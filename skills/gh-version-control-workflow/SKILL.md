@@ -343,6 +343,7 @@ DELETE_REMOTE="true"
 - Use `safe-worktree` for cleanup; do not run branch/worktree deletion commands freehand.
 - If an issue is in-scope for a release, it must be referenced in `Version Bump: X.Y.Z`.
 - When adding `qa` to a closed issue, always add manual testing instructions to the version tracker.
+- Do *not* work inside the base repo, always inside a worktree. Base repo must always have an integration branch checked out. Do not check out a worktree/issue branch.
 
 ## Command Reference
 See `references/commands.md` for command templates and daily ops shortcuts.

@@ -10,6 +10,10 @@ Use this skill to clean up issue worktrees and branches without risking `main`/`
 
 This workflow is built for Codex command-policy environments where commands like `git branch -d` or `git push origin --delete` may be rejected.
 
+Important:
+- Git can retain stale worktree registrations after manual folder removal.
+- The helper script handles this automatically by running `git worktree prune` as part of normal cleanup.
+
 ## Use When
 - A PR is merged and you need local/remote branch + worktree cleanup.
 - An issue branch/worktree is intentionally abandoned and must be removed.
@@ -66,6 +70,8 @@ Run `--help` for usage:
 - Refuses non-issue branch names by default (`^codex/issue-[0-9]+-`).
 - Optionally enforces `--issue-number` branch match.
 - Refuses dangerous worktree paths (`/`, `.`, `$HOME`, empty, repo root).
+- Uses recoverable deletion fallback (`trash`) when `git worktree remove` cannot fully remove the directory.
+- Runs `git worktree prune` by default (before and after worktree-path cleanup) to clear stale registrations automatically.
 - Requires merged state unless `--allow-unmerged-delete true`.
 - Uses policy-aware fallback deletes for local and remote refs.
 - Fails non-zero if branch/worktree still exists after attempted cleanup.

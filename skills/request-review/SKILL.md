@@ -21,6 +21,9 @@ Avoid window-name-based targets because names can change with the active command
 - If explicitly asked to use this skill, do not manually commit/push first.
 - Run this skill directly and let it handle commit/push in the default path.
 - Use the opt-in existing-commit mode only as recovery when a commit was already created/pushed by mistake.
+- Wait for review, do not finish your turn until the agent is done reviewing your code.
+- Take remediary action as needed and request another review.
+- If you pass, this is a good stopping point.
 
 ## Behavior
 - Default path: commits first using the provided commit message (`git add -A` then `git commit -m ...`).

@@ -157,8 +157,12 @@ fi
 git switch "$INTEGRATION_BRANCH"
 git pull --ff-only origin "$INTEGRATION_BRANCH"
 
+# Always prune first to clear stale registrations from manually deleted/trashed
+# worktrees before attempting path-level cleanup.
+git worktree prune
+
 if [[ -d "$WORKTREE_PATH" ]]; then
-  git worktree remove "$WORKTREE_PATH" || true
+  git worktree remove "$WORKTREE_PATH" || git worktree remove --force "$WORKTREE_PATH" || true
 fi
 
 if [[ -d "$WORKTREE_PATH" ]]; then
@@ -168,6 +172,10 @@ if [[ -d "$WORKTREE_PATH" ]]; then
     die "worktree still exists and trash is unavailable: $WORKTREE_PATH"
   fi
 fi
+
+# Run prune again after removal/trash attempts so branch deletion is not blocked
+# by stale worktree registrations.
+git worktree prune
 
 if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
   git branch -d "$BRANCH" || git update-ref -d "refs/heads/$BRANCH"
