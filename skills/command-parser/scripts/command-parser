@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "Usage: command-parser <command...>" >&2
+  exit 2
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if [[ -f "$SKILL_DIR/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$SKILL_DIR/.env"
+  set +a
+fi
+
+warnings_flag="no"
+if [[ -n "${COMMAND_PARSER_WARNINGS:-}" && "${COMMAND_PARSER_WARNINGS:-}" != "0" ]]; then
+  warnings_flag="yes"
+fi
+
+profile="${COMMAND_PARSER_PROFILE:-command-parser}"
+
+tmp_root="${TMPDIR:-/tmp}"
+tmp_dir="$(mktemp -d "${tmp_root%/}/command-parser.XXXXXX")"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+cat > "$tmp_dir/AGENTS.md" <<'EOF_AGENTS'
+You are command-parser, a CLI output extraction agent.
+
+Task:
+- Read ./output.log and extract errors (and warnings only if requested).
+- Prefer targeted search (`rg`, `grep`) before broad reads for huge files.
+
+Output rules:
+- If there are no errors at all, output exactly: No errors!
+- Otherwise output:
+  - ## Errors
+  - one bullet per distinct error as: - <brief message> — <file:line(:col) when present>
+- Special case — unit test failures:
+  - Include failing test names and concise assertion/panic/trace lines that explain why a test failed.
+  - Include expected vs actual snippets when present.
+  - Do not include passing tests or non-error test noise.
+- If warnings are requested and present, add:
+  - ## Warnings
+  - one bullet per distinct warning as: - <brief message> — <file:line(:col) when present>
+- Preserve file paths and coordinates exactly as shown.
+- Do not include advice, fixes, commands, or extra headings.
+EOF_AGENTS
+
+if "$@" >"$tmp_dir/output.log" 2>&1; then
+  command_exit=0
+else
+  command_exit=$?
+fi
+
+printf '%q ' "$@" > "$tmp_dir/command.txt"
+printf '\n' >> "$tmp_dir/command.txt"
+
+prompt="$(cat <<EOF_PROMPT
+Parse ./output.log from this command:
+$(cat "$tmp_dir/command.txt")
+
+Include warnings: $warnings_flag
+
+Return only the structured extraction format from AGENTS.md.
+EOF_PROMPT
+)"
+
+config_file="${HOME}/.codex/config.toml"
+if [[ ! -f "$config_file" ]]; then
+  echo "command-parser: missing config file: $config_file" >&2
+  exit 1
+fi
+if ! rg -q "^\\[profiles\\.${profile}\\]$" "$config_file"; then
+  echo "command-parser: profile '$profile' not found in $config_file" >&2
+  exit 1
+fi
+
+exec_args=(
+  --skip-git-repo-check
+  -s read-only
+  -C "$tmp_dir"
+  -p "$profile"
+  -o "$tmp_dir/response.log"
+)
+exec_args+=("$prompt")
+
+codex exec "${exec_args[@]}" >/dev/null 2>&1
+
+if [[ ! -s "$tmp_dir/response.log" ]]; then
+  echo "command-parser: missing parser response" >&2
+  exit 1
+fi
+
+cat "$tmp_dir/response.log"
+printf '\n'
+exit "$command_exit"

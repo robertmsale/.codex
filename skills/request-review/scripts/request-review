@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage:
+  request-review <tmux-pane-target> <commit-message>
+
+Examples:
+  request-review "coolproject-78-dialpad:1.1" "fix: address codex review"
+  request-review "%25" "chore: review checkpoint"
+USAGE
+}
+
+require_cmd() {
+  local cmd="$1"
+  command -v "$cmd" >/dev/null 2>&1 || {
+    echo "request-review: missing required command: $cmd" >&2
+    exit 1
+  }
+}
+
+resolve_tmux_pane() {
+  local target="$1"
+  local resolved=""
+
+  resolved="$(tmux display-message -p -t "$target" '#{pane_id}' 2>/dev/null || true)"
+  if [[ -n "$resolved" ]]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+
+  # Legacy format compatibility: <session>:<window-name>@%<pane-id>.
+  if [[ "$target" =~ @(%[0-9]+)$ ]]; then
+    local pane_hint="${BASH_REMATCH[1]}"
+    resolved="$(tmux display-message -p -t "$pane_hint" '#{pane_id}' 2>/dev/null || true)"
+    if [[ -n "$resolved" ]]; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+send_to_pane() {
+  local pane="$1"
+  local message="$2"
+  local tmp_file
+  tmp_file="$(mktemp)"
+  printf '%s\n' "$message" >"$tmp_file"
+
+  tmux load-buffer -b request-review-buffer "$tmp_file"
+  tmux paste-buffer -d -b request-review-buffer -t "$pane"
+  sleep 5
+  tmux send-keys -t "$pane" Enter
+
+  rm -f "$tmp_file"
+}
+
+extract_local_review_message() {
+  local raw_jsonl_path="$1"
+  local output_path="$2"
+
+  RAW_JSONL_PATH="$raw_jsonl_path" OUTPUT_PATH="$output_path" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+raw_path = Path(os.environ["RAW_JSONL_PATH"])
+out_path = Path(os.environ["OUTPUT_PATH"])
+
+text = raw_path.read_text(encoding="utf-8", errors="replace")
+message = ""
+for line in text.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except Exception:
+        continue
+    if obj.get("type") != "item.completed":
+        continue
+    item = obj.get("item") or {}
+    if item.get("type") != "agent_message":
+        continue
+    candidate = (item.get("text") or "").strip()
+    if candidate:
+        message = candidate
+
+if not message:
+    message = text.strip()
+
+out_path.write_text(message + ("\n" if message else ""), encoding="utf-8")
+PY
+}
+
+if [[ $# -lt 2 ]]; then
+  usage
+  exit 2
+fi
+
+target_pane_input="$1"
+shift
+commit_message="$*"
+
+if [[ -z "$commit_message" ]]; then
+  echo "request-review: commit message cannot be empty" >&2
+  exit 2
+fi
+
+require_cmd git
+require_cmd tmux
+require_cmd gh
+require_cmd codex
+require_cmd jq
+require_cmd python3
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$repo_root" ]]; then
+  echo "request-review: must run inside a git repository" >&2
+  exit 2
+fi
+
+target_pane="$(resolve_tmux_pane "$target_pane_input" || true)"
+if [[ -z "$target_pane" ]]; then
+  echo "request-review: tmux pane not found: $target_pane_input" >&2
+  echo "request-review: use a stable pane target like <session>:0.0 or %<pane-id>" >&2
+  exit 2
+fi
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+skill_dir="$(cd "$script_dir/.." && pwd)"
+
+if [[ -f "$skill_dir/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$skill_dir/.env"
+  set +a
+fi
+
+review_mode="${REQUEST_REVIEW_MODE:-local}"
+bot_login="${REQUEST_REVIEW_BOT_LOGIN:-chatgpt-codex-connector[bot]}"
+poll_interval_seconds="${REQUEST_REVIEW_POLL_INTERVAL_SECONDS:-20}"
+timeout_seconds="${REQUEST_REVIEW_TIMEOUT_SECONDS:-1800}"
+trigger_comment="${REQUEST_REVIEW_TRIGGER_COMMENT:-@codex review}"
+
+local_profile="${REQUEST_REVIEW_LOCAL_PROFILE:-local-review}"
+local_output_file="${REQUEST_REVIEW_LOCAL_OUTPUT_FILE:-review.log}"
+local_error_file="${REQUEST_REVIEW_LOCAL_ERROR_FILE:-review.err.log}"
+local_keep_debug_logs="${REQUEST_REVIEW_LOCAL_KEEP_DEBUG_LOGS:-0}"
+
+lock_root="${HOME}/.codex/tmp"
+lock_dir="${lock_root}/request-review.lock"
+mkdir -p "$lock_root"
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  echo "request-review: another request-review run is active; run only one review at a time" >&2
+  exit 1
+fi
+trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
+
+cd "$repo_root"
+
+git add -A
+if git diff --cached --quiet; then
+  echo "request-review: no changes to commit; refusing to review an old commit" >&2
+  exit 2
+fi
+
+git commit -m "$commit_message"
+review_sha="$(git rev-parse --verify HEAD)"
+
+branch_name="$(git rev-parse --abbrev-ref HEAD)"
+
+if [[ "$review_mode" == "remote" ]]; then
+  git push -u origin HEAD
+
+  pr_number="$(gh pr view --json number,state --jq '.number' 2>/dev/null || true)"
+  pr_state="$(gh pr view --json number,state --jq '.state' 2>/dev/null || true)"
+  if [[ -z "$pr_number" ]]; then
+    result="request-review (remote): no PR found for branch '$branch_name'. Open a PR first."
+    send_to_pane "$target_pane" "$result"
+    echo "$result"
+    exit 1
+  fi
+  if [[ "$pr_state" != "OPEN" ]]; then
+    result="request-review (remote): PR #$pr_number is not OPEN (state: $pr_state)."
+    send_to_pane "$target_pane" "$result"
+    echo "$result"
+    exit 1
+  fi
+
+  if ! gh pr comment "$pr_number" --body "$trigger_comment" >/dev/null; then
+    result="request-review (remote): failed to post trigger comment '$trigger_comment' on PR #$pr_number"
+    send_to_pane "$target_pane" "$result"
+    echo "$result"
+    exit 1
+  fi
+
+  repo_name="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+
+  commit_timestamp=""
+  for _ in $(seq 1 30); do
+    commit_timestamp="$(gh api "repos/$repo_name/pulls/$pr_number/commits" --jq '.[] | select(.sha=="'"$review_sha"'") | .commit.committer.date' || true)"
+    if [[ -n "$commit_timestamp" ]]; then
+      break
+    fi
+    sleep 2
+  done
+
+  if [[ -z "$commit_timestamp" ]]; then
+    result="request-review (remote): commit $review_sha is not present on PR #$pr_number yet."
+    send_to_pane "$target_pane" "$result"
+    echo "$result"
+    exit 1
+  fi
+
+  start_epoch="$(date +%s)"
+  while true; do
+    now_epoch="$(date +%s)"
+    elapsed="$((now_epoch - start_epoch))"
+
+    inline_json="$(gh api "repos/$repo_name/pulls/$pr_number/comments?since=$commit_timestamp" --paginate \
+      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at > "'"$commit_timestamp"'") and (.commit_id=="'"$review_sha"'" or .original_commit_id=="'"$review_sha"'")) | {id,created_at,html_url,path,line,body}]')"
+
+    inline_count="$(jq 'length' <<<"$inline_json")"
+    if [[ "$inline_count" -gt 0 ]]; then
+      result_header="request-review (remote): $inline_count inline comment(s) from $bot_login on PR #$pr_number for commit $review_sha"
+      result_body="$(jq -r '.[] | "- \(.html_url)\n  File: \(.path // "unknown"):\(.line // 0)\n  Comment: \(.body)\n"' <<<"$inline_json")"
+      result="$result_header\n\n$result_body"
+      send_to_pane "$target_pane" "$result"
+      echo -e "$result"
+      exit 0
+    fi
+
+    thumbs_up="$(gh api "repos/$repo_name/issues/$pr_number/reactions" -H 'Accept: application/vnd.github+json' --paginate \
+      --jq 'any(.[]; .user.login=="'"$bot_login"'" and .content=="+1" and (.created_at > "'"$commit_timestamp"'"))')"
+
+    if [[ "$thumbs_up" == "true" ]]; then
+      result="request-review (remote): 👍 from $bot_login on PR #$pr_number after commit $review_sha"
+      send_to_pane "$target_pane" "$result"
+      echo "$result"
+      exit 0
+    fi
+
+    if [[ "$elapsed" -ge "$timeout_seconds" ]]; then
+      result="request-review (remote): timed out after ${timeout_seconds}s waiting for review signal on PR #$pr_number for commit $review_sha"
+      send_to_pane "$target_pane" "$result"
+      echo "$result"
+      exit 1
+    fi
+
+    sleep "$poll_interval_seconds"
+  done
+fi
+
+if [[ "$review_mode" != "local" ]]; then
+  echo "request-review: unsupported REQUEST_REVIEW_MODE='$review_mode' (expected 'local' or 'remote')" >&2
+  exit 2
+fi
+
+local_output_path="$repo_root/$local_output_file"
+local_error_path="$repo_root/$local_error_file"
+local_raw_jsonl_path="$repo_root/.request-review.events.jsonl"
+
+config_file="${HOME}/.codex/config.toml"
+if [[ ! -f "$config_file" ]]; then
+  result="request-review (local): missing config file: $config_file"
+  send_to_pane "$target_pane" "$result"
+  echo "$result"
+  exit 1
+fi
+if ! rg -q "^\[profiles\.${local_profile}\]$" "$config_file"; then
+  result="request-review (local): profile '$local_profile' not found in $config_file"
+  send_to_pane "$target_pane" "$result"
+  echo "$result"
+  exit 1
+fi
+
+cmd=(
+  codex exec
+  -C "$repo_root"
+  -s read-only
+  -p "$local_profile"
+)
+
+cmd+=(
+  --json
+  review
+  --commit "$review_sha"
+  --title "$commit_message"
+)
+
+if "${cmd[@]}" >"$local_raw_jsonl_path" 2>"$local_error_path"; then
+  review_exit=0
+else
+  review_exit=$?
+fi
+
+extract_local_review_message "$local_raw_jsonl_path" "$local_output_path"
+
+if [[ ! -s "$local_output_path" ]]; then
+  result="request-review (local): missing review output at $local_output_path (check $local_error_path)"
+  send_to_pane "$target_pane" "$result"
+  echo "$result"
+  exit 1
+fi
+
+result="$(cat "$local_output_path")"
+send_to_pane "$target_pane" "$result"
+printf '%s\n' "$result"
+
+if [[ "$local_keep_debug_logs" == "0" ]]; then
+  rm -f "$local_raw_jsonl_path"
+fi
+
+exit "$review_exit"

@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  codex-tmux <session-name> [initial prompt...]
+
+Behavior:
+  - Creates a new detached tmux session and launches codex in that pane.
+  - If CODEX_THREAD_ID is set, uses: codex resume ... CODEX_THREAD_ID [initial prompt]
+  - If CODEX_THREAD_ID is empty/unset, uses: codex ... [initial prompt]
+USAGE
+}
+
+require_cmd() {
+  local cmd="$1"
+  command -v "$cmd" >/dev/null 2>&1 || {
+    echo "Missing required command: $cmd" >&2
+    exit 1
+  }
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -lt 1 ]]; then
+  usage >&2
+  exit 1
+fi
+
+SESSION_NAME="$1"
+shift || true
+INITIAL_PROMPT="${*:-}"
+
+require_cmd tmux
+require_cmd codex
+
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+  echo "tmux session '$SESSION_NAME' already exists. Choose a different session name." >&2
+  exit 1
+fi
+
+tmux new-session -d -s "$SESSION_NAME"
+sleep "${CODEX_TMUX_BOOT_DELAY_SECONDS:-2}"
+PANE_ID="$(tmux list-panes -t "$SESSION_NAME" -F '#{pane_id}' | head -n1)"
+WINDOW_INDEX="$(tmux display-message -p -t "$PANE_ID" '#{window_index}')"
+PANE_INDEX="$(tmux display-message -p -t "$PANE_ID" '#{pane_index}')"
+STABLE_SESSION_PANE="${SESSION_NAME}:${WINDOW_INDEX}.${PANE_INDEX}"
+
+if [[ -z "$PANE_ID" || -z "$STABLE_SESSION_PANE" ]]; then
+  echo "Failed to resolve tmux pane for session '$SESSION_NAME'." >&2
+  exit 1
+fi
+
+DEV_INSTRUCTIONS="You are running in tmux located at $STABLE_SESSION_PANE (pane_id $PANE_ID)"
+
+CMD=( )
+if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
+  CMD=(codex resume -c "developer_instructions=$DEV_INSTRUCTIONS" "$CODEX_THREAD_ID")
+else
+  CMD=(codex -c "developer_instructions=$DEV_INSTRUCTIONS")
+fi
+
+if [[ -n "$INITIAL_PROMPT" ]]; then
+  CMD+=("$INITIAL_PROMPT")
+fi
+
+printf -v CMD_STR '%q ' "${CMD[@]}"
+CMD_STR="${CMD_STR% }"
+
+tmux send-keys -t "$PANE_ID" -l "$CMD_STR"
+tmux send-keys -t "$PANE_ID" C-m
+
+echo "Launched: $STABLE_SESSION_PANE"
+echo "Pane ID: $PANE_ID"
+echo "Attach with: tmux attach -t $SESSION_NAME"

@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+  echo "safe-worktree: $*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  safe-worktree-cleanup \
+    --repo-root <path> \
+    --integration-branch <name> \
+    --branch <name> \
+    --worktree-path <path> \
+    [--issue-number <n>] \
+    [--delete-remote true|false] \
+    [--allow-unmerged-delete true|false]
+
+Defaults:
+  --delete-remote true
+  --allow-unmerged-delete false
+EOF
+}
+
+require_value() {
+  local flag="$1"
+  local value="${2:-}"
+  [[ -n "$value" ]] || die "missing value for $flag"
+}
+
+bool_or_die() {
+  local name="$1"
+  local value="$2"
+  case "$value" in
+    true|false) ;;
+    *) die "$name must be true or false (got: $value)" ;;
+  esac
+}
+
+REPO_ROOT=""
+INTEGRATION_BRANCH=""
+BRANCH=""
+WORKTREE_PATH=""
+ISSUE_NUMBER=""
+DELETE_REMOTE="true"
+ALLOW_UNMERGED_DELETE="false"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo-root)
+      shift
+      require_value "--repo-root" "${1:-}"
+      REPO_ROOT="$1"
+      ;;
+    --integration-branch)
+      shift
+      require_value "--integration-branch" "${1:-}"
+      INTEGRATION_BRANCH="$1"
+      ;;
+    --branch)
+      shift
+      require_value "--branch" "${1:-}"
+      BRANCH="$1"
+      ;;
+    --worktree-path)
+      shift
+      require_value "--worktree-path" "${1:-}"
+      WORKTREE_PATH="$1"
+      ;;
+    --issue-number)
+      shift
+      require_value "--issue-number" "${1:-}"
+      ISSUE_NUMBER="$1"
+      ;;
+    --delete-remote)
+      shift
+      require_value "--delete-remote" "${1:-}"
+      DELETE_REMOTE="$1"
+      ;;
+    --allow-unmerged-delete)
+      shift
+      require_value "--allow-unmerged-delete" "${1:-}"
+      ALLOW_UNMERGED_DELETE="$1"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown arg: $1"
+      ;;
+  esac
+  shift
+done
+
+[[ -n "$REPO_ROOT" ]] || die "--repo-root is required"
+[[ -n "$INTEGRATION_BRANCH" ]] || die "--integration-branch is required"
+[[ -n "$BRANCH" ]] || die "--branch is required"
+[[ -n "$WORKTREE_PATH" ]] || die "--worktree-path is required"
+
+bool_or_die "--delete-remote" "$DELETE_REMOTE"
+bool_or_die "--allow-unmerged-delete" "$ALLOW_UNMERGED_DELETE"
+
+command -v git >/dev/null 2>&1 || die "git is required"
+
+REPO_ROOT="$(cd "$REPO_ROOT" && pwd)"
+[[ -d "$REPO_ROOT/.git" || -f "$REPO_ROOT/.git" ]] || die "not a git repo: $REPO_ROOT"
+
+cd "$REPO_ROOT"
+
+git fetch origin --prune
+
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+
+case "$BRANCH" in
+  main|master|develop|staging|production)
+    die "refusing to delete protected branch: $BRANCH"
+    ;;
+esac
+
+[[ "$BRANCH" != "$INTEGRATION_BRANCH" ]] || die "refusing to delete integration branch: $BRANCH"
+[[ "$BRANCH" != "$CURRENT_BRANCH" ]] || die "refusing to delete currently checked out branch: $BRANCH"
+
+[[ "$BRANCH" =~ ^codex/issue-[0-9]+- ]] || die "refusing non-issue branch: $BRANCH"
+
+if [[ -n "$ISSUE_NUMBER" ]]; then
+  [[ "$BRANCH" =~ ^codex/issue-${ISSUE_NUMBER}- ]] || {
+    die "branch does not match --issue-number $ISSUE_NUMBER: $BRANCH"
+  }
+fi
+
+if [[ -z "$WORKTREE_PATH" || "$WORKTREE_PATH" == "/" || "$WORKTREE_PATH" == "." || "$WORKTREE_PATH" == "$HOME" ]]; then
+  die "refusing dangerous worktree path: $WORKTREE_PATH"
+fi
+
+[[ "$WORKTREE_PATH" != "$REPO_ROOT" ]] || die "worktree path cannot equal repo root"
+
+git show-ref --verify --quiet "refs/remotes/origin/$INTEGRATION_BRANCH" || {
+  die "origin/$INTEGRATION_BRANCH not found"
+}
+
+if [[ "$ALLOW_UNMERGED_DELETE" != "true" ]] && git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  MERGED_PR=""
+  if command -v gh >/dev/null 2>&1; then
+    MERGED_PR="$(gh pr list --head "$BRANCH" --state merged --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$MERGED_PR" ]]; then
+    if ! git merge-base --is-ancestor "$BRANCH" "refs/remotes/origin/$INTEGRATION_BRANCH"; then
+      die "branch is not merged into origin/$INTEGRATION_BRANCH: $BRANCH"
+    fi
+  fi
+fi
+
+git switch "$INTEGRATION_BRANCH"
+git pull --ff-only origin "$INTEGRATION_BRANCH"
+
+if [[ -d "$WORKTREE_PATH" ]]; then
+  git worktree remove "$WORKTREE_PATH" || true
+fi
+
+if [[ -d "$WORKTREE_PATH" ]]; then
+  if command -v trash >/dev/null 2>&1; then
+    trash -- "$WORKTREE_PATH"
+  else
+    die "worktree still exists and trash is unavailable: $WORKTREE_PATH"
+  fi
+fi
+
+if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  git branch -d "$BRANCH" || git update-ref -d "refs/heads/$BRANCH"
+fi
+
+if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  die "local branch still exists after delete attempts: $BRANCH"
+fi
+
+if [[ "$DELETE_REMOTE" == "true" ]] && git ls-remote --heads origin "$BRANCH" | grep -q .; then
+  git push origin --delete "$BRANCH" || {
+    command -v gh >/dev/null 2>&1 || die "remote delete fallback requires gh"
+    REPO_NAME="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+    gh api -X DELETE "repos/$REPO_NAME/git/refs/heads/$BRANCH"
+  }
+fi
+
+if [[ "$DELETE_REMOTE" == "true" ]] && git ls-remote --heads origin "$BRANCH" | grep -q .; then
+  die "remote branch still exists after delete attempts: $BRANCH"
+fi
+
+if [[ -d "$WORKTREE_PATH" ]]; then
+  die "worktree path still exists: $WORKTREE_PATH"
+fi
+
+echo "safe-worktree: cleanup complete for $BRANCH"

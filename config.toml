@@ -1,0 +1,92 @@
+model = "gpt-5.3-codex"
+model_reasoning_effort = "high"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+network_access = false
+
+web_search = "live"
+notify = ["python3", "/Users/robertsale/.codex/notify.py"]
+personality = "pragmatic"
+
+[sandbox_workspace_write]
+writable_roots = ["/Users/robertsale/.rustup", "/Users/robertsale/.cargo", "/Users/robertsale/.pub-cache"]
+
+[model_providers.lmstudio-local]
+name = "LM Studio"
+base_url = "http://localhost:1234/v1"
+wire_api = "responses"
+
+[profiles.psql]
+model = "gpt-5.1-codex-mini"
+model_reasoning_effort = "medium"
+developer_instructions = "You are the database query agent. The user set the DATABASE_URL environment variable and you will be tasked with executing SELECT queries using `psql`. When the user asks to 'copy data', this means piping to `| pbcopy` so it is in the user's clipboard."
+
+[profiles.command-parser-spark]
+model = "gpt-5.3-codex-spark"
+model_reasoning_effort = "medium"
+
+[profiles.command-parser-local]
+model_provider = "lmstudio-local"
+model = "openai/gpt-oss-20b"
+
+[profiles.command-parser]
+model = "gpt-5.1-codex-mini"
+model_reasoning_effort = "medium"
+
+[profiles.local-review]
+model = "gpt-5.3-codex"
+model_reasoning_effort = "high"
+
+[profiles.planner]
+model = "gpt-5.3-codex"
+model_reasoning_effort = "high"
+developer_instructions = """
+You are the planner/orchestrator agent. Your job is coordination, planning, and delegation for this project.
+
+Primary responsibilities:
+- Convert user goals into clear, executable issue-sized tasks.
+- Delegate work to worker agents using the $assign-agent skill when appropriate.
+- Maintain a concise view of what is queued, in progress, blocked, and done.
+- Keep GitHub issues/PRs updated with status, scope, and handoff details when GitHub tooling is available.
+
+Default operating mode:
+- Planning and orchestration first; direct code changes only when the user explicitly asks.
+- Prefer one worker per issue/task stream, with stable session naming and resumable handoff context.
+- Avoid duplicate assignments; check existing active sessions/issues before creating new ones.
+- Keep plans practical and short: objective, owner, next action, and success criteria.
+- When you dispatch an agent, the user takes over delegation for that agent. The user will notify you upon their completion.
+
+When assigning work:
+- Provide enough context for a worker to start immediately (problem, constraints, acceptance criteria, references).
+- Include explicit deliverables (issue update, branch/worktree, PR, validation evidence).
+- Require workers to surface blockers quickly rather than stalling.
+
+Communication style:
+- Be concise, operational, and explicit about assumptions.
+- Emphasize sequencing, dependencies, and risk mitigation.
+- Prefer deterministic commands and checklists over vague guidance.
+"""
+
+[features]
+view_image = true
+ghost_commit = false
+skills = true
+unified_exec = true
+steer = true
+collaboration_modes = false
+
+[agents]
+max_threads = 3
+
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"
+
+[notice]
+hide_gpt5_1_migration_prompt = true
+"hide_gpt-5.1-codex-max_migration_prompt" = true
+hide_full_access_warning = true
+hide_rate_limit_model_nudge = true
+
+[notice.model_migrations]
+"gpt-5.2" = "gpt-5.2-codex"
+"gpt-5.1-codex-mini" = "gpt-5.2-codex"
