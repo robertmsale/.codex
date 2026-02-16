@@ -9,6 +9,14 @@ Usage:
 Examples:
   request-review "coolproject-78-dialpad:1.1" "fix: address codex review"
   request-review "%25" "chore: review checkpoint"
+
+Optional env flags:
+  REQUEST_REVIEW_USE_EXISTING_COMMIT=1
+    - Skip git add/commit.
+    - In remote mode, also skip git push.
+  REQUEST_REVIEW_EXISTING_COMMIT_SHA=<sha-or-ref>
+    - Review this commit when REQUEST_REVIEW_USE_EXISTING_COMMIT=1.
+    - Defaults to HEAD.
 USAGE
 }
 
@@ -150,6 +158,8 @@ local_profile="${REQUEST_REVIEW_LOCAL_PROFILE:-local-review}"
 local_output_file="${REQUEST_REVIEW_LOCAL_OUTPUT_FILE:-review.log}"
 local_error_file="${REQUEST_REVIEW_LOCAL_ERROR_FILE:-review.err.log}"
 local_keep_debug_logs="${REQUEST_REVIEW_LOCAL_KEEP_DEBUG_LOGS:-0}"
+use_existing_commit_flag="${REQUEST_REVIEW_USE_EXISTING_COMMIT:-0}"
+existing_commit_sha_ref="${REQUEST_REVIEW_EXISTING_COMMIT_SHA:-HEAD}"
 
 lock_root="${HOME}/.codex/tmp"
 lock_dir="${lock_root}/request-review.lock"
@@ -162,19 +172,29 @@ trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
 
 cd "$repo_root"
 
-git add -A
-if git diff --cached --quiet; then
-  echo "request-review: no changes to commit; refusing to review an old commit" >&2
-  exit 2
-fi
+if [[ "$use_existing_commit_flag" != "0" ]]; then
+  review_sha="$(git rev-parse --verify "${existing_commit_sha_ref}^{commit}" 2>/dev/null || true)"
+  if [[ -z "$review_sha" ]]; then
+    echo "request-review: REQUEST_REVIEW_EXISTING_COMMIT_SHA is not a valid commit: $existing_commit_sha_ref" >&2
+    exit 2
+  fi
+else
+  git add -A
+  if git diff --cached --quiet; then
+    echo "request-review: no changes to commit; refusing to review an old commit" >&2
+    exit 2
+  fi
 
-git commit -m "$commit_message"
-review_sha="$(git rev-parse --verify HEAD)"
+  git commit -m "$commit_message"
+  review_sha="$(git rev-parse --verify HEAD)"
+fi
 
 branch_name="$(git rev-parse --abbrev-ref HEAD)"
 
 if [[ "$review_mode" == "remote" ]]; then
-  git push -u origin HEAD
+  if [[ "$use_existing_commit_flag" == "0" ]]; then
+    git push -u origin HEAD
+  fi
 
   pr_number="$(gh pr view --json number,state --jq '.number' 2>/dev/null || true)"
   pr_state="$(gh pr view --json number,state --jq '.state' 2>/dev/null || true)"
@@ -210,7 +230,11 @@ if [[ "$review_mode" == "remote" ]]; then
   done
 
   if [[ -z "$commit_timestamp" ]]; then
-    result="request-review (remote): commit $review_sha is not present on PR #$pr_number yet."
+    if [[ "$use_existing_commit_flag" != "0" ]]; then
+      result="request-review (remote): commit $review_sha is not present on PR #$pr_number. If needed, disable REQUEST_REVIEW_USE_EXISTING_COMMIT and rerun so this script can push."
+    else
+      result="request-review (remote): commit $review_sha is not present on PR #$pr_number yet."
+    fi
     send_to_pane "$target_pane" "$result"
     echo "$result"
     exit 1

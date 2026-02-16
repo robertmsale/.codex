@@ -1,6 +1,6 @@
 ---
 name: request-review
-description: Commit changes, then run either remote GitHub Codex review polling or local codex exec review, and send results back to a specified tmux pane.
+description: Request code review and route results to a tmux pane. Default flow commits first; optional opt-in flow can target an existing commit without commit/push.
 ---
 
 # Request Review
@@ -17,15 +17,22 @@ Examples:
 Use stable pane identifiers. Prefer `%<pane-id>` or `<session>:<window-index>.<pane-index>`.
 Avoid window-name-based targets because names can change with the active command.
 
+## Preferred workflow
+- If explicitly asked to use this skill, do not manually commit/push first.
+- Run this skill directly and let it handle commit/push in the default path.
+- Use the opt-in existing-commit mode only as recovery when a commit was already created/pushed by mistake.
+
 ## Behavior
-- Commits first using the provided commit message (`git add -A` then `git commit -m ...`).
-- Uses the newly created `HEAD` commit as the target review SHA.
+- Default path: commits first using the provided commit message (`git add -A` then `git commit -m ...`).
+- Default path: uses the newly created `HEAD` commit as the target review SHA.
+- Opt-in recovery path: set `REQUEST_REVIEW_USE_EXISTING_COMMIT=1` to skip `git add`/`git commit` and review an existing commit (defaults to `HEAD`, or `REQUEST_REVIEW_EXISTING_COMMIT_SHA`).
 - Runs exactly one review request at a time (global lock).
 - Sends final review text back to the target pane, waits 5 seconds, then sends Enter.
 
 ## Mode switch (from `.env`)
 - `REQUEST_REVIEW_MODE=remote`
-  - Pushes branch (`git push -u origin HEAD`).
+  - Default path pushes branch (`git push -u origin HEAD`).
+  - With `REQUEST_REVIEW_USE_EXISTING_COMMIT=1`, skips push and hooks review onto the existing commit SHA.
   - Finds the PR for current branch.
   - Posts `@codex review` to trigger cloud review explicitly.
   - Polls until one condition is met for the target commit SHA:
@@ -49,6 +56,8 @@ Useful variables:
 - `REQUEST_REVIEW_POLL_INTERVAL_SECONDS=20`
 - `REQUEST_REVIEW_TIMEOUT_SECONDS=1800`
 - `REQUEST_REVIEW_LOCAL_PROFILE=local-review`
+- `REQUEST_REVIEW_USE_EXISTING_COMMIT=0|1` (default `0`)
+- `REQUEST_REVIEW_EXISTING_COMMIT_SHA=<sha-or-ref>` (default `HEAD` when existing-commit mode is enabled)
 
 ## Critical discipline
 - Only run one review request at a time.
