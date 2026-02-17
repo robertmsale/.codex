@@ -1,8 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+show_usage() {
+  cat >&2 <<'EOF_USAGE'
+Usage:
+  command-parser [--request-additional "<question>"] <command...>
+
+Notes:
+  - Default mode prints compact error extraction only.
+  - Use --request-additional only when absolutely necessary.
+EOF_USAGE
+}
+
+additional_request="${COMMAND_PARSER_ADDITIONAL_REQUEST:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --request-additional|--request-info)
+      if [[ $# -lt 2 ]]; then
+        echo "command-parser: missing value for $1" >&2
+        show_usage
+        exit 2
+      fi
+      additional_request="$2"
+      shift 2
+      ;;
+    --help|-h)
+      show_usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "command-parser: unknown option: $1" >&2
+      show_usage
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
 if [[ $# -eq 0 ]]; then
-  echo "Usage: command-parser <command...>" >&2
+  show_usage
   exit 2
 fi
 
@@ -38,7 +80,9 @@ Task:
 - Prefer targeted search (`rg`, `grep`) before broad reads for huge files.
 
 Output rules:
-- If there are no errors at all, output exactly: No errors!
+- If there are no errors at all:
+  - and no additional request: output exactly: No errors!
+  - and additional request exists: output `No errors!` first, then `## Requested Information`
 - Otherwise output:
   - ## Errors
   - one bullet per distinct error as: - <brief message> — <file:line(:col) when present>
@@ -49,6 +93,11 @@ Output rules:
 - If warnings are requested and present, add:
   - ## Warnings
   - one bullet per distinct warning as: - <brief message> — <file:line(:col) when present>
+- Additional request (optional):
+  - Only if an additional request is provided, append:
+    - ## Requested Information
+    - concise bullets answering only that request, anchored to log lines/files when present
+  - If requested information is not present, output: - Not found in output.
 - Preserve file paths and coordinates exactly as shown.
 - Do not include advice, fixes, commands, or extra headings.
 EOF_AGENTS
@@ -67,6 +116,8 @@ Parse ./output.log from this command:
 $(cat "$tmp_dir/command.txt")
 
 Include warnings: $warnings_flag
+
+Additional request: ${additional_request:-<none>}
 
 Return only the structured extraction format from AGENTS.md.
 EOF_PROMPT
