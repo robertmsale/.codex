@@ -66,6 +66,20 @@ send_to_pane() {
   rm -f "$tmp_file"
 }
 
+emit_result() {
+  local message="$1"
+
+  # If we're targeting the same pane we're running in, print once locally.
+  # This avoids duplicate output from both tmux paste and stdout.
+  if [[ -n "${current_pane:-}" && "$current_pane" == "$target_pane" ]]; then
+    printf '%s\n' "$message"
+    return
+  fi
+
+  send_to_pane "$target_pane" "$message"
+  printf '%s\n' "$message"
+}
+
 extract_local_review_message() {
   local raw_jsonl_path="$1"
   local output_path="$2"
@@ -137,6 +151,7 @@ if [[ -z "$target_pane" ]]; then
   echo "request-review: use a stable pane target like <session>:<window-index>.<pane-index>" >&2
   exit 2
 fi
+current_pane="${TMUX_PANE:-}"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 skill_dir="$(cd "$script_dir/.." && pwd)"
@@ -222,8 +237,7 @@ if [[ "$review_disable" != "0" ]]; then
     git push -u origin HEAD
   fi
   result="all clear!"
-  send_to_pane "$target_pane" "$result"
-  echo "$result"
+  emit_result "$result"
   exit 0
 fi
 
@@ -236,21 +250,18 @@ if [[ "$review_mode" == "remote" ]]; then
   pr_state="$(gh pr view --json number,state --jq '.state' 2>/dev/null || true)"
   if [[ -z "$pr_number" ]]; then
     result="request-review (remote): no PR found for branch '$branch_name'. Open a PR first."
-    send_to_pane "$target_pane" "$result"
-    echo "$result"
+    emit_result "$result"
     exit 1
   fi
   if [[ "$pr_state" != "OPEN" ]]; then
     result="request-review (remote): PR #$pr_number is not OPEN (state: $pr_state)."
-    send_to_pane "$target_pane" "$result"
-    echo "$result"
+    emit_result "$result"
     exit 1
   fi
 
   if ! gh pr comment "$pr_number" --body "$trigger_comment" >/dev/null; then
     result="request-review (remote): failed to post trigger comment '$trigger_comment' on PR #$pr_number"
-    send_to_pane "$target_pane" "$result"
-    echo "$result"
+    emit_result "$result"
     exit 1
   fi
 
@@ -271,8 +282,7 @@ if [[ "$review_mode" == "remote" ]]; then
     else
       result="request-review (remote): commit $review_sha is not present on PR #$pr_number yet."
     fi
-    send_to_pane "$target_pane" "$result"
-    echo "$result"
+    emit_result "$result"
     exit 1
   fi
 
@@ -289,9 +299,8 @@ if [[ "$review_mode" == "remote" ]]; then
     if [[ "$inline_count" -gt 0 ]]; then
       result_header="request-review (remote): $inline_count inline comment(s) from $bot_login on PR #$pr_number for commit $review_sha"
       result_body="$(jq -r '.[] | "- \(.html_url)\n  File: \(.path // "unknown"):\(.line // 0)\n  Comment: \(.body)\n"' <<<"$inline_json")"
-      result="$result_header\n\n$result_body"
-      send_to_pane "$target_pane" "$result"
-      echo -e "$result"
+      result="${result_header}"$'\n\n'"${result_body}"
+      emit_result "$result"
       exit 0
     fi
 
@@ -308,15 +317,13 @@ if [[ "$review_mode" == "remote" ]]; then
 
     if [[ "$thumbs_up" == "true" ]]; then
       result="request-review (remote): 👍 from $bot_login on PR #$pr_number after commit $review_sha"
-      send_to_pane "$target_pane" "$result"
-      echo "$result"
+      emit_result "$result"
       exit 0
     fi
 
     if [[ "$elapsed" -ge "$timeout_seconds" ]]; then
       result="request-review (remote): timed out after ${timeout_seconds}s waiting for review signal on PR #$pr_number for commit $review_sha"
-      send_to_pane "$target_pane" "$result"
-      echo "$result"
+      emit_result "$result"
       exit 1
     fi
 
@@ -336,14 +343,12 @@ local_raw_jsonl_path="$repo_root/.request-review.events.jsonl"
 config_file="${HOME}/.codex/config.toml"
 if [[ ! -f "$config_file" ]]; then
   result="request-review (local): missing config file: $config_file"
-  send_to_pane "$target_pane" "$result"
-  echo "$result"
+  emit_result "$result"
   exit 1
 fi
 if ! rg -q "^\[profiles\.${local_profile}\]$" "$config_file"; then
   result="request-review (local): profile '$local_profile' not found in $config_file"
-  send_to_pane "$target_pane" "$result"
-  echo "$result"
+  emit_result "$result"
   exit 1
 fi
 
@@ -371,14 +376,12 @@ extract_local_review_message "$local_raw_jsonl_path" "$local_output_path"
 
 if [[ ! -s "$local_output_path" ]]; then
   result="request-review (local): missing review output at $local_output_path (check $local_error_path)"
-  send_to_pane "$target_pane" "$result"
-  echo "$result"
+  emit_result "$result"
   exit 1
 fi
 
 result="$(cat "$local_output_path")"
-send_to_pane "$target_pane" "$result"
-printf '%s\n' "$result"
+emit_result "$result"
 
 if [[ "$local_keep_debug_logs" == "0" ]]; then
   rm -f "$local_raw_jsonl_path"

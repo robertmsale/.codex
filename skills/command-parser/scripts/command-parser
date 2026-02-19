@@ -150,5 +150,4 @@ if [[ ! -s "$tmp_dir/response.log" ]]; then
 fi
 
 cat "$tmp_dir/response.log"
-printf '\n'
 exit "$command_exit"
