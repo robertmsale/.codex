@@ -1,0 +1,11 @@
+# Branch safety protections.
+prefix_rule(
+    pattern = ["git", "push", "origin", ["main", "master", "staging", "develop", "production"]],
+    decision = "forbidden",
+    justification = "Do not push directly to integration/protected branches; use issue branch + PR workflow.",
+)
+prefix_rule(
+    pattern = ["git", "push", ["-f", "--force"]],
+    decision = "forbidden",
+    justification = "Force pushes are blocked; use normal PR workflow and safe-worktree cleanup if needed.",
+)

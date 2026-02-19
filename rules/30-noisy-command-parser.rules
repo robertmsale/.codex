@@ -1,0 +1,21 @@
+# Noisy command enforcement: route through command-parser wrapper.
+prefix_rule(
+    pattern = ["cargo", ["check", "test", "clippy", "build"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["pytest"],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser pytest -q.",
+)
+prefix_rule(
+    pattern = ["flutter", ["analyze", "build"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["npm", "run", "build"],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser npm run build.",
+)

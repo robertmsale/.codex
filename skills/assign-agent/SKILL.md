@@ -24,6 +24,8 @@ Use this skill when an orchestrator agent needs to assign work to another local 
 - Worker must request review, apply fixes for findings, and request review again in a loop.
 - Worker stops only when review is clean (no unresolved findings) or the orchestrator explicitly says to stop.
 - Prefer using the `request-review` skill/script with a stable tmux pane target.
+- Orchestrator must provide the fully qualified pane target for the worker session (for example `<session>:1.1`) in the assignment prompt.
+- Worker must pass that exact fully qualified pane target to `request-review` and must not discover a pane dynamically via `tmux display-message`.
 
 ## Required Skill Injection (Strict)
 - Orchestrator prompts must explicitly include required skills for the assignment and state `do not skip`.
@@ -63,6 +65,7 @@ Seed the worker with enough context to begin immediately:
 
 ```text
 You are assigned to <issue/reference> in <repo path or repo URL>.
+Review pane target for request-review (use exactly): <session>:<window-index>.<pane-index>
 
 Required skills for this assignment (do not skip):
 - $gh-version-control-workflow (<absolute-skill-path>)
@@ -90,8 +93,7 @@ Goals:
      ```
 5. If your task includes PR work, run a strict review loop until clean:
    ```bash
-   PANE_ID="$(tmux display-message -p '#{pane_id}')"
-   ~/.codex/skills/request-review/scripts/request-review "$PANE_ID" "<commit-message>"
+   ~/.codex/skills/request-review/scripts/request-review "<session>:<window-index>.<pane-index>" "<commit-message>"
    ```
    - Address findings, commit, and rerun `request-review`.
    - Repeat until review is clean.
@@ -107,6 +109,7 @@ Before considering handoff complete, verify:
 - The assignment prompt explicitly lists required skills with `do not skip`.
 - For PR assignments, prompt explicitly requires `gh-version-control-workflow`.
 - For cleanup/deletion assignments, prompt explicitly requires `safe-worktree` and/or `safe-delete`.
+- For PR assignments, prompt includes the fully qualified review pane target and does not use dynamic pane discovery commands.
 
 ## Worker behavior constraints
 - One assignment maps to one worker session.

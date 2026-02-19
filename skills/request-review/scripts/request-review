@@ -241,6 +241,7 @@ if [[ "$review_mode" == "remote" ]]; then
   fi
 
   start_epoch="$(date +%s)"
+  eyes_announced=0
   while true; do
     now_epoch="$(date +%s)"
     elapsed="$((now_epoch - start_epoch))"
@@ -258,8 +259,16 @@ if [[ "$review_mode" == "remote" ]]; then
       exit 0
     fi
 
-    thumbs_up="$(gh api "repos/$repo_name/issues/$pr_number/reactions" -H 'Accept: application/vnd.github+json' --paginate \
-      --jq 'any(.[]; .user.login=="'"$bot_login"'" and .content=="+1" and (.created_at > "'"$commit_timestamp"'"))')"
+    reactions_json="$(gh api "repos/$repo_name/issues/$pr_number/reactions" -H 'Accept: application/vnd.github+json' --paginate \
+      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at > "'"$commit_timestamp"'")) | {content,created_at}]')"
+
+    eyes_reaction="$(jq 'any(.[]; .content=="eyes")' <<<"$reactions_json")"
+    if [[ "$eyes_reaction" == "true" && "$eyes_announced" -eq 0 ]]; then
+      echo "request-review (remote): 👀 from $bot_login detected on PR #$pr_number; review is in progress, waiting for final result..."
+      eyes_announced=1
+    fi
+
+    thumbs_up="$(jq 'any(.[]; .content=="+1")' <<<"$reactions_json")"
 
     if [[ "$thumbs_up" == "true" ]]; then
       result="request-review (remote): 👍 from $bot_login on PR #$pr_number after commit $review_sha"

@@ -1,0 +1,11 @@
+# Safe delete enforcement.
+prefix_rule(
+    pattern = ["rm"],
+    decision = "forbidden",
+    justification = "Use safe-delete skill: ~/.codex/skills/safe-delete/SKILL.md and run `trash -- <path>`.",
+)
+prefix_rule(
+    pattern = ["rmdir"],
+    decision = "forbidden",
+    justification = "Use safe-delete skill: ~/.codex/skills/safe-delete/SKILL.md and run `trash -- <path>`.",
+)

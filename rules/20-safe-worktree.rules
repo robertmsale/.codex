@@ -1,0 +1,16 @@
+# Safe worktree cleanup enforcement.
+prefix_rule(
+    pattern = ["git", "worktree", "remove"],
+    decision = "forbidden",
+    justification = "Use safe-worktree skill: ~/.codex/skills/safe-worktree/SKILL.md and run its cleanup helper script.",
+)
+prefix_rule(
+    pattern = ["git", "branch", ["-d", "-D"]],
+    decision = "forbidden",
+    justification = "Use safe-worktree skill: ~/.codex/skills/safe-worktree/SKILL.md for branch/worktree cleanup.",
+)
+prefix_rule(
+    pattern = ["git", "push", "origin", "--delete"],
+    decision = "forbidden",
+    justification = "Use safe-worktree skill: ~/.codex/skills/safe-worktree/SKILL.md for remote branch cleanup.",
+)
