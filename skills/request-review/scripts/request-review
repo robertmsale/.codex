@@ -8,7 +8,7 @@ Usage:
 
 Examples:
   request-review "coolproject-78-dialpad:1.1" "fix: address codex review"
-  request-review "%25" "chore: review checkpoint"
+  request-review "coolproject-78-dialpad:1.1" "chore: review checkpoint"
 
 Optional env flags:
   REQUEST_REVIEW_USE_EXISTING_COMMIT=1
@@ -134,7 +134,7 @@ fi
 target_pane="$(resolve_tmux_pane "$target_pane_input" || true)"
 if [[ -z "$target_pane" ]]; then
   echo "request-review: tmux pane not found: $target_pane_input" >&2
-  echo "request-review: use a stable pane target like <session>:0.0 or %<pane-id>" >&2
+  echo "request-review: use a stable pane target like <session>:<window-index>.<pane-index>" >&2
   exit 2
 fi
 
@@ -153,6 +153,7 @@ bot_login="${REQUEST_REVIEW_BOT_LOGIN:-chatgpt-codex-connector[bot]}"
 poll_interval_seconds="${REQUEST_REVIEW_POLL_INTERVAL_SECONDS:-20}"
 timeout_seconds="${REQUEST_REVIEW_TIMEOUT_SECONDS:-1800}"
 trigger_comment="${REQUEST_REVIEW_TRIGGER_COMMENT:-@codex review}"
+review_disable="${REQUEST_REVIEW_DISABLE:-0}"
 
 local_profile="${REQUEST_REVIEW_LOCAL_PROFILE:-local-review}"
 local_output_file="${REQUEST_REVIEW_LOCAL_OUTPUT_FILE:-review.log}"
@@ -162,14 +163,6 @@ use_existing_commit_flag="${REQUEST_REVIEW_USE_EXISTING_COMMIT:-0}"
 existing_commit_sha_ref="${REQUEST_REVIEW_EXISTING_COMMIT_SHA:-HEAD}"
 
 lock_root="${HOME}/.codex/tmp"
-lock_dir="${lock_root}/request-review.lock"
-mkdir -p "$lock_root"
-if ! mkdir "$lock_dir" 2>/dev/null; then
-  echo "request-review: another request-review run is active; run only one review at a time" >&2
-  exit 1
-fi
-trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
-
 cd "$repo_root"
 
 if [[ "$use_existing_commit_flag" != "0" ]]; then
@@ -190,6 +183,49 @@ else
 fi
 
 branch_name="$(git rev-parse --abbrev-ref HEAD)"
+
+# Scoped lock: allow concurrent reviews across different projects/PRs/branches.
+# Scope key:
+# - remote mode: repo + PR number (if available), otherwise repo + branch
+# - local mode: repo + branch
+repo_name_for_lock="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || basename "$repo_root")"
+pr_number_for_lock=""
+if [[ "$review_mode" == "remote" ]]; then
+  pr_number_for_lock="$(gh pr view --json number --jq '.number' 2>/dev/null || true)"
+fi
+
+if [[ "$review_mode" == "remote" && -n "$pr_number_for_lock" ]]; then
+  lock_scope="mode=remote|repo=${repo_name_for_lock}|pr=${pr_number_for_lock}"
+else
+  lock_scope="mode=${review_mode}|repo=${repo_name_for_lock}|branch=${branch_name}"
+fi
+
+lock_hash="$(python3 - <<'PY' "$lock_scope"
+import hashlib
+import sys
+print(hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest()[:20])
+PY
+)"
+
+lock_dir="${lock_root}/request-review.lock.${lock_hash}"
+mkdir -p "$lock_root"
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  echo "request-review: another request-review run is active for scope [$lock_scope]" >&2
+  echo "request-review: lock path: $lock_dir" >&2
+  exit 1
+fi
+printf 'pid=%s\nstarted=%s\nscope=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$lock_scope" >"$lock_dir/owner"
+trap 'rm -f "$lock_dir/owner" 2>/dev/null || true; rmdir "$lock_dir" 2>/dev/null || true' EXIT
+
+if [[ "$review_disable" != "0" ]]; then
+  if [[ "$review_mode" == "remote" && "$use_existing_commit_flag" == "0" ]]; then
+    git push -u origin HEAD
+  fi
+  result="all clear!"
+  send_to_pane "$target_pane" "$result"
+  echo "$result"
+  exit 0
+fi
 
 if [[ "$review_mode" == "remote" ]]; then
   if [[ "$use_existing_commit_flag" == "0" ]]; then

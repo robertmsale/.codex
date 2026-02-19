@@ -180,17 +180,16 @@ git worktree add ../<repo>-wt-<issue-number> codex/issue-<issue-number>-<slug>
 
 Do implementation work in the worktree path, not in the primary checkout.
 
-### 4) Commit and publish
+### 4) Bootstrap PR branch and publish
 In the issue worktree:
 
 ```bash
 git status
-git add -A
-git commit -m "<type>: <summary>"
+git commit --allow-empty -m "chore: bootstrap PR"
 git push -u origin codex/issue-<issue-number>-<slug>
 ```
 
-Prefer multiple small commits for reviewability.
+This creates a minimal remote branch state so PR-first/review tooling can run immediately without first-review special cases.
 
 ### 5) Open PR and link issue
 Create a PR targeting the integration branch and include an auto-close reference.
@@ -205,6 +204,18 @@ gh pr create \
 
 The `Closes #<issue-number>` line links the PR and auto-closes the issue on merge.
 Prefer body files for `gh issue create`, `gh issue edit`, `gh pr create`, and `gh pr edit`.
+
+### 5c) Implement and push normal commits
+After the bootstrap PR exists, continue implementation with regular commits:
+
+```bash
+git status
+git add -A
+git commit -m "<type>: <summary>"
+git push
+```
+
+Prefer multiple small commits for reviewability.
 
 ### 5a) Escaping-safe body files
 Use heredocs to build Markdown bodies with real newlines:

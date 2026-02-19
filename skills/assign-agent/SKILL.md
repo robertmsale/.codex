@@ -21,6 +21,7 @@ Use this skill when an orchestrator agent needs to assign work to another local 
 
 ## PR Review Loop Requirement (Strict)
 - If the assignment includes creating or updating a PR, review is mandatory before stopping.
+- For PR assignments, bootstrap the PR early with an empty commit (`chore: bootstrap PR`) so review tooling always has an open PR target before the first real implementation commit.
 - Worker must request review, apply fixes for findings, and request review again in a loop.
 - Worker stops only when review is clean (no unresolved findings) or the orchestrator explicitly says to stop.
 - Prefer using the `request-review` skill/script with a stable tmux pane target.
@@ -79,7 +80,7 @@ Goals:
    THREAD_ID="$(echo $CODEX_THREAD_ID)"
    test -n "$THREAD_ID"
    ```
-3. If [$gh-version-control-workflow](/Users/robertsale/Code/ezra/ezra/.codex/skills/gh-version-control-workflow/SKILL.md) is in your current skill list/context:
+3. If [$gh-version-control-workflow](/Users/robertsale/.codex/skills/gh-version-control-workflow/SKILL.md) is in your current skill list/context:
    - Add a GitHub issue comment with a fenced bash block that uses the expanded value:
      ```bash
      CODEX_THREAD_ID='<expanded-thread-id>' codex-tmux '<session-name>'
@@ -91,14 +92,21 @@ Goals:
      CODEX_THREAD_ID='<expanded-thread-id>' codex-tmux '<session-name>'
      EOF
      ```
-5. If your task includes PR work, run a strict review loop until clean:
+5. Use the required skills above to create the issue branch/worktree.
+6. If your task includes PR work, bootstrap the PR early with an empty commit before implementation commits:
+   ```bash
+   git commit --allow-empty -m "chore: bootstrap PR"
+   git push -u origin HEAD
+   # then open/update the PR
+   ```
+7. Implement the fix and keep the PR updated.
+8. If your task includes PR work, run a strict review loop until clean:
    ```bash
    ~/.codex/skills/request-review/scripts/request-review "<session>:<window-index>.<pane-index>" "<commit-message>"
    ```
    - Address findings, commit, and rerun `request-review`.
    - Repeat until review is clean.
-6. Use the required skills above to create the issue branch/worktree, implement the fix, open PR, and complete merge/cleanup flow.
-7. If PR work is included: merge only after the review loop is clean, then run required cleanup using `safe-worktree` (and `safe-delete` where applicable).
+9. If PR work is included: merge only after the review loop is clean, then run required cleanup using `safe-worktree` (and `safe-delete` where applicable).
 ```
 
 ## Orchestrator Acceptance Check

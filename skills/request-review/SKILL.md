@@ -13,6 +13,7 @@ Run:
 Examples:
 - `~/.codex/skills/request-review/scripts/request-review "coolproject-78-dialpad:1.1" "fix: address review findings"`
 - `~/.codex/skills/request-review/scripts/request-review "coolproject-78-dialpad:1.1" "chore: review checkpoint"`
+- `REQUEST_REVIEW_DISABLE=1 ~/.codex/skills/request-review/scripts/request-review "coolproject-78-dialpad:1.1" "chore: bypass review"`
 
 Use a fully qualified stable pane identifier: `<session>:<window-index>.<pane-index>`.
 Avoid window-name-based targets because names can change with the active command.
@@ -31,7 +32,8 @@ Do not compute pane targets dynamically in worker sessions (for example, do not 
 - Default path: commits first using the provided commit message (`git add -A` then `git commit -m ...`).
 - Default path: uses the newly created `HEAD` commit as the target review SHA.
 - Opt-in recovery path: set `REQUEST_REVIEW_USE_EXISTING_COMMIT=1` to skip `git add`/`git commit` and review an existing commit (defaults to `HEAD`, or `REQUEST_REVIEW_EXISTING_COMMIT_SHA`).
-- Runs exactly one review request at a time (global lock).
+- Disable path: set `REQUEST_REVIEW_DISABLE=1` to skip both remote and local review execution. In this mode the script prints `all clear!` and exits success.
+- Runs one review request at a time per scoped lock (project + PR when available, otherwise project + branch).
 - Sends final review text back to the target pane, waits 5 seconds, then sends Enter.
 
 ## Mode switch (from `.env`)
@@ -63,9 +65,10 @@ Useful variables:
 - `REQUEST_REVIEW_LOCAL_PROFILE=local-review`
 - `REQUEST_REVIEW_USE_EXISTING_COMMIT=0|1` (default `0`)
 - `REQUEST_REVIEW_EXISTING_COMMIT_SHA=<sha-or-ref>` (default `HEAD` when existing-commit mode is enabled)
+- `REQUEST_REVIEW_DISABLE=0|1` (default `0`; when `1`, bypasses review execution and returns `all clear!`)
 
 ## Critical discipline
-- Only run one review request at a time.
+- Only run one review request at a time for the same project/PR scope.
 - Do not launch concurrent review requests.
 - CRITICAL: Do not modify `~/.codex/skills/request-review/.env` and do not switch `REQUEST_REVIEW_MODE` (`local`/`remote`). Agents are not allowed to change review settings at all.
 - CRITICAL: After starting `request-review`, wait patiently and do not cancel/interrupt the review command under any circumstances.

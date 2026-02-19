@@ -51,10 +51,15 @@ git worktree list
 
 ## Development Loop (inside issue worktree)
 ```bash
+# bootstrap PR early
+git commit --allow-empty -m "chore: bootstrap PR"
+git push -u origin codex/issue-<issue-number>-<slug>
+
+# then iterate normally
 git status
 git add -A
 git commit -m "<type>: <summary>"
-git push -u origin codex/issue-<issue-number>-<slug>
+git push
 ```
 
 ## Pull Requests
