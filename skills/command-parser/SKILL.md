@@ -1,6 +1,6 @@
 ---
 name: command-parser
-description: Summarize large CLI output via a temp workspace + `codex exec` to extract errors (and optional warnings) with file/line anchors. [skill-hash:7da2875]
+description: Summarize large CLI output via a temp workspace + `codex exec` to extract errors (and optional warnings) with file/line anchors. [skill-hash:8ad3984]
 ---
 
 # Command Parser
@@ -27,14 +27,19 @@ Recommended default:
 - Keep default compact extraction for speed and consistency.
 
 ## Configuration
-The script sources `~/.codex/skills/command-parser/.env`.
 
-Default values:
-- `COMMAND_PARSER_PROFILE=command-parser`
+Configuration is managed by the user. Do not change configuration.
 
-Model and reasoning effort are not configured in `.env`.
-They are read from the selected profile in `~/.codex/config.toml` and remain the source of truth.
-If the configured profile is missing from `config.toml`, the wrapper exits with an error.
+## Speed Signals
+
+- "fast": active profile is expected to produce highly accurate results within seconds of the real command completion
+- "medium": active profile is a slower but highly capable agent that produces results faster than the command takes to execute
+- "slow": active profile uses local inference. Results may take longer than original command invocation time
+
+## Progress Signals
+
+- "=": Command executing now
+- "=!": Agent actively parsing command
 
 ## codex exec invocation
 The wrapper uses:

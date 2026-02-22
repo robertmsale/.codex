@@ -23,6 +23,17 @@ version.json
 .system/
 build/
 target/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+skills/robdex-orchestrator
+.robdex-integration/
+.robdex-integration-thread
 
 # Cache files for Sublime Text
 *.tmlanguage.cache

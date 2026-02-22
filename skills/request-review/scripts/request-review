@@ -105,6 +105,28 @@ if [[ -f "$skill_dir/.env" ]]; then
   set +a
 fi
 
+if [[ "${ROBDEX_REVIEW_BRIDGE_DIRECT:-0}" != "1" && "${ROBDEX_ORCHESTRATION_ENABLED:-0}" == "1" ]]; then
+  if [[ -n "${ROBDEX_BRIDGE_HOST:-}" && -n "${ROBDEX_BRIDGE_PORT:-}" && -n "${ROBDEX_BRIDGE_TOKEN:-}" ]]; then
+    bridge_cli="${HOME}/.codex/skills/robdex-orchestrator/scripts/robdex-bridge"
+    if [[ ! -x "$bridge_cli" ]]; then
+      echo "request-review: robdex bridge helper is missing or not executable: $bridge_cli" >&2
+      exit 1
+    fi
+
+    bridge_args=(review-request --commit "$commit_message")
+    if [[ "${REQUEST_REVIEW_USE_EXISTING_COMMIT:-0}" != "0" ]]; then
+      bridge_args+=(--use-existing-commit)
+      if [[ -n "${REQUEST_REVIEW_EXISTING_COMMIT_SHA:-}" ]]; then
+        bridge_args+=(--existing-commit "${REQUEST_REVIEW_EXISTING_COMMIT_SHA}")
+      fi
+    fi
+
+    "$bridge_cli" "${bridge_args[@]}"
+    echo "request-review: queued via robdex bridge. Stop now and wait for in-thread review delivery."
+    exit 0
+  fi
+fi
+
 review_mode="${REQUEST_REVIEW_MODE:-local}"
 bot_login="${REQUEST_REVIEW_BOT_LOGIN:-chatgpt-codex-connector[bot]}"
 poll_interval_seconds="${REQUEST_REVIEW_POLL_INTERVAL_SECONDS:-20}"

@@ -1,0 +1,22 @@
+[project]
+name = "gitops-mcp"
+version = "0.1.0"
+description = "Robdex GitOps MCP server for guarded git mutations and GitHub review workflows"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastmcp>=2.12.0",
+  "PyGithub>=2.5.0",
+  "python-dotenv>=1.0.1",
+]
+
+[project.scripts]
+gitops-mcp = "gitops_mcp.server:main"
+gitops-smoke-github = "gitops_mcp.smoke:main"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true

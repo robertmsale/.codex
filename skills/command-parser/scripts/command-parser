@@ -56,6 +56,9 @@ if [[ -f "$SKILL_DIR/.env" ]]; then
   # shellcheck disable=SC1091
   source "$SKILL_DIR/.env"
   set +a
+  if [[ -n "${COMMAND_PARSER_SPEED_MESSAGE:-}" ]]; then
+    printf '%s\n' "$COMMAND_PARSER_SPEED_MESSAGE" >&2
+  fi
 fi
 
 warnings_flag="no"
@@ -102,6 +105,8 @@ Output rules:
 - Do not include advice, fixes, commands, or extra headings.
 EOF_AGENTS
 
+printf '=' >&2
+
 if "$@" >"$tmp_dir/output.log" 2>&1; then
   command_exit=0
 else
@@ -141,6 +146,8 @@ exec_args=(
   -o "$tmp_dir/response.log"
 )
 exec_args+=("$prompt")
+
+printf '!\n' >&2
 
 codex exec "${exec_args[@]}" >/dev/null 2>&1
 

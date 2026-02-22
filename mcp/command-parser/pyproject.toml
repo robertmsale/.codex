@@ -1,0 +1,19 @@
+[project]
+name = "command-parser-mcp"
+version = "0.1.0"
+description = "MCP server for sandbox-aware command execution + output parsing"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastmcp>=3.0.0",
+]
+
+[project.scripts]
+command-parser-mcp = "command_parser_mcp.server:main"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true

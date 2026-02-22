@@ -1,6 +1,6 @@
 ---
 name: gh-version-control-workflow
-description: Run a disciplined GitHub workflow with git + gh using issues, issue-derived branches, worktrees, and PRs. Use when you need concurrent feature work, clear review boundaries, and issue-linked PRs instead of direct commits to integration branches. [skill-hash:00926af]
+description: Run a disciplined GitHub workflow with git + gh using issues, issue-derived branches, worktrees, and PRs. Use when you need concurrent feature work, clear review boundaries, and issue-linked PRs instead of direct commits to integration branches. [skill-hash:3d9f0be]
 ---
 
 # GH Version Control Workflow
@@ -11,6 +11,15 @@ Use this workflow to move from direct commits on shared branches to issue-driven
 - each issue maps to a branch
 - each branch gets its own worktree for concurrency
 - each completed branch is proposed via a PR that links and closes its issue
+
+## MCP-first mutation rule
+When MCP server `gitops` is available, prefer MCP tools for mutating operations:
+- `git_worktree_create` for new sibling worktrees
+- `git_commit` for guarded commits on non-integration branches
+- `git_request_review_and_wait` for review requests (commit/push/PR/review wait path)
+- `github_*` tools for issue/PR/comment writes
+
+Use raw `git`/`gh` commands as fallback when MCP is unavailable or explicitly requested.
 
 ## Preconditions
 Run these checks first:
