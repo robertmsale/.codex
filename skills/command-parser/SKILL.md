@@ -1,26 +1,18 @@
 ---
 name: command-parser
-description: Summarize large CLI output via a temp workspace + `codex exec` to extract errors (and optional warnings) with file/line anchors. [skill-hash:8ad3984]
+description: Run command execution through MCP `commandParser.command_parser_run`, enforcing sandbox policy and returning compact parser output (or sandbox failure text) without wrapper-script workflow. [skill-hash:d4f31a2]
 ---
 
 # Command Parser
 
 ## Overview
-Run noisy commands through `~/.codex/skills/command-parser/scripts/command-parser`.
-
-The wrapper:
-1. runs your command once,
-2. writes logs into a temporary folder,
-3. runs `codex exec` in that folder with read-only sandbox,
-4. prints a compact summary from `response.log`,
-5. removes the temp folder.
-
-This keeps parser context focused on command output, even for very large logs.
+Use MCP tool `commandParser.command_parser_run` for noisy command execution and log extraction.
+Do not use the legacy shell wrapper as the default path.
 
 ## Quick Start
-- `~/.codex/skills/command-parser/scripts/command-parser <command...>`
-- `COMMAND_PARSER_WARNINGS=1 ~/.codex/skills/command-parser/scripts/command-parser <command...>`
-- `~/.codex/skills/command-parser/scripts/command-parser --request-additional "What stack trace line caused failure?" <command...>`
+- `commandParser.command_parser_run(command=[...])`
+- `commandParser.command_parser_run(command=[...], include_warnings=true)`
+- `commandParser.command_parser_run(command=[...], additional_request="...")`
 
 Recommended default:
 - Do **not** request additional information unless absolutely necessary.
@@ -30,24 +22,11 @@ Recommended default:
 
 Configuration is managed by the user. Do not change configuration.
 
-## Speed Signals
-
-- "fast": active profile is expected to produce highly accurate results within seconds of the real command completion
-- "medium": active profile is a slower but highly capable agent that produces results faster than the command takes to execute
-- "slow": active profile uses local inference. Results may take longer than original command invocation time
-
-## Progress Signals
-
-- "=": Command executing now
-- "=!": Agent actively parsing command
-
-## codex exec invocation
-The wrapper uses:
-- `-p <COMMAND_PARSER_PROFILE>`
-- `-s read-only`
-- `--skip-git-repo-check`
-- `-o <tmp>/response.log`
-- stdout/stderr redirected to `/dev/null`
+## MCP Behavior
+- Tool executes the command once under resolved sandbox policy.
+- If sandbox blocks execution, tool returns sandbox failure text directly.
+- If command runs, tool returns parser extraction output.
+- Tool output is plain text to minimize token usage.
 
 ## Output Expectations
 - If no errors: `No errors!`
@@ -59,5 +38,5 @@ The wrapper uses:
 - No advice, fixes, or extra commentary
 
 ## Notes
-- Avoid wrapping long-lived interactive/watch commands.
-- For failed wrapped commands, the wrapper returns the wrapped command's exit code after printing the parsed summary.
+- Avoid long-lived interactive/watch commands.
+- Prefer explicit `command=[...]` arrays over shell-joined strings.
