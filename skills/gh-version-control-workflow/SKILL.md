@@ -1,6 +1,6 @@
 ---
 name: gh-version-control-workflow
-description: Run a disciplined GitHub workflow with git + gh using issues, issue-derived branches, worktrees, and PRs. Use when you need concurrent feature work, clear review boundaries, and issue-linked PRs instead of direct commits to integration branches.
+description: Run a disciplined GitHub workflow with git + gh using issues, issue-derived branches, worktrees, and PRs. Use when you need concurrent feature work, clear review boundaries, and issue-linked PRs instead of direct commits to integration branches. [skill-hash:00926af]
 ---
 
 # GH Version Control Workflow

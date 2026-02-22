@@ -1,6 +1,6 @@
 ---
 name: safe-worktree
-description: Safely remove issue worktrees and branches with policy-aware fallbacks. Use for post-merge cleanup or abandoned issue cleanup when branch/worktree deletion commands may be blocked. Aggressively protects main/master and other integration branches, and when local branch-deletion safeguards are missing, proactively offer to install lightweight protection hooks first.
+description: Safely remove issue worktrees and branches with policy-aware fallbacks. Use for post-merge cleanup or abandoned issue cleanup when branch/worktree deletion commands may be blocked. Aggressively protects main/master and other integration branches, and when local branch-deletion safeguards are missing, proactively offer to install lightweight protection hooks first. [skill-hash:eeff146]
 ---
 
 # Safe Worktree Cleanup

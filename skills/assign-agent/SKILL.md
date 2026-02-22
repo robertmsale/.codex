@@ -1,6 +1,6 @@
 ---
 name: assign-agent
-description: Launch delegated Codex workers in dedicated tmux sessions via codex-tmux, with resumable CODEX_THREAD_ID handoff for GitHub issue workflows.
+description: Launch delegated Codex workers in dedicated tmux sessions via codex-tmux, with resumable CODEX_THREAD_ID handoff for GitHub issue workflows. [skill-hash:da921a4]
 ---
 
 # Assign Agent
@@ -11,6 +11,34 @@ Use this skill when an orchestrator agent needs to assign work to another local 
 - Start a worker in its own tmux session using `codex-tmux`.
 - Keep worker sessions resumable by capturing `CODEX_THREAD_ID`.
 - Standardize issue delegation prompts and handoff artifacts.
+
+## Runtime-Aware Dispatch Mode (Strict)
+- If `ROBDEX_ORCHESTRATION_ENABLED=1`, prefer robdex runtime orchestration over tmux:
+  - Use `$robdex-orchestrator` commands (`env-check`, `whoami`, `spawn`, `send`, `wait`, `resume`).
+  - Do not launch a tmux worker unless the user explicitly asks for tmux mode.
+- If robdex env is unavailable, use tmux mode as the fallback.
+
+## Worker Modes (Strict)
+- Choose one mode per assignment and state it explicitly in the prompt.
+- `PR worker`:
+  - Includes implementation + PR lifecycle.
+  - Must follow review loop requirements.
+- `Exploratory worker`:
+  - Research/triage/verification only.
+  - Must not bootstrap PRs or run merge/cleanup steps unless explicitly requested.
+
+## Inter-Agent Message Contract (Strict)
+- For orchestrated collaboration, use this prefix:
+  - `[<sender-name>] [intent:<plan|ask|handoff|status>] [reply:<required|optional>] <message>`
+- Keep messages short and actionable.
+- For handoffs, include acceptance criteria and concrete next command(s).
+- Never send multiple semantically-duplicate steering messages in rapid succession.
+
+## Abuse Guardrails (Strict)
+- Max worker spawns per orchestration turn: 2 (unless user overrides).
+- Max delegation depth: 2 (orchestrator -> worker -> optional sub-worker).
+- Reuse/`resume` existing workers when possible before spawning new ones.
+- If there is no user request for fan-out, do not parallelize aggressively.
 
 ## Critical Resume-ID Rule (Strict)
 - Resume handoff must use a real, expanded thread id value.
@@ -24,13 +52,15 @@ Use this skill when an orchestrator agent needs to assign work to another local 
 - For PR assignments, bootstrap the PR early with an empty commit (`chore: bootstrap PR`) so review tooling always has an open PR target before the first real implementation commit.
 - Worker must request review, apply fixes for findings, and request review again in a loop.
 - Worker stops only when review is clean (no unresolved findings) or the orchestrator explicitly says to stop.
-- Prefer using the `request-review` skill/script with a stable tmux pane target.
-- Orchestrator must provide the fully qualified pane target for the worker session (for example `<session>:1.1`) in the assignment prompt.
-- Worker must pass that exact fully qualified pane target to `request-review` and must not discover a pane dynamically via `tmux display-message`.
+- Prefer using the `request-review` skill/script directly:
+  - `~/.codex/skills/request-review/scripts/request-review "<commit-message>"`
+- `request-review` results are returned in stdout of the worker terminal; do not route review through tmux pane callbacks.
 
 ## Required Skill Injection (Strict)
 - Orchestrator prompts must explicitly include required skills for the assignment and state `do not skip`.
 - Do not rely on implicit skill discovery for delegated workers.
+- If running inside robdex orchestration environment, include:
+  - `$robdex-orchestrator` (`/Users/robertsale/Code/robdex/skills/robdex-orchestrator/SKILL.md`)
 - For any code-change task that ends in a PR, always require:
   - `$gh-version-control-workflow`
 - If the task requires branch/worktree cleanup, always require:
@@ -66,7 +96,6 @@ Seed the worker with enough context to begin immediately:
 
 ```text
 You are assigned to <issue/reference> in <repo path or repo URL>.
-Review pane target for request-review (use exactly): <session>:<window-index>.<pane-index>
 
 Required skills for this assignment (do not skip):
 - $gh-version-control-workflow (<absolute-skill-path>)
@@ -102,7 +131,7 @@ Goals:
 7. Implement the fix and keep the PR updated.
 8. If your task includes PR work, run a strict review loop until clean:
    ```bash
-   ~/.codex/skills/request-review/scripts/request-review "<session>:<window-index>.<pane-index>" "<commit-message>"
+   ~/.codex/skills/request-review/scripts/request-review "<commit-message>"
    ```
    - Address findings, commit, and rerun `request-review`.
    - Repeat until review is clean.
@@ -117,9 +146,9 @@ Before considering handoff complete, verify:
 - The assignment prompt explicitly lists required skills with `do not skip`.
 - For PR assignments, prompt explicitly requires `gh-version-control-workflow`.
 - For cleanup/deletion assignments, prompt explicitly requires `safe-worktree` and/or `safe-delete`.
-- For PR assignments, prompt includes the fully qualified review pane target and does not use dynamic pane discovery commands.
 
 ## Worker behavior constraints
 - One assignment maps to one worker session.
 - Do not reuse an unrelated existing tmux session.
 - Keep the session name stable for the life of the issue to preserve resume ergonomics.
+- In robdex mode, keep one worker thread name per task stream and prefer resume over duplicate names.

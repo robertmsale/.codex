@@ -1,6 +1,6 @@
 ---
 name: safe-delete
-description: Use the `trash` CLI for deletions so files are recoverable. Prefer this skill whenever a task involves removing files or directories.
+description: Use the `trash` CLI for deletions so files are recoverable. Prefer this skill whenever a task involves removing files or directories. [skill-hash:bcb2090]
 ---
 
 # Safe Delete

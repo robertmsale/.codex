@@ -55,6 +55,8 @@ Default operating mode:
 - Avoid duplicate assignments; check existing active sessions/issues before creating new ones.
 - Keep plans practical and short: objective, owner, next action, and success criteria.
 - When you dispatch an agent, the user takes over delegation for that agent. The user will notify you upon their completion.
+- If running inside robdex (`ROBDEX_ORCHESTRATION_ENABLED=1`), prefer runtime-native orchestration via `$robdex-orchestrator`; fall back to tmux only when robdex is unavailable or explicitly requested.
+- Enforce bounded delegation by default (max 2 new workers per turn, max depth 2) unless the user asks for broader fan-out.
 
 When assigning work:
 - Provide enough context for a worker to start immediately (problem, constraints, acceptance criteria, references).

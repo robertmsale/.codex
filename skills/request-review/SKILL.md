@@ -1,24 +1,19 @@
 ---
 name: request-review
-description: Request code review and route results to a tmux pane. Default flow commits first; optional opt-in flow can target an existing commit without commit/push.
+description: Request code review for the current branch/PR. Default flow commits first; optional opt-in flow can target an existing commit without commit/push. [skill-hash:6a0d8f3]
 ---
 
 # Request Review
 
-Use this skill when an agent needs to request code review and route the result back into a specific tmux pane.
+Use this skill when an agent needs to request code review for the current branch/PR and get the result in stdout.
 
 Run:
-- `~/.codex/skills/request-review/scripts/request-review <tmux-pane-target> <commit-message>`
+- `~/.codex/skills/request-review/scripts/request-review <commit-message>`
 
 Examples:
-- `~/.codex/skills/request-review/scripts/request-review "coolproject-78-dialpad:1.1" "fix: address review findings"`
-- `~/.codex/skills/request-review/scripts/request-review "coolproject-78-dialpad:1.1" "chore: review checkpoint"`
-- `REQUEST_REVIEW_DISABLE=1 ~/.codex/skills/request-review/scripts/request-review "coolproject-78-dialpad:1.1" "chore: bypass review"`
-
-Use a fully qualified stable pane identifier: `<session>:<window-index>.<pane-index>`.
-Avoid window-name-based targets because names can change with the active command.
-When assigned via `$assign-agent`, use the exact pane target provided by the orchestrator.
-Do not compute pane targets dynamically in worker sessions (for example, do not use `tmux display-message` to discover pane id for review routing).
+- `~/.codex/skills/request-review/scripts/request-review "fix: address review findings"`
+- `~/.codex/skills/request-review/scripts/request-review "chore: review checkpoint"`
+- `REQUEST_REVIEW_DISABLE=1 ~/.codex/skills/request-review/scripts/request-review "chore: bypass review"`
 
 ## Preferred workflow
 - If explicitly asked to use this skill, do not manually commit/push first.
@@ -33,8 +28,9 @@ Do not compute pane targets dynamically in worker sessions (for example, do not 
 - Default path: uses the newly created `HEAD` commit as the target review SHA.
 - Opt-in recovery path: set `REQUEST_REVIEW_USE_EXISTING_COMMIT=1` to skip `git add`/`git commit` and review an existing commit (defaults to `HEAD`, or `REQUEST_REVIEW_EXISTING_COMMIT_SHA`).
 - Disable path: set `REQUEST_REVIEW_DISABLE=1` to skip both remote and local review execution. In this mode the script prints `all clear!` and exits success.
+- Protected-branch guard: refuses to run on integration branches (default: `main master staging prod production`; configurable via `REQUEST_REVIEW_INTEGRATION_BRANCHES`).
 - Runs one review request at a time per scoped lock (project + PR when available, otherwise project + branch).
-- Sends final review text back to the target pane, waits 5 seconds, then sends Enter.
+- Prints final review text to stdout.
 
 ## Mode switch (from `.env`)
 - `REQUEST_REVIEW_MODE=remote`
@@ -61,11 +57,11 @@ Useful variables:
 - `REQUEST_REVIEW_BOT_LOGIN=chatgpt-codex-connector[bot]`
 - `REQUEST_REVIEW_TRIGGER_COMMENT=@codex review`
 - `REQUEST_REVIEW_POLL_INTERVAL_SECONDS=20`
-- `REQUEST_REVIEW_TIMEOUT_SECONDS=1800`
 - `REQUEST_REVIEW_LOCAL_PROFILE=local-review`
 - `REQUEST_REVIEW_USE_EXISTING_COMMIT=0|1` (default `0`)
 - `REQUEST_REVIEW_EXISTING_COMMIT_SHA=<sha-or-ref>` (default `HEAD` when existing-commit mode is enabled)
 - `REQUEST_REVIEW_DISABLE=0|1` (default `0`; when `1`, bypasses review execution and returns `all clear!`)
+- `REQUEST_REVIEW_INTEGRATION_BRANCHES="main master staging prod production"` (space-separated protected branches that fail fast)
 
 ## Critical discipline
 - Only run one review request at a time for the same project/PR scope.

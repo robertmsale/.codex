@@ -1,6 +1,6 @@
 ---
 name: command-parser
-description: Summarize large CLI output via a temp workspace + `codex exec` to extract errors (and optional warnings) with file/line anchors.
+description: Summarize large CLI output via a temp workspace + `codex exec` to extract errors (and optional warnings) with file/line anchors. [skill-hash:7da2875]
 ---
 
 # Command Parser
