@@ -1,39 +1,38 @@
 ---
 name: request-review
-description: Request code review for the current branch/PR using MCP-first flow (`git_request_review_and_wait`), with script fallback for legacy contexts. [skill-hash:c3d7f21]
+description: Request code review via MCP `gitops.git_request_review_and_wait` only; do not run legacy shell review scripts unless the user explicitly asks. [skill-hash:7f4c1b8]
 ---
 
 # Request Review
 
-Use this skill when an agent needs to request code review for the current branch/PR and get the final result.
+Use this skill when an agent needs code review for the current branch/PR.
 
-## Preferred workflow (MCP-first)
+## Required workflow (MCP-only)
 
-If MCP server `gitops` is available, use MCP tool `git_request_review_and_wait` instead of the shell script.
+Use MCP tool `git_request_review_and_wait`.
+Do not run `~/.codex/skills/request-review/scripts/request-review` during normal agent operation.
 
-Behavior in MCP flow:
-- Refuses to run on protected integration branches.
-- Commits and pushes as part of the review flow (unless explicitly using an existing commit).
-- Creates a PR if one does not exist yet.
-- Posts trigger comment (default `@codex review`).
-- Waits until final review outcome is detected.
-- Returns inline findings or approval summary.
+Expected behavior:
+- Refuses protected integration branches.
+- Handles commit/push/PR/review wait according to server policy/env.
+- Returns findings summary or approval outcome.
 
-## Legacy fallback (script)
+## Tool usage
 
-Run only when MCP is unavailable:
-- `~/.codex/skills/request-review/scripts/request-review <commit-message>`
+Preferred call:
+- `git_request_review_and_wait(commit_message="<type>: <summary>", repo_path="<worktree path>")`
 
-Examples:
-- `~/.codex/skills/request-review/scripts/request-review "fix: address review findings"`
-- `~/.codex/skills/request-review/scripts/request-review "chore: review checkpoint"`
+Optional fields only when needed by user/repo policy:
+- `existing_commit_sha`
+- `use_existing_commit`
+- `create_pr_if_missing`
+- `pr_title`
+- `pr_body`
 
 ## Config source
-- MCP flow reads:
+- Review behavior is controlled by operator-managed env/config:
   - `~/.codex/mcp/gitops/.env`
-  - `~/.codex/skills/request-review/.env` (existing review knobs)
-- Legacy script reads:
-  - `~/.codex/skills/request-review/.env`
+  - `~/.codex/skills/request-review/.env` (legacy knob source still honored by gitops policy wiring)
 
 ## Env knobs (authoritative)
 - `REQUEST_REVIEW_MODE=local|remote`
@@ -51,3 +50,7 @@ Examples:
 - Do not launch duplicate review requests.
 - Do not modify review `.env` knobs. Agents are not allowed to change review settings.
 - After starting review, wait patiently; do not cancel/interrupt unless an operator explicitly asks.
+
+## Legacy script policy
+- Legacy script path exists for operator-maintained compatibility only.
+- Agents must not execute the script unless the user explicitly instructs script usage.

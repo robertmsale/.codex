@@ -108,3 +108,6 @@ Temporary Items
 
 # Log files created by default by the nohup command
 nohup.out
+
+.bridge-token
+

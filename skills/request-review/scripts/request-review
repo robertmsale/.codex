@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+echo "Use the gitops MCP server to request review"
+exit 1
+
 usage() {
   cat >&2 <<'USAGE'
 Usage:

@@ -30,6 +30,11 @@ Agents should not edit these values.
 - `GITOPS_INTEGRATION_BRANCH=...` (default base branch used by `git_worktree_create`)
 - `GITOPS_WORKTREE_DIR=.worktrees` (repo-relative directory where worktrees are created)
 
+## Worktree cleanup
+
+- Use `git_worktree_cleanup` to remove worktrees and optionally delete local/remote branches.
+- Protected integration branches are blocked from cleanup operations.
+
 ## Run (stdio)
 
 - `uv --project ~/.codex/mcp/gitops run gitops-mcp`

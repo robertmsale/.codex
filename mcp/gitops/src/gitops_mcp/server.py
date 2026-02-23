@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from dotenv import dotenv_values
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from github import Auth
@@ -18,13 +19,32 @@ from github.Repository import Repository
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REQUEST_REVIEW_ENV_PATH = Path.home() / ".codex" / "skills" / "request-review" / ".env"
+MAX_TOOL_OUTPUT_CHARS = max(256, int(os.getenv("GITOPS_MAX_OUTPUT_CHARS", "4000")))
 
 
 def _load_environment() -> None:
     # Local MCP env is highest priority for this server process.
     load_dotenv(PROJECT_ROOT / ".env", override=True)
-    # Keep request-review knobs consistent with the existing skill defaults.
-    load_dotenv(REQUEST_REVIEW_ENV_PATH, override=False)
+    # Request-review env is operator-authoritative for review behavior.
+    # It must override MCP-local defaults for shared review knobs.
+    load_dotenv(REQUEST_REVIEW_ENV_PATH, override=True)
+
+
+def _refresh_review_environment() -> None:
+    # Re-read on every review tool call so operator edits take effect without MCP restart.
+    load_dotenv(PROJECT_ROOT / ".env", override=True)
+
+    # Reset review-scoped knobs so removals in request-review/.env are respected.
+    for key in [k for k in os.environ if k.startswith("REQUEST_REVIEW_")]:
+        os.environ.pop(key, None)
+
+    values = dotenv_values(REQUEST_REVIEW_ENV_PATH)
+    for key, value in values.items():
+        if key is None or not key.startswith("REQUEST_REVIEW_"):
+            continue
+        if value is None:
+            continue
+        os.environ[key] = value
 
 
 _load_environment()
@@ -156,6 +176,8 @@ def _parse_bool_env(key: str, default: bool = False) -> bool:
 
 
 def _review_settings() -> ReviewSettings:
+    _refresh_review_environment()
+
     mode = os.getenv("REQUEST_REVIEW_MODE", "local").strip().lower()
     if mode not in {"local", "remote"}:
         raise GitOpsError(
@@ -217,6 +239,24 @@ def _normalize_line(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def _compact_text(text: str, max_chars: int = MAX_TOOL_OUTPUT_CHARS) -> str:
+    normalized = text.strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    omitted = len(normalized) - max_chars
+    head = normalized[: max_chars - 48].rstrip()
+    return f"{head}\n... [truncated {omitted} chars]"
+
+
+def _compact_inline_text(text: str, max_chars: int = 220) -> str:
+    normalized = str(text or "").replace("\n", " ").strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    omitted = len(normalized) - max_chars
+    head = normalized[: max_chars - 32].rstrip()
+    return f"{head}... (+{omitted} chars)"
+
+
 def _slug(text: str) -> str:
     value = re.sub(r"[^a-zA-Z0-9._-]+", "-", text.strip())
     value = re.sub(r"-+", "-", value).strip("-")
@@ -236,6 +276,68 @@ def _worktrees_root(repo_root: Path) -> Path:
             f"repo={repo_root} configured={relative} resolved={root}"
         ) from exc
     return root
+
+
+def _worktree_entries(repo_root: Path) -> list[dict[str, str]]:
+    listing = _run_git(repo_root, ["worktree", "list", "--porcelain"]).stdout
+    entries: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for line in listing.splitlines():
+        raw = line.strip()
+        if not raw:
+            if current:
+                entries.append(current)
+                current = {}
+            continue
+        if " " in raw:
+            key, value = raw.split(" ", 1)
+            current[key] = value.strip()
+        else:
+            current[raw] = "true"
+    if current:
+        entries.append(current)
+    return entries
+
+
+def _normalize_branch_ref(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    if trimmed.startswith("refs/heads/"):
+        return trimmed.removeprefix("refs/heads/")
+    return trimmed
+
+
+def _resolve_worktree_target(
+    repo_root: Path,
+    worktree_path: str | None,
+    branch_name: str | None,
+) -> tuple[Path, str | None]:
+    entries = _worktree_entries(repo_root)
+    if not entries:
+        raise GitOpsError("No worktrees found for repository.")
+
+    requested_path = Path(worktree_path).expanduser().resolve() if worktree_path else None
+    requested_branch = _normalize_branch_ref(branch_name)
+
+    for entry in entries:
+        path_value = entry.get("worktree")
+        if not path_value:
+            continue
+        entry_path = Path(path_value).expanduser().resolve()
+        entry_branch = _normalize_branch_ref(entry.get("branch"))
+        path_match = requested_path is not None and entry_path == requested_path
+        branch_match = requested_branch is not None and entry_branch == requested_branch
+        if path_match or branch_match:
+            return entry_path, entry_branch
+
+    if requested_path is not None:
+        raise GitOpsError(f"Worktree path is not registered: {requested_path}")
+    if requested_branch is not None:
+        raise GitOpsError(f"Branch is not attached to any worktree: {requested_branch}")
+    raise GitOpsError("Unable to resolve worktree target.")
 
 
 def _extract_local_review_message(raw_jsonl: str) -> str:
@@ -346,7 +448,7 @@ def _run_local_review(
     return payload
 
 
-@mcp.tool
+@mcp.tool(output_schema=None)
 def git_worktree_create(
     branch_name: str,
     worktree_name: str | None = None,
@@ -387,11 +489,78 @@ def git_worktree_create(
 
     text = (add_result.stderr or add_result.stdout).strip()
     if text:
-        return text
-    return str(target_dir)
+        return _compact_text(text)
+    return _compact_text(str(target_dir))
 
 
-@mcp.tool
+@mcp.tool(output_schema=None)
+def git_worktree_cleanup(
+    worktree_path: str | None = None,
+    branch_name: str | None = None,
+    repo_path: str | None = None,
+    delete_local_branch: bool = True,
+    delete_remote_branch: bool = False,
+    force: bool = False,
+) -> str:
+    """Remove a worktree and optionally delete its branch with protected-branch guards."""
+    if not worktree_path and not branch_name:
+        raise GitOpsError("Provide worktree_path or branch_name.")
+
+    repo_root = _resolve_repo_root(repo_path)
+    target_path, resolved_branch = _resolve_worktree_target(repo_root, worktree_path, branch_name)
+
+    if resolved_branch and resolved_branch in _protected_branches():
+        raise GitOpsError(f"Refusing cleanup for protected integration branch '{resolved_branch}'.")
+
+    root_path = repo_root.resolve()
+    if target_path == root_path:
+        raise GitOpsError("Refusing to remove repository root worktree.")
+
+    remove_args = ["worktree", "remove"]
+    if force:
+        remove_args.append("--force")
+    remove_args.append(str(target_path))
+    remove_result = _run_git(repo_root, remove_args, check=False)
+    if remove_result.returncode != 0:
+        detail = remove_result.stderr or remove_result.stdout or "unknown error"
+        raise GitOpsError(f"Failed to remove worktree {target_path}: {detail}")
+
+    _run_git(repo_root, ["worktree", "prune"], check=False)
+
+    lines: list[str] = []
+    remove_text = (remove_result.stderr or remove_result.stdout).strip()
+    if remove_text:
+        lines.append(remove_text)
+    else:
+        lines.append(f"Removed worktree: {target_path}")
+
+    if delete_local_branch and resolved_branch:
+        delete_flag = "-D" if force else "-d"
+        branch_result = _run_git(repo_root, ["branch", delete_flag, resolved_branch], check=False)
+        if branch_result.returncode != 0:
+            detail = branch_result.stderr or branch_result.stdout or "unknown error"
+            raise GitOpsError(f"Worktree removed but local branch delete failed for '{resolved_branch}': {detail}")
+        branch_text = (branch_result.stderr or branch_result.stdout).strip()
+        if branch_text:
+            lines.append(branch_text)
+        else:
+            lines.append(f"Deleted local branch: {resolved_branch}")
+
+    if delete_remote_branch and resolved_branch:
+        remote_result = _run_git(repo_root, ["push", "origin", "--delete", resolved_branch], check=False)
+        if remote_result.returncode != 0:
+            detail = remote_result.stderr or remote_result.stdout or "unknown error"
+            raise GitOpsError(f"Worktree/local cleanup done but remote delete failed for '{resolved_branch}': {detail}")
+        remote_text = (remote_result.stderr or remote_result.stdout).strip()
+        if remote_text:
+            lines.append(remote_text)
+        else:
+            lines.append(f"Deleted remote branch: {resolved_branch}")
+
+    return _compact_text("\n".join(lines))
+
+
+@mcp.tool(output_schema=None)
 def git_commit(
     message: str,
     repo_path: str | None = None,
@@ -415,10 +584,10 @@ def git_commit(
     if allow_empty:
         commit_args.append("--allow-empty")
     _run_git(repo_root, commit_args)
-    return _run_git(repo_root, ["log", "--oneline", "-n", "1"]).stdout
+    return _compact_text(_run_git(repo_root, ["log", "--oneline", "-n", "1"]).stdout)
 
 
-@mcp.tool
+@mcp.tool(output_schema=None)
 def git_request_review_and_wait(
     commit_message: str,
     repo_path: str | None = None,
@@ -455,7 +624,8 @@ def git_request_review_and_wait(
 
     if settings.mode == "local":
         local_payload = _run_local_review(repo_root, review_sha, commit_message, settings)
-        return str(local_payload.get("message", "")).strip() or "Local review completed."
+        message = str(local_payload.get("message", "")).strip() or "Local review completed."
+        return _compact_text(message)
 
     if settings.mode != "remote":
         raise GitOpsError(f"Unsupported review mode: {settings.mode}")
@@ -522,7 +692,7 @@ def git_request_review_and_wait(
                     lines.append(f"- {coord} {body}")
                 else:
                     lines.append(f"- {coord}")
-            return "\n".join(lines)
+            return _compact_text("\n".join(lines))
 
         thumbs_up = False
         for reaction in pull.as_issue().get_reactions():
@@ -539,21 +709,21 @@ def git_request_review_and_wait(
                 thumbs_up = True
 
         if thumbs_up:
-            return f"approved\nPR: {pull.html_url}"
+            return _compact_text(f"approved\nPR: {pull.html_url}")
 
         time.sleep(settings.poll_interval_seconds)
 
 
 def _issue_to_text(issue: Any) -> str:
-    return f"#{issue.number} [{issue.state}] {issue.title}\n{issue.html_url}"
+    return _compact_text(f"#{issue.number} [{issue.state}] {issue.title}\n{issue.html_url}")
 
 
 def _pull_to_text(pull: Any) -> str:
     draft = " draft" if pull.draft else ""
-    return f"PR #{pull.number} [{pull.state}{draft}] {pull.title}\n{pull.html_url}"
+    return _compact_text(f"PR #{pull.number} [{pull.state}{draft}] {pull.title}\n{pull.html_url}")
 
 
-@mcp.tool
+@mcp.tool(output_schema=None)
 def github_get_issue(issue_number: int, repo_full_name: str | None = None, repo_path: str | None = None) -> str:
     """Fetch a single GitHub issue."""
     repo_root = _resolve_repo_root(repo_path)
@@ -562,10 +732,10 @@ def github_get_issue(issue_number: int, repo_full_name: str | None = None, repo_
     return _issue_to_text(issue)
 
 
-@mcp.tool
+@mcp.tool(output_schema=None)
 def github_list_issues(
     state: str = "open",
-    limit: int = 50,
+    limit: int = 25,
     repo_full_name: str | None = None,
     repo_path: str | None = None,
 ) -> str:
@@ -579,10 +749,10 @@ def github_list_issues(
         items.append(_issue_to_text(issue))
         if len(items) >= max(1, limit):
             break
-    return "\n\n".join(items) if items else "(no issues)"
+    return _compact_text("\n\n".join(items) if items else "(no issues)")
 
 
-@mcp.tool
+@mcp.tool(output_schema=None)
 def github_create_issue(
     title: str,
     body: str = "",
@@ -603,7 +773,7 @@ def github_create_issue(
     return _issue_to_text(issue)
 
 
-@mcp.tool
+@mcp.tool(output_schema=None)
 def github_update_issue(
     issue_number: int,
     title: str | None = None,
@@ -629,7 +799,7 @@ def github_update_issue(
     return _issue_to_text(refreshed)
 
 
-@mcp.tool
+@mcp.tool(output_schema=None)
 def github_add_issue_comment(
     issue_number: int,
     body: str,
@@ -641,10 +811,10 @@ def github_add_issue_comment(
     repo, _ = _repo(repo_root, repo_full_name)
     issue = repo.get_issue(number=issue_number)
     comment = issue.create_comment(body)
-    return f"{comment.html_url}"
+    return _compact_text(f"{comment.html_url}")
 
 
-@mcp.tool
+@mcp.tool(output_schema=None)
 def github_get_pull_request(
     pull_number: int,
     repo_full_name: str | None = None,
@@ -657,7 +827,63 @@ def github_get_pull_request(
     return _pull_to_text(pull)
 
 
-@mcp.tool
+@mcp.tool(output_schema=None)
+def github_merge_pull_request(
+    pull_number: int,
+    merge_method: str = "squash",
+    commit_message: str | None = None,
+    expected_head_sha: str | None = None,
+    delete_branch: bool = False,
+    repo_full_name: str | None = None,
+    repo_path: str | None = None,
+) -> str:
+    """Merge a pull request (default: squash) and optionally delete its remote branch."""
+    repo_root = _resolve_repo_root(repo_path)
+    repo, _ = _repo(repo_root, repo_full_name)
+    pull = repo.get_pull(number=pull_number)
+
+    method = merge_method.strip().lower()
+    if method not in {"merge", "squash", "rebase"}:
+        raise GitOpsError("merge_method must be one of: merge, squash, rebase")
+
+    if pull.state != "open":
+        raise GitOpsError(f"PR #{pull_number} is not open (state={pull.state}).")
+
+    result = pull.merge(
+        commit_message=(commit_message or None),
+        sha=(expected_head_sha or None),
+        merge_method=method,
+    )
+    if not result.merged:
+        raise GitOpsError(result.message or f"PR #{pull_number} merge failed.")
+
+    lines = [
+        f"merged via {method}",
+        f"PR: {pull.html_url}",
+    ]
+    if result.sha:
+        lines.append(f"merge_sha: {result.sha}")
+
+    if delete_branch:
+        head_ref = (pull.head.ref or "").strip()
+        if not head_ref:
+            raise GitOpsError("PR merged but head branch is unknown; remote branch delete skipped.")
+        if head_ref in _protected_branches():
+            raise GitOpsError(
+                f"PR merged but refusing to delete protected branch '{head_ref}'."
+            )
+        if head_ref == repo.default_branch:
+            raise GitOpsError(
+                f"PR merged but refusing to delete repository default branch '{head_ref}'."
+            )
+        git_ref = repo.get_git_ref(f"heads/{head_ref}")
+        git_ref.delete()
+        lines.append(f"deleted_remote_branch: {head_ref}")
+
+    return _compact_text("\n".join(lines))
+
+
+@mcp.tool(output_schema=None)
 def github_add_pull_request_comment(
     pull_number: int,
     body: str,
@@ -669,13 +895,13 @@ def github_add_pull_request_comment(
     repo, _ = _repo(repo_root, repo_full_name)
     pull = repo.get_pull(number=pull_number)
     comment = pull.create_issue_comment(body)
-    return f"{comment.html_url}"
+    return _compact_text(f"{comment.html_url}")
 
 
-@mcp.tool
+@mcp.tool(output_schema=None)
 def github_list_pull_request_review_comments(
     pull_number: int,
-    limit: int = 100,
+    limit: int = 50,
     repo_full_name: str | None = None,
     repo_path: str | None = None,
 ) -> str:
@@ -687,14 +913,14 @@ def github_list_pull_request_review_comments(
     items: list[str] = []
     for comment in pull.get_comments():
         coord = f"{comment.path}:{comment.line}" if comment.line is not None else str(comment.path)
-        body_text = str(comment.body or "").replace("\n", " ").strip()
+        body_text = _compact_inline_text(comment.body or "")
         items.append(f"{coord} {body_text}\n{comment.html_url}".strip())
         if len(items) >= max(1, limit):
             break
-    return "\n\n".join(items) if items else "(no review comments)"
+    return _compact_text("\n\n".join(items) if items else "(no review comments)")
 
 
-@mcp.tool
+@mcp.tool(output_schema=None)
 def github_add_pull_request_review_comment(
     pull_number: int,
     commit_id: str,
@@ -725,7 +951,7 @@ def github_add_pull_request_review_comment(
         kwargs["start_side"] = start_side
 
     comment = pull.create_review_comment(**kwargs)
-    return f"{comment.html_url}"
+    return _compact_text(f"{comment.html_url}")
 
 
 def main() -> None:

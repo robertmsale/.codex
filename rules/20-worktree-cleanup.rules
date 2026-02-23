@@ -1,0 +1,16 @@
+# Worktree cleanup enforcement (MCP-first).
+prefix_rule(
+    pattern = ["git", "worktree", "remove"],
+    decision = "forbidden",
+    justification = "Use gitops MCP tool: git_worktree_cleanup(...).",
+)
+prefix_rule(
+    pattern = ["git", "branch", ["-d", "-D"]],
+    decision = "forbidden",
+    justification = "Use gitops MCP tool: git_worktree_cleanup(..., delete_local_branch=true).",
+)
+prefix_rule(
+    pattern = ["git", "push", "origin", "--delete"],
+    decision = "forbidden",
+    justification = "Use gitops MCP tool: git_worktree_cleanup(..., delete_remote_branch=true).",
+)

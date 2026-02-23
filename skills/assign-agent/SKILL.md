@@ -64,7 +64,7 @@ Use this skill when an orchestrator agent needs to assign work to another local 
 - For any code-change task that ends in a PR, always require:
   - `$gh-version-control-workflow`
 - If the task requires branch/worktree cleanup, always require:
-  - `$safe-worktree`
+  - `$gh-version-control-workflow` (use `git_worktree_cleanup`)
 - If the task requires deleting files/directories, always require:
   - `$safe-delete`
 - Include absolute SKILL.md paths in the prompt for each required skill.
@@ -99,7 +99,6 @@ You are assigned to <issue/reference> in <repo path or repo URL>.
 
 Required skills for this assignment (do not skip):
 - $gh-version-control-workflow (<absolute-skill-path>)
-- $safe-worktree (<absolute-skill-path>) [when cleanup applies]
 - $safe-delete (<absolute-skill-path>) [when deletion applies]
 
 Goals:
@@ -135,7 +134,7 @@ Goals:
    ```
    - Address findings, commit, and rerun `request-review`.
    - Repeat until review is clean.
-9. If PR work is included: merge only after the review loop is clean, then run required cleanup using `safe-worktree` (and `safe-delete` where applicable).
+9. If PR work is included: merge only after the review loop is clean, then run required cleanup using `git_worktree_cleanup` (and `safe-delete` where applicable).
 ```
 
 ## Orchestrator Acceptance Check
@@ -145,7 +144,7 @@ Before considering handoff complete, verify:
 - The thread id value is not empty.
 - The assignment prompt explicitly lists required skills with `do not skip`.
 - For PR assignments, prompt explicitly requires `gh-version-control-workflow`.
-- For cleanup/deletion assignments, prompt explicitly requires `safe-worktree` and/or `safe-delete`.
+- For cleanup/deletion assignments, prompt explicitly requires `gh-version-control-workflow` (for `git_worktree_cleanup`) and/or `safe-delete`.
 
 ## Worker behavior constraints
 - One assignment maps to one worker session.

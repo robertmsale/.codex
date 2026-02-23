@@ -242,6 +242,33 @@ def _assert_profile_exists(profile: str) -> None:
         raise CommandParserError(f"Profile '{profile}' not found in {config_file}")
 
 
+def _load_config_payload() -> dict[str, Any]:
+    if not CODEX_CONFIG_FILE.exists():
+        return {}
+    try:
+        payload = tomllib.loads(CODEX_CONFIG_FILE.read_text(encoding="utf-8", errors="replace"))
+    except Exception:  # noqa: BLE001
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _load_mcp_server_names() -> list[str]:
+    payload = _load_config_payload()
+    servers = payload.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return []
+    names = [name for name in servers.keys() if isinstance(name, str) and name]
+    names.sort()
+    return names
+
+
+def _mcp_disable_override(name: str) -> str:
+    escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+    return f'mcp_servers."{escaped}".enabled=false'
+
+
 def _parse_output_with_codex(
     outcome: ExecutionOutcome,
     include_warnings: bool,
@@ -302,16 +329,101 @@ Output rules:
             "codex",
             "exec",
             "--skip-git-repo-check",
+            "--ephemeral",
             "-s",
             "read-only",
             "-C",
             temp_dir,
             "-p",
             profile,
-            "-o",
-            str(response_log),
-            prompt,
+            "-c",
+            "web_search=\"disabled\"",
+            # "-c",
+            # "tools.web_search=false",
+            # "-c",
+            # "tools.view_image=false",
+            # "-c",
+            # "features.shell_tool=false",
+            "-c",
+            "features.unified_exec=false",
+            # "-c",
+            # "features.shell_zsh_fork=false",
+            # "-c",
+            # "features.shell_snapshot=false",
+            # "-c",
+            # "features.js_repl=false",
+            # "-c",
+            # "features.js_repl_tools_only=false",
+            # "-c",
+            # "features.web_search_request=false",
+            # "-c",
+            # "features.web_search_cached=false",
+            # "-c",
+            # "features.search_tool=false",
+            # "-c",
+            # "features.codex_git_commit=false",
+            # "-c",
+            # "features.runtime_metrics=false",
+            # "-c",
+            # "features.sqlite=false",
+            # "-c",
+            # "features.memory_tool=false",
+            # "-c",
+            # "features.child_agents_md=false",
+            # "-c",
+            # "features.apply_patch_freeform=false",
+            # "-c",
+            # "features.use_linux_sandbox_bwrap=false",
+            # "-c",
+            # "features.request_rule=false",
+            # "-c",
+            # "features.experimental_windows_sandbox=false",
+            # "-c",
+            # "features.elevated_windows_sandbox=false",
+            # "-c",
+            # "features.remote_models=false",
+            # "-c",
+            # "features.powershell_utf8=false",
+            # "-c",
+            # "features.enable_request_compression=false",
+            "-c",
+            "features.multi_agent=false",
+            # "-c",
+            # "features.apps=false",
+            # "-c",
+            # "features.apps_mcp_gateway=false",
+            # "-c",
+            # "features.skill_mcp_dependency_install=false",
+            # "-c",
+            # "features.skill_env_var_dependency_prompt=false",
+            "-c",
+            "features.steer=false",
+            # "-c",
+            # "features.collaboration_modes=false",
+            # "-c",
+            # "features.personality=false",
+            # "-c",
+            # "features.prevent_idle_sleep=false",
+            # "-c",
+            # "features.responses_websockets=false",
+            # "-c",
+            # "features.responses_websockets_v2=false",
+            # "-c",
+            # "features.undo=false",
+            "-c",
+            "features.skills=false",
+            # "-c",
+            # "skills=false",
         ]
+        # for server_name in _load_mcp_server_names():
+        #     cmd.extend(["-c", _mcp_disable_override(server_name)])
+        cmd.extend(
+            [
+                "-o",
+                str(response_log),
+                prompt,
+            ]
+        )
 
         result = subprocess.run(cmd, text=True, capture_output=True)
         if result.returncode != 0:

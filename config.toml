@@ -1,8 +1,7 @@
 model = "gpt-5.3-codex"
 model_reasoning_effort = "high"
 approval_policy = "never"
-sandbox_mode = "workspace-write"
-network_access = false
+sandbox_mode = "danger-full-access"
 
 web_search = "live"
 notify = ["python3", "/Users/robertsale/.codex/notify.py"]
@@ -13,7 +12,6 @@ writable_roots = [
   "/Users/robertsale/.rustup",
   "/Users/robertsale/.cargo",
   "/Users/robertsale/.pub-cache",
-  "/Users/robertsale/.codex",
   "/Users/robertsale/.cache",
   "/Users/robertsale/.swiftpm",
   "/private/var/folders",
@@ -24,7 +22,13 @@ writable_roots = [
   "/Users/robertsale/Library/Caches/com.apple.dt.Xcode",
   "/Users/robertsale/Library/Caches/com.apple.DeveloperTools",
   "/Users/robertsale/Library/Logs/CoreSimulator",
+  "/Users/robertsale/.docker",
+  "/Users/robertsale/Library/Containers/com.docker.docker",
+  "/Users/robertsale/Library/Group Containers/group.com.docker",
+  "/Users/robertsale/Library/Application Support/Docker Desktop",
+  "/var/run/docker.sock",
 ]
+network_access = true
 
 [model_providers.lmstudio-local]
 name = "LM Studio"
@@ -109,6 +113,13 @@ enabled = true
 [mcp_servers.commandParser]
 command = "uv"
 args = ["--project", "/Users/robertsale/.codex/mcp/command-parser", "run", "command-parser-mcp"]
+tool_timeout_sec = 9223372036854775807
+startup_timeout_sec = 20
+enabled = true
+
+[mcp_servers.robdexOrchestrator]
+command = "uv"
+args = ["--project", "/Users/robertsale/.codex/mcp/robdex-orchestrator", "run", "robdex-orchestrator-mcp"]
 tool_timeout_sec = 9223372036854775807
 startup_timeout_sec = 20
 enabled = true

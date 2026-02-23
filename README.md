@@ -9,7 +9,7 @@ This directory contains my Codex CLI personal configuration (`config.toml`), sta
 - `gh-version-control-workflow`: Run issue-driven git/gh flow with worktrees, PRs, and disciplined cleanup.
 - `request-review`: Commit and trigger review (remote bot or local `codex exec`) and send results to tmux.
 - `safe-delete`: Use `trash` instead of `rm` so deletions are recoverable.
-- `safe-worktree`: Deterministic, policy-aware worktree/branch cleanup with strong protected-branch guards.
+- `gitops` MCP (`git_worktree_cleanup`): Deterministic, policy-aware worktree/branch cleanup with protected-branch guards.
 
 ## `config.toml` at a glance
 
