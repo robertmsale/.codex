@@ -1,6 +1,6 @@
 ---
 name: safe-delete
-description: Use the `trash` CLI for deletions so files are recoverable. Prefer this skill whenever a task involves removing files or directories. [skill-hash:bcb2090]
+description: Use MCP `safeDelete.safe_delete` to stage deletions under `/tmp/safe-delete` with collision-safe timestamped paths. Prefer this skill whenever a task involves removing files or directories. [skill-hash:9e1d4bf]
 ---
 
 # Safe Delete
@@ -8,14 +8,20 @@ description: Use the `trash` CLI for deletions so files are recoverable. Prefer 
 Use this skill whenever a task involves deleting files or directories.
 
 Rules:
+
 - Never use `rm`.
-- Use `trash` for deletions so items go to the OS Trash and can be recovered.
-- For paths that might start with `-`, pass `--` before paths.
+- Use MCP `safeDelete.safe_delete` so paths are moved to `/tmp/safe-delete` and
+  can be recovered.
+- If MCP is unavailable, fallback to:
+  - `mkdir -p /tmp/safe-delete`
+  - `mv -- <path...> /tmp/safe-delete/`
 
 Patterns:
-- Single path: `trash -- <path>`
-- Multiple paths: `trash -- <path1> <path2>`
-- Glob delete: `trash '*.log'`
+
+- Single path: `safeDelete.safe_delete(paths=[\"<path>\"])`
+- Multiple paths: `safeDelete.safe_delete(paths=[\"<path1>\", \"<path2>\"])`
+- Optional cwd: `safeDelete.safe_delete(paths=[\"build\"], cwd=\"/repo\")`
 
 Quick check:
-- `which trash`
+
+- `ls -la /tmp/safe-delete`

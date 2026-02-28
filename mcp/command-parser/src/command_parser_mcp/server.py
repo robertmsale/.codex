@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import os
 import re
 import shlex
 import subprocess
 import tempfile
+import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from fastmcp import FastMCP
+from fastmcp.tools.tool import ToolResult
+from mcp.types import TextContent
 
 SANDBOX_FAILURE_PATTERNS = [
     re.compile(r"forbidden-sandbox-reinit", re.IGNORECASE),
@@ -20,7 +24,13 @@ SANDBOX_FAILURE_PATTERNS = [
     re.compile(r"sandbox(?:-exec)?[: ].*denied", re.IGNORECASE),
 ]
 
-DEFAULT_PROFILE = os.getenv("COMMAND_PARSER_PROFILE", "command-parser")
+COMMAND_PARSER_DEFAULT_PROFILE = "command-parser"
+COMMAND_PARSER_SKILL_ENV_FILE = Path(
+    os.getenv(
+        "COMMAND_PARSER_SKILL_ENV_FILE",
+        str(Path.home() / ".codex" / "skills" / "command-parser" / ".env"),
+    )
+)
 ROBDEX_STATE_FILE = Path(
     os.getenv(
         "COMMAND_PARSER_ROBDEX_STATE_FILE",
@@ -31,6 +41,18 @@ CODEX_CONFIG_FILE = Path(
     os.getenv(
         "COMMAND_PARSER_CODEX_CONFIG_FILE",
         str(Path.home() / ".codex" / "config.toml"),
+    )
+)
+COMMAND_PARSER_USAGE_LOG_FILE = Path(
+    os.getenv(
+        "COMMAND_PARSER_USAGE_LOG_FILE",
+        str(Path.home() / ".codex" / "command-parser-usage.log"),
+    )
+)
+COMMAND_PARSER_RULE_FILE = Path(
+    os.getenv(
+        "COMMAND_PARSER_RULE_FILE",
+        str(COMMAND_PARSER_SKILL_ENV_FILE.parent / "command-parser.rule"),
     )
 )
 
@@ -96,6 +118,41 @@ def _load_config_fallback_state() -> ConfigFallbackState:
     return ConfigFallbackState(mode=mode, network_access=network_access)
 
 
+def _parse_dotenv_value(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        return ""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _refresh_command_parser_environment() -> None:
+    # Re-read command-parser skill env on every tool call so operator edits
+    # (for example COMMAND_PARSER_PROFILE) apply immediately without restart.
+    for key in [k for k in os.environ if k.startswith("COMMAND_PARSER_")]:
+        os.environ.pop(key, None)
+
+    if not COMMAND_PARSER_SKILL_ENV_FILE.exists():
+        return
+
+    for raw_line in COMMAND_PARSER_SKILL_ENV_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env_key = key.strip()
+        if not env_key.startswith("COMMAND_PARSER_"):
+            continue
+        os.environ[env_key] = _parse_dotenv_value(value)
+
+
+def _default_profile() -> str:
+    return os.getenv("COMMAND_PARSER_PROFILE", COMMAND_PARSER_DEFAULT_PROFILE).strip() or COMMAND_PARSER_DEFAULT_PROFILE
+
+
 def _normalize_mode(value: str) -> Literal["read-only", "workspace-write", "danger-full-access"]:
     normalized = value.strip().lower()
     if normalized not in {"read-only", "workspace-write", "danger-full-access"}:
@@ -105,41 +162,36 @@ def _normalize_mode(value: str) -> Literal["read-only", "workspace-write", "dang
 
 def _resolve_sandbox_state(
     cwd: str | None,
-    sandbox_mode: Literal["read-only", "workspace-write", "danger-full-access"] | None,
-    network_access: bool | None,
-    thread_id: str | None,
 ) -> SandboxState:
-    resolved_thread_id = _resolve_thread_id(thread_id)
+    resolved_thread_id = _resolve_thread_id()
     robdex_metadata = _load_robdex_thread_metadata(resolved_thread_id)
     config_fallback = _load_config_fallback_state()
 
-    effective_mode: Literal["read-only", "workspace-write", "danger-full-access"] | None = None
-    if sandbox_mode is not None:
-        effective_mode = _normalize_mode(sandbox_mode)
+    metadata_mode = _normalize_robdex_mode(robdex_metadata.get("sandboxMode"))
+    config_mode = config_fallback.mode
+    # Global full-access mode must win over potentially stale per-thread
+    # metadata so command-parser matches the active Codex runtime policy.
+    if config_mode == "danger-full-access":
+        effective_mode: Literal["read-only", "workspace-write", "danger-full-access"] = "danger-full-access"
+    elif metadata_mode is not None:
+        effective_mode = metadata_mode
+    elif config_mode is not None:
+        effective_mode = config_mode
     else:
-        effective_mode = _normalize_robdex_mode(robdex_metadata.get("sandboxMode"))
-        if effective_mode is None:
-            effective_mode = config_fallback.mode
-        if effective_mode is None:
-            effective_mode = _normalize_mode(CURRENT_SANDBOX_STATE.mode)
+        effective_mode = _normalize_mode(CURRENT_SANDBOX_STATE.mode)
 
-    if network_access is not None:
-        effective_network = bool(network_access)
+    metadata_network = robdex_metadata.get("networkAccess")
+    if isinstance(metadata_network, bool):
+        effective_network = metadata_network
     else:
-        metadata_network = robdex_metadata.get("networkAccess")
-        if isinstance(metadata_network, bool):
-            effective_network = metadata_network
-        else:
-            effective_network = config_fallback.network_access
-            if effective_network is None:
-                effective_network = CURRENT_SANDBOX_STATE.network_access
+        effective_network = config_fallback.network_access
+        if effective_network is None:
+            effective_network = CURRENT_SANDBOX_STATE.network_access
 
     command_cwd = cwd or CURRENT_SANDBOX_STATE.cwd or os.getcwd()
     command_cwd = str(Path(command_cwd).expanduser().resolve())
 
-    if sandbox_mode is not None or network_access is not None:
-        source = "tool-override"
-    elif robdex_metadata:
+    if robdex_metadata:
         source = "robdex-state"
     elif config_fallback.mode is not None or config_fallback.network_access is not None:
         source = "codex-config"
@@ -155,10 +207,7 @@ def _resolve_sandbox_state(
     )
 
 
-def _resolve_thread_id(explicit_thread_id: str | None) -> str | None:
-    if explicit_thread_id is not None:
-        trimmed = explicit_thread_id.strip()
-        return trimmed or None
+def _resolve_thread_id() -> str | None:
     env_value = os.getenv("CODEX_THREAD_ID", "").strip()
     return env_value or None
 
@@ -233,6 +282,40 @@ def _is_sandbox_failure(outcome: ExecutionOutcome, state: SandboxState) -> bool:
     return any(pattern.search(haystack) for pattern in SANDBOX_FAILURE_PATTERNS)
 
 
+def _extract_sandbox_failure_text(outcome: ExecutionOutcome) -> str | None:
+    for text in (outcome.stderr, outcome.stdout, outcome.combined_output):
+        if not text:
+            continue
+
+        first_match_index: int | None = None
+        for pattern in SANDBOX_FAILURE_PATTERNS:
+            match = pattern.search(text)
+            if not match:
+                continue
+            if first_match_index is None or match.start() < first_match_index:
+                first_match_index = match.start()
+
+        if first_match_index is None:
+            continue
+
+        line_start = text.rfind("\n", 0, first_match_index)
+        if line_start == -1:
+            line_start = 0
+        else:
+            line_start += 1
+        trimmed = text[line_start:].strip()
+        if trimmed:
+            return trimmed
+
+    fallback = (outcome.stderr or outcome.stdout or outcome.combined_output).strip()
+    return fallback or None
+
+
+def _plaintext_result(message: str) -> ToolResult:
+    text = message.strip() or "No output."
+    return ToolResult(content=[TextContent(type="text", text=text)])
+
+
 def _assert_profile_exists(profile: str) -> None:
     config_file = CODEX_CONFIG_FILE
     if not config_file.exists():
@@ -270,6 +353,7 @@ def _mcp_disable_override(name: str) -> str:
 
 
 def _parse_output_with_codex(
+    raw_command: list[str],
     outcome: ExecutionOutcome,
     include_warnings: bool,
     additional_request: str | None,
@@ -285,13 +369,19 @@ def _parse_output_with_codex(
         agents_md = temp_path / "AGENTS.md"
 
         output_log.write_text(outcome.combined_output, encoding="utf-8", errors="replace")
-        command_txt.write_text(" ".join(shlex.quote(arg) for arg in outcome.argv) + "\n", encoding="utf-8")
+        command_txt.write_text(" ".join(shlex.quote(arg) for arg in raw_command) + "\n", encoding="utf-8")
         agents_md.write_text(
             """You are command-parser, a CLI output extraction agent.
 
 Task:
 - Read ./output.log and extract errors (and warnings only if requested).
 - Prefer targeted search (`rg`, `grep`) before broad reads for huge files.
+- Read ./command.txt to determine whether this command should have used command-parser.
+
+Hard refusal (required):
+- If ./command.txt shows a non-noisy command (for example `cargo fmt`, `ls`, `rg`), output exactly:
+  Refusal: non-noisy command. Run this command directly instead of command-parser.
+- Do not parse ./output.log when this refusal applies.
 
 Output rules:
 - If there are no errors at all:
@@ -319,7 +409,7 @@ Output rules:
         )
 
         prompt = (
-            f"Parse ./output.log from this command:\n{command_txt.read_text(encoding='utf-8')}\n"
+            f"Parse ./output.log from this raw command:\n{command_txt.read_text(encoding='utf-8')}\n"
             f"Include warnings: {'yes' if include_warnings else 'no'}\n\n"
             f"Additional request: {additional_request or '<none>'}\n\n"
             "Return only the structured extraction format from AGENTS.md."
@@ -412,8 +502,8 @@ Output rules:
             # "features.undo=false",
             "-c",
             "features.skills=false",
-            # "-c",
-            # "skills=false",
+            "-c",
+            "mcp_servers.commandParser.enabled=false",
         ]
         # for server_name in _load_mcp_server_names():
         #     cmd.extend(["-c", _mcp_disable_override(server_name)])
@@ -437,40 +527,166 @@ Output rules:
         return response_log.read_text(encoding="utf-8", errors="replace").strip()
 
 
+def _raw_command_text(command: list[str]) -> str:
+    return " ".join(shlex.quote(arg) for arg in command)
+
+
+def _resolved_usage_log_file() -> Path:
+    raw = os.getenv("COMMAND_PARSER_USAGE_LOG_FILE", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return COMMAND_PARSER_USAGE_LOG_FILE
+
+
+def _resolved_rule_file() -> Path:
+    raw = os.getenv("COMMAND_PARSER_RULE_FILE", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return COMMAND_PARSER_RULE_FILE
+
+
+def _append_usage_log(command: list[str], cwd: str) -> None:
+    log_file = _resolved_usage_log_file()
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    line = f"{timestamp} | {_raw_command_text(command)} | cwd={cwd}\n"
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+        raise CommandParserError(
+            f"Failed to append command usage log at {log_file}: {reason}"
+        ) from exc
+
+
+def _delay_seconds() -> float:
+    raw = os.getenv("COMMAND_PARSER_DELAY", "0").strip()
+    if not raw:
+        return 0.0
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise CommandParserError(f"Invalid COMMAND_PARSER_DELAY='{raw}'. Use a numeric seconds value.") from exc
+    if value < 0:
+        raise CommandParserError(f"Invalid COMMAND_PARSER_DELAY='{raw}'. Value must be >= 0.")
+    return value
+
+
+def _execpolicy_forbidden_message(payload: dict[str, Any]) -> str | None:
+    decision = str(payload.get("decision", "")).strip().lower()
+    if decision == "forbidden":
+        matched_rules = payload.get("matchedRules")
+        if isinstance(matched_rules, list):
+            for entry in matched_rules:
+                if not isinstance(entry, dict):
+                    continue
+                prefix_match = entry.get("prefixRuleMatch")
+                if not isinstance(prefix_match, dict):
+                    continue
+                justification = str(prefix_match.get("justification", "")).strip()
+                if justification:
+                    return justification
+        return "Command is forbidden by command-parser.rule."
+
+    matched_rules = payload.get("matchedRules")
+    if not isinstance(matched_rules, list):
+        return None
+
+    for entry in matched_rules:
+        if not isinstance(entry, dict):
+            continue
+        prefix_match = entry.get("prefixRuleMatch")
+        if not isinstance(prefix_match, dict):
+            continue
+        rule_decision = str(prefix_match.get("decision", "")).strip().lower()
+        if rule_decision != "forbidden":
+            continue
+        justification = str(prefix_match.get("justification", "")).strip()
+        return justification or "Command is forbidden by command-parser.rule."
+    return None
+
+
+def _check_command_policy(command: list[str], cwd: str) -> str | None:
+    rule_file = _resolved_rule_file()
+    if not rule_file.exists():
+        return None
+
+    check_cmd = [
+        "codex",
+        "execpolicy",
+        "check",
+        "--rules",
+        str(rule_file),
+        "--",
+        *command,
+    ]
+    result = subprocess.run(check_cmd, cwd=cwd, text=True, capture_output=True)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+        raise CommandParserError(
+            f"execpolicy check failed for command-parser.rule at {rule_file}: {detail}"
+        )
+
+    stdout = (result.stdout or "").strip()
+    if not stdout:
+        return None
+
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise CommandParserError(
+            f"execpolicy output was not valid JSON: {stdout}"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        return None
+
+    return _execpolicy_forbidden_message(payload)
+
+
 @mcp.tool
 def command_parser_run(
     command: list[str],
     cwd: str | None = None,
     include_warnings: bool = False,
     additional_request: str | None = None,
-    sandbox_mode: Literal["read-only", "workspace-write", "danger-full-access"] | None = None,
-    network_access: bool | None = None,
-    thread_id: str | None = None,
-    profile: str | None = None,
-) -> str:
+) -> ToolResult:
     """Run command once with sandbox routing, skip parser on sandbox failures, parse output otherwise."""
-    state = _resolve_sandbox_state(cwd, sandbox_mode, network_access, thread_id)
+    _refresh_command_parser_environment()
+    state = _resolve_sandbox_state(cwd)
+    _append_usage_log(command=command, cwd=state.cwd)
+
+    policy_message = _check_command_policy(command=command, cwd=state.cwd)
+    if policy_message:
+        return _plaintext_result(f"Command blocked by command-parser.rule: {policy_message}")
+
+    delay = _delay_seconds()
+    if delay > 0:
+        time.sleep(delay)
+
     argv = _build_execution_argv(command, state)
     outcome = _run_command(argv=argv, cwd=state.cwd)
 
     if _is_sandbox_failure(outcome, state):
-        text = (outcome.stderr or outcome.stdout).strip()
-        return text or "Sandbox blocked command execution."
+        text = _extract_sandbox_failure_text(outcome)
+        return _plaintext_result(text or "Sandbox blocked command execution.")
 
-    parser_profile = (profile or DEFAULT_PROFILE).strip() or DEFAULT_PROFILE
-    return _parse_output_with_codex(
+    parser_profile = _default_profile()
+    parsed = _parse_output_with_codex(
+        raw_command=command,
         outcome=outcome,
         include_warnings=include_warnings,
         additional_request=additional_request,
         profile=parser_profile,
     )
+    return _plaintext_result(parsed)
 
 
 def main() -> None:
     # NOTE: FastMCP/mcp Python SDK currently does not expose Codex custom request
     # handling for `codex/sandbox-state/update` with dynamic ClientRequest unions.
-    # This server therefore uses env/default-based sandbox state plus optional
-    # per-call overrides until SDK support lands.
+    # This server therefore uses env/config/robdex-derived sandbox state.
     mcp.run(transport="stdio")
 
 

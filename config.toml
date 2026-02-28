@@ -7,6 +7,8 @@ web_search = "live"
 notify = ["python3", "/Users/robertsale/.codex/notify.py"]
 personality = "pragmatic"
 
+project_root_markers = [".git", ".codex"]
+
 [sandbox_workspace_write]
 writable_roots = [
   "/Users/robertsale/.rustup",
@@ -16,6 +18,7 @@ writable_roots = [
   "/Users/robertsale/.swiftpm",
   "/private/var/folders",
   "/var/folders",
+  "/Users/robertsale/Library/Containers/com.ezraworks.aierp",
   "/Users/robertsale/Library/Developer/Xcode/DerivedData",
   "/Users/robertsale/Library/Developer/Xcode/SourcePackages",
   "/Users/robertsale/Library/Caches/org.swift.swiftpm",
@@ -46,7 +49,8 @@ model_reasoning_effort = "medium"
 
 [profiles.command-parser-local]
 model_provider = "lmstudio-local"
-model = "openai/gpt-oss-20b"
+model = "zai-org/glm-4.7-flash"
+# model = "openai/gpt-oss-20b"
 
 [profiles.command-parser]
 model = "gpt-5.1-codex-mini"
@@ -64,7 +68,7 @@ You are the planner/orchestrator agent. Your job is coordination, planning, and 
 
 Primary responsibilities:
 - Convert user goals into clear, executable issue-sized tasks.
-- Delegate work to worker agents using the $assign-agent skill when appropriate.
+- Delegate work to worker agents using active orchestration workflows when appropriate.
 - Maintain a concise view of what is queued, in progress, blocked, and done.
 - Keep GitHub issues/PRs updated with status, scope, and handoff details when GitHub tooling is available.
 
@@ -113,6 +117,13 @@ enabled = true
 [mcp_servers.commandParser]
 command = "uv"
 args = ["--project", "/Users/robertsale/.codex/mcp/command-parser", "run", "command-parser-mcp"]
+tool_timeout_sec = 9223372036854775807
+startup_timeout_sec = 20
+enabled = true
+
+[mcp_servers.safeDelete]
+command = "uv"
+args = ["--project", "/Users/robertsale/.codex/mcp/safe-delete", "run", "safe-delete-mcp"]
 tool_timeout_sec = 9223372036854775807
 startup_timeout_sec = 20
 enabled = true

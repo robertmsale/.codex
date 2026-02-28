@@ -1,6 +1,7 @@
 # gitops-mcp
 
-Local MCP server used by robdex/Codex for guarded git mutations and GitHub workflows.
+Local MCP server used by robdex/Codex for guarded git mutations and GitHub
+workflows.
 
 ## Setup
 
@@ -11,8 +12,8 @@ Local MCP server used by robdex/Codex for guarded git mutations and GitHub workf
 
 ## Review control knobs (operator-owned)
 
-These are loaded from `~/.codex/mcp/gitops/.env` and `~/.codex/skills/request-review/.env`.
-Agents should not edit these values.
+These are loaded from `~/.codex/mcp/gitops/.env` and
+`~/.codex/skills/request-review/.env`. Agents should not edit these values.
 
 - `REQUEST_REVIEW_MODE=local|remote`
 - `REQUEST_REVIEW_DISABLE=0|1`
@@ -27,18 +28,25 @@ Agents should not edit these values.
 
 ## Worktree defaults
 
-- `GITOPS_INTEGRATION_BRANCH=...` (default base branch used by `git_worktree_create`)
-- `GITOPS_WORKTREE_DIR=.worktrees` (repo-relative directory where worktrees are created)
+- `GITOPS_INTEGRATION_BRANCH=...` (default base branch used by
+  `git_worktree_create`)
+- `GITOPS_WORKTREE_DIR=.worktrees` (repo-relative directory where worktrees are
+  created)
 
 ## Worktree cleanup
 
-- Use `git_worktree_cleanup` to remove worktrees and optionally delete local/remote branches.
-- Protected integration branches are blocked from cleanup operations.
+- Use `git_worktree_cleanup(worktree_path)`.
+- Cleanup flow is path-only:
+  1. Validate path is a registered non-root git worktree
+  2. Move the directory to Trash (`/usr/local/bin/trash` by default, fallback `trash` on `PATH`)
+  3. Run `git worktree prune`
+- Branch deletion is intentionally not performed by this tool.
 
 ## Trivial git ops
 
 - Use `git_fetch` for `git fetch` equivalents.
-- Use `git_rebase` for rebasing current worktree branch (protected branches blocked).
+- Use `git_rebase` for rebasing current worktree branch (protected branches
+  blocked).
 
 ## Run (stdio)
 

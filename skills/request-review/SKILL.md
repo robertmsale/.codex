@@ -9,10 +9,12 @@ Use this skill when an agent needs code review for the current branch/PR.
 
 ## Required workflow (MCP-only)
 
-Use MCP tool `git_request_review_and_wait`.
-Do not run `~/.codex/skills/request-review/scripts/request-review` during normal agent operation.
+Use MCP tool `git_request_review_and_wait`. Do not run
+`~/.codex/skills/request-review/scripts/request-review` during normal agent
+operation.
 
 Expected behavior:
+
 - Refuses protected integration branches.
 - Handles commit/push/PR/review wait according to server policy/env.
 - Returns findings summary or approval outcome.
@@ -20,9 +22,11 @@ Expected behavior:
 ## Tool usage
 
 Preferred call:
+
 - `git_request_review_and_wait(commit_message="<type>: <summary>", repo_path="<worktree path>")`
 
 Optional fields only when needed by user/repo policy:
+
 - `existing_commit_sha`
 - `use_existing_commit`
 - `create_pr_if_missing`
@@ -30,11 +34,14 @@ Optional fields only when needed by user/repo policy:
 - `pr_body`
 
 ## Config source
+
 - Review behavior is controlled by operator-managed env/config:
   - `~/.codex/mcp/gitops/.env`
-  - `~/.codex/skills/request-review/.env` (legacy knob source still honored by gitops policy wiring)
+  - `~/.codex/skills/request-review/.env` (legacy knob source still honored by
+    gitops policy wiring)
 
 ## Env knobs (authoritative)
+
 - `REQUEST_REVIEW_MODE=local|remote`
 - `REQUEST_REVIEW_BOT_LOGIN=chatgpt-codex-connector[bot]`
 - `REQUEST_REVIEW_TRIGGER_COMMENT=@codex review`
@@ -46,11 +53,16 @@ Optional fields only when needed by user/repo policy:
 - `REQUEST_REVIEW_INTEGRATION_BRANCHES="main master staging prod production"`
 
 ## Critical discipline
+
 - Only one review request per project/PR scope at a time.
 - Do not launch duplicate review requests.
-- Do not modify review `.env` knobs. Agents are not allowed to change review settings.
-- After starting review, wait patiently; do not cancel/interrupt unless an operator explicitly asks.
+- Do not modify review `.env` knobs. Agents are not allowed to change review
+  settings.
+- After starting review, wait patiently; do not cancel/interrupt unless an
+  operator explicitly asks.
 
 ## Legacy script policy
+
 - Legacy script path exists for operator-maintained compatibility only.
-- Agents must not execute the script unless the user explicitly instructs script usage.
+- Agents must not execute the script unless the user explicitly instructs script
+  usage.

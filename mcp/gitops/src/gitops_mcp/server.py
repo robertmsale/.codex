@@ -436,6 +436,19 @@ def _worktrees_root(repo_root: Path) -> Path:
     return root
 
 
+def _resolve_trash_bin() -> str:
+    preferred = Path("/usr/local/bin/trash")
+    if preferred.exists() and os.access(preferred, os.X_OK):
+        return str(preferred)
+    fallback = shutil.which("trash")
+    if fallback:
+        return fallback
+    raise GitOpsError(
+        "Missing trash CLI for worktree cleanup. Expected '/usr/local/bin/trash' "
+        "or a 'trash' executable on PATH."
+    )
+
+
 def _worktree_entries(repo_root: Path) -> list[dict[str, str]]:
     listing = _run_git(repo_root, ["worktree", "list", "--porcelain"]).stdout
     entries: list[dict[str, str]] = []
@@ -496,11 +509,6 @@ def _resolve_worktree_target(
     if requested_branch is not None:
         raise GitOpsError(f"Branch is not attached to any worktree: {requested_branch}")
     raise GitOpsError("Unable to resolve worktree target.")
-
-
-def _is_lock_permission_error(detail: str) -> bool:
-    lowered = detail.lower()
-    return ".lock" in lowered and ("permission denied" in lowered or "operation not permitted" in lowered)
 
 
 def _extract_local_review_message(raw_jsonl: str) -> str:
@@ -658,100 +666,71 @@ def git_worktree_create(
 
 @mcp.tool(output_schema=None)
 def git_worktree_cleanup(
-    worktree_path: str | None = None,
-    branch_name: str | None = None,
-    repo_path: str | None = None,
-    delete_local_branch: bool = True,
-    delete_remote_branch: bool = False,
-    force: bool = False,
+    worktree_path: str,
 ) -> str:
-    """Remove a worktree and optionally delete its branch with protected-branch guards."""
-    if not worktree_path and not branch_name:
-        raise GitOpsError("Provide worktree_path or branch_name.")
+    """Trash a worktree directory and prune stale worktree metadata."""
+    if not worktree_path.strip():
+        raise GitOpsError("worktree_path is required.")
 
-    repo_root = _resolve_repo_root(repo_path)
-    requested_branch = _normalize_branch_ref(branch_name)
-    resolved_branch = requested_branch
-    target_path: Path | None = None
-    detached_branch_target = False
-
-    try:
-        target_path, attached_branch = _resolve_worktree_target(repo_root, worktree_path, branch_name)
-        if attached_branch:
-            resolved_branch = attached_branch
-    except GitOpsError as exc:
-        if worktree_path or not requested_branch or "Branch is not attached to any worktree:" not in str(exc):
-            raise
-        detached_branch_target = True
-
-    if resolved_branch and resolved_branch in _protected_branches():
-        raise GitOpsError(f"Refusing cleanup for protected integration branch '{resolved_branch}'.")
-
-    lines: list[str] = []
+    target_path = Path(worktree_path).expanduser().resolve()
+    repo_root = _resolve_repo_root(str(target_path))
     root_path = repo_root.resolve()
-    if target_path is not None:
-        if target_path == root_path:
-            raise GitOpsError("Refusing to remove repository root worktree.")
+    normalized_target = str(target_path)
 
-        remove_args = ["worktree", "remove"]
-        if force:
-            remove_args.append("--force")
-        remove_args.append(str(target_path))
-        remove_result = _run_git(repo_root, remove_args, check=False)
-        if remove_result.returncode != 0:
-            detail = remove_result.stderr or remove_result.stdout or "unknown error"
-            raise GitOpsError(f"Failed to remove worktree {target_path}: {detail}")
+    entries = _worktree_entries(repo_root)
+    registered_entry: dict[str, str] | None = None
+    for entry in entries:
+        value = entry.get("worktree")
+        if not value:
+            continue
+        if str(Path(value).expanduser().resolve()) == normalized_target:
+            registered_entry = entry
+            break
 
-        _run_git(repo_root, ["worktree", "prune"], check=False)
+    if registered_entry is None:
+        raise GitOpsError(f"Worktree path is not registered: {target_path}")
 
-        remove_text = (remove_result.stderr or remove_result.stdout).strip()
-        if remove_text:
-            lines.append(remove_text)
-        else:
-            lines.append(f"Removed worktree: {target_path}")
+    if target_path == root_path:
+        raise GitOpsError("Refusing to trash repository root worktree.")
 
-        if target_path.exists():
-            try:
-                shutil.rmtree(target_path)
-                lines.append(f"Removed lingering worktree directory: {target_path}")
-            except OSError as exc:
-                reason = exc.strerror or str(exc)
-                raise GitOpsError(
-                    f"Worktree detached but failed to remove directory '{target_path}': {reason}"
-                ) from exc
-            _run_git(repo_root, ["worktree", "prune"], check=False)
+    trash_bin = _resolve_trash_bin()
+    lines: list[str] = []
+    if target_path.exists():
+        trash_result = _run_command(
+            [trash_bin, "--", str(target_path)],
+            cwd=repo_root,
+            check=False,
+        )
+        if trash_result.returncode != 0:
+            detail = (trash_result.stderr or trash_result.stdout or "unknown error").strip()
+            raise GitOpsError(f"Failed to trash worktree directory '{target_path}': {detail}")
+        lines.append(f"Trashed worktree directory: {target_path}")
     else:
-        if detached_branch_target and resolved_branch:
-            lines.append(f"No attached worktree found for '{resolved_branch}'; branch-only cleanup mode.")
+        lines.append(f"Worktree directory already missing: {target_path}")
 
-    if delete_local_branch and resolved_branch:
-        delete_flag = "-D" if force else "-d"
-        branch_result = _run_git(repo_root, ["branch", delete_flag, resolved_branch], check=False)
-        if branch_result.returncode != 0:
-            detail = branch_result.stderr or branch_result.stdout or "unknown error"
-            if _is_lock_permission_error(detail):
-                lines.append(
-                    "Deferred local branch deletion due lockfile permissions. "
-                    f"Branch '{resolved_branch}' remains. Details: {detail}"
-                )
-            else:
-                raise GitOpsError(f"Worktree removed but local branch delete failed for '{resolved_branch}': {detail}")
-        branch_text = (branch_result.stderr or branch_result.stdout).strip()
-        if branch_result.returncode == 0 and branch_text:
-            lines.append(branch_text)
-        elif branch_result.returncode == 0:
-            lines.append(f"Deleted local branch: {resolved_branch}")
+    prune_result = _run_git(repo_root, ["worktree", "prune"], check=False)
+    if prune_result.returncode != 0:
+        detail = (prune_result.stderr or prune_result.stdout or "unknown error").strip()
+        raise GitOpsError(f"git worktree prune failed after trashing '{target_path}': {detail}")
+    prune_text = (prune_result.stderr or prune_result.stdout).strip()
+    if prune_text:
+        lines.append(prune_text)
+    else:
+        lines.append("Pruned stale worktree metadata.")
 
-    if delete_remote_branch and resolved_branch:
-        remote_result = _run_git(repo_root, ["push", "origin", "--delete", resolved_branch], check=False)
-        if remote_result.returncode != 0:
-            detail = remote_result.stderr or remote_result.stdout or "unknown error"
-            raise GitOpsError(f"Worktree/local cleanup done but remote delete failed for '{resolved_branch}': {detail}")
-        remote_text = (remote_result.stderr or remote_result.stdout).strip()
-        if remote_text:
-            lines.append(remote_text)
-        else:
-            lines.append(f"Deleted remote branch: {resolved_branch}")
+    remaining_entries = _worktree_entries(repo_root)
+    still_registered = False
+    for entry in remaining_entries:
+        value = entry.get("worktree")
+        if not value:
+            continue
+        if str(Path(value).expanduser().resolve()) == normalized_target:
+            still_registered = True
+            break
+    if still_registered:
+        raise GitOpsError(
+            f"Worktree directory was trashed but remains registered after prune: {target_path}"
+        )
 
     return _compact_text("\n".join(lines))
 

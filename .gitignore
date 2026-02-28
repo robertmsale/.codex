@@ -110,4 +110,8 @@ Temporary Items
 nohup.out
 
 .bridge-token
-
+.worktrees/
+.zed/
+robdex.json
+session_index.jsonl
+*.log

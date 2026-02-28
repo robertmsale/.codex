@@ -7,10 +7,10 @@ prefix_rule(
 prefix_rule(
     pattern = ["git", "branch", ["-d", "-D"]],
     decision = "forbidden",
-    justification = "Use gitops MCP tool: git_worktree_cleanup(..., delete_local_branch=true).",
+    justification = "Branch deletion is intentionally out of scope for git_worktree_cleanup (path-only trash + prune).",
 )
 prefix_rule(
     pattern = ["git", "push", "origin", "--delete"],
     decision = "forbidden",
-    justification = "Use gitops MCP tool: git_worktree_cleanup(..., delete_remote_branch=true).",
+    justification = "Remote branch deletion is intentionally out of scope for git_worktree_cleanup (path-only trash + prune).",
 )

@@ -5,14 +5,20 @@ MCP server for robdex bridge orchestration.
 ## Scope
 
 Tools exposed:
+
 - `robdex_list_projects`
 - `robdex_list_agents`
 - `robdex_spawn_agent`
-- `robdex_resume_agent`
+- `robdex_unarchive_agent`
 - `robdex_rename_agent`
 - `robdex_send_message`
 
+Notes:
+
+- `robdex_unarchive_agent` is the tool for restoring archived threads.
+
 Not exposed:
+
 - `whoami`
 - `env-check`
 - `wait`

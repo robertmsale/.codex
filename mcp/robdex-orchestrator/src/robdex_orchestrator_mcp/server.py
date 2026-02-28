@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Any
 import websockets
 from fastmcp import Context, FastMCP
 
-CONTINUATION_SUFFIX = "Continue working unless told explicitly to stop, and respond only if necessary."
+CONTINUATION_SUFFIX = "Continue working unless told explicitly to stop, and respond to this message using $robdex-orchestrator only if necessary."
 DEFAULT_INSTANCE_ID = "mgmt-global"
 ROBDEX_STATE_FILE = Path.home() / ".codex" / "robdex.json"
 ROBDEX_TOKEN_FILE = Path(__file__).resolve().parents[2] / ".bridge-token"
@@ -53,6 +54,7 @@ class ThreadEntry:
 @dataclass(frozen=True)
 class AgentEntry:
     id: str
+    instance_id: str | None
     thread_id: str | None
     status: str
     project_path: str | None
@@ -155,17 +157,17 @@ def _load_state() -> tuple[dict[str, str], dict[str, str], str | None]:
 
 def _resolve_session_thread_id(
     *,
-    agent_thread_id: str,
+    from_thread_id: str,
     tool_context: Context,
 ) -> str:
-    provided_thread_id = _normalize_text(agent_thread_id)
+    provided_thread_id = _normalize_text(from_thread_id)
     if not provided_thread_id:
-        raise BridgeError("agent_thread_id is required. Use `echo \"$CODEX_THREAD_ID\"` and pass that value.")
+        raise BridgeError("from_thread_id is required. Use `echo \"$CODEX_THREAD_ID\"` and pass that value.")
 
     environment_thread_id = _normalize_text(os.getenv("CODEX_THREAD_ID"))
     if environment_thread_id and environment_thread_id != provided_thread_id:
         raise BridgeError(
-            f"agent_thread_id {_quoted(provided_thread_id)} does not match this thread identity {_quoted(environment_thread_id)}."
+            f"from_thread_id {_quoted(provided_thread_id)} does not match this thread identity {_quoted(environment_thread_id)}."
         )
 
     try:
@@ -178,7 +180,7 @@ def _resolve_session_thread_id(
         if locked_thread_id:
             if locked_thread_id != provided_thread_id:
                 raise BridgeError(
-                    f"Session is locked to agent_thread_id {_quoted(locked_thread_id)}; refusing {_quoted(provided_thread_id)}."
+                    f"Session is locked to from_thread_id {_quoted(locked_thread_id)}; refusing {_quoted(provided_thread_id)}."
                 )
             return locked_thread_id
 
@@ -296,12 +298,21 @@ def _parse_agents(result: dict[str, Any]) -> list[AgentEntry]:
         agents.append(
             AgentEntry(
                 id=agent_id,
+                instance_id=_normalize_text(entry.get("instanceId")),
                 thread_id=_normalize_text(entry.get("threadId")),
                 status=_normalize_text(entry.get("status")) or "unknown",
                 project_path=_normalized_path(entry.get("projectPath")),
             )
         )
     return agents
+
+
+def _is_active_turn_changed_error(message: str) -> bool:
+    lowered = str(message or "").lower()
+    return (
+        ("expected active turn id" in lowered and "but found" in lowered)
+        or ("missing field" in lowered and "expectedturnid" in lowered)
+    )
 
 
 def _parse_thread_list(result: dict[str, Any], titles_by_thread_id: dict[str, str], orchestrator_by_project: dict[str, str], current_project: str | None) -> list[ThreadEntry]:
@@ -351,7 +362,7 @@ def _parse_thread_list(result: dict[str, Any], titles_by_thread_id: dict[str, st
     return threads
 
 
-def _resolve_context(agent_thread_id: str, tool_context: Context) -> Context:
+def _resolve_context(from_thread_id: str, tool_context: Context) -> Context:
     host = _normalize_text(os.getenv("ROBDEX_BRIDGE_HOST")) or "127.0.0.1"
     port_text = _normalize_text(os.getenv("ROBDEX_BRIDGE_PORT")) or "42080"
     token = _normalize_text(os.getenv("ROBDEX_BRIDGE_TOKEN"))
@@ -367,7 +378,7 @@ def _resolve_context(agent_thread_id: str, tool_context: Context) -> Context:
 
     instance_id = _normalize_text(os.getenv("ROBDEX_INSTANCE_ID")) or DEFAULT_INSTANCE_ID
     current_thread_id = _resolve_session_thread_id(
-        agent_thread_id=agent_thread_id,
+        from_thread_id=from_thread_id,
         tool_context=tool_context,
     )
 
@@ -378,6 +389,34 @@ def _resolve_context(agent_thread_id: str, tool_context: Context) -> Context:
         if thread_id == current_thread_id:
             current_project = project_path
             break
+
+    if not current_project and current_thread_id:
+        try:
+            agents_result = _run_command(host, port, token, name="listAgents")
+            for agent in _parse_agents(agents_result):
+                if agent.thread_id == current_thread_id and agent.project_path:
+                    current_project = agent.project_path
+                    break
+        except Exception:
+            current_project = None
+
+    if not current_project and current_thread_id:
+        thread_payload = {
+            "instanceId": instance_id,
+            "archived": False,
+            "limit": 1000,
+            "modelProviders": [],
+            "sortKey": "updated_at",
+        }
+        try:
+            thread_result = _run_command(host, port, token, name="threadList", payload=thread_payload)
+            parsed_threads = _parse_thread_list(thread_result, titles_by_thread_id, orchestrator_by_project, None)
+            for thread in parsed_threads:
+                if thread.id == current_thread_id and thread.project_path:
+                    current_project = thread.project_path
+                    break
+        except Exception:
+            current_project = None
 
     if not current_project:
         current_project = _normalized_path(os.getenv("ROBDEX_PROJECT_PATH"))
@@ -431,9 +470,17 @@ def _append_suffix(text: str) -> str:
     return f"{text}\n\n{CONTINUATION_SUFFIX}"
 
 
-def _format_agent_line(thread_id: str, display_name: str, orchestrator_ids: set[str], project_path: str | None = None, show_project: bool = False) -> str:
+def _format_agent_line(
+    thread_id: str,
+    display_name: str,
+    orchestrator_ids: set[str],
+    project_path: str | None = None,
+    show_project: bool = False,
+    current_thread_id: str | None = None,
+) -> str:
+    you_prefix = "**YOU** " if current_thread_id and thread_id == current_thread_id else ""
     suffix = " [orchestrator]" if thread_id in orchestrator_ids else ""
-    base = f"{_quoted(display_name)} ({thread_id}){suffix}"
+    base = f"{you_prefix}{_quoted(display_name)} ({thread_id}){suffix}"
     if show_project and project_path:
         return f"{base} | {project_path}"
     return base
@@ -489,21 +536,21 @@ def _resolve_thread_by_name(name: str, threads: list[ThreadEntry]) -> ThreadEntr
     if not matches:
         raise BridgeError(f"No thread found with title {_quoted(name)}.")
     if len(matches) > 1:
-        raise BridgeError(f"Multiple threads match {_quoted(name)}; use thread_id instead.")
+        raise BridgeError(f"Multiple threads match {_quoted(name)}; use to_thread_id instead.")
     return matches[0]
 
 
 def _resolve_thread_target(
     *,
-    thread_id: str | None,
+    to_thread_id: str | None,
     name: str | None,
     project_path: str | None,
     threads: list[ThreadEntry],
 ) -> ThreadEntry:
-    if thread_id:
-        normalized_id = _normalize_text(thread_id)
+    if to_thread_id:
+        normalized_id = _normalize_text(to_thread_id)
         if not normalized_id:
-            raise BridgeError("thread_id cannot be empty")
+            raise BridgeError("to_thread_id cannot be empty")
         for thread in threads:
             if thread.id == normalized_id:
                 return thread
@@ -516,7 +563,7 @@ def _resolve_thread_target(
             scope_threads = [thread for thread in threads if thread.project_path == normalized_project]
         return _resolve_thread_by_name(name, scope_threads)
 
-    raise BridgeError("Provide thread_id or name")
+    raise BridgeError("Provide to_thread_id or name")
 
 
 def _compose_message(ctx: Context, text: str) -> str:
@@ -553,11 +600,20 @@ def _send_text_to_thread(ctx: Context, target_thread_id: str, text: str) -> None
         payload: dict[str, Any] = {"agentId": running_agent.id, "text": text}
         if sender_agent_id:
             payload["senderAgentId"] = sender_agent_id
+        try:
+            _run_command(ctx.host, ctx.port, ctx.token, name="sendAgentInput", payload=payload)
+            return
+        except BridgeError as error:
+            if not _is_active_turn_changed_error(str(error)):
+                raise
+
+        time.sleep(0.2)
         _run_command(ctx.host, ctx.port, ctx.token, name="sendAgentInput", payload=payload)
         return
 
+    target_agent = next((agent for agent in agents if agent.thread_id == target_thread_id), None)
     payload = {
-        "instanceId": ctx.instance_id,
+        "instanceId": target_agent.instance_id if target_agent and target_agent.instance_id else ctx.instance_id,
         "threadId": target_thread_id,
         "text": text,
     }
@@ -565,9 +621,9 @@ def _send_text_to_thread(ctx: Context, target_thread_id: str, text: str) -> None
 
 
 @mcp.tool
-def robdex_list_projects(agent_thread_id: str, ctx: Context) -> str:
+def robdex_list_projects(from_thread_id: str, ctx: Context) -> str:
     """List known project paths and their configured orchestrator thread IDs."""
-    resolved_context = _resolve_context(agent_thread_id=agent_thread_id, tool_context=ctx)
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
     if not resolved_context.orchestrator_by_project:
         return "(no project orchestrators configured)"
 
@@ -581,18 +637,17 @@ def robdex_list_projects(agent_thread_id: str, ctx: Context) -> str:
 
 @mcp.tool
 def robdex_list_agents(
-    agent_thread_id: str,
+    from_thread_id: str,
     include_archived: bool = False,
     include_all_projects: bool = False,
     project_path: str | None = None,
     ctx: Context = None,
 ) -> str:
     """List thread identities in robdex format; default is current project, unarchived only."""
-    resolved_context = _resolve_context(agent_thread_id=agent_thread_id, tool_context=ctx)
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
     target_project = _resolve_project_scope(resolved_context, project_path)
 
-    if include_all_projects and not resolved_context.current_is_orchestrator:
-        raise BridgeError("Only orchestrator threads can list agents across projects.")
+    include_all_projects = include_all_projects and resolved_context.current_is_orchestrator
 
     threads = _list_threads(resolved_context, archived=include_archived)
     current_project = resolved_context.current_project_path
@@ -641,6 +696,7 @@ def robdex_list_agents(
             orchestrator_ids=orchestrator_ids,
             project_path=thread.project_path,
             show_project=show_project,
+            current_thread_id=resolved_context.current_thread_id,
         )
         for thread in sorted_threads
     ]
@@ -649,20 +705,19 @@ def robdex_list_agents(
 
 @mcp.tool
 def robdex_spawn_agent(
-    agent_thread_id: str,
+    from_thread_id: str,
     name: str,
     prompt: str = "",
-    project_path: str | None = None,
     cwd: str | None = None,
     ctx: Context = None,
 ) -> str:
     """Spawn a worker agent thread with a unique display name."""
-    resolved_context = _resolve_context(agent_thread_id=agent_thread_id, tool_context=ctx)
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
     name_value = _normalize_text(name)
     if not name_value:
         raise BridgeError("name is required")
 
-    target_project = _resolve_project_scope(resolved_context, project_path)
+    target_project = resolved_context.current_project_path
     _ensure_orchestrator_for_project(resolved_context, target_project, "spawn agents")
     _ensure_unique_title(resolved_context, name_value)
 
@@ -706,61 +761,66 @@ def robdex_spawn_agent(
 
 
 @mcp.tool
-def robdex_resume_agent(
-    agent_thread_id: str,
+def robdex_unarchive_agent(
+    from_thread_id: str,
     name: str,
     prompt: str = "",
     project_path: str | None = None,
     ctx: Context = None,
 ) -> str:
-    """Unarchive a named thread and optionally send a steering/start message."""
-    resolved_context = _resolve_context(agent_thread_id=agent_thread_id, tool_context=ctx)
+    """Unarchive a named thread; if already unarchived, no-op. Optionally send a steering/start message."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
     name_value = _normalize_text(name)
     if not name_value:
         raise BridgeError("name is required")
 
-    all_threads = _list_threads(resolved_context, archived=False) + _list_threads(resolved_context, archived=True)
+    all_unarchived = _list_threads(resolved_context, archived=False)
+    all_archived = _list_threads(resolved_context, archived=True)
+    all_threads = all_unarchived + all_archived
     target_project = _resolve_project_scope(resolved_context, project_path)
     scoped_threads = all_threads
     if target_project:
         scoped_threads = [thread for thread in all_threads if thread.project_path == target_project]
     target = _resolve_thread_by_name(name_value, scoped_threads)
 
-    _ensure_orchestrator_for_project(resolved_context, target.project_path or target_project, "resume agents")
+    _ensure_orchestrator_for_project(resolved_context, target.project_path or target_project, "unarchive agents")
 
-    _run_command(
-        resolved_context.host,
-        resolved_context.port,
-        resolved_context.token,
-        name="threadUnarchive",
-        payload={"instanceId": resolved_context.instance_id, "threadId": target.id},
-    )
+    was_archived = any(thread.id == target.id for thread in all_archived)
+    if was_archived:
+        _run_command(
+            resolved_context.host,
+            resolved_context.port,
+            resolved_context.token,
+            name="threadUnarchive",
+            payload={"instanceId": resolved_context.instance_id, "threadId": target.id},
+        )
 
     if prompt.strip():
         message = _compose_message(resolved_context, prompt)
         _send_text_to_thread(resolved_context, target.id, message)
 
-    return f"Resumed {_quoted(target.display_name)} ({target.id})"
+    status = "Unarchived" if was_archived else "Already unarchived"
+    return f"{status} {_quoted(target.display_name)} ({target.id})"
 
 
 @mcp.tool
 def robdex_rename_agent(
-    agent_thread_id: str,
+    from_thread_id: str,
     new_name: str,
-    thread_id: str | None = None,
+    to_thread_id: str | None = None,
     name: str | None = None,
     project_path: str | None = None,
     ctx: Context = None,
 ) -> str:
     """Rename a thread display name with uniqueness and orchestrator checks."""
-    resolved_context = _resolve_context(agent_thread_id=agent_thread_id, tool_context=ctx)
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
     new_name_value = _normalize_text(new_name)
     if not new_name_value:
         raise BridgeError("new_name is required")
 
     all_threads = _list_threads(resolved_context, archived=False) + _list_threads(resolved_context, archived=True)
     target = _resolve_thread_target(
-        thread_id=thread_id,
+        to_thread_id=to_thread_id,
         name=name,
         project_path=_resolve_project_scope(resolved_context, project_path),
         threads=all_threads,
@@ -781,27 +841,51 @@ def robdex_rename_agent(
 
 @mcp.tool
 def robdex_send_message(
-    agent_thread_id: str,
+    from_thread_id: str,
     text: str,
-    thread_id: str | None = None,
+    to_thread_id: str | None = None,
     name: str | None = None,
     project_path: str | None = None,
     ctx: Context = None,
 ) -> str:
-    """Send steering/user input to a target thread. Cross-project sends require orchestrator identity."""
-    resolved_context = _resolve_context(agent_thread_id=agent_thread_id, tool_context=ctx)
+    """Send steering/user input to a target thread with project-boundary guardrails."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
     all_unarchived = _list_threads(resolved_context, archived=False)
+    all_archived = _list_threads(resolved_context, archived=True)
+    all_threads = all_unarchived + all_archived
 
     target = _resolve_thread_target(
-        thread_id=thread_id,
+        to_thread_id=to_thread_id,
         name=name,
-        project_path=None if resolved_context.current_is_orchestrator else _resolve_project_scope(resolved_context, project_path),
+        project_path=_resolve_project_scope(resolved_context, project_path),
         threads=all_unarchived,
     )
 
-    if resolved_context.current_project_path and target.project_path and target.project_path != resolved_context.current_project_path:
-        if not resolved_context.current_is_orchestrator:
-            raise BridgeError("Only orchestrator threads can send messages across projects.")
+    if not target.project_path:
+        raise BridgeError("Target thread is outside configured Robdex project scope.")
+
+    if target.project_path not in resolved_context.orchestrator_by_project:
+        raise BridgeError(f"No orchestrator is configured for target project: {target.project_path}")
+
+    sender_thread = next(
+        (thread for thread in all_threads if thread.id == resolved_context.current_thread_id),
+        None,
+    )
+    sender_project = sender_thread.project_path if sender_thread else resolved_context.current_project_path
+    if not sender_project:
+        raise BridgeError(
+            "Unable to resolve sender project for this thread identity; refusing cross-project-ambiguous send."
+        )
+
+    same_project = bool(sender_project and sender_project == target.project_path)
+    target_is_orchestrator = resolved_context.orchestrator_by_project.get(target.project_path) == target.id
+
+    if resolved_context.current_is_orchestrator:
+        if not same_project and not target_is_orchestrator:
+            raise BridgeError("Orchestrators can only message worker threads inside their own project.")
+    else:
+        if not same_project:
+            raise BridgeError("Workers can only message threads inside their own project.")
 
     message = _compose_message(resolved_context, text)
     _send_text_to_thread(resolved_context, target.id, message)

@@ -1,41 +1,19 @@
-# Noisy command enforcement: route through command-parser wrapper.
-prefix_rule(
-    pattern = ["cargo", ["check", "test", "clippy", "build"]],
-    decision = "forbidden",
-    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
-)
+# command-parser.rule
+# Evaluated by command-parser MCP before sandbox/execution:
+#   codex execpolicy check --rules <this-file> -- <raw-command...>
+#
+# This ruleset blocks:
+# 1) Code formatters entirely.
+# 2) Low-noise commands that should run directly instead of command-parser.
+
+# --------------------
+# Formatters (hard ban)
+# --------------------
 prefix_rule(
     pattern = ["cargo", ["fmt"]],
     decision = "forbidden",
     justification = "absolutely never run these",
 )
-prefix_rule(
-    pattern = ["dart", ["format"]],
-    decision = "forbidden",
-    justification = "absolutely never run these",
-)
-prefix_rule(
-    pattern = ["deno", ["fmt"]],
-    decision = "forbidden",
-    justification = "absolutely never run these",
-)
-prefix_rule(
-    pattern = ["pytest"],
-    decision = "forbidden",
-    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser pytest -q.",
-)
-prefix_rule(
-    pattern = ["flutter", ["analyze", "build"]],
-    decision = "forbidden",
-    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
-)
-prefix_rule(
-    pattern = ["npm", "run", "build"],
-    decision = "forbidden",
-    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser npm run build.",
-)
-
-# Hard ban for formatters.
 prefix_rule(
     pattern = ["rustfmt"],
     decision = "forbidden",
@@ -83,6 +61,16 @@ prefix_rule(
 )
 prefix_rule(
     pattern = ["dprint", "fmt"],
+    decision = "forbidden",
+    justification = "absolutely never run these",
+)
+prefix_rule(
+    pattern = ["deno", ["fmt"]],
+    decision = "forbidden",
+    justification = "absolutely never run these",
+)
+prefix_rule(
+    pattern = ["dart", ["format"]],
     decision = "forbidden",
     justification = "absolutely never run these",
 )
@@ -360,4 +348,218 @@ prefix_rule(
     pattern = ["npx", "stylelint", ["--fix"]],
     decision = "forbidden",
     justification = "absolutely never run these",
+)
+
+# ------------------------------------------
+# Low-noise commands: refuse command-parser use
+# ------------------------------------------
+prefix_rule(
+    pattern = ["ls"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["dir"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["pwd"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["cd"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["tree"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["find"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["fd"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["fdfind"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["locate"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["which"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["whereis"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["realpath"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["readlink"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["basename"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["dirname"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["file"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["stat"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["du"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["df"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["rg"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["grep"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["egrep"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["fgrep"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["ag"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["ack"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["git"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["cat"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["head"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["tail"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["sed"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["awk"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["wc"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["sort"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["uniq"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["cut"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["xargs"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["ps"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["top"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["htop"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["pgrep"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["pstree"],
+    decision = "forbidden",
+    justification = "run directly.",
+)
+prefix_rule(
+    pattern = ["printenv"],
+    decision = "forbidden",
+    justification = "run directly.",
 )

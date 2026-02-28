@@ -1,0 +1,19 @@
+[project]
+name = "safe-delete-mcp"
+version = "0.1.0"
+description = "MCP server for recoverable deletes staged under /tmp/safe-delete"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastmcp>=3.0.0",
+]
+
+[project.scripts]
+safe-delete-mcp = "safe_delete_mcp.server:main"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
