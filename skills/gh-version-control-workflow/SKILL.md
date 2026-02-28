@@ -1,6 +1,6 @@
 ---
 name: gh-version-control-workflow
-description: MCP-first issue/branch/worktree/PR workflow using `gitops` tools for all mutating git and GitHub operations; direct git/gh usage is fallback-only and must be justified. [skill-hash:5e3c9d1]
+description: MCP-first issue/branch/worktree/PR workflow using `gitops` tools for all mutating git and GitHub operations; direct git/gh usage is fallback-only and must be justified. MANDATORY, READ WHOLE SKILL FILE ONE TIME AND NEVER READ AGAIN, DO NOT EDIT FILES UNTIL THIS IS READ. [skill-hash:8c41f2a]
 ---
 
 # GH Version Control Workflow
@@ -19,6 +19,8 @@ When `gitops` MCP is available, use it for all writes:
 - Git/worktree mutation:
   - `git_worktree_create`
   - `git_worktree_cleanup`
+  - `git_fetch`
+  - `git_rebase`
   - `git_commit`
   - `git_request_review_and_wait`
 - GitHub mutation:
@@ -74,11 +76,20 @@ Choose integration base branch per repo policy.
 Create worktree from integration branch:
 - `git_worktree_create(repo_path, base_branch, branch_name, worktree_name)`
 
+`git_worktree_create` base branch input rules (to avoid ambiguous failures):
+- Pass `base_branch` as a plain branch name (for example `master`), not a remote-qualified ref (for example not `origin/master`).
+- The MCP tool resolves the remote internally; passing `origin/...` can produce invalid `origin/origin/...` refs.
+- If the default integration base is missing in the repo (for example `origin/integration` does not exist), explicitly pick the repo's actual integration branch name from `git branch -r` (commonly `master`).
+
 Always implement inside the created worktree, not the primary checkout.
 
 ### 4) Bootstrap PR branch and publish
 Bootstrap branch with empty commit if needed:
 - `git_commit(message="chore: bootstrap PR", add_all=false, allow_empty=true, repo_path=<worktree>)`
+
+When syncing your worktree branch with integration:
+- `git_fetch(repo_path=<worktree>, remote="origin", prune=true)`
+- `git_rebase(repo_path=<worktree>, upstream="origin/<integration-branch>")`
 
 Do not push manually.
 Remote branch + PR lifecycle should run through `git_request_review_and_wait`.
@@ -140,6 +151,7 @@ Never delete branches/worktrees freehand when MCP cleanup is available.
 - Update issue labels/state/assignee: `github_update_issue`
 - Comment issue: `github_add_issue_comment`
 - Create worktree branch: `git_worktree_create`
+- Sync with remote integration branch: `git_fetch`, `git_rebase`
 - Commit changes: `git_commit`
 - Request review (PR/push/wait): `git_request_review_and_wait`
 - Read PR: `github_get_pull_request`
