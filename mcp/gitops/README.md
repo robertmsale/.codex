@@ -35,6 +35,11 @@ Agents should not edit these values.
 - Use `git_worktree_cleanup` to remove worktrees and optionally delete local/remote branches.
 - Protected integration branches are blocked from cleanup operations.
 
+## Trivial git ops
+
+- Use `git_fetch` for `git fetch` equivalents.
+- Use `git_rebase` for rebasing current worktree branch (protected branches blocked).
+
 ## Run (stdio)
 
 - `uv --project ~/.codex/mcp/gitops run gitops-mcp`
