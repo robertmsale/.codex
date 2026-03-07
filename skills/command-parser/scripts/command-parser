@@ -1,5 +1,217 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "use the MCP server if enabled" >&2
-exit 1
+show_usage() {
+  cat >&2 <<'EOF_USAGE'
+Usage:
+  command-parser [--request-additional "<analysis request>"] [--warnings] <command...>
+
+Notes:
+  - Runs the command directly on host (normal sandbox/approval behavior).
+  - Parses output via codex exec running inside Docker.
+  - --request-additional is analysis-only; it cannot run commands.
+EOF_USAGE
+}
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Error: docker is required" >&2
+  exit 1
+fi
+
+additional_request="${COMMAND_PARSER_ADDITIONAL_REQUEST:-}"
+include_warnings="no"
+if [[ "${COMMAND_PARSER_WARNINGS:-0}" != "0" && "${COMMAND_PARSER_WARNINGS:-}" != "" ]]; then
+  include_warnings="yes"
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --request-additional|--request-info)
+      if [[ $# -lt 2 ]]; then
+        echo "command-parser: missing value for $1" >&2
+        show_usage
+        exit 2
+      fi
+      additional_request="$2"
+      shift 2
+      ;;
+    --warnings)
+      include_warnings="yes"
+      shift
+      ;;
+    --help|-h)
+      show_usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "command-parser: unknown option: $1" >&2
+      show_usage
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [[ $# -eq 0 ]]; then
+  show_usage
+  exit 2
+fi
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+skill_dir="$(cd "$script_dir/.." && pwd)"
+build_script="$script_dir/build-command-parser-image"
+
+if [[ -f "$skill_dir/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$skill_dir/.env"
+  set +a
+fi
+
+image_tag="${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}"
+profile="${COMMAND_PARSER_PROFILE:-command-parser}"
+host_codex_home="${CODEX_HOME:-$HOME/.codex}"
+
+if ! docker image inspect "$image_tag" >/dev/null 2>&1; then
+  "$build_script" >/dev/null
+fi
+
+tmp_root="${TMPDIR:-/tmp}"
+tmp_dir="$(mktemp -d "${tmp_root%/}/command-parser.XXXXXX")"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+if "$@" >"$tmp_dir/output.log" 2>&1; then
+  command_exit=0
+else
+  command_exit=$?
+fi
+
+printf '%q ' "$@" >"$tmp_dir/command.txt"
+printf '\n' >>"$tmp_dir/command.txt"
+
+cat >"$tmp_dir/AGENTS.md" <<'EOF_AGENTS'
+You are command-parser, a CLI output extraction agent.
+
+Task:
+- Read ./output.log and extract errors (and warnings only if requested).
+- Prefer targeted search (`rg`, `grep`) before broad reads for huge files.
+- Read ./command.txt to determine whether this command should have used command-parser.
+- You cannot run commands. You cannot rerun commands. You cannot inspect anything outside the provided files.
+
+Hard refusal (required):
+- If ./command.txt shows a non-noisy command (for example `cargo fmt`, `ls`, `rg`, `echo`), output exactly:
+  Refusal: non-noisy command. Run this command directly instead of command-parser.
+- Do not parse ./output.log when this refusal applies.
+
+Output rules:
+- If there are no errors at all:
+  - and no additional request: output exactly: No errors!
+  - and additional request exists: output `No errors!` first, then `## Requested Information`
+- Otherwise output:
+  - ## Errors
+  - one bullet per distinct error as: - <brief message> — <file:line(:col) when present>
+- Special case — unit test failures:
+  - Include failing test names and concise assertion/panic/trace lines that explain why a test failed.
+  - Include expected vs actual snippets when present.
+  - Do not include passing tests or non-error test noise.
+- If warnings are requested and present, add:
+  - ## Warnings
+  - one bullet per distinct warning as: - <brief message> — <file:line(:col) when present>
+- Additional request (optional):
+  - Only if an additional request is provided, append:
+    - ## Requested Information
+    - concise bullets answering only that request, anchored to log lines/files when present
+  - If the additional request asks you to run, rerun, retry, execute, invoke, or test a command, output exactly:
+    - I cannot run commands, do not ask me again.
+  - If requested information is not present, output: - Not found in output.
+- Preserve file paths and coordinates exactly as shown.
+- Do not include advice, fixes, commands, or extra headings.
+EOF_AGENTS
+
+prompt="$(cat <<EOF_PROMPT
+Parse ./output.log from this raw command:
+$(cat "$tmp_dir/command.txt")
+
+Include warnings: $include_warnings
+
+Additional request: ${additional_request:-<none>}
+
+Return only the structured extraction format from AGENTS.md.
+EOF_PROMPT
+)"
+
+workspace_host="$(pwd)"
+docker_tmp="/tmp/command-parser"
+docker_home="/tmp/command-parser-home"
+docker_codex_home="/codex-home"
+events_log="$tmp_dir/events.jsonl"
+
+docker run --rm -i \
+  -u "$(id -u):$(id -g)" \
+  -e HOME="$docker_home" \
+  -e CODEX_HOME="$docker_codex_home" \
+  -e CODEX_NO_COLOR=1 \
+  -v "$host_codex_home:$docker_codex_home:rw" \
+  -v "$workspace_host:/workspace:rw" \
+  -v "$tmp_dir:$docker_tmp:rw" \
+  --workdir "$docker_tmp" \
+  "$image_tag" \
+  codex exec \
+    --skip-git-repo-check \
+    --ephemeral \
+    --json \
+    -s read-only \
+    -C "$docker_tmp" \
+    -p "$profile" \
+    "$prompt" >"$events_log"
+
+python3 - "$events_log" "$tmp_dir/response.log" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+events_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+last_message = None
+
+for raw_line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
+    line = raw_line.strip()
+    if not line:
+        continue
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+
+    if not isinstance(event, dict):
+        continue
+
+    event_type = event.get("type")
+    if event_type == "item.completed":
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                last_message = text
+    elif event_type == "agent_message":
+        text = event.get("text")
+        if isinstance(text, str) and text.strip():
+            last_message = text
+
+if not last_message:
+    raise SystemExit("command-parser: missing parser response")
+
+output_path.write_text(last_message.rstrip() + "\n", encoding="utf-8")
+PY
+
+cat "$tmp_dir/response.log"
+exit "$command_exit"
