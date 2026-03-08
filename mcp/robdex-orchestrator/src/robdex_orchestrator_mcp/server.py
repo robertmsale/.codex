@@ -79,6 +79,14 @@ def _normalized_path(value: str | None) -> str | None:
     return str(Path(trimmed).expanduser().resolve())
 
 
+def _path_is_within_project(path: str, project_path: str) -> bool:
+    try:
+        Path(path).relative_to(Path(project_path))
+    except ValueError:
+        return False
+    return True
+
+
 def _normalized_title(value: str) -> str:
     return value.strip().lower()
 
@@ -406,7 +414,7 @@ def _parse_thread_list(result: dict[str, Any], titles_by_thread_id: dict[str, st
 
         project_path: str | None = None
         if cwd:
-            matches = [candidate for candidate in known_projects if cwd.startswith(candidate)]
+            matches = [candidate for candidate in known_projects if _path_is_within_project(cwd, candidate)]
             if matches:
                 project_path = max(matches, key=len)
 
@@ -508,7 +516,7 @@ def _resolve_context(from_thread_id: str, tool_context: Context) -> Context:
     )
 
 
-def _list_threads(ctx: Context, archived: bool) -> list[ThreadEntry]:
+def _list_threads(ctx: Context, archived: bool, *, include_hidden: bool = False) -> list[ThreadEntry]:
     payload = {
         "instanceId": ctx.instance_id,
         "archived": archived,
@@ -517,7 +525,10 @@ def _list_threads(ctx: Context, archived: bool) -> list[ThreadEntry]:
         "sortKey": "updated_at",
     }
     result = _run_command(ctx.host, ctx.port, ctx.token, name="threadList", payload=payload)
-    return _parse_thread_list(result, ctx.titles_by_thread_id, ctx.orchestrator_by_project, ctx.current_project_path)
+    threads = _parse_thread_list(result, ctx.titles_by_thread_id, ctx.orchestrator_by_project, ctx.current_project_path)
+    if include_hidden:
+        return threads
+    return [thread for thread in threads if not thread.hidden]
 
 
 def _current_sender_label(ctx: Context) -> str:
@@ -778,6 +789,8 @@ def robdex_list_agents(
     target_project = _resolve_project_scope(resolved_context, project_path)
 
     include_all_projects = include_all_projects and resolved_context.current_is_orchestrator
+    if not include_all_projects and not target_project:
+        raise BridgeError("Unable to resolve project scope for list-agents without --all-projects.")
 
     threads = _list_threads(resolved_context, archived=include_archived)
     current_project = resolved_context.current_project_path
