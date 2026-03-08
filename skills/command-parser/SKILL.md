@@ -1,6 +1,6 @@
 ---
 name: command-parser
-description: Run noisy command parsing via `~/.codex/skills/command-parser/scripts/command-parser ...`. [skill-hash:2a9825d]
+description: Run noisy command parsing via `~/.codex/skills/command-parser/scripts/command-parser ...`. It is a neutral execute-capture-parse wrapper; sandbox/approval failures short-circuit instead of being parsed. [skill-hash:7e91c4a]
 ---
 
 # Command Parser
@@ -29,7 +29,8 @@ Build image script:
 5. Exits with the original command exit code.
 
 Sandbox/approval behavior for the target command is whatever the calling agent
-already has. This skill does not add custom sandbox bypass logic.
+already has. This skill does not add custom sandbox bypass logic or hidden
+workspace mutation.
 
 ## Usage
 
@@ -50,6 +51,7 @@ Recommended default:
 
 - `--request-additional` is analysis-only.
 - The parser cannot run commands, rerun commands, retry commands, or inspect anything outside captured files.
+- If the target command hits sandbox/approval restrictions, command-parser stops immediately and tells you to run the command directly so Codex can own the approval boundary.
 - If the request asks parser to run commands, it must return:
   `I cannot run commands, do not ask me again.`
 - Simple commands (for example `ls`, `rg`, `echo`, `cargo fmt`) should be run directly, not via command-parser.

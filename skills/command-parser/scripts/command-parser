@@ -13,6 +13,47 @@ Notes:
 EOF_USAGE
 }
 
+emit_sandbox_fast_fail_if_needed() {
+  local output_log="$1"
+  if [[ ! -s "$output_log" ]]; then
+    return 0
+  fi
+
+  local first_match
+  first_match="$(
+    python3 - "$output_log" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+patterns = [
+    re.compile(r"forbidden-sandbox-reinit", re.IGNORECASE),
+    re.compile(r"killed by sandbox", re.IGNORECASE),
+    re.compile(r"sandbox(?:[^a-z0-9]+|$).*denied", re.IGNORECASE),
+    re.compile(r"sandbox-exec: sandbox_apply: operation not permitted", re.IGNORECASE),
+    re.compile(r"pathaccessexception.*operation not permitted", re.IGNORECASE),
+    re.compile(r"operation not permitted", re.IGNORECASE),
+]
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+for line in text.splitlines():
+    for pattern in patterns:
+        if pattern.search(line):
+            print(line.strip())
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+  )" || true
+
+  if [[ -z "$first_match" ]]; then
+    return 0
+  fi
+
+  echo "command-parser: command hit sandbox/approval restrictions. Run this command directly so Codex can own the approval boundary." >&2
+  echo "$first_match" >&2
+  exit 1
+}
+
 check_command_policy() {
   local rule_file="$1"
   shift
@@ -196,6 +237,8 @@ if "$@" >"$tmp_dir/output.log" 2>&1; then
 else
   command_exit=$?
 fi
+
+emit_sandbox_fast_fail_if_needed "$tmp_dir/output.log"
 
 printf '%q ' "$@" >"$tmp_dir/command.txt"
 printf '\n' >>"$tmp_dir/command.txt"
