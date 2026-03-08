@@ -220,7 +220,7 @@ fi
 tmp_root="${TMPDIR:-/tmp}"
 tmp_dir="$(mktemp -d "${tmp_root%/}/command-parser.XXXXXX")"
 cleanup() {
-  trash "$tmp_dir" >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
 }
 trap cleanup EXIT
 

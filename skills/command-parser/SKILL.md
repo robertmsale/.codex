@@ -1,6 +1,6 @@
 ---
 name: command-parser
-description: Run noisy command parsing via `~/.codex/skills/command-parser/scripts/command-parser ...`. It enforces `command-parser.rule`, runs the command directly, captures `output.log`, and returns only the parser's final extraction. [skill-hash:1c8d4e2]
+description: Run noisy command parsing via `~/.codex/skills/command-parser/scripts/command-parser ...`. It enforces `command-parser.rule`, runs the command directly, captures `output.log`, and returns only the parser's final extraction. Temporary parser artifacts are removed on exit. [skill-hash:3d4b7a1]
 ---
 
 # Command Parser
