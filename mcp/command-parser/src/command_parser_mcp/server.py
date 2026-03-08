@@ -34,7 +34,7 @@ COMMAND_PARSER_SKILL_ENV_FILE = Path(
 ROBDEX_STATE_FILE = Path(
     os.getenv(
         "COMMAND_PARSER_ROBDEX_STATE_FILE",
-        str(Path.home() / ".codex" / "robdex.json"),
+        str(Path.home() / ".codex" / "robdex" / "robdex.json"),
     )
 )
 CODEX_CONFIG_FILE = Path(

@@ -20,7 +20,7 @@ uv --project ~/.codex/mcp/command-parser run command-parser-mcp
     - sandbox failure text (if blocked), or
     - parser extraction output (on success).
   - Policy precedence:
-    1. per-thread metadata in `~/.codex/robdex.json`
+    1. per-thread metadata in `~/.codex/robdex/robdex.json`
        (`threadMetadataByID[threadId]`)
     2. `~/.codex/config.toml` defaults (`sandbox_mode`, `network_access`)
     3. process env defaults (`ROBDEX_SANDBOX_MODE`, `ROBDEX_NETWORK_ACCESS`)

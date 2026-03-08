@@ -111,7 +111,7 @@ nohup.out
 .bridge-token
 .worktrees/
 .zed/
-robdex.json
+robdex/
 session_index.jsonl
 *.log
 robdex-thread-project-locks.json

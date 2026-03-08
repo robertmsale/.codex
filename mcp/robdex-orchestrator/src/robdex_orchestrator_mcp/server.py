@@ -16,7 +16,7 @@ from fastmcp import Context, FastMCP
 
 CONTINUATION_SUFFIX = "Continue working unless told explicitly to stop, and respond to this message using $robdex-orchestrator only if necessary."
 DEFAULT_INSTANCE_ID = "mgmt-global"
-ROBDEX_STATE_FILE = Path.home() / ".codex" / "robdex.json"
+ROBDEX_STATE_FILE = Path.home() / ".codex" / "robdex" / "robdex.json"
 ROBDEX_TOKEN_FILE = Path(__file__).resolve().parents[2] / ".bridge-token"
 SESSION_THREAD_LOCKS: dict[str, str] = {}
 SESSION_THREAD_LOCKS_MUTEX = threading.Lock()

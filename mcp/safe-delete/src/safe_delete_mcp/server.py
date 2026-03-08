@@ -23,7 +23,7 @@ SANDBOX_FAILURE_PATTERNS = [
 ROBDEX_STATE_FILE = Path(
     os.getenv(
         "SAFE_DELETE_ROBDEX_STATE_FILE",
-        str(Path.home() / ".codex" / "robdex.json"),
+        str(Path.home() / ".codex" / "robdex" / "robdex.json"),
     )
 )
 CODEX_CONFIG_FILE = Path(
