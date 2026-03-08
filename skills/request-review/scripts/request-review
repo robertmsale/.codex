@@ -160,6 +160,10 @@ local_raw_jsonl_path="$repo_root/.request-review.events.jsonl"
 
 use_existing_commit_flag="${REQUEST_REVIEW_USE_EXISTING_COMMIT:-0}"
 existing_commit_sha_ref="${REQUEST_REVIEW_EXISTING_COMMIT_SHA:-HEAD}"
+remote_pr_number=""
+remote_pr_state=""
+remote_review_started_at=""
+remote_branch_sha=""
 
 lock_root="${HOME}/.codex/tmp"
 clear_review_result
@@ -175,6 +179,14 @@ for protected_branch in $integration_branches_raw; do
   fi
 done
 
+if [[ "$review_mode" == "remote" ]]; then
+  remote_pr_number="$(gh pr view --json number --jq '.number' 2>/dev/null || true)"
+  if [[ -n "$remote_pr_number" ]]; then
+    remote_pr_state="$(gh pr view --json state --jq '.state' 2>/dev/null || true)"
+  fi
+  remote_branch_sha="$(git ls-remote --heads origin "refs/heads/$branch_name" 2>/dev/null | awk 'NR==1 {print $1}')"
+fi
+
 if [[ "$use_existing_commit_flag" != "0" ]]; then
   review_sha="$(git rev-parse --verify "${existing_commit_sha_ref}^{commit}" 2>/dev/null || true)"
   if [[ -z "$review_sha" ]]; then
@@ -184,19 +196,23 @@ if [[ "$use_existing_commit_flag" != "0" ]]; then
 else
   git add -A
   if git diff --cached --quiet; then
-    echo "request-review: no changes to commit; refusing to review an old commit" >&2
-    exit 2
+    if [[ "$review_mode" == "remote" && -n "$remote_pr_number" && "$remote_pr_state" == "OPEN" ]]; then
+      review_sha="$(git rev-parse --verify HEAD)"
+      if [[ -n "$remote_branch_sha" && "$remote_branch_sha" == "$review_sha" ]]; then
+        use_existing_commit_flag="1"
+      fi
+    else
+      echo "request-review: no changes to commit; refusing to review an old commit" >&2
+      exit 2
+    fi
+  else
+    git commit -m "$commit_message"
+    review_sha="$(git rev-parse --verify HEAD)"
   fi
-
-  git commit -m "$commit_message"
-  review_sha="$(git rev-parse --verify HEAD)"
 fi
 
 repo_name_for_lock="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || basename "$repo_root")"
-pr_number_for_lock=""
-if [[ "$review_mode" == "remote" ]]; then
-  pr_number_for_lock="$(gh pr view --json number --jq '.number' 2>/dev/null || true)"
-fi
+pr_number_for_lock="$remote_pr_number"
 
 if [[ "$review_mode" == "remote" && -n "$pr_number_for_lock" ]]; then
   lock_scope="mode=remote|repo=${repo_name_for_lock}|pr=${pr_number_for_lock}"
@@ -234,7 +250,6 @@ if [[ "$review_mode" == "remote" ]]; then
   require_cmd gh
   require_cmd jq
 
-  echo 'Remote review takes a long time. To not interrupt this process, and do not post additional `@codex review` comments.'
   if [[ "$use_existing_commit_flag" == "0" ]]; then
     git push -u origin HEAD
   fi
@@ -250,12 +265,13 @@ if [[ "$review_mode" == "remote" ]]; then
     exit 1
   fi
 
-  if ! gh pr comment "$pr_number" --body "$trigger_comment" >/dev/null; then
+  repo_name="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+
+  remote_review_started_at="$(gh api --method POST "repos/$repo_name/issues/$pr_number/comments" -f body="$trigger_comment" --jq '.created_at' 2>/dev/null || true)"
+  if [[ -z "$remote_review_started_at" ]]; then
     emit_result "request-review (remote): failed to post trigger comment '$trigger_comment' on PR #$pr_number"
     exit 1
   fi
-
-  repo_name="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
   commit_timestamp=""
   for _ in $(seq 1 30); do
     commit_timestamp="$(gh api "repos/$repo_name/pulls/$pr_number/commits" --jq '.[] | select(.sha=="'"$review_sha"'") | .commit.committer.date' || true)"
@@ -277,7 +293,7 @@ if [[ "$review_mode" == "remote" ]]; then
   eyes_announced=0
   while true; do
     inline_json="$(gh api "repos/$repo_name/pulls/$pr_number/comments?since=$commit_timestamp" --paginate \
-      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at > "'"$commit_timestamp"'") and (.commit_id=="'"$review_sha"'" or .original_commit_id=="'"$review_sha"'")) | {id,created_at,html_url,path,line,body}]')"
+      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at >= "'"$remote_review_started_at"'") and (.commit_id=="'"$review_sha"'" or .original_commit_id=="'"$review_sha"'")) | {id,created_at,html_url,path,line,body}]')"
 
     inline_count="$(jq 'length' <<<"$inline_json")"
     if [[ "$inline_count" -gt 0 ]]; then
@@ -289,12 +305,11 @@ if [[ "$review_mode" == "remote" ]]; then
     fi
 
     reactions_json="$(gh api "repos/$repo_name/issues/$pr_number/reactions" -H 'Accept: application/vnd.github+json' --paginate \
-      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at > "'"$commit_timestamp"'")) | {content,created_at}]')"
+      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at >= "'"$remote_review_started_at"'")) | {content,created_at}]')"
 
     eyes_reaction="$(jq 'any(.[]; .content=="eyes")' <<<"$reactions_json")"
     if [[ "$eyes_reaction" == "true" && "$eyes_announced" -eq 0 ]]; then
       echo "request-review (remote): 👀 from $bot_login detected on PR #$pr_number; review is in progress, waiting for final result..."
-      echo "Do not under any circumstances interrupt this process, and do not post additional comments to the PR."
       eyes_announced=1
     fi
 

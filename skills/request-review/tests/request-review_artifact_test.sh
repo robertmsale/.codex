@@ -94,6 +94,63 @@ EOF
   chmod +x "$bin_dir/docker"
 }
 
+setup_remote_review_stubs() {
+  local bin_dir="$1"
+
+  cat >"$bin_dir/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "repo" && "\${2:-}" == "view" ]]; then
+  echo "example/repo"
+  exit 0
+fi
+
+if [[ "\${1:-}" == "pr" && "\${2:-}" == "view" ]]; then
+  if [[ "\$*" == *".number"* ]]; then
+    echo "711"
+    exit 0
+  fi
+  if [[ "\$*" == *".state"* ]]; then
+    echo "OPEN"
+    exit 0
+  fi
+fi
+
+if [[ "\${1:-}" == "pr" && "\${2:-}" == "comment" ]]; then
+  exit 0
+fi
+
+if [[ "\${1:-}" == "api" && "\${2:-}" == "--method" && "\${3:-}" == "POST" && "\${4:-}" == *"/issues/711/comments"* ]]; then
+  echo "\${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME:-2026-03-08T00:00:00Z}"
+  exit 0
+fi
+
+if [[ "\${1:-}" == "api" && "\${2:-}" == *"/pulls/711/commits"* ]]; then
+  echo "2026-03-07T00:00:00Z"
+  exit 0
+fi
+
+if [[ "\${1:-}" == "api" && "\${2:-}" == *"/pulls/711/comments"* ]]; then
+  echo "[]"
+  exit 0
+fi
+
+if [[ "\${1:-}" == "api" && "\${2:-}" == *"/issues/711/reactions"* ]]; then
+  if [[ -n "\${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME:-}" && ( "\$*" != *"\${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME}"* || "\$*" != *".created_at >="* ) ]]; then
+    echo "missing inclusive trigger-time filter in reactions query: \$*" >&2
+    exit 1
+  fi
+  echo '[{"content":"+1","created_at":"2026-03-08T00:00:01Z"}]'
+  exit 0
+fi
+
+echo "unexpected gh invocation: \$*" >&2
+exit 1
+EOF
+  chmod +x "$bin_dir/gh"
+}
+
 make_skill_copy() {
   local dest_dir="$1"
   local env_contents="$2"
@@ -165,7 +222,89 @@ test_local_failure_clears_review_log() {
   assert_file_missing "$repo_dir/review.log"
 }
 
+test_remote_rerun_reuses_head_when_pr_is_open() {
+  local repo_dir="$tmp_root/remote-rerun-repo"
+  local origin_dir="$tmp_root/remote-rerun-origin.git"
+  local home_dir="$tmp_root/remote-rerun-home"
+  local bin_dir="$tmp_root/remote-rerun-bin"
+  local skill_copy_dir="$tmp_root/remote-rerun-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local output
+  local review_sha
+  local expected
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+
+  printf 'remote rerun change\n' >>"$repo_dir/file.txt"
+  git -C "$repo_dir" add file.txt
+  git -C "$repo_dir" commit -m "existing remote commit" >/dev/null
+  git -C "$repo_dir" push origin feature/request-review-artifact >/dev/null
+  review_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+
+  setup_remote_review_stubs "$bin_dir"
+  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=remote'
+
+  output="$(
+    cd "$repo_dir" &&
+      HOME="$home_dir" \
+      PATH="$bin_dir:$PATH" \
+      REQUEST_REVIEW_EXPECTED_TRIGGER_TIME=2026-03-08T00:00:00Z \
+      "$request_review_script" "test: remote rerun reuses head"
+  )"
+
+  expected="request-review (remote): 👍 from chatgpt-codex-connector[bot] on PR #711 after commit $review_sha"
+  [[ "$output" == *"$expected"* ]] || fail "unexpected remote rerun output: $output"
+  assert_file_contains "$repo_dir/review.log" "$expected"
+}
+
+test_remote_rerun_pushes_head_when_pr_branch_is_behind() {
+  local repo_dir="$tmp_root/remote-rerun-push-repo"
+  local origin_dir="$tmp_root/remote-rerun-push-origin.git"
+  local home_dir="$tmp_root/remote-rerun-push-home"
+  local bin_dir="$tmp_root/remote-rerun-push-bin"
+  local skill_copy_dir="$tmp_root/remote-rerun-push-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local output
+  local review_sha
+  local expected
+  local remote_sha
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+
+  printf 'remote rerun pushed base\n' >>"$repo_dir/file.txt"
+  git -C "$repo_dir" add file.txt
+  git -C "$repo_dir" commit -m "pushed remote commit" >/dev/null
+  git -C "$repo_dir" push origin feature/request-review-artifact >/dev/null
+
+  printf 'remote rerun local only\n' >>"$repo_dir/file.txt"
+  git -C "$repo_dir" add file.txt
+  git -C "$repo_dir" commit -m "local only commit" >/dev/null
+  review_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+
+  setup_remote_review_stubs "$bin_dir"
+  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=remote'
+
+  output="$(
+    cd "$repo_dir" &&
+      HOME="$home_dir" \
+      PATH="$bin_dir:$PATH" \
+      REQUEST_REVIEW_EXPECTED_TRIGGER_TIME=2026-03-08T00:00:00Z \
+      "$request_review_script" "test: remote rerun pushes head when pr branch is behind"
+  )"
+
+  expected="request-review (remote): 👍 from chatgpt-codex-connector[bot] on PR #711 after commit $review_sha"
+  [[ "$output" == *"$expected"* ]] || fail "unexpected remote rerun push output: $output"
+  remote_sha="$(git --git-dir="$origin_dir" rev-parse refs/heads/feature/request-review-artifact)"
+  [[ "$remote_sha" == "$review_sha" ]] || fail "expected remote branch to advance to $review_sha, got $remote_sha"
+}
+
 test_remote_disable_writes_review_log
 test_local_failure_clears_review_log
+test_remote_rerun_reuses_head_when_pr_is_open
+test_remote_rerun_pushes_head_when_pr_branch_is_behind
 
 echo "PASS: request-review artifact handling"
