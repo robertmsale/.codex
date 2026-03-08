@@ -34,7 +34,10 @@ writable_roots = [
   "/Users/robertsale/Library/Containers/com.docker.docker",
   "/Users/robertsale/Library/Group Containers/group.com.docker",
   "/Users/robertsale/Library/Application Support/Docker Desktop",
+  "/opt/homebrew/Caskroom/flutter",
   "/var/run/docker.sock",
+  "/Users/robertsale/.codex/.uv-cache",
+  "/Users/robertsale/.codex/tmp",
 ]
 network_access = true
 

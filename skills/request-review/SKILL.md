@@ -1,6 +1,6 @@
 ---
 name: request-review
-description: Request review via `scripts/request-review` (script-first, no MCP tool calls). Writes `review.log` in the worktree root. [skill-hash:4e7a9d1]
+description: Request review via `scripts/request-review` with a commit message. Review output is written to `review.log` in the worktree root. [skill-hash:6f3b8d2]
 ---
 
 # Request Review
@@ -16,19 +16,13 @@ Use this skill when you need code review on the current worktree branch.
 ## Behavior
 
 - Review output is written/read from `review.log` in the worktree root.
-- Local vs remote mode is controlled by operator `.env` settings.
+- Review mode and review disable are operator-controlled.
 
-## Inputs
+## Input
 
 - Required: commit message text.
-- Optional env toggles (operator-controlled):
-  - `REQUEST_REVIEW_MODE=local|remote`
-  - `REQUEST_REVIEW_DISABLE=0|1`
-  - `REQUEST_REVIEW_USE_EXISTING_COMMIT=0|1`
-  - `REQUEST_REVIEW_EXISTING_COMMIT_SHA=<sha-or-ref>`
 
 ## Guardrails
 
 - Refuses protected integration branches.
-- Do not modify review config unless the user explicitly instructs it.
 - Do not launch duplicate review requests for the same branch/PR scope.

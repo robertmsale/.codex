@@ -566,6 +566,40 @@ def _resolve_thread_target(
     raise BridgeError("Provide to_thread_id or name")
 
 
+def _resolve_send_target(
+    *,
+    ctx: Context,
+    to_thread_id: str | None,
+    name: str | None,
+    project_path: str | None,
+    threads: list[ThreadEntry],
+) -> ThreadEntry:
+    try:
+        return _resolve_thread_target(
+            to_thread_id=to_thread_id,
+            name=name,
+            project_path=_resolve_project_scope(ctx, project_path),
+            threads=threads,
+        )
+    except BridgeError as exc:
+        # Orchestrator-to-orchestrator sends should resolve by unique title even
+        # when the caller omits project_path.
+        if not (
+            ctx.current_is_orchestrator
+            and not to_thread_id
+            and name
+            and project_path is None
+            and "No thread found with title" in str(exc)
+        ):
+            raise
+        return _resolve_thread_target(
+            to_thread_id=None,
+            name=name,
+            project_path=None,
+            threads=threads,
+        )
+
+
 def _compose_message(ctx: Context, text: str) -> str:
     trimmed = text.strip()
     if not trimmed:
@@ -854,10 +888,11 @@ def robdex_send_message(
     all_archived = _list_threads(resolved_context, archived=True)
     all_threads = all_unarchived + all_archived
 
-    target = _resolve_thread_target(
+    target = _resolve_send_target(
+        ctx=resolved_context,
         to_thread_id=to_thread_id,
         name=name,
-        project_path=_resolve_project_scope(resolved_context, project_path),
+        project_path=project_path,
         threads=all_unarchived,
     )
 

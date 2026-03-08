@@ -10,7 +10,7 @@ Examples:
   request-review "fix: address codex review"
   request-review "chore: review checkpoint"
 
-Optional env flags:
+Optional runtime env flags:
   REQUEST_REVIEW_USE_EXISTING_COMMIT=1
     - Skip git add/commit.
     - In remote mode, also skip git push.
@@ -19,16 +19,6 @@ Optional env flags:
     - Defaults to HEAD.
 USAGE
 }
-
-if [[ "${1:-}" != "-h" && "${1:-}" != "--help" && "${REQUEST_REVIEW_IN_LAUNCH_JOB:-0}" != "1" && "${REQUEST_REVIEW_USE_LAUNCH_JOB:-1}" != "0" ]]; then
-  launch_job="${HOME}/.codex/skills/command-execution/scripts/launch-job"
-  if [[ ! -x "$launch_job" ]]; then
-    echo "request-review: launch-job is missing or not executable: $launch_job" >&2
-    exit 1
-  fi
-  export REQUEST_REVIEW_IN_LAUNCH_JOB=1
-  exec "$launch_job" "$0" "$@"
-fi
 
 require_cmd() {
   local cmd="$1"
@@ -81,6 +71,29 @@ out_path.write_text(message + ("\n" if message else ""), encoding="utf-8")
 PY
 }
 
+load_operator_env() {
+  local env_file="$1"
+
+  unset REQUEST_REVIEW_MODE
+  unset REQUEST_REVIEW_BOT_LOGIN
+  unset REQUEST_REVIEW_TRIGGER_COMMENT
+  unset REQUEST_REVIEW_POLL_INTERVAL_SECONDS
+  unset REQUEST_REVIEW_DISABLE
+  unset REQUEST_REVIEW_LOCAL_PROFILE
+  unset REQUEST_REVIEW_LOCAL_OUTPUT_FILE
+  unset REQUEST_REVIEW_LOCAL_ERROR_FILE
+  unset REQUEST_REVIEW_LOCAL_KEEP_DEBUG_LOGS
+  unset REQUEST_REVIEW_IMAGE
+  unset REQUEST_REVIEW_CODEX_VERSION
+
+  if [[ -f "$env_file" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$env_file"
+    set +a
+  fi
+}
+
 if [[ $# -lt 1 ]]; then
   usage
   exit 2
@@ -92,16 +105,13 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 commit_message="$*"
-
 if [[ -z "$commit_message" ]]; then
   echo "request-review: commit message cannot be empty" >&2
   exit 2
 fi
 
 require_cmd git
-require_cmd gh
 require_cmd codex
-require_cmd jq
 require_cmd python3
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -112,24 +122,18 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 skill_dir="$(cd "$script_dir/.." && pwd)"
-
-if [[ -f "$skill_dir/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "$skill_dir/.env"
-  set +a
-fi
+load_operator_env "$skill_dir/.env"
 
 review_mode="${REQUEST_REVIEW_MODE:-local}"
 bot_login="${REQUEST_REVIEW_BOT_LOGIN:-chatgpt-codex-connector[bot]}"
 poll_interval_seconds="${REQUEST_REVIEW_POLL_INTERVAL_SECONDS:-20}"
 trigger_comment="${REQUEST_REVIEW_TRIGGER_COMMENT:-@codex review}"
 review_disable="${REQUEST_REVIEW_DISABLE:-0}"
-
 local_profile="${REQUEST_REVIEW_LOCAL_PROFILE:-local-review}"
 local_output_file="${REQUEST_REVIEW_LOCAL_OUTPUT_FILE:-review.log}"
 local_error_file="${REQUEST_REVIEW_LOCAL_ERROR_FILE:-review.err.log}"
 local_keep_debug_logs="${REQUEST_REVIEW_LOCAL_KEEP_DEBUG_LOGS:-0}"
+
 use_existing_commit_flag="${REQUEST_REVIEW_USE_EXISTING_COMMIT:-0}"
 existing_commit_sha_ref="${REQUEST_REVIEW_EXISTING_COMMIT_SHA:-HEAD}"
 
@@ -163,10 +167,6 @@ else
   review_sha="$(git rev-parse --verify HEAD)"
 fi
 
-# Scoped lock: allow concurrent reviews across different projects/PRs/branches.
-# Scope key:
-# - remote mode: repo + PR number (if available), otherwise repo + branch
-# - local mode: repo + branch
 repo_name_for_lock="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || basename "$repo_root")"
 pr_number_for_lock=""
 if [[ "$review_mode" == "remote" ]]; then
@@ -200,12 +200,14 @@ if [[ "$review_disable" != "0" ]]; then
   if [[ "$review_mode" == "remote" && "$use_existing_commit_flag" == "0" ]]; then
     git push -u origin HEAD
   fi
-  result="all clear!"
-  emit_result "$result"
+  emit_result "all clear!"
   exit 0
 fi
 
 if [[ "$review_mode" == "remote" ]]; then
+  require_cmd gh
+  require_cmd jq
+
   echo 'Remote review takes a long time. To not interrupt this process, and do not post additional `@codex review` comments.'
   if [[ "$use_existing_commit_flag" == "0" ]]; then
     git push -u origin HEAD
@@ -214,24 +216,20 @@ if [[ "$review_mode" == "remote" ]]; then
   pr_number="$(gh pr view --json number,state --jq '.number' 2>/dev/null || true)"
   pr_state="$(gh pr view --json number,state --jq '.state' 2>/dev/null || true)"
   if [[ -z "$pr_number" ]]; then
-    result="request-review (remote): no PR found for branch '$branch_name'. Open a PR first."
-    emit_result "$result"
+    emit_result "request-review (remote): no PR found for branch '$branch_name'. Open a PR first."
     exit 1
   fi
   if [[ "$pr_state" != "OPEN" ]]; then
-    result="request-review (remote): PR #$pr_number is not OPEN (state: $pr_state)."
-    emit_result "$result"
+    emit_result "request-review (remote): PR #$pr_number is not OPEN (state: $pr_state)."
     exit 1
   fi
 
   if ! gh pr comment "$pr_number" --body "$trigger_comment" >/dev/null; then
-    result="request-review (remote): failed to post trigger comment '$trigger_comment' on PR #$pr_number"
-    emit_result "$result"
+    emit_result "request-review (remote): failed to post trigger comment '$trigger_comment' on PR #$pr_number"
     exit 1
   fi
 
   repo_name="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
-
   commit_timestamp=""
   for _ in $(seq 1 30); do
     commit_timestamp="$(gh api "repos/$repo_name/pulls/$pr_number/commits" --jq '.[] | select(.sha=="'"$review_sha"'") | .commit.committer.date' || true)"
@@ -243,11 +241,10 @@ if [[ "$review_mode" == "remote" ]]; then
 
   if [[ -z "$commit_timestamp" ]]; then
     if [[ "$use_existing_commit_flag" != "0" ]]; then
-      result="request-review (remote): commit $review_sha is not present on PR #$pr_number. If needed, disable REQUEST_REVIEW_USE_EXISTING_COMMIT and rerun so this script can push."
+      emit_result "request-review (remote): commit $review_sha is not present on PR #$pr_number. If needed, disable REQUEST_REVIEW_USE_EXISTING_COMMIT and rerun so this script can push."
     else
-      result="request-review (remote): commit $review_sha is not present on PR #$pr_number yet."
+      emit_result "request-review (remote): commit $review_sha is not present on PR #$pr_number yet."
     fi
-    emit_result "$result"
     exit 1
   fi
 
@@ -260,8 +257,7 @@ if [[ "$review_mode" == "remote" ]]; then
     if [[ "$inline_count" -gt 0 ]]; then
       result_header="request-review (remote): $inline_count inline comment(s) from $bot_login on PR #$pr_number for commit $review_sha"
       result_body="$(jq -r '.[] | "- \(.html_url)\n  File: \(.path // "unknown"):\(.line // 0)\n  Comment: \(.body)\n"' <<<"$inline_json")"
-      result="${result_header}"$'\n\n'"${result_body}"
-      emit_result "$result"
+      emit_result "${result_header}"$'\n\n'"${result_body}"
       exit 0
     fi
 
@@ -276,10 +272,8 @@ if [[ "$review_mode" == "remote" ]]; then
     fi
 
     thumbs_up="$(jq 'any(.[]; .content=="+1")' <<<"$reactions_json")"
-
     if [[ "$thumbs_up" == "true" ]]; then
-      result="request-review (remote): 👍 from $bot_login on PR #$pr_number after commit $review_sha"
-      emit_result "$result"
+      emit_result "request-review (remote): 👍 from $bot_login on PR #$pr_number after commit $review_sha"
       exit 0
     fi
 
@@ -292,31 +286,55 @@ if [[ "$review_mode" != "local" ]]; then
   exit 2
 fi
 
+require_cmd docker
+
 local_output_path="$repo_root/$local_output_file"
 local_error_path="$repo_root/$local_error_file"
 local_raw_jsonl_path="$repo_root/.request-review.events.jsonl"
 
 config_file="${HOME}/.codex/config.toml"
 if [[ ! -f "$config_file" ]]; then
-  result="request-review (local): missing config file: $config_file"
-  emit_result "$result"
+  emit_result "request-review (local): missing config file: $config_file"
   exit 1
 fi
 if ! rg -q "^\[profiles\.${local_profile}\]$" "$config_file"; then
-  result="request-review (local): profile '$local_profile' not found in $config_file"
-  emit_result "$result"
+  emit_result "request-review (local): profile '$local_profile' not found in $config_file"
   exit 1
 fi
 
+shared_builder="${HOME}/.codex/scripts/build-codex-agent-image"
+if [[ ! -x "$shared_builder" ]]; then
+  emit_result "request-review (local): missing shared Docker builder: $shared_builder"
+  exit 1
+fi
+
+local_image_tag="${REQUEST_REVIEW_IMAGE:-${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}}"
+host_codex_home="${CODEX_HOME:-$HOME/.codex}"
+docker_home="/tmp/request-review-home"
+docker_codex_home="/codex-home"
+
+if ! docker image inspect "$local_image_tag" >/dev/null 2>&1; then
+  CODEX_AGENT_IMAGE="$local_image_tag" \
+  CODEX_AGENT_CODEX_VERSION="${REQUEST_REVIEW_CODEX_VERSION:-0.110.0}" \
+    "$shared_builder" >/dev/null
+fi
+
 cmd=(
+  docker run --rm -i
+  -u "$(id -u):$(id -g)"
+  -e "HOME=$docker_home"
+  -e "CODEX_HOME=$docker_codex_home"
+  -e "CODEX_NO_COLOR=1"
+  -v "$host_codex_home:$docker_codex_home:rw"
+  -v "$repo_root:/workspace:rw"
+  --workdir /workspace
+  "$local_image_tag"
   codex exec
-  -C "$repo_root"
+  --skip-git-repo-check
+  --json
+  -C /workspace
   -s read-only
   -p "$local_profile"
-)
-
-cmd+=(
-  --json
   review
   --commit "$review_sha"
   --title "$commit_message"
@@ -331,13 +349,11 @@ fi
 extract_local_review_message "$local_raw_jsonl_path" "$local_output_path"
 
 if [[ ! -s "$local_output_path" ]]; then
-  result="request-review (local): missing review output at $local_output_path (check $local_error_path)"
-  emit_result "$result"
+  emit_result "request-review (local): missing review output at $local_output_path (check $local_error_path)"
   exit 1
 fi
 
-result="$(cat "$local_output_path")"
-emit_result "$result"
+emit_result "$(cat "$local_output_path")"
 
 if [[ "$local_keep_debug_logs" == "0" ]]; then
   rm -f "$local_raw_jsonl_path"

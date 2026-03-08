@@ -1,55 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Error: docker is required" >&2
+shared_builder="${HOME}/.codex/scripts/build-codex-agent-image"
+if [[ ! -x "$shared_builder" ]]; then
+  echo "Error: missing shared builder: $shared_builder" >&2
   exit 1
 fi
 
-IMAGE_TAG="${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}"
-CODEX_VERSION="${COMMAND_PARSER_CODEX_VERSION:-0.110.0}"
-
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/command-parser-image.XXXXXX")"
-cleanup() {
-  rm -rf "$tmp_dir"
-}
-trap cleanup EXIT
-
-cat >"$tmp_dir/Dockerfile" <<EOF
-# syntax=docker/dockerfile:1.10
-FROM buildpack-deps:trixie
-
-ENV DEBIAN_FRONTEND=noninteractive \\
-    TZ=UTC \\
-    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-RUN --mount=type=cache,target=/var/cache/apt \\
-    apt-get update && \\
-    apt-get install -y --no-install-recommends \\
-      ca-certificates \\
-      curl \\
-      gpg \\
-      jq \\
-      python3 \\
-      ripgrep \\
-      tini
-
-RUN mkdir -p /etc/apt/keyrings && \\
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \\
-    printf "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main\\n" > /etc/apt/sources.list.d/nodesource.list && \\
-    apt-get update && \\
-    apt-get install -y --no-install-recommends nodejs
-
-RUN npm install -g "@openai/codex@${CODEX_VERSION}"
-
-RUN groupadd -g 1000 codex && \\
-    useradd -m -u 1000 -g 1000 -s /bin/bash codex && \\
-    install -d -o 1000 -g 1000 /home/codex/.codex && \\
-    install -d -o 1000 -g 1000 /workspace
-
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["bash"]
-EOF
-
-docker build -t "$IMAGE_TAG" -f "$tmp_dir/Dockerfile" "$tmp_dir"
-echo "Built image: $IMAGE_TAG"
+CODEX_AGENT_IMAGE="${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}" \
+CODEX_AGENT_CODEX_VERSION="${COMMAND_PARSER_CODEX_VERSION:-0.110.0}" \
+  exec "$shared_builder"

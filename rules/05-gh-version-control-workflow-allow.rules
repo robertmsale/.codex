@@ -1,0 +1,66 @@
+# Allow trusted gh-version-control-workflow script entrypoints.
+
+prefix_rule(
+    pattern = ["git-worktree-create"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-create"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-worktree-create"],
+    decision = "allow",
+)
+
+prefix_rule(
+    pattern = ["git-sync-worktree"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/gh-version-control-workflow/scripts/git-sync-worktree"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-sync-worktree"],
+    decision = "allow",
+)
+
+prefix_rule(
+    pattern = ["git-commit"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/gh-version-control-workflow/scripts/git-commit"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-commit"],
+    decision = "allow",
+)
+
+prefix_rule(
+    pattern = ["git-publish-worktree"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/gh-version-control-workflow/scripts/git-publish-worktree"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-publish-worktree"],
+    decision = "allow",
+)
+
+prefix_rule(
+    pattern = ["git-worktree-cleanup"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup"],
+    decision = "allow",
+)

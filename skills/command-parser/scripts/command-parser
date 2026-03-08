@@ -13,10 +13,104 @@ Notes:
 EOF_USAGE
 }
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Error: docker is required" >&2
-  exit 1
-fi
+check_command_policy() {
+  local rule_file="$1"
+  shift
+
+  if [[ ! -f "$rule_file" ]]; then
+    return 0
+  fi
+
+  local check_output
+  if ! check_output="$(codex execpolicy check --rules "$rule_file" -- "$@" 2>&1)"; then
+    echo "command-parser: execpolicy check failed for $rule_file: $check_output" >&2
+    exit 1
+  fi
+
+  local policy_message
+  policy_message="$(
+    python3 - "$check_output" <<'PY'
+import json
+import re
+import sys
+
+raw = sys.argv[1].strip()
+if not raw:
+    raise SystemExit(0)
+
+decoder = json.JSONDecoder()
+payload = None
+for index, char in enumerate(raw):
+    if char != "{":
+        continue
+    try:
+        candidate, end = decoder.raw_decode(raw[index:])
+    except json.JSONDecodeError:
+        continue
+    if isinstance(candidate, dict):
+        payload = candidate
+        break
+
+if payload is None:
+    failure_patterns = [
+        r"forbidden-sandbox-reinit",
+        r"operation not permitted",
+        r"killed by sandbox",
+        r"sandbox(?:[^a-z0-9]+|$).*denied",
+    ]
+    lowered = raw.lower()
+    if any(re.search(pattern, lowered, re.IGNORECASE) for pattern in failure_patterns):
+        print(f"command-parser: execpolicy check failed: {raw}", file=sys.stderr)
+        raise SystemExit(3)
+    print(f"command-parser: execpolicy output was not valid JSON: {raw}", file=sys.stderr)
+    raise SystemExit(2)
+
+if not isinstance(payload, dict):
+    raise SystemExit(0)
+
+decision = str(payload.get("decision", "")).strip().lower()
+matched_rules = payload.get("matchedRules")
+
+def extract_justification() -> str | None:
+    if not isinstance(matched_rules, list):
+        return None
+    for entry in matched_rules:
+        if not isinstance(entry, dict):
+            continue
+        prefix_match = entry.get("prefixRuleMatch")
+        if not isinstance(prefix_match, dict):
+            continue
+        rule_decision = str(prefix_match.get("decision", "")).strip().lower()
+        if rule_decision != "forbidden":
+            continue
+        justification = str(prefix_match.get("justification", "")).strip()
+        if justification:
+            return justification
+    return None
+
+message = None
+if decision == "forbidden":
+    message = extract_justification() or "Command is forbidden by command-parser.rule."
+else:
+    message = extract_justification()
+
+if message:
+    print(message)
+PY
+  )"
+  local policy_status=$?
+  if [[ $policy_status -eq 3 ]]; then
+    echo "command-parser: execpolicy check failed for $rule_file: $check_output" >&2
+    exit 1
+  elif [[ $policy_status -ne 0 ]]; then
+    exit "$policy_status"
+  fi
+
+  if [[ -n "$policy_message" ]]; then
+    echo "Command blocked by command-parser.rule: $policy_message"
+    exit 2
+  fi
+}
 
 additional_request="${COMMAND_PARSER_ADDITIONAL_REQUEST:-}"
 include_warnings="no"
@@ -72,6 +166,14 @@ if [[ -f "$skill_dir/.env" ]]; then
   # shellcheck disable=SC1091
   source "$skill_dir/.env"
   set +a
+fi
+
+rule_file="${COMMAND_PARSER_RULE_FILE:-$skill_dir/command-parser.rule}"
+check_command_policy "$rule_file" "$@"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Error: docker is required" >&2
+  exit 1
 fi
 
 image_tag="${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}"
