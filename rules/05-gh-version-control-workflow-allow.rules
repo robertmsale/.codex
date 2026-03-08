@@ -1,4 +1,4 @@
-# Allow trusted gh-version-control-workflow script entrypoints.
+# Allow trusted gitops workflow script entrypoints.
 
 prefix_rule(
     pattern = ["git-worktree-create"],
@@ -39,6 +39,7 @@ prefix_rule(
     decision = "allow",
 )
 
+# request-review is part of the trusted gitops workflow surface.
 prefix_rule(
     pattern = ["request-review"],
     decision = "allow",

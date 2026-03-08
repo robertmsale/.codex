@@ -1,6 +1,6 @@
 ---
 name: request-review
-description: Request review via `scripts/request-review` with a commit message. Review output is written to `review.log` in the worktree root. [skill-hash:6f3b8d2]
+description: Request review via `scripts/request-review` with a commit message. Review output is written to `review.log` in the worktree root. Skip review for non-working-code changes such as docs, policy text, or comment-only edits. [skill-hash:4b7f0d1]
 ---
 
 # Request Review
@@ -17,6 +17,7 @@ Use this skill when you need code review on the current worktree branch.
 
 - Review output is written/read from `review.log` in the worktree root.
 - Review mode and review disable are operator-controlled.
+- Non-working-code changes such as docs, policy text, or comment-only edits do not require request-review.
 
 ## Input
 
@@ -26,3 +27,4 @@ Use this skill when you need code review on the current worktree branch.
 
 - Refuses protected integration branches.
 - Do not launch duplicate review requests for the same branch/PR scope.
+- For changes that affect working code or runtime behavior, keep using request-review before publish/merge.
