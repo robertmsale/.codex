@@ -16,6 +16,7 @@ writable_roots = [
   "/Users/robertsale/.rustup",
   "/Users/robertsale/.cargo",
   "/Users/robertsale/.pub-cache",
+  "/Users/robertsale/.dart-tool",
   "/Users/robertsale/.cache",
   "/Users/robertsale/.cache/uv",
   "/Users/robertsale/.swiftpm",
