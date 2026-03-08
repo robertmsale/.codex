@@ -31,7 +31,6 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
-skills/robdex-orchestrator
 .robdex-integration/
 .robdex-integration-thread
 

@@ -49,6 +49,11 @@ class ThreadEntry:
     display_name: str
     project_path: str | None
     has_custom_title: bool
+    issue_number: int | None = None
+    pull_request_number: int | None = None
+    blocked_reason: str | None = None
+    unblock_when: str | None = None
+    hidden: bool = False
 
 
 @dataclass(frozen=True)
@@ -153,6 +158,60 @@ def _load_state() -> tuple[dict[str, str], dict[str, str], str | None]:
 
     global_orchestrator = _normalize_text(payload.get("orchestratorThreadID"))
     return titles, orchestrators, global_orchestrator
+
+
+def _load_state_payload() -> dict[str, Any]:
+    if not ROBDEX_STATE_FILE.exists():
+        return {}
+    try:
+        payload = json.loads(ROBDEX_STATE_FILE.read_text(encoding="utf-8", errors="replace"))
+    except Exception as exc:  # noqa: BLE001
+        raise BridgeError(f"Failed to parse {ROBDEX_STATE_FILE}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise BridgeError(f"Invalid robdex state payload in {ROBDEX_STATE_FILE}")
+    return payload
+
+
+def _write_state_payload(payload: dict[str, Any]) -> None:
+    ROBDEX_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ROBDEX_STATE_FILE.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _load_thread_metadata_map() -> dict[str, dict[str, Any]]:
+    payload = _load_state_payload()
+    metadata = payload.get("threadMetadataByID")
+    if not isinstance(metadata, dict):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for thread_id, raw in metadata.items():
+        normalized_id = _normalize_text(str(thread_id))
+        if not normalized_id or not isinstance(raw, dict):
+            continue
+        result[normalized_id] = dict(raw)
+    return result
+
+
+def _set_thread_metadata_fields(thread_id: str, updates: dict[str, Any | None]) -> None:
+    payload = _load_state_payload()
+    metadata = payload.get("threadMetadataByID")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        payload["threadMetadataByID"] = metadata
+
+    current_raw = metadata.get(thread_id)
+    current = dict(current_raw) if isinstance(current_raw, dict) else {}
+
+    for key, value in updates.items():
+        if value is None:
+            current.pop(key, None)
+        else:
+            current[key] = value
+
+    metadata[thread_id] = current
+    _write_state_payload(payload)
 
 
 def _resolve_session_thread_id(
@@ -330,6 +389,7 @@ def _parse_thread_list(result: dict[str, Any], titles_by_thread_id: dict[str, st
     known_projects = set(orchestrator_by_project.keys())
     if current_project:
         known_projects.add(current_project)
+    metadata_by_thread = _load_thread_metadata_map()
 
     threads: list[ThreadEntry] = []
     for row in data:
@@ -342,6 +402,7 @@ def _parse_thread_list(result: dict[str, Any], titles_by_thread_id: dict[str, st
         preview = _normalize_text(row.get("preview"))
         custom_title = titles_by_thread_id.get(thread_id)
         display_name = custom_title or preview or thread_id
+        metadata = metadata_by_thread.get(thread_id, {})
 
         project_path: str | None = None
         if cwd:
@@ -357,6 +418,11 @@ def _parse_thread_list(result: dict[str, Any], titles_by_thread_id: dict[str, st
                 display_name=display_name,
                 project_path=project_path,
                 has_custom_title=custom_title is not None,
+                issue_number=metadata.get("issueNumber") if isinstance(metadata.get("issueNumber"), int) else None,
+                pull_request_number=metadata.get("pullRequestNumber") if isinstance(metadata.get("pullRequestNumber"), int) else None,
+                blocked_reason=_normalize_text(metadata.get("blockedReason")) if isinstance(metadata.get("blockedReason"), str) else None,
+                unblock_when=_normalize_text(metadata.get("unblockWhen")) if isinstance(metadata.get("unblockWhen"), str) else None,
+                hidden=bool(metadata.get("hidden")) if "hidden" in metadata else False,
             )
         )
     return threads
@@ -498,6 +564,20 @@ def _display_name_for_listing(thread: ThreadEntry, max_unnamed_length: int = 96)
     return f"{clipped}..."
 
 
+def _thread_metadata_suffix(thread: ThreadEntry) -> str:
+    parts: list[str] = []
+    if thread.issue_number is not None:
+        parts.append(f"issue=#{thread.issue_number}")
+    if thread.pull_request_number is not None:
+        parts.append(f"pr=#{thread.pull_request_number}")
+    if thread.blocked_reason:
+        blocked = f"blocked={_quoted(thread.blocked_reason)}"
+        if thread.unblock_when:
+            blocked += f" until={_quoted(thread.unblock_when)}"
+        parts.append(blocked)
+    return f" | {'; '.join(parts)}" if parts else ""
+
+
 def _resolve_project_scope(ctx: Context, requested_project_path: str | None) -> str | None:
     if requested_project_path:
         return _normalized_path(requested_project_path)
@@ -538,6 +618,22 @@ def _resolve_thread_by_name(name: str, threads: list[ThreadEntry]) -> ThreadEntr
     if len(matches) > 1:
         raise BridgeError(f"Multiple threads match {_quoted(name)}; use to_thread_id instead.")
     return matches[0]
+
+
+def _resolve_int_metadata(value: int | None, clear: bool, field_name: str) -> int | None:
+    if clear:
+        return None
+    if value is None:
+        return None
+    if value <= 0:
+        raise BridgeError(f"{field_name} must be a positive integer.")
+    return value
+
+
+def _resolve_text_metadata(value: str | None, clear: bool) -> str | None:
+    if clear:
+        return None
+    return _normalize_text(value)
 
 
 def _resolve_thread_target(
@@ -731,7 +827,7 @@ def robdex_list_agents(
             project_path=thread.project_path,
             show_project=show_project,
             current_thread_id=resolved_context.current_thread_id,
-        )
+        ) + _thread_metadata_suffix(thread)
         for thread in sorted_threads
     ]
     return "\n".join(lines)
@@ -743,6 +839,7 @@ def robdex_spawn_agent(
     name: str,
     prompt: str = "",
     cwd: str | None = None,
+    issue_number: int | None = None,
     ctx: Context = None,
 ) -> str:
     """Spawn a worker agent thread with a unique display name."""
@@ -791,7 +888,85 @@ def robdex_spawn_agent(
         raise BridgeError("Bridge agent payload malformed")
     thread_id = _normalize_text(agent_payload.get("threadId")) or "no-thread-id"
     display_name = _normalize_text(agent_payload.get("displayName")) or name_value
+    if issue_number is not None:
+        if issue_number <= 0:
+            raise BridgeError("issue_number must be a positive integer.")
+        _set_thread_metadata_fields(thread_id, {"issueNumber": issue_number})
     return f"Spawned {_quoted(display_name)} ({thread_id})"
+
+
+@mcp.tool
+def robdex_set_worker_metadata(
+    from_thread_id: str,
+    issue_number: int | None = None,
+    pull_request_number: int | None = None,
+    blocked_reason: str | None = None,
+    unblock_when: str | None = None,
+    clear_issue_number: bool = False,
+    clear_pull_request_number: bool = False,
+    clear_blocked: bool = False,
+    to_thread_id: str | None = None,
+    name: str | None = None,
+    project_path: str | None = None,
+    ctx: Context = None,
+) -> str:
+    """Set issue/PR/blocked bookkeeping fields for a worker thread."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    all_threads = _list_threads(resolved_context, archived=False) + _list_threads(resolved_context, archived=True)
+    target = _resolve_thread_target(
+        to_thread_id=to_thread_id,
+        name=name,
+        project_path=_resolve_project_scope(resolved_context, project_path),
+        threads=all_threads,
+    )
+
+    _ensure_orchestrator_for_project(resolved_context, target.project_path, "set worker metadata")
+
+    if target.id == resolved_context.current_thread_id:
+        raise BridgeError("Orchestrators cannot set worker metadata on themselves.")
+
+    orchestrator_ids = set(resolved_context.orchestrator_by_project.values())
+    if target.id in orchestrator_ids:
+        raise BridgeError("Worker metadata can only be set on non-orchestrator threads.")
+
+    resolved_issue_number = _resolve_int_metadata(issue_number, clear_issue_number, "issue_number")
+    resolved_pr_number = _resolve_int_metadata(pull_request_number, clear_pull_request_number, "pull_request_number")
+    resolved_blocked_reason = _resolve_text_metadata(blocked_reason, clear_blocked)
+    resolved_unblock_when = _resolve_text_metadata(unblock_when, clear_blocked)
+
+    if resolved_unblock_when is not None and resolved_blocked_reason is None:
+        raise BridgeError("unblock_when requires blocked_reason unless clear_blocked is used.")
+
+    updates: dict[str, Any | None] = {}
+    if issue_number is not None or clear_issue_number:
+        updates["issueNumber"] = resolved_issue_number
+    if pull_request_number is not None or clear_pull_request_number:
+        updates["pullRequestNumber"] = resolved_pr_number
+    if blocked_reason is not None or unblock_when is not None or clear_blocked:
+        updates["blockedReason"] = resolved_blocked_reason
+        updates["unblockWhen"] = resolved_unblock_when
+
+    if not updates:
+        raise BridgeError("Provide at least one metadata field to set or clear.")
+
+    _set_thread_metadata_fields(target.id, updates)
+
+    refreshed = _load_thread_metadata_map().get(target.id, {})
+    summary_parts: list[str] = []
+    if isinstance(refreshed.get("issueNumber"), int):
+        summary_parts.append(f"issue=#{refreshed['issueNumber']}")
+    if isinstance(refreshed.get("pullRequestNumber"), int):
+        summary_parts.append(f"pr=#{refreshed['pullRequestNumber']}")
+    blocked_value = _normalize_text(refreshed.get("blockedReason")) if isinstance(refreshed.get("blockedReason"), str) else None
+    unblock_value = _normalize_text(refreshed.get("unblockWhen")) if isinstance(refreshed.get("unblockWhen"), str) else None
+    if blocked_value:
+        blocked_summary = f"blocked={_quoted(blocked_value)}"
+        if unblock_value:
+            blocked_summary += f" until={_quoted(unblock_value)}"
+        summary_parts.append(blocked_summary)
+
+    summary = ", ".join(summary_parts) if summary_parts else "cleared"
+    return f"Updated {_quoted(target.display_name)} ({target.id}): {summary}"
 
 
 @mcp.tool
