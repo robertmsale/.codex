@@ -24,18 +24,167 @@ prefix_rule(
     decision = "forbidden",
     justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser pytest -q.",
 )
+
+# Allow noisy commands when correctly routed through command-parser.
 prefix_rule(
-    pattern = ["flutter", ["analyze", "build"]],
+    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", "cargo", ["check", "test", "clippy", "build", "bench"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", "cargo", ["check", "test", "clippy", "build", "bench"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["command-parser", "cargo", ["check", "test", "clippy", "build", "bench"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", "cargo", "nextest", ["run"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", "cargo", "nextest", ["run"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["command-parser", "cargo", "nextest", ["run"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", "flutter", ["build", "test", "drive"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", "flutter", ["build", "test", "drive"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["command-parser", "flutter", ["build", "test", "drive"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", ["xcodebuild", "swift", "swift-build"], ["build", "test", "package"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", ["xcodebuild", "swift", "swift-build"], ["build", "test", "package"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["command-parser", ["xcodebuild", "swift", "swift-build"], ["build", "test", "package"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", ["pytest", "go", "gradle", "./gradlew", "npm", "pnpm", "yarn", "bun", "deno"], ["test", "build", "check", "verify", "lint", "run"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", ["pytest", "go", "gradle", "./gradlew", "npm", "pnpm", "yarn", "bun", "deno"], ["test", "build", "check", "verify", "lint", "run"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["command-parser", ["pytest", "go", "gradle", "./gradlew", "npm", "pnpm", "yarn", "bun", "deno"], ["test", "build", "check", "verify", "lint", "run"]],
+    decision = "allow",
+    justification = "Good job using it correctly.",
+)
+
+# Direct noisy commands must not bypass command-parser.
+prefix_rule(
+    pattern = ["cargo", "nextest", ["run"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["flutter", ["analyze"]],
+    decision = "forbidden",
+    justification = "Flutter analyze forbidden. Use flutter build macos instead.",
+)
+prefix_rule(
+    pattern = ["flutter", ["build", "test", "drive"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["xcodebuild"],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser xcodebuild <args>.",
+)
+prefix_rule(
+    pattern = ["swift", ["build", "test", "package"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["go", ["test", "build"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["gradle", ["build", "test", "check"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["./gradlew", ["build", "test", "check"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["npm", "run", ["build", "test", "check", "lint"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["pnpm", ["build", "test", "check", "lint"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["pnpm", "run", ["build", "test", "check", "lint"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["yarn", ["build", "test", "check", "lint"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["yarn", "run", ["build", "test", "check", "lint"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["bun", ["build", "test"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["bun", "run", ["build", "test", "check", "lint"]],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
+)
+prefix_rule(
+    pattern = ["deno", ["test", "check", "lint", "task"]],
     decision = "forbidden",
     justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
 )
 prefix_rule(
     pattern = ["npm", "run", "build"],
-    decision = "forbidden",
-    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser npm run build.",
-)
-prefix_rule(
-    pattern = ["xcodebuild"],
     decision = "forbidden",
     justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser npm run build.",
 )
