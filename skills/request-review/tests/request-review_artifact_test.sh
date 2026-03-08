@@ -97,19 +97,6 @@ EOF
 setup_remote_review_stubs() {
   local bin_dir="$1"
 
-  cat >"$bin_dir/date" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-if [[ "${1:-}" == "-u" && "${2:-}" == "+%Y-%m-%dT%H:%M:%SZ" ]]; then
-  echo "${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME:-2026-03-08T00:00:00Z}"
-  exit 0
-fi
-
-/bin/date "$@"
-EOF
-  chmod +x "$bin_dir/date"
-
   cat >"$bin_dir/gh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -134,6 +121,11 @@ if [[ "\${1:-}" == "pr" && "\${2:-}" == "comment" ]]; then
   exit 0
 fi
 
+if [[ "\${1:-}" == "api" && "\${2:-}" == "--method" && "\${3:-}" == "POST" && "\${4:-}" == *"/issues/711/comments"* ]]; then
+  echo "\${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME:-2026-03-08T00:00:00Z}"
+  exit 0
+fi
+
 if [[ "\${1:-}" == "api" && "\${2:-}" == *"/pulls/711/commits"* ]]; then
   echo "2026-03-07T00:00:00Z"
   exit 0
@@ -145,8 +137,8 @@ if [[ "\${1:-}" == "api" && "\${2:-}" == *"/pulls/711/comments"* ]]; then
 fi
 
 if [[ "\${1:-}" == "api" && "\${2:-}" == *"/issues/711/reactions"* ]]; then
-  if [[ -n "\${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME:-}" && "\$*" != *"\${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME}"* ]]; then
-    echo "missing trigger-time filter in reactions query: \$*" >&2
+  if [[ -n "\${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME:-}" && ( "\$*" != *"\${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME}"* || "\$*" != *".created_at >="* ) ]]; then
+    echo "missing inclusive trigger-time filter in reactions query: \$*" >&2
     exit 1
   fi
   echo '[{"content":"+1","created_at":"2026-03-08T00:00:01Z"}]'

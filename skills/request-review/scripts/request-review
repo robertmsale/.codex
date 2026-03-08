@@ -262,13 +262,13 @@ if [[ "$review_mode" == "remote" ]]; then
     exit 1
   fi
 
-  if ! gh pr comment "$pr_number" --body "$trigger_comment" >/dev/null; then
+  repo_name="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+
+  remote_review_started_at="$(gh api --method POST "repos/$repo_name/issues/$pr_number/comments" -f body="$trigger_comment" --jq '.created_at' 2>/dev/null || true)"
+  if [[ -z "$remote_review_started_at" ]]; then
     emit_result "request-review (remote): failed to post trigger comment '$trigger_comment' on PR #$pr_number"
     exit 1
   fi
-  remote_review_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-  repo_name="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
   commit_timestamp=""
   for _ in $(seq 1 30); do
     commit_timestamp="$(gh api "repos/$repo_name/pulls/$pr_number/commits" --jq '.[] | select(.sha=="'"$review_sha"'") | .commit.committer.date' || true)"
@@ -290,7 +290,7 @@ if [[ "$review_mode" == "remote" ]]; then
   eyes_announced=0
   while true; do
     inline_json="$(gh api "repos/$repo_name/pulls/$pr_number/comments?since=$commit_timestamp" --paginate \
-      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at > "'"$remote_review_started_at"'") and (.commit_id=="'"$review_sha"'" or .original_commit_id=="'"$review_sha"'")) | {id,created_at,html_url,path,line,body}]')"
+      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at >= "'"$remote_review_started_at"'") and (.commit_id=="'"$review_sha"'" or .original_commit_id=="'"$review_sha"'")) | {id,created_at,html_url,path,line,body}]')"
 
     inline_count="$(jq 'length' <<<"$inline_json")"
     if [[ "$inline_count" -gt 0 ]]; then
@@ -302,7 +302,7 @@ if [[ "$review_mode" == "remote" ]]; then
     fi
 
     reactions_json="$(gh api "repos/$repo_name/issues/$pr_number/reactions" -H 'Accept: application/vnd.github+json' --paginate \
-      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at > "'"$remote_review_started_at"'")) | {content,created_at}]')"
+      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at >= "'"$remote_review_started_at"'")) | {content,created_at}]')"
 
     eyes_reaction="$(jq 'any(.[]; .content=="eyes")' <<<"$reactions_json")"
     if [[ "$eyes_reaction" == "true" && "$eyes_announced" -eq 0 ]]; then
