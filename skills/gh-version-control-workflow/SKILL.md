@@ -1,11 +1,11 @@
 ---
 name: gh-version-control-workflow
-description: Script-first issue/worktree/PR workflow using local scripts under `scripts/` plus direct `git`/`gh`. Do not use MCP gitops mutation tools for normal flow. Working-code changes require review; non-working-code docs/policy/comment-only changes may skip request-review. [skill-hash:0ed51c8]
+description: Script-first worktree/branch/PR workflow using local scripts under `scripts/` plus direct `git`/`gh`. Use dedicated worktrees and PRs as the delivery units; do not create child issues by default for every internal slice. Working-code changes require review. [skill-hash:2c51a7e]
 ---
 
 # GH Version Control Workflow
 
-Use this workflow for issue-driven branch/worktree/PR delivery.
+Use this workflow for branch/worktree/PR delivery.
 
 ## Required Rules
 
@@ -14,6 +14,8 @@ Use this workflow for issue-driven branch/worktree/PR delivery.
 - Use script wrappers in this skill for git mutations.
 - Request review before publish for working-code changes.
 - Non-working-code docs, policy text, and comment-only edits may skip request-review when there is no runtime or security impact.
+- Do not create a child GitHub issue for every internal implementation slice by default.
+- It is acceptable for multiple related PRs/workers to reference the same master issue.
 
 ## Core Scripts
 
@@ -34,12 +36,29 @@ Use this workflow for issue-driven branch/worktree/PR delivery.
   - `~/.codex/skills/request-review/scripts/request-review "<commit message>"`
 - `git-publish-worktree` refuses when `review.log` is missing, so review-skipping changes may need direct PR push/merge instead of the publish script.
 
-## Issue + PR Steps
+## Preferred Planning Model
 
-1. Create/update issue with `gh issue ...`.
+- One master issue may cover a larger effort.
+- Independent workers can each have their own worktree/branch/PR under that same master issue.
+- Create child issues only when they are useful outside the local execution workflow.
+
+## Delivery Steps
+
+1. Create/update the master issue when external tracking is needed.
 2. Create worktree branch with `git-worktree-create`.
 3. Implement in worktree.
 4. Commit with `git-commit`.
 5. Request review (`request-review`) for working-code changes, or skip it for non-working-code docs/policy/comment-only changes.
 6. Publish (`git-publish-worktree`) when review is required and `review.log` is present.
 7. Merge and cleanup (`git-worktree-cleanup`).
+
+## Multi-Worker Guidance
+
+When several workers are active on one master issue:
+- each worker should have its own worktree/branch
+- each worker may open its own PR asynchronously
+- downstream workers should sync/rebase after dependency merges rather than waiting for a giant combined branch
+
+Prefer this over:
+- one giant long-lived branch
+- many child issues with no reliable closeout discipline
