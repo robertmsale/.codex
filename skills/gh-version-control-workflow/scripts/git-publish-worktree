@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_worktree_lib.sh
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  cat >&2 <<'EOF'
+Usage:
+  git-publish-worktree <worktree_path> [integration_branch]
+EOF
+  exit 2
+fi
+
+worktree_path="$1"
+base_branch="${2:-${GITOPS_INTEGRATION_BRANCH:-master}}"
+
+resolved_output="$(resolve_worktree "$worktree_path")"
+wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
+
+branch="$(git -C "$wt_abs" rev-parse --abbrev-ref HEAD)"
+require_non_integration_branch "$branch"
+
+if [[ ! -f "$wt_abs/review.log" ]]; then
+  echo "Publish blocked: review.log not found in worktree root. Request review first." >&2
+  exit 2
+fi
+
+if git -C "$wt_abs" push -q -u origin "$branch"; then
+  :
+else
+  git -C "$wt_abs" push -q -u --force-with-lease origin "$branch"
+fi
+
+if (cd "$wt_abs" && gh pr view --json number >/dev/null 2>&1); then
+  :
+else
+  (cd "$wt_abs" && gh pr create --base "$base_branch" --head "$branch" --fill >/dev/null)
+fi
+
+(cd "$wt_abs" && gh pr view --json number,url --jq '"PR #\(.number): \(.url)"')

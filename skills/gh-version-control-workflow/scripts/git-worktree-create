@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_worktree_lib.sh
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -ne 4 ]]; then
+  cat >&2 <<'EOF'
+Usage:
+  git-worktree-create <repo_path> <base_branch> <branch_name> <worktree_name>
+EOF
+  exit 2
+fi
+
+repo_path="$1"
+base_branch="$2"
+branch_name="$3"
+worktree_name="$4"
+
+repo_abs="$(cd "$repo_path" && pwd)"
+if ! git -C "$repo_abs" rev-parse --git-dir >/dev/null 2>&1; then
+  echo "Not a git repository: $repo_abs" >&2
+  exit 2
+fi
+
+require_non_integration_branch "$branch_name"
+
+if git -C "$repo_abs" show-ref --verify --quiet "refs/heads/$base_branch"; then
+  base_ref="$base_branch"
+elif git -C "$repo_abs" show-ref --verify --quiet "refs/remotes/origin/$base_branch"; then
+  base_ref="origin/$base_branch"
+else
+  echo "Base branch not found locally or on origin: $base_branch" >&2
+  exit 2
+fi
+
+worktrees_dir="$repo_abs/.worktrees"
+worktree_path="$worktrees_dir/$worktree_name"
+mkdir -p "$worktrees_dir"
+
+if [[ -e "$worktree_path" ]]; then
+  echo "Worktree path already exists: $worktree_path" >&2
+  exit 2
+fi
+
+if git -C "$repo_abs" show-ref --verify --quiet "refs/heads/$branch_name"; then
+  git -C "$repo_abs" worktree add --quiet "$worktree_path" "$branch_name"
+else
+  git -C "$repo_abs" worktree add --quiet -b "$branch_name" "$worktree_path" "$base_ref"
+fi
+
+printf '%s\n' "$worktree_path"

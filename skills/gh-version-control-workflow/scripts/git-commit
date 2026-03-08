@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_worktree_lib.sh
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -lt 2 ]]; then
+  cat >&2 <<'EOF'
+Usage:
+  git-commit <worktree_path> <message> [--allow-empty] [--no-add]
+EOF
+  exit 2
+fi
+
+worktree_path="$1"
+message="$2"
+shift 2
+
+allow_empty=0
+do_add=1
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --allow-empty) allow_empty=1 ;;
+    --no-add) do_add=0 ;;
+    *)
+      echo "Unknown flag: $1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [[ -z "${message// }" ]]; then
+  echo "Commit message is required" >&2
+  exit 2
+fi
+
+resolved_output="$(resolve_worktree "$worktree_path")"
+wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
+
+branch="$(git -C "$wt_abs" rev-parse --abbrev-ref HEAD)"
+require_non_integration_branch "$branch"
+
+if [[ "$do_add" -eq 1 ]]; then
+  git -C "$wt_abs" add -A
+fi
+
+if [[ "$allow_empty" -eq 0 ]] && git -C "$wt_abs" diff --cached --quiet; then
+  echo "No staged changes to commit." >&2
+  exit 2
+fi
+
+if [[ "$allow_empty" -eq 1 ]]; then
+  git -C "$wt_abs" commit --allow-empty -m "$message" >/dev/null
+else
+  git -C "$wt_abs" commit -m "$message" >/dev/null
+fi
+
+git -C "$wt_abs" show --no-patch --oneline --quiet HEAD

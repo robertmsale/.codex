@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  launch-job <command> [args...]
+  launch-job -lc "<command string>"
+  launch-job -c "<command string>"
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+  usage >&2
+  exit 2
+fi
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ "${LAUNCH_JOB_PASSTHRU:-0}" == "1" ]]; then
+  if [[ "${1:-}" == "-lc" || "${1:-}" == "-c" ]]; then
+    exec /bin/zsh "$@"
+  fi
+  exec "$@"
+fi
+
+if [[ "${1:-}" == "-lc" || "${1:-}" == "-c" ]]; then
+  mode="$1"
+  shift
+  if [[ $# -lt 1 ]]; then
+    usage >&2
+    exit 2
+  fi
+  shell_bin="${LAUNCH_JOB_SHELL:-/bin/zsh}"
+  command_text="$1"
+  shift
+  set -- "$shell_bin" "$mode" "$command_text" "$@"
+fi
+
+umask 077
+state_root="/tmp/codex-command-jobs"
+mkdir -p "$state_root"
+
+if command -v uuidgen >/dev/null 2>&1; then
+  job_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+else
+  job_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+fi
+
+job_file="$state_root/${job_id}.job"
+{
+  printf 'job_id=%s\n' "$job_id"
+  printf 'cwd=%s\n' "$PWD"
+  printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} >"$job_file"
+
+printf 'job_id: %s\n' "$job_id" >&2
+
+cleanup() {
+  rm -f "$job_file"
+}
+
+cmd_pid=""
+on_signal() {
+  if [[ -n "${cmd_pid:-}" ]]; then
+    kill -TERM "$cmd_pid" 2>/dev/null || true
+    wait "$cmd_pid" 2>/dev/null || true
+  fi
+  cleanup
+  exit 130
+}
+
+trap on_signal HUP INT TERM
+trap 'cleanup' EXIT
+
+LAUNCH_JOB_PASSTHRU=1 "$@" &
+cmd_pid=$!
+
+if wait "$cmd_pid"; then
+  exit 0
+else
+  exit $?
+fi

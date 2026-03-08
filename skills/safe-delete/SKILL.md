@@ -1,27 +1,20 @@
 ---
 name: safe-delete
-description: Use MCP `safeDelete.safe_delete` to stage deletions under `/tmp/safe-delete` with collision-safe timestamped paths. Prefer this skill whenever a task involves removing files or directories. [skill-hash:9e1d4bf]
+description: Stage deletions with `scripts/safe-delete` (script-first, no MCP tool calls). Moves paths to `/tmp/safe-delete` with collision-safe names. [skill-hash:71d8a0c]
 ---
 
 # Safe Delete
 
-Use this skill whenever a task involves deleting files or directories.
+Use this skill whenever you need to remove files/directories without permanent deletion.
 
-Rules:
+## Required Path
 
-- Never use `rm`.
-- Use MCP `safeDelete.safe_delete` so paths are moved to `/tmp/safe-delete` and
-  can be recovered.
-- If MCP is unavailable, fallback to:
-  - `mkdir -p /tmp/safe-delete`
-  - `mv -- <path...> /tmp/safe-delete/`
+- Run: `~/.codex/skills/safe-delete/scripts/safe-delete <path...>`
+- Do not call MCP safe-delete tools.
+- Do not run raw `rm` unless user explicitly asks for hard delete.
 
-Patterns:
+## Behavior
 
-- Single path: `safeDelete.safe_delete(paths=[\"<path>\"])`
-- Multiple paths: `safeDelete.safe_delete(paths=[\"<path1>\", \"<path2>\"])`
-- Optional cwd: `safeDelete.safe_delete(paths=[\"build\"], cwd=\"/repo\")`
-
-Quick check:
-
-- `ls -la /tmp/safe-delete`
+- Creates `/tmp/safe-delete` if missing.
+- Moves each provided path to `/tmp/safe-delete/<name>-<timestamp>-<rand>`.
+- Prints one mapping line per moved path.

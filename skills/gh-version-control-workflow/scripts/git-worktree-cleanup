@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_worktree_lib.sh
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -ne 1 ]]; then
+  cat >&2 <<'EOF'
+Usage:
+  git-worktree-cleanup <worktree_path>
+EOF
+  exit 2
+fi
+
+worktree_path="$1"
+
+if [[ ! -e "$worktree_path" ]]; then
+  echo "all clear: worktree path is already missing"
+  exit 0
+fi
+
+if ! git -C "$worktree_path" rev-parse --git-dir >/dev/null 2>&1; then
+  echo "Path is not a git worktree: $worktree_path" >&2
+  exit 2
+fi
+
+resolved_output="$(resolve_worktree "$worktree_path")"
+wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
+repo_root="$(printf '%s\n' "$resolved_output" | sed -n '2p')"
+
+/bin/rm -rf "$wt_abs"
+git -C "$repo_root" worktree prune --expire now >/dev/null
+
+printf 'Cleaned worktree: %s\n' "$wt_abs"

@@ -2,10 +2,12 @@ model = "gpt-5.3-codex"
 model_reasoning_effort = "high"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
+background_terminal_max_timeout = 9223372036854775807
 
 web_search = "live"
 notify = ["python3", "/Users/robertsale/.codex/notify.py"]
 personality = "pragmatic"
+#zsh_path = "/usr/local/bin/launch-job"
 
 project_root_markers = [".git", ".codex"]
 
@@ -93,6 +95,7 @@ Communication style:
 """
 
 [features]
+#shell_zsh_fork = true
 view_image = true
 ghost_commit = false
 skills = true
@@ -112,11 +115,18 @@ command = "uv"
 args = ["--project", "/Users/robertsale/.codex/mcp/gitops", "run", "gitops-mcp"]
 tool_timeout_sec = 9223372036854775807
 startup_timeout_sec = 20
-enabled = true
+enabled = false
 
 [mcp_servers.commandParser]
 command = "uv"
 args = ["--project", "/Users/robertsale/.codex/mcp/command-parser", "run", "command-parser-mcp"]
+tool_timeout_sec = 9223372036854775807
+startup_timeout_sec = 20
+enabled = false
+
+[mcp_servers.commandExecution]
+command = "uv"
+args = ["--project", "/Users/robertsale/.codex/mcp/command-execution", "run", "command-execution-mcp"]
 tool_timeout_sec = 9223372036854775807
 startup_timeout_sec = 20
 enabled = true
@@ -126,14 +136,14 @@ command = "uv"
 args = ["--project", "/Users/robertsale/.codex/mcp/safe-delete", "run", "safe-delete-mcp"]
 tool_timeout_sec = 9223372036854775807
 startup_timeout_sec = 20
-enabled = true
+enabled = false
 
 [mcp_servers.robdexOrchestrator]
 command = "uv"
 args = ["--project", "/Users/robertsale/.codex/mcp/robdex-orchestrator", "run", "robdex-orchestrator-mcp"]
 tool_timeout_sec = 9223372036854775807
 startup_timeout_sec = 20
-enabled = true
+enabled = false
 
 [notice]
 hide_gpt5_1_migration_prompt = true

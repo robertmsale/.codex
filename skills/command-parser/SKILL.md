@@ -1,6 +1,6 @@
 ---
 name: command-parser
-description: Run noisy command parsing via `scripts/command-parser`. It executes the target command directly, then analyzes output with `codex exec` in Docker (`@openai/codex@0.110.0`). [skill-hash:b1f4d8e]
+description: Run noisy command parsing via `launch-job ~/.codex/skills/command-parser/scripts/command-parser ...`. Keep command execution on the launch-job workflow. [skill-hash:4a9825d]
 ---
 
 # Command Parser
@@ -34,13 +34,13 @@ already has. This skill does not add custom sandbox bypass logic.
 ## Usage
 
 Default:
-- `~/.codex/skills/command-parser/scripts/command-parser <command...>`
+- `launch-job ~/.codex/skills/command-parser/scripts/command-parser <command...>`
 
 With warnings:
-- `~/.codex/skills/command-parser/scripts/command-parser --warnings <command...>`
+- `launch-job ~/.codex/skills/command-parser/scripts/command-parser --warnings <command...>`
 
 With additional analysis request:
-- `~/.codex/skills/command-parser/scripts/command-parser --request-additional "<analysis request>" <command...>`
+- `launch-job ~/.codex/skills/command-parser/scripts/command-parser --request-additional "<analysis request>" <command...>`
 
 Recommended default:
 - Leave `--request-additional` empty.
@@ -52,7 +52,7 @@ Recommended default:
 - The parser cannot run commands, rerun commands, retry commands, or inspect anything outside captured files.
 - If the request asks parser to run commands, it must return:
   `I cannot run commands, do not ask me again.`
-- Simple commands (for example `ls`, `rg`, `echo`, `cargo fmt`) should be run directly, not via command-parser.
+- Simple commands (for example `ls`, `rg`, `echo`, `cargo fmt`) should be run with `launch-job` directly, not via command-parser.
 
 ## Output Contract
 

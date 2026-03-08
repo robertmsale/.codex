@@ -8,6 +8,15 @@
   is available.
 - DO NOT RUN CODE FORMATTING TOOLS.
 
+### Command Execution (Required)
+
+- Every shell command execution produces a stable `job_id` (via `launch-job` shell flow).
+- Capture the `job_id` from `stderr` line format: `job_id: <uuid>`.
+- If the command is not already complete when you regain control, call MCP
+  `command_execution_wait(job_id)` and wait on that same ID.
+- Never relaunch the same command as a timeout workaround.
+- Never use direct polling loops when `command_execution_wait` is available.
+
 ## Skill Rules
 
 ### When to read a SKILL.md
@@ -40,12 +49,9 @@ explicitly asks you to.
 - If a skill has no hash token, fall back to the standard "When to read a
   SKILL.md" rules.
 
-### MCP & Skill Problems
+### Tooling & Skill Problems
 
-Workflows are mandatory, especially in regards to skills and MCP tools. If you
-run into issues with MCP tools that are not input errors, please stop and notify
-the user so they can fix your tooling. If the robdexOrchestrator MCP tooling is
-available, contact your project's orchestrator, who can pass any messages along
-to the Config orchestrator, then stop until you receive confirmation the tooling
-is fixed. This includes tool input params, and output params (truncated to
-remove noise)
+Workflows are mandatory. If a required skill script or MCP tool fails in a
+non-input way, stop and notify the user so tooling can be fixed. If robdex
+orchestration is available, contact your project's orchestrator with the failing
+tool/script invocation and truncated output, then pause until tooling is fixed.
