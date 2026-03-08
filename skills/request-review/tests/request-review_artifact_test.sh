@@ -259,8 +259,52 @@ test_remote_rerun_reuses_head_when_pr_is_open() {
   assert_file_contains "$repo_dir/review.log" "$expected"
 }
 
+test_remote_rerun_pushes_head_when_pr_branch_is_behind() {
+  local repo_dir="$tmp_root/remote-rerun-push-repo"
+  local origin_dir="$tmp_root/remote-rerun-push-origin.git"
+  local home_dir="$tmp_root/remote-rerun-push-home"
+  local bin_dir="$tmp_root/remote-rerun-push-bin"
+  local skill_copy_dir="$tmp_root/remote-rerun-push-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local output
+  local review_sha
+  local expected
+  local remote_sha
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+
+  printf 'remote rerun pushed base\n' >>"$repo_dir/file.txt"
+  git -C "$repo_dir" add file.txt
+  git -C "$repo_dir" commit -m "pushed remote commit" >/dev/null
+  git -C "$repo_dir" push origin feature/request-review-artifact >/dev/null
+
+  printf 'remote rerun local only\n' >>"$repo_dir/file.txt"
+  git -C "$repo_dir" add file.txt
+  git -C "$repo_dir" commit -m "local only commit" >/dev/null
+  review_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+
+  setup_remote_review_stubs "$bin_dir"
+  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=remote'
+
+  output="$(
+    cd "$repo_dir" &&
+      HOME="$home_dir" \
+      PATH="$bin_dir:$PATH" \
+      REQUEST_REVIEW_EXPECTED_TRIGGER_TIME=2026-03-08T00:00:00Z \
+      "$request_review_script" "test: remote rerun pushes head when pr branch is behind"
+  )"
+
+  expected="request-review (remote): 👍 from chatgpt-codex-connector[bot] on PR #711 after commit $review_sha"
+  [[ "$output" == *"$expected"* ]] || fail "unexpected remote rerun push output: $output"
+  remote_sha="$(git --git-dir="$origin_dir" rev-parse refs/heads/feature/request-review-artifact)"
+  [[ "$remote_sha" == "$review_sha" ]] || fail "expected remote branch to advance to $review_sha, got $remote_sha"
+}
+
 test_remote_disable_writes_review_log
 test_local_failure_clears_review_log
 test_remote_rerun_reuses_head_when_pr_is_open
+test_remote_rerun_pushes_head_when_pr_branch_is_behind
 
 echo "PASS: request-review artifact handling"

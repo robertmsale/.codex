@@ -163,6 +163,7 @@ existing_commit_sha_ref="${REQUEST_REVIEW_EXISTING_COMMIT_SHA:-HEAD}"
 remote_pr_number=""
 remote_pr_state=""
 remote_review_started_at=""
+remote_branch_sha=""
 
 lock_root="${HOME}/.codex/tmp"
 clear_review_result
@@ -183,6 +184,7 @@ if [[ "$review_mode" == "remote" ]]; then
   if [[ -n "$remote_pr_number" ]]; then
     remote_pr_state="$(gh pr view --json state --jq '.state' 2>/dev/null || true)"
   fi
+  remote_branch_sha="$(git ls-remote --heads origin "refs/heads/$branch_name" 2>/dev/null | awk 'NR==1 {print $1}')"
 fi
 
 if [[ "$use_existing_commit_flag" != "0" ]]; then
@@ -195,8 +197,10 @@ else
   git add -A
   if git diff --cached --quiet; then
     if [[ "$review_mode" == "remote" && -n "$remote_pr_number" && "$remote_pr_state" == "OPEN" ]]; then
-      use_existing_commit_flag="1"
       review_sha="$(git rev-parse --verify HEAD)"
+      if [[ -n "$remote_branch_sha" && "$remote_branch_sha" == "$review_sha" ]]; then
+        use_existing_commit_flag="1"
+      fi
     else
       echo "request-review: no changes to commit; refusing to review an old commit" >&2
       exit 2
@@ -246,7 +250,6 @@ if [[ "$review_mode" == "remote" ]]; then
   require_cmd gh
   require_cmd jq
 
-  echo 'Remote review takes a long time. To not interrupt this process, and do not post additional `@codex review` comments.'
   if [[ "$use_existing_commit_flag" == "0" ]]; then
     git push -u origin HEAD
   fi
@@ -307,7 +310,6 @@ if [[ "$review_mode" == "remote" ]]; then
     eyes_reaction="$(jq 'any(.[]; .content=="eyes")' <<<"$reactions_json")"
     if [[ "$eyes_reaction" == "true" && "$eyes_announced" -eq 0 ]]; then
       echo "request-review (remote): 👀 from $bot_login detected on PR #$pr_number; review is in progress, waiting for final result..."
-      echo "Do not under any circumstances interrupt this process, and do not post additional comments to the PR."
       eyes_announced=1
     fi
 
