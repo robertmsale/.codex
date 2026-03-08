@@ -40,6 +40,19 @@ prefix_rule(
 )
 
 prefix_rule(
+    pattern = ["request-review"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/request-review/scripts/request-review"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/request-review/scripts/request-review"],
+    decision = "allow",
+)
+
+prefix_rule(
     pattern = ["git-publish-worktree"],
     decision = "allow",
 )
