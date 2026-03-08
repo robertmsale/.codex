@@ -274,6 +274,12 @@ docker run --rm -i \
     -s read-only \
     -C "$docker_tmp" \
     -p "$profile" \
+    -c 'web_search="disabled"' \
+    -c "features.unified_exec=false" \
+    -c "features.multi_agent=false" \
+    -c "features.steer=false" \
+    -c "features.skills=false" \
+    -c "mcp_servers.commandParser.enabled=false" \
     "$prompt" >"$events_log"
 
 python3 - "$events_log" "$tmp_dir/response.log" <<'PY'
@@ -283,6 +289,7 @@ from pathlib import Path
 
 events_path = Path(sys.argv[1])
 output_path = Path(sys.argv[2])
+last_completed_message = None
 last_message = None
 
 for raw_line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -303,16 +310,18 @@ for raw_line in events_path.read_text(encoding="utf-8", errors="replace").splitl
         if isinstance(item, dict) and item.get("type") == "agent_message":
             text = item.get("text")
             if isinstance(text, str) and text.strip():
+                last_completed_message = text
                 last_message = text
     elif event_type == "agent_message":
         text = event.get("text")
         if isinstance(text, str) and text.strip():
             last_message = text
 
-if not last_message:
+final_message = last_completed_message or last_message
+if not final_message:
     raise SystemExit("command-parser: missing parser response")
 
-output_path.write_text(last_message.rstrip() + "\n", encoding="utf-8")
+output_path.write_text(final_message.rstrip() + "\n", encoding="utf-8")
 PY
 
 cat "$tmp_dir/response.log"
