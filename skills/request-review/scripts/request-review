@@ -33,6 +33,26 @@ emit_result() {
   printf '%s\n' "$message"
 }
 
+persist_review_result() {
+  local message="$1"
+
+  mkdir -p "$(dirname "$review_log_path")"
+  printf '%s\n' "$message" >"$review_log_path"
+
+  if [[ "$local_output_path" != "$review_log_path" ]]; then
+    mkdir -p "$(dirname "$local_output_path")"
+    printf '%s\n' "$message" >"$local_output_path"
+  fi
+}
+
+clear_review_result() {
+  rm -f "$review_log_path"
+
+  if [[ "$local_output_path" != "$review_log_path" ]]; then
+    rm -f "$local_output_path"
+  fi
+}
+
 extract_local_review_message() {
   local raw_jsonl_path="$1"
   local output_path="$2"
@@ -133,11 +153,16 @@ local_profile="${REQUEST_REVIEW_LOCAL_PROFILE:-local-review}"
 local_output_file="${REQUEST_REVIEW_LOCAL_OUTPUT_FILE:-review.log}"
 local_error_file="${REQUEST_REVIEW_LOCAL_ERROR_FILE:-review.err.log}"
 local_keep_debug_logs="${REQUEST_REVIEW_LOCAL_KEEP_DEBUG_LOGS:-0}"
+review_log_path="$repo_root/review.log"
+local_output_path="$repo_root/$local_output_file"
+local_error_path="$repo_root/$local_error_file"
+local_raw_jsonl_path="$repo_root/.request-review.events.jsonl"
 
 use_existing_commit_flag="${REQUEST_REVIEW_USE_EXISTING_COMMIT:-0}"
 existing_commit_sha_ref="${REQUEST_REVIEW_EXISTING_COMMIT_SHA:-HEAD}"
 
 lock_root="${HOME}/.codex/tmp"
+clear_review_result
 cd "$repo_root"
 branch_name="$(git rev-parse --abbrev-ref HEAD)"
 
@@ -200,6 +225,7 @@ if [[ "$review_disable" != "0" ]]; then
   if [[ "$review_mode" == "remote" && "$use_existing_commit_flag" == "0" ]]; then
     git push -u origin HEAD
   fi
+  persist_review_result "all clear!"
   emit_result "all clear!"
   exit 0
 fi
@@ -257,6 +283,7 @@ if [[ "$review_mode" == "remote" ]]; then
     if [[ "$inline_count" -gt 0 ]]; then
       result_header="request-review (remote): $inline_count inline comment(s) from $bot_login on PR #$pr_number for commit $review_sha"
       result_body="$(jq -r '.[] | "- \(.html_url)\n  File: \(.path // "unknown"):\(.line // 0)\n  Comment: \(.body)\n"' <<<"$inline_json")"
+      persist_review_result "${result_header}"$'\n\n'"${result_body}"
       emit_result "${result_header}"$'\n\n'"${result_body}"
       exit 0
     fi
@@ -273,6 +300,7 @@ if [[ "$review_mode" == "remote" ]]; then
 
     thumbs_up="$(jq 'any(.[]; .content=="+1")' <<<"$reactions_json")"
     if [[ "$thumbs_up" == "true" ]]; then
+      persist_review_result "request-review (remote): 👍 from $bot_login on PR #$pr_number after commit $review_sha"
       emit_result "request-review (remote): 👍 from $bot_login on PR #$pr_number after commit $review_sha"
       exit 0
     fi
@@ -288,9 +316,7 @@ fi
 
 require_cmd docker
 
-local_output_path="$repo_root/$local_output_file"
-local_error_path="$repo_root/$local_error_file"
-local_raw_jsonl_path="$repo_root/.request-review.events.jsonl"
+local_tmp_output_path="$repo_root/.request-review.output.tmp"
 
 config_file="${HOME}/.codex/config.toml"
 if [[ ! -f "$config_file" ]]; then
@@ -346,17 +372,26 @@ else
   review_exit=$?
 fi
 
-extract_local_review_message "$local_raw_jsonl_path" "$local_output_path"
+extract_local_review_message "$local_raw_jsonl_path" "$local_tmp_output_path"
 
-if [[ ! -s "$local_output_path" ]]; then
+if [[ ! -s "$local_tmp_output_path" ]]; then
   emit_result "request-review (local): missing review output at $local_output_path (check $local_error_path)"
   exit 1
 fi
 
-emit_result "$(cat "$local_output_path")"
+local_review_message="$(cat "$local_tmp_output_path")"
+rm -f "$local_tmp_output_path"
+
+if [[ "$review_exit" -ne 0 ]]; then
+  emit_result "$local_review_message"
+  exit "$review_exit"
+fi
+
+persist_review_result "$local_review_message"
+emit_result "$local_review_message"
 
 if [[ "$local_keep_debug_logs" == "0" ]]; then
   rm -f "$local_raw_jsonl_path"
 fi
 
-exit "$review_exit"
+exit 0
