@@ -1,4 +1,4 @@
-model = "gpt-5.3-codex"
+model = "gpt-5.4"
 model_reasoning_effort = "high"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
@@ -17,7 +17,10 @@ writable_roots = [
   "/Users/robertsale/.cargo",
   "/Users/robertsale/.pub-cache",
   "/Users/robertsale/.cache",
+  "/Users/robertsale/.cache/uv",
   "/Users/robertsale/.swiftpm",
+  "/tmp/uv-cache",
+  "/private/tmp/uv-cache",
   "/private/var/folders",
   "/var/folders",
   "/Users/robertsale/Library/Containers/com.ezraworks.aierp",

@@ -24,7 +24,7 @@ Execution model is simple:
 
 ## Workflow
 
-1. Run the command normally (shell path is `launch-job`).
+1. Run the command normally.
 2. Capture the printed `job_id`.
 3. If completion is not immediate, call:
    `command_execution_wait(job_id=<that_id>)`.

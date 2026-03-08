@@ -1,6 +1,6 @@
 ---
 name: request-review
-description: Request review via `scripts/request-review` (script-first, no MCP tool calls). The script auto-routes through `launch-job` and writes `review.log` in the worktree root. [skill-hash:1c7e2d4]
+description: Request review via `scripts/request-review` (script-first, no MCP tool calls). Writes `review.log` in the worktree root. [skill-hash:4e7a9d1]
 ---
 
 # Request Review
@@ -15,7 +15,6 @@ Use this skill when you need code review on the current worktree branch.
 
 ## Behavior
 
-- The script auto-routes through `launch-job` by default.
 - Review output is written/read from `review.log` in the worktree root.
 - Local vs remote mode is controlled by operator `.env` settings.
 

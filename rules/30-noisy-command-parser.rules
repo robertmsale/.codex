@@ -34,6 +34,11 @@ prefix_rule(
     decision = "forbidden",
     justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser npm run build.",
 )
+prefix_rule(
+    pattern = ["xcodebuild"],
+    decision = "forbidden",
+    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser npm run build.",
+)
 
 # Hard ban for formatters.
 prefix_rule(
