@@ -160,6 +160,8 @@ local_raw_jsonl_path="$repo_root/.request-review.events.jsonl"
 
 use_existing_commit_flag="${REQUEST_REVIEW_USE_EXISTING_COMMIT:-0}"
 existing_commit_sha_ref="${REQUEST_REVIEW_EXISTING_COMMIT_SHA:-HEAD}"
+remote_pr_number=""
+remote_pr_state=""
 
 lock_root="${HOME}/.codex/tmp"
 clear_review_result
@@ -175,6 +177,13 @@ for protected_branch in $integration_branches_raw; do
   fi
 done
 
+if [[ "$review_mode" == "remote" ]]; then
+  remote_pr_number="$(gh pr view --json number --jq '.number' 2>/dev/null || true)"
+  if [[ -n "$remote_pr_number" ]]; then
+    remote_pr_state="$(gh pr view --json state --jq '.state' 2>/dev/null || true)"
+  fi
+fi
+
 if [[ "$use_existing_commit_flag" != "0" ]]; then
   review_sha="$(git rev-parse --verify "${existing_commit_sha_ref}^{commit}" 2>/dev/null || true)"
   if [[ -z "$review_sha" ]]; then
@@ -184,19 +193,21 @@ if [[ "$use_existing_commit_flag" != "0" ]]; then
 else
   git add -A
   if git diff --cached --quiet; then
-    echo "request-review: no changes to commit; refusing to review an old commit" >&2
-    exit 2
+    if [[ "$review_mode" == "remote" && -n "$remote_pr_number" && "$remote_pr_state" == "OPEN" ]]; then
+      use_existing_commit_flag="1"
+      review_sha="$(git rev-parse --verify HEAD)"
+    else
+      echo "request-review: no changes to commit; refusing to review an old commit" >&2
+      exit 2
+    fi
+  else
+    git commit -m "$commit_message"
+    review_sha="$(git rev-parse --verify HEAD)"
   fi
-
-  git commit -m "$commit_message"
-  review_sha="$(git rev-parse --verify HEAD)"
 fi
 
 repo_name_for_lock="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || basename "$repo_root")"
-pr_number_for_lock=""
-if [[ "$review_mode" == "remote" ]]; then
-  pr_number_for_lock="$(gh pr view --json number --jq '.number' 2>/dev/null || true)"
-fi
+pr_number_for_lock="$remote_pr_number"
 
 if [[ "$review_mode" == "remote" && -n "$pr_number_for_lock" ]]; then
   lock_scope="mode=remote|repo=${repo_name_for_lock}|pr=${pr_number_for_lock}"
