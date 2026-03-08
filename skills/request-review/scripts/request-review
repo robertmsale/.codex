@@ -162,6 +162,7 @@ use_existing_commit_flag="${REQUEST_REVIEW_USE_EXISTING_COMMIT:-0}"
 existing_commit_sha_ref="${REQUEST_REVIEW_EXISTING_COMMIT_SHA:-HEAD}"
 remote_pr_number=""
 remote_pr_state=""
+remote_review_started_at=""
 
 lock_root="${HOME}/.codex/tmp"
 clear_review_result
@@ -265,6 +266,7 @@ if [[ "$review_mode" == "remote" ]]; then
     emit_result "request-review (remote): failed to post trigger comment '$trigger_comment' on PR #$pr_number"
     exit 1
   fi
+  remote_review_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   repo_name="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
   commit_timestamp=""
@@ -288,7 +290,7 @@ if [[ "$review_mode" == "remote" ]]; then
   eyes_announced=0
   while true; do
     inline_json="$(gh api "repos/$repo_name/pulls/$pr_number/comments?since=$commit_timestamp" --paginate \
-      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at > "'"$commit_timestamp"'") and (.commit_id=="'"$review_sha"'" or .original_commit_id=="'"$review_sha"'")) | {id,created_at,html_url,path,line,body}]')"
+      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at > "'"$remote_review_started_at"'") and (.commit_id=="'"$review_sha"'" or .original_commit_id=="'"$review_sha"'")) | {id,created_at,html_url,path,line,body}]')"
 
     inline_count="$(jq 'length' <<<"$inline_json")"
     if [[ "$inline_count" -gt 0 ]]; then
@@ -300,7 +302,7 @@ if [[ "$review_mode" == "remote" ]]; then
     fi
 
     reactions_json="$(gh api "repos/$repo_name/issues/$pr_number/reactions" -H 'Accept: application/vnd.github+json' --paginate \
-      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at > "'"$commit_timestamp"'")) | {content,created_at}]')"
+      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at > "'"$remote_review_started_at"'")) | {content,created_at}]')"
 
     eyes_reaction="$(jq 'any(.[]; .content=="eyes")' <<<"$reactions_json")"
     if [[ "$eyes_reaction" == "true" && "$eyes_announced" -eq 0 ]]; then
