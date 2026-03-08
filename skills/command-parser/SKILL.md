@@ -1,14 +1,13 @@
 ---
 name: command-parser
-description: Run noisy command parsing via `~/.codex/skills/command-parser/scripts/command-parser ...`. It is a neutral execute-capture-parse wrapper; sandbox/approval failures short-circuit instead of being parsed. [skill-hash:7e91c4a]
+description: Run noisy command parsing via `~/.codex/skills/command-parser/scripts/command-parser ...`. It enforces `command-parser.rule`, runs the command directly, captures `output.log`, and returns only the parser's final extraction. [skill-hash:1c8d4e2]
 ---
 
 # Command Parser
 
 ## Purpose
 
-Use this skill when a command is noisy (high-volume build/test/lint/tool output)
-and you only need compact extraction.
+Use this skill when a command is noisy and you only need compact extraction.
 
 Do not use this for simple commands.
 
@@ -22,15 +21,14 @@ Build image script:
 
 ## Execution Model
 
-1. Runs the target command directly in the caller environment.
-2. Captures command stdout/stderr to `output.log`.
-3. Runs `codex exec --json` inside Docker to parse `output.log`.
-4. Prints only the final parser message (not full event noise).
-5. Exits with the original command exit code.
+1. Enforces `command-parser.rule` with `codex execpolicy check`.
+2. Runs the target command directly in the caller environment.
+3. Captures command stdout/stderr to `output.log`.
+4. Runs `codex exec --json` inside Docker to parse `output.log`.
+5. Prints only the parser's final message.
+6. Exits with the original command exit code.
 
-Sandbox/approval behavior for the target command is whatever the calling agent
-already has. This skill does not add custom sandbox bypass logic or hidden
-workspace mutation.
+This skill does not mutate the workspace or add command-specific behavior.
 
 ## Usage
 
@@ -51,7 +49,6 @@ Recommended default:
 
 - `--request-additional` is analysis-only.
 - The parser cannot run commands, rerun commands, retry commands, or inspect anything outside captured files.
-- If the target command hits sandbox/approval restrictions, command-parser stops immediately and tells you to run the command directly so Codex can own the approval boundary.
 - If the request asks parser to run commands, it must return:
   `I cannot run commands, do not ask me again.`
 - Simple commands (for example `ls`, `rg`, `echo`, `cargo fmt`) should be run directly, not via command-parser.
@@ -63,7 +60,7 @@ Recommended default:
   - `## Errors` with concise bullets and file/line when available
   - optional `## Warnings` when warnings are requested
 - Optional `## Requested Information` appears only when `--request-additional` is provided.
-- Output should be concise and extraction-only (no remediation plans or extra chatter).
+- Output is extraction-only.
 
 ## Operator Config
 
