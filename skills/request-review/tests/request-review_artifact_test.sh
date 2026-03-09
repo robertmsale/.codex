@@ -671,6 +671,57 @@ test_remote_rewritten_head_force_pushes_with_lease() {
   assert_file_contains "$repo_dir/review.log" "$expected"
 }
 
+test_remote_existing_commit_from_stale_clone_does_not_rewind_remote() {
+  local repo_dir="$tmp_root/remote-stale-clone-repo"
+  local origin_dir="$tmp_root/remote-stale-clone-origin.git"
+  local home_dir="$tmp_root/remote-stale-clone-home"
+  local bin_dir="$tmp_root/remote-stale-clone-bin"
+  local skill_copy_dir="$tmp_root/remote-stale-clone-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local output
+  local review_sha
+  local remote_sha
+  local other_clone_dir="$tmp_root/remote-stale-clone-other"
+  local pr_exists_file="$tmp_root/remote-stale-clone-pr-open"
+  local expected
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+  setup_remote_review_stubs "$bin_dir"
+  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=remote'
+
+  printf 'stale clone review target\n' >>"$repo_dir/file.txt"
+  git -C "$repo_dir" add file.txt
+  git -C "$repo_dir" commit -m "stale clone review target" >/dev/null
+  git -C "$repo_dir" push origin feature/request-review-artifact >/dev/null
+  review_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+
+  git clone "$origin_dir" "$other_clone_dir" >/dev/null
+  git -C "$other_clone_dir" checkout feature/request-review-artifact >/dev/null
+  git -C "$other_clone_dir" config user.name "Codex Test"
+  git -C "$other_clone_dir" config user.email "codex@example.com"
+  printf 'newer remote-only commit\n' >>"$other_clone_dir/file.txt"
+  git -C "$other_clone_dir" add file.txt
+  git -C "$other_clone_dir" commit -m "newer remote-only commit" >/dev/null
+  git -C "$other_clone_dir" push origin feature/request-review-artifact >/dev/null
+  remote_sha="$(git --git-dir="$origin_dir" rev-parse refs/heads/feature/request-review-artifact)"
+
+  output="$(
+    cd "$repo_dir" &&
+      HOME="$home_dir" \
+      PATH="$bin_dir:$PATH" \
+      REQUEST_REVIEW_TEST_PR_EXISTS_FILE="$pr_exists_file" \
+      REQUEST_REVIEW_EXPECTED_TRIGGER_TIME=2026-03-08T00:00:00Z \
+      "$request_review_script" --use-existing-commit --existing-commit "$review_sha" "test: stale clone existing commit"
+  )"
+
+  expected="request-review (remote): 👍 from chatgpt-codex-connector[bot] on PR #711 after commit $review_sha"
+  [[ "$output" == *"$expected"* ]] || fail "unexpected stale-clone existing-commit output: $output"
+  [[ "$(git --git-dir="$origin_dir" rev-parse refs/heads/feature/request-review-artifact)" == "$remote_sha" ]] || fail "expected remote branch to remain at $remote_sha"
+  assert_file_contains "$repo_dir/review.log" "$expected"
+}
+
 test_remote_disable_writes_review_log
 test_local_failure_clears_review_log
 test_remote_rerun_reuses_head_when_pr_is_open
@@ -683,5 +734,6 @@ test_remote_clean_head_without_pr_reuses_head_and_creates_pr
 test_remote_existing_commit_pushes_selected_sha_not_head
 test_remote_existing_ancestor_commit_skips_non_fast_forward_push
 test_remote_rewritten_head_force_pushes_with_lease
+test_remote_existing_commit_from_stale_clone_does_not_rewind_remote
 
 echo "PASS: request-review artifact handling"
