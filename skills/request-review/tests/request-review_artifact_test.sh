@@ -207,6 +207,38 @@ make_skill_copy() {
   printf '%s\n' "$env_contents" >"$dest_dir/.env"
 }
 
+test_canonical_env_overrides_agent_runtime_env() {
+  local repo_dir="$tmp_root/canonical-env-repo"
+  local origin_dir="$tmp_root/canonical-env-origin.git"
+  local home_dir="$tmp_root/canonical-env-home"
+  local bin_dir="$tmp_root/canonical-env-bin"
+  local skill_copy_dir="$tmp_root/canonical-env-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local output
+  local canonical_env_dir="$home_dir/.codex/skills/request-review"
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+  setup_local_success_review_stubs "$home_dir" "$bin_dir"
+  mkdir -p "$canonical_env_dir"
+  printf '%s\n' 'REQUEST_REVIEW_MODE=local' >"$canonical_env_dir/.env"
+  cp -R "$skill_dir" "$skill_copy_dir"
+  rm -f "$skill_copy_dir/.env"
+
+  output="$(
+    cd "$repo_dir" &&
+      HOME="$home_dir" \
+      CODEX_HOME="$home_dir/.codex" \
+      PATH="$bin_dir:$PATH" \
+      REQUEST_REVIEW_MODE=remote \
+      "$request_review_script" --use-existing-commit "test: canonical env wins"
+  )"
+
+  [[ "$output" == "all clear!" ]] || fail "expected canonical env to force local mode, got: $output"
+  assert_file_contains "$repo_dir/review.log" "all clear!"
+}
+
 test_remote_disable_writes_review_log() {
   local repo_dir="$tmp_root/remote-repo"
   local origin_dir="$tmp_root/remote-origin.git"
@@ -599,6 +631,7 @@ test_remote_rerun_reuses_head_when_pr_is_open
 test_remote_rerun_pushes_head_when_pr_branch_is_behind
 test_use_existing_commit_flag_reviews_clean_head
 test_existing_commit_flag_like_text_stays_in_message
+test_canonical_env_overrides_agent_runtime_env
 test_remote_dirty_worktree_creates_pr_and_reviews_in_one_shot
 test_remote_clean_head_without_pr_reuses_head_and_creates_pr
 test_remote_existing_commit_pushes_selected_sha_not_head

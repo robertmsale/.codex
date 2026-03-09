@@ -149,6 +149,20 @@ load_operator_env() {
   fi
 }
 
+resolve_operator_env_file() {
+  local skill_dir="$1"
+  local codex_home="${CODEX_HOME:-$HOME/.codex}"
+  local canonical_env_file="$codex_home/skills/request-review/.env"
+  local local_env_file="$skill_dir/.env"
+
+  if [[ -f "$canonical_env_file" ]]; then
+    printf '%s\n' "$canonical_env_file"
+    return
+  fi
+
+  printf '%s\n' "$local_env_file"
+}
+
 cli_use_existing_commit_flag=""
 cli_existing_commit_sha_ref=""
 commit_message_parts=()
@@ -214,7 +228,7 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 skill_dir="$(cd "$script_dir/.." && pwd)"
-load_operator_env "$skill_dir/.env"
+load_operator_env "$(resolve_operator_env_file "$skill_dir")"
 
 review_mode="${REQUEST_REVIEW_MODE:-local}"
 bot_login="${REQUEST_REVIEW_BOT_LOGIN:-chatgpt-codex-connector[bot]}"
