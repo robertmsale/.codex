@@ -14,8 +14,8 @@ Examples:
 
 Optional runtime env flags:
   REQUEST_REVIEW_USE_EXISTING_COMMIT=1
-    - Skip git add/commit.
-    - In remote mode, also skip git push.
+    - Review the current HEAD (or REQUEST_REVIEW_EXISTING_COMMIT_SHA) instead of creating a new commit.
+    - In remote mode, the script still pushes when origin does not yet have that commit.
   REQUEST_REVIEW_EXISTING_COMMIT_SHA=<sha-or-ref>
     - Review this commit when REQUEST_REVIEW_USE_EXISTING_COMMIT=1.
     - Defaults to HEAD.
@@ -209,6 +209,8 @@ remote_pr_number=""
 remote_pr_state=""
 remote_review_started_at=""
 remote_branch_sha=""
+remote_default_branch=""
+should_push_review_sha=0
 
 lock_root="${HOME}/.codex/tmp"
 clear_review_result
@@ -230,6 +232,7 @@ if [[ "$review_mode" == "remote" ]]; then
     remote_pr_state="$(gh pr view --json state --jq '.state' 2>/dev/null || true)"
   fi
   remote_branch_sha="$(git ls-remote --heads origin "refs/heads/$branch_name" 2>/dev/null | awk 'NR==1 {print $1}')"
+  remote_default_branch="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
 fi
 
 if [[ "$use_existing_commit_flag" != "0" ]]; then
@@ -238,21 +241,23 @@ if [[ "$use_existing_commit_flag" != "0" ]]; then
     echo "request-review: REQUEST_REVIEW_EXISTING_COMMIT_SHA is not a valid commit: $existing_commit_sha_ref" >&2
     exit 2
   fi
+  if [[ "$review_mode" == "remote" && "$remote_branch_sha" != "$review_sha" ]]; then
+    should_push_review_sha=1
+  fi
 else
   git add -A
   if git diff --cached --quiet; then
-    if [[ "$review_mode" == "remote" && -n "$remote_pr_number" && "$remote_pr_state" == "OPEN" ]]; then
-      review_sha="$(git rev-parse --verify HEAD)"
-      if [[ -n "$remote_branch_sha" && "$remote_branch_sha" == "$review_sha" ]]; then
-        use_existing_commit_flag="1"
-      fi
-    else
-      echo "request-review: no changes to commit; refusing to review an old commit" >&2
-      exit 2
+    review_sha="$(git rev-parse --verify HEAD)"
+    use_existing_commit_flag="1"
+    if [[ "$review_mode" == "remote" && "$remote_branch_sha" != "$review_sha" ]]; then
+      should_push_review_sha=1
     fi
   else
     git commit -m "$commit_message"
     review_sha="$(git rev-parse --verify HEAD)"
+    if [[ "$review_mode" == "remote" ]]; then
+      should_push_review_sha=1
+    fi
   fi
 fi
 
@@ -283,7 +288,7 @@ printf 'pid=%s\nstarted=%s\nscope=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$
 trap 'rm -f "$lock_dir/owner" 2>/dev/null || true; rmdir "$lock_dir" 2>/dev/null || true' EXIT
 
 if [[ "$review_disable" != "0" ]]; then
-  if [[ "$review_mode" == "remote" && "$use_existing_commit_flag" == "0" ]]; then
+  if [[ "$review_mode" == "remote" && "$should_push_review_sha" != "0" ]]; then
     git push -u origin HEAD
   fi
   persist_review_result "all clear!"
@@ -295,15 +300,23 @@ if [[ "$review_mode" == "remote" ]]; then
   require_cmd gh
   require_cmd jq
 
-  if [[ "$use_existing_commit_flag" == "0" ]]; then
+  if [[ "$should_push_review_sha" != "0" ]]; then
     git push -u origin HEAD
   fi
 
   pr_number="$(gh pr view --json number,state --jq '.number' 2>/dev/null || true)"
   pr_state="$(gh pr view --json number,state --jq '.state' 2>/dev/null || true)"
   if [[ -z "$pr_number" ]]; then
-    emit_result "request-review (remote): no PR found for branch '$branch_name'. Open a PR first."
-    exit 1
+    if [[ -z "$remote_default_branch" ]]; then
+      emit_result "request-review (remote): no PR found for branch '$branch_name', and failed to determine the repo default branch for PR creation."
+      exit 1
+    fi
+    if ! gh pr create --base "$remote_default_branch" --head "$branch_name" --fill >/dev/null 2>&1; then
+      emit_result "request-review (remote): failed to create a PR for branch '$branch_name' against '$remote_default_branch'."
+      exit 1
+    fi
+    pr_number="$(gh pr view --json number,state --jq '.number' 2>/dev/null || true)"
+    pr_state="$(gh pr view --json number,state --jq '.state' 2>/dev/null || true)"
   fi
   if [[ "$pr_state" != "OPEN" ]]; then
     emit_result "request-review (remote): PR #$pr_number is not OPEN (state: $pr_state)."

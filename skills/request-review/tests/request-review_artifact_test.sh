@@ -102,11 +102,18 @@ setup_remote_review_stubs() {
 set -euo pipefail
 
 if [[ "\${1:-}" == "repo" && "\${2:-}" == "view" ]]; then
+  if [[ "\$*" == *".defaultBranchRef.name"* ]]; then
+    echo "\${REQUEST_REVIEW_TEST_DEFAULT_BRANCH:-main}"
+    exit 0
+  fi
   echo "example/repo"
   exit 0
 fi
 
 if [[ "\${1:-}" == "pr" && "\${2:-}" == "view" ]]; then
+  if [[ -n "\${REQUEST_REVIEW_TEST_PR_EXISTS_FILE:-}" && ! -f "\${REQUEST_REVIEW_TEST_PR_EXISTS_FILE}" ]]; then
+    exit 1
+  fi
   if [[ "\$*" == *".number"* ]]; then
     echo "711"
     exit 0
@@ -118,6 +125,14 @@ if [[ "\${1:-}" == "pr" && "\${2:-}" == "view" ]]; then
 fi
 
 if [[ "\${1:-}" == "pr" && "\${2:-}" == "comment" ]]; then
+  exit 0
+fi
+
+if [[ "\${1:-}" == "pr" && "\${2:-}" == "create" ]]; then
+  if [[ -n "\${REQUEST_REVIEW_TEST_PR_EXISTS_FILE:-}" ]]; then
+    : >"\${REQUEST_REVIEW_TEST_PR_EXISTS_FILE}"
+  fi
+  echo "https://github.com/example/repo/pull/711"
   exit 0
 fi
 
@@ -265,6 +280,7 @@ test_remote_rerun_reuses_head_when_pr_is_open() {
   local output
   local review_sha
   local expected
+  local pr_exists_file="$tmp_root/remote-rerun-pr-open"
 
   setup_repo "$repo_dir" "$origin_dir"
   setup_common_home "$home_dir"
@@ -278,11 +294,13 @@ test_remote_rerun_reuses_head_when_pr_is_open() {
 
   setup_remote_review_stubs "$bin_dir"
   make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=remote'
+  : >"$pr_exists_file"
 
   output="$(
     cd "$repo_dir" &&
       HOME="$home_dir" \
       PATH="$bin_dir:$PATH" \
+      REQUEST_REVIEW_TEST_PR_EXISTS_FILE="$pr_exists_file" \
       REQUEST_REVIEW_EXPECTED_TRIGGER_TIME=2026-03-08T00:00:00Z \
       "$request_review_script" "test: remote rerun reuses head"
   )"
@@ -303,6 +321,7 @@ test_remote_rerun_pushes_head_when_pr_branch_is_behind() {
   local review_sha
   local expected
   local remote_sha
+  local pr_exists_file="$tmp_root/remote-rerun-push-pr-open"
 
   setup_repo "$repo_dir" "$origin_dir"
   setup_common_home "$home_dir"
@@ -320,11 +339,13 @@ test_remote_rerun_pushes_head_when_pr_branch_is_behind() {
 
   setup_remote_review_stubs "$bin_dir"
   make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=remote'
+  : >"$pr_exists_file"
 
   output="$(
     cd "$repo_dir" &&
       HOME="$home_dir" \
       PATH="$bin_dir:$PATH" \
+      REQUEST_REVIEW_TEST_PR_EXISTS_FILE="$pr_exists_file" \
       REQUEST_REVIEW_EXPECTED_TRIGGER_TIME=2026-03-08T00:00:00Z \
       "$request_review_script" "test: remote rerun pushes head when pr branch is behind"
   )"
@@ -394,11 +415,96 @@ test_existing_commit_flag_like_text_stays_in_message() {
   [[ "$(git -C "$repo_dir" log -1 --pretty=%s)" == "fix parser --use-existing-commit text" ]] || fail "expected full message to be committed verbatim"
 }
 
+test_remote_dirty_worktree_creates_pr_and_reviews_in_one_shot() {
+  local repo_dir="$tmp_root/remote-dirty-repo"
+  local origin_dir="$tmp_root/remote-dirty-origin.git"
+  local home_dir="$tmp_root/remote-dirty-home"
+  local bin_dir="$tmp_root/remote-dirty-bin"
+  local skill_copy_dir="$tmp_root/remote-dirty-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local output
+  local review_sha
+  local expected
+  local pr_exists_file="$tmp_root/remote-dirty-pr-open"
+  local remote_sha
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+  setup_remote_review_stubs "$bin_dir"
+  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=remote'
+
+  printf 'dirty remote change\n' >>"$repo_dir/file.txt"
+
+  output="$(
+    cd "$repo_dir" &&
+      HOME="$home_dir" \
+      PATH="$bin_dir:$PATH" \
+      REQUEST_REVIEW_TEST_PR_EXISTS_FILE="$pr_exists_file" \
+      REQUEST_REVIEW_EXPECTED_TRIGGER_TIME=2026-03-08T00:00:00Z \
+      "$request_review_script" "test: remote dirty one shot"
+  )"
+
+  review_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+  expected="request-review (remote): 👍 from chatgpt-codex-connector[bot] on PR #711 after commit $review_sha"
+  [[ "$output" == *"$expected"* ]] || fail "unexpected remote dirty output: $output"
+  [[ "$(git -C "$repo_dir" log -1 --pretty=%s)" == "test: remote dirty one shot" ]] || fail "expected dirty path to create the intended commit"
+  [[ -f "$pr_exists_file" ]] || fail "expected remote dirty path to create a PR"
+  remote_sha="$(git --git-dir="$origin_dir" rev-parse refs/heads/feature/request-review-artifact)"
+  [[ "$remote_sha" == "$review_sha" ]] || fail "expected remote branch to advance to $review_sha, got $remote_sha"
+  assert_file_contains "$repo_dir/review.log" "$expected"
+}
+
+test_remote_clean_head_without_pr_reuses_head_and_creates_pr() {
+  local repo_dir="$tmp_root/remote-clean-repo"
+  local origin_dir="$tmp_root/remote-clean-origin.git"
+  local home_dir="$tmp_root/remote-clean-home"
+  local bin_dir="$tmp_root/remote-clean-bin"
+  local skill_copy_dir="$tmp_root/remote-clean-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local output
+  local review_sha
+  local expected
+  local pr_exists_file="$tmp_root/remote-clean-pr-open"
+  local remote_sha
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+  setup_remote_review_stubs "$bin_dir"
+  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=remote'
+
+  printf 'clean remote commit\n' >>"$repo_dir/file.txt"
+  git -C "$repo_dir" add file.txt
+  git -C "$repo_dir" commit -m "existing clean commit" >/dev/null
+  review_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+
+  output="$(
+    cd "$repo_dir" &&
+      HOME="$home_dir" \
+      PATH="$bin_dir:$PATH" \
+      REQUEST_REVIEW_TEST_PR_EXISTS_FILE="$pr_exists_file" \
+      REQUEST_REVIEW_EXPECTED_TRIGGER_TIME=2026-03-08T00:00:00Z \
+      "$request_review_script" "test: remote clean one shot"
+  )"
+
+  expected="request-review (remote): 👍 from chatgpt-codex-connector[bot] on PR #711 after commit $review_sha"
+  [[ "$output" == *"$expected"* ]] || fail "unexpected remote clean output: $output"
+  [[ "$(git -C "$repo_dir" rev-parse HEAD)" == "$review_sha" ]] || fail "expected clean path to reuse existing HEAD"
+  [[ "$(git -C "$repo_dir" log -1 --pretty=%s)" == "existing clean commit" ]] || fail "expected clean path not to create a new commit"
+  [[ -f "$pr_exists_file" ]] || fail "expected remote clean path to create a PR"
+  remote_sha="$(git --git-dir="$origin_dir" rev-parse refs/heads/feature/request-review-artifact)"
+  [[ "$remote_sha" == "$review_sha" ]] || fail "expected remote branch to advance to $review_sha, got $remote_sha"
+  assert_file_contains "$repo_dir/review.log" "$expected"
+}
+
 test_remote_disable_writes_review_log
 test_local_failure_clears_review_log
 test_remote_rerun_reuses_head_when_pr_is_open
 test_remote_rerun_pushes_head_when_pr_branch_is_behind
 test_use_existing_commit_flag_reviews_clean_head
 test_existing_commit_flag_like_text_stays_in_message
+test_remote_dirty_worktree_creates_pr_and_reviews_in_one_shot
+test_remote_clean_head_without_pr_reuses_head_and_creates_pr
 
 echo "PASS: request-review artifact handling"
