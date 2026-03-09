@@ -78,3 +78,43 @@ prefix_rule(
     pattern = ["/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup"],
     decision = "allow",
 )
+
+# command-parser xcodebuild/swift entrypoints are trusted for noisy Apple toolchains.
+prefix_rule(
+    pattern = ["command-parser", "xcodebuild"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", "xcodebuild"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", "xcodebuild"],
+    decision = "allow",
+)
+
+prefix_rule(
+    pattern = ["command-parser", "swift"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", "swift"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", "swift"],
+    decision = "allow",
+)
+
+prefix_rule(
+    pattern = ["command-parser", "swift-build"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", "swift-build"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", "swift-build"],
+    decision = "allow",
+)
