@@ -4,11 +4,13 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  request-review <commit-message>
+  request-review [--use-existing-commit] [--existing-commit <sha-or-ref>] <commit-message>
 
 Examples:
   request-review "fix: address codex review"
   request-review "chore: review checkpoint"
+  request-review --use-existing-commit "fix: rerun review for current HEAD"
+  request-review --use-existing-commit --existing-commit HEAD~1 "fix: review prior commit"
 
 Optional runtime env flags:
   REQUEST_REVIEW_USE_EXISTING_COMMIT=1
@@ -114,17 +116,54 @@ load_operator_env() {
   fi
 }
 
-if [[ $# -lt 1 ]]; then
+cli_use_existing_commit_flag=""
+cli_existing_commit_sha_ref=""
+commit_message_parts=()
+parsing_options=1
+
+while [[ $# -gt 0 ]]; do
+  if [[ "$parsing_options" == "0" ]]; then
+    commit_message_parts+=("$1")
+    shift
+    continue
+  fi
+
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --use-existing-commit)
+      cli_use_existing_commit_flag="1"
+      shift
+      ;;
+    --existing-commit)
+      if [[ $# -lt 2 ]]; then
+        echo "request-review: --existing-commit requires a sha or ref" >&2
+        exit 2
+      fi
+      cli_use_existing_commit_flag="1"
+      cli_existing_commit_sha_ref="$2"
+      shift 2
+      ;;
+    --)
+      parsing_options=0
+      shift
+      ;;
+    *)
+      parsing_options=0
+      commit_message_parts+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ ${#commit_message_parts[@]} -lt 1 ]]; then
   usage
   exit 2
 fi
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  usage
-  exit 0
-fi
-
-commit_message="$*"
+commit_message="${commit_message_parts[*]}"
 if [[ -z "$commit_message" ]]; then
   echo "request-review: commit message cannot be empty" >&2
   exit 2
@@ -160,6 +199,12 @@ local_raw_jsonl_path="$repo_root/.request-review.events.jsonl"
 
 use_existing_commit_flag="${REQUEST_REVIEW_USE_EXISTING_COMMIT:-0}"
 existing_commit_sha_ref="${REQUEST_REVIEW_EXISTING_COMMIT_SHA:-HEAD}"
+if [[ -n "$cli_use_existing_commit_flag" ]]; then
+  use_existing_commit_flag="$cli_use_existing_commit_flag"
+fi
+if [[ -n "$cli_existing_commit_sha_ref" ]]; then
+  existing_commit_sha_ref="$cli_existing_commit_sha_ref"
+fi
 remote_pr_number=""
 remote_pr_state=""
 remote_review_started_at=""
