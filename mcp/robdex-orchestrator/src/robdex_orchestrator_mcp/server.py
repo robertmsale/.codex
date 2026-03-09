@@ -65,6 +65,11 @@ class AgentEntry:
     project_path: str | None
 
 
+@dataclass(frozen=True)
+class InstanceEntry:
+    id: str
+
+
 def _normalize_text(value: str | None) -> str | None:
     if value is None:
         return None
@@ -374,12 +379,88 @@ def _parse_agents(result: dict[str, Any]) -> list[AgentEntry]:
     return agents
 
 
+def _parse_instances(result: dict[str, Any]) -> list[InstanceEntry]:
+    if result.get("type") != "instances":
+        raise BridgeError("Bridge response was not instances payload")
+    payload = result.get("payload")
+    if not isinstance(payload, list):
+        raise BridgeError("Bridge instances payload malformed")
+
+    instances: list[InstanceEntry] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        instance_id = _normalize_text(entry.get("id"))
+        if not instance_id:
+            continue
+        instances.append(InstanceEntry(id=instance_id))
+    return instances
+
+
 def _is_active_turn_changed_error(message: str) -> bool:
     lowered = str(message or "").lower()
     return (
         ("expected active turn id" in lowered and "but found" in lowered)
         or ("missing field" in lowered and "expectedturnid" in lowered)
     )
+
+
+def _is_instance_not_found_error(message: str) -> bool:
+    return "instancenotfound(" in str(message or "").lower()
+
+
+def _resolve_live_instance_id(host: str, port: int, token: str | None, preferred_instance_id: str) -> str:
+    try:
+        instances_result = _run_command(host, port, token, name="listInstances")
+        instances = _parse_instances(instances_result)
+    except Exception:
+        return preferred_instance_id
+
+    if not instances:
+        return preferred_instance_id
+
+    instance_ids = {instance.id for instance in instances}
+    if preferred_instance_id in instance_ids:
+        return preferred_instance_id
+    if DEFAULT_INSTANCE_ID in instance_ids:
+        return DEFAULT_INSTANCE_ID
+
+    first_non_management = next(
+        (instance.id for instance in instances if not instance.id.startswith("mgmt-")),
+        None,
+    )
+    if first_non_management:
+        return first_non_management
+
+    return instances[0].id
+
+
+def _run_instance_command(
+    host: str,
+    port: int,
+    token: str | None,
+    *,
+    name: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        return _run_command(host, port, token, name=name, payload=payload)
+    except BridgeError as exc:
+        if not _is_instance_not_found_error(str(exc)):
+            raise
+        original_error = exc
+
+    original_instance_id = _normalize_text(payload.get("instanceId"))
+    if not original_instance_id:
+        raise original_error
+
+    fallback_instance_id = _resolve_live_instance_id(host, port, token, DEFAULT_INSTANCE_ID)
+    if fallback_instance_id == original_instance_id:
+        raise original_error
+
+    recovered_payload = dict(payload)
+    recovered_payload["instanceId"] = fallback_instance_id
+    return _run_command(host, port, token, name=name, payload=recovered_payload)
 
 
 def _parse_thread_list(result: dict[str, Any], titles_by_thread_id: dict[str, str], orchestrator_by_project: dict[str, str], current_project: str | None) -> list[ThreadEntry]:
@@ -450,7 +531,8 @@ def _resolve_context(from_thread_id: str, tool_context: Context) -> Context:
     except ValueError as exc:
         raise BridgeError(f"Invalid ROBDEX_BRIDGE_PORT: {port_text}") from exc
 
-    instance_id = _normalize_text(os.getenv("ROBDEX_INSTANCE_ID")) or DEFAULT_INSTANCE_ID
+    preferred_instance_id = _normalize_text(os.getenv("ROBDEX_INSTANCE_ID")) or DEFAULT_INSTANCE_ID
+    instance_id = _resolve_live_instance_id(host, port, token, preferred_instance_id)
     current_thread_id = _resolve_session_thread_id(
         from_thread_id=from_thread_id,
         tool_context=tool_context,
@@ -483,7 +565,7 @@ def _resolve_context(from_thread_id: str, tool_context: Context) -> Context:
             "sortKey": "updated_at",
         }
         try:
-            thread_result = _run_command(host, port, token, name="threadList", payload=thread_payload)
+            thread_result = _run_instance_command(host, port, token, name="threadList", payload=thread_payload)
             parsed_threads = _parse_thread_list(thread_result, titles_by_thread_id, orchestrator_by_project, None)
             for thread in parsed_threads:
                 if thread.id == current_thread_id and thread.project_path:
@@ -524,7 +606,7 @@ def _list_threads(ctx: Context, archived: bool, *, include_hidden: bool = False)
         "modelProviders": [],
         "sortKey": "updated_at",
     }
-    result = _run_command(ctx.host, ctx.port, ctx.token, name="threadList", payload=payload)
+    result = _run_instance_command(ctx.host, ctx.port, ctx.token, name="threadList", payload=payload)
     threads = _parse_thread_list(result, ctx.titles_by_thread_id, ctx.orchestrator_by_project, ctx.current_project_path)
     if include_hidden:
         return threads
@@ -758,7 +840,7 @@ def _send_text_to_thread(ctx: Context, target_thread_id: str, text: str) -> None
         "threadId": target_thread_id,
         "text": text,
     }
-    _run_command(ctx.host, ctx.port, ctx.token, name="turnStart", payload=payload)
+    _run_instance_command(ctx.host, ctx.port, ctx.token, name="turnStart", payload=payload)
 
 
 @mcp.tool
@@ -1009,7 +1091,7 @@ def robdex_unarchive_agent(
 
     was_archived = any(thread.id == target.id for thread in all_archived)
     if was_archived:
-        _run_command(
+        _run_instance_command(
             resolved_context.host,
             resolved_context.port,
             resolved_context.token,
@@ -1051,7 +1133,7 @@ def robdex_rename_agent(
     _ensure_orchestrator_for_project(resolved_context, target.project_path, "rename agents")
     _ensure_unique_title(resolved_context, new_name_value, excluding_thread_id=target.id)
 
-    _run_command(
+    _run_instance_command(
         resolved_context.host,
         resolved_context.port,
         resolved_context.token,
