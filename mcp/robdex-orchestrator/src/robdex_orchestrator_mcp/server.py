@@ -70,6 +70,16 @@ class InstanceEntry:
     id: str
 
 
+@dataclass(frozen=True)
+class ThreadGroupEntry:
+    id: str
+    title: str
+    thread_ids: list[str]
+    is_collapsed: bool
+    created_at: float
+    updated_at: float
+
+
 def _normalize_text(value: str | None) -> str | None:
     if value is None:
         return None
@@ -94,6 +104,17 @@ def _path_is_within_project(path: str, project_path: str) -> bool:
 
 def _normalized_title(value: str) -> str:
     return value.strip().lower()
+
+
+def _coerce_timestamp(value: Any, default: float) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
 
 
 def _quoted(value: str) -> str:
@@ -224,6 +245,92 @@ def _set_thread_metadata_fields(thread_id: str, updates: dict[str, Any | None]) 
             current[key] = value
 
     metadata[thread_id] = current
+    _write_state_payload(payload)
+
+
+def _normalized_thread_group(raw: Any) -> ThreadGroupEntry | None:
+    if not isinstance(raw, dict):
+        return None
+
+    raw_group_id = raw.get("id")
+    raw_title = raw.get("title")
+    group_id = _normalize_text(raw_group_id if isinstance(raw_group_id, str) else None if raw_group_id is None else str(raw_group_id))
+    title = _normalize_text(raw_title if isinstance(raw_title, str) else None if raw_title is None else str(raw_title))
+    if not group_id or not title:
+        return None
+
+    raw_thread_ids = raw.get("threadIDs")
+    thread_ids: list[str] = []
+    seen_thread_ids: set[str] = set()
+    if isinstance(raw_thread_ids, list):
+        for entry in raw_thread_ids:
+            thread_id = _normalize_text(str(entry))
+            if not thread_id or thread_id in seen_thread_ids:
+                continue
+            seen_thread_ids.add(thread_id)
+            thread_ids.append(thread_id)
+
+    now = time.time()
+    created_at = _coerce_timestamp(raw.get("createdAt"), now)
+    updated_at = _coerce_timestamp(raw.get("updatedAt"), created_at)
+    return ThreadGroupEntry(
+        id=group_id,
+        title=title,
+        thread_ids=thread_ids,
+        is_collapsed=bool(raw.get("isCollapsed")),
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+
+
+def _sort_thread_groups(groups: list[ThreadGroupEntry]) -> list[ThreadGroupEntry]:
+    return sorted(
+        groups,
+        key=lambda group: (_normalized_title(group.title), -group.updated_at, group.id),
+    )
+
+
+def _load_thread_groups_by_project() -> dict[str, list[ThreadGroupEntry]]:
+    payload = _load_state_payload()
+    raw_groups_by_project = payload.get("threadGroupsByProjectPath")
+    if not isinstance(raw_groups_by_project, dict):
+        return {}
+
+    result: dict[str, list[ThreadGroupEntry]] = {}
+    for raw_project_path, raw_groups in raw_groups_by_project.items():
+        project_path = _normalized_path(str(raw_project_path))
+        if not project_path or not isinstance(raw_groups, list):
+            continue
+        groups = [group for group in (_normalized_thread_group(entry) for entry in raw_groups) if group]
+        if groups:
+            result[project_path] = _sort_thread_groups(groups)
+    return result
+
+
+def _write_thread_groups_by_project(groups_by_project: dict[str, list[ThreadGroupEntry]]) -> None:
+    payload = _load_state_payload()
+    serialized: dict[str, list[dict[str, Any]]] = {}
+    for project_path, groups in groups_by_project.items():
+        normalized_project_path = _normalized_path(project_path)
+        if not normalized_project_path or not groups:
+            continue
+        serialized[normalized_project_path] = [
+            {
+                "id": group.id,
+                "title": group.title,
+                "threadIDs": group.thread_ids,
+                "isCollapsed": group.is_collapsed,
+                "createdAt": group.created_at,
+                "updatedAt": group.updated_at,
+            }
+            for group in _sort_thread_groups(groups)
+        ]
+
+    if serialized:
+        payload["threadGroupsByProjectPath"] = serialized
+    else:
+        payload.pop("threadGroupsByProjectPath", None)
+    payload["updatedAt"] = time.time()
     _write_state_payload(payload)
 
 
@@ -671,10 +778,24 @@ def _thread_metadata_suffix(thread: ThreadEntry) -> str:
     return f" | {'; '.join(parts)}" if parts else ""
 
 
+def _format_thread_group_line(group: ThreadGroupEntry) -> str:
+    thread_summary = ", ".join(group.thread_ids) if group.thread_ids else "(empty)"
+    collapsed = "collapsed" if group.is_collapsed else "expanded"
+    return f"{_quoted(group.title)} ({group.id}) | {collapsed}; threads={thread_summary}"
+
+
 def _resolve_project_scope(ctx: Context, requested_project_path: str | None) -> str | None:
     if requested_project_path:
         return _normalized_path(requested_project_path)
     return ctx.current_project_path
+
+
+def _resolve_group_project_scope(ctx: Context, requested_project_path: str | None, action: str) -> str:
+    target_project = _resolve_project_scope(ctx, requested_project_path)
+    _ensure_orchestrator_for_project(ctx, target_project, action)
+    if not target_project:
+        raise BridgeError(f"Unable to resolve target project for {action}.")
+    return target_project
 
 
 def _ensure_orchestrator_for_project(ctx: Context, project_path: str | None, action: str) -> None:
@@ -727,6 +848,21 @@ def _resolve_text_metadata(value: str | None, clear: bool) -> str | None:
     if clear:
         return None
     return _normalize_text(value)
+
+
+def _require_thread_group(
+    groups: list[ThreadGroupEntry],
+    group_id: str,
+    *,
+    action: str,
+) -> tuple[int, ThreadGroupEntry]:
+    normalized_group_id = _normalize_text(group_id)
+    if not normalized_group_id:
+        raise BridgeError("group_id is required")
+    for index, group in enumerate(groups):
+        if group.id == normalized_group_id:
+            return index, group
+    raise BridgeError(f"Thread group not found for {action}: {normalized_group_id}")
 
 
 def _resolve_thread_target(
@@ -926,6 +1062,226 @@ def robdex_list_agents(
         for thread in sorted_threads
     ]
     return "\n".join(lines)
+
+
+@mcp.tool
+def robdex_list_thread_groups(
+    from_thread_id: str,
+    project_path: str | None = None,
+    ctx: Context = None,
+) -> str:
+    """List persisted thread groups for a project."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    target_project = _resolve_group_project_scope(resolved_context, project_path, "list thread groups")
+    groups = _load_thread_groups_by_project().get(target_project, [])
+    if not groups:
+        return "(no thread groups)"
+    return "\n".join(_format_thread_group_line(group) for group in groups)
+
+
+@mcp.tool
+def robdex_create_thread_group(
+    from_thread_id: str,
+    title: str,
+    project_path: str | None = None,
+    seed_thread_id: str | None = None,
+    ctx: Context = None,
+) -> str:
+    """Create a new thread group for a project."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    target_project = _resolve_group_project_scope(resolved_context, project_path, "create thread groups")
+    title_value = _normalize_text(title)
+    if not title_value:
+        raise BridgeError("title is required")
+
+    seed_thread_id_value = _normalize_text(seed_thread_id)
+    groups_by_project = _load_thread_groups_by_project()
+    groups = list(groups_by_project.get(target_project, []))
+    if seed_thread_id_value:
+        now = time.time()
+        for index, group in enumerate(groups):
+            if seed_thread_id_value in group.thread_ids:
+                groups[index] = ThreadGroupEntry(
+                    id=group.id,
+                    title=group.title,
+                    thread_ids=[thread_id for thread_id in group.thread_ids if thread_id != seed_thread_id_value],
+                    is_collapsed=group.is_collapsed,
+                    created_at=group.created_at,
+                    updated_at=now,
+                )
+
+    now = time.time()
+    group = ThreadGroupEntry(
+        id=str(uuid.uuid4()),
+        title=title_value,
+        thread_ids=[seed_thread_id_value] if seed_thread_id_value else [],
+        is_collapsed=False,
+        created_at=now,
+        updated_at=now,
+    )
+    groups.append(group)
+    groups_by_project[target_project] = _sort_thread_groups(groups)
+    _write_thread_groups_by_project(groups_by_project)
+    return f"Created {_format_thread_group_line(group)}"
+
+
+@mcp.tool
+def robdex_update_thread_group(
+    from_thread_id: str,
+    group_id: str,
+    title: str | None = None,
+    is_collapsed: bool | None = None,
+    project_path: str | None = None,
+    ctx: Context = None,
+) -> str:
+    """Update thread group title and/or collapsed state."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    target_project = _resolve_group_project_scope(resolved_context, project_path, "update thread groups")
+    if title is None and is_collapsed is None:
+        raise BridgeError("Provide at least one of title or collapsed state to update.")
+    groups_by_project = _load_thread_groups_by_project()
+    groups = list(groups_by_project.get(target_project, []))
+    index, current_group = _require_thread_group(groups, group_id, action="update")
+
+    next_title = current_group.title
+    next_updated_at = current_group.updated_at
+    if title is not None:
+        next_title_value = _normalize_text(title)
+        if not next_title_value:
+            raise BridgeError("title cannot be empty")
+        next_title = next_title_value
+        next_updated_at = time.time()
+
+    next_collapsed = current_group.is_collapsed if is_collapsed is None else bool(is_collapsed)
+    updated_group = ThreadGroupEntry(
+        id=current_group.id,
+        title=next_title,
+        thread_ids=list(current_group.thread_ids),
+        is_collapsed=next_collapsed,
+        created_at=current_group.created_at,
+        updated_at=next_updated_at,
+    )
+    groups[index] = updated_group
+    groups_by_project[target_project] = _sort_thread_groups(groups)
+    _write_thread_groups_by_project(groups_by_project)
+    return f"Updated {_format_thread_group_line(updated_group)}"
+
+
+@mcp.tool
+def robdex_move_thread_to_group(
+    from_thread_id: str,
+    thread_id: str,
+    group_id: str | None = None,
+    project_path: str | None = None,
+    ctx: Context = None,
+) -> str:
+    """Move a thread into a group, or remove it from any current group."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    target_project = _resolve_group_project_scope(resolved_context, project_path, "move threads between thread groups")
+    thread_id_value = _normalize_text(thread_id)
+    if not thread_id_value:
+        raise BridgeError("thread_id is required")
+
+    groups_by_project = _load_thread_groups_by_project()
+    groups = list(groups_by_project.get(target_project, []))
+    target_index: int | None = None
+    if group_id is not None:
+        target_index, _ = _require_thread_group(groups, group_id, action="move")
+
+    now = time.time()
+    for index, group in enumerate(groups):
+        if thread_id_value in group.thread_ids:
+            groups[index] = ThreadGroupEntry(
+                id=group.id,
+                title=group.title,
+                thread_ids=[entry for entry in group.thread_ids if entry != thread_id_value],
+                is_collapsed=group.is_collapsed,
+                created_at=group.created_at,
+                updated_at=now,
+            )
+
+    destination_group_id: str | None = None
+    if target_index is not None:
+        target_group = groups[target_index]
+        destination_group_id = target_group.id
+        groups[target_index] = ThreadGroupEntry(
+            id=target_group.id,
+            title=target_group.title,
+            thread_ids=target_group.thread_ids + [thread_id_value],
+            is_collapsed=target_group.is_collapsed,
+            created_at=target_group.created_at,
+            updated_at=now,
+        )
+
+    groups_by_project[target_project] = _sort_thread_groups(groups)
+    _write_thread_groups_by_project(groups_by_project)
+    if destination_group_id:
+        return f"Moved {thread_id_value} to thread group {destination_group_id}"
+    return f"Removed {thread_id_value} from any thread group in {target_project}"
+
+
+@mcp.tool
+def robdex_delete_thread_group(
+    from_thread_id: str,
+    group_id: str,
+    project_path: str | None = None,
+    ctx: Context = None,
+) -> str:
+    """Delete a thread group from a project."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    target_project = _resolve_group_project_scope(resolved_context, project_path, "delete thread groups")
+    groups_by_project = _load_thread_groups_by_project()
+    groups = list(groups_by_project.get(target_project, []))
+    _, group = _require_thread_group(groups, group_id, action="delete")
+    remaining_groups = [entry for entry in groups if entry.id != group.id]
+    if remaining_groups:
+        groups_by_project[target_project] = _sort_thread_groups(remaining_groups)
+    else:
+        groups_by_project.pop(target_project, None)
+    _write_thread_groups_by_project(groups_by_project)
+    return f"Deleted {_quoted(group.title)} ({group.id})"
+
+
+@mcp.tool
+def robdex_archive_thread_group(
+    from_thread_id: str,
+    group_id: str,
+    project_path: str | None = None,
+    ctx: Context = None,
+) -> str:
+    """Archive all active same-project threads in a thread group."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    target_project = _resolve_group_project_scope(resolved_context, project_path, "archive thread groups")
+    groups = _load_thread_groups_by_project().get(target_project, [])
+    _, group = _require_thread_group(groups, group_id, action="archive")
+
+    active_threads = _list_threads(resolved_context, archived=False, include_hidden=True)
+    archived_threads = _list_threads(resolved_context, archived=True, include_hidden=True)
+    active_by_id = {thread.id: thread for thread in active_threads}
+    archived_by_id = {thread.id: thread for thread in archived_threads}
+
+    archived_thread_ids: list[str] = []
+    skipped_thread_ids: list[str] = []
+    for thread_id in group.thread_ids:
+        if thread_id in archived_by_id:
+            skipped_thread_ids.append(thread_id)
+            continue
+        thread = active_by_id.get(thread_id)
+        if not thread or thread.project_path != target_project:
+            skipped_thread_ids.append(thread_id)
+            continue
+        _run_instance_command(
+            resolved_context.host,
+            resolved_context.port,
+            resolved_context.token,
+            name="threadArchive",
+            payload={"instanceId": resolved_context.instance_id, "threadId": thread_id},
+        )
+        archived_thread_ids.append(thread_id)
+
+    summary = [f"archived={','.join(archived_thread_ids) if archived_thread_ids else '(none)'}"]
+    summary.append(f"skipped={','.join(skipped_thread_ids) if skipped_thread_ids else '(none)'}")
+    return f"Archived {_quoted(group.title)} ({group.id}) | {'; '.join(summary)}"
 
 
 @mcp.tool

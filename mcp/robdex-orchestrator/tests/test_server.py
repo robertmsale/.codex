@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import unittest
 from unittest.mock import patch
@@ -171,6 +172,194 @@ class RobdexListAgentsScopeTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(server.BridgeError, "Unable to resolve project scope"):
                 server.robdex_list_agents(from_thread_id="orchestrator-thread", ctx=None)
+
+
+class RobdexThreadGroupTests(unittest.TestCase):
+    def setUp(self) -> None:
+        server.SESSION_THREAD_LOCKS.clear()
+
+    def test_create_thread_group_detaches_seed_thread_from_existing_group(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="mgmt-global",
+            current_thread_id="orch-ezra",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
+            orchestrator_by_project={project_path: "orch-ezra"},
+        )
+        initial_payload = {
+            "threadGroupsByProjectPath": {
+                project_path: [
+                    {
+                        "id": "group-existing",
+                        "title": "Existing",
+                        "threadIDs": ["thread-1"],
+                        "isCollapsed": False,
+                        "createdAt": 1.0,
+                        "updatedAt": 1.0,
+                    }
+                ]
+            }
+        }
+        writes: list[dict] = []
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_load_state_payload", side_effect=lambda: copy.deepcopy(initial_payload)),
+            patch.object(server, "_write_state_payload", side_effect=writes.append),
+        ):
+            result = server.robdex_create_thread_group(
+                from_thread_id="orch-ezra",
+                title="API Cleanup",
+                seed_thread_id="thread-1",
+                ctx=None,
+            )
+
+        self.assertIn("Created", result)
+        written_groups = writes[-1]["threadGroupsByProjectPath"][project_path]
+        existing_group = next(group for group in written_groups if group["id"] == "group-existing")
+        created_group = next(group for group in written_groups if group["id"] != "group-existing")
+        self.assertEqual(existing_group["threadIDs"], [])
+        self.assertEqual(created_group["title"], "API Cleanup")
+        self.assertEqual(created_group["threadIDs"], ["thread-1"])
+
+    def test_move_thread_to_group_keeps_single_group_membership(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="mgmt-global",
+            current_thread_id="orch-ezra",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
+            orchestrator_by_project={project_path: "orch-ezra"},
+        )
+        initial_payload = {
+            "threadGroupsByProjectPath": {
+                project_path: [
+                    {
+                        "id": "group-a",
+                        "title": "Group A",
+                        "threadIDs": ["thread-1"],
+                        "isCollapsed": False,
+                        "createdAt": 1.0,
+                        "updatedAt": 1.0,
+                    },
+                    {
+                        "id": "group-b",
+                        "title": "Group B",
+                        "threadIDs": [],
+                        "isCollapsed": False,
+                        "createdAt": 2.0,
+                        "updatedAt": 2.0,
+                    },
+                ]
+            }
+        }
+        writes: list[dict] = []
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_load_state_payload", side_effect=lambda: copy.deepcopy(initial_payload)),
+            patch.object(server, "_write_state_payload", side_effect=writes.append),
+        ):
+            result = server.robdex_move_thread_to_group(
+                from_thread_id="orch-ezra",
+                thread_id="thread-1",
+                group_id="group-b",
+                ctx=None,
+            )
+
+        self.assertIn("group-b", result)
+        written_groups = writes[-1]["threadGroupsByProjectPath"][project_path]
+        group_a = next(group for group in written_groups if group["id"] == "group-a")
+        group_b = next(group for group in written_groups if group["id"] == "group-b")
+        self.assertEqual(group_a["threadIDs"], [])
+        self.assertEqual(group_b["threadIDs"], ["thread-1"])
+
+    def test_archive_thread_group_archives_only_active_same_project_threads(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        other_project_path = server._normalized_path("/tmp/other") or "/tmp/other"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="mgmt-global",
+            current_thread_id="orch-ezra",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
+            orchestrator_by_project={project_path: "orch-ezra"},
+        )
+        active_thread = server.ThreadEntry(
+            id="active-thread",
+            cwd="/tmp/ezra/active",
+            preview="Active",
+            display_name="Active",
+            project_path=project_path,
+            has_custom_title=True,
+        )
+        foreign_thread = server.ThreadEntry(
+            id="foreign-thread",
+            cwd="/tmp/other/foreign",
+            preview="Foreign",
+            display_name="Foreign",
+            project_path=other_project_path,
+            has_custom_title=True,
+        )
+        archived_thread = server.ThreadEntry(
+            id="archived-thread",
+            cwd="/tmp/ezra/archived",
+            preview="Archived",
+            display_name="Archived",
+            project_path=project_path,
+            has_custom_title=True,
+        )
+        archived_calls: list[tuple[str, dict]] = []
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(
+                server,
+                "_load_thread_groups_by_project",
+                return_value={
+                    project_path: [
+                        server.ThreadGroupEntry(
+                            id="group-1",
+                            title="Hotfixes",
+                            thread_ids=["active-thread", "archived-thread", "foreign-thread", "missing-thread"],
+                            is_collapsed=False,
+                            created_at=1.0,
+                            updated_at=1.0,
+                        )
+                    ]
+                },
+            ),
+            patch.object(server, "_list_threads", side_effect=[[active_thread, foreign_thread], [archived_thread]]),
+            patch.object(
+                server,
+                "_run_instance_command",
+                side_effect=lambda host, port, token, *, name, payload: archived_calls.append((name, payload)) or {},
+            ),
+        ):
+            result = server.robdex_archive_thread_group(
+                from_thread_id="orch-ezra",
+                group_id="group-1",
+                ctx=None,
+            )
+
+        self.assertIn("archived=active-thread", result)
+        self.assertIn("skipped=archived-thread,foreign-thread,missing-thread", result)
+        self.assertEqual(
+            archived_calls,
+            [("threadArchive", {"instanceId": "mgmt-global", "threadId": "active-thread"})],
+        )
 
 
 if __name__ == "__main__":

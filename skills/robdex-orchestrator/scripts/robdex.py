@@ -31,6 +31,36 @@ def main() -> int:
     p_list.add_argument("--all-projects", action="store_true")
     p_list.add_argument("--project-path")
 
+    p_group_list = sub.add_parser("list-thread-groups")
+    p_group_list.add_argument("--project-path")
+
+    p_group_create = sub.add_parser("create-thread-group")
+    p_group_create.add_argument("--title", required=True)
+    p_group_create.add_argument("--project-path")
+    p_group_create.add_argument("--seed-thread-id")
+
+    p_group_update = sub.add_parser("update-thread-group")
+    p_group_update.add_argument("--group-id", required=True)
+    p_group_update.add_argument("--title")
+    p_group_update.add_argument("--project-path")
+    collapse_group = p_group_update.add_mutually_exclusive_group()
+    collapse_group.add_argument("--collapsed", action="store_true")
+    collapse_group.add_argument("--expanded", action="store_true")
+
+    p_group_move = sub.add_parser("move-thread-to-group")
+    p_group_move.add_argument("--thread-id", required=True)
+    p_group_move.add_argument("--group-id")
+    p_group_move.add_argument("--project-path")
+    p_group_move.add_argument("--remove", action="store_true")
+
+    p_group_delete = sub.add_parser("delete-thread-group")
+    p_group_delete.add_argument("--group-id", required=True)
+    p_group_delete.add_argument("--project-path")
+
+    p_group_archive = sub.add_parser("archive-thread-group")
+    p_group_archive.add_argument("--group-id", required=True)
+    p_group_archive.add_argument("--project-path")
+
     p_spawn = sub.add_parser("spawn-agent")
     p_spawn.add_argument("--name", required=True)
     p_spawn.add_argument("--prompt", default="")
@@ -78,6 +108,58 @@ def main() -> int:
                 from_thread_id=thread_id,
                 include_archived=args.include_archived,
                 include_all_projects=args.all_projects,
+                project_path=args.project_path,
+                ctx=ctx,
+            )
+        elif args.cmd == "list-thread-groups":
+            out = robdex_server.robdex_list_thread_groups(
+                from_thread_id=thread_id,
+                project_path=args.project_path,
+                ctx=ctx,
+            )
+        elif args.cmd == "create-thread-group":
+            out = robdex_server.robdex_create_thread_group(
+                from_thread_id=thread_id,
+                title=args.title,
+                project_path=args.project_path,
+                seed_thread_id=args.seed_thread_id,
+                ctx=ctx,
+            )
+        elif args.cmd == "update-thread-group":
+            collapsed_state = None
+            if args.collapsed:
+                collapsed_state = True
+            elif args.expanded:
+                collapsed_state = False
+            out = robdex_server.robdex_update_thread_group(
+                from_thread_id=thread_id,
+                group_id=args.group_id,
+                title=args.title,
+                is_collapsed=collapsed_state,
+                project_path=args.project_path,
+                ctx=ctx,
+            )
+        elif args.cmd == "move-thread-to-group":
+            if args.remove and args.group_id:
+                parser.error("move-thread-to-group accepts either --group-id or --remove")
+            out = robdex_server.robdex_move_thread_to_group(
+                from_thread_id=thread_id,
+                thread_id=args.thread_id,
+                group_id=None if args.remove else args.group_id,
+                project_path=args.project_path,
+                ctx=ctx,
+            )
+        elif args.cmd == "delete-thread-group":
+            out = robdex_server.robdex_delete_thread_group(
+                from_thread_id=thread_id,
+                group_id=args.group_id,
+                project_path=args.project_path,
+                ctx=ctx,
+            )
+        elif args.cmd == "archive-thread-group":
+            out = robdex_server.robdex_archive_thread_group(
+                from_thread_id=thread_id,
+                group_id=args.group_id,
                 project_path=args.project_path,
                 ctx=ctx,
             )
