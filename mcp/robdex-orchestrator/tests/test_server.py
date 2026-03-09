@@ -362,5 +362,100 @@ class RobdexThreadGroupTests(unittest.TestCase):
         )
 
 
+class RobdexSendMessageTests(unittest.TestCase):
+    def test_orchestrator_send_to_running_agent_omits_sender_agent_id(self) -> None:
+        ctx = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="mgmt-global",
+            current_thread_id="orch-ezra",
+            current_project_path="/tmp/ezra",
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
+            orchestrator_by_project={"/tmp/ezra": "orch-ezra"},
+        )
+        sent_payloads: list[dict] = []
+
+        def fake_run_command(host: str, port: int, token: str | None, *, name: str, payload=None):
+            if name == "listAgents":
+                return {
+                    "type": "agents",
+                    "payload": [
+                        {
+                            "id": "sender-agent",
+                            "instanceId": "mgmt-global",
+                            "threadId": "orch-ezra",
+                            "status": "running",
+                            "projectPath": "/tmp/ezra",
+                        },
+                        {
+                            "id": "target-agent",
+                            "instanceId": "mgmt-global",
+                            "threadId": "worker-thread",
+                            "status": "running",
+                            "projectPath": "/tmp/ezra",
+                        },
+                    ],
+                }
+            if name == "sendAgentInput":
+                sent_payloads.append(payload)
+                return {}
+            raise AssertionError(f"Unexpected call: {name} {payload}")
+
+        with patch.object(server, "_run_command", side_effect=fake_run_command):
+            server._send_text_to_thread(ctx, "worker-thread", "hello")
+
+        self.assertEqual(sent_payloads, [{"agentId": "target-agent", "text": "hello"}])
+
+    def test_worker_send_to_running_agent_keeps_sender_agent_id(self) -> None:
+        ctx = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="mgmt-global",
+            current_thread_id="worker-a-thread",
+            current_project_path="/tmp/ezra",
+            current_is_orchestrator=False,
+            titles_by_thread_id={"worker-a-thread": "Worker A"},
+            orchestrator_by_project={"/tmp/ezra": "orch-ezra"},
+        )
+        sent_payloads: list[dict] = []
+
+        def fake_run_command(host: str, port: int, token: str | None, *, name: str, payload=None):
+            if name == "listAgents":
+                return {
+                    "type": "agents",
+                    "payload": [
+                        {
+                            "id": "sender-agent",
+                            "instanceId": "mgmt-global",
+                            "threadId": "worker-a-thread",
+                            "status": "running",
+                            "projectPath": "/tmp/ezra",
+                        },
+                        {
+                            "id": "target-agent",
+                            "instanceId": "mgmt-global",
+                            "threadId": "worker-b-thread",
+                            "status": "running",
+                            "projectPath": "/tmp/ezra",
+                        },
+                    ],
+                }
+            if name == "sendAgentInput":
+                sent_payloads.append(payload)
+                return {}
+            raise AssertionError(f"Unexpected call: {name} {payload}")
+
+        with patch.object(server, "_run_command", side_effect=fake_run_command):
+            server._send_text_to_thread(ctx, "worker-b-thread", "hello")
+
+        self.assertEqual(
+            sent_payloads,
+            [{"agentId": "target-agent", "text": "hello", "senderAgentId": "sender-agent"}],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -957,7 +957,10 @@ def _send_text_to_thread(ctx: Context, target_thread_id: str, text: str) -> None
 
     if running_agent:
         payload: dict[str, Any] = {"agentId": running_agent.id, "text": text}
-        if sender_agent_id:
+        # Orchestrator sends are already project-scoped in this script layer.
+        # Omitting senderAgentId avoids bridge-side false restrictions when the
+        # live sender agent is transiently associated with a different project.
+        if sender_agent_id and not ctx.current_is_orchestrator:
             payload["senderAgentId"] = sender_agent_id
         try:
             _run_command(ctx.host, ctx.port, ctx.token, name="sendAgentInput", payload=payload)
