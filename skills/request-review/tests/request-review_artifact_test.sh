@@ -545,6 +545,54 @@ test_remote_existing_commit_pushes_selected_sha_not_head() {
   assert_file_contains "$repo_dir/review.log" "$expected"
 }
 
+test_remote_existing_ancestor_commit_skips_non_fast_forward_push() {
+  local repo_dir="$tmp_root/remote-ancestor-commit-repo"
+  local origin_dir="$tmp_root/remote-ancestor-commit-origin.git"
+  local home_dir="$tmp_root/remote-ancestor-commit-home"
+  local bin_dir="$tmp_root/remote-ancestor-commit-bin"
+  local skill_copy_dir="$tmp_root/remote-ancestor-commit-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local output
+  local review_sha
+  local head_sha
+  local expected
+  local pr_exists_file="$tmp_root/remote-ancestor-commit-pr-open"
+  local remote_sha
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+  setup_remote_review_stubs "$bin_dir"
+  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=remote'
+
+  printf 'ancestor review target\n' >>"$repo_dir/file.txt"
+  git -C "$repo_dir" add file.txt
+  git -C "$repo_dir" commit -m "ancestor review target" >/dev/null
+  review_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+
+  printf 'already pushed head\n' >>"$repo_dir/file.txt"
+  git -C "$repo_dir" add file.txt
+  git -C "$repo_dir" commit -m "already pushed head" >/dev/null
+  head_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+  git -C "$repo_dir" push origin feature/request-review-artifact >/dev/null
+
+  output="$(
+    cd "$repo_dir" &&
+      HOME="$home_dir" \
+      PATH="$bin_dir:$PATH" \
+      REQUEST_REVIEW_TEST_PR_EXISTS_FILE="$pr_exists_file" \
+      REQUEST_REVIEW_EXPECTED_TRIGGER_TIME=2026-03-08T00:00:00Z \
+      "$request_review_script" --use-existing-commit --existing-commit "$review_sha" "test: remote ancestor existing commit"
+  )"
+
+  expected="request-review (remote): 👍 from chatgpt-codex-connector[bot] on PR #711 after commit $review_sha"
+  [[ "$output" == *"$expected"* ]] || fail "unexpected remote ancestor existing-commit output: $output"
+  [[ "$(git -C "$repo_dir" rev-parse HEAD)" == "$head_sha" ]] || fail "expected local HEAD to remain on the newer pushed commit"
+  remote_sha="$(git --git-dir="$origin_dir" rev-parse refs/heads/feature/request-review-artifact)"
+  [[ "$remote_sha" == "$head_sha" ]] || fail "expected remote branch to stay on $head_sha, got $remote_sha"
+  assert_file_contains "$repo_dir/review.log" "$expected"
+}
+
 test_remote_disable_writes_review_log
 test_local_failure_clears_review_log
 test_remote_rerun_reuses_head_when_pr_is_open
@@ -554,5 +602,6 @@ test_existing_commit_flag_like_text_stays_in_message
 test_remote_dirty_worktree_creates_pr_and_reviews_in_one_shot
 test_remote_clean_head_without_pr_reuses_head_and_creates_pr
 test_remote_existing_commit_pushes_selected_sha_not_head
+test_remote_existing_ancestor_commit_skips_non_fast_forward_push
 
 echo "PASS: request-review artifact handling"

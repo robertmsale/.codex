@@ -35,10 +35,29 @@ emit_result() {
   printf '%s\n' "$message"
 }
 
+remote_contains_commit() {
+  local commit_sha="$1"
+  local remote_tip_sha="$2"
+
+  if [[ -z "$remote_tip_sha" ]]; then
+    return 1
+  fi
+  if [[ "$commit_sha" == "$remote_tip_sha" ]]; then
+    return 0
+  fi
+
+  git merge-base --is-ancestor "$commit_sha" "$remote_tip_sha" >/dev/null 2>&1
+}
+
 push_review_target() {
   local review_sha="$1"
   local branch_name="$2"
+  local remote_branch_sha="${3:-}"
   local head_sha
+
+  if remote_contains_commit "$review_sha" "$remote_branch_sha"; then
+    return
+  fi
 
   head_sha="$(git rev-parse --verify HEAD)"
   if [[ "$review_sha" == "$head_sha" ]]; then
@@ -303,7 +322,7 @@ trap 'rm -f "$lock_dir/owner" 2>/dev/null || true; rmdir "$lock_dir" 2>/dev/null
 
 if [[ "$review_disable" != "0" ]]; then
   if [[ "$review_mode" == "remote" && "$should_push_review_sha" != "0" ]]; then
-    push_review_target "$review_sha" "$branch_name"
+    push_review_target "$review_sha" "$branch_name" "$remote_branch_sha"
   fi
   persist_review_result "all clear!"
   emit_result "all clear!"
@@ -315,7 +334,7 @@ if [[ "$review_mode" == "remote" ]]; then
   require_cmd jq
 
   if [[ "$should_push_review_sha" != "0" ]]; then
-    push_review_target "$review_sha" "$branch_name"
+    push_review_target "$review_sha" "$branch_name" "$remote_branch_sha"
   fi
 
   pr_number="$(gh pr view --json number,state --jq '.number' 2>/dev/null || true)"
