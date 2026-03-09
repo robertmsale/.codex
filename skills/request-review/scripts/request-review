@@ -35,6 +35,20 @@ emit_result() {
   printf '%s\n' "$message"
 }
 
+push_review_target() {
+  local review_sha="$1"
+  local branch_name="$2"
+  local head_sha
+
+  head_sha="$(git rev-parse --verify HEAD)"
+  if [[ "$review_sha" == "$head_sha" ]]; then
+    git push -u origin HEAD
+    return
+  fi
+
+  git push origin "${review_sha}:refs/heads/${branch_name}"
+}
+
 persist_review_result() {
   local message="$1"
 
@@ -289,7 +303,7 @@ trap 'rm -f "$lock_dir/owner" 2>/dev/null || true; rmdir "$lock_dir" 2>/dev/null
 
 if [[ "$review_disable" != "0" ]]; then
   if [[ "$review_mode" == "remote" && "$should_push_review_sha" != "0" ]]; then
-    git push -u origin HEAD
+    push_review_target "$review_sha" "$branch_name"
   fi
   persist_review_result "all clear!"
   emit_result "all clear!"
@@ -301,7 +315,7 @@ if [[ "$review_mode" == "remote" ]]; then
   require_cmd jq
 
   if [[ "$should_push_review_sha" != "0" ]]; then
-    git push -u origin HEAD
+    push_review_target "$review_sha" "$branch_name"
   fi
 
   pr_number="$(gh pr view --json number,state --jq '.number' 2>/dev/null || true)"
