@@ -153,25 +153,324 @@ class RobdexListAgentsScopeTests(unittest.TestCase):
 
         self.assertEqual([thread.id for thread in threads], ["visible-thread"])
 
-    def test_list_agents_rejects_unscoped_default_listing(self) -> None:
+    def test_list_agents_uses_scoped_bridge_endpoint(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token="bridge-token",
+            instance_id="instance",
+            current_thread_id="orchestrator-thread",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orchestrator-thread": "Ezra Orchestrator"},
+            orchestrator_by_project={project_path: "orchestrator-thread"},
+        )
+        requests: list[dict] = []
+        payload = {
+            "items": [
+                {
+                    "id": "orchestrator-thread",
+                    "displayName": "Ezra Orchestrator",
+                    "projectPath": project_path,
+                    "cwd": project_path,
+                    "isOrchestrator": True,
+                    "isRunning": True,
+                    "issueNumber": None,
+                    "pullRequestNumber": None,
+                    "blockedReason": None,
+                    "unblockWhen": None,
+                    "updatedAt": 1234567890,
+                },
+                {
+                    "id": "worker-thread",
+                    "displayName": "Accounting Command Center Completion",
+                    "projectPath": project_path,
+                    "cwd": f"{project_path}/.worktrees/accounting",
+                    "isOrchestrator": False,
+                    "isRunning": True,
+                    "issueNumber": 624,
+                    "pullRequestNumber": 712,
+                    "blockedReason": "waiting on merge",
+                    "unblockWhen": "after sync",
+                    "updatedAt": 1234567891,
+                },
+            ]
+        }
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(
+                    {"host": host, "port": port, "token": token, **kwargs}
+                )
+                or payload,
+            ),
+        ):
+            result = server.robdex_list_agents(from_thread_id="orchestrator-thread", ctx=None)
+
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "host": "127.0.0.1",
+                    "port": 42080,
+                    "token": "bridge-token",
+                    "method": "GET",
+                    "path": "/orchestrator/agents",
+                    "query": {
+                        "senderThreadId": "orchestrator-thread",
+                        "includeArchived": "0",
+                    },
+                }
+            ],
+        )
+        self.assertIn('**YOU** "Ezra Orchestrator" (orchestrator-thread) [orchestrator]', result)
+        self.assertIn('"Accounting Command Center Completion" (worker-thread)', result)
+        self.assertIn('issue=#624', result)
+        self.assertIn('pr=#712', result)
+        self.assertIn('blocked="waiting on merge" until="after sync"', result)
+
+    def test_list_agents_passes_include_archived_to_bridge(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
         resolved_context = server.Context(
             host="127.0.0.1",
             port=42080,
             token=None,
             instance_id="instance",
             current_thread_id="orchestrator-thread",
-            current_project_path=None,
+            current_project_path=project_path,
             current_is_orchestrator=True,
             titles_by_thread_id={"orchestrator-thread": "Ezra Orchestrator"},
-            orchestrator_by_project={"/tmp/ezra": "orchestrator-thread"},
+            orchestrator_by_project={project_path: "orchestrator-thread"},
         )
+        requests: list[dict] = []
 
         with (
             patch.object(server, "_resolve_context", return_value=resolved_context),
-            patch.object(server, "_list_threads", return_value=[]),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(kwargs) or {"items": []},
+            ),
         ):
-            with self.assertRaisesRegex(server.BridgeError, "Unable to resolve project scope"):
-                server.robdex_list_agents(from_thread_id="orchestrator-thread", ctx=None)
+            result = server.robdex_list_agents(
+                from_thread_id="orchestrator-thread",
+                include_archived=True,
+                ctx=None,
+            )
+
+        self.assertEqual(result, "(no matching threads)")
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "method": "GET",
+                    "path": "/orchestrator/agents",
+                    "query": {
+                        "senderThreadId": "orchestrator-thread",
+                        "includeArchived": "1",
+                    },
+                }
+            ],
+        )
+
+
+class RobdexSendMessageTests(unittest.TestCase):
+    def test_send_message_posts_to_scoped_bridge_endpoint_by_thread_id(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token="bridge-token",
+            instance_id="instance",
+            current_thread_id="orch-ezra",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
+            orchestrator_by_project={project_path: "orch-ezra"},
+        )
+        requests: list[dict] = []
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(
+                    {"host": host, "port": port, "token": token, **kwargs}
+                )
+                or {
+                    "recipientThreadId": "worker-thread",
+                    "recipientDisplayName": "Accounting Command Center Completion",
+                    "turnId": "turn-123",
+                },
+            ),
+        ):
+            result = server.robdex_send_message(
+                from_thread_id="orch-ezra",
+                to_thread_id="worker-thread",
+                text="Please sync to main and rerun validation.",
+                ctx=None,
+            )
+
+        self.assertEqual(result, 'Sent to "Accounting Command Center Completion" (worker-thread)')
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["method"], "POST")
+        self.assertEqual(requests[0]["path"], "/orchestrator/agent-message")
+        self.assertEqual(
+            requests[0]["body"],
+            {
+                "senderThreadId": "orch-ezra",
+                "recipientThreadId": "worker-thread",
+                "recipientName": None,
+                "text": "[Ezra Orchestrator]: Please sync to main and rerun validation.\n\n"
+                + server.CONTINUATION_SUFFIX,
+            },
+        )
+
+    def test_send_message_resolves_name_within_scoped_project_agents(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        other_project_path = server._normalized_path("/tmp/other") or "/tmp/other"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="instance",
+            current_thread_id="orch-ezra",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
+            orchestrator_by_project={project_path: "orch-ezra"},
+        )
+        scoped_agents_payload = {
+            "items": [
+                {
+                    "id": "worker-thread",
+                    "displayName": "Issue 624 Accounting UI Alignment",
+                    "projectPath": project_path,
+                    "cwd": f"{project_path}/.worktrees/accounting-ui",
+                    "isOrchestrator": False,
+                    "isRunning": True,
+                    "issueNumber": 624,
+                    "pullRequestNumber": None,
+                    "blockedReason": None,
+                    "unblockWhen": None,
+                    "updatedAt": 1234567892,
+                },
+                {
+                    "id": "other-thread",
+                    "displayName": "Issue 624 Accounting UI Alignment",
+                    "projectPath": other_project_path,
+                    "cwd": f"{other_project_path}/.worktrees/accounting-ui",
+                    "isOrchestrator": False,
+                    "isRunning": True,
+                    "issueNumber": 624,
+                    "pullRequestNumber": None,
+                    "blockedReason": None,
+                    "unblockWhen": None,
+                    "updatedAt": 1234567893,
+                },
+            ]
+        }
+        requests: list[dict] = []
+
+        def fake_http_json_request(host: str, port: int, token: str | None, **kwargs):
+            requests.append({"host": host, "port": port, "token": token, **kwargs})
+            if kwargs["method"] == "GET":
+                return scoped_agents_payload
+            return {
+                "recipientThreadId": "worker-thread",
+                "recipientDisplayName": "Issue 624 Accounting UI Alignment",
+                "turnId": "turn-456",
+            }
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_http_json_request", side_effect=fake_http_json_request),
+        ):
+            result = server.robdex_send_message(
+                from_thread_id="orch-ezra",
+                name="Issue 624 Accounting UI Alignment",
+                project_path=project_path,
+                text="Status check.",
+                ctx=None,
+            )
+
+        self.assertEqual(result, 'Sent to "Issue 624 Accounting UI Alignment" (worker-thread)')
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[0]["method"], "GET")
+        self.assertEqual(requests[0]["path"], "/orchestrator/agents")
+        self.assertEqual(requests[1]["method"], "POST")
+        self.assertEqual(
+            requests[1]["body"],
+            {
+                "senderThreadId": "orch-ezra",
+                "recipientThreadId": "worker-thread",
+                "recipientName": None,
+                "text": "[Ezra Orchestrator]: Status check.\n\n" + server.CONTINUATION_SUFFIX,
+            },
+        )
+
+    def test_unarchive_agent_prompt_uses_scoped_bridge_message_endpoint(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="mgmt-global",
+            current_thread_id="orch-ezra",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
+            orchestrator_by_project={project_path: "orch-ezra"},
+        )
+        archived_thread = server.ThreadEntry(
+            id="worker-thread",
+            cwd="/tmp/ezra/.worktrees/worker",
+            preview="Issue 624 Accounting UI Alignment",
+            display_name="Issue 624 Accounting UI Alignment",
+            project_path=project_path,
+            has_custom_title=True,
+        )
+        requests: list[dict] = []
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_list_threads", side_effect=[[], [archived_thread]]),
+            patch.object(server, "_run_instance_command", return_value={}),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(kwargs)
+                or {"recipientThreadId": "worker-thread", "recipientDisplayName": archived_thread.display_name, "turnId": "turn-789"},
+            ),
+        ):
+            result = server.robdex_unarchive_agent(
+                from_thread_id="orch-ezra",
+                name=archived_thread.display_name,
+                prompt="Resume work.",
+                ctx=None,
+            )
+
+        self.assertEqual(result, f'Unarchived "{archived_thread.display_name}" ({archived_thread.id})')
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "method": "POST",
+                    "path": "/orchestrator/agent-message",
+                    "body": {
+                        "senderThreadId": "orch-ezra",
+                        "recipientThreadId": "worker-thread",
+                        "recipientName": None,
+                        "text": "[Ezra Orchestrator]: Resume work.\n\n" + server.CONTINUATION_SUFFIX,
+                    },
+                }
+            ],
+        )
 
 
 class RobdexThreadGroupTests(unittest.TestCase):

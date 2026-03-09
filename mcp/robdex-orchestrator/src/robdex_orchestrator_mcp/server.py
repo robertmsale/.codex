@@ -7,6 +7,9 @@ import subprocess
 import threading
 import time
 import uuid
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -54,6 +57,9 @@ class ThreadEntry:
     blocked_reason: str | None = None
     unblock_when: str | None = None
     hidden: bool = False
+    is_orchestrator: bool = False
+    is_running: bool = False
+    updated_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +125,53 @@ def _coerce_timestamp(value: Any, default: float) -> float:
 
 def _quoted(value: str) -> str:
     return json.dumps(value)
+
+
+def _http_json_request(
+    host: str,
+    port: int,
+    token: str | None,
+    *,
+    method: str,
+    path: str,
+    query: dict[str, str] | None = None,
+    body: dict[str, Any] | None = None,
+    timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
+    query_string = urllib.parse.urlencode(query or {})
+    url = f"http://{host}:{port}{path}"
+    if query_string:
+        url = f"{url}?{query_string}"
+
+    payload_bytes: bytes | None = None
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if body is not None:
+        payload_bytes = json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(url, data=payload_bytes, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            detail = ""
+        message = detail or exc.reason or f"HTTP {exc.code}"
+        raise BridgeError(message) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise BridgeError(f"HTTP request failed for {method.upper()} {path}: {exc}") from exc
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise BridgeError(f"Bridge HTTP response was not valid JSON for {method.upper()} {path}") from exc
+    if not isinstance(payload, dict):
+        raise BridgeError(f"Bridge HTTP response was not an object for {method.upper()} {path}")
+    return payload
 
 
 def _read_bridge_token_from_keychain() -> str | None:
@@ -570,6 +623,60 @@ def _run_instance_command(
     return _run_command(host, port, token, name=name, payload=recovered_payload)
 
 
+def _parse_scoped_agents_payload(payload: dict[str, Any]) -> list[ThreadEntry]:
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise BridgeError("Scoped agents payload missing items list")
+
+    agents: list[ThreadEntry] = []
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        thread_id = _normalize_text(entry.get("id"))
+        if not thread_id:
+            continue
+        display_name = _normalize_text(entry.get("displayName")) or thread_id
+        issue_number = entry.get("issueNumber") if isinstance(entry.get("issueNumber"), int) else None
+        pull_request_number = entry.get("pullRequestNumber") if isinstance(entry.get("pullRequestNumber"), int) else None
+        blocked_reason = _normalize_text(entry.get("blockedReason")) if isinstance(entry.get("blockedReason"), str) else None
+        unblock_when = _normalize_text(entry.get("unblockWhen")) if isinstance(entry.get("unblockWhen"), str) else None
+        updated_at = _coerce_timestamp(entry.get("updatedAt"), 0.0)
+        agents.append(
+            ThreadEntry(
+                id=thread_id,
+                cwd=_normalized_path(entry.get("cwd")),
+                preview=display_name,
+                display_name=display_name,
+                project_path=_normalized_path(entry.get("projectPath")),
+                has_custom_title=True,
+                issue_number=issue_number,
+                pull_request_number=pull_request_number,
+                blocked_reason=blocked_reason,
+                unblock_when=unblock_when,
+                hidden=False,
+                is_orchestrator=bool(entry.get("isOrchestrator")),
+                is_running=bool(entry.get("isRunning")),
+                updated_at=updated_at,
+            )
+        )
+    return agents
+
+
+def _list_scoped_agents(ctx: Context, *, include_archived: bool) -> list[ThreadEntry]:
+    payload = _http_json_request(
+        ctx.host,
+        ctx.port,
+        ctx.token,
+        method="GET",
+        path="/orchestrator/agents",
+        query={
+            "senderThreadId": ctx.current_thread_id or "",
+            "includeArchived": "1" if include_archived else "0",
+        },
+    )
+    return _parse_scoped_agents_payload(payload)
+
+
 def _parse_thread_list(result: dict[str, Any], titles_by_thread_id: dict[str, str], orchestrator_by_project: dict[str, str], current_project: str | None) -> list[ThreadEntry]:
     if result.get("type") != "threadList":
         raise BridgeError("Bridge response was not threadList payload")
@@ -934,51 +1041,6 @@ def _compose_message(ctx: Context, text: str) -> str:
     return _append_suffix(prefixed)
 
 
-def _send_text_to_thread(ctx: Context, target_thread_id: str, text: str) -> None:
-    agents_result = _run_command(ctx.host, ctx.port, ctx.token, name="listAgents")
-    agents = _parse_agents(agents_result)
-    sender_agent_id = next(
-        (
-            agent.id
-            for agent in agents
-            if agent.thread_id == ctx.current_thread_id and agent.status not in {"closed"}
-        ),
-        None,
-    )
-
-    running_agent = next(
-        (
-            agent
-            for agent in agents
-            if agent.thread_id == target_thread_id and agent.status not in {"closed"}
-        ),
-        None,
-    )
-
-    if running_agent:
-        payload: dict[str, Any] = {"agentId": running_agent.id, "text": text}
-        if sender_agent_id:
-            payload["senderAgentId"] = sender_agent_id
-        try:
-            _run_command(ctx.host, ctx.port, ctx.token, name="sendAgentInput", payload=payload)
-            return
-        except BridgeError as error:
-            if not _is_active_turn_changed_error(str(error)):
-                raise
-
-        time.sleep(0.2)
-        _run_command(ctx.host, ctx.port, ctx.token, name="sendAgentInput", payload=payload)
-        return
-
-    target_agent = next((agent for agent in agents if agent.thread_id == target_thread_id), None)
-    payload = {
-        "instanceId": target_agent.instance_id if target_agent and target_agent.instance_id else ctx.instance_id,
-        "threadId": target_thread_id,
-        "text": text,
-    }
-    _run_instance_command(ctx.host, ctx.port, ctx.token, name="turnStart", payload=payload)
-
-
 @mcp.tool
 def robdex_list_projects(from_thread_id: str, ctx: Context) -> str:
     """List known project paths and their configured orchestrator thread IDs."""
@@ -1002,53 +1064,24 @@ def robdex_list_agents(
     project_path: str | None = None,
     ctx: Context = None,
 ) -> str:
-    """List thread identities in robdex format; default is current project, unarchived only."""
+    """List bridge-scoped visible agents for the current sender thread."""
     resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    threads = _list_scoped_agents(resolved_context, include_archived=include_archived)
+
     target_project = _resolve_project_scope(resolved_context, project_path)
-
-    include_all_projects = include_all_projects and resolved_context.current_is_orchestrator
-    if not include_all_projects and not target_project:
-        raise BridgeError("Unable to resolve project scope for list-agents without --all-projects.")
-
-    threads = _list_threads(resolved_context, archived=include_archived)
-    current_project = resolved_context.current_project_path
-    is_cross_project_scope = bool(target_project and current_project and target_project != current_project)
-
-    if include_all_projects:
-        filtered: list[ThreadEntry] = []
-        for thread in threads:
-            if thread.project_path == current_project:
-                filtered.append(thread)
-                continue
-
-            project = thread.project_path
-            if not project:
-                continue
-            orchestrator_id = resolved_context.orchestrator_by_project.get(project)
-            if not orchestrator_id:
-                continue
-            if include_archived:
-                continue
-            if thread.id != orchestrator_id:
-                continue
-            filtered.append(thread)
-        threads = filtered
-    else:
-        if target_project:
-            threads = [thread for thread in threads if thread.project_path == target_project]
-        if is_cross_project_scope:
-            orchestrator_id = resolved_context.orchestrator_by_project.get(target_project)
-            if not orchestrator_id or include_archived:
-                threads = []
-            else:
-                threads = [thread for thread in threads if thread.id == orchestrator_id]
+    if target_project:
+        threads = [thread for thread in threads if thread.project_path == target_project]
 
     if not threads:
         return "(no matching threads)"
 
-    orchestrator_ids = set(resolved_context.orchestrator_by_project.values())
-    sorted_threads = sorted(threads, key=lambda item: (_normalized_title(item.display_name), item.id))
-    show_project = include_all_projects or bool(project_path and project_path != resolved_context.current_project_path)
+    orchestrator_ids = {thread.id for thread in threads if thread.is_orchestrator}
+    sorted_threads = sorted(
+        threads,
+        key=lambda item: (_normalized_title(item.display_name), _normalized_path(item.project_path) or "", item.id),
+    )
+    visible_projects = {thread.project_path for thread in threads if thread.project_path}
+    show_project = include_all_projects or len(visible_projects) > 1 or bool(project_path and project_path != resolved_context.current_project_path)
 
     lines = [
         _format_agent_line(
@@ -1457,7 +1490,19 @@ def robdex_unarchive_agent(
 
     if prompt.strip():
         message = _compose_message(resolved_context, prompt)
-        _send_text_to_thread(resolved_context, target.id, message)
+        _http_json_request(
+            resolved_context.host,
+            resolved_context.port,
+            resolved_context.token,
+            method="POST",
+            path="/orchestrator/agent-message",
+            body={
+                "senderThreadId": resolved_context.current_thread_id or "",
+                "recipientThreadId": target.id,
+                "recipientName": None,
+                "text": message,
+            },
+        )
 
     status = "Unarchived" if was_archived else "Already unarchived"
     return f"{status} {_quoted(target.display_name)} ({target.id})"
@@ -1508,49 +1553,46 @@ def robdex_send_message(
     project_path: str | None = None,
     ctx: Context = None,
 ) -> str:
-    """Send steering/user input to a target thread with project-boundary guardrails."""
+    """Send a bridge-scoped message using senderThreadId-based authorization."""
     resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
-    all_unarchived = _list_threads(resolved_context, archived=False)
-    all_archived = _list_threads(resolved_context, archived=True)
-    all_threads = all_unarchived + all_archived
-
-    target = _resolve_send_target(
-        ctx=resolved_context,
-        to_thread_id=to_thread_id,
-        name=name,
-        project_path=project_path,
-        threads=all_unarchived,
-    )
-
-    if not target.project_path:
-        raise BridgeError("Target thread is outside configured Robdex project scope.")
-
-    if target.project_path not in resolved_context.orchestrator_by_project:
-        raise BridgeError(f"No orchestrator is configured for target project: {target.project_path}")
-
-    sender_thread = next(
-        (thread for thread in all_threads if thread.id == resolved_context.current_thread_id),
-        None,
-    )
-    sender_project = sender_thread.project_path if sender_thread else resolved_context.current_project_path
-    if not sender_project:
-        raise BridgeError(
-            "Unable to resolve sender project for this thread identity; refusing cross-project-ambiguous send."
-        )
-
-    same_project = bool(sender_project and sender_project == target.project_path)
-    target_is_orchestrator = resolved_context.orchestrator_by_project.get(target.project_path) == target.id
-
-    if resolved_context.current_is_orchestrator:
-        if not same_project and not target_is_orchestrator:
-            raise BridgeError("Orchestrators can only message worker threads inside their own project.")
-    else:
-        if not same_project:
-            raise BridgeError("Workers can only message threads inside their own project.")
-
     message = _compose_message(resolved_context, text)
-    _send_text_to_thread(resolved_context, target.id, message)
-    return f"Sent to {_quoted(target.display_name)} ({target.id})"
+
+    recipient_thread_id = _normalize_text(to_thread_id)
+    recipient_name = _normalize_text(name)
+    if not recipient_thread_id and not recipient_name:
+        raise BridgeError("Provide to_thread_id or name")
+
+    if project_path:
+        visible_agents = _list_scoped_agents(resolved_context, include_archived=False)
+        filtered_agents = visible_agents
+        target_project = _resolve_project_scope(resolved_context, project_path)
+        if target_project:
+            filtered_agents = [thread for thread in visible_agents if thread.project_path == target_project]
+        target = _resolve_thread_target(
+            to_thread_id=recipient_thread_id,
+            name=recipient_name,
+            project_path=None,
+            threads=filtered_agents,
+        )
+        recipient_thread_id = target.id
+        recipient_name = None
+
+    response = _http_json_request(
+        resolved_context.host,
+        resolved_context.port,
+        resolved_context.token,
+        method="POST",
+        path="/orchestrator/agent-message",
+        body={
+            "senderThreadId": resolved_context.current_thread_id or "",
+            "recipientThreadId": recipient_thread_id,
+            "recipientName": recipient_name,
+            "text": message,
+        },
+    )
+    resolved_thread_id = _normalize_text(response.get("recipientThreadId")) or recipient_thread_id or "unknown-thread-id"
+    resolved_display_name = _normalize_text(response.get("recipientDisplayName")) or recipient_name or resolved_thread_id
+    return f"Sent to {_quoted(resolved_display_name)} ({resolved_thread_id})"
 
 
 def main() -> None:
