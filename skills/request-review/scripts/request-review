@@ -119,8 +119,15 @@ load_operator_env() {
 cli_use_existing_commit_flag=""
 cli_existing_commit_sha_ref=""
 commit_message_parts=()
+parsing_options=1
 
 while [[ $# -gt 0 ]]; do
+  if [[ "$parsing_options" == "0" ]]; then
+    commit_message_parts+=("$1")
+    shift
+    continue
+  fi
+
   case "$1" in
     -h|--help)
       usage
@@ -140,13 +147,11 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --)
+      parsing_options=0
       shift
-      while [[ $# -gt 0 ]]; do
-        commit_message_parts+=("$1")
-        shift
-      done
       ;;
     *)
+      parsing_options=0
       commit_message_parts+=("$1")
       shift
       ;;

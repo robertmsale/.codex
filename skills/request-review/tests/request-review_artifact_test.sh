@@ -365,10 +365,40 @@ test_use_existing_commit_flag_reviews_clean_head() {
   [[ "$(git -C "$repo_dir" rev-parse HEAD)" == "$review_sha" ]] || fail "expected HEAD to remain unchanged"
 }
 
+test_existing_commit_flag_like_text_stays_in_message() {
+  local repo_dir="$tmp_root/existing-commit-message-repo"
+  local origin_dir="$tmp_root/existing-commit-message-origin.git"
+  local home_dir="$tmp_root/existing-commit-message-home"
+  local bin_dir="$tmp_root/existing-commit-message-bin"
+  local skill_copy_dir="$tmp_root/existing-commit-message-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local output
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+  setup_local_success_review_stubs "$home_dir" "$bin_dir"
+  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=local'
+
+  printf 'real change\n' >>"$repo_dir/file.txt"
+
+  output="$(
+    cd "$repo_dir" &&
+      HOME="$home_dir" \
+      PATH="$bin_dir:$PATH" \
+      "$request_review_script" fix parser --use-existing-commit text
+  )"
+
+  [[ "$output" == *"all clear!"* ]] || fail "unexpected flag-like message output: $output"
+  assert_file_contains "$repo_dir/review.log" "all clear!"
+  [[ "$(git -C "$repo_dir" log -1 --pretty=%s)" == "fix parser --use-existing-commit text" ]] || fail "expected full message to be committed verbatim"
+}
+
 test_remote_disable_writes_review_log
 test_local_failure_clears_review_log
 test_remote_rerun_reuses_head_when_pr_is_open
 test_remote_rerun_pushes_head_when_pr_branch_is_behind
 test_use_existing_commit_flag_reviews_clean_head
+test_existing_commit_flag_like_text_stays_in_message
 
 echo "PASS: request-review artifact handling"
