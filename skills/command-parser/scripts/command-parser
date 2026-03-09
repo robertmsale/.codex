@@ -308,11 +308,10 @@ docker run --rm -i \
     -C "$docker_tmp" \
     -p "$profile" \
     -c 'web_search="disabled"' \
-    -c "features.unified_exec=false" \
+    -c "features.unified_exec=true" \
     -c "features.multi_agent=false" \
     -c "features.steer=false" \
     -c "features.skills=false" \
-    -c "mcp_servers.commandParser.enabled=false" \
     "$prompt" >"$events_log"
 
 extract_parser_response "$events_log" "$tmp_dir/response.log"
