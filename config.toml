@@ -141,6 +141,17 @@ args = ["--project", "/Users/robertsale/.codex/mcp/command-execution", "run", "c
 startup_timeout_sec = 20.0
 tool_timeout_sec = 9223372036854776000.0
 
+[mcp_servers.XcodeBuildMCP]
+command = "xcodebuildmcp"
+args = ["mcp"]
+enabled = false
+startup_timeout_sec = 20.0
+tool_timeout_sec = 9223372036854776000.0
+
+[mcp_servers.xcode]
+command = "xcrun"
+args = ["mcpbridge"]
+
 ###############################################################################
 #                                                                             #
 #        @@@@@@@   @@@@@@  @@@@@@@  @@@@@@@   @@@@@@   @@@@@@@  @@@@@@@@      #
