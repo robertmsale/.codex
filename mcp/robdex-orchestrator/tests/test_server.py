@@ -456,6 +456,150 @@ class RobdexSendMessageTests(unittest.TestCase):
             [{"agentId": "target-agent", "text": "hello", "senderAgentId": "sender-agent"}],
         )
 
+    def test_orchestrator_can_message_cross_project_orchestrator(self) -> None:
+        config_project = server._normalized_path("/tmp/config") or "/tmp/config"
+        ezra_project = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="mgmt-global",
+            current_thread_id="orch-config",
+            current_project_path=config_project,
+            current_is_orchestrator=True,
+            titles_by_thread_id={
+                "orch-config": "Codex Config Orchestrator",
+                "orch-ezra": "Ezra Orchestrator",
+            },
+            orchestrator_by_project={config_project: "orch-config", ezra_project: "orch-ezra"},
+        )
+        all_threads = [
+            server.ThreadEntry(
+                id="orch-config",
+                cwd="/tmp/config",
+                preview="Codex Config Orchestrator",
+                display_name="Codex Config Orchestrator",
+                project_path=config_project,
+                has_custom_title=True,
+            ),
+            server.ThreadEntry(
+                id="orch-ezra",
+                cwd="/tmp/ezra",
+                preview="Ezra Orchestrator",
+                display_name="Ezra Orchestrator",
+                project_path=ezra_project,
+                has_custom_title=True,
+            ),
+        ]
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_list_threads", side_effect=[all_threads, []]),
+            patch.object(server, "_send_text_to_thread") as mock_send,
+        ):
+            result = server.robdex_send_message(
+                from_thread_id="orch-config",
+                name="Ezra Orchestrator",
+                text="status update",
+                ctx=None,
+            )
+
+        self.assertIn('"Ezra Orchestrator"', result)
+        mock_send.assert_called_once()
+
+    def test_worker_can_message_same_project_orchestrator(self) -> None:
+        ezra_project = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        other_project = server._normalized_path("/tmp/other") or "/tmp/other"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="mgmt-global",
+            current_thread_id="worker-a",
+            current_project_path=ezra_project,
+            current_is_orchestrator=False,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator", "worker-a": "Worker A"},
+            orchestrator_by_project={ezra_project: "orch-ezra", other_project: "orch-other"},
+        )
+        all_threads = [
+            server.ThreadEntry(
+                id="worker-a",
+                cwd="/tmp/ezra/worker-a",
+                preview="Worker A",
+                display_name="Worker A",
+                project_path=ezra_project,
+                has_custom_title=True,
+            ),
+            server.ThreadEntry(
+                id="orch-ezra",
+                cwd="/tmp/ezra",
+                preview="Ezra Orchestrator",
+                display_name="Ezra Orchestrator",
+                project_path=ezra_project,
+                has_custom_title=True,
+            ),
+        ]
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_list_threads", side_effect=[all_threads, []]),
+            patch.object(server, "_send_text_to_thread") as mock_send,
+        ):
+            result = server.robdex_send_message(
+                from_thread_id="worker-a",
+                name="Ezra Orchestrator",
+                text="need an interface decision",
+                ctx=None,
+            )
+
+        self.assertIn('"Ezra Orchestrator"', result)
+        mock_send.assert_called_once()
+
+    def test_worker_cannot_message_cross_project_orchestrator(self) -> None:
+        config_project = server._normalized_path("/tmp/config") or "/tmp/config"
+        ezra_project = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="mgmt-global",
+            current_thread_id="worker-a",
+            current_project_path=config_project,
+            current_is_orchestrator=False,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator", "worker-a": "Worker A"},
+            orchestrator_by_project={config_project: "orch-config", ezra_project: "orch-ezra"},
+        )
+        all_threads = [
+            server.ThreadEntry(
+                id="worker-a",
+                cwd="/tmp/config/worker-a",
+                preview="Worker A",
+                display_name="Worker A",
+                project_path=config_project,
+                has_custom_title=True,
+            ),
+            server.ThreadEntry(
+                id="orch-ezra",
+                cwd="/tmp/ezra",
+                preview="Ezra Orchestrator",
+                display_name="Ezra Orchestrator",
+                project_path=ezra_project,
+                has_custom_title=True,
+            ),
+        ]
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_list_threads", side_effect=[all_threads, []]),
+        ):
+            with self.assertRaisesRegex(server.BridgeError, "Workers can only message threads inside their own project"):
+                server.robdex_send_message(
+                    from_thread_id="worker-a",
+                    to_thread_id="orch-ezra",
+                    text="hello",
+                    ctx=None,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
