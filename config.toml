@@ -1,15 +1,35 @@
+###############################################################################
+#                                                                             #
+# @@@@@@@  @@@@@@  @@@@@@@       @@@      @@@@@@@@ @@@  @@@ @@@@@@@@ @@@      #
+#   @@!   @@!  @@@ @@!  @@@      @@!      @@!      @@!  @@@ @@!      @@!      #
+#   @!!   @!@  !@! @!@@!@!       @!!      @!!!:!   @!@  !@! @!!!:!   @!!      #
+#   !!:   !!:  !!! !!:           !!:      !!:       !: .:!  !!:      !!:      #
+#    :     : :. :   :            : ::.: : : :: :::    ::    : :: ::: : ::.: : #
+#                                                                             #
+###############################################################################
+
 model = "gpt-5.4"
 model_reasoning_effort = "high"
-approval_policy = "never"
-sandbox_mode = "danger-full-access"
 background_terminal_max_timeout = 9223372036854775807
+project_root_markers = [".git", ".codex"]
 
 web_search = "live"
 notify = ["python3", "/Users/robertsale/.codex/notify.py"]
 personality = "pragmatic"
 #zsh_path = "/usr/local/bin/launch-job"
 
-project_root_markers = [".git", ".codex"]
+###############################################################################
+#                                                                             #
+#          @@@@@@  @@@@@@  @@@  @@@ @@@@@@@  @@@@@@@   @@@@@@  @@@  @@@       #
+#         !@@     @@!  @@@ @@!@!@@@ @@!  @@@ @@!  @@@ @@!  @@@ @@!  !@@       #
+#          !@@!!  @!@!@!@! @!@@!!@! @!@  !@! @!@!@!@  @!@  !@!  !@@!@!        #
+#             !:! !!:  !!! !!:  !!! !!:  !!! !!:  !!! !!:  !!!  !: :!!        #
+#         ::.: :   :   : : ::    :  :: :  :  :: : ::   : :. :  :::  :::       #
+#                                                                             #
+###############################################################################
+
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
 
 [sandbox_workspace_write]
 writable_roots = [
@@ -43,6 +63,16 @@ writable_roots = [
 ]
 network_access = true
 
+###############################################################################
+#                                                                             #
+#       @@@@@@@  @@@@@@@   @@@@@@  @@@@@@@@ @@@ @@@      @@@@@@@@  @@@@@@     #
+#       @@!  @@@ @@!  @@@ @@!  @@@ @@!      @@! @@!      @@!      !@@         #
+#       @!@@!@!  @!@!!@!  @!@  !@! @!!!:!   !!@ @!!      @!!!:!    !@@!!      #
+#       !!:      !!: :!!  !!:  !!! !!:      !!: !!:      !!:          !:!     #
+#        :        :   : :  : :. :   :       :   : ::.: : : :: ::: ::.: :      #
+#                                                                             #
+###############################################################################
+
 [model_providers.lmstudio-local]
 name = "LM Studio"
 base_url = "http://localhost:1234/v1"
@@ -59,8 +89,8 @@ model_reasoning_effort = "medium"
 
 [profiles.command-parser-local]
 model_provider = "lmstudio-local"
-model = "zai-org/glm-4.7-flash"
-# model = "openai/gpt-oss-20b"
+# model = "zai-org/glm-4.7-flash"
+model = "openai/gpt-oss-20b"
 
 [profiles.command-parser]
 model = "gpt-5.1-codex-mini"
@@ -70,37 +100,15 @@ model_reasoning_effort = "medium"
 model = "gpt-5.3-codex"
 model_reasoning_effort = "high"
 
-[profiles.planner]
-model = "gpt-5.3-codex"
-model_reasoning_effort = "high"
-developer_instructions = """
-You are the planner/orchestrator agent. Your job is coordination, planning, and delegation for this project.
-
-Primary responsibilities:
-- Convert user goals into clear, executable issue-sized tasks.
-- Delegate work to worker agents using active orchestration workflows when appropriate.
-- Maintain a concise view of what is queued, in progress, blocked, and done.
-- Keep GitHub issues/PRs updated with status, scope, and handoff details when GitHub tooling is available.
-
-Default operating mode:
-- Planning and orchestration first; direct code changes only when the user explicitly asks.
-- Prefer one worker per issue/task stream, with stable session naming and resumable handoff context.
-- Avoid duplicate assignments; check existing active sessions/issues before creating new ones.
-- Keep plans practical and short: objective, owner, next action, and success criteria.
-- When you dispatch an agent, the user takes over delegation for that agent. The user will notify you upon their completion.
-- If running inside robdex (`ROBDEX_ORCHESTRATION_ENABLED=1`), prefer runtime-native orchestration via `$robdex-orchestrator`; fall back to tmux only when robdex is unavailable or explicitly requested.
-- Enforce bounded delegation by default (max 2 new workers per turn, max depth 2) unless the user asks for broader fan-out.
-
-When assigning work:
-- Provide enough context for a worker to start immediately (problem, constraints, acceptance criteria, references).
-- Include explicit deliverables (issue update, branch/worktree, PR, validation evidence).
-- Require workers to surface blockers quickly rather than stalling.
-
-Communication style:
-- Be concise, operational, and explicit about assumptions.
-- Emphasize sequencing, dependencies, and risk mitigation.
-- Prefer deterministic commands and checklists over vague guidance.
-"""
+###############################################################################
+#                                                                             #
+#     @@@@@@@@ @@@@@@@@  @@@@@@  @@@@@@@ @@@  @@@ @@@@@@@  @@@@@@@@  @@@@@@   #
+#     @@!      @@!      @@!  @@@   @@!   @@!  @@@ @@!  @@@ @@!      !@@       #
+#     @!!!:!   @!!!:!   @!@!@!@!   @!!   @!@  !@! @!@!!@!  @!!!:!    !@@!!    #
+#     !!:      !!:      !!:  !!!   !!:   !!:  !!! !!: :!!  !!:          !:!   #
+#      :       : :: :::  :   : :    :     :.:: :   :   : : : :: ::: ::.: :    #
+#                                                                             #
+###############################################################################
 
 [features]
 #shell_zsh_fork = true
@@ -112,46 +120,36 @@ steer = true
 collaboration_modes = false
 
 [agents]
-max_threads = 3
+max_threads = 1
+
+###############################################################################
+#                                                                             #
+#                         @@@@@@@@@@   @@@@@@@ @@@@@@@                        #
+#                         @@! @@! @@! !@@      @@!  @@@                       #
+#                         @!! !!@ @!@ !@!      @!@@!@!                        #
+#                         !!:     !!: :!!      !!:                            #
+#                          :      :    :: :: :  :                             #
+#                                                                             #
+###############################################################################
 
 [mcp_servers.openaiDeveloperDocs]
 url = "https://developers.openai.com/mcp"
-enabled = false
-
-[mcp_servers.gitops]
-command = "uv"
-args = ["--project", "/Users/robertsale/.codex/mcp/gitops", "run", "gitops-mcp"]
-tool_timeout_sec = 9223372036854775807
-startup_timeout_sec = 20
-enabled = false
-
-[mcp_servers.commandParser]
-command = "uv"
-args = ["--project", "/Users/robertsale/.codex/mcp/command-parser", "run", "command-parser-mcp"]
-tool_timeout_sec = 9223372036854775807
-startup_timeout_sec = 20
-enabled = false
 
 [mcp_servers.commandExecution]
 command = "uv"
 args = ["--project", "/Users/robertsale/.codex/mcp/command-execution", "run", "command-execution-mcp"]
-tool_timeout_sec = 9223372036854775807
-startup_timeout_sec = 20
-enabled = true
+startup_timeout_sec = 20.0
+tool_timeout_sec = 9223372036854776000.0
 
-[mcp_servers.safeDelete]
-command = "uv"
-args = ["--project", "/Users/robertsale/.codex/mcp/safe-delete", "run", "safe-delete-mcp"]
-tool_timeout_sec = 9223372036854775807
-startup_timeout_sec = 20
-enabled = false
-
-[mcp_servers.robdexOrchestrator]
-command = "uv"
-args = ["--project", "/Users/robertsale/.codex/mcp/robdex-orchestrator", "run", "robdex-orchestrator-mcp"]
-tool_timeout_sec = 9223372036854775807
-startup_timeout_sec = 20
-enabled = false
+###############################################################################
+#                                                                             #
+#        @@@@@@@   @@@@@@  @@@@@@@  @@@@@@@   @@@@@@   @@@@@@@  @@@@@@@@      #
+#       !@@       @@!  @@@ @@!  @@@ @@!  @@@ @@!  @@@ !@@       @@!           #
+#       !@! @!@!@ @!@!@!@! @!@!!@!  @!@!@!@  @!@!@!@! !@! @!@!@ @!!!:!        #
+#       :!!   !!: !!:  !!! !!: :!!  !!:  !!! !!:  !!! :!!   !!: !!:           #
+#        :: :: :   :   : :  :   : : :: : ::   :   : :  :: :: :  : :: :::      #
+#                                                                             #
+###############################################################################
 
 [notice]
 hide_gpt5_1_migration_prompt = true
