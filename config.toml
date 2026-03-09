@@ -171,3 +171,18 @@ hide_rate_limit_model_nudge = true
 [notice.model_migrations]
 "gpt-5.2" = "gpt-5.2-codex"
 "gpt-5.1-codex-mini" = "gpt-5.2-codex"
+
+###############################################################################
+#                                                                             #
+#     @@@@@@@  @@@@@@@   @@@@@@      @@@ @@@@@@@@  @@@@@@@ @@@@@@@  @@@@@@    #
+#     @@!  @@@ @@!  @@@ @@!  @@@     @@! @@!      !@@        @@!   !@@        #
+#     @!@@!@!  @!@!!@!  @!@  !@!     !!@ @!!!:!   !@!        @!!    !@@!!     #
+#     !!:      !!: :!!  !!:  !!! .  .!!  !!:      :!!        !!:       !:!    #
+#      :        :   : :  : :. :  ::.::   : :: :::  :: :: :    :    ::.: :     #
+#                                                                             #
+###############################################################################
+
+projects."/Users/robertsale/Code/ezra/ezra".trust_level = "trusted"
+projects."/Users/robertsale/Code/ezra/ezra/.worktrees".trust_level = "trusted"
+projects."/Users/robertsale/Code/robdex".trust_level = "trusted"
+projects."/Users/robertsale/Code/robdex/.worktrees".trust_level = "trusted"

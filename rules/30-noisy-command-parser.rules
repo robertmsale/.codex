@@ -72,19 +72,34 @@ prefix_rule(
     justification = "Good job using it correctly.",
 )
 prefix_rule(
-    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", ["xcodebuild", "swift", "swift-build"], ["build", "test", "package"]],
+    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", ["swift", "swift-build"], ["build", "test", "package"]],
     decision = "allow",
     justification = "Good job using it correctly.",
 )
 prefix_rule(
-    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", ["xcodebuild", "swift", "swift-build"], ["build", "test", "package"]],
+    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", ["swift", "swift-build"], ["build", "test", "package"]],
     decision = "allow",
     justification = "Good job using it correctly.",
 )
 prefix_rule(
-    pattern = ["command-parser", ["xcodebuild", "swift", "swift-build"], ["build", "test", "package"]],
+    pattern = ["command-parser", ["swift", "swift-build"], ["build", "test", "package"]],
     decision = "allow",
     justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", "xcodebuild"],
+    decision = "forbidden",
+    justification = "Use the xcode-mcp skill: ~/.codex/skills/xcode-mcp/SKILL.md and the Xcode MCP tools instead of routing xcodebuild through command-parser.",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", "xcodebuild"],
+    decision = "forbidden",
+    justification = "Use the xcode-mcp skill: ~/.codex/skills/xcode-mcp/SKILL.md and the Xcode MCP tools instead of routing xcodebuild through command-parser.",
+)
+prefix_rule(
+    pattern = ["command-parser", "xcodebuild"],
+    decision = "forbidden",
+    justification = "Use the xcode-mcp skill: ~/.codex/skills/xcode-mcp/SKILL.md and the Xcode MCP tools instead of routing xcodebuild through command-parser.",
 )
 prefix_rule(
     pattern = ["~/.codex/skills/command-parser/scripts/command-parser", ["pytest", "go", "gradle", "./gradlew", "npm", "pnpm", "yarn", "bun", "deno"], ["test", "build", "check", "verify", "lint", "run"]],
@@ -121,7 +136,7 @@ prefix_rule(
 prefix_rule(
     pattern = ["xcodebuild"],
     decision = "forbidden",
-    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser xcodebuild <args>.",
+    justification = "Use the xcode-mcp skill: ~/.codex/skills/xcode-mcp/SKILL.md and the Xcode MCP tools instead of xcodebuild CLI.",
 )
 prefix_rule(
     pattern = ["swift", ["build", "test", "package"]],
