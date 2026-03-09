@@ -49,11 +49,26 @@ remote_contains_commit() {
   git merge-base --is-ancestor "$commit_sha" "$remote_tip_sha" >/dev/null 2>&1
 }
 
+remote_is_ancestor_of_commit() {
+  local remote_tip_sha="$1"
+  local commit_sha="$2"
+
+  if [[ -z "$remote_tip_sha" ]]; then
+    return 1
+  fi
+  if [[ "$remote_tip_sha" == "$commit_sha" ]]; then
+    return 0
+  fi
+
+  git merge-base --is-ancestor "$remote_tip_sha" "$commit_sha" >/dev/null 2>&1
+}
+
 push_review_target() {
   local review_sha="$1"
   local branch_name="$2"
   local remote_branch_sha="${3:-}"
   local head_sha
+  local branch_refspec
 
   if remote_contains_commit "$review_sha" "$remote_branch_sha"; then
     return
@@ -61,11 +76,21 @@ push_review_target() {
 
   head_sha="$(git rev-parse --verify HEAD)"
   if [[ "$review_sha" == "$head_sha" ]]; then
-    git push -u origin HEAD
+    if remote_is_ancestor_of_commit "$remote_branch_sha" "$head_sha"; then
+      git push -u origin HEAD
+    else
+      git push --force-with-lease="refs/heads/${branch_name}:${remote_branch_sha}" origin "HEAD:refs/heads/${branch_name}"
+      git branch --set-upstream-to="origin/${branch_name}" >/dev/null 2>&1 || true
+    fi
     return
   fi
 
-  git push origin "${review_sha}:refs/heads/${branch_name}"
+  branch_refspec="${review_sha}:refs/heads/${branch_name}"
+  if remote_is_ancestor_of_commit "$remote_branch_sha" "$review_sha"; then
+    git push origin "$branch_refspec"
+  else
+    git push --force-with-lease="refs/heads/${branch_name}:${remote_branch_sha}" origin "$branch_refspec"
+  fi
 }
 
 persist_review_result() {

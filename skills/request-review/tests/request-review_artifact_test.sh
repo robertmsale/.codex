@@ -625,6 +625,52 @@ test_remote_existing_ancestor_commit_skips_non_fast_forward_push() {
   assert_file_contains "$repo_dir/review.log" "$expected"
 }
 
+test_remote_rewritten_head_force_pushes_with_lease() {
+  local repo_dir="$tmp_root/remote-rewritten-head-repo"
+  local origin_dir="$tmp_root/remote-rewritten-head-origin.git"
+  local home_dir="$tmp_root/remote-rewritten-head-home"
+  local bin_dir="$tmp_root/remote-rewritten-head-bin"
+  local skill_copy_dir="$tmp_root/remote-rewritten-head-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local output
+  local review_sha
+  local expected
+  local pr_exists_file="$tmp_root/remote-rewritten-head-pr-open"
+  local remote_sha
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+  setup_remote_review_stubs "$bin_dir"
+  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=remote'
+
+  printf 'remote history commit\n' >>"$repo_dir/file.txt"
+  git -C "$repo_dir" add file.txt
+  git -C "$repo_dir" commit -m "remote history commit" >/dev/null
+  git -C "$repo_dir" push origin feature/request-review-artifact >/dev/null
+
+  git -C "$repo_dir" reset --hard HEAD~1 >/dev/null
+  printf 'rewritten local head\n' >>"$repo_dir/file.txt"
+  git -C "$repo_dir" add file.txt
+  git -C "$repo_dir" commit -m "rewritten local head" >/dev/null
+  review_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+
+  output="$(
+    cd "$repo_dir" &&
+      HOME="$home_dir" \
+      PATH="$bin_dir:$PATH" \
+      REQUEST_REVIEW_TEST_PR_EXISTS_FILE="$pr_exists_file" \
+      REQUEST_REVIEW_EXPECTED_TRIGGER_TIME=2026-03-08T00:00:00Z \
+      "$request_review_script" "test: remote rewritten head"
+  )"
+
+  expected="request-review (remote): 👍 from chatgpt-codex-connector[bot] on PR #711 after commit $review_sha"
+  [[ "$output" == *"$expected"* ]] || fail "unexpected rewritten-head output: $output"
+  remote_sha="$(git --git-dir="$origin_dir" rev-parse refs/heads/feature/request-review-artifact)"
+  [[ "$remote_sha" == "$review_sha" ]] || fail "expected remote branch to force-update to $review_sha, got $remote_sha"
+  assert_file_contains "$repo_dir/review.log" "$expected"
+}
+
 test_remote_disable_writes_review_log
 test_local_failure_clears_review_log
 test_remote_rerun_reuses_head_when_pr_is_open
@@ -636,5 +682,6 @@ test_remote_dirty_worktree_creates_pr_and_reviews_in_one_shot
 test_remote_clean_head_without_pr_reuses_head_and_creates_pr
 test_remote_existing_commit_pushes_selected_sha_not_head
 test_remote_existing_ancestor_commit_skips_non_fast_forward_push
+test_remote_rewritten_head_force_pushes_with_lease
 
 echo "PASS: request-review artifact handling"
