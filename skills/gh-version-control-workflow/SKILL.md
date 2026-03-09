@@ -27,8 +27,8 @@ Use this workflow for branch/worktree/PR delivery.
   - `~/.codex/skills/gh-version-control-workflow/scripts/git-commit <worktree_path> "<message>"`
 - Publish (push + PR, force-with-lease on non-FF for non-integration branches):
   - `~/.codex/skills/gh-version-control-workflow/scripts/git-publish-worktree <worktree_path> [integration_branch]`
-- Cleanup:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup <worktree_path>`
+- Cleanup (stash dirty parent repo state, fast-forward the parent integration branch, restore the stash, then remove the worktree):
+  - `~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup <worktree_path> [integration_branch]`
 
 ## Review Requirement
 
@@ -50,7 +50,7 @@ Use this workflow for branch/worktree/PR delivery.
 4. Commit with `git-commit`.
 5. Request review (`request-review`) for working-code changes, or skip it for non-working-code docs/policy/comment-only changes.
 6. Publish (`git-publish-worktree`) when review is required and `review.log` is present.
-7. Merge and cleanup (`git-worktree-cleanup`).
+7. Merge and cleanup (`git-worktree-cleanup`), which also fast-forwards the parent integration branch by default using the branch currently checked out in the parent repo.
 
 ## Multi-Worker Guidance
 

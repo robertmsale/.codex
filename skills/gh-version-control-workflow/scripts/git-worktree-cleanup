@@ -5,15 +5,16 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./_worktree_lib.sh
 source "$script_dir/_worktree_lib.sh"
 
-if [[ $# -ne 1 ]]; then
+if [[ $# -lt 1 || $# -gt 2 ]]; then
   cat >&2 <<'EOF'
 Usage:
-  git-worktree-cleanup <worktree_path>
+  git-worktree-cleanup <worktree_path> [integration_branch]
 EOF
   exit 2
 fi
 
 worktree_path="$1"
+integration_branch_arg="${2:-}"
 
 if [[ ! -e "$worktree_path" ]]; then
   echo "all clear: worktree path is already missing"
@@ -28,8 +29,24 @@ fi
 resolved_output="$(resolve_worktree "$worktree_path")"
 wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
 repo_root="$(printf '%s\n' "$resolved_output" | sed -n '2p')"
+integration_branch="$(resolve_integration_branch "$repo_root" "$integration_branch_arg")"
+stash_ref=""
+stash_label=""
+
+if [[ -n "$(git -C "$repo_root" status --short)" ]]; then
+  stash_label="git-worktree-cleanup:auto-stash:$(date -u +%Y%m%dT%H%M%SZ)"
+  git -C "$repo_root" stash push -u -m "$stash_label" >/dev/null
+  stash_ref="$(git -C "$repo_root" stash list --format='%gd %s' | awk -v label="$stash_label" '$0 ~ label {print $1; exit}')"
+fi
+
+git -C "$repo_root" fetch -q origin "$integration_branch"
+git -C "$repo_root" pull --ff-only origin "$integration_branch" >/dev/null
+
+if [[ -n "$stash_ref" ]]; then
+  git -C "$repo_root" stash pop "$stash_ref" >/dev/null
+fi
 
 /bin/rm -rf "$wt_abs"
 git -C "$repo_root" worktree prune --expire now >/dev/null
 
-printf 'Cleaned worktree: %s\n' "$wt_abs"
+printf 'Synced %s to origin/%s and cleaned worktree: %s\n' "$repo_root" "$integration_branch" "$wt_abs"

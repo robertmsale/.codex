@@ -40,3 +40,35 @@ resolve_worktree() {
 
   printf '%s\n%s\n' "$wt_abs" "$repo_root"
 }
+
+resolve_integration_branch() {
+  local repo_root="$1"
+  local explicit_branch="${2:-}"
+  local resolved_branch
+
+  if [[ -n "$explicit_branch" ]]; then
+    printf '%s\n' "$explicit_branch"
+    return
+  fi
+
+  resolved_branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [[ -n "$resolved_branch" && "$resolved_branch" != "HEAD" ]]; then
+    printf '%s\n' "$resolved_branch"
+    return
+  fi
+
+  resolved_branch="$(git -C "$repo_root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  if [[ -n "$resolved_branch" ]]; then
+    printf '%s\n' "$resolved_branch"
+    return
+  fi
+
+  resolved_branch="$(git -C "$repo_root" remote show origin 2>/dev/null | sed -n '/HEAD branch/s/.*: //p' | head -n 1)"
+  if [[ -n "$resolved_branch" ]]; then
+    printf '%s\n' "$resolved_branch"
+    return
+  fi
+
+  echo "Unable to resolve integration branch for repository root: $repo_root" >&2
+  exit 2
+}
