@@ -151,6 +151,39 @@ EOF
   chmod +x "$bin_dir/gh"
 }
 
+setup_local_success_review_stubs() {
+  local home_dir="$1"
+  local bin_dir="$2"
+
+  cat >"$home_dir/.codex/config.toml" <<'EOF'
+[profiles.local-review]
+model = "test"
+EOF
+
+  cat >"$home_dir/.codex/scripts/build-codex-agent-image" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$home_dir/.codex/scripts/build-codex-agent-image"
+
+  cat >"$bin_dir/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
+  exit 0
+fi
+
+if [[ "${1:-}" == "run" ]]; then
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"all clear!"}}'
+  exit 0
+fi
+
+exit 2
+EOF
+  chmod +x "$bin_dir/docker"
+}
+
 make_skill_copy() {
   local dest_dir="$1"
   local env_contents="$2"
@@ -302,9 +335,40 @@ test_remote_rerun_pushes_head_when_pr_branch_is_behind() {
   [[ "$remote_sha" == "$review_sha" ]] || fail "expected remote branch to advance to $review_sha, got $remote_sha"
 }
 
+test_use_existing_commit_flag_reviews_clean_head() {
+  local repo_dir="$tmp_root/existing-commit-repo"
+  local origin_dir="$tmp_root/existing-commit-origin.git"
+  local home_dir="$tmp_root/existing-commit-home"
+  local bin_dir="$tmp_root/existing-commit-bin"
+  local skill_copy_dir="$tmp_root/existing-commit-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local output
+  local review_sha
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+  setup_local_success_review_stubs "$home_dir" "$bin_dir"
+  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=local'
+
+  review_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+
+  output="$(
+    cd "$repo_dir" &&
+      HOME="$home_dir" \
+      PATH="$bin_dir:$PATH" \
+      "$request_review_script" --use-existing-commit "test: reuse existing head commit"
+  )"
+
+  [[ "$output" == "all clear!" ]] || fail "unexpected existing commit output: $output"
+  assert_file_contains "$repo_dir/review.log" "all clear!"
+  [[ "$(git -C "$repo_dir" rev-parse HEAD)" == "$review_sha" ]] || fail "expected HEAD to remain unchanged"
+}
+
 test_remote_disable_writes_review_log
 test_local_failure_clears_review_log
 test_remote_rerun_reuses_head_when_pr_is_open
 test_remote_rerun_pushes_head_when_pr_branch_is_behind
+test_use_existing_commit_flag_reviews_clean_head
 
 echo "PASS: request-review artifact handling"
