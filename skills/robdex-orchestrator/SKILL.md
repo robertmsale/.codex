@@ -1,6 +1,6 @@
 ---
 name: robdex-orchestrator
-description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, and use direct worker-to-worker coordination when interfaces or dependencies matter. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:6d0e3bf]
+description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, and use direct worker-to-worker coordination when interfaces or dependencies matter. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:933dd1e]
 ---
 
 # Robdex Orchestrator
@@ -62,6 +62,13 @@ If a master issue is sufficient, keep decomposition in worker prompts, metadata,
   - `robdex list-agents`
   - `robdex list-agents --include-archived`
   - `robdex list-agents --all-projects`
+- Thread groups:
+  - `robdex list-thread-groups [--project-path <path>]`
+  - `robdex create-thread-group --title "<title>" [--project-path <path>] [--seed-thread-id <thread>]`
+  - `robdex update-thread-group --group-id <id> [--title "<title>"] [--collapsed|--expanded] [--project-path <path>]`
+  - `robdex move-thread-to-group --thread-id <thread> [--group-id <id> | --remove] [--project-path <path>]`
+  - `robdex delete-thread-group --group-id <id> [--project-path <path>]`
+  - `robdex archive-thread-group --group-id <id> [--project-path <path>]`
 - Spawn:
   - `robdex spawn-agent --name "<title>" --prompt "<task>"`
   - `robdex spawn-agent --name "<title>" --prompt "<task>" --issue-number <issue>`
