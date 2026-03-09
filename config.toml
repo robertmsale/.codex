@@ -182,7 +182,8 @@ hide_rate_limit_model_nudge = true
 #                                                                             #
 ###############################################################################
 
-projects."/Users/robertsale/Code/ezra/ezra".trust_level = "trusted"
-projects."/Users/robertsale/Code/ezra/ezra/.worktrees".trust_level = "trusted"
-projects."/Users/robertsale/Code/robdex".trust_level = "trusted"
-projects."/Users/robertsale/Code/robdex/.worktrees".trust_level = "trusted"
+[projects]
+"/Users/robertsale/Code/ezra/ezra" = { trust_level = "trusted" }
+"/Users/robertsale/Code/ezra/ezra/.worktrees" = { trust_level = "trusted" }
+"/Users/robertsale/Code/robdex" = { trust_level = "trusted" }
+"/Users/robertsale/Code/robdex/.worktrees" = { trust_level = "trusted" }

@@ -1,6 +1,6 @@
 ---
 name: flutter-commands
-description: Read this before running Flutter commands. Use when working in Flutter or Dart projects that may invoke `flutter build`, `flutter test`, integration tests, macOS desktop builds, Widgetbook flows, or design-system-driven UI work. Enforces local command safety rules, bans `flutter analyze`, and documents the preferred validation/build path.
+description: Read this before running Flutter commands. Use when working in Flutter or Dart projects that may invoke `flutter build`, `flutter test`, integration tests, macOS desktop builds, Widgetbook flows, or design-system-driven UI work. Enforces local command safety rules, bans `flutter analyze`, blocks `flutter build` as a general validation path, and prefers the project's local validation script.
 ---
 
 # Flutter Commands
@@ -10,13 +10,14 @@ Read this before running Flutter commands.
 ## Hard Rules
 
 - Never run `flutter analyze`.
+- Do not use `flutter build` as the general validation path.
 - Never run multiple Flutter build or test commands concurrently or in the background.
 - Treat overlapping Flutter builds/tests as a tooling hazard, not as a speed optimization.
 
 ## Validation Priority
 
-- Prefer `flutter build macos` as the default validation path when the target app supports it.
-- Use build-first validation because it catches many real compile/link/runtime-surface issues that `flutter analyze` misses.
+- Use the project's local code validation script instead of `flutter analyze` or `flutter build`.
+- If the project has a prescribed local validation entrypoint, treat it as authoritative.
 - Run one Flutter build or test command at a time and wait for it to finish before starting another.
 
 ## Integration Tests With Rust

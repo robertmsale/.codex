@@ -57,19 +57,34 @@ prefix_rule(
     justification = "Good job using it correctly.",
 )
 prefix_rule(
-    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", "flutter", ["build", "test", "drive"]],
+    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", "flutter", ["test", "drive"]],
     decision = "allow",
     justification = "Good job using it correctly.",
 )
 prefix_rule(
-    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", "flutter", ["build", "test", "drive"]],
+    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", "flutter", ["test", "drive"]],
     decision = "allow",
     justification = "Good job using it correctly.",
 )
 prefix_rule(
-    pattern = ["command-parser", "flutter", ["build", "test", "drive"]],
+    pattern = ["command-parser", "flutter", ["test", "drive"]],
     decision = "allow",
     justification = "Good job using it correctly.",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/command-parser/scripts/command-parser", "flutter", ["build"]],
+    decision = "forbidden",
+    justification = "Use the project's local code validation script instead.",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", "flutter", ["build"]],
+    decision = "forbidden",
+    justification = "Use the project's local code validation script instead.",
+)
+prefix_rule(
+    pattern = ["command-parser", "flutter", ["build"]],
+    decision = "forbidden",
+    justification = "Use the project's local code validation script instead.",
 )
 prefix_rule(
     pattern = ["~/.codex/skills/command-parser/scripts/command-parser", ["swift", "swift-build"], ["build", "test", "package"]],
@@ -126,10 +141,15 @@ prefix_rule(
 prefix_rule(
     pattern = ["flutter", ["analyze"]],
     decision = "forbidden",
-    justification = "Flutter analyze forbidden. Use flutter build macos instead.",
+    justification = "Use the project's local code validation script instead.",
 )
 prefix_rule(
-    pattern = ["flutter", ["build", "test", "drive"]],
+    pattern = ["flutter", ["build"]],
+    decision = "forbidden",
+    justification = "Use the project's local code validation script instead.",
+)
+prefix_rule(
+    pattern = ["flutter", ["test", "drive"]],
     decision = "forbidden",
     justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
 )
