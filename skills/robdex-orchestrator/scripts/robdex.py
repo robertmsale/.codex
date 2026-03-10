@@ -21,7 +21,17 @@ def _require_thread_id() -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="robdex")
+    parser = argparse.ArgumentParser(
+        prog="robdex",
+        description=(
+            "Robdex orchestration CLI. Use it to coordinate workers, bookkeeping, "
+            "and reasonable approval-routing/escalation requests."
+        ),
+        epilog=(
+            "Approval-routing bar: the command must make sense for the task and "
+            "must not be blatantly destructive."
+        ),
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("list-projects")
