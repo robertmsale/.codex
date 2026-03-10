@@ -1,11 +1,11 @@
 ---
 name: robdex-orchestrator
-description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, use direct worker-to-worker coordination when interfaces or dependencies matter, and route reasonable approval/escalation requests through the orchestrator when needed. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:af5e3c2]
+description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, use direct worker-to-worker coordination when interfaces or dependencies matter, and route reasonable approval/escalation requests through the orchestrator when needed. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:b4dc7fe]
 ---
 
 # Robdex Orchestrator
 
-Use this skill to list, spawn, steer, rename, unarchive, maintain worker bookkeeping, and coordinate reasonable approval routing when a worker hits sandbox limits.
+Use this skill to list, spawn, steer, rename, archive, unarchive, maintain worker bookkeeping, and coordinate reasonable approval routing when a worker hits sandbox limits.
 
 ## Preferred Delivery Model
 
@@ -77,6 +77,10 @@ If a master issue is sufficient, keep decomposition in worker prompts, metadata,
   - `robdex send-message --to-thread-id "<thread id>" --text "<message>"`
 - Rename:
   - `robdex rename-agent --name "<old>" --new-name "<new>"`
+- Archive:
+  - `robdex archive-agent --name "<title>"`
+  - `robdex archive-agent --to-thread-id "<thread id>"`
+  - `robdex archive-agent --name "<title>" --project-path <path>`
 - Unarchive:
   - `robdex unarchive-agent --name "<title>" --prompt "<message>"`
 - Worker metadata:
@@ -155,6 +159,7 @@ Keep the orchestrator aware of coordination-critical state:
 
 - Keep orchestration within project boundaries.
 - Use `send-message` for active workers.
+- Once a worker is confirmed completely done with its task, the orchestrator may archive it with `archive-agent`.
 - Use `unarchive-agent` only when a worker is archived.
 - Approval routing is for reasonable task-aligned commands that need escalation, not for blatantly destructive commands.
 - Only set bookkeeping on worker threads inside your own project.

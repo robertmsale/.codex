@@ -473,6 +473,98 @@ class RobdexSendMessageTests(unittest.TestCase):
         )
 
 
+class RobdexArchiveAgentTests(unittest.TestCase):
+    def test_archive_agent_posts_to_scoped_bridge_endpoint(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token="bridge-token",
+            instance_id="instance",
+            current_thread_id="orch-ezra",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
+            orchestrator_by_project={project_path: "orch-ezra"},
+        )
+        requests: list[dict] = []
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(
+                    {"host": host, "port": port, "token": token, **kwargs}
+                )
+                or {
+                    "recipientThreadId": "worker-thread",
+                    "recipientDisplayName": "Issue 677 Realtime Backend Hardening",
+                    "alreadyArchived": False,
+                },
+            ),
+        ):
+            result = server.robdex_archive_agent(
+                from_thread_id="orch-ezra",
+                name="Issue 677 Realtime Backend Hardening",
+                project_path=project_path,
+                ctx=None,
+            )
+
+        self.assertEqual(result, 'Archived "Issue 677 Realtime Backend Hardening" (worker-thread)')
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "host": "127.0.0.1",
+                    "port": 42080,
+                    "token": "bridge-token",
+                    "method": "POST",
+                    "path": "/orchestrator/archive-agent",
+                    "body": {
+                        "senderThreadId": "orch-ezra",
+                        "recipientThreadId": None,
+                        "recipientName": "Issue 677 Realtime Backend Hardening",
+                        "projectPath": project_path,
+                    },
+                }
+            ],
+        )
+
+    def test_archive_agent_reports_already_archived(self) -> None:
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="instance",
+            current_thread_id="orch-ezra",
+            current_project_path="/tmp/ezra",
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
+            orchestrator_by_project={"/tmp/ezra": "orch-ezra"},
+        )
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(
+                server,
+                "_http_json_request",
+                return_value={
+                    "recipientThreadId": "worker-thread",
+                    "recipientDisplayName": "Completed Worker",
+                    "alreadyArchived": True,
+                },
+            ),
+        ):
+            result = server.robdex_archive_agent(
+                from_thread_id="orch-ezra",
+                to_thread_id="worker-thread",
+                ctx=None,
+            )
+
+        self.assertEqual(result, 'Already archived "Completed Worker" (worker-thread)')
+
+
 class RobdexThreadGroupTests(unittest.TestCase):
     def setUp(self) -> None:
         server.SESSION_THREAD_LOCKS.clear()

@@ -82,6 +82,11 @@ def main() -> int:
     p_unarchive.add_argument("--prompt", default="")
     p_unarchive.add_argument("--project-path")
 
+    p_archive = sub.add_parser("archive-agent")
+    p_archive.add_argument("--to-thread-id")
+    p_archive.add_argument("--name")
+    p_archive.add_argument("--project-path")
+
     p_rename = sub.add_parser("rename-agent")
     p_rename.add_argument("--new-name", required=True)
     p_rename.add_argument("--to-thread-id")
@@ -187,6 +192,14 @@ def main() -> int:
                 from_thread_id=thread_id,
                 name=args.name,
                 prompt=args.prompt,
+                project_path=args.project_path,
+                ctx=ctx,
+            )
+        elif args.cmd == "archive-agent":
+            out = robdex_server.robdex_archive_agent(
+                from_thread_id=thread_id,
+                to_thread_id=args.to_thread_id,
+                name=args.name,
                 project_path=args.project_path,
                 ctx=ctx,
             )

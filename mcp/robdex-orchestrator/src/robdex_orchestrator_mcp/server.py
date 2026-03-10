@@ -1454,6 +1454,44 @@ def robdex_set_worker_metadata(
 
 
 @mcp.tool
+def robdex_archive_agent(
+    from_thread_id: str,
+    to_thread_id: str | None = None,
+    name: str | None = None,
+    project_path: str | None = None,
+    ctx: Context = None,
+) -> str:
+    """Archive a worker thread through the bridge-owned orchestrator archive endpoint."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+
+    recipient_thread_id = _normalize_text(to_thread_id)
+    recipient_name = _normalize_text(name)
+    if not recipient_thread_id and not recipient_name:
+        raise BridgeError("Provide to_thread_id or name")
+
+    target_project = _resolve_project_scope(resolved_context, project_path)
+    response = _http_json_request(
+        resolved_context.host,
+        resolved_context.port,
+        resolved_context.token,
+        method="POST",
+        path="/orchestrator/archive-agent",
+        body={
+            "senderThreadId": resolved_context.current_thread_id or "",
+            "recipientThreadId": recipient_thread_id,
+            "recipientName": recipient_name,
+            "projectPath": target_project,
+        },
+    )
+
+    resolved_thread_id = _normalize_text(response.get("recipientThreadId")) or recipient_thread_id or "unknown-thread-id"
+    resolved_display_name = _normalize_text(response.get("recipientDisplayName")) or recipient_name or resolved_thread_id
+    already_archived = bool(response.get("alreadyArchived"))
+    status = "Already archived" if already_archived else "Archived"
+    return f"{status} {_quoted(resolved_display_name)} ({resolved_thread_id})"
+
+
+@mcp.tool
 def robdex_unarchive_agent(
     from_thread_id: str,
     name: str,
