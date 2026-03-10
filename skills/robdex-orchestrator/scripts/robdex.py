@@ -41,6 +41,8 @@ def main() -> int:
     p_list.add_argument("--all-projects", action="store_true")
     p_list.add_argument("--project-path")
 
+    sub.add_parser("list-pending-approvals")
+
     p_group_list = sub.add_parser("list-thread-groups")
     p_group_list.add_argument("--project-path")
 
@@ -111,6 +113,12 @@ def main() -> int:
     p_meta.add_argument("--unblock-when")
     p_meta.add_argument("--clear-blocked", action="store_true")
 
+    p_approve = sub.add_parser("approve-approval")
+    p_approve.add_argument("--approval-id", required=True)
+
+    p_decline = sub.add_parser("decline-approval")
+    p_decline.add_argument("--approval-id", required=True)
+
     args = parser.parse_args()
     thread_id = _require_thread_id()
     ctx = _ScriptContext(thread_id)
@@ -118,6 +126,11 @@ def main() -> int:
     try:
         if args.cmd == "list-projects":
             out = robdex_server.robdex_list_projects(from_thread_id=thread_id, ctx=ctx)
+        elif args.cmd == "list-pending-approvals":
+            out = robdex_server.robdex_list_pending_approvals(
+                from_thread_id=thread_id,
+                ctx=ctx,
+            )
         elif args.cmd == "list-agents":
             out = robdex_server.robdex_list_agents(
                 from_thread_id=thread_id,
@@ -234,6 +247,18 @@ def main() -> int:
                 to_thread_id=args.to_thread_id,
                 name=args.name,
                 project_path=args.project_path,
+                ctx=ctx,
+            )
+        elif args.cmd == "approve-approval":
+            out = robdex_server.robdex_approve_approval(
+                from_thread_id=thread_id,
+                approval_id=args.approval_id,
+                ctx=ctx,
+            )
+        elif args.cmd == "decline-approval":
+            out = robdex_server.robdex_decline_approval(
+                from_thread_id=thread_id,
+                approval_id=args.approval_id,
                 ctx=ctx,
             )
         else:

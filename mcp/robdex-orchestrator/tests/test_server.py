@@ -473,6 +473,224 @@ class RobdexSendMessageTests(unittest.TestCase):
         )
 
 
+class RobdexApprovalRoutingTests(unittest.TestCase):
+    def test_list_pending_approvals_reads_snapshot_and_filters_visible_threads(self) -> None:
+        project_path = server._normalized_path("/tmp/codex") or "/tmp/codex"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token="bridge-token",
+            instance_id="mgmt-global",
+            current_thread_id="orch-codex",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-codex": "Codex Config Orchestrator"},
+            orchestrator_by_project={project_path: "orch-codex"},
+        )
+        requests: list[dict] = []
+        visible_worker = {
+            "id": "worker-thread",
+            "displayName": "Route Approval E2E Smoke",
+            "projectPath": project_path,
+            "cwd": f"{project_path}/.worktrees/approval-smoke",
+            "isOrchestrator": False,
+            "isRunning": True,
+            "issueNumber": None,
+            "pullRequestNumber": None,
+            "blockedReason": None,
+            "unblockWhen": None,
+            "updatedAt": 1234567890,
+        }
+        hidden_foreign = {
+            "id": "foreign-thread",
+            "displayName": "Foreign Worker",
+            "projectPath": server._normalized_path("/tmp/other") or "/tmp/other",
+            "cwd": "/tmp/other/.worktrees/foreign",
+            "isOrchestrator": False,
+            "isRunning": True,
+            "issueNumber": None,
+            "pullRequestNumber": None,
+            "blockedReason": None,
+            "unblockWhen": None,
+            "updatedAt": 1234567891,
+        }
+
+        def fake_http_json_request(host: str, port: int, token: str | None, **kwargs):
+            requests.append({"host": host, "port": port, "token": token, **kwargs})
+            if kwargs["path"] == "/state/snapshot":
+                return {
+                    "pendingApprovals": [
+                        {
+                            "id": "agent-1773162405-dec9:0",
+                            "instanceID": "agent-1773162405-dec9",
+                            "requestID": 0,
+                            "threadID": "worker-thread",
+                            "turnID": "turn-1",
+                            "itemID": "item-1",
+                            "kind": {"commandExecution": {}},
+                            "title": "Command approval is pending.",
+                            "detail": "Do you want to allow the single smoke-test fetch?",
+                            "command": "git -C /tmp/codex fetch origin main",
+                            "commandCWD": project_path,
+                            "fileGrantRoot": None,
+                        },
+                        {
+                            "id": "agent-foreign:1",
+                            "instanceID": "agent-foreign",
+                            "requestID": 1,
+                            "threadID": "foreign-thread",
+                            "turnID": "turn-2",
+                            "itemID": "item-2",
+                            "kind": {"commandExecution": {}},
+                            "title": "Foreign approval",
+                            "detail": None,
+                            "command": "git status",
+                            "commandCWD": "/tmp/other",
+                            "fileGrantRoot": None,
+                        },
+                    ]
+                }
+            if kwargs["path"] == "/orchestrator/agents":
+                return {"items": [visible_worker, hidden_foreign]}
+            raise AssertionError(f"Unexpected request: {kwargs}")
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_http_json_request", side_effect=fake_http_json_request),
+        ):
+            result = server.robdex_list_pending_approvals(from_thread_id="orch-codex", ctx=None)
+
+        self.assertIn("agent-1773162405-dec9:0", result)
+        self.assertIn('thread="Route Approval E2E Smoke" (worker-thread)', result)
+        self.assertNotIn("agent-foreign:1", result)
+        self.assertEqual(requests[0]["path"], "/state/snapshot")
+        self.assertEqual(requests[0]["query"], {"includeMessageCache": "0"})
+
+    def test_approve_approval_accepts_short_request_id_for_command_approval(self) -> None:
+        project_path = server._normalized_path("/tmp/codex") or "/tmp/codex"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token="bridge-token",
+            instance_id="mgmt-global",
+            current_thread_id="orch-codex",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-codex": "Codex Config Orchestrator"},
+            orchestrator_by_project={project_path: "orch-codex"},
+        )
+        approval = server.PendingApprovalEntry(
+            id="agent-1773162405-dec9:0",
+            instance_id="agent-1773162405-dec9",
+            request_id=0,
+            request_id_display="0",
+            thread_id="worker-thread",
+            turn_id="turn-1",
+            item_id="item-1",
+            kind="commandExecution",
+            title="Command approval is pending.",
+            detail="Allow the fetch.",
+            command="git -C /tmp/codex fetch origin main",
+            command_cwd=project_path,
+            file_grant_root=None,
+        )
+        visible_thread = server.ThreadEntry(
+            id="worker-thread",
+            cwd=f"{project_path}/.worktrees/approval-smoke",
+            preview="Route Approval E2E Smoke",
+            display_name="Route Approval E2E Smoke",
+            project_path=project_path,
+            has_custom_title=True,
+        )
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_list_pending_approvals", return_value=[approval]),
+            patch.object(server, "_list_scoped_agents", return_value=[visible_thread]),
+            patch.object(server, "_run_command", return_value={"type": "empty"}) as run_command,
+        ):
+            result = server.robdex_approve_approval(
+                from_thread_id="orch-codex",
+                approval_id="0",
+                ctx=None,
+            )
+
+        self.assertEqual(result, 'Approved "agent-1773162405-dec9:0" for "Route Approval E2E Smoke" (worker-thread)')
+        run_command.assert_called_once_with(
+            "127.0.0.1",
+            42080,
+            "bridge-token",
+            name="commandApproval",
+            payload={
+                "instanceId": "agent-1773162405-dec9",
+                "requestId": 0,
+                "decision": "accept",
+            },
+        )
+
+    def test_decline_approval_uses_file_approval_command(self) -> None:
+        project_path = server._normalized_path("/tmp/codex") or "/tmp/codex"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="mgmt-global",
+            current_thread_id="orch-codex",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-codex": "Codex Config Orchestrator"},
+            orchestrator_by_project={project_path: "orch-codex"},
+        )
+        approval = server.PendingApprovalEntry(
+            id="agent-1773162405-dec9:file-7",
+            instance_id="agent-1773162405-dec9",
+            request_id="file-7",
+            request_id_display="file-7",
+            thread_id="worker-thread",
+            turn_id="turn-2",
+            item_id="item-2",
+            kind="fileChange",
+            title="File approval is pending.",
+            detail="Grant write access to a temp directory.",
+            command=None,
+            command_cwd=None,
+            file_grant_root="/tmp/codex",
+        )
+        visible_thread = server.ThreadEntry(
+            id="worker-thread",
+            cwd=f"{project_path}/.worktrees/approval-smoke",
+            preview="Route Approval E2E Smoke",
+            display_name="Route Approval E2E Smoke",
+            project_path=project_path,
+            has_custom_title=True,
+        )
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_list_pending_approvals", return_value=[approval]),
+            patch.object(server, "_list_scoped_agents", return_value=[visible_thread]),
+            patch.object(server, "_run_command", return_value={"type": "empty"}) as run_command,
+        ):
+            result = server.robdex_decline_approval(
+                from_thread_id="orch-codex",
+                approval_id="agent-1773162405-dec9:file-7",
+                ctx=None,
+            )
+
+        self.assertEqual(result, 'Declined "agent-1773162405-dec9:file-7" for "Route Approval E2E Smoke" (worker-thread)')
+        run_command.assert_called_once_with(
+            "127.0.0.1",
+            42080,
+            None,
+            name="fileApproval",
+            payload={
+                "instanceId": "agent-1773162405-dec9",
+                "requestId": "file-7",
+                "decision": "decline",
+            },
+        )
+
+
 class RobdexArchiveAgentTests(unittest.TestCase):
     def test_archive_agent_posts_to_scoped_bridge_endpoint(self) -> None:
         project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
