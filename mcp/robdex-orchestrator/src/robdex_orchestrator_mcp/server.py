@@ -766,8 +766,13 @@ def _list_pending_approvals(ctx: Context) -> list[PendingApprovalEntry]:
     return [approval for approval in approvals if approval.thread_id in visible_thread_ids]
 
 
-def _approval_thread_display_name(ctx: Context, approval: PendingApprovalEntry) -> str:
-    visible_threads = _list_scoped_agents(ctx, include_archived=True)
+def _approval_thread_display_name(
+    ctx: Context,
+    approval: PendingApprovalEntry,
+    visible_threads: list[ThreadEntry] | None = None,
+) -> str:
+    if visible_threads is None:
+        visible_threads = _list_scoped_agents(ctx, include_archived=True)
     for thread in visible_threads:
         if thread.id == approval.thread_id:
             return thread.display_name
@@ -1240,11 +1245,18 @@ def robdex_list_pending_approvals(from_thread_id: str, ctx: Context = None) -> s
     approvals = _list_pending_approvals(resolved_context)
     if not approvals:
         return "(no pending approvals)"
+    visible_threads = _list_scoped_agents(resolved_context, include_archived=True)
     approvals = sorted(
         approvals,
-        key=lambda approval: (_normalized_title(_approval_thread_display_name(resolved_context, approval)), approval.id),
+        key=lambda approval: (
+            _normalized_title(_approval_thread_display_name(resolved_context, approval, visible_threads)),
+            approval.id,
+        ),
     )
-    return "\n".join(_format_pending_approval_line(resolved_context, approval) for approval in approvals)
+    return "\n".join(
+        _format_pending_approval_line(resolved_context, approval)
+        for approval in approvals
+    )
 
 
 @mcp.tool
@@ -1256,6 +1268,8 @@ def robdex_approve_approval(
     """Approve a visible pending command/file approval by full or short approval id."""
     resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
     approval = _resolve_pending_approval(resolved_context, approval_id)
+    visible_threads = _list_scoped_agents(resolved_context, include_archived=True)
+    target_display_name = _approval_thread_display_name(resolved_context, approval, visible_threads)
     command_name = _approval_command_name(approval)
     _run_command(
         resolved_context.host,
@@ -1268,7 +1282,7 @@ def robdex_approve_approval(
             "decision": "accept",
         },
     )
-    return f"Approved {_quoted(approval.id)} for {_quoted(_approval_thread_display_name(resolved_context, approval))} ({approval.thread_id})"
+    return f"Approved {_quoted(approval.id)} for {_quoted(target_display_name)} ({approval.thread_id})"
 
 
 @mcp.tool
@@ -1280,6 +1294,8 @@ def robdex_decline_approval(
     """Decline a visible pending command/file approval by full or short approval id."""
     resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
     approval = _resolve_pending_approval(resolved_context, approval_id)
+    visible_threads = _list_scoped_agents(resolved_context, include_archived=True)
+    target_display_name = _approval_thread_display_name(resolved_context, approval, visible_threads)
     command_name = _approval_command_name(approval)
     _run_command(
         resolved_context.host,
@@ -1292,7 +1308,7 @@ def robdex_decline_approval(
             "decision": "decline",
         },
     )
-    return f"Declined {_quoted(approval.id)} for {_quoted(_approval_thread_display_name(resolved_context, approval))} ({approval.thread_id})"
+    return f"Declined {_quoted(approval.id)} for {_quoted(target_display_name)} ({approval.thread_id})"
 
 
 @mcp.tool
