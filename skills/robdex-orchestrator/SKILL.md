@@ -1,6 +1,6 @@
 ---
 name: robdex-orchestrator
-description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, use direct worker-to-worker coordination when interfaces or dependencies matter, and route reasonable approval/escalation requests through the orchestrator when needed. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:3d10d7b]
+description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, use direct worker-to-worker coordination when interfaces or dependencies matter, and route reasonable approval/escalation requests through the orchestrator when needed. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:52b9f31]
 ---
 
 # Robdex Orchestrator
@@ -95,6 +95,25 @@ If a master issue is sufficient, keep decomposition in worker prompts, metadata,
   - `robdex set-worker-metadata --name "<agent name>" --clear-issue-number`
   - `robdex set-worker-metadata --name "<agent name>" --clear-pr-number`
 
+## Canonical Worker States
+
+Use explicit next-action states. Do not leave threads in vague terminal labels such as `passed`, `publishable`, or `merge-ready` without a concrete next step.
+
+- `active`
+  - work is in flight right now
+  - the worker has an immediate next action
+- `blocked`
+  - the worker cannot proceed because of a tooling failure, dependency, approval, or product decision
+  - include a real blocked reason and an `unblock-when` condition when applicable
+- `paused-awaiting-next-slice`
+  - the current slice is done, but you intentionally expect a follow-up slice soon
+  - use this instead of pretending the worker is still active when there is no immediate command to run
+- `ready-for-archive`
+  - the worker is fully done with its task and has no next action
+  - archive it instead of leaving it hanging in an ambiguous finished state
+
+If a worker is done and there is no concrete immediate next action, move it toward `ready-for-archive` and archive it.
+
 ## Approval Routing
 
 Approval requests are an explicit supported orchestration path when a worker is blocked by sandboxing or other command-execution approval requirements.
@@ -122,6 +141,11 @@ Approval responses are decision-only today:
 - use `list-pending-approvals` to inspect visible routed approvals
 - use `approve-approval` or `decline-approval` with the approval id from Robdex
 - if you decline and need to explain or redirect the worker, send a separate normal `robdex send-message` afterward
+
+Approval source of truth:
+- the bridge-visible pending approval record is the authoritative state for whether an approval is waiting
+- the routed chat/request message is a notification surface, not the approval ledger
+- GitHub state and local review locks are unrelated to whether a routed command or file approval is still pending
 
 ## Delegation Guidance
 
@@ -167,6 +191,14 @@ Keep the orchestrator aware of coordination-critical state:
 - To clear blocked state, use `--clear-blocked`. Do not write placeholder values like `active` or `now`.
 - If workers share one master issue, it is acceptable for multiple workers to carry the same issue number.
 - Do not invent child issue numbers solely to satisfy bookkeeping.
+
+## Archived Stewardship
+
+- Use `robdex list-agents --include-archived` when deciding whether to keep something archived, unarchive it, or clean up naming and bookkeeping.
+- Treat archived listings as a stewardship index built from current metadata such as title, issue, PR, blocked reason, and last-known status.
+- Do not dump or rely on old prompt blobs just to decide whether a worker should stay archived.
+- Unarchive only when there is a real new next action to assign.
+- Once a worker is truly done, prefer archiving it over leaving a stale inactive thread in the active list.
 
 ## Guardrails
 
