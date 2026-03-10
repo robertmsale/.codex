@@ -1257,14 +1257,14 @@ def github_merge_pull_request(
     repo_full_name: str | None = None,
     repo_path: str | None = None,
 ) -> str:
-    """Merge a pull request (default: squash) and optionally delete its remote branch."""
+    """Merge a pull request via squash and optionally delete its remote branch."""
     repo_root = _resolve_repo_root(repo_path)
     repo, _ = _repo(repo_root, repo_full_name)
     pull = repo.get_pull(number=pull_number)
 
     method = merge_method.strip().lower()
-    if method not in {"merge", "squash", "rebase"}:
-        raise GitOpsError("merge_method must be one of: merge, squash, rebase")
+    if method != "squash":
+        raise GitOpsError("Only squash merges are supported by the gitops workflow.")
 
     if pull.state != "open":
         raise GitOpsError(f"PR #{pull_number} is not open (state={pull.state}).")

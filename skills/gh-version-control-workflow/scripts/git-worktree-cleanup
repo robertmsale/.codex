@@ -46,7 +46,7 @@ if [[ -n "$stash_ref" ]]; then
   git -C "$repo_root" stash pop "$stash_ref" >/dev/null
 fi
 
-/bin/rm -rf "$wt_abs"
+git -C "$repo_root" worktree remove --force "$wt_abs" >/dev/null
 git -C "$repo_root" worktree prune --expire now >/dev/null
 
 printf 'Synced %s to origin/%s and cleaned worktree: %s\n' "$repo_root" "$integration_branch" "$wt_abs"

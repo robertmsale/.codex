@@ -50,9 +50,12 @@ output="$("$cleanup_script" "$worktree_path")"
 
 [[ "$output" == *"origin/main"* ]] || fail "expected cleanup output to mention origin/main, got: $output"
 [[ ! -e "$worktree_path" ]] || fail "expected worktree to be removed"
+if git -C "$repo_dir" worktree list --porcelain | awk '/^worktree / {sub(/^worktree /, ""); print}' | grep -Fxq "$worktree_path"; then
+  fail "expected worktree metadata to be pruned for $worktree_path"
+fi
 [[ "$(git -C "$repo_dir" rev-parse --abbrev-ref HEAD)" == "main" ]] || fail "expected repo root to stay on main"
 [[ "$(git -C "$repo_dir" log -1 --pretty=%s)" == "remote main advance" ]] || fail "expected repo root to fast-forward to remote main"
 [[ "$(tail -n 1 "$repo_dir/notes.txt")" == "dirty integration change" ]] || fail "expected dirty tracked change to be restored after stash pop"
 [[ "$(cat "$repo_dir/local-note.txt")" == "keep me" ]] || fail "expected untracked file to be restored after stash pop"
 
-echo "PASS: git-worktree-cleanup syncs integration branch"
+echo "PASS: git-worktree-cleanup syncs integration branch and removes worktree metadata"

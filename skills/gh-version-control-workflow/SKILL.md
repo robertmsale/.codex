@@ -12,6 +12,7 @@ Use this workflow for branch/worktree/PR delivery.
 - Use dedicated worktrees for implementation.
 - Never commit on integration branches (`main`, `master`, etc.).
 - Use script wrappers in this skill for git mutations.
+- Merge PRs with squash; do not use merge commits or rebase merges in the gitops workflow.
 - Request review before publish for working-code changes.
 - Non-working-code docs, policy text, and comment-only edits may skip request-review when there is no runtime or security impact.
 - Do not create a child GitHub issue for every internal implementation slice by default.
@@ -50,7 +51,7 @@ Use this workflow for branch/worktree/PR delivery.
 4. Commit with `git-commit`.
 5. Request review (`request-review`) for working-code changes, or skip it for non-working-code docs/policy/comment-only changes.
 6. Publish (`git-publish-worktree`) when review is required and `review.log` is present.
-7. Merge and cleanup (`git-worktree-cleanup`), which also fast-forwards the parent integration branch by default using the branch currently checked out in the parent repo.
+7. Merge with squash, then run cleanup (`git-worktree-cleanup`), which also fast-forwards the parent integration branch by default using the branch currently checked out in the parent repo.
 
 ## Multi-Worker Guidance
 
