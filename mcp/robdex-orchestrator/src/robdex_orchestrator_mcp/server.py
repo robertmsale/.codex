@@ -807,8 +807,12 @@ def _approval_command_name(approval: PendingApprovalEntry) -> str:
     raise BridgeError(f"Unsupported approval kind for decision routing: {approval.kind}")
 
 
-def _format_pending_approval_line(ctx: Context, approval: PendingApprovalEntry) -> str:
-    target_name = _approval_thread_display_name(ctx, approval)
+def _format_pending_approval_line(
+    ctx: Context,
+    approval: PendingApprovalEntry,
+    visible_threads: list[ThreadEntry] | None = None,
+) -> str:
+    target_name = _approval_thread_display_name(ctx, approval, visible_threads)
     summary = f"{approval.id} | request={approval.request_id_display} | kind={approval.kind} | thread={_quoted(target_name)} ({approval.thread_id})"
     detail = approval.command or approval.file_grant_root or approval.detail or approval.title
     if detail:
@@ -1254,7 +1258,7 @@ def robdex_list_pending_approvals(from_thread_id: str, ctx: Context = None) -> s
         ),
     )
     return "\n".join(
-        _format_pending_approval_line(resolved_context, approval)
+        _format_pending_approval_line(resolved_context, approval, visible_threads)
         for approval in approvals
     )
 
