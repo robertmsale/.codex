@@ -67,6 +67,19 @@ prefix_rule(
 )
 
 prefix_rule(
+    pattern = ["git-merge-worktree"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["~/.codex/skills/gh-version-control-workflow/scripts/git-merge-worktree"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-merge-worktree"],
+    decision = "allow",
+)
+
+prefix_rule(
     pattern = ["git-worktree-cleanup"],
     decision = "allow",
 )

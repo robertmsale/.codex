@@ -1,6 +1,6 @@
 ---
 name: gh-version-control-workflow
-description: Script-first worktree/branch/PR workflow using local scripts under `scripts/` plus direct `git`/`gh`. Use dedicated worktrees and PRs as the delivery units; do not create child issues by default for every internal slice. Working-code changes require review. [skill-hash:2c51a7e]
+description: Script-first worktree/branch/PR workflow using local scripts under `scripts/` plus direct `git`/`gh`. Use dedicated worktrees and PRs as the delivery units; do not create child issues by default for every internal slice. Working-code changes require review. [skill-hash:6c4e2b1]
 ---
 
 # GH Version Control Workflow
@@ -28,6 +28,9 @@ Use this workflow for branch/worktree/PR delivery.
   - `~/.codex/skills/gh-version-control-workflow/scripts/git-commit <worktree_path> "<message>"`
 - Publish (push + PR, force-with-lease on non-FF for non-integration branches):
   - `~/.codex/skills/gh-version-control-workflow/scripts/git-publish-worktree <worktree_path> [integration_branch]`
+- Merge (squash merge the PR, delete the remote branch, remove the local worktree, prune worktree metadata, and delete the local branch):
+  - `~/.codex/skills/gh-version-control-workflow/scripts/git-merge-worktree <worktree_path> [integration_branch]`
+  - if the squash merge fails, the worktree and branch are left in place for conflict resolution or retry
 - Cleanup (stash dirty parent repo state, fast-forward the parent integration branch, restore the stash, then remove the worktree):
   - `~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup <worktree_path> [integration_branch]`
 
@@ -51,7 +54,7 @@ Use this workflow for branch/worktree/PR delivery.
 4. Commit with `git-commit`.
 5. Request review (`request-review`) for working-code changes, or skip it for non-working-code docs/policy/comment-only changes.
 6. Publish (`git-publish-worktree`) when review is required and `review.log` is present.
-7. Merge with squash, then run cleanup (`git-worktree-cleanup`), which also fast-forwards the parent integration branch by default using the branch currently checked out in the parent repo.
+7. Merge with `git-merge-worktree`, which performs the squash merge, deletes the remote branch, fast-forwards the parent integration branch, removes the worktree, prunes worktree metadata, and deletes the local branch.
 
 ## Multi-Worker Guidance
 

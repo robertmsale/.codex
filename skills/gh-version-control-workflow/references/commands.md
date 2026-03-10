@@ -74,7 +74,8 @@ gh pr create --base <integration-branch> --head codex/issue-<issue-number>-<slug
 gh pr edit <pr-number> --body-file /tmp/pr-body.md
 gh pr view --web
 gh pr checks --watch
-gh pr merge --squash --delete-branch
+~/.codex/skills/gh-version-control-workflow/scripts/git-merge-worktree ../<repo>-wt-<issue-number> <integration-branch>
+# if the squash merge fails, the worktree and branch stay in place for retry/conflict resolution
 for issue in $(gh pr view <pr-number> --json closingIssuesReferences --jq '.closingIssuesReferences[].number'); do gh issue edit "$issue" --add-label qa; done
 gh issue comment "$TRACKER_ISSUE" --body-file /tmp/version-bump-qa.md
 ```

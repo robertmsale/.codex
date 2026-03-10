@@ -145,6 +145,13 @@ These are runtime artifacts, not hand-maintained source files.
 
 - The normal path is worktree-first and script-first.
 - Working-code changes should go through review before publish.
+- `git-merge-worktree` is the standard merge wrapper after publish:
+  - squash merge the PR
+  - delete the remote branch
+  - sync the parent integration branch
+  - remove and prune the local worktree
+  - delete the local feature branch
+  - leave branch/worktree state intact if the squash merge itself fails
 - `git-worktree-cleanup` now also syncs the parent integration branch after a
   successful remote merge:
   - resolve integration branch from the parent repo by default
