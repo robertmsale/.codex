@@ -1,11 +1,11 @@
 ---
 name: robdex-orchestrator
-description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, and use direct worker-to-worker coordination when interfaces or dependencies matter. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:933dd1e]
+description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, use direct worker-to-worker coordination when interfaces or dependencies matter, and route reasonable approval/escalation requests through the orchestrator when needed. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:af5e3c2]
 ---
 
 # Robdex Orchestrator
 
-Use this skill to list, spawn, steer, rename, unarchive, and maintain worker bookkeeping.
+Use this skill to list, spawn, steer, rename, unarchive, maintain worker bookkeeping, and coordinate reasonable approval routing when a worker hits sandbox limits.
 
 ## Preferred Delivery Model
 
@@ -87,6 +87,25 @@ If a master issue is sufficient, keep decomposition in worker prompts, metadata,
   - `robdex set-worker-metadata --name "<agent name>" --clear-issue-number`
   - `robdex set-worker-metadata --name "<agent name>" --clear-pr-number`
 
+## Approval Routing
+
+Approval requests are an explicit supported orchestration path when a worker is blocked by sandboxing or other command-execution approval requirements.
+
+Use this path for commands that:
+- make sense for the task at hand
+- are normal engineering operations such as tests, builds, checks, or other routine validation steps
+- may need sandbox escalation, writable-root changes, or similar approval to proceed
+
+Do not route or approve commands that are blatantly destructive or nonsensical, for example:
+- `rm -rf /`
+- obvious wipe/reset/destructive commands unrelated to the task
+- similarly high-risk commands with no credible engineering justification
+
+Practical bar:
+- the command must make sense for the work
+- the rationale must be coherent
+- blatantly destructive commands are not approval-worthy
+
 ## Delegation Guidance
 
 Before spawning workers, decide how many are justified.
@@ -137,6 +156,7 @@ Keep the orchestrator aware of coordination-critical state:
 - Keep orchestration within project boundaries.
 - Use `send-message` for active workers.
 - Use `unarchive-agent` only when a worker is archived.
+- Approval routing is for reasonable task-aligned commands that need escalation, not for blatantly destructive commands.
 - Only set bookkeeping on worker threads inside your own project.
 - Do not set worker metadata on orchestrator threads.
 - If tooling fails in a non-input way, stop and escalate.
