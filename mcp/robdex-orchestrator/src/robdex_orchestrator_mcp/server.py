@@ -86,6 +86,23 @@ class ThreadGroupEntry:
     updated_at: float
 
 
+@dataclass(frozen=True)
+class PendingApprovalEntry:
+    id: str
+    instance_id: str
+    request_id: str | int
+    request_id_display: str
+    thread_id: str
+    turn_id: str | None
+    item_id: str | None
+    kind: str
+    title: str
+    detail: str | None
+    command: str | None
+    command_cwd: str | None
+    file_grant_root: str | None
+
+
 def _normalize_text(value: str | None) -> str | None:
     if value is None:
         return None
@@ -677,6 +694,113 @@ def _list_scoped_agents(ctx: Context, *, include_archived: bool) -> list[ThreadE
     return _parse_scoped_agents_payload(payload)
 
 
+def _parse_pending_approvals_payload(payload: dict[str, Any]) -> list[PendingApprovalEntry]:
+    items = payload.get("pendingApprovals")
+    if not isinstance(items, list):
+        raise BridgeError("Bridge snapshot missing pendingApprovals list")
+
+    approvals: list[PendingApprovalEntry] = []
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        approval_id = _normalize_text(entry.get("id"))
+        instance_id = _normalize_text(entry.get("instanceID"))
+        thread_id = _normalize_text(entry.get("threadID"))
+        kind = _normalize_text(entry.get("kind"))
+        title = _normalize_text(entry.get("title")) or "Pending approval"
+        request_id_raw = entry.get("requestID")
+        if not approval_id or not instance_id or not thread_id or not kind:
+            continue
+        if not isinstance(request_id_raw, (str, int)):
+            continue
+        request_id_display = str(request_id_raw).strip()
+        if not request_id_display:
+            continue
+        approvals.append(
+            PendingApprovalEntry(
+                id=approval_id,
+                instance_id=instance_id,
+                request_id=request_id_raw,
+                request_id_display=request_id_display,
+                thread_id=thread_id,
+                turn_id=_normalize_text(entry.get("turnID")),
+                item_id=_normalize_text(entry.get("itemID")),
+                kind=kind,
+                title=title,
+                detail=_normalize_text(entry.get("detail")),
+                command=_normalize_text(entry.get("command")),
+                command_cwd=_normalized_path(entry.get("commandCWD")),
+                file_grant_root=_normalized_path(entry.get("fileGrantRoot")),
+            )
+        )
+    return approvals
+
+
+def _list_pending_approvals(ctx: Context) -> list[PendingApprovalEntry]:
+    payload = _http_json_request(
+        ctx.host,
+        ctx.port,
+        ctx.token,
+        method="GET",
+        path="/state/snapshot",
+        query={"includeMessageCache": "0"},
+    )
+    approvals = _parse_pending_approvals_payload(payload)
+    visible_thread_ids = {
+        thread.id for thread in _list_scoped_agents(ctx, include_archived=True)
+    }
+    if ctx.current_thread_id:
+        visible_thread_ids.add(ctx.current_thread_id)
+    return [approval for approval in approvals if approval.thread_id in visible_thread_ids]
+
+
+def _approval_thread_display_name(ctx: Context, approval: PendingApprovalEntry) -> str:
+    visible_threads = _list_scoped_agents(ctx, include_archived=True)
+    for thread in visible_threads:
+        if thread.id == approval.thread_id:
+            return thread.display_name
+    return ctx.titles_by_thread_id.get(approval.thread_id, approval.thread_id)
+
+
+def _resolve_pending_approval(ctx: Context, approval_id: str) -> PendingApprovalEntry:
+    approval_id_value = _normalize_text(approval_id)
+    if not approval_id_value:
+        raise BridgeError("approval_id is required")
+
+    approvals = _list_pending_approvals(ctx)
+    direct_match = next((approval for approval in approvals if approval.id == approval_id_value), None)
+    if direct_match:
+        return direct_match
+
+    request_matches = [approval for approval in approvals if approval.request_id_display == approval_id_value]
+    if not request_matches:
+        raise BridgeError(f"Pending approval not found: {approval_id_value}")
+    if len(request_matches) > 1:
+        raise BridgeError(
+            f"Multiple pending approvals match request ID {_quoted(approval_id_value)}; use the full approval id."
+        )
+    return request_matches[0]
+
+
+def _approval_command_name(approval: PendingApprovalEntry) -> str:
+    if approval.kind == "commandExecution":
+        return "commandApproval"
+    if approval.kind == "fileChange":
+        return "fileApproval"
+    raise BridgeError(f"Unsupported approval kind for decision routing: {approval.kind}")
+
+
+def _format_pending_approval_line(ctx: Context, approval: PendingApprovalEntry) -> str:
+    target_name = _approval_thread_display_name(ctx, approval)
+    summary = f"{approval.id} | request={approval.request_id_display} | kind={approval.kind} | thread={_quoted(target_name)} ({approval.thread_id})"
+    detail = approval.command or approval.file_grant_root or approval.detail or approval.title
+    if detail:
+        summary += f" | detail={_quoted(detail)}"
+    if approval.command_cwd:
+        summary += f" | cwd={approval.command_cwd}"
+    return summary
+
+
 def _parse_thread_list(result: dict[str, Any], titles_by_thread_id: dict[str, str], orchestrator_by_project: dict[str, str], current_project: str | None) -> list[ThreadEntry]:
     if result.get("type") != "threadList":
         raise BridgeError("Bridge response was not threadList payload")
@@ -1095,6 +1219,68 @@ def robdex_list_agents(
         for thread in sorted_threads
     ]
     return "\n".join(lines)
+
+
+@mcp.tool
+def robdex_list_pending_approvals(from_thread_id: str, ctx: Context = None) -> str:
+    """List pending routed approvals visible to the current orchestrator."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    approvals = _list_pending_approvals(resolved_context)
+    if not approvals:
+        return "(no pending approvals)"
+    approvals = sorted(
+        approvals,
+        key=lambda approval: (_normalized_title(_approval_thread_display_name(resolved_context, approval)), approval.id),
+    )
+    return "\n".join(_format_pending_approval_line(resolved_context, approval) for approval in approvals)
+
+
+@mcp.tool
+def robdex_approve_approval(
+    from_thread_id: str,
+    approval_id: str,
+    ctx: Context = None,
+) -> str:
+    """Approve a visible pending command/file approval by full or short approval id."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    approval = _resolve_pending_approval(resolved_context, approval_id)
+    command_name = _approval_command_name(approval)
+    _run_command(
+        resolved_context.host,
+        resolved_context.port,
+        resolved_context.token,
+        name=command_name,
+        payload={
+            "instanceId": approval.instance_id,
+            "requestId": approval.request_id,
+            "decision": "accept",
+        },
+    )
+    return f"Approved {_quoted(approval.id)} for {_quoted(_approval_thread_display_name(resolved_context, approval))} ({approval.thread_id})"
+
+
+@mcp.tool
+def robdex_decline_approval(
+    from_thread_id: str,
+    approval_id: str,
+    ctx: Context = None,
+) -> str:
+    """Decline a visible pending command/file approval by full or short approval id."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    approval = _resolve_pending_approval(resolved_context, approval_id)
+    command_name = _approval_command_name(approval)
+    _run_command(
+        resolved_context.host,
+        resolved_context.port,
+        resolved_context.token,
+        name=command_name,
+        payload={
+            "instanceId": approval.instance_id,
+            "requestId": approval.request_id,
+            "decision": "decline",
+        },
+    )
+    return f"Declined {_quoted(approval.id)} for {_quoted(_approval_thread_display_name(resolved_context, approval))} ({approval.thread_id})"
 
 
 @mcp.tool

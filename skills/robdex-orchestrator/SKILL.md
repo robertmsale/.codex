@@ -1,6 +1,6 @@
 ---
 name: robdex-orchestrator
-description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, use direct worker-to-worker coordination when interfaces or dependencies matter, and route reasonable approval/escalation requests through the orchestrator when needed. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:b4dc7fe]
+description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, use direct worker-to-worker coordination when interfaces or dependencies matter, and route reasonable approval/escalation requests through the orchestrator when needed. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:3d10d7b]
 ---
 
 # Robdex Orchestrator
@@ -62,6 +62,10 @@ If a master issue is sufficient, keep decomposition in worker prompts, metadata,
   - `robdex list-agents`
   - `robdex list-agents --include-archived`
   - `robdex list-agents --all-projects`
+- Pending approvals:
+  - `robdex list-pending-approvals`
+  - `robdex approve-approval --approval-id <approval id>`
+  - `robdex decline-approval --approval-id <approval id>`
 - Thread groups:
   - `robdex list-thread-groups [--project-path <path>]`
   - `robdex create-thread-group --title "<title>" [--project-path <path>] [--seed-thread-id <thread>]`
@@ -109,6 +113,15 @@ Practical bar:
 - the command must make sense for the work
 - the rationale must be coherent
 - blatantly destructive commands are not approval-worthy
+
+Approval responses are decision-only today:
+- use the `robdex` script directly for approval handling:
+  - `~/.codex/skills/robdex-orchestrator/scripts/robdex list-pending-approvals`
+  - `~/.codex/skills/robdex-orchestrator/scripts/robdex approve-approval --approval-id <approval id>`
+  - `~/.codex/skills/robdex-orchestrator/scripts/robdex decline-approval --approval-id <approval id>`
+- use `list-pending-approvals` to inspect visible routed approvals
+- use `approve-approval` or `decline-approval` with the approval id from Robdex
+- if you decline and need to explain or redirect the worker, send a separate normal `robdex send-message` afterward
 
 ## Delegation Guidance
 
