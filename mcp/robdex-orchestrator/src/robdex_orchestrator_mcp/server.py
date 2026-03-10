@@ -140,6 +140,15 @@ def _coerce_timestamp(value: Any, default: float) -> float:
     return default
 
 
+def _normalize_approval_kind(value: Any) -> str | None:
+    if isinstance(value, str):
+        return _normalize_text(value)
+    if isinstance(value, dict) and len(value) == 1:
+        key = next(iter(value.keys()))
+        return _normalize_text(str(key))
+    return None
+
+
 def _quoted(value: str) -> str:
     return json.dumps(value)
 
@@ -706,7 +715,7 @@ def _parse_pending_approvals_payload(payload: dict[str, Any]) -> list[PendingApp
         approval_id = _normalize_text(entry.get("id"))
         instance_id = _normalize_text(entry.get("instanceID"))
         thread_id = _normalize_text(entry.get("threadID"))
-        kind = _normalize_text(entry.get("kind"))
+        kind = _normalize_approval_kind(entry.get("kind"))
         title = _normalize_text(entry.get("title")) or "Pending approval"
         request_id_raw = entry.get("requestID")
         if not approval_id or not instance_id or not thread_id or not kind:
@@ -746,8 +755,11 @@ def _list_pending_approvals(ctx: Context) -> list[PendingApprovalEntry]:
         query={"includeMessageCache": "0"},
     )
     approvals = _parse_pending_approvals_payload(payload)
+    visible_threads = _list_scoped_agents(ctx, include_archived=True)
     visible_thread_ids = {
-        thread.id for thread in _list_scoped_agents(ctx, include_archived=True)
+        thread.id
+        for thread in visible_threads
+        if not ctx.current_project_path or thread.project_path == ctx.current_project_path
     }
     if ctx.current_thread_id:
         visible_thread_ids.add(ctx.current_thread_id)
