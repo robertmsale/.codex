@@ -23,12 +23,14 @@ Build image script:
 
 1. Enforces `command-parser.rule` with `codex execpolicy check`.
 2. Runs the target command directly in the caller environment.
+   - The wrapped command receives `IS_USING_COMMAND_PARSER=true`.
 3. Captures command stdout/stderr to `output.log`.
 4. Runs `codex exec --json` inside Docker to parse `output.log`.
 5. Prints only the parser's final message.
 6. Exits with the original command exit code.
 
 This skill does not mutate the workspace or add command-specific behavior.
+Callers should not need to prefix `IS_USING_COMMAND_PARSER=true` manually.
 
 ## Usage
 
@@ -49,6 +51,7 @@ Recommended default:
 
 - `--request-additional` is analysis-only.
 - The parser cannot run commands, rerun commands, retry commands, or inspect anything outside captured files.
+- Parser-routed wrapper commands that explicitly require command-parser, such as `db_test.sh test ...` and `db_test.sh exec ...`, remain valid command-parser targets even when the nested command is small.
 - If the request asks parser to run commands, it must return:
   `I cannot run commands, do not ask me again.`
 - Simple commands (for example `ls`, `rg`, `echo`, `cargo fmt`) should be run directly, not via command-parser.

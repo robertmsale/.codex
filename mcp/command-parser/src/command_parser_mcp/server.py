@@ -259,11 +259,14 @@ def _build_execution_argv(command: list[str], state: SandboxState) -> list[str]:
 
 
 def _run_command(argv: list[str], cwd: str) -> ExecutionOutcome:
+    env = os.environ.copy()
+    env["IS_USING_COMMAND_PARSER"] = "true"
     proc = subprocess.run(
         argv,
         cwd=cwd,
         text=True,
         capture_output=True,
+        env=env,
     )
     return ExecutionOutcome(
         argv=argv,
@@ -381,6 +384,7 @@ Task:
 Hard refusal (required):
 - If ./command.txt shows a non-noisy command (for example `cargo fmt`, `ls`, `rg`), output exactly:
   Refusal: non-noisy command. Run this command directly instead of command-parser.
+- Do not apply this refusal to parser-routed wrapper commands that explicitly require command-parser, such as `db_test.sh test ...` or `db_test.sh exec ...`, even if the nested command is small.
 - Do not parse ./output.log when this refusal applies.
 
 Output rules:

@@ -224,7 +224,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if "$@" >"$tmp_dir/output.log" 2>&1; then
+if IS_USING_COMMAND_PARSER=true "$@" >"$tmp_dir/output.log" 2>&1; then
   command_exit=0
 else
   command_exit=$?
@@ -245,6 +245,7 @@ Task:
 Hard refusal (required):
 - If ./command.txt shows a non-noisy command (for example `cargo fmt`, `ls`, `rg`, `echo`), output exactly:
   Refusal: non-noisy command. Run this command directly instead of command-parser.
+- Do not apply this refusal to parser-routed wrapper commands that explicitly require command-parser, such as `db_test.sh test ...` or `db_test.sh exec ...`, even if the nested command is small.
 - Do not parse ./output.log when this refusal applies.
 
 Output rules:
