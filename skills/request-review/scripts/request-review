@@ -314,6 +314,9 @@ clear_review_result
 cd "$repo_root"
 branch_name="$(git rev-parse --abbrev-ref HEAD)"
 
+echo "request-review: review may take a long time; do not poll stdin"
+echo "request-review: launch it with command-execution, keep the returned job_id, and use command_execution_wait(job_id) to await review results"
+
 integration_branches_raw="${REQUEST_REVIEW_INTEGRATION_BRANCHES:-main master staging prod production}"
 for protected_branch in $integration_branches_raw; do
   if [[ "$branch_name" == "$protected_branch" ]]; then

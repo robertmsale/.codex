@@ -1,6 +1,6 @@
 ---
 name: request-review
-description: Request review via `scripts/request-review` with a commit message. Review output is written to `review.log` in the worktree root. Skip review for non-working-code changes such as docs, policy text, or comment-only edits. MUST USE $command-execution SKILL WITH THIS PROCESS. [skill-hash:3f8d6a2]
+description: Request review via `scripts/request-review` with a commit message. Review output is written to `review.log` in the worktree root. Skip review for non-working-code changes such as docs, policy text, or comment-only edits. MUST USE $command-execution SKILL WITH THIS PROCESS. [skill-hash:8a4d2f1]
 ---
 
 # Request Review
@@ -46,40 +46,25 @@ Use this skill when you need code review on the current worktree branch.
 
 ## Edge Cases
 
-- Remote review succeeded but the local wrapper hung or left a stale lock:
-  - inspect the lock path printed by the wrapper, then inspect `<lock path>/owner`
-  - if that PID is still active for the same scope, do not launch a duplicate run
-  - if the PID is gone and GitHub already shows the correct trigger comment or bot review for the intended PR+commit, classify it as local stale-lock state, remove the stale lock directory, and rerun once
 - Remote review is still pending after a long time:
   - do not treat long cloud review wait alone as a failed review outcome
   - if the review process is still alive and GitHub shows the trigger comment / in-progress signal, classify it as a long-wait in-progress state
 - Review succeeded remotely but `review.log` is absent:
-  - treat this as a local artifact problem, not as proof that remote review failed
-  - if GitHub shows the correct remote review result, rerun once to repopulate `review.log`
-  - if rerun still cannot restore `review.log`, stop and classify it as a tooling blocker because publish depends on the local artifact
+  - do not rerun request-review just because `review.log` is empty
+  - inspect GitHub directly
+  - look for a thumbs-up reaction on the trigger comment or for new inline review comments on the target commit
+  - if GitHub shows the remote review result, treat remote review as completed and classify the local empty `review.log` as a tooling artifact problem
+  - if GitHub does not show a completed remote review result yet, classify it as still in progress
 - `--use-existing-commit` on a clean rerun:
   - valid when the intended review target is already committed
   - invalid when the operator actually expects the wrapper to capture new uncommitted work
 
-## Lock / Retry Guidance
+## Verification Guidance
 
-- Safe retry:
-  - remote review state is already correct, but the local wrapper exited poorly, hung, or failed to write `review.log`
-  - the printed lock owner PID is gone or clearly stale
-  - rerun once after removing the stale lock
-- Inspect before retry:
-  - lock path exists and the owner PID may still be live
-  - remote GitHub state is unclear for the intended PR/commit
-- True blocker:
-  - repeated reruns keep recreating or colliding on the same lock without a live owner
-  - remote review succeeded but `review.log` still cannot be restored
-  - remote GitHub state and local wrapper state disagree in a way you cannot reconcile from one safe inspection
-
-## Known Edge Cases
-
-- Request-review serializes by PR scope in remote mode and by branch scope otherwise, so a rerun can legitimately collide with another active local operator run.
-- A stale local lock does not mean remote review failed.
-- A missing `review.log` after visible remote success is a local wrapper artifact issue until proven otherwise.
+- If remote mode completes cleanly and `review.log` is present, use it as the local publish gate.
+- If `review.log` is empty or absent, verify remote status on GitHub before doing anything else.
+- GitHub is the source of truth for whether remote review actually happened.
+- `review.log` is only the local artifact the publish script looks for.
 
 ## Guardrails
 
