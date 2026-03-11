@@ -151,6 +151,7 @@ tool_timeout_sec = 9223372036854776000.0
 [mcp_servers.xcode]
 command = "xcrun"
 args = ["mcpbridge"]
+enabled = false
 
 ###############################################################################
 #                                                                             #

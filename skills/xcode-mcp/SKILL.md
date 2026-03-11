@@ -1,6 +1,6 @@
 ---
 name: xcode-mcp
-description: Use the Xcode MCP tools instead of `xcodebuild` or ad-hoc Apple CLI flows when working on Xcode projects. Open a dedicated Xcode window first for worktrees, then inspect files, builds, tests, previews, and docs through the MCP surface. [skill-hash:7b3e1c4]
+description: Xcode MCP is disabled on this system. Use direct `xcodebuild` with the approval system instead of relying on the Xcode MCP server. Open a dedicated Xcode window first for worktrees when you need GUI inspection. [skill-hash:6e2c4b9]
 ---
 
 # Xcode MCP
@@ -8,43 +8,15 @@ description: Use the Xcode MCP tools instead of `xcodebuild` or ad-hoc Apple CLI
 Use this skill for Apple-platform projects that live in Xcode.
 
 Default rule:
-- prefer the Xcode MCP server over `xcodebuild`, `swift build`, ad-hoc DerivedData inspection, or manual Xcode GUI guesswork
+- the Xcode MCP server is disabled here
+- use direct `xcodebuild` and rely on approval prompts when escalation is needed
+- do not route `xcodebuild` through the Xcode MCP server on this system
 
-This is the main MCP surface visible here right now:
-- `XcodeListWindows`
-  - find the active Xcode windows and their workspace tab identifiers
-- `XcodeLS`
-  - browse the project navigator structure
-- `XcodeGlob`
-  - find files by wildcard
-- `XcodeGrep`
-  - search project text with regex
-- `XcodeRead`
-  - read source files with line numbers
-- `XcodeUpdate`
-  - edit existing files
-- `XcodeWrite`
-  - create or overwrite files
-- `XcodeRefreshCodeIssuesInFile`
-  - refresh file-level diagnostics
-- `XcodeListNavigatorIssues`
-  - inspect the Issue Navigator view
-- `DocumentationSearch`
-  - search Apple documentation from inside the Xcode toolchain context
-- `BuildProject`
-  - build the active scheme for the selected workspace tab
-- `GetBuildLog`
-  - inspect the last build log and filter errors/warnings
-- `GetTestList`
-  - enumerate available tests
-- `RunAllTests`
-  - run the active test plan
-- `RunSomeTests`
-  - run specific tests only
-- `RenderPreview`
-  - render SwiftUI previews
-- `ExecuteSnippet`
-  - run a Swift snippet in file context
+Practical consequence:
+- `xcodebuild` is the one exception to the normal noisy-command routing rule
+- direct `xcodebuild` is acceptable
+- `command-parser xcodebuild ...` is also acceptable when you specifically want output extraction
+- both paths should prompt for approval rather than being auto-allowed
 
 ## Setup
 
@@ -72,16 +44,13 @@ If the target device has any other human name:
 ## Preferred Workflow
 
 1. Open the worktree-local `.xcodeproj` or `.xcworkspace` if needed.
-2. Use `XcodeListWindows` to find the right tab.
-3. Inspect project structure with `XcodeLS`, `XcodeGlob`, `XcodeGrep`, and `XcodeRead`.
-4. Make edits through the normal file-editing tools.
-5. Validate with `BuildProject`, `GetBuildLog`, `RunSomeTests`, `RunAllTests`, `RenderPreview`, or `XcodeRefreshCodeIssuesInFile` as appropriate.
-6. Use `DocumentationSearch` when Apple API behavior is unclear.
+2. Use Xcode itself for GUI inspection if needed.
+3. Make edits through the normal file-editing tools.
+4. Validate with direct `xcodebuild` commands and the approval system.
 
 ## Guardrails
 
-- Do not default to CLI builds when the Xcode MCP tool can do the same job.
-- Do not guess the active workspace tab; check it with `XcodeListWindows`.
+- Do not assume the Xcode MCP server is available.
 - Do not use a shared Xcode window for multiple worktrees.
 - Do not build against random named devices.
-- Prefer targeted tests with `RunSomeTests` before broad test runs when the affected area is narrow.
+- Prefer targeted `xcodebuild test` invocations before broad test runs when the affected area is narrow.

@@ -103,18 +103,18 @@ prefix_rule(
 )
 prefix_rule(
     pattern = ["~/.codex/skills/command-parser/scripts/command-parser", "xcodebuild"],
-    decision = "forbidden",
-    justification = "Use the xcode-mcp skill: ~/.codex/skills/xcode-mcp/SKILL.md and the Xcode MCP tools instead of routing xcodebuild through command-parser.",
+    decision = "prompt",
+    justification = "xcodebuild is allowed on this system only with explicit approval.",
 )
 prefix_rule(
     pattern = ["/Users/robertsale/.codex/skills/command-parser/scripts/command-parser", "xcodebuild"],
-    decision = "forbidden",
-    justification = "Use the xcode-mcp skill: ~/.codex/skills/xcode-mcp/SKILL.md and the Xcode MCP tools instead of routing xcodebuild through command-parser.",
+    decision = "prompt",
+    justification = "xcodebuild is allowed on this system only with explicit approval.",
 )
 prefix_rule(
     pattern = ["command-parser", "xcodebuild"],
-    decision = "forbidden",
-    justification = "Use the xcode-mcp skill: ~/.codex/skills/xcode-mcp/SKILL.md and the Xcode MCP tools instead of routing xcodebuild through command-parser.",
+    decision = "prompt",
+    justification = "xcodebuild is allowed on this system only with explicit approval.",
 )
 prefix_rule(
     pattern = ["~/.codex/skills/command-parser/scripts/command-parser", ["pytest", "go", "gradle", "./gradlew", "npm", "pnpm", "yarn", "bun", "deno"], ["test", "build", "check", "verify", "lint", "run"]],
@@ -155,8 +155,8 @@ prefix_rule(
 )
 prefix_rule(
     pattern = ["xcodebuild"],
-    decision = "forbidden",
-    justification = "Use the xcode-mcp skill: ~/.codex/skills/xcode-mcp/SKILL.md and the Xcode MCP tools instead of xcodebuild CLI.",
+    decision = "prompt",
+    justification = "xcodebuild is allowed on this system only with explicit approval.",
 )
 prefix_rule(
     pattern = ["swift", ["build", "test", "package"]],
