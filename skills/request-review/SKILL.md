@@ -1,6 +1,6 @@
 ---
 name: request-review
-description: Request review via `scripts/request-review` with a commit message. Review output is written to `review.log` in the worktree root. Skip review for non-working-code changes such as docs, policy text, or comment-only edits. [skill-hash:2e7c5b1]
+description: Request review via `scripts/request-review` with a commit message. Review output is written to `review.log` in the worktree root. Skip review for non-working-code changes such as docs, policy text, or comment-only edits. MUST USE $command-execution SKILL WITH THIS PROCESS. [skill-hash:3f8d6a2]
 ---
 
 # Request Review
