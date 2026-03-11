@@ -1,6 +1,6 @@
 ---
 name: command-execution
-description: Every command execution yields a stable `job_id`; if command completion is not immediate, wait with MCP `command_execution_wait(job_id)`. [skill-hash:5b1e4a9]
+description: Every command execution yields a stable `job_id`; if command completion is not immediate, wait with MCP `command_execution_wait(job_id)`. MANDATORY, MUST ALWAYS USE THIS. [skill-hash:6a23ba7]
 ---
 
 # Command Execution
