@@ -1,6 +1,6 @@
 ---
 name: robdex-orchestrator
-description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, use direct worker-to-worker coordination when interfaces or dependencies matter, and route reasonable approval/escalation requests through the orchestrator when needed. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:52b9f31]
+description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, use direct worker-to-worker coordination when interfaces or dependencies matter, and route reasonable approval/escalation requests through the orchestrator when needed. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:9c1d6a4]
 ---
 
 # Robdex Orchestrator
@@ -195,7 +195,9 @@ Keep the orchestrator aware of coordination-critical state:
 ## Archived Stewardship
 
 - Use `robdex list-agents --include-archived` when deciding whether to keep something archived, unarchive it, or clean up naming and bookkeeping.
-- Treat archived listings as a stewardship index built from current metadata such as title, issue, PR, blocked reason, and last-known status.
+- Treat archived listings as a concise stewardship index built from current metadata such as title, issue, PR, blocked reason, and current visibility, not as a transcript dump.
+- `list-agents --include-archived` should stay single-line and cleanup-friendly; if it starts surfacing historical prompt blobs or transcript-like text again, treat that as a runtime/CLI bug.
+- If a thread was never properly titled, expect a clipped single-line fallback label rather than a raw prompt or multi-line transcript dump.
 - Do not dump or rely on old prompt blobs just to decide whether a worker should stay archived.
 - Unarchive only when there is a real new next action to assign.
 - Once a worker is truly done, prefer archiving it over leaving a stale inactive thread in the active list.

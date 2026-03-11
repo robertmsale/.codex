@@ -153,6 +153,10 @@ def _quoted(value: str) -> str:
     return json.dumps(value)
 
 
+def _compact_display_text(value: str) -> str:
+    return " ".join(value.split())
+
+
 def _http_json_request(
     host: str,
     port: int,
@@ -1005,14 +1009,15 @@ def _format_agent_line(
 
 
 def _display_name_for_listing(thread: ThreadEntry, max_unnamed_length: int = 96) -> str:
-    if thread.has_custom_title:
-        return thread.display_name
-    if thread.display_name == thread.id:
-        return thread.display_name
+    compact_name = _compact_display_text(thread.display_name)
+    if compact_name == thread.id:
+        return compact_name
 
-    if len(thread.display_name) <= max_unnamed_length:
-        return thread.display_name
-    clipped = thread.display_name[: max_unnamed_length - 3].rstrip()
+    max_length = 120 if thread.has_custom_title else max_unnamed_length
+    if len(compact_name) <= max_length:
+        return compact_name
+
+    clipped = compact_name[: max_length - 3].rstrip()
     return f"{clipped}..."
 
 

@@ -37,7 +37,11 @@ def main() -> int:
     sub.add_parser("list-projects")
 
     p_list = sub.add_parser("list-agents")
-    p_list.add_argument("--include-archived", action="store_true")
+    p_list.add_argument(
+        "--include-archived",
+        action="store_true",
+        help="Include archived agents in the concise single-line stewardship listing.",
+    )
     p_list.add_argument("--all-projects", action="store_true")
     p_list.add_argument("--project-path")
 

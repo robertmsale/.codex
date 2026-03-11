@@ -277,6 +277,53 @@ class RobdexListAgentsScopeTests(unittest.TestCase):
             ],
         )
 
+    def test_list_agents_compacts_and_clips_blob_like_display_names(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="instance",
+            current_thread_id="orchestrator-thread",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orchestrator-thread": "Ezra Orchestrator"},
+            orchestrator_by_project={project_path: "orchestrator-thread"},
+        )
+        payload = {
+            "items": [
+                {
+                    "id": "archived-worker-thread",
+                    "displayName": "Spawned by Ezra Orchestrator\n\nThis is an extremely long historical prompt blob that should never be rendered verbatim in archived stewardship listings because it makes cleanup unreadable.",
+                    "projectPath": project_path,
+                    "cwd": f"{project_path}/.worktrees/archive-smoke",
+                    "isOrchestrator": False,
+                    "isRunning": False,
+                    "issueNumber": 777,
+                    "pullRequestNumber": 901,
+                    "blockedReason": None,
+                    "unblockWhen": None,
+                    "updatedAt": 1234567899,
+                }
+            ]
+        }
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_http_json_request", return_value=payload),
+        ):
+            result = server.robdex_list_agents(
+                from_thread_id="orchestrator-thread",
+                include_archived=True,
+                ctx=None,
+            )
+
+        self.assertIn('"Spawned by Ezra Orchestrator This is an extremely long historical prompt blob', result)
+        self.assertNotIn("\n\nThis is an extremely long historical prompt blob", result)
+        self.assertIn("...", result)
+        self.assertIn("issue=#777", result)
+        self.assertIn("pr=#901", result)
+
 
 class RobdexSendMessageTests(unittest.TestCase):
     def test_send_message_posts_to_scoped_bridge_endpoint_by_thread_id(self) -> None:
