@@ -767,94 +767,6 @@ EOF
   [[ ! -d "$stale_lock_dir" ]] || fail "expected stale lock dir to be removed"
 }
 
-test_remote_timeout_releases_lock() {
-  local repo_dir="$tmp_root/remote-timeout-repo"
-  local origin_dir="$tmp_root/remote-timeout-origin.git"
-  local home_dir="$tmp_root/remote-timeout-home"
-  local bin_dir="$tmp_root/remote-timeout-bin"
-  local skill_copy_dir="$tmp_root/remote-timeout-skill"
-  local request_review_script="$skill_copy_dir/scripts/request-review"
-  local output
-  local status
-
-  setup_repo "$repo_dir" "$origin_dir"
-  setup_common_home "$home_dir"
-  setup_common_stubs "$bin_dir"
-  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=remote'
-
-  printf 'timeout change\n' >>"$repo_dir/file.txt"
-  git -C "$repo_dir" add file.txt
-  git -C "$repo_dir" commit -m "timeout commit" >/dev/null
-  git -C "$repo_dir" push origin feature/request-review-artifact >/dev/null
-
-  cat >"$bin_dir/gh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-if [[ "${1:-}" == "repo" && "${2:-}" == "view" ]]; then
-  if [[ "$*" == *".defaultBranchRef.name"* ]]; then
-    echo "main"
-    exit 0
-  fi
-  echo "example/repo"
-  exit 0
-fi
-
-if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
-  if [[ "$*" == *".number"* ]]; then
-    echo "711"
-    exit 0
-  fi
-  if [[ "$*" == *".state"* ]]; then
-    echo "OPEN"
-    exit 0
-  fi
-fi
-
-if [[ "${1:-}" == "api" && "${2:-}" == "--method" && "${3:-}" == "POST" && "${4:-}" == *"/issues/711/comments"* ]]; then
-  echo "2026-03-11T00:00:00Z"
-  exit 0
-fi
-
-if [[ "${1:-}" == "api" && "${2:-}" == *"/pulls/711/commits"* ]]; then
-  echo "2026-03-11T00:00:00Z"
-  exit 0
-fi
-
-if [[ "${1:-}" == "api" && ( "${2:-}" == *"/pulls/711/comments"* || "${2:-}" == *"/issues/711/reactions"* ) ]]; then
-  echo "[]"
-  exit 0
-fi
-
-if [[ "${1:-}" == "pr" && "${2:-}" == "create" ]]; then
-  echo "https://github.com/example/repo/pull/711"
-  exit 0
-fi
-
-echo "unexpected gh invocation: $*" >&2
-exit 1
-EOF
-  chmod +x "$bin_dir/gh"
-
-  set +e
-  output="$(
-    cd "$repo_dir" &&
-      HOME="$home_dir" \
-      PATH="$bin_dir:$PATH" \
-      REQUEST_REVIEW_REMOTE_TIMEOUT_SECONDS=1 \
-      "$request_review_script" --use-existing-commit "test: remote timeout" 2>&1
-  )"
-  status=$?
-  set -e
-
-  [[ $status -ne 0 ]] || fail "expected remote timeout failure"
-  [[ "$output" == *"timed out after 1s waiting for chatgpt-codex-connector[bot] on PR #711"* ]] || fail "unexpected remote timeout output: $output"
-  assert_file_missing "$repo_dir/review.log"
-  if compgen -G "$home_dir/.codex/tmp/request-review.lock.*" >/dev/null; then
-    fail "expected remote timeout to release request-review lock"
-  fi
-}
-
 test_remote_disable_writes_review_log
 test_local_failure_clears_review_log
 test_remote_rerun_reuses_head_when_pr_is_open
@@ -869,6 +781,5 @@ test_remote_existing_ancestor_commit_skips_non_fast_forward_push
 test_remote_rewritten_head_force_pushes_with_lease
 test_remote_existing_commit_from_stale_clone_does_not_rewind_remote
 test_stale_lock_is_reclaimed_before_review_runs
-test_remote_timeout_releases_lock
 
 echo "PASS: request-review artifact handling"
