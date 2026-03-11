@@ -1,6 +1,6 @@
 ---
 name: request-review
-description: Request review via `scripts/request-review` with a commit message. Review output is written to `review.log` in the worktree root. Skip review for non-working-code changes such as docs, policy text, or comment-only edits. [skill-hash:6d1a2c4]
+description: Request review via `scripts/request-review` with a commit message. Review output is written to `review.log` in the worktree root. Skip review for non-working-code changes such as docs, policy text, or comment-only edits. [skill-hash:4f6b2d8]
 ---
 
 # Request Review
@@ -20,6 +20,7 @@ Use this skill when you need code review on the current worktree branch.
 - Review mode and review disable are operator-controlled.
 - Non-working-code changes such as docs, policy text, or comment-only edits do not require request-review.
 - In remote mode, GitHub review state is the source of truth for whether the review actually happened.
+- In remote mode, once cloud review is in progress, the default behavior is to wait indefinitely for completion rather than classify a long-running review as failed.
 - `review.log` is the local publish-gate artifact, not the remote source of truth.
 - The local lock under `~/.codex/tmp/request-review.lock.*` is only local serialization state for this wrapper.
 
@@ -49,6 +50,10 @@ Use this skill when you need code review on the current worktree branch.
   - inspect the lock path printed by the wrapper, then inspect `<lock path>/owner`
   - if that PID is still active for the same scope, do not launch a duplicate run
   - if the PID is gone and GitHub already shows the correct trigger comment or bot review for the intended PR+commit, classify it as local stale-lock state, remove the stale lock directory, and rerun once
+- Remote review is still pending after a long time:
+  - do not treat long cloud review wait alone as a failed review outcome
+  - if the review process is still alive and GitHub shows the trigger comment / in-progress signal, classify it as a long-wait in-progress state
+  - only use `REQUEST_REVIEW_REMOTE_TIMEOUT_SECONDS` when an operator explicitly wants a bounded wait for debugging or special handling
 - Review succeeded remotely but `review.log` is absent:
   - treat this as a local artifact problem, not as proof that remote review failed
   - if GitHub shows the correct remote review result, rerun once to repopulate `review.log`
