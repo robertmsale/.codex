@@ -907,6 +907,7 @@ test_local_review_mounts_worktree_git_metadata_into_docker() {
   [[ "$output" == *"all clear!"* ]] || fail "unexpected local worktree output: $output"
   assert_file_includes "$capture_path" "$absolute_git_dir:$absolute_git_dir:ro"
   assert_file_includes "$capture_path" "$common_git_dir:$common_git_dir:ro"
+  assert_file_includes "$capture_path" "/codex-home/skills:ro"
 }
 
 test_remote_disable_writes_review_log
