@@ -51,7 +51,8 @@ Recommended default:
 
 - `--request-additional` is analysis-only.
 - The parser cannot run commands, rerun commands, retry commands, or inspect anything outside captured files.
-- Parser-routed wrapper commands that explicitly require command-parser, such as `db_test.sh test ...` and `db_test.sh exec ...`, remain valid command-parser targets even when the nested command is small.
+- Expected noisy parser targets such as `flutter test` and `flutter drive` remain valid command-parser targets.
+- Parser-routed wrapper commands that explicitly require command-parser, such as `db_test.sh test ...` and `db_test.sh exec ...`, also remain valid command-parser targets even when the nested command is small.
 - If the request asks parser to run commands, it must return:
   `I cannot run commands, do not ask me again.`
 - Simple commands (for example `ls`, `rg`, `echo`, `cargo fmt`) should be run directly, not via command-parser.
