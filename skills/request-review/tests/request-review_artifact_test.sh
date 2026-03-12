@@ -161,6 +161,15 @@ if [[ "\${1:-}" == "api" && "\${2:-}" == *"/pulls/711/comments"* ]]; then
   exit 0
 fi
 
+if [[ "\${1:-}" == "api" && "\${2:-}" == *"/issues/711/comments"* ]]; then
+  if [[ -n "\${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME:-}" && ( "\$*" != *"\${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME}"* || "\$*" != *".created_at >="* ) ]]; then
+    echo "missing inclusive trigger-time filter in issue comments query: \$*" >&2
+    exit 1
+  fi
+  echo "\${REQUEST_REVIEW_TEST_ISSUE_COMMENTS_JSON:-[]}"
+  exit 0
+fi
+
 if [[ "\${1:-}" == "api" && "\${2:-}" == *"/issues/711/reactions"* ]]; then
   if [[ -n "\${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME:-}" && ( "\$*" != *"\${REQUEST_REVIEW_EXPECTED_TRIGGER_TIME}"* || "\$*" != *".created_at >="* ) ]]; then
     echo "missing inclusive trigger-time filter in reactions query: \$*" >&2
@@ -431,6 +440,57 @@ test_remote_rerun_pushes_head_when_pr_branch_is_behind() {
   [[ "$output" == *"$expected"* ]] || fail "unexpected remote rerun push output: $output"
   remote_sha="$(git --git-dir="$origin_dir" rev-parse refs/heads/feature/request-review-artifact)"
   [[ "$remote_sha" == "$review_sha" ]] || fail "expected remote branch to advance to $review_sha, got $remote_sha"
+}
+
+test_remote_terminal_issue_comment_exits_nonzero() {
+  local repo_dir="$tmp_root/remote-terminal-comment-repo"
+  local origin_dir="$tmp_root/remote-terminal-comment-origin.git"
+  local home_dir="$tmp_root/remote-terminal-comment-home"
+  local bin_dir="$tmp_root/remote-terminal-comment-bin"
+  local skill_copy_dir="$tmp_root/remote-terminal-comment-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local output
+  local status
+  local review_sha
+  local expected
+  local pr_exists_file="$tmp_root/remote-terminal-comment-pr-open"
+  local issue_comments_json
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+  setup_remote_review_stubs "$bin_dir"
+  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=remote'
+
+  printf 'remote terminal comment change\n' >>"$repo_dir/file.txt"
+  git -C "$repo_dir" add file.txt
+  git -C "$repo_dir" commit -m "remote terminal comment commit" >/dev/null
+  git -C "$repo_dir" push origin feature/request-review-artifact >/dev/null
+  review_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+  : >"$pr_exists_file"
+
+  issue_comments_json="$(cat <<'JSON'
+[{"created_at":"2026-03-08T00:00:05Z","html_url":"https://github.com/example/repo/pull/711#issuecomment-1","body":"Codex Review: Something went wrong. Try again later by commenting \"@codex review\"."}]
+JSON
+)"
+
+  set +e
+  output="$(
+    cd "$repo_dir" &&
+      HOME="$home_dir" \
+      PATH="$bin_dir:$PATH" \
+      REQUEST_REVIEW_TEST_PR_EXISTS_FILE="$pr_exists_file" \
+      REQUEST_REVIEW_EXPECTED_TRIGGER_TIME=2026-03-08T00:00:00Z \
+      REQUEST_REVIEW_TEST_ISSUE_COMMENTS_JSON="$issue_comments_json" \
+      "$request_review_script" "test: remote terminal issue comment" 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ $status -ne 0 ]] || fail "expected remote terminal bot comment to exit nonzero"
+  expected=$'request-review (remote): terminal bot error comment from chatgpt-codex-connector[bot] on PR #711 after commit '"$review_sha"$'\n\n- https://github.com/example/repo/pull/711#issuecomment-1\n  Comment: Codex Review: Something went wrong. Try again later by commenting "@codex review".'
+  [[ "$output" == *"$expected"* ]] || fail "unexpected terminal-comment output: $output"
+  assert_file_contains "$repo_dir/review.log" "$expected"
 }
 
 test_use_existing_commit_flag_reviews_clean_head() {
@@ -853,6 +913,7 @@ test_remote_disable_writes_review_log
 test_local_failure_clears_review_log
 test_remote_rerun_reuses_head_when_pr_is_open
 test_remote_rerun_pushes_head_when_pr_branch_is_behind
+test_remote_terminal_issue_comment_exits_nonzero
 test_use_existing_commit_flag_reviews_clean_head
 test_existing_commit_flag_like_text_stays_in_message
 test_canonical_env_overrides_agent_runtime_env

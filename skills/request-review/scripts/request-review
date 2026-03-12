@@ -36,6 +36,16 @@ emit_result() {
   printf '%s\n' "$message"
 }
 
+remote_terminal_error_comment_json() {
+  local issue_comments_json="$1"
+
+  jq -c '
+    map(select(((.body // "") | startswith("Codex Review: Something went wrong."))))
+    | sort_by(.created_at)
+    | last // empty
+  ' <<<"$issue_comments_json"
+}
+
 is_request_review_pid_active() {
   local pid="$1"
   local command_text=""
@@ -475,6 +485,18 @@ if [[ "$review_mode" == "remote" ]]; then
       persist_review_result "${result_header}"$'\n\n'"${result_body}"
       emit_result "${result_header}"$'\n\n'"${result_body}"
       exit 0
+    fi
+
+    issue_comments_json="$(gh api "repos/$repo_name/issues/$pr_number/comments?since=$remote_review_started_at" --paginate \
+      --jq '[.[] | select(.user.login=="'"$bot_login"'" and (.created_at >= "'"$remote_review_started_at"'")) | {created_at,html_url,body}]')"
+
+    terminal_error_comment_json="$(remote_terminal_error_comment_json "$issue_comments_json")"
+    if [[ -n "$terminal_error_comment_json" && "$terminal_error_comment_json" != "null" ]]; then
+      result_header="request-review (remote): terminal bot error comment from $bot_login on PR #$pr_number after commit $review_sha"
+      result_body="$(jq -r '"- \(.html_url // "issue-comment")\n  Comment: \(.body)\n"' <<<"$terminal_error_comment_json")"
+      persist_review_result "${result_header}"$'\n\n'"${result_body}"
+      emit_result "${result_header}"$'\n\n'"${result_body}"
+      exit 1
     fi
 
     reactions_json="$(gh api "repos/$repo_name/issues/$pr_number/reactions" -H 'Accept: application/vnd.github+json' --paginate \
