@@ -285,11 +285,12 @@ Return only the structured extraction format from AGENTS.md.
 EOF_PROMPT
 )"
 
-workspace_host="$(pwd)"
 docker_tmp="/tmp/command-parser"
 docker_home="/tmp/command-parser-home"
 docker_codex_home="/codex-home"
 events_log="$tmp_dir/events.jsonl"
+empty_skills_dir="$tmp_dir/empty-skills"
+mkdir -p "$empty_skills_dir"
 
 docker run --rm -i \
   -u "$(id -u):$(id -g)" \
@@ -297,7 +298,7 @@ docker run --rm -i \
   -e CODEX_HOME="$docker_codex_home" \
   -e CODEX_NO_COLOR=1 \
   -v "$host_codex_home:$docker_codex_home:rw" \
-  -v "$workspace_host:/workspace:rw" \
+  -v "$empty_skills_dir:$docker_codex_home/skills:ro" \
   -v "$tmp_dir:$docker_tmp:rw" \
   --workdir "$docker_tmp" \
   "$image_tag" \

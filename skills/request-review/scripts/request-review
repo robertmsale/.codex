@@ -155,6 +155,11 @@ clear_review_result() {
   fi
 }
 
+cleanup_request_review_runtime() {
+  rm -rf "$lock_dir" 2>/dev/null || true
+  rm -rf "${request_review_temp_dir:-}" 2>/dev/null || true
+}
+
 extract_local_review_message() {
   local raw_jsonl_path="$1"
   local output_path="$2"
@@ -326,6 +331,7 @@ remote_review_started_at=""
 remote_branch_sha=""
 remote_default_branch=""
 should_push_review_sha=0
+request_review_temp_dir=""
 
 lock_root="${HOME}/.codex/tmp"
 clear_review_result
@@ -410,7 +416,7 @@ if ! mkdir "$lock_dir" 2>/dev/null; then
   fi
 fi
 printf 'pid=%s\nstarted=%s\nscope=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$lock_scope" >"$lock_dir/owner"
-trap 'rm -rf "$lock_dir" 2>/dev/null || true' EXIT HUP INT TERM
+trap cleanup_request_review_runtime EXIT HUP INT TERM
 
 if [[ "$review_disable" != "0" ]]; then
   if [[ "$review_mode" == "remote" && "$should_push_review_sha" != "0" ]]; then
@@ -548,6 +554,9 @@ local_image_tag="${REQUEST_REVIEW_IMAGE:-${COMMAND_PARSER_IMAGE:-command-parser:
 host_codex_home="${CODEX_HOME:-$HOME/.codex}"
 docker_home="/tmp/request-review-home"
 docker_codex_home="/codex-home"
+request_review_temp_dir="$(mktemp -d "${lock_root%/}/request-review.runtime.XXXXXX")"
+empty_skills_dir="$request_review_temp_dir/empty-skills"
+mkdir -p "$empty_skills_dir"
 absolute_git_dir="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
 common_git_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 extra_docker_mounts=()
@@ -590,6 +599,7 @@ cmd=(
   -e "CODEX_HOME=$docker_codex_home"
   -e "CODEX_NO_COLOR=1"
   -v "$host_codex_home:$docker_codex_home:rw"
+  -v "$empty_skills_dir:$docker_codex_home/skills:ro"
   -v "$repo_root:/workspace:rw"
 )
 
