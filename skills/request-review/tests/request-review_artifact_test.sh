@@ -22,6 +22,16 @@ assert_file_contains() {
   [[ "$actual" == "$expected" ]] || fail "expected '$expected' in $path, got '$actual'"
 }
 
+assert_file_includes() {
+  local path="$1"
+  local expected_fragment="$2"
+
+  [[ -f "$path" ]] || fail "expected file to exist: $path"
+  local actual
+  actual="$(cat "$path")"
+  [[ "$actual" == *"$expected_fragment"* ]] || fail "expected '$expected_fragment' in $path, got '$actual'"
+}
+
 assert_file_missing() {
   local path="$1"
   [[ ! -e "$path" ]] || fail "expected file to be absent: $path"
@@ -199,6 +209,41 @@ EOF
   chmod +x "$bin_dir/docker"
 }
 
+setup_local_capture_review_stubs() {
+  local home_dir="$1"
+  local bin_dir="$2"
+  local capture_path="$3"
+
+  cat >"$home_dir/.codex/config.toml" <<'EOF'
+[profiles.local-review]
+model = "test"
+EOF
+
+  cat >"$home_dir/.codex/scripts/build-codex-agent-image" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$home_dir/.codex/scripts/build-codex-agent-image"
+
+  cat >"$bin_dir/docker" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then
+  exit 0
+fi
+
+if [[ "\${1:-}" == "run" ]]; then
+  printf '%s\n' "\$@" >"$capture_path"
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"all clear!"}}'
+  exit 0
+fi
+
+exit 2
+EOF
+  chmod +x "$bin_dir/docker"
+}
+
 make_skill_copy() {
   local dest_dir="$1"
   local env_contents="$2"
@@ -235,7 +280,7 @@ test_canonical_env_overrides_agent_runtime_env() {
       "$request_review_script" --use-existing-commit "test: canonical env wins"
   )"
 
-  [[ "$output" == "all clear!" ]] || fail "expected canonical env to force local mode, got: $output"
+  [[ "$output" == *"all clear!"* ]] || fail "expected canonical env to force local mode, got: $output"
   assert_file_contains "$repo_dir/review.log" "all clear!"
 }
 
@@ -413,7 +458,7 @@ test_use_existing_commit_flag_reviews_clean_head() {
       "$request_review_script" --use-existing-commit "test: reuse existing head commit"
   )"
 
-  [[ "$output" == "all clear!" ]] || fail "unexpected existing commit output: $output"
+  [[ "$output" == *"all clear!"* ]] || fail "unexpected existing commit output: $output"
   assert_file_contains "$repo_dir/review.log" "all clear!"
   [[ "$(git -C "$repo_dir" rev-parse HEAD)" == "$review_sha" ]] || fail "expected HEAD to remain unchanged"
 }
@@ -762,9 +807,46 @@ EOF
       "$request_review_script" --use-existing-commit "test: stale lock reclaimed"
   )"
 
-  [[ "$output" == "all clear!" ]] || fail "unexpected stale lock output: $output"
+  [[ "$output" == *"all clear!"* ]] || fail "unexpected stale lock output: $output"
   assert_file_contains "$repo_dir/review.log" "all clear!"
   [[ ! -d "$stale_lock_dir" ]] || fail "expected stale lock dir to be removed"
+}
+
+test_local_review_mounts_worktree_git_metadata_into_docker() {
+  local repo_dir="$tmp_root/worktree-mount-repo"
+  local origin_dir="$tmp_root/worktree-mount-origin.git"
+  local worktree_dir="$tmp_root/worktree-mount-checkout"
+  local home_dir="$tmp_root/worktree-mount-home"
+  local bin_dir="$tmp_root/worktree-mount-bin"
+  local skill_copy_dir="$tmp_root/worktree-mount-skill"
+  local request_review_script="$skill_copy_dir/scripts/request-review"
+  local capture_path="$tmp_root/worktree-mount-docker-args.txt"
+  local absolute_git_dir
+  local common_git_dir
+  local output
+
+  setup_repo "$repo_dir" "$origin_dir"
+  setup_common_home "$home_dir"
+  setup_common_stubs "$bin_dir"
+  setup_local_capture_review_stubs "$home_dir" "$bin_dir" "$capture_path"
+  make_skill_copy "$skill_copy_dir" 'REQUEST_REVIEW_MODE=local'
+
+  git -C "$repo_dir" branch worktree-review HEAD >/dev/null
+  git -C "$repo_dir" worktree add "$worktree_dir" worktree-review >/dev/null
+
+  absolute_git_dir="$(git -C "$worktree_dir" rev-parse --absolute-git-dir)"
+  common_git_dir="$(git -C "$worktree_dir" rev-parse --git-common-dir)"
+
+  output="$(
+    cd "$worktree_dir" &&
+      HOME="$home_dir" \
+      PATH="$bin_dir:$PATH" \
+      "$request_review_script" --use-existing-commit "test: worktree git mounts"
+  )"
+
+  [[ "$output" == *"all clear!"* ]] || fail "unexpected local worktree output: $output"
+  assert_file_includes "$capture_path" "$absolute_git_dir:$absolute_git_dir:ro"
+  assert_file_includes "$capture_path" "$common_git_dir:$common_git_dir:ro"
 }
 
 test_remote_disable_writes_review_log
@@ -781,5 +863,6 @@ test_remote_existing_ancestor_commit_skips_non_fast_forward_push
 test_remote_rewritten_head_force_pushes_with_lease
 test_remote_existing_commit_from_stale_clone_does_not_rewind_remote
 test_stale_lock_is_reclaimed_before_review_runs
+test_local_review_mounts_worktree_git_metadata_into_docker
 
 echo "PASS: request-review artifact handling"

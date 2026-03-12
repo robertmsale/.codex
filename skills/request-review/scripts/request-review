@@ -23,6 +23,14 @@ require_cmd() {
   }
 }
 
+path_is_within() {
+  local candidate_path="$1"
+  local parent_path="$2"
+  local normalized_parent="${parent_path%/}/"
+
+  [[ "$candidate_path" == "$parent_path" || "$candidate_path" == "$normalized_parent"* ]]
+}
+
 emit_result() {
   local message="$1"
   printf '%s\n' "$message"
@@ -518,6 +526,34 @@ local_image_tag="${REQUEST_REVIEW_IMAGE:-${COMMAND_PARSER_IMAGE:-command-parser:
 host_codex_home="${CODEX_HOME:-$HOME/.codex}"
 docker_home="/tmp/request-review-home"
 docker_codex_home="/codex-home"
+absolute_git_dir="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
+common_git_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+extra_docker_mounts=()
+
+add_git_mount_if_needed() {
+  local mount_path="$1"
+  local existing_path
+
+  [[ -n "$mount_path" ]] || return 0
+  [[ -d "$mount_path" ]] || return 0
+  if path_is_within "$mount_path" "$repo_root"; then
+    return 0
+  fi
+
+  set +u
+  for existing_path in "${extra_docker_mounts[@]}"; do
+    if [[ "$existing_path" == "$mount_path:$mount_path:ro" ]]; then
+      set -u
+      return 0
+    fi
+  done
+  set -u
+
+  extra_docker_mounts+=("$mount_path:$mount_path:ro")
+}
+
+add_git_mount_if_needed "$absolute_git_dir"
+add_git_mount_if_needed "$common_git_dir"
 
 if ! docker image inspect "$local_image_tag" >/dev/null 2>&1; then
   CODEX_AGENT_IMAGE="$local_image_tag" \
@@ -533,6 +569,15 @@ cmd=(
   -e "CODEX_NO_COLOR=1"
   -v "$host_codex_home:$docker_codex_home:rw"
   -v "$repo_root:/workspace:rw"
+)
+
+set +u
+for docker_mount in "${extra_docker_mounts[@]}"; do
+  cmd+=(-v "$docker_mount")
+done
+set -u
+
+cmd+=(
   --workdir /workspace
   "$local_image_tag"
   codex exec
