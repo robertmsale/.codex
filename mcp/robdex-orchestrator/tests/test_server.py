@@ -37,6 +37,46 @@ class RobdexInstanceFallbackTests(unittest.TestCase):
 
         self.assertEqual(ctx.instance_id, "mgmt-global")
 
+    def test_current_role_uses_resolved_context(self) -> None:
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="mgmt-global",
+            current_thread_id="orch-ezra",
+            current_project_path="/tmp/ezra",
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
+            orchestrator_by_project={"/tmp/ezra": "orch-ezra"},
+        )
+
+        with patch.object(server, "_resolve_context", return_value=resolved_context):
+            role = server.robdex_current_role(from_thread_id="orch-ezra", ctx=None)
+            whoami = server.robdex_whoami(from_thread_id="orch-ezra", ctx=None)
+
+        self.assertEqual(role, "orchestrator")
+        self.assertIn("role=orchestrator", whoami)
+        self.assertIn("thread_id=orch-ezra", whoami)
+        self.assertIn("project_path=/tmp/ezra", whoami)
+
+    def test_current_role_returns_worker_when_sender_is_not_orchestrator(self) -> None:
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token=None,
+            instance_id="mgmt-global",
+            current_thread_id="worker-thread",
+            current_project_path="/tmp/ezra",
+            current_is_orchestrator=False,
+            titles_by_thread_id={"worker-thread": "Worker Thread"},
+            orchestrator_by_project={"/tmp/ezra": "orch-ezra"},
+        )
+
+        with patch.object(server, "_resolve_context", return_value=resolved_context):
+            role = server.robdex_current_role(from_thread_id="worker-thread", ctx=None)
+
+        self.assertEqual(role, "worker")
+
     def test_list_threads_recovers_from_stale_instance_id(self) -> None:
         ctx = server.Context(
             host="127.0.0.1",
