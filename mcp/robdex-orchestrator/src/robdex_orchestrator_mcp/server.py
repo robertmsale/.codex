@@ -982,6 +982,10 @@ def _current_sender_label(ctx: Context) -> str:
     return "unknown-thread"
 
 
+def _current_role_name(ctx: Context) -> str:
+    return "orchestrator" if ctx.current_is_orchestrator else "worker"
+
+
 def _is_prefixed_agent_message(text: str) -> bool:
     return text.startswith("[") and "]:" in text.split("\n", 1)[0]
 
@@ -1189,6 +1193,24 @@ def _compose_message(ctx: Context, text: str) -> str:
     sender_label = _current_sender_label(ctx)
     prefixed = trimmed if _is_prefixed_agent_message(trimmed) else f"[{sender_label}]: {trimmed}"
     return _append_suffix(prefixed)
+
+
+def robdex_current_role(from_thread_id: str, ctx: Context = None) -> str:
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    return _current_role_name(resolved_context)
+
+
+@mcp.tool
+def robdex_whoami(from_thread_id: str, ctx: Context = None) -> str:
+    """Show the current Robdex sender thread role and resolved project scope."""
+    resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
+    return "\n".join(
+        [
+            f"role={_current_role_name(resolved_context)}",
+            f"thread_id={resolved_context.current_thread_id or 'unknown'}",
+            f"project_path={resolved_context.current_project_path or 'unknown'}",
+        ]
+    )
 
 
 @mcp.tool

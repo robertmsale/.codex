@@ -1,68 +1,65 @@
 ---
 name: robdex-orchestrator
-description: Orchestrate workers via `scripts/robdex` (script-first). Prefer one master issue plus a small number of independent worker slices, keep worker metadata current, use direct worker-to-worker coordination when interfaces or dependencies matter, and route reasonable approval/escalation requests through the orchestrator when needed. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:9c1d6a4]
+description: Use Robdex communication and orchestration via `scripts/robdex`. First run `scripts/robdex-role-instructions` so the live thread loads only its role-specific guidance from `resources/orchestrator.md` or `resources/worker.md`. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:4b7f2d1]
 ---
 
 # Robdex Orchestrator
 
-Use this skill to list, spawn, steer, rename, archive, unarchive, maintain worker bookkeeping, and coordinate reasonable approval routing when a worker hits sandbox limits.
+Use this skill for Robdex-backed worker/orchestrator communication, bookkeeping, archive flows, and routed approvals.
 
-## Preferred Delivery Model
+## First Step
 
-Default to:
-- one master issue that represents the overall effort
-- a small number of worker agents for non-cross-cutting, dependency-light slices
-- one PR per worker branch/worktree
+Before acting on this skill, run:
 
-Do not default to:
-- creating a child issue for every implementation slice
-- leaving many open child issues after the real work has already moved to PRs
-- treating issue creation as mandatory for internal decomposition
+- `~/.codex/skills/robdex-orchestrator/scripts/robdex-role-instructions`
 
-Use child issues only when they add real tracking value outside the orchestrator itself, for example:
-- separately triaged external work
-- work owned by different people outside the worker pool
-- user-requested public breakdown
-- follow-on items that should survive beyond the current orchestration run
+That script uses the live Robdex thread identity to determine whether the caller is an orchestrator or a worker and prints only the matching role reference:
 
-If a master issue is sufficient, keep decomposition in worker prompts, metadata, and PRs rather than multiplying GitHub issues.
+- `resources/orchestrator.md`
+- `resources/worker.md`
+
+Do not preload both role files just to figure out which one applies.
 
 ## Required Path
 
 - Use: `~/.codex/skills/robdex-orchestrator/scripts/robdex ...`
-- Do not call robdex MCP tools directly for normal orchestration.
-- Do not pass `from_thread_id` manually.
+- Use: `~/.codex/skills/robdex-orchestrator/scripts/robdex-role-instructions`
+- Do not call Robdex MCP tools directly for normal orchestration.
+- Do not pass `from_thread_id` or sender identity manually.
 
-## Identity
+## Identity And Scope
 
 - `$CODEX_THREAD_ID` is the sender identity source.
-- The script injects sender identity automatically.
+- The script resolves sender identity automatically.
 - If `$CODEX_THREAD_ID` is missing, stop and report tooling failure.
+- `robdex whoami` shows the live resolved role, thread id, and project path.
+- Bridge-owned authorization decides who can list, message, archive, or approve. Do not recreate that logic in shell scripts or prompts.
 
-## System Experts
+## Shared Communication Surface
 
-- When an agent needs detailed information about how some `codex app-server` behavior works, source that information from `Codex App-Server Expert`.
-- `Codex App-Server Expert` is a read-only orchestrator inside the real codex app-server codebase and is specialized for finding the relevant implementation details there.
-- Use that agent for understanding app-server internals that local configs or wrapper tooling depend on; do not guess when the answer needs code-level confirmation.
-
-## Robdex Runtime
-
-- `Robdex Orchestrator` is the orchestrator for the Robdex runtime itself.
-- Robdex is the native macOS app/runtime wrapper around `codex app-server`; for example, messages in this environment may be flowing through Robdex.
-- Bug reports should come to this orchestrator first so you can determine whether the problem is in local Codex config/workflow logic, codex app-server behavior, or the Robdex app/runtime.
-- If more app-server detail is needed during triage, consult `Codex App-Server Expert`.
-- If the issue is upstream in Robdex rather than the local config layer, forward the bug details to `Robdex Orchestrator`.
-- Any Robdex code change requires a full app restart to take effect. Even if `Robdex Orchestrator` reports the fix is done, treat it as restart-required and do not claim the fix is live until the user restarts the app.
-
-## Commands
-
-- List projects:
+- Projects:
   - `robdex list-projects`
-- List agents:
+- Role / identity:
+  - `robdex whoami`
+  - `robdex role-instructions`
+- Agents:
   - `robdex list-agents`
   - `robdex list-agents --include-archived`
   - `robdex list-agents --all-projects`
-- Pending approvals:
+  - `robdex spawn-agent --name "<title>" --prompt "<task>"`
+  - `robdex rename-agent --name "<old>" --new-name "<new>"`
+  - `robdex archive-agent --name "<title>"`
+  - `robdex archive-agent --to-thread-id "<thread id>"`
+  - `robdex unarchive-agent --name "<title>" --prompt "<message>"`
+- Messaging:
+  - `robdex send-message --name "<agent name>" --text "<message>"`
+  - `robdex send-message --to-thread-id "<thread id>" --text "<message>"`
+- Metadata:
+  - `robdex set-worker-metadata --name "<agent name>" --issue-number <issue>`
+  - `robdex set-worker-metadata --name "<agent name>" --pr-number <pr>`
+  - `robdex set-worker-metadata --name "<agent name>" --blocked-reason "<reason>" --unblock-when "<condition>"`
+  - `robdex set-worker-metadata --name "<agent name>" --clear-blocked`
+- Routed approvals:
   - `robdex list-pending-approvals`
   - `robdex approve-approval --approval-id <approval id>`
   - `robdex decline-approval --approval-id <approval id>`
@@ -73,143 +70,28 @@ If a master issue is sufficient, keep decomposition in worker prompts, metadata,
   - `robdex move-thread-to-group --thread-id <thread> [--group-id <id> | --remove] [--project-path <path>]`
   - `robdex delete-thread-group --group-id <id> [--project-path <path>]`
   - `robdex archive-thread-group --group-id <id> [--project-path <path>]`
-- Spawn:
-  - `robdex spawn-agent --name "<title>" --prompt "<task>"`
-  - `robdex spawn-agent --name "<title>" --prompt "<task>" --issue-number <issue>`
-- Message:
-  - `robdex send-message --name "<agent name>" --text "<message>"`
-  - `robdex send-message --to-thread-id "<thread id>" --text "<message>"`
-- Rename:
-  - `robdex rename-agent --name "<old>" --new-name "<new>"`
-- Archive:
-  - `robdex archive-agent --name "<title>"`
-  - `robdex archive-agent --to-thread-id "<thread id>"`
-  - `robdex archive-agent --name "<title>" --project-path <path>`
-- Unarchive:
-  - `robdex unarchive-agent --name "<title>" --prompt "<message>"`
-- Worker metadata:
-  - `robdex set-worker-metadata --name "<agent name>" --issue-number <issue>`
-  - `robdex set-worker-metadata --name "<agent name>" --pr-number <pr>`
-  - `robdex set-worker-metadata --name "<agent name>" --blocked-reason "<reason>" --unblock-when "<time or condition>"`
-  - `robdex set-worker-metadata --name "<agent name>" --clear-blocked`
-  - `robdex set-worker-metadata --name "<agent name>" --clear-issue-number`
-  - `robdex set-worker-metadata --name "<agent name>" --clear-pr-number`
 
-## Canonical Worker States
+## Source Of Truth
 
-Use explicit next-action states. Do not leave threads in vague terminal labels such as `passed`, `publishable`, or `merge-ready` without a concrete next step.
+- The Robdex bridge is the source of truth for visible agents, message authorization, archive authorization, and pending approvals.
+- The routed approval ledger is bridge-visible pending approval state, not the chat notification that announced it.
+- Local metadata is bookkeeping only; it does not replace bridge authorization or scoped visibility.
 
-- `active`
-  - work is in flight right now
-  - the worker has an immediate next action
-- `blocked`
-  - the worker cannot proceed because of a tooling failure, dependency, approval, or product decision
-  - include a real blocked reason and an `unblock-when` condition when applicable
-- `paused-awaiting-next-slice`
-  - the current slice is done, but you intentionally expect a follow-up slice soon
-  - use this instead of pretending the worker is still active when there is no immediate command to run
-- `ready-for-archive`
-  - the worker is fully done with its task and has no next action
-  - archive it instead of leaving it hanging in an ambiguous finished state
+## System Experts
 
-If a worker is done and there is no concrete immediate next action, move it toward `ready-for-archive` and archive it.
+- When detailed `codex app-server` behavior matters, ask `Codex App-Server Expert`.
+- `Codex App-Server Expert` is a read-only orchestrator inside the real app-server codebase and is specialized for code-level implementation lookup.
+- When the issue is upstream in Robdex rather than local config, forward it to `Robdex Orchestrator`.
 
-## Approval Routing
+## Robdex Runtime
 
-Approval requests are an explicit supported orchestration path when a worker is blocked by sandboxing or other command-execution approval requirements.
+- `Robdex Orchestrator` owns the Robdex runtime itself.
+- Robdex code changes are restart-bound. If a Robdex-side fix is reported, do not claim it is live until the app has actually been rebuilt/restarted from the integrated code.
 
-Use this path for commands that:
-- make sense for the task at hand
-- are normal engineering operations such as tests, builds, checks, or other routine validation steps
-- may need sandbox escalation, writable-root changes, or similar approval to proceed
+## Shared Guardrails
 
-Do not route or approve commands that are blatantly destructive or nonsensical, for example:
-- `rm -rf /`
-- obvious wipe/reset/destructive commands unrelated to the task
-- similarly high-risk commands with no credible engineering justification
-
-Practical bar:
-- the command must make sense for the work
-- the rationale must be coherent
-- blatantly destructive commands are not approval-worthy
-
-Approval responses are decision-only today:
-- use the `robdex` script directly for approval handling:
-  - `~/.codex/skills/robdex-orchestrator/scripts/robdex list-pending-approvals`
-  - `~/.codex/skills/robdex-orchestrator/scripts/robdex approve-approval --approval-id <approval id>`
-  - `~/.codex/skills/robdex-orchestrator/scripts/robdex decline-approval --approval-id <approval id>`
-- use `list-pending-approvals` to inspect visible routed approvals
-- use `approve-approval` or `decline-approval` with the approval id from Robdex
-- if you decline and need to explain or redirect the worker, send a separate normal `robdex send-message` afterward
-
-Approval source of truth:
-- the bridge-visible pending approval record is the authoritative state for whether an approval is waiting
-- the routed chat/request message is a notification surface, not the approval ledger
-- GitHub state and local review locks are unrelated to whether a routed command or file approval is still pending
-
-## Delegation Guidance
-
-Before spawning workers, decide how many are justified.
-
-Use more than one worker only when the slices are:
-- meaningfully independent
-- low-conflict in touched files
-- low-dependency or dependency-manageable with branch sync/rebase
-
-Prefer fewer workers when:
-- the work is cross-cutting in the same files
-- there is a single risky integration seam
-- the coordination overhead will exceed the throughput gain
-
-Good default split patterns:
-- frontend vs backend
-- API contract vs consuming UI
-- infrastructure/tooling vs product surface
-- independent feature slices with clear boundaries
-
-## Worker Coordination
-
-Workers can and should coordinate directly when needed.
-
-Use direct worker-to-worker messaging when:
-- one worker needs an interface contract from another
-- a dependency merged and a downstream worker needs to sync/rebase
-- two workers touch adjacent seams and need to agree on boundaries
-- a worker is blocked on another worker's output rather than on tooling
-
-Do not wait for workers to "just notice" each other. If coordination is needed, instruct it explicitly.
-
-Keep the orchestrator aware of coordination-critical state:
-- who depends on whom
-- which worker should sync/rebase after a merge
-- whether a blocker is code dependency vs tooling vs product decision
-
-## Bookkeeping
-
-- Keep issue, PR, and blocked state current on active workers.
-- `list-agents` includes issue, PR, and blocked metadata when present.
-- To clear blocked state, use `--clear-blocked`. Do not write placeholder values like `active` or `now`.
-- If workers share one master issue, it is acceptable for multiple workers to carry the same issue number.
-- Do not invent child issue numbers solely to satisfy bookkeeping.
-
-## Archived Stewardship
-
-- Use `robdex list-agents --include-archived` when deciding whether to keep something archived, unarchive it, or clean up naming and bookkeeping.
-- Treat archived listings as a concise stewardship index built from current metadata such as title, issue, PR, blocked reason, and current visibility, not as a transcript dump.
-- `list-agents --include-archived` should stay single-line and cleanup-friendly; if it starts surfacing historical prompt blobs or transcript-like text again, treat that as a runtime/CLI bug.
-- If a thread was never properly titled, expect a clipped single-line fallback label rather than a raw prompt or multi-line transcript dump.
-- Do not dump or rely on old prompt blobs just to decide whether a worker should stay archived.
-- Unarchive only when there is a real new next action to assign.
-- Once a worker is truly done, prefer archiving it over leaving a stale inactive thread in the active list.
-
-## Guardrails
-
-- Keep orchestration within project boundaries.
-- Use `send-message` for active workers.
-- Once a worker is confirmed completely done with its task, the orchestrator may archive it with `archive-agent`.
-- Use `unarchive-agent` only when a worker is archived.
-- Approval routing is for reasonable task-aligned commands that need escalation, not for blatantly destructive commands.
-- Only set bookkeeping on worker threads inside your own project.
-- Do not set worker metadata on orchestrator threads.
-- If tooling fails in a non-input way, stop and escalate.
-- Prefer PRs and worker metadata as the execution ledger; do not use a swarm of stale child issues as pseudo-status tracking.
+- Keep orchestration within the bridge-authorized project scope.
+- Use the public `robdex` script surface instead of inventing ad hoc bridge calls.
+- Approval routing is for reasonable task-aligned engineering commands, not blatantly destructive commands.
+- If tooling fails in a non-input way, stop and escalate with the exact command, cwd, and output.
+- Role-specific operating discipline lives in the dynamic role instructions, not in this top-level file.
