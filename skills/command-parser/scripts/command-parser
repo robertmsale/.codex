@@ -156,6 +156,19 @@ ensure_parser_container() {
 
   mkdir -p "$host_spool_root" "$host_skills_shadow_dir"
 
+  local expected_codex_mount expected_skills_mount
+  expected_codex_mount="$host_codex_home:$docker_codex_home:rw"
+  expected_skills_mount="$host_skills_shadow_dir:$docker_codex_home/skills:rw"
+
+  if docker container inspect "$container_name" >/dev/null 2>&1; then
+    local existing_mounts mount_summary
+    existing_mounts="$(docker container inspect -f '{{range .Mounts}}{{println .Source ":" .Destination ":" .RW}}{{end}}' "$container_name" 2>/dev/null || true)"
+    mount_summary="$(printf '%s\n' "$existing_mounts" | tr -d ' ')"
+    if ! grep -Fqx "$expected_codex_mount" <<<"$mount_summary" || ! grep -Fqx "$expected_skills_mount" <<<"$mount_summary"; then
+      docker rm -f "$container_name" >/dev/null
+    fi
+  fi
+
   if docker container inspect "$container_name" >/dev/null 2>&1; then
     local existing_image_id desired_image_id
     existing_image_id="$(docker container inspect -f '{{.Image}}' "$container_name" 2>/dev/null || true)"
@@ -259,7 +272,7 @@ fi
 
 image_tag="${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}"
 profile="${COMMAND_PARSER_PROFILE:-command-parser}"
-host_codex_home="$(cd "$skill_dir/../.." && pwd)"
+host_codex_home="$(cd "${HOME}/.codex" && pwd)"
 container_name="command-parser-runtime"
 docker_codex_home="/codex-home"
 preferred_spool_root="/tmp/command-parser-spool"
