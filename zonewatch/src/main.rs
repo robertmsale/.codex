@@ -5,18 +5,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
 const SAMPLE_INTERVAL_SECONDS: u64 = 5;
 const HISTORY_WINDOW_SECONDS: i64 = 10 * 60;
+const HISTORY_DEFAULT_LIMIT: usize = 50;
+const HISTORY_MAX_LIMIT: usize = 200;
 const LEAK_WINDOW_SECONDS: i64 = 60;
 const LEAK_RATE_THRESHOLD: f64 = 5.0;
 const GROWING_RATE_THRESHOLD: f64 = 0.5;
@@ -79,11 +81,30 @@ struct HistoryEntry {
 #[derive(Clone, Debug, Serialize)]
 struct HistoryResponse {
     samples: Vec<HistoryEntry>,
+    next_cursor: Option<DateTime<Utc>>,
+    has_more: bool,
+    limit: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryQuery {
+    limit: Option<usize>,
+    cursor: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct HistoryPageRequest {
+    limit: usize,
+    cursor: Option<DateTime<Utc>>,
+    start: Option<DateTime<Utc>>,
+    end: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug)]
@@ -161,19 +182,27 @@ async fn health_handler(State(state): State<SharedState>) -> impl IntoResponse {
     }
 }
 
-async fn history_handler(State(state): State<SharedState>) -> impl IntoResponse {
-    let guard = state.read().await;
-    let samples = guard
-        .history
-        .iter()
-        .map(|sample| HistoryEntry {
-            t: sample.timestamp,
-            zone_map_pct: sample.zone_map_pct,
-            kalloc: sample.kalloc_1024_used,
-        })
-        .collect();
+async fn history_handler(
+    State(state): State<SharedState>,
+    Query(query): Query<HistoryQuery>,
+) -> impl IntoResponse {
+    let request = match parse_history_request(query) {
+        Ok(request) => request,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: err }),
+            )
+                .into_response();
+        }
+    };
 
-    (StatusCode::OK, Json(HistoryResponse { samples })).into_response()
+    let guard = state.read().await;
+    (
+        StatusCode::OK,
+        Json(build_history_response(&guard.history, &request)),
+    )
+        .into_response()
 }
 
 fn sample_once(state: &mut AppState) -> Result<()> {
@@ -243,6 +272,68 @@ fn build_health_response(
         last_error,
         warnings,
     })
+}
+
+fn parse_history_request(query: HistoryQuery) -> Result<HistoryPageRequest, String> {
+    let limit = query
+        .limit
+        .unwrap_or(HISTORY_DEFAULT_LIMIT)
+        .clamp(1, HISTORY_MAX_LIMIT);
+    let cursor = parse_history_timestamp("cursor", query.cursor.as_deref())?;
+    let start = parse_history_timestamp("start", query.start.as_deref())?;
+    let end = parse_history_timestamp("end", query.end.as_deref())?;
+
+    if let (Some(start), Some(end)) = (start, end) {
+        if start > end {
+            return Err("start must be less than or equal to end".to_string());
+        }
+    }
+
+    Ok(HistoryPageRequest {
+        limit,
+        cursor,
+        start,
+        end,
+    })
+}
+
+fn parse_history_timestamp(field: &str, raw: Option<&str>) -> Result<Option<DateTime<Utc>>, String> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|value| Some(value.with_timezone(&Utc)))
+        .map_err(|_| format!("{field} must be an RFC3339 timestamp"))
+}
+
+fn build_history_response(history: &VecDeque<Sample>, request: &HistoryPageRequest) -> HistoryResponse {
+    let mut samples: Vec<HistoryEntry> = history
+        .iter()
+        .rev()
+        .filter(|sample| request.start.is_none_or(|start| sample.timestamp >= start))
+        .filter(|sample| request.end.is_none_or(|end| sample.timestamp <= end))
+        .filter(|sample| request.cursor.is_none_or(|cursor| sample.timestamp < cursor))
+        .take(request.limit + 1)
+        .map(|sample| HistoryEntry {
+            t: sample.timestamp,
+            zone_map_pct: sample.zone_map_pct,
+            kalloc: sample.kalloc_1024_used,
+        })
+        .collect();
+
+    let has_more = samples.len() > request.limit;
+    if has_more {
+        samples.truncate(request.limit);
+    }
+    let next_cursor = samples.last().map(|sample| sample.t).filter(|_| has_more);
+
+    HistoryResponse {
+        samples,
+        next_cursor,
+        has_more,
+        limit: request.limit,
+    }
 }
 
 fn classify_status(
@@ -561,5 +652,113 @@ data_shared.kalloc.1024  1024      128K      256K     128      96
         trim_history(&mut history, now);
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].kalloc_1024_used, 105);
+    }
+
+    #[test]
+    fn history_defaults_to_latest_page() {
+        let base = Utc::now();
+        let history: VecDeque<Sample> = (0..60)
+            .map(|idx| Sample {
+                timestamp: base + ChronoDuration::seconds(idx),
+                ..sample_at(0, 30.0, idx as u64)
+            })
+            .collect();
+
+        let response = build_history_response(
+            &history,
+            &HistoryPageRequest {
+                limit: HISTORY_DEFAULT_LIMIT,
+                cursor: None,
+                start: None,
+                end: None,
+            },
+        );
+
+        assert_eq!(response.limit, HISTORY_DEFAULT_LIMIT);
+        assert_eq!(response.samples.len(), HISTORY_DEFAULT_LIMIT);
+        assert!(response.has_more);
+        assert_eq!(response.samples.first().unwrap().kalloc, 59);
+        assert_eq!(response.samples.last().unwrap().kalloc, 10);
+        assert_eq!(response.next_cursor, Some(response.samples.last().unwrap().t));
+    }
+
+    #[test]
+    fn history_cursor_pages_backward() {
+        let base = Utc::now();
+        let history: VecDeque<Sample> = (0..6)
+            .map(|idx| Sample {
+                timestamp: base + ChronoDuration::seconds(idx),
+                ..sample_at(0, 30.0, idx as u64)
+            })
+            .collect();
+
+        let first_page = build_history_response(
+            &history,
+            &HistoryPageRequest {
+                limit: 2,
+                cursor: None,
+                start: None,
+                end: None,
+            },
+        );
+        let second_page = build_history_response(
+            &history,
+            &HistoryPageRequest {
+                limit: 2,
+                cursor: first_page.next_cursor,
+                start: None,
+                end: None,
+            },
+        );
+
+        assert_eq!(
+            first_page.samples.iter().map(|sample| sample.kalloc).collect::<Vec<_>>(),
+            vec![5, 4]
+        );
+        assert_eq!(
+            second_page.samples.iter().map(|sample| sample.kalloc).collect::<Vec<_>>(),
+            vec![3, 2]
+        );
+    }
+
+    #[test]
+    fn history_respects_time_range_filters() {
+        let base = Utc::now();
+        let history: VecDeque<Sample> = (0..6)
+            .map(|idx| Sample {
+                timestamp: base + ChronoDuration::seconds(idx),
+                ..sample_at(0, 30.0, idx as u64)
+            })
+            .collect();
+
+        let response = build_history_response(
+            &history,
+            &HistoryPageRequest {
+                limit: 10,
+                cursor: None,
+                start: Some(base + ChronoDuration::seconds(2)),
+                end: Some(base + ChronoDuration::seconds(4)),
+            },
+        );
+
+        assert_eq!(
+            response.samples.iter().map(|sample| sample.kalloc).collect::<Vec<_>>(),
+            vec![4, 3, 2]
+        );
+        assert!(!response.has_more);
+        assert!(response.next_cursor.is_none());
+    }
+
+    #[test]
+    fn history_rejects_invalid_ranges() {
+        let err = parse_history_request(HistoryQuery {
+            limit: Some(10),
+            cursor: None,
+            start: Some("2026-03-14T20:00:05Z".to_string()),
+            end: Some("2026-03-14T20:00:00Z".to_string()),
+        })
+        .unwrap_err();
+
+        assert_eq!(err, "start must be less than or equal to end");
     }
 }
