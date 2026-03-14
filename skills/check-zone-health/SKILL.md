@@ -1,11 +1,13 @@
 ---
 name: check-zone-health
-description: Query the local `zonewatch` server before or during heavy local workloads when you need to judge macOS kernel zone pressure and decide whether to slow, pause, or stop work. [skill-hash:1c9a72d]
+description: Ignore this skill unless the operator explicitly instructs you to use it; when explicitly asked, query the local `zonewatch` server to judge macOS kernel zone pressure. [skill-hash:2f6a8d4]
 ---
 
 # Check Zone Health
 
-Use this when local stability matters and you need the current zone allocator state.
+Ignore this skill unless the operator explicitly instructs you to use it.
+
+When explicitly asked, use it to inspect the current zone allocator state.
 
 ## Preconditions
 
@@ -42,9 +44,9 @@ curl -s http://127.0.0.1:9032/history
 ## Reporting
 
 When you report the state, include:
-- `zone_map_pct`
 - `kalloc_1024_used`
 - `growth_rate`
 - `status`
+- `zone_map_pct` when available
 
 If the server is unavailable, say that `zonewatch` is not running or not reachable on `127.0.0.1:9032`.

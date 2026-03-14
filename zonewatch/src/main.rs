@@ -29,9 +29,9 @@ type SharedState = Arc<RwLock<AppState>>;
 #[derive(Clone, Debug, Serialize)]
 struct Sample {
     timestamp: DateTime<Utc>,
-    zone_map_size: u64,
-    zone_map_max: u64,
-    zone_map_pct: f64,
+    zone_map_size: Option<u64>,
+    zone_map_max: Option<u64>,
+    zone_map_pct: Option<f64>,
     zone_name: String,
     object_size: u64,
     allocated_memory: String,
@@ -54,24 +54,25 @@ enum HealthStatus {
 #[derive(Clone, Debug, Serialize)]
 struct HealthResponse {
     timestamp: DateTime<Utc>,
-    zone_map_pct: f64,
+    zone_map_pct: Option<f64>,
     kalloc_1024_used: u64,
     growth_rate: f64,
     status: HealthStatus,
-    zone_map_size: u64,
-    zone_map_max: u64,
+    zone_map_size: Option<u64>,
+    zone_map_max: Option<u64>,
     object_size: u64,
     allocated_memory: String,
     capacity: String,
     elements: u64,
     elements_in_use: u64,
     last_error: Option<String>,
+    warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct HistoryEntry {
     t: DateTime<Utc>,
-    zone_map_pct: f64,
+    zone_map_pct: Option<f64>,
     kalloc: u64,
 }
 
@@ -176,18 +177,16 @@ async fn history_handler(State(state): State<SharedState>) -> impl IntoResponse 
 }
 
 fn sample_once(state: &mut AppState) -> Result<()> {
-    let zone_map_size = read_sysctl_value("vm.zone_map_size")?;
-    let zone_map_max = read_sysctl_value("vm.zone_map_max")?;
+    let zone_map = read_zone_map_metrics()?;
     let zprint_output = run_command("zprint", &[])?;
     let zone_row = parse_zone_row(&zprint_output, "data_shared.kalloc.1024")?;
-    let zone_map_pct = percent(zone_map_size, zone_map_max)?;
     let now = Utc::now();
 
     let sample = Sample {
         timestamp: now,
-        zone_map_size,
-        zone_map_max,
-        zone_map_pct,
+        zone_map_size: zone_map.as_ref().map(|metrics| metrics.zone_map_size),
+        zone_map_max: zone_map.as_ref().map(|metrics| metrics.zone_map_max),
+        zone_map_pct: zone_map.as_ref().map(|metrics| metrics.zone_map_pct),
         zone_name: zone_row.zone_name,
         object_size: zone_row.object_size,
         allocated_memory: zone_row.allocated_memory,
@@ -223,6 +222,10 @@ fn build_health_response(
         .ok_or_else(|| anyhow!("no samples collected yet"))?;
     let growth_rate = compute_growth_rate(history);
     let status = classify_status(history, growth_rate, current.zone_map_pct);
+    let mut warnings = Vec::new();
+    if current.zone_map_pct.is_none() {
+        warnings.push("zone map sysctls are unavailable on this system; zone map percentage metrics are omitted".to_string());
+    }
 
     Ok(HealthResponse {
         timestamp: current.timestamp,
@@ -238,15 +241,22 @@ fn build_health_response(
         elements: current.elements,
         elements_in_use: current.elements_in_use,
         last_error,
+        warnings,
     })
 }
 
-fn classify_status(history: &VecDeque<Sample>, growth_rate: f64, zone_map_pct: f64) -> HealthStatus {
-    if zone_map_pct > CRITICAL_ZONE_MAP_PERCENT {
-        return HealthStatus::Critical;
-    }
-    if zone_map_pct > DANGER_ZONE_MAP_PERCENT {
-        return HealthStatus::Danger;
+fn classify_status(
+    history: &VecDeque<Sample>,
+    growth_rate: f64,
+    zone_map_pct: Option<f64>,
+) -> HealthStatus {
+    if let Some(zone_map_pct) = zone_map_pct {
+        if zone_map_pct > CRITICAL_ZONE_MAP_PERCENT {
+            return HealthStatus::Critical;
+        }
+        if zone_map_pct > DANGER_ZONE_MAP_PERCENT {
+            return HealthStatus::Danger;
+        }
     }
 
     if sustained_leak_rate(history).is_some_and(|rate| rate > LEAK_RATE_THRESHOLD) {
@@ -301,6 +311,37 @@ fn rate_between(older: &Sample, newer: &Sample) -> Option<f64> {
 fn read_sysctl_value(key: &str) -> Result<u64> {
     let output = run_command("sysctl", &[key])?;
     parse_sysctl_value(&output).with_context(|| format!("failed to parse sysctl output for {key}"))
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ZoneMapMetrics {
+    zone_map_size: u64,
+    zone_map_max: u64,
+    zone_map_pct: f64,
+}
+
+fn read_zone_map_metrics() -> Result<Option<ZoneMapMetrics>> {
+    let zone_map_size = match read_sysctl_value("vm.zone_map_size") {
+        Ok(value) => value,
+        Err(err) if is_unknown_oid_error(&err) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let zone_map_max = match read_sysctl_value("vm.zone_map_max") {
+        Ok(value) => value,
+        Err(err) if is_unknown_oid_error(&err) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+
+    Ok(Some(ZoneMapMetrics {
+        zone_map_size,
+        zone_map_max,
+        zone_map_pct: percent(zone_map_size, zone_map_max)?,
+    }))
+}
+
+fn is_unknown_oid_error(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains("unknown oid"))
 }
 
 fn parse_sysctl_value(output: &str) -> Result<u64> {
@@ -373,9 +414,9 @@ mod tests {
     fn sample_at(seconds: i64, zone_map_pct: f64, kalloc: u64) -> Sample {
         Sample {
             timestamp: Utc::now() + ChronoDuration::seconds(seconds),
-            zone_map_size: 1,
-            zone_map_max: 2,
-            zone_map_pct,
+            zone_map_size: Some(1),
+            zone_map_max: Some(2),
+            zone_map_pct: Some(zone_map_pct),
             zone_name: "data_shared.kalloc.1024".to_string(),
             object_size: 1024,
             allocated_memory: "10M".to_string(),
@@ -414,7 +455,7 @@ data_shared.kalloc.1024  1024      128K      256K     128      96
             sample_at(5, 40.1, 1_001),
         ]);
 
-        let status = classify_status(&history, compute_growth_rate(&history), 40.1);
+        let status = classify_status(&history, compute_growth_rate(&history), Some(40.1));
         assert_eq!(status, HealthStatus::Stable);
     }
 
@@ -426,7 +467,7 @@ data_shared.kalloc.1024  1024      128K      256K     128      96
         ]);
 
         let growth = compute_growth_rate(&history);
-        let status = classify_status(&history, growth, 45.2);
+        let status = classify_status(&history, growth, Some(45.2));
         assert!(growth > GROWING_RATE_THRESHOLD);
         assert_eq!(status, HealthStatus::Growing);
     }
@@ -439,7 +480,7 @@ data_shared.kalloc.1024  1024      128K      256K     128      96
         ]);
 
         let growth = compute_growth_rate(&history);
-        let status = classify_status(&history, growth, 50.5);
+        let status = classify_status(&history, growth, Some(50.5));
         assert!(growth > LEAK_RATE_THRESHOLD);
         assert_eq!(status, HealthStatus::LeakDetected);
     }
@@ -451,7 +492,7 @@ data_shared.kalloc.1024  1024      128K      256K     128      96
             sample_at(65, 82.5, 2_000),
         ]);
 
-        let status = classify_status(&history, compute_growth_rate(&history), 82.5);
+        let status = classify_status(&history, compute_growth_rate(&history), Some(82.5));
         assert_eq!(status, HealthStatus::Danger);
     }
 
@@ -462,8 +503,32 @@ data_shared.kalloc.1024  1024      128K      256K     128      96
             sample_at(65, 91.5, 2_000),
         ]);
 
-        let status = classify_status(&history, compute_growth_rate(&history), 91.5);
+        let status = classify_status(&history, compute_growth_rate(&history), Some(91.5));
         assert_eq!(status, HealthStatus::Critical);
+    }
+
+    #[test]
+    fn growing_status_still_works_without_zone_map_metrics() {
+        let history = VecDeque::from([
+            sample_at(0, 45.0, 1_000),
+            sample_at(5, 45.2, 1_006),
+        ]);
+
+        let status = classify_status(&history, compute_growth_rate(&history), None);
+        assert_eq!(status, HealthStatus::Growing);
+    }
+
+    #[test]
+    fn build_health_response_warns_when_zone_map_metrics_are_missing() {
+        let mut sample = sample_at(0, 45.0, 1_000);
+        sample.zone_map_size = None;
+        sample.zone_map_max = None;
+        sample.zone_map_pct = None;
+        let history = VecDeque::from([sample]);
+
+        let response = build_health_response(&history, None).unwrap();
+        assert!(response.zone_map_pct.is_none());
+        assert_eq!(response.warnings.len(), 1);
     }
 
     #[test]
