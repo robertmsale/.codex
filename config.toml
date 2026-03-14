@@ -111,13 +111,28 @@ model_reasoning_effort = "high"
 ###############################################################################
 
 [features]
-#shell_zsh_fork = true
-view_image = true
-ghost_commit = false
-skills = true
-unified_exec = true
-steer = true
-collaboration_modes = false
+# Ones I care about
+view_image = true               # Handy, obvious
+unified_exec = true             # Enables uncapped command running
+steer = true                    # Enables mid-turn and inter-agent communication, vital feature
+apps = false                    # Need to find use for this (what apps are available/worthy of enablement)
+memories = false                # Disabled for now, worth considering, requires testing
+#memory_tool = false
+#sqlite = true                  # Potentially default enabled, don't wanna regress
+plugins = false                 # Need to understand what makes this different from apps/skills/mcp
+
+# Ones I don't
+multi_agent = false             # Wrecks weekly rate limits
+shell_zsh_fork = false          # Drops back down to synchronous 10 min cap command execution
+collaboration_modes = false     # UX variants managed by hand
+collab = false                  # Nope
+codex_git_commit = false        # Managed manually
+fast_mode = false               # Achieved through concurrency
+responses_websockets = false    # Absolutely gobbles rate limits
+responses_websockets_v2 = false # "I want 0% weekly as fast as possible"
+voice_transcription = false     # Wispr Flow
+undo = false                    # Conflicts with version control
+js_repl = false                 # Just open a terminal
 
 [agents]
 max_threads = 1
