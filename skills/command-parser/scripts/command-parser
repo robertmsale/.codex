@@ -157,9 +157,13 @@ ensure_parser_container() {
   mkdir -p "$host_spool_root" "$host_skills_shadow_dir"
 
   local existing_image=""
+  local existing_codex_home_mount=""
   if docker container inspect "$container_name" >/dev/null 2>&1; then
     existing_image="$(docker container inspect -f '{{.Config.Image}}' "$container_name" 2>/dev/null || true)"
-    if [[ "$existing_image" != "$image_tag" ]]; then
+    existing_codex_home_mount="$(
+      docker container inspect -f "{{range .Mounts}}{{if eq .Destination \"$docker_codex_home\"}}{{.Source}}{{end}}{{end}}" "$container_name" 2>/dev/null || true
+    )"
+    if [[ "$existing_image" != "$image_tag" || "$existing_codex_home_mount" != "$host_codex_home" ]]; then
       docker rm -f "$container_name" >/dev/null
     fi
   fi
@@ -254,10 +258,18 @@ image_tag="${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}"
 profile="${COMMAND_PARSER_PROFILE:-command-parser}"
 host_codex_home="${CODEX_HOME:-$HOME/.codex}"
 container_name="command-parser-runtime"
-host_spool_root="/tmp/command-parser-spool"
+docker_codex_home="/codex-home"
+host_codex_home="$(cd "$host_codex_home" && pwd)"
+preferred_spool_root="/tmp/command-parser-spool"
+if mkdir -p "$preferred_spool_root" 2>/dev/null; then
+  host_spool_root="$preferred_spool_root"
+else
+  tmp_root="${TMPDIR:-/tmp}"
+  host_spool_root="${tmp_root%/}/command-parser-spool"
+  mkdir -p "$host_spool_root"
+fi
 host_skills_shadow_dir="$host_spool_root/skills-shadow"
 docker_spool_root="/tmp/command-parser-spool"
-docker_codex_home="/codex-home"
 
 if ! docker image inspect "$image_tag" >/dev/null 2>&1; then
   "$build_script" >/dev/null

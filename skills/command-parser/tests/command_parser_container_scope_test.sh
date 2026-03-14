@@ -41,6 +41,7 @@ state_dir="$tmp_root/docker-state"
 spool_root="/tmp/command-parser-spool"
 
 mkdir -p "$repo_dir" "$bin_dir" "$home_dir/.codex" "$state_dir"
+normalized_codex_home="$(cd "$home_dir/.codex" && pwd)"
 printf 'base\n' >"$repo_dir/file.txt"
 
 cat >"$bin_dir/codex" <<'EOF'
@@ -64,6 +65,7 @@ container_name_file="\$state_dir/container-name"
 container_image_file="\$state_dir/container-image"
 container_running_file="\$state_dir/container-running"
 spool_host_file="\$state_dir/spool-host"
+codex_home_host_file="\$state_dir/codex-home-host"
 
 if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then
   exit 0
@@ -85,6 +87,9 @@ if [[ "\${1:-}" == "container" && "\${2:-}" == "inspect" ]]; then
       ;;
     '{{.State.Running}}')
       cat "\$container_running_file"
+      ;;
+    '{{range .Mounts}}{{if eq .Destination "/codex-home"}}{{.Source}}{{end}}{{end}}')
+      cat "\$codex_home_host_file"
       ;;
     *)
       printf '{}\n'
@@ -118,6 +123,9 @@ if [[ "\${1:-}" == "run" ]]; then
         ;;
       -v)
         mount_spec="\$2"
+        if [[ "\$mount_spec" == *":/codex-home:rw" ]]; then
+          printf '%s' "\${mount_spec%%:/codex-home:rw}" >"\$codex_home_host_file"
+        fi
         if [[ "\$mount_spec" == *":/tmp/command-parser-spool:rw" ]]; then
           printf '%s' "\${mount_spec%%:/tmp/command-parser-spool:rw}" >"\$spool_host_file"
         fi
@@ -191,6 +199,7 @@ output_two="$(
 [[ "$output_two" == "No errors!" ]] || fail "unexpected parser output: $output_two"
 assert_file_includes "$log_path" "/codex-home/skills:rw"
 assert_file_includes "$log_path" "$spool_root:/tmp/command-parser-spool:rw"
+assert_file_includes "$log_path" "$normalized_codex_home:/codex-home:rw"
 assert_file_excludes "$log_path" "$repo_dir:/workspace:rw"
 
 run_count="$(grep -c '^run ' "$log_path" || true)"
