@@ -1,6 +1,6 @@
 ---
 name: command-parser
-description: Run noisy command parsing via `~/.codex/skills/command-parser/scripts/command-parser ...`. It enforces `command-parser.rule`, runs the command directly, captures `output.log`, and returns only the parser's final extraction. Temporary parser artifacts are removed on exit. [skill-hash:3d4b7a1]
+description: Run noisy command parsing via `~/.codex/skills/command-parser/scripts/command-parser ...`. It enforces `command-parser.rule`, runs the command directly, captures `output.log`, and returns only the parser's final extraction. A single long-lived parser container is reused across invocations. [skill-hash:92f3c18]
 ---
 
 # Command Parser
@@ -25,12 +25,17 @@ Build image script:
 2. Runs the target command directly in the caller environment.
    - The wrapped command receives `IS_USING_COMMAND_PARSER=true`.
 3. Captures command stdout/stderr to `output.log`.
-4. Runs `codex exec --json` inside Docker to parse `output.log`.
+4. Reuses one long-lived Docker container and runs `codex exec --json` via `docker exec` to parse `output.log`.
 5. Prints only the parser's final message.
 6. Exits with the original command exit code.
 
 This skill does not mutate the workspace or add command-specific behavior.
 Callers should not need to prefix `IS_USING_COMMAND_PARSER=true` manually.
+
+Container scope:
+- The parser container does not receive the caller project/worktree as a mount.
+- Parser scratch lives under `/tmp/command-parser-spool`.
+- The container reuses one shared global `~/.codex` mount plus an empty writable `skills` overlay.
 
 ## Usage
 

@@ -145,6 +145,54 @@ output_path.write_text(final_message.rstrip() + "\n", encoding="utf-8")
 PY
 }
 
+ensure_parser_container() {
+  local container_name="$1"
+  local image_tag="$2"
+  local host_codex_home="$3"
+  local host_spool_root="$4"
+  local host_skills_shadow_dir="$5"
+  local docker_codex_home="$6"
+  local docker_spool_root="$7"
+
+  mkdir -p "$host_spool_root" "$host_skills_shadow_dir"
+
+  if docker container inspect "$container_name" >/dev/null 2>&1; then
+    local existing_image_id desired_image_id
+    existing_image_id="$(docker container inspect -f '{{.Image}}' "$container_name" 2>/dev/null || true)"
+    desired_image_id="$(docker image inspect -f '{{.Id}}' "$image_tag" 2>/dev/null || true)"
+    if [[ -n "$existing_image_id" && -n "$desired_image_id" && "$existing_image_id" != "$desired_image_id" ]]; then
+      echo "command-parser: reusing existing runtime container image id $existing_image_id; requested image $image_tag ($desired_image_id) will not take effect until the runtime container is replaced." >&2
+    fi
+    local running_state
+    running_state="$(docker container inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || true)"
+    if [[ "$running_state" != "true" ]]; then
+      docker start "$container_name" >/dev/null
+    fi
+    return
+  fi
+
+  local run_output=""
+  if ! run_output="$(
+    docker run -d \
+      --name "$container_name" \
+      -u "$(id -u):$(id -g)" \
+      -e HOME="/tmp/command-parser-home" \
+      -e CODEX_HOME="$docker_codex_home" \
+      -e CODEX_NO_COLOR=1 \
+      -v "$host_codex_home:$docker_codex_home:rw" \
+      -v "$host_skills_shadow_dir:$docker_codex_home/skills:rw" \
+      -v "$host_spool_root:$docker_spool_root:rw" \
+      "$image_tag" \
+      sh -lc 'while :; do sleep 3600; done' 2>&1
+  )"; then
+    if docker container inspect "$container_name" >/dev/null 2>&1; then
+      return
+    fi
+    echo "$run_output" >&2
+    return 1
+  fi
+}
+
 additional_request="${COMMAND_PARSER_ADDITIONAL_REQUEST:-}"
 include_warnings="no"
 if [[ "${COMMAND_PARSER_WARNINGS:-0}" != "0" && "${COMMAND_PARSER_WARNINGS:-}" != "" ]]; then
@@ -211,14 +259,34 @@ fi
 
 image_tag="${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}"
 profile="${COMMAND_PARSER_PROFILE:-command-parser}"
-host_codex_home="${CODEX_HOME:-$HOME/.codex}"
+host_codex_home="$(cd "$skill_dir/../.." && pwd)"
+container_name="command-parser-runtime"
+docker_codex_home="/codex-home"
+preferred_spool_root="/tmp/command-parser-spool"
+if mkdir -p "$preferred_spool_root" 2>/dev/null; then
+  host_spool_root="$preferred_spool_root"
+else
+  tmp_root="${TMPDIR:-/tmp}"
+  host_spool_root="${tmp_root%/}/command-parser-spool"
+  mkdir -p "$host_spool_root"
+fi
+host_skills_shadow_dir="$host_spool_root/skills-shadow"
+docker_spool_root="/tmp/command-parser-spool"
 
 if ! docker image inspect "$image_tag" >/dev/null 2>&1; then
   "$build_script" >/dev/null
 fi
 
-tmp_root="${TMPDIR:-/tmp}"
-tmp_dir="$(mktemp -d "${tmp_root%/}/command-parser.XXXXXX")"
+ensure_parser_container \
+  "$container_name" \
+  "$image_tag" \
+  "$host_codex_home" \
+  "$host_spool_root" \
+  "$host_skills_shadow_dir" \
+  "$docker_codex_home" \
+  "$docker_spool_root"
+
+tmp_dir="$(mktemp -d "$host_spool_root/run.XXXXXX")"
 cleanup() {
   rm -rf "$tmp_dir"
 }
@@ -286,35 +354,42 @@ EOF_PROMPT
 )"
 
 docker_tmp="/tmp/command-parser"
-docker_home="/tmp/command-parser-home"
-docker_codex_home="/codex-home"
 events_log="$tmp_dir/events.jsonl"
-empty_skills_dir="$tmp_dir/empty-skills"
-mkdir -p "$empty_skills_dir"
+docker_tmp="$docker_spool_root/$(basename "$tmp_dir")"
+docker_home="$docker_tmp/home"
+docker_tmpdir="$docker_tmp/tmp"
 
-docker run --rm -i \
+cat >"$tmp_dir/parse.sh" <<EOF_PARSE
+#!/bin/sh
+set -eu
+mkdir -p "\$HOME" "\$TMPDIR"
+prompt="\$(cat ./prompt.txt)"
+codex exec \
+  --skip-git-repo-check \
+  --ephemeral \
+  --json \
+  -s read-only \
+  -C "$docker_tmp" \
+  -p "$profile" \
+  -c 'web_search="disabled"' \
+  -c "features.unified_exec=true" \
+  -c "features.multi_agent=false" \
+  -c "features.steer=false" \
+  -c "features.skills=false" \
+  "\$prompt" > ./events.jsonl
+EOF_PARSE
+chmod +x "$tmp_dir/parse.sh"
+printf '%s\n' "$prompt" >"$tmp_dir/prompt.txt"
+
+docker exec \
   -u "$(id -u):$(id -g)" \
   -e HOME="$docker_home" \
+  -e TMPDIR="$docker_tmpdir" \
   -e CODEX_HOME="$docker_codex_home" \
   -e CODEX_NO_COLOR=1 \
-  -v "$host_codex_home:$docker_codex_home:rw" \
-  -v "$empty_skills_dir:$docker_codex_home/skills:ro" \
-  -v "$tmp_dir:$docker_tmp:rw" \
   --workdir "$docker_tmp" \
-  "$image_tag" \
-  codex exec \
-    --skip-git-repo-check \
-    --ephemeral \
-    --json \
-    -s read-only \
-    -C "$docker_tmp" \
-    -p "$profile" \
-    -c 'web_search="disabled"' \
-    -c "features.unified_exec=true" \
-    -c "features.multi_agent=false" \
-    -c "features.steer=false" \
-    -c "features.skills=false" \
-    "$prompt" >"$events_log"
+  "$container_name" \
+  sh ./parse.sh
 
 extract_parser_response "$events_log" "$tmp_dir/response.log"
 cat "$tmp_dir/response.log"
