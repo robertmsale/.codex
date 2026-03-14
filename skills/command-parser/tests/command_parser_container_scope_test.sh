@@ -197,18 +197,29 @@ output_three="$(
     "$parser_script" /usr/bin/printf 'ok\n'
 )"
 
+image_warning_path="$tmp_root/image-warning.txt"
+output_four="$(
+  cd "$repo_dir" &&
+    HOME="$home_dir" \
+    COMMAND_PARSER_IMAGE="command-parser:9.9.9" \
+    PATH="$bin_dir:$PATH" \
+    "$parser_script" /usr/bin/printf 'ok\n' 2>"$image_warning_path"
+)"
+
 [[ "$output_one" == "No errors!" ]] || fail "unexpected parser output: $output_one"
 [[ "$output_two" == "No errors!" ]] || fail "unexpected parser output: $output_two"
 [[ "$output_three" == "No errors!" ]] || fail "unexpected parser output: $output_three"
+[[ "$output_four" == "No errors!" ]] || fail "unexpected parser output: $output_four"
 assert_file_includes "$log_path" "/codex-home/skills:rw"
 assert_file_includes "$log_path" "$spool_root:/tmp/command-parser-spool:rw"
 assert_file_includes "$log_path" "$normalized_codex_home:/codex-home:rw"
 assert_file_excludes "$log_path" "$repo_dir:/workspace:rw"
+assert_file_includes "$image_warning_path" "requested image command-parser:9.9.9 will not take effect"
 
 run_count="$(grep -c '^run ' "$log_path" || true)"
 exec_count="$(grep -c '^exec ' "$log_path" || true)"
 [[ "$run_count" == "1" ]] || fail "expected exactly one docker run call, got $run_count"
-[[ "$exec_count" == "3" ]] || fail "expected exactly three docker exec calls, got $exec_count"
+[[ "$exec_count" == "4" ]] || fail "expected exactly four docker exec calls, got $exec_count"
 [[ ! -d "$fresh_codex_home" ]] || fail "expected inherited CODEX_HOME override to be ignored"
 
 echo "PASS: command-parser container scope"

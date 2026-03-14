@@ -157,6 +157,11 @@ ensure_parser_container() {
   mkdir -p "$host_spool_root" "$host_skills_shadow_dir"
 
   if docker container inspect "$container_name" >/dev/null 2>&1; then
+    local existing_image
+    existing_image="$(docker container inspect -f '{{.Config.Image}}' "$container_name" 2>/dev/null || true)"
+    if [[ -n "$existing_image" && "$existing_image" != "$image_tag" ]]; then
+      echo "command-parser: reusing existing runtime container image $existing_image; requested image $image_tag will not take effect until the runtime container is replaced." >&2
+    fi
     local running_state
     running_state="$(docker container inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || true)"
     if [[ "$running_state" != "true" ]]; then
