@@ -157,10 +157,11 @@ ensure_parser_container() {
   mkdir -p "$host_spool_root" "$host_skills_shadow_dir"
 
   if docker container inspect "$container_name" >/dev/null 2>&1; then
-    local existing_image
-    existing_image="$(docker container inspect -f '{{.Config.Image}}' "$container_name" 2>/dev/null || true)"
-    if [[ -n "$existing_image" && "$existing_image" != "$image_tag" ]]; then
-      echo "command-parser: reusing existing runtime container image $existing_image; requested image $image_tag will not take effect until the runtime container is replaced." >&2
+    local existing_image_id desired_image_id
+    existing_image_id="$(docker container inspect -f '{{.Image}}' "$container_name" 2>/dev/null || true)"
+    desired_image_id="$(docker image inspect -f '{{.Id}}' "$image_tag" 2>/dev/null || true)"
+    if [[ -n "$existing_image_id" && -n "$desired_image_id" && "$existing_image_id" != "$desired_image_id" ]]; then
+      echo "command-parser: reusing existing runtime container image id $existing_image_id; requested image $image_tag ($desired_image_id) will not take effect until the runtime container is replaced." >&2
     fi
     local running_state
     running_state="$(docker container inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || true)"
@@ -258,11 +259,9 @@ fi
 
 image_tag="${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}"
 profile="${COMMAND_PARSER_PROFILE:-command-parser}"
-host_codex_home="$HOME/.codex"
+host_codex_home="$(cd "$skill_dir/../.." && pwd)"
 container_name="command-parser-runtime"
 docker_codex_home="/codex-home"
-mkdir -p "$host_codex_home"
-host_codex_home="$(cd "$host_codex_home" && pwd)"
 preferred_spool_root="/tmp/command-parser-spool"
 if mkdir -p "$preferred_spool_root" 2>/dev/null; then
   host_spool_root="$preferred_spool_root"

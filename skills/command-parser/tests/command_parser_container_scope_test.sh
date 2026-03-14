@@ -4,6 +4,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 skill_dir="$(cd "$script_dir/.." && pwd)"
 parser_script="$skill_dir/scripts/command-parser"
+expected_codex_home="$(cd "$skill_dir/../.." && pwd)"
 
 tmp_root="$(mktemp -d)"
 trap 'rm -rf "$tmp_root"' EXIT
@@ -41,7 +42,6 @@ state_dir="$tmp_root/docker-state"
 spool_root="/tmp/command-parser-spool"
 
 mkdir -p "$repo_dir" "$bin_dir" "$home_dir/.codex" "$state_dir"
-normalized_codex_home="$(cd "$home_dir/.codex" && pwd)"
 printf 'base\n' >"$repo_dir/file.txt"
 
 cat >"$bin_dir/codex" <<'EOF'
@@ -67,6 +67,19 @@ container_running_file="\$state_dir/container-running"
 spool_host_file="\$state_dir/spool-host"
 
 if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then
+  if [[ "\${3:-}" == "-f" ]]; then
+    case "\${5:-}" in
+      command-parser:0.110.0)
+        printf 'sha256:parser-default\n'
+        ;;
+      command-parser:9.9.9)
+        printf 'sha256:parser-alt\n'
+        ;;
+      *)
+        printf 'sha256:parser-unknown\n'
+        ;;
+    esac
+  fi
   exit 0
 fi
 
@@ -83,6 +96,20 @@ if [[ "\${1:-}" == "container" && "\${2:-}" == "inspect" ]]; then
   case "\$format" in
     '{{.Config.Image}}')
       cat "\$container_image_file"
+      ;;
+    '{{.Image}}')
+      image_tag="\$(cat "\$container_image_file")"
+      case "\$image_tag" in
+        command-parser:0.110.0)
+          printf 'sha256:parser-default\n'
+          ;;
+        command-parser:9.9.9)
+          printf 'sha256:parser-alt\n'
+          ;;
+        *)
+          printf 'sha256:parser-unknown\n'
+          ;;
+      esac
       ;;
     '{{.State.Running}}')
       cat "\$container_running_file"
@@ -212,9 +239,9 @@ output_four="$(
 [[ "$output_four" == "No errors!" ]] || fail "unexpected parser output: $output_four"
 assert_file_includes "$log_path" "/codex-home/skills:rw"
 assert_file_includes "$log_path" "$spool_root:/tmp/command-parser-spool:rw"
-assert_file_includes "$log_path" "$normalized_codex_home:/codex-home:rw"
+assert_file_includes "$log_path" "$expected_codex_home:/codex-home:rw"
 assert_file_excludes "$log_path" "$repo_dir:/workspace:rw"
-assert_file_includes "$image_warning_path" "requested image command-parser:9.9.9 will not take effect"
+assert_file_includes "$image_warning_path" "requested image command-parser:9.9.9 (sha256:parser-alt) will not take effect"
 
 run_count="$(grep -c '^run ' "$log_path" || true)"
 exec_count="$(grep -c '^exec ' "$log_path" || true)"
