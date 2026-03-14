@@ -119,6 +119,7 @@ async fn main() -> Result<()> {
     let sampler_state = Arc::clone(&state);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(SAMPLE_INTERVAL_SECONDS));
+        interval.tick().await;
         loop {
             interval.tick().await;
             let mut guard = sampler_state.write().await;
@@ -281,6 +282,7 @@ fn sustained_leak_rate(history: &VecDeque<Sample>) -> Option<f64> {
     let current = history.back()?;
     let baseline = history
         .iter()
+        .rev()
         .find(|sample| (current.timestamp - sample.timestamp).num_seconds() >= LEAK_WINDOW_SECONDS)?;
 
     rate_between(baseline, current)
@@ -465,6 +467,19 @@ data_shared.kalloc.1024  1024      128K      256K     128      96
     }
 
     #[test]
+    fn sustained_leak_rate_uses_nearest_window_baseline() {
+        let history = VecDeque::from([
+            sample_at(0, 50.0, 1_000),
+            sample_at(30, 50.0, 1_000),
+            sample_at(61, 50.0, 1_100),
+            sample_at(90, 50.0, 1_400),
+        ]);
+
+        let rate = sustained_leak_rate(&history).unwrap();
+        assert!(rate > 6.0 && rate < 7.0);
+    }
+
+    #[test]
     fn trims_history_outside_window() {
         let now = Utc::now();
         let mut history = VecDeque::from([
@@ -483,4 +498,3 @@ data_shared.kalloc.1024  1024      128K      256K     128      96
         assert_eq!(history[0].kalloc_1024_used, 105);
     }
 }
-
