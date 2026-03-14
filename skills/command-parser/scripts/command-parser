@@ -259,6 +259,7 @@ profile="${COMMAND_PARSER_PROFILE:-command-parser}"
 host_codex_home="${CODEX_HOME:-$HOME/.codex}"
 container_name="command-parser-runtime"
 docker_codex_home="/codex-home"
+mkdir -p "$host_codex_home"
 host_codex_home="$(cd "$host_codex_home" && pwd)"
 preferred_spool_root="/tmp/command-parser-spool"
 if mkdir -p "$preferred_spool_root" 2>/dev/null; then

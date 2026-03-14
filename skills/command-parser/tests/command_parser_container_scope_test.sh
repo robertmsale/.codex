@@ -195,8 +195,18 @@ output_two="$(
     "$parser_script" /usr/bin/printf 'ok\n'
 )"
 
+fresh_codex_home="$tmp_root/fresh-codex-home"
+output_three="$(
+  cd "$repo_dir" &&
+    HOME="$home_dir" \
+    CODEX_HOME="$fresh_codex_home" \
+    PATH="$bin_dir:$PATH" \
+    "$parser_script" /usr/bin/printf 'ok\n'
+)"
+
 [[ "$output_one" == "No errors!" ]] || fail "unexpected parser output: $output_one"
 [[ "$output_two" == "No errors!" ]] || fail "unexpected parser output: $output_two"
+[[ "$output_three" == "No errors!" ]] || fail "unexpected parser output: $output_three"
 assert_file_includes "$log_path" "/codex-home/skills:rw"
 assert_file_includes "$log_path" "$spool_root:/tmp/command-parser-spool:rw"
 assert_file_includes "$log_path" "$normalized_codex_home:/codex-home:rw"
@@ -204,7 +214,8 @@ assert_file_excludes "$log_path" "$repo_dir:/workspace:rw"
 
 run_count="$(grep -c '^run ' "$log_path" || true)"
 exec_count="$(grep -c '^exec ' "$log_path" || true)"
-[[ "$run_count" == "1" ]] || fail "expected exactly one docker run, got $run_count"
-[[ "$exec_count" == "2" ]] || fail "expected exactly two docker exec calls, got $exec_count"
+[[ "$run_count" == "2" ]] || fail "expected exactly two docker run calls, got $run_count"
+[[ "$exec_count" == "3" ]] || fail "expected exactly three docker exec calls, got $exec_count"
+[[ -d "$fresh_codex_home" ]] || fail "expected fresh CODEX_HOME to be created"
 
 echo "PASS: command-parser container scope"
