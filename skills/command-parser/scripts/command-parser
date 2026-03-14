@@ -170,17 +170,26 @@ ensure_parser_container() {
     return
   fi
 
-  docker run -d \
-    --name "$container_name" \
-    -u "$(id -u):$(id -g)" \
-    -e HOME="/tmp/command-parser-home" \
-    -e CODEX_HOME="$docker_codex_home" \
-    -e CODEX_NO_COLOR=1 \
-    -v "$host_codex_home:$docker_codex_home:rw" \
-    -v "$host_skills_shadow_dir:$docker_codex_home/skills:rw" \
-    -v "$host_spool_root:$docker_spool_root:rw" \
-    "$image_tag" \
-    sh -lc 'while :; do sleep 3600; done' >/dev/null
+  local run_output=""
+  if ! run_output="$(
+    docker run -d \
+      --name "$container_name" \
+      -u "$(id -u):$(id -g)" \
+      -e HOME="/tmp/command-parser-home" \
+      -e CODEX_HOME="$docker_codex_home" \
+      -e CODEX_NO_COLOR=1 \
+      -v "$host_codex_home:$docker_codex_home:rw" \
+      -v "$host_skills_shadow_dir:$docker_codex_home/skills:rw" \
+      -v "$host_spool_root:$docker_spool_root:rw" \
+      "$image_tag" \
+      sh -lc 'while :; do sleep 3600; done' 2>&1
+  )"; then
+    if docker container inspect "$container_name" >/dev/null 2>&1; then
+      return
+    fi
+    echo "$run_output" >&2
+    return 1
+  fi
 }
 
 additional_request="${COMMAND_PARSER_ADDITIONAL_REQUEST:-}"
