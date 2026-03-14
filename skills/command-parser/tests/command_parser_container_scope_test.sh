@@ -65,7 +65,6 @@ container_name_file="\$state_dir/container-name"
 container_image_file="\$state_dir/container-image"
 container_running_file="\$state_dir/container-running"
 spool_host_file="\$state_dir/spool-host"
-codex_home_host_file="\$state_dir/codex-home-host"
 
 if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then
   exit 0
@@ -87,9 +86,6 @@ if [[ "\${1:-}" == "container" && "\${2:-}" == "inspect" ]]; then
       ;;
     '{{.State.Running}}')
       cat "\$container_running_file"
-      ;;
-    '{{range .Mounts}}{{if eq .Destination "/codex-home"}}{{.Source}}{{end}}{{end}}')
-      cat "\$codex_home_host_file"
       ;;
     *)
       printf '{}\n'
@@ -123,9 +119,6 @@ if [[ "\${1:-}" == "run" ]]; then
         ;;
       -v)
         mount_spec="\$2"
-        if [[ "\$mount_spec" == *":/codex-home:rw" ]]; then
-          printf '%s' "\${mount_spec%%:/codex-home:rw}" >"\$codex_home_host_file"
-        fi
         if [[ "\$mount_spec" == *":/tmp/command-parser-spool:rw" ]]; then
           printf '%s' "\${mount_spec%%:/tmp/command-parser-spool:rw}" >"\$spool_host_file"
         fi
@@ -214,8 +207,8 @@ assert_file_excludes "$log_path" "$repo_dir:/workspace:rw"
 
 run_count="$(grep -c '^run ' "$log_path" || true)"
 exec_count="$(grep -c '^exec ' "$log_path" || true)"
-[[ "$run_count" == "2" ]] || fail "expected exactly two docker run calls, got $run_count"
+[[ "$run_count" == "1" ]] || fail "expected exactly one docker run call, got $run_count"
 [[ "$exec_count" == "3" ]] || fail "expected exactly three docker exec calls, got $exec_count"
-[[ -d "$fresh_codex_home" ]] || fail "expected fresh CODEX_HOME to be created"
+[[ ! -d "$fresh_codex_home" ]] || fail "expected inherited CODEX_HOME override to be ignored"
 
 echo "PASS: command-parser container scope"

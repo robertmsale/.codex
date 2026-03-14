@@ -35,7 +35,7 @@ Callers should not need to prefix `IS_USING_COMMAND_PARSER=true` manually.
 Container scope:
 - The parser container does not receive the caller project/worktree as a mount.
 - Parser scratch lives under `/tmp/command-parser-spool`.
-- The container reuses one shared `CODEX_HOME` mount plus an empty writable `skills` overlay.
+- The container reuses one shared global `~/.codex` mount plus an empty writable `skills` overlay.
 
 ## Usage
 

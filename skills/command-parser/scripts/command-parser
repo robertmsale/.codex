@@ -156,18 +156,6 @@ ensure_parser_container() {
 
   mkdir -p "$host_spool_root" "$host_skills_shadow_dir"
 
-  local existing_image=""
-  local existing_codex_home_mount=""
-  if docker container inspect "$container_name" >/dev/null 2>&1; then
-    existing_image="$(docker container inspect -f '{{.Config.Image}}' "$container_name" 2>/dev/null || true)"
-    existing_codex_home_mount="$(
-      docker container inspect -f "{{range .Mounts}}{{if eq .Destination \"$docker_codex_home\"}}{{.Source}}{{end}}{{end}}" "$container_name" 2>/dev/null || true
-    )"
-    if [[ "$existing_image" != "$image_tag" || "$existing_codex_home_mount" != "$host_codex_home" ]]; then
-      docker rm -f "$container_name" >/dev/null
-    fi
-  fi
-
   if docker container inspect "$container_name" >/dev/null 2>&1; then
     local running_state
     running_state="$(docker container inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || true)"
@@ -256,7 +244,7 @@ fi
 
 image_tag="${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}"
 profile="${COMMAND_PARSER_PROFILE:-command-parser}"
-host_codex_home="${CODEX_HOME:-$HOME/.codex}"
+host_codex_home="$HOME/.codex"
 container_name="command-parser-runtime"
 docker_codex_home="/codex-home"
 mkdir -p "$host_codex_home"
