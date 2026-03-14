@@ -1,0 +1,50 @@
+---
+name: check-zone-health
+description: Query the local `zonewatch` server before or during heavy local workloads when you need to judge macOS kernel zone pressure and decide whether to slow, pause, or stop work. [skill-hash:1c9a72d]
+---
+
+# Check Zone Health
+
+Use this when local stability matters and you need the current zone allocator state.
+
+## Preconditions
+
+- The operator must already have the privileged `zonewatch` server running locally.
+- Do not try to start it yourself with `sudo`.
+
+## Query
+
+Run:
+
+```bash
+curl -s http://127.0.0.1:9032/health
+```
+
+For trend context, also use:
+
+```bash
+curl -s http://127.0.0.1:9032/history
+```
+
+## Interpret
+
+- `stable`
+  - System looks healthy. Continue normal work.
+- `growing`
+  - Pressure is increasing. Monitor more frequently and avoid increasing workload churn.
+- `leak_detected`
+  - Slow container spawning or other high-churn activity, warn the operator, and watch the slope.
+- `danger`
+  - Pause container spawning and notify the operator immediately.
+- `critical`
+  - Stop workloads and tell the operator the machine may need OrbStack or system restart.
+
+## Reporting
+
+When you report the state, include:
+- `zone_map_pct`
+- `kalloc_1024_used`
+- `growth_rate`
+- `status`
+
+If the server is unavailable, say that `zonewatch` is not running or not reachable on `127.0.0.1:9032`.
