@@ -1,6 +1,6 @@
 ---
 name: robdex-orchestrator
-description: Use Robdex communication and orchestration via `scripts/robdex`. First run `scripts/robdex-role-instructions` so the live thread loads only its role-specific guidance from `resources/orchestrator.md` or `resources/worker.md`. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:4b7f2d1]
+description: Use Robdex communication and orchestration via `scripts/robdex`. First run `scripts/robdex-role-instructions` so the live thread loads only its role-specific guidance from `resources/orchestrator.md` or `resources/worker.md`. Thread identity is auto-resolved from `$CODEX_THREAD_ID`; never pass sender ID manually. [skill-hash:c914c20]
 ---
 
 # Robdex Orchestrator
@@ -62,7 +62,7 @@ Do not preload both role files just to figure out which one applies.
 - Routed approvals:
   - `robdex list-pending-approvals`
   - `robdex approve-approval --approval-id <approval id>`
-  - `robdex decline-approval --approval-id <approval id>`
+  - `robdex decline-approval --approval-id <approval id> [--message "<note>"]`
 - Thread groups:
   - `robdex list-thread-groups [--project-path <path>]`
   - `robdex create-thread-group --title "<title>" [--project-path <path>] [--seed-thread-id <thread>]`
@@ -76,6 +76,12 @@ Do not preload both role files just to figure out which one applies.
 - The Robdex bridge is the source of truth for visible agents, message authorization, archive authorization, and pending approvals.
 - The routed approval ledger is bridge-visible pending approval state, not the chat notification that announced it.
 - Local metadata is bookkeeping only; it does not replace bridge authorization or scoped visibility.
+
+## Approval Notes
+
+- `list-pending-approvals` may include `approvalReason` and joined `fileChanges`; prefer those file summaries over generic grant-root text when deciding.
+- `decline-approval --message "<note>"` declines the approval and asks Robdex to send the note as a normal follow-up worker message.
+- If approval output reports a `follow-up error`, treat it as partial failure: the approval decision already happened, but the note did not reach the worker.
 
 ## System Experts
 

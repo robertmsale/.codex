@@ -145,6 +145,7 @@ def main() -> int:
 
     p_decline = sub.add_parser("decline-approval")
     p_decline.add_argument("--approval-id", required=True)
+    p_decline.add_argument("--message")
 
     args = parser.parse_args()
     thread_id = _require_thread_id()
@@ -290,6 +291,7 @@ def main() -> int:
             out = robdex_server.robdex_decline_approval(
                 from_thread_id=thread_id,
                 approval_id=args.approval_id,
+                message=args.message,
                 ctx=ctx,
             )
         else:

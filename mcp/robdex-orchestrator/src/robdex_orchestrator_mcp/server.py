@@ -98,9 +98,25 @@ class PendingApprovalEntry:
     kind: str
     title: str
     detail: str | None
+    approval_reason: str | None
     command: str | None
     command_cwd: str | None
     file_grant_root: str | None
+    file_changes: list["PendingApprovalFileChangeEntry"]
+
+
+@dataclass(frozen=True)
+class PendingApprovalFileChangeEntry:
+    path: str
+    kind: str
+    diff: str | None
+
+
+@dataclass(frozen=True)
+class ApprovalCommandResult:
+    follow_up_message_requested: bool
+    follow_up_message_sent: bool
+    follow_up_error: str | None
 
 
 def _normalize_text(value: str | None) -> str | None:
@@ -147,6 +163,13 @@ def _normalize_approval_kind(value: Any) -> str | None:
         key = next(iter(value.keys()))
         return _normalize_text(str(key))
     return None
+
+
+def _normalize_file_change_kind(value: Any) -> str:
+    normalized = _normalize_text(str(value)) if value is not None else None
+    if normalized in {"create", "update", "delete", "rename", "unknown"}:
+        return normalized
+    return "unknown"
 
 
 def _quoted(value: str) -> str:
@@ -741,12 +764,35 @@ def _parse_pending_approvals_payload(payload: dict[str, Any]) -> list[PendingApp
                 kind=kind,
                 title=title,
                 detail=_normalize_text(entry.get("detail")),
+                approval_reason=_normalize_text(entry.get("approvalReason")),
                 command=_normalize_text(entry.get("command")),
                 command_cwd=_normalized_path(entry.get("commandCWD")),
                 file_grant_root=_normalized_path(entry.get("fileGrantRoot")),
+                file_changes=_parse_pending_approval_file_changes(entry.get("fileChanges")),
             )
         )
     return approvals
+
+
+def _parse_pending_approval_file_changes(raw: Any) -> list[PendingApprovalFileChangeEntry]:
+    if not isinstance(raw, list):
+        return []
+
+    file_changes: list[PendingApprovalFileChangeEntry] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        path = _normalize_text(entry.get("path"))
+        if not path:
+            continue
+        file_changes.append(
+            PendingApprovalFileChangeEntry(
+                path=path,
+                kind=_normalize_file_change_kind(entry.get("kind")),
+                diff=_normalize_text(entry.get("diff")),
+            )
+        )
+    return file_changes
 
 
 def _list_pending_approvals(ctx: Context) -> list[PendingApprovalEntry]:
@@ -811,6 +857,56 @@ def _approval_command_name(approval: PendingApprovalEntry) -> str:
     raise BridgeError(f"Unsupported approval kind for decision routing: {approval.kind}")
 
 
+def _format_file_change_summary(file_changes: list[PendingApprovalFileChangeEntry]) -> str | None:
+    if not file_changes:
+        return None
+
+    preview_limit = 3
+    preview = [f"{change.kind} {change.path}" for change in file_changes[:preview_limit]]
+    if len(file_changes) > preview_limit:
+        preview.append(f"(+{len(file_changes) - preview_limit} more)")
+    return ", ".join(preview)
+
+
+def _approval_detail_summary(approval: PendingApprovalEntry) -> str | None:
+    return (
+        _format_file_change_summary(approval.file_changes)
+        or approval.command
+        or approval.file_grant_root
+        or approval.approval_reason
+        or approval.detail
+        or approval.title
+    )
+
+
+def _parse_approval_command_result(result: dict[str, Any]) -> ApprovalCommandResult | None:
+    if result.get("type") != "approvalResult":
+        return None
+
+    payload = result.get("payload")
+    if not isinstance(payload, dict):
+        raise BridgeError("Bridge approvalResult payload malformed")
+
+    return ApprovalCommandResult(
+        follow_up_message_requested=bool(payload.get("followUpMessageRequested")),
+        follow_up_message_sent=bool(payload.get("followUpMessageSent")),
+        follow_up_error=_normalize_text(payload.get("followUpError")),
+    )
+
+
+def _approval_follow_up_suffix(result: dict[str, Any]) -> str:
+    parsed = _parse_approval_command_result(result)
+    if parsed is None:
+        return ""
+    if parsed.follow_up_error:
+        return f" | follow-up error={_quoted(parsed.follow_up_error)} | approval decision already applied"
+    if parsed.follow_up_message_requested and parsed.follow_up_message_sent:
+        return " | follow-up sent"
+    if parsed.follow_up_message_requested:
+        return " | follow-up requested"
+    return ""
+
+
 def _format_pending_approval_line(
     ctx: Context,
     approval: PendingApprovalEntry,
@@ -818,9 +914,11 @@ def _format_pending_approval_line(
 ) -> str:
     target_name = _approval_thread_display_name(ctx, approval, visible_threads)
     summary = f"{approval.id} | request={approval.request_id_display} | kind={approval.kind} | thread={_quoted(target_name)} ({approval.thread_id})"
-    detail = approval.command or approval.file_grant_root or approval.detail or approval.title
+    detail = _approval_detail_summary(approval)
     if detail:
         summary += f" | detail={_quoted(detail)}"
+    if approval.approval_reason:
+        summary += f" | reason={_quoted(approval.approval_reason)}"
     if approval.command_cwd:
         summary += f" | cwd={approval.command_cwd}"
     return summary
@@ -1302,7 +1400,7 @@ def robdex_approve_approval(
     visible_threads = _list_scoped_agents(resolved_context, include_archived=True)
     target_display_name = _approval_thread_display_name(resolved_context, approval, visible_threads)
     command_name = _approval_command_name(approval)
-    _run_command(
+    result = _run_command(
         resolved_context.host,
         resolved_context.port,
         resolved_context.token,
@@ -1313,13 +1411,17 @@ def robdex_approve_approval(
             "decision": "accept",
         },
     )
-    return f"Approved {_quoted(approval.id)} for {_quoted(target_display_name)} ({approval.thread_id})"
+    return (
+        f"Approved {_quoted(approval.id)} for {_quoted(target_display_name)} ({approval.thread_id})"
+        f"{_approval_follow_up_suffix(result)}"
+    )
 
 
 @mcp.tool
 def robdex_decline_approval(
     from_thread_id: str,
     approval_id: str,
+    message: str | None = None,
     ctx: Context = None,
 ) -> str:
     """Decline a visible pending command/file approval by full or short approval id."""
@@ -1328,18 +1430,25 @@ def robdex_decline_approval(
     visible_threads = _list_scoped_agents(resolved_context, include_archived=True)
     target_display_name = _approval_thread_display_name(resolved_context, approval, visible_threads)
     command_name = _approval_command_name(approval)
-    _run_command(
+    payload: dict[str, Any] = {
+        "instanceId": approval.instance_id,
+        "requestId": approval.request_id,
+        "decision": "decline",
+    }
+    message_value = _normalize_text(message)
+    if message_value:
+        payload["message"] = message_value
+    result = _run_command(
         resolved_context.host,
         resolved_context.port,
         resolved_context.token,
         name=command_name,
-        payload={
-            "instanceId": approval.instance_id,
-            "requestId": approval.request_id,
-            "decision": "decline",
-        },
+        payload=payload,
     )
-    return f"Declined {_quoted(approval.id)} for {_quoted(target_display_name)} ({approval.thread_id})"
+    return (
+        f"Declined {_quoted(approval.id)} for {_quoted(target_display_name)} ({approval.thread_id})"
+        f"{_approval_follow_up_suffix(result)}"
+    )
 
 
 @mcp.tool

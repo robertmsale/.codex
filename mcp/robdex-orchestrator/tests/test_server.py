@@ -617,9 +617,11 @@ class RobdexApprovalRoutingTests(unittest.TestCase):
                             "kind": {"commandExecution": {}},
                             "title": "Command approval is pending.",
                             "detail": "Do you want to allow the single smoke-test fetch?",
+                            "approvalReason": "Needed to verify the worktree can sync cleanly.",
                             "command": "git -C /tmp/codex fetch origin main",
                             "commandCWD": project_path,
                             "fileGrantRoot": None,
+                            "fileChanges": [],
                         },
                         {
                             "id": "agent-foreign:1",
@@ -631,9 +633,11 @@ class RobdexApprovalRoutingTests(unittest.TestCase):
                             "kind": {"commandExecution": {}},
                             "title": "Foreign approval",
                             "detail": None,
+                            "approvalReason": None,
                             "command": "git status",
                             "commandCWD": "/tmp/other",
                             "fileGrantRoot": None,
+                            "fileChanges": [],
                         },
                     ]
                 }
@@ -649,9 +653,71 @@ class RobdexApprovalRoutingTests(unittest.TestCase):
 
         self.assertIn("agent-1773162405-dec9:0", result)
         self.assertIn('thread="Route Approval E2E Smoke" (worker-thread)', result)
+        self.assertIn('reason="Needed to verify the worktree can sync cleanly."', result)
         self.assertNotIn("agent-foreign:1", result)
         self.assertEqual(requests[0]["path"], "/state/snapshot")
         self.assertEqual(requests[0]["query"], {"includeMessageCache": "0"})
+
+    def test_list_pending_approvals_prefers_file_change_summary(self) -> None:
+        project_path = server._normalized_path("/tmp/codex") or "/tmp/codex"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token="bridge-token",
+            instance_id="mgmt-global",
+            current_thread_id="orch-codex",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-codex": "Codex Config Orchestrator"},
+            orchestrator_by_project={project_path: "orch-codex"},
+        )
+        approval = server.PendingApprovalEntry(
+            id="agent-1773162405-dec9:file-7",
+            instance_id="agent-1773162405-dec9",
+            request_id="file-7",
+            request_id_display="file-7",
+            thread_id="worker-thread",
+            turn_id="turn-2",
+            item_id="item-2",
+            kind="fileChange",
+            title="File approval is pending.",
+            detail="Grant write access to a temp directory.",
+            approval_reason="Please narrow this to AppState.swift first.",
+            command=None,
+            command_cwd=None,
+            file_grant_root="/tmp/codex",
+            file_changes=[
+                server.PendingApprovalFileChangeEntry(
+                    path="AppState.swift",
+                    kind="update",
+                    diff="@@ -1 +1 @@",
+                ),
+                server.PendingApprovalFileChangeEntry(
+                    path="Cache.swift",
+                    kind="create",
+                    diff=None,
+                ),
+            ],
+        )
+        visible_thread = server.ThreadEntry(
+            id="worker-thread",
+            cwd=f"{project_path}/.worktrees/approval-smoke",
+            preview="Route Approval E2E Smoke",
+            display_name="Route Approval E2E Smoke",
+            project_path=project_path,
+            has_custom_title=True,
+        )
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_list_pending_approvals", return_value=[approval]),
+            patch.object(server, "_list_scoped_agents", return_value=[visible_thread]),
+        ):
+            result = server.robdex_list_pending_approvals(from_thread_id="orch-codex", ctx=None)
+
+        self.assertIn('detail="update AppState.swift, create Cache.swift"', result)
+        self.assertIn('reason="Please narrow this to AppState.swift first."', result)
+        self.assertNotIn('/tmp/codex"', result)
 
     def test_approve_approval_accepts_short_request_id_for_command_approval(self) -> None:
         project_path = server._normalized_path("/tmp/codex") or "/tmp/codex"
@@ -677,9 +743,11 @@ class RobdexApprovalRoutingTests(unittest.TestCase):
             kind="commandExecution",
             title="Command approval is pending.",
             detail="Allow the fetch.",
+            approval_reason=None,
             command="git -C /tmp/codex fetch origin main",
             command_cwd=project_path,
             file_grant_root=None,
+            file_changes=[],
         )
         visible_thread = server.ThreadEntry(
             id="worker-thread",
@@ -739,9 +807,11 @@ class RobdexApprovalRoutingTests(unittest.TestCase):
             kind="fileChange",
             title="File approval is pending.",
             detail="Grant write access to a temp directory.",
+            approval_reason="Please narrow this to AppState.swift first.",
             command=None,
             command_cwd=None,
             file_grant_root="/tmp/codex",
+            file_changes=[],
         )
         visible_thread = server.ThreadEntry(
             id="worker-thread",
@@ -756,15 +826,30 @@ class RobdexApprovalRoutingTests(unittest.TestCase):
             patch.object(server, "_resolve_context", return_value=resolved_context),
             patch.object(server, "_list_pending_approvals", return_value=[approval]),
             patch.object(server, "_list_scoped_agents", return_value=[visible_thread]),
-            patch.object(server, "_run_command", return_value={"type": "empty"}) as run_command,
+            patch.object(
+                server,
+                "_run_command",
+                return_value={
+                    "type": "approvalResult",
+                    "payload": {
+                        "followUpMessageRequested": True,
+                        "followUpMessageSent": False,
+                        "followUpError": "worker thread not reachable",
+                    },
+                },
+            ) as run_command,
         ):
             result = server.robdex_decline_approval(
                 from_thread_id="orch-codex",
                 approval_id="agent-1773162405-dec9:file-7",
+                message="Please narrow this to AppState.swift first.",
                 ctx=None,
             )
 
-        self.assertEqual(result, 'Declined "agent-1773162405-dec9:file-7" for "Route Approval E2E Smoke" (worker-thread)')
+        self.assertEqual(
+            result,
+            'Declined "agent-1773162405-dec9:file-7" for "Route Approval E2E Smoke" (worker-thread) | follow-up error="worker thread not reachable" | approval decision already applied',
+        )
         run_command.assert_called_once_with(
             "127.0.0.1",
             42080,
@@ -774,6 +859,7 @@ class RobdexApprovalRoutingTests(unittest.TestCase):
                 "instanceId": "agent-1773162405-dec9",
                 "requestId": "file-7",
                 "decision": "decline",
+                "message": "Please narrow this to AppState.swift first.",
             },
         )
 
