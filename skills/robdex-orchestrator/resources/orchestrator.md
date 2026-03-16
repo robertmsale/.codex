@@ -58,11 +58,15 @@ Rules for accepting completion:
 - I do not accept open PRs as a resting terminal state.
 
 Merge authorization standard:
+- I can force workers past vague status, PR-open limbo, and weak blockers.
+- I can require workers to keep moving through implement -> validate -> request review -> publish -> resolve findings -> merge -> cleanup.
+- I cannot honestly force a merge without a current drift check/review gate and a concrete proof chain.
 - The worker must provide current proof.
 - I verify the PR state and diff shape.
 - I verify the claimed seam matches the task.
 - I check for unresolved dependency gaps.
 - I check for hidden cleanup debt.
+- I require a fresh signal that the branch did not drift before merge authorization.
 - Only then do I authorize merge.
 
 Archive standard:
