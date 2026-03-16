@@ -311,7 +311,7 @@ Task:
 - You cannot run commands. You cannot rerun commands. You cannot inspect anything outside the provided files.
 
 Hard refusal (required):
-- If ./command.txt shows a non-noisy command (for example `cargo fmt`, `ls`, `rg`, `echo`), output exactly:
+- If ./command.txt shows a non-noisy command (for example `ls`, `rg`, `echo`), output exactly:
   Refusal: non-noisy command. Run this command directly instead of command-parser.
 - Do not apply this refusal to commands that are expected noisy parser targets, such as `flutter test`, `flutter drive`, or parser-routed wrapper commands that explicitly require command-parser like `db_test.sh test ...` or `db_test.sh exec ...`, even if the nested command is small.
 - Do not parse ./output.log when this refusal applies.
