@@ -1,29 +1,19 @@
 ---
 name: start-turn
-description: Read at the start of every turn. Establish the execution pipeline, lock in required skills, and do not start implementation out of order. Project-specific turn-boundary skills may further refine the process and must be followed when relevant. [skill-hash:7f2d6b1]
+description: Read at the start of every turn. Establish the execution pipeline before work begins. First run `scripts/start-turn-role-instructions` so the current thread loads only its worker or orchestrator guidance. Project-specific turn-boundary skills may further refine the process and must be followed when relevant. [skill-hash:9b1c5d4]
 ---
 
 # Start Turn
 
 Read this at the start of each turn.
 
-## Required Order
+## Required Path
 
-1. Confirm scope and deliverable for this turn in one sentence.
-2. If git workflow is involved, read `$gh-version-control-workflow` before any git mutation.
-3. If the project has turn-related skills for the phase you are entering, read and follow them before proceeding.
-4. Create a dedicated worktree and do the turn's implementation work there.
-5. If commands are needed, capture the command `job_id`.
-6. If command completion is not immediate, wait with `command_execution_wait(job_id)`.
-7. Use `$command-parser` only for noisy output extraction.
-8. If deletions are needed, use `$safe-delete`.
-9. If worker orchestration is needed, use `$robdex-orchestrator`.
+- Run: `~/.codex/skills/start-turn/scripts/start-turn-role-instructions`
+- Load the worker or orchestrator instructions for this turn before proceeding.
 
-## Hard Rules
+## Shared Guardrails
 
-- Do not start implementation before pipeline selection is clear.
-- Do not ignore project-specific process skills that refine the current phase of work.
-- Do not implement in the base repo when worktree workflow applies.
+- Follow project-specific turn-boundary skills when the current phase calls for them.
 - Do not bypass required skill workflows.
 - Do not invent fallback paths when a required skill/tool is available.
-- Do not concurrently execute any commands that rely on locks (e.g `cargo check` and `cargo test`, or `flutter analyze` and `flutter test`) regardless of how safe you think it is to do.
