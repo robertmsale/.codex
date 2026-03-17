@@ -77,7 +77,7 @@ prefix_rule(
 prefix_rule(
     pattern = ["flutter", ["analyze"]],
     decision = "forbidden",
-    justification = "Analyze is disabled. Use `flutter build macos` instead.",
+    justification = "Analyze is disabled. Use your project's static code analysis tool instead",
 )
 prefix_rule(
     pattern = ["gofmt"],
