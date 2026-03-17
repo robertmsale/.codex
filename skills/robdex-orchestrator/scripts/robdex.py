@@ -41,6 +41,30 @@ def _load_role_instructions(thread_id: str, ctx: _ScriptContext) -> str:
     return resource_path.read_text(encoding="utf-8").rstrip()
 
 
+def _resolve_text_input(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    *,
+    inline_attr: str,
+    file_attr: str,
+    stdin_attr: str,
+    label: str,
+) -> str:
+    inline_value = getattr(args, inline_attr)
+    if inline_value is not None:
+        return inline_value
+
+    file_path = getattr(args, file_attr)
+    if file_path is not None:
+        return Path(file_path).expanduser().read_text(encoding="utf-8")
+
+    if getattr(args, stdin_attr):
+        return sys.stdin.read()
+
+    parser.error(f"{label} input is required")
+    return ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="robdex",
@@ -123,7 +147,10 @@ def main() -> int:
     p_rename.add_argument("--project-path")
 
     p_send = sub.add_parser("send-message")
-    p_send.add_argument("--text", required=True)
+    send_text = p_send.add_mutually_exclusive_group(required=True)
+    send_text.add_argument("--text")
+    send_text.add_argument("--text-file")
+    send_text.add_argument("--text-stdin", action="store_true")
     p_send.add_argument("--to-thread-id")
     p_send.add_argument("--name")
     p_send.add_argument("--project-path")
@@ -258,9 +285,17 @@ def main() -> int:
                 ctx=ctx,
             )
         elif args.cmd == "send-message":
+            text = _resolve_text_input(
+                parser,
+                args,
+                inline_attr="text",
+                file_attr="text_file",
+                stdin_attr="text_stdin",
+                label="send-message text",
+            )
             out = robdex_server.robdex_send_message(
                 from_thread_id=thread_id,
-                text=args.text,
+                text=text,
                 to_thread_id=args.to_thread_id,
                 name=args.name,
                 project_path=args.project_path,

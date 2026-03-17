@@ -54,6 +54,8 @@ Do not preload both role files just to figure out which one applies.
 - Messaging:
   - `robdex send-message --name "<agent name>" --text "<message>"`
   - `robdex send-message --to-thread-id "<thread id>" --text "<message>"`
+  - `robdex send-message --name "<agent name>" --text-file <path>`
+  - `robdex send-message --to-thread-id "<thread id>" --text-stdin`
 - Metadata:
   - `robdex set-worker-metadata --name "<agent name>" --issue-number <issue>`
   - `robdex set-worker-metadata --name "<agent name>" --pr-number <pr>`
@@ -98,6 +100,7 @@ Do not preload both role files just to figure out which one applies.
 
 - Keep orchestration within the bridge-authorized project scope.
 - Use the public `robdex` script surface instead of inventing ad hoc bridge calls.
+- Prefer `--text-file` or `--text-stdin` for shell-sensitive message text that may contain backticks or other command-substitution syntax.
 - Approval routing is for reasonable task-aligned engineering commands, not blatantly destructive commands.
 - If tooling fails in a non-input way, stop and escalate with the exact command, cwd, and output.
 - Role-specific operating discipline lives in the dynamic role instructions, not in this top-level file.

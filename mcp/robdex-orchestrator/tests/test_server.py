@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
+import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -558,6 +561,202 @@ class RobdexSendMessageTests(unittest.TestCase):
                 }
             ],
         )
+
+
+class RobdexWorkerMetadataTests(unittest.TestCase):
+    def setUp(self) -> None:
+        server.SESSION_THREAD_LOCKS.clear()
+
+    def test_set_worker_metadata_posts_to_bridge_owned_endpoint(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token="bridge-token",
+            instance_id="mgmt-global",
+            current_thread_id="orch-ezra",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
+            orchestrator_by_project={project_path: "orch-ezra"},
+        )
+        requests: list[dict] = []
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(
+                    {"host": host, "port": port, "token": token, **kwargs}
+                )
+                or {
+                    "recipientThreadId": "worker-thread",
+                    "recipientDisplayName": "Issue 624 Accounting UI Alignment",
+                    "issueNumber": 624,
+                    "pullRequestNumber": 712,
+                    "blockedReason": "waiting on merge",
+                    "unblockWhen": "after sync",
+                },
+            ),
+        ):
+            result = server.robdex_set_worker_metadata(
+                from_thread_id="orch-ezra",
+                name="Issue 624 Accounting UI Alignment",
+                project_path=project_path,
+                issue_number=624,
+                pull_request_number=712,
+                blocked_reason="waiting on merge",
+                unblock_when="after sync",
+                ctx=None,
+            )
+
+        self.assertEqual(
+            result,
+            'Updated "Issue 624 Accounting UI Alignment" (worker-thread): issue=#624, pr=#712, blocked="waiting on merge" until="after sync"',
+        )
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "host": "127.0.0.1",
+                    "port": 42080,
+                    "token": "bridge-token",
+                    "method": "POST",
+                    "path": "/orchestrator/worker-metadata",
+                    "body": {
+                        "senderThreadId": "orch-ezra",
+                        "recipientThreadId": None,
+                        "recipientName": "Issue 624 Accounting UI Alignment",
+                        "projectPath": project_path,
+                        "issueNumber": 624,
+                        "pullRequestNumber": 712,
+                        "blockedReason": "waiting on merge",
+                        "unblockWhen": "after sync",
+                        "clearIssueNumber": False,
+                        "clearPullRequestNumber": False,
+                        "clearBlocked": False,
+                    },
+                }
+            ],
+        )
+
+    def test_spawn_agent_issue_number_uses_bridge_owned_metadata_endpoint(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = server.Context(
+            host="127.0.0.1",
+            port=42080,
+            token="bridge-token",
+            instance_id="mgmt-global",
+            current_thread_id="orch-ezra",
+            current_project_path=project_path,
+            current_is_orchestrator=True,
+            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
+            orchestrator_by_project={project_path: "orch-ezra"},
+        )
+        requests: list[dict] = []
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_ensure_unique_title"),
+            patch.object(
+                server,
+                "_run_command",
+                return_value={
+                    "type": "agent",
+                    "payload": {
+                        "threadId": "worker-thread",
+                        "displayName": "Issue 900 Metadata Hardening",
+                    },
+                },
+            ),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(
+                    {"host": host, "port": port, "token": token, **kwargs}
+                )
+                or {
+                    "recipientThreadId": "worker-thread",
+                    "recipientDisplayName": "Issue 900 Metadata Hardening",
+                    "issueNumber": 900,
+                    "pullRequestNumber": None,
+                    "blockedReason": None,
+                    "unblockWhen": None,
+                },
+            ),
+        ):
+            result = server.robdex_spawn_agent(
+                from_thread_id="orch-ezra",
+                name="Issue 900 Metadata Hardening",
+                issue_number=900,
+                ctx=None,
+            )
+
+        self.assertEqual(result, 'Spawned "Issue 900 Metadata Hardening" (worker-thread)')
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "host": "127.0.0.1",
+                    "port": 42080,
+                    "token": "bridge-token",
+                    "method": "POST",
+                    "path": "/orchestrator/worker-metadata",
+                    "body": {
+                        "senderThreadId": "orch-ezra",
+                        "recipientThreadId": "worker-thread",
+                        "recipientName": None,
+                        "projectPath": project_path,
+                        "issueNumber": 900,
+                        "pullRequestNumber": None,
+                        "blockedReason": None,
+                        "unblockWhen": None,
+                        "clearIssueNumber": False,
+                        "clearPullRequestNumber": False,
+                        "clearBlocked": False,
+                    },
+                }
+            ],
+        )
+
+    def test_set_thread_metadata_fields_serializes_concurrent_updates(self) -> None:
+        original_state_file = server.ROBDEX_STATE_FILE
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = server.Path(tmp) / "robdex.json"
+            state_path.write_text(
+                json.dumps({"threadMetadataByID": {"worker-thread": {}}}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            server.ROBDEX_STATE_FILE = state_path
+            start_barrier = threading.Barrier(2)
+            errors: list[str] = []
+
+            def apply(updates: dict[str, int]) -> None:
+                try:
+                    start_barrier.wait(timeout=2)
+                    server._set_thread_metadata_fields("worker-thread", updates)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(str(exc))
+
+            threads = [
+                threading.Thread(target=apply, args=({"issueNumber": 101},)),
+                threading.Thread(target=apply, args=({"pullRequestNumber": 202},)),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            self.assertEqual(errors, [])
+            final_payload = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                final_payload["threadMetadataByID"]["worker-thread"],
+                {"issueNumber": 101, "pullRequestNumber": 202},
+            )
+
+        server.ROBDEX_STATE_FILE = original_state_file
 
 
 class RobdexApprovalRoutingTests(unittest.TestCase):
