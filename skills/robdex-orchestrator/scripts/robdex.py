@@ -84,12 +84,6 @@ def main() -> int:
     sub.add_parser("list-projects")
 
     p_list = sub.add_parser("list-agents")
-    p_list.add_argument(
-        "--include-archived",
-        action="store_true",
-        help="Include archived agents in the concise single-line stewardship listing.",
-    )
-    p_list.add_argument("--all-projects", action="store_true")
     p_list.add_argument("--project-path")
 
     sub.add_parser("list-pending-approvals")
@@ -129,11 +123,6 @@ def main() -> int:
     p_spawn.add_argument("--prompt", default="")
     p_spawn.add_argument("--cwd")
     p_spawn.add_argument("--issue-number", type=int)
-
-    p_unarchive = sub.add_parser("unarchive-agent")
-    p_unarchive.add_argument("--name", required=True)
-    p_unarchive.add_argument("--prompt", default="")
-    p_unarchive.add_argument("--project-path")
 
     p_archive = sub.add_parser("archive-agent")
     p_archive.add_argument("--to-thread-id")
@@ -193,8 +182,8 @@ def main() -> int:
         elif args.cmd == "list-agents":
             out = robdex_server.robdex_list_agents(
                 from_thread_id=thread_id,
-                include_archived=args.include_archived,
-                include_all_projects=args.all_projects,
+                include_archived=False,
+                include_all_projects=False,
                 project_path=args.project_path,
                 ctx=ctx,
             )
@@ -257,14 +246,6 @@ def main() -> int:
                 prompt=args.prompt,
                 cwd=args.cwd,
                 issue_number=args.issue_number,
-                ctx=ctx,
-            )
-        elif args.cmd == "unarchive-agent":
-            out = robdex_server.robdex_unarchive_agent(
-                from_thread_id=thread_id,
-                name=args.name,
-                prompt=args.prompt,
-                project_path=args.project_path,
                 ctx=ctx,
             )
         elif args.cmd == "archive-agent":

@@ -1,41 +1,17 @@
 ---
 name: command-parser
-description: Run noisy command parsing via `~/.codex/skills/command-parser/scripts/command-parser ...`. It enforces `command-parser.rule`, runs the command directly, captures `output.log`, and returns only the parser's final extraction. A single long-lived parser container is reused across invocations. [skill-hash:92f3c18]
+description: Use `~/.codex/skills/command-parser/scripts/command-parser ...` when a command is noisy and you want a compact extraction instead of raw output. The skill is for how and when to use the tool, not how it works internally. [skill-hash:e3f2d4a]
 ---
 
 # Command Parser
 
-## Purpose
-
-Use this skill when a command is noisy and you only need compact extraction.
-
-Do not use this for simple commands.
+Use this skill when a command is noisy and you want a compact extraction.
+Do not use it for simple commands.
 
 ## Command
 
 Script path:
 - `~/.codex/skills/command-parser/scripts/command-parser`
-
-Build image script:
-- `~/.codex/skills/command-parser/scripts/build-command-parser-image`
-
-## Execution Model
-
-1. Enforces `command-parser.rule` with `codex execpolicy check`.
-2. Runs the target command directly in the caller environment.
-   - The wrapped command receives `IS_USING_COMMAND_PARSER=true`.
-3. Captures command stdout/stderr to `output.log`.
-4. Reuses one long-lived Docker container and runs `codex exec --json` via `docker exec` to parse `output.log`.
-5. Prints only the parser's final message.
-6. Exits with the original command exit code.
-
-This skill does not mutate the workspace or add command-specific behavior.
-Callers should not need to prefix `IS_USING_COMMAND_PARSER=true` manually.
-
-Container scope:
-- The parser container does not receive the caller project/worktree as a mount.
-- Parser scratch lives under `/tmp/command-parser-spool`.
-- The container reuses one shared global `~/.codex` mount plus an empty writable `skills` overlay.
 
 ## Usage
 
@@ -55,12 +31,11 @@ Recommended default:
 ## Guardrails
 
 - `--request-additional` is analysis-only.
-- The parser cannot run commands, rerun commands, retry commands, or inspect anything outside captured files.
 - Expected noisy parser targets such as `flutter test` and `flutter drive` remain valid command-parser targets.
 - Parser-routed wrapper commands that explicitly require command-parser, such as `db_test.sh test ...` and `db_test.sh exec ...`, also remain valid command-parser targets even when the nested command is small.
-- If the request asks parser to run commands, it must return:
-  `I cannot run commands, do not ask me again.`
 - Simple commands (for example `ls`, `rg`, `echo`, `cargo fmt`) should be run directly, not via command-parser.
+- If the tool rejects a command, treat that as the rule doing its job. Do not try to explain around the rejection or work around it.
+- If the command-parser tool itself is broken, report the tooling bug instead of bypassing the workflow.
 
 ## Output Contract
 
@@ -71,13 +46,16 @@ Recommended default:
 - Optional `## Requested Information` appears only when `--request-additional` is provided.
 - Output is extraction-only.
 
-## Operator Config
+## For Codex Config Orchestrator
 
-Managed via `~/.codex/skills/command-parser/.env`:
-- `COMMAND_PARSER_IMAGE` (default `command-parser:0.110.0`)
-- `COMMAND_PARSER_CODEX_VERSION` (default `0.110.0`)
-- `COMMAND_PARSER_PROFILE`
-- `COMMAND_PARSER_WARNINGS`
-- `COMMAND_PARSER_ADDITIONAL_REQUEST`
-
-Agents should not edit operator config unless explicitly instructed by the user.
+- Important files:
+  - skill doc: `~/.codex/skills/command-parser/SKILL.md`
+  - rule file: `~/.codex/skills/command-parser/command-parser.rule`
+  - wrapper script: `~/.codex/skills/command-parser/scripts/command-parser`
+  - build script: `~/.codex/skills/command-parser/scripts/build-command-parser-image`
+  - operator config: `~/.codex/skills/command-parser/.env`
+  - MCP server: `~/.codex/mcp/command-parser/src/command_parser_mcp/server.py`
+- Profile changes are allowed only if you receive rate limit reports.
+- In that case, you may switch to the other non-local profile in `~/.codex/skills/command-parser/.env`.
+- Otherwise the profile stays on spark.
+- Only the operator may change the delay setting. Do not touch it.

@@ -1,6 +1,6 @@
 ---
 name: end-turn
-description: Read at the end of every turn. Before git ops, enforce final validation and handoff discipline. [skill-hash:8c2d1f0]
+description: Read at the end of every turn. Before git ops, enforce final validation and handoff discipline. Project-specific end-of-turn validation workflows take precedence when provided. [skill-hash:5ae3c94]
 ---
 
 # End Turn
@@ -10,10 +10,13 @@ Read this at the end of each turn.
 ## Before Git Ops, Read This
 
 1. Ensure required validation for touched files has actually run and passed.
-2. If any required check failed or was blocked, stop and report exact command + exact failure.
-3. If command output was noisy, provide concise extracted results (not raw dumps).
-4. If review is required, use `$request-review` before publish/merge steps.
-5. Do not proceed with git publish/cleanup until validation status is explicit.
+2. If the project has a special process for static code validation or end-of-turn proof, prefer that over running direct commands.
+3. If a required check failed with no useful information, or it clearly failed because of a tooling problem, stop and report the exact command + exact failure.
+4. Otherwise, fix the reported errors and restart the end-of-turn process.
+5. Assume reviews are required unless told explicitly otherwise. Use `$request-review` before publish/merge steps.
+  - Exception: doc-only updates do not require a review. Working code executed by a machine is the primary review target.
+  - This is not the same as an Orchestrator review which happens before merge.
+6. Do not proceed with git publish/cleanup until validation status is explicit.
 
 ## Handoff Rules
 
