@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import os
 import tempfile
@@ -1159,9 +1158,8 @@ class RobdexThreadGroupTests(unittest.TestCase):
     def setUp(self) -> None:
         server.SESSION_THREAD_LOCKS.clear()
 
-    def test_create_thread_group_detaches_seed_thread_from_existing_group(self) -> None:
-        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
-        resolved_context = server.Context(
+    def _resolved_context(self, project_path: str) -> server.Context:
+        return server.Context(
             host="127.0.0.1",
             port=42080,
             token=None,
@@ -1172,26 +1170,94 @@ class RobdexThreadGroupTests(unittest.TestCase):
             titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
             orchestrator_by_project={project_path: "orch-ezra"},
         )
-        initial_payload = {
-            "threadGroupsByProjectPath": {
-                project_path: [
-                    {
-                        "id": "group-existing",
-                        "title": "Existing",
-                        "threadIDs": ["thread-1"],
-                        "isCollapsed": False,
-                        "createdAt": 1.0,
-                        "updatedAt": 1.0,
-                    }
-                ]
-            }
-        }
-        writes: list[dict] = []
+
+    def test_list_thread_groups_reads_bridge_contract(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = self._resolved_context(project_path)
+        requests: list[dict] = []
 
         with (
             patch.object(server, "_resolve_context", return_value=resolved_context),
-            patch.object(server, "_load_state_payload", side_effect=lambda: copy.deepcopy(initial_payload)),
-            patch.object(server, "_write_state_payload", side_effect=writes.append),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(
+                    {"host": host, "port": port, "token": token, **kwargs}
+                )
+                or {
+                    "projectPath": project_path,
+                    "items": [
+                        {
+                            "id": "group-existing",
+                            "title": "Existing",
+                            "threadIDs": ["thread-1"],
+                            "isCollapsed": False,
+                            "createdAt": 1.0,
+                            "updatedAt": 1.0,
+                        }
+                    ],
+                },
+            ),
+        ):
+            result = server.robdex_list_thread_groups(
+                from_thread_id="orch-ezra",
+                ctx=None,
+            )
+
+        self.assertEqual(result, '"Existing" (group-existing) | expanded; threads=thread-1')
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "host": "127.0.0.1",
+                    "port": 42080,
+                    "token": None,
+                    "method": "GET",
+                    "path": "/orchestrator/thread-groups",
+                    "query": {
+                        "senderThreadId": "orch-ezra",
+                        "projectPath": project_path,
+                    },
+                }
+            ],
+        )
+
+    def test_create_thread_group_posts_bridge_contract(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = self._resolved_context(project_path)
+        requests: list[dict] = []
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(
+                    {"host": host, "port": port, "token": token, **kwargs}
+                )
+                or {
+                    "projectPath": project_path,
+                    "items": [
+                        {
+                            "id": "group-existing",
+                            "title": "Existing",
+                            "threadIDs": [],
+                            "isCollapsed": False,
+                            "createdAt": 1.0,
+                            "updatedAt": 2.0,
+                        },
+                        {
+                            "id": "group-created",
+                            "title": "API Cleanup",
+                            "threadIDs": ["thread-1"],
+                            "isCollapsed": False,
+                            "createdAt": 2.0,
+                            "updatedAt": 2.0,
+                        },
+                    ],
+                    "changedGroupId": "group-created",
+                },
+            ),
         ):
             result = server.robdex_create_thread_group(
                 from_thread_id="orch-ezra",
@@ -1200,55 +1266,120 @@ class RobdexThreadGroupTests(unittest.TestCase):
                 ctx=None,
             )
 
-        self.assertIn("Created", result)
-        written_groups = writes[-1]["threadGroupsByProjectPath"][project_path]
-        existing_group = next(group for group in written_groups if group["id"] == "group-existing")
-        created_group = next(group for group in written_groups if group["id"] != "group-existing")
-        self.assertEqual(existing_group["threadIDs"], [])
-        self.assertEqual(created_group["title"], "API Cleanup")
-        self.assertEqual(created_group["threadIDs"], ["thread-1"])
-
-    def test_move_thread_to_group_keeps_single_group_membership(self) -> None:
-        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
-        resolved_context = server.Context(
-            host="127.0.0.1",
-            port=42080,
-            token=None,
-            instance_id="mgmt-global",
-            current_thread_id="orch-ezra",
-            current_project_path=project_path,
-            current_is_orchestrator=True,
-            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
-            orchestrator_by_project={project_path: "orch-ezra"},
+        self.assertEqual(result, 'Created "API Cleanup" (group-created) | expanded; threads=thread-1')
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "host": "127.0.0.1",
+                    "port": 42080,
+                    "token": None,
+                    "method": "POST",
+                    "path": "/orchestrator/thread-groups/create",
+                    "body": {
+                        "senderThreadId": "orch-ezra",
+                        "projectPath": project_path,
+                        "title": "API Cleanup",
+                        "seedThreadId": "thread-1",
+                    },
+                }
+            ],
         )
-        initial_payload = {
-            "threadGroupsByProjectPath": {
-                project_path: [
-                    {
-                        "id": "group-a",
-                        "title": "Group A",
-                        "threadIDs": ["thread-1"],
-                        "isCollapsed": False,
-                        "createdAt": 1.0,
-                        "updatedAt": 1.0,
-                    },
-                    {
-                        "id": "group-b",
-                        "title": "Group B",
-                        "threadIDs": [],
-                        "isCollapsed": False,
-                        "createdAt": 2.0,
-                        "updatedAt": 2.0,
-                    },
-                ]
-            }
-        }
-        writes: list[dict] = []
+
+    def test_update_thread_group_posts_bridge_contract(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = self._resolved_context(project_path)
+        requests: list[dict] = []
 
         with (
             patch.object(server, "_resolve_context", return_value=resolved_context),
-            patch.object(server, "_load_state_payload", side_effect=lambda: copy.deepcopy(initial_payload)),
-            patch.object(server, "_write_state_payload", side_effect=writes.append),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(
+                    {"host": host, "port": port, "token": token, **kwargs}
+                )
+                or {
+                    "projectPath": project_path,
+                    "items": [
+                        {
+                            "id": "group-1",
+                            "title": "Renamed",
+                            "threadIDs": ["thread-1"],
+                            "isCollapsed": True,
+                            "createdAt": 1.0,
+                            "updatedAt": 3.0,
+                        }
+                    ],
+                    "changedGroupId": "group-1",
+                },
+            ),
+        ):
+            result = server.robdex_update_thread_group(
+                from_thread_id="orch-ezra",
+                group_id="group-1",
+                title="Renamed",
+                is_collapsed=True,
+                ctx=None,
+            )
+
+        self.assertEqual(result, 'Updated "Renamed" (group-1) | collapsed; threads=thread-1')
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "host": "127.0.0.1",
+                    "port": 42080,
+                    "token": None,
+                    "method": "POST",
+                    "path": "/orchestrator/thread-groups/update",
+                    "body": {
+                        "senderThreadId": "orch-ezra",
+                        "projectPath": project_path,
+                        "groupId": "group-1",
+                        "title": "Renamed",
+                        "collapsed": True,
+                    },
+                }
+            ],
+        )
+
+    def test_move_thread_to_group_posts_bridge_contract(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = self._resolved_context(project_path)
+        requests: list[dict] = []
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(
+                    {"host": host, "port": port, "token": token, **kwargs}
+                )
+                or {
+                    "projectPath": project_path,
+                    "items": [
+                        {
+                            "id": "group-a",
+                            "title": "Group A",
+                            "threadIDs": [],
+                            "isCollapsed": False,
+                            "createdAt": 1.0,
+                            "updatedAt": 4.0,
+                        },
+                        {
+                            "id": "group-b",
+                            "title": "Group B",
+                            "threadIDs": ["thread-1"],
+                            "isCollapsed": False,
+                            "createdAt": 2.0,
+                            "updatedAt": 4.0,
+                        },
+                    ],
+                    "changedGroupId": "group-b",
+                },
+            ),
         ):
             result = server.robdex_move_thread_to_group(
                 from_thread_id="orch-ezra",
@@ -1257,27 +1388,153 @@ class RobdexThreadGroupTests(unittest.TestCase):
                 ctx=None,
             )
 
-        self.assertIn("group-b", result)
-        written_groups = writes[-1]["threadGroupsByProjectPath"][project_path]
-        group_a = next(group for group in written_groups if group["id"] == "group-a")
-        group_b = next(group for group in written_groups if group["id"] == "group-b")
-        self.assertEqual(group_a["threadIDs"], [])
-        self.assertEqual(group_b["threadIDs"], ["thread-1"])
+        self.assertEqual(result, "Moved thread-1 to thread group group-b")
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "host": "127.0.0.1",
+                    "port": 42080,
+                    "token": None,
+                    "method": "POST",
+                    "path": "/orchestrator/thread-groups/move-thread",
+                    "body": {
+                        "senderThreadId": "orch-ezra",
+                        "projectPath": project_path,
+                        "threadId": "thread-1",
+                        "targetGroupId": "group-b",
+                    },
+                }
+            ],
+        )
+
+    def test_remove_thread_from_group_sends_null_target_group_id(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = self._resolved_context(project_path)
+        requests: list[dict] = []
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(
+                    {"host": host, "port": port, "token": token, **kwargs}
+                )
+                or {
+                    "projectPath": project_path,
+                    "items": [
+                        {
+                            "id": "group-a",
+                            "title": "Group A",
+                            "threadIDs": [],
+                            "isCollapsed": False,
+                            "createdAt": 1.0,
+                            "updatedAt": 5.0,
+                        }
+                    ],
+                    "changedGroupId": None,
+                },
+            ),
+        ):
+            result = server.robdex_move_thread_to_group(
+                from_thread_id="orch-ezra",
+                thread_id="thread-1",
+                group_id=None,
+                ctx=None,
+            )
+
+        self.assertEqual(result, f"Removed thread-1 from any thread group in {project_path}")
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "host": "127.0.0.1",
+                    "port": 42080,
+                    "token": None,
+                    "method": "POST",
+                    "path": "/orchestrator/thread-groups/move-thread",
+                    "body": {
+                        "senderThreadId": "orch-ezra",
+                        "projectPath": project_path,
+                        "threadId": "thread-1",
+                        "targetGroupId": None,
+                    },
+                }
+            ],
+        )
+
+    def test_delete_thread_group_posts_bridge_contract(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = self._resolved_context(project_path)
+        requests: list[dict] = []
+
+        def fake_http_json_request(host: str, port: int, token: str | None, **kwargs):
+            requests.append({"host": host, "port": port, "token": token, **kwargs})
+            if kwargs["method"] == "GET":
+                return {
+                    "projectPath": project_path,
+                    "items": [
+                        {
+                            "id": "group-1",
+                            "title": "Delete Me",
+                            "threadIDs": ["thread-1"],
+                            "isCollapsed": False,
+                            "createdAt": 1.0,
+                            "updatedAt": 1.0,
+                        }
+                    ],
+                }
+            return {
+                "projectPath": project_path,
+                "items": [],
+                "changedGroupId": "group-1",
+            }
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_http_json_request", side_effect=fake_http_json_request),
+        ):
+            result = server.robdex_delete_thread_group(
+                from_thread_id="orch-ezra",
+                group_id="group-1",
+                ctx=None,
+            )
+
+        self.assertEqual(result, 'Deleted "Delete Me" (group-1)')
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "host": "127.0.0.1",
+                    "port": 42080,
+                    "token": None,
+                    "method": "GET",
+                    "path": "/orchestrator/thread-groups",
+                    "query": {
+                        "senderThreadId": "orch-ezra",
+                        "projectPath": project_path,
+                    },
+                },
+                {
+                    "host": "127.0.0.1",
+                    "port": 42080,
+                    "token": None,
+                    "method": "POST",
+                    "path": "/orchestrator/thread-groups/delete",
+                    "body": {
+                        "senderThreadId": "orch-ezra",
+                        "projectPath": project_path,
+                        "groupId": "group-1",
+                    },
+                },
+            ],
+        )
 
     def test_archive_thread_group_archives_only_active_same_project_threads(self) -> None:
         project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
         other_project_path = server._normalized_path("/tmp/other") or "/tmp/other"
-        resolved_context = server.Context(
-            host="127.0.0.1",
-            port=42080,
-            token=None,
-            instance_id="mgmt-global",
-            current_thread_id="orch-ezra",
-            current_project_path=project_path,
-            current_is_orchestrator=True,
-            titles_by_thread_id={"orch-ezra": "Ezra Orchestrator"},
-            orchestrator_by_project={project_path: "orch-ezra"},
-        )
+        resolved_context = self._resolved_context(project_path)
         active_thread = server.ThreadEntry(
             id="active-thread",
             cwd="/tmp/ezra/active",
@@ -1308,18 +1565,19 @@ class RobdexThreadGroupTests(unittest.TestCase):
             patch.object(server, "_resolve_context", return_value=resolved_context),
             patch.object(
                 server,
-                "_load_thread_groups_by_project",
+                "_http_json_request",
                 return_value={
-                    project_path: [
-                        server.ThreadGroupEntry(
-                            id="group-1",
-                            title="Hotfixes",
-                            thread_ids=["active-thread", "archived-thread", "foreign-thread", "missing-thread"],
-                            is_collapsed=False,
-                            created_at=1.0,
-                            updated_at=1.0,
-                        )
-                    ]
+                    "projectPath": project_path,
+                    "items": [
+                        {
+                            "id": "group-1",
+                            "title": "Hotfixes",
+                            "threadIDs": ["active-thread", "archived-thread", "foreign-thread", "missing-thread"],
+                            "isCollapsed": False,
+                            "createdAt": 1.0,
+                            "updatedAt": 1.0,
+                        }
+                    ],
                 },
             ),
             patch.object(server, "_list_threads", side_effect=[[active_thread, foreign_thread], [archived_thread]]),

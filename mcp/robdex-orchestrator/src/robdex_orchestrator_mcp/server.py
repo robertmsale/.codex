@@ -438,48 +438,58 @@ def _sort_thread_groups(groups: list[ThreadGroupEntry]) -> list[ThreadGroupEntry
     )
 
 
-def _load_thread_groups_by_project() -> dict[str, list[ThreadGroupEntry]]:
-    payload = _load_state_payload()
-    raw_groups_by_project = payload.get("threadGroupsByProjectPath")
-    if not isinstance(raw_groups_by_project, dict):
-        return {}
-
-    result: dict[str, list[ThreadGroupEntry]] = {}
-    for raw_project_path, raw_groups in raw_groups_by_project.items():
-        project_path = _normalized_path(str(raw_project_path))
-        if not project_path or not isinstance(raw_groups, list):
-            continue
-        groups = [group for group in (_normalized_thread_group(entry) for entry in raw_groups) if group]
-        if groups:
-            result[project_path] = _sort_thread_groups(groups)
-    return result
+@dataclass(frozen=True)
+class ThreadGroupMutationResult:
+    project_path: str | None
+    items: list[ThreadGroupEntry]
+    changed_group_id: str | None
 
 
-def _write_thread_groups_by_project(groups_by_project: dict[str, list[ThreadGroupEntry]]) -> None:
-    def apply_updates(payload: dict[str, Any]) -> None:
-        serialized: dict[str, list[dict[str, Any]]] = {}
-        for project_path, groups in groups_by_project.items():
-            normalized_project_path = _normalized_path(project_path)
-            if not normalized_project_path or not groups:
-                continue
-            serialized[normalized_project_path] = [
-                {
-                    "id": group.id,
-                    "title": group.title,
-                    "threadIDs": group.thread_ids,
-                    "isCollapsed": group.is_collapsed,
-                    "createdAt": group.created_at,
-                    "updatedAt": group.updated_at,
-                }
-                for group in _sort_thread_groups(groups)
-            ]
+def _parse_thread_group_items(payload: dict[str, Any], *, action: str) -> list[ThreadGroupEntry]:
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        raise BridgeError(f"Bridge {action} payload missing items list")
+    return _sort_thread_groups(
+        [group for group in (_normalized_thread_group(entry) for entry in raw_items) if group]
+    )
 
-        if serialized:
-            payload["threadGroupsByProjectPath"] = serialized
-        else:
-            payload.pop("threadGroupsByProjectPath", None)
 
-    _mutate_state_payload(apply_updates)
+def _load_thread_groups(ctx: Context, *, project_path: str | None) -> tuple[str | None, list[ThreadGroupEntry]]:
+    query = {"senderThreadId": ctx.current_thread_id or ""}
+    if project_path:
+        query["projectPath"] = project_path
+    payload = _http_json_request(
+        ctx.host,
+        ctx.port,
+        ctx.token,
+        method="GET",
+        path="/orchestrator/thread-groups",
+        query=query,
+    )
+    resolved_project_path = _normalized_path(payload.get("projectPath")) or project_path
+    return resolved_project_path, _parse_thread_group_items(payload, action="thread-groups list")
+
+
+def _mutate_thread_groups(
+    ctx: Context,
+    *,
+    path: str,
+    body: dict[str, Any],
+    action: str,
+) -> ThreadGroupMutationResult:
+    payload = _http_json_request(
+        ctx.host,
+        ctx.port,
+        ctx.token,
+        method="POST",
+        path=path,
+        body=body,
+    )
+    return ThreadGroupMutationResult(
+        project_path=_normalized_path(payload.get("projectPath")),
+        items=_parse_thread_group_items(payload, action=action),
+        changed_group_id=_normalize_text(payload.get("changedGroupId")),
+    )
 
 
 def _resolve_session_thread_id(
@@ -1518,7 +1528,7 @@ def robdex_list_thread_groups(
     """List persisted thread groups for a project."""
     resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
     target_project = _resolve_group_project_scope(resolved_context, project_path, "list thread groups")
-    groups = _load_thread_groups_by_project().get(target_project, [])
+    _, groups = _load_thread_groups(resolved_context, project_path=target_project)
     if not groups:
         return "(no thread groups)"
     return "\n".join(_format_thread_group_line(group) for group in groups)
@@ -1539,34 +1549,21 @@ def robdex_create_thread_group(
     if not title_value:
         raise BridgeError("title is required")
 
-    seed_thread_id_value = _normalize_text(seed_thread_id)
-    groups_by_project = _load_thread_groups_by_project()
-    groups = list(groups_by_project.get(target_project, []))
-    if seed_thread_id_value:
-        now = time.time()
-        for index, group in enumerate(groups):
-            if seed_thread_id_value in group.thread_ids:
-                groups[index] = ThreadGroupEntry(
-                    id=group.id,
-                    title=group.title,
-                    thread_ids=[thread_id for thread_id in group.thread_ids if thread_id != seed_thread_id_value],
-                    is_collapsed=group.is_collapsed,
-                    created_at=group.created_at,
-                    updated_at=now,
-                )
-
-    now = time.time()
-    group = ThreadGroupEntry(
-        id=str(uuid.uuid4()),
-        title=title_value,
-        thread_ids=[seed_thread_id_value] if seed_thread_id_value else [],
-        is_collapsed=False,
-        created_at=now,
-        updated_at=now,
+    result = _mutate_thread_groups(
+        resolved_context,
+        path="/orchestrator/thread-groups/create",
+        action="thread-groups create",
+        body={
+            "senderThreadId": resolved_context.current_thread_id or "",
+            "projectPath": target_project,
+            "title": title_value,
+            "seedThreadId": _normalize_text(seed_thread_id),
+        },
     )
-    groups.append(group)
-    groups_by_project[target_project] = _sort_thread_groups(groups)
-    _write_thread_groups_by_project(groups_by_project)
+    changed_group_id = result.changed_group_id
+    if not changed_group_id:
+        raise BridgeError("Bridge create thread group response missing changedGroupId")
+    _, group = _require_thread_group(result.items, changed_group_id, action="create")
     return f"Created {_format_thread_group_line(group)}"
 
 
@@ -1584,31 +1581,27 @@ def robdex_update_thread_group(
     target_project = _resolve_group_project_scope(resolved_context, project_path, "update thread groups")
     if title is None and is_collapsed is None:
         raise BridgeError("Provide at least one of title or collapsed state to update.")
-    groups_by_project = _load_thread_groups_by_project()
-    groups = list(groups_by_project.get(target_project, []))
-    index, current_group = _require_thread_group(groups, group_id, action="update")
-
-    next_title = current_group.title
-    next_updated_at = current_group.updated_at
+    title_value = None
     if title is not None:
-        next_title_value = _normalize_text(title)
-        if not next_title_value:
+        title_value = _normalize_text(title)
+        if not title_value:
             raise BridgeError("title cannot be empty")
-        next_title = next_title_value
-        next_updated_at = time.time()
-
-    next_collapsed = current_group.is_collapsed if is_collapsed is None else bool(is_collapsed)
-    updated_group = ThreadGroupEntry(
-        id=current_group.id,
-        title=next_title,
-        thread_ids=list(current_group.thread_ids),
-        is_collapsed=next_collapsed,
-        created_at=current_group.created_at,
-        updated_at=next_updated_at,
+    result = _mutate_thread_groups(
+        resolved_context,
+        path="/orchestrator/thread-groups/update",
+        action="thread-groups update",
+        body={
+            "senderThreadId": resolved_context.current_thread_id or "",
+            "projectPath": target_project,
+            "groupId": _normalize_text(group_id),
+            "title": title_value,
+            "collapsed": is_collapsed,
+        },
     )
-    groups[index] = updated_group
-    groups_by_project[target_project] = _sort_thread_groups(groups)
-    _write_thread_groups_by_project(groups_by_project)
+    changed_group_id = result.changed_group_id
+    if not changed_group_id:
+        raise BridgeError("Bridge update thread group response missing changedGroupId")
+    _, updated_group = _require_thread_group(result.items, changed_group_id, action="update")
     return f"Updated {_format_thread_group_line(updated_group)}"
 
 
@@ -1626,43 +1619,21 @@ def robdex_move_thread_to_group(
     thread_id_value = _normalize_text(thread_id)
     if not thread_id_value:
         raise BridgeError("thread_id is required")
-
-    groups_by_project = _load_thread_groups_by_project()
-    groups = list(groups_by_project.get(target_project, []))
-    target_index: int | None = None
-    if group_id is not None:
-        target_index, _ = _require_thread_group(groups, group_id, action="move")
-
-    now = time.time()
-    for index, group in enumerate(groups):
-        if thread_id_value in group.thread_ids:
-            groups[index] = ThreadGroupEntry(
-                id=group.id,
-                title=group.title,
-                thread_ids=[entry for entry in group.thread_ids if entry != thread_id_value],
-                is_collapsed=group.is_collapsed,
-                created_at=group.created_at,
-                updated_at=now,
-            )
-
-    destination_group_id: str | None = None
-    if target_index is not None:
-        target_group = groups[target_index]
-        destination_group_id = target_group.id
-        groups[target_index] = ThreadGroupEntry(
-            id=target_group.id,
-            title=target_group.title,
-            thread_ids=target_group.thread_ids + [thread_id_value],
-            is_collapsed=target_group.is_collapsed,
-            created_at=target_group.created_at,
-            updated_at=now,
-        )
-
-    groups_by_project[target_project] = _sort_thread_groups(groups)
-    _write_thread_groups_by_project(groups_by_project)
-    if destination_group_id:
-        return f"Moved {thread_id_value} to thread group {destination_group_id}"
-    return f"Removed {thread_id_value} from any thread group in {target_project}"
+    target_group_id = _normalize_text(group_id) if group_id is not None else None
+    result = _mutate_thread_groups(
+        resolved_context,
+        path="/orchestrator/thread-groups/move-thread",
+        action="thread-groups move-thread",
+        body={
+            "senderThreadId": resolved_context.current_thread_id or "",
+            "projectPath": target_project,
+            "threadId": thread_id_value,
+            "targetGroupId": target_group_id,
+        },
+    )
+    if target_group_id:
+        return f"Moved {thread_id_value} to thread group {target_group_id}"
+    return f"Removed {thread_id_value} from any thread group in {result.project_path or target_project}"
 
 
 @mcp.tool
@@ -1675,15 +1646,18 @@ def robdex_delete_thread_group(
     """Delete a thread group from a project."""
     resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
     target_project = _resolve_group_project_scope(resolved_context, project_path, "delete thread groups")
-    groups_by_project = _load_thread_groups_by_project()
-    groups = list(groups_by_project.get(target_project, []))
+    _, groups = _load_thread_groups(resolved_context, project_path=target_project)
     _, group = _require_thread_group(groups, group_id, action="delete")
-    remaining_groups = [entry for entry in groups if entry.id != group.id]
-    if remaining_groups:
-        groups_by_project[target_project] = _sort_thread_groups(remaining_groups)
-    else:
-        groups_by_project.pop(target_project, None)
-    _write_thread_groups_by_project(groups_by_project)
+    _mutate_thread_groups(
+        resolved_context,
+        path="/orchestrator/thread-groups/delete",
+        action="thread-groups delete",
+        body={
+            "senderThreadId": resolved_context.current_thread_id or "",
+            "projectPath": target_project,
+            "groupId": group.id,
+        },
+    )
     return f"Deleted {_quoted(group.title)} ({group.id})"
 
 
@@ -1697,7 +1671,7 @@ def robdex_archive_thread_group(
     """Archive all active same-project threads in a thread group."""
     resolved_context = _resolve_context(from_thread_id=from_thread_id, tool_context=ctx)
     target_project = _resolve_group_project_scope(resolved_context, project_path, "archive thread groups")
-    groups = _load_thread_groups_by_project().get(target_project, [])
+    _, groups = _load_thread_groups(resolved_context, project_path=target_project)
     _, group = _require_thread_group(groups, group_id, action="archive")
 
     active_threads = _list_threads(resolved_context, archived=False, include_hidden=True)
