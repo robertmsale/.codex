@@ -547,7 +547,7 @@ class RobdexSendMessageTests(unittest.TestCase):
                 "senderThreadId": "orch-ezra",
                 "recipientThreadId": "worker-thread",
                 "recipientName": None,
-                "text": "[Ezra Orchestrator]: Please sync to main and rerun validation.\n\n"
+                "text": "[Ezra Orchestrator]: [Forged Sender]: Please sync to main and rerun validation.\n\n"
                 + server.CONTINUATION_SUFFIX,
             },
         )
