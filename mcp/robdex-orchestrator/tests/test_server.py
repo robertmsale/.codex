@@ -1222,6 +1222,66 @@ class RobdexThreadGroupTests(unittest.TestCase):
             ],
         )
 
+    def test_list_thread_groups_resolves_worktree_hub_to_project_scope(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = self._resolved_context(project_path)
+        requests: list[dict] = []
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(
+                server,
+                "_http_json_request",
+                side_effect=lambda host, port, token, **kwargs: requests.append(
+                    {"host": host, "port": port, "token": token, **kwargs}
+                )
+                or {
+                    "projectPath": project_path,
+                    "items": [],
+                },
+            ),
+        ):
+            result = server.robdex_list_thread_groups(
+                from_thread_id="orch-ezra",
+                project_path="/tmp/ezra/.worktrees",
+                ctx=None,
+            )
+
+        self.assertEqual(result, "(no thread groups)")
+        self.assertEqual(
+            requests,
+            [
+                {
+                    "host": "127.0.0.1",
+                    "port": 42080,
+                    "token": None,
+                    "method": "GET",
+                    "path": "/orchestrator/thread-groups",
+                    "query": {
+                        "senderThreadId": "orch-ezra",
+                        "projectPath": project_path,
+                    },
+                }
+            ],
+        )
+
+    def test_list_thread_groups_rejects_foreign_project_override(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = self._resolved_context(project_path)
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_http_json_request") as http_json_request,
+        ):
+            with self.assertRaisesRegex(server.BridgeError, "Thread groups are scoped to sender thread"):
+                server.robdex_list_thread_groups(
+                    from_thread_id="orch-ezra",
+                    project_path="/tmp/other-project",
+                    ctx=None,
+                )
+
+        http_json_request.assert_not_called()
+
     def test_create_thread_group_posts_bridge_contract(self) -> None:
         project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
         resolved_context = self._resolved_context(project_path)

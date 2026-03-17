@@ -1202,10 +1202,15 @@ def _resolve_project_scope(ctx: Context, requested_project_path: str | None) -> 
 
 
 def _resolve_group_project_scope(ctx: Context, requested_project_path: str | None, action: str) -> str:
-    target_project = _resolve_project_scope(ctx, requested_project_path)
+    target_project = ctx.current_project_path
     _ensure_orchestrator_for_project(ctx, target_project, action)
     if not target_project:
         raise BridgeError(f"Unable to resolve target project for {action}.")
+    requested_project = _normalized_path(requested_project_path)
+    if requested_project and not _path_is_within_project(requested_project, target_project):
+        raise BridgeError(
+            f"Thread groups are scoped to sender thread `{ctx.current_thread_id or 'unknown'}` project `{target_project}`."
+        )
     return target_project
 
 
