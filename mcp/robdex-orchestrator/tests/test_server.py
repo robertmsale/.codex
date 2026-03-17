@@ -1464,6 +1464,24 @@ class RobdexThreadGroupTests(unittest.TestCase):
             ],
         )
 
+    def test_move_thread_to_group_rejects_explicit_empty_group_id(self) -> None:
+        project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
+        resolved_context = self._resolved_context(project_path)
+
+        with (
+            patch.object(server, "_resolve_context", return_value=resolved_context),
+            patch.object(server, "_http_json_request") as http_json_request,
+        ):
+            with self.assertRaisesRegex(server.BridgeError, "group_id is required"):
+                server.robdex_move_thread_to_group(
+                    from_thread_id="orch-ezra",
+                    thread_id="thread-1",
+                    group_id="   ",
+                    ctx=None,
+                )
+
+        http_json_request.assert_not_called()
+
     def test_delete_thread_group_posts_bridge_contract(self) -> None:
         project_path = server._normalized_path("/tmp/ezra") or "/tmp/ezra"
         resolved_context = self._resolved_context(project_path)

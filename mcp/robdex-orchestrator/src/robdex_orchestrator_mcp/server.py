@@ -1619,7 +1619,11 @@ def robdex_move_thread_to_group(
     thread_id_value = _normalize_text(thread_id)
     if not thread_id_value:
         raise BridgeError("thread_id is required")
-    target_group_id = _normalize_text(group_id) if group_id is not None else None
+    target_group_id = None
+    if group_id is not None:
+        target_group_id = _normalize_text(group_id)
+        if target_group_id is None:
+            raise BridgeError("group_id is required")
     result = _mutate_thread_groups(
         resolved_context,
         path="/orchestrator/thread-groups/move-thread",
