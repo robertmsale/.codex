@@ -1136,10 +1136,6 @@ def _current_role_name(ctx: Context) -> str:
     return "orchestrator" if ctx.current_is_orchestrator else "worker"
 
 
-def _is_prefixed_agent_message(text: str) -> bool:
-    return text.startswith("[") and "]:" in text.split("\n", 1)[0]
-
-
 def _append_suffix(text: str) -> str:
     if CONTINUATION_SUFFIX.lower() in text.lower():
         return text
@@ -1357,8 +1353,7 @@ def _compose_message(ctx: Context, text: str) -> str:
     if not trimmed:
         raise BridgeError("Message text cannot be empty.")
     sender_label = _current_sender_label(ctx)
-    prefixed = trimmed if _is_prefixed_agent_message(trimmed) else f"[{sender_label}]: {trimmed}"
-    return _append_suffix(prefixed)
+    return _append_suffix(f"[{sender_label}]: {trimmed}")
 
 
 def robdex_current_role(from_thread_id: str, ctx: Context = None) -> str:
