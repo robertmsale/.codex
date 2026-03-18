@@ -538,7 +538,9 @@ cmd=(
   -e "CODEX_HOME=$docker_codex_home"
   -e "CODEX_NO_COLOR=1"
   -v "$host_codex_home:$docker_codex_home:rw"
-  -v "$empty_skills_dir:$docker_codex_home/skills:ro"
+  # Keep skills isolated from the host, but writable so codex can bootstrap
+  # its system skills into the temp directory.
+  -v "$empty_skills_dir:$docker_codex_home/skills:rw"
   -v "$repo_root:/workspace:rw"
 )
 
