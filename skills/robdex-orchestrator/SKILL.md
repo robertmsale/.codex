@@ -20,7 +20,6 @@ Do not preload both role files just to figure out which one applies.
 
 - Use: `~/.codex/skills/robdex-orchestrator/scripts/robdex ...`
 - Use: `~/.codex/skills/robdex-orchestrator/scripts/robdex-role-instructions`
-- Do not call Robdex MCP tools directly for normal orchestration.
 
 ## Shared Commands
 

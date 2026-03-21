@@ -10,7 +10,6 @@ Read this at the start of each turn.
 ## Required Path
 
 - Run: `~/.codex/skills/start-turn/scripts/start-turn-role-instructions`
-- Load the worker or orchestrator instructions for this turn before proceeding.
 
 ## Shared Guardrails
 

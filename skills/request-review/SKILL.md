@@ -1,6 +1,6 @@
 ---
 name: request-review
-description: Use `scripts/request-review` for review-gated work. First run `scripts/request-review-role-instructions` so the current thread loads only the worker or orchestrator guidance it actually needs. MUST USE $command-execution SKILL WITH THIS PROCESS. [skill-hash:6db4f7e]
+description: Use `scripts/request-review` for review-gated work. First run `scripts/request-review-role-instructions` so the current thread loads only the worker or orchestrator guidance it actually needs. MUST USE $command-execution SKILL WITH THIS PROCESS. [skill-hash:91e3b8c]
 ---
 
 # Request Review
@@ -13,8 +13,7 @@ Role-specific guidance lives in the matching role file.
 - Run: `~/.codex/skills/request-review/scripts/request-review-role-instructions`
 - Run: `~/.codex/skills/request-review/scripts/request-review "<commit message>"`
 - Use the shared `~/.codex` script path shown here. Do not rewrite it to a worktree-local `.codex/...` path unless a project-local skill explicitly requires a repo-local wrapper.
-
-Everything else is role-specific. Load the current role instructions before proceeding.
+- Everything else is role-specific. Load the current role instructions before proceeding.
 
 ## Guardrails
 

@@ -1,36 +1,31 @@
 ---
 name: command-execution
-description: Every command execution yields a stable `job_id`; if command completion is not immediate, wait with MCP `command_execution_wait(job_id)`. MANDATORY, MUST ALWAYS USE THIS. [skill-hash:6a23ba7]
+description: Every command execution yields a stable `job_id`; if command completion is not immediate, wait with MCP `command_execution_wait(job_id)`. When this skill is active, treat its workflow as binding for the rest of the turn. [skill-hash:3a6d8f1]
 ---
 
 # Command Execution
 
-## Purpose
-
 Use this skill for all command execution.
 
-Execution model is simple:
-1. Every command invocation yields a stable `job_id`.
-2. If the command is still running when you regain control, wait on that same
-   ID with MCP `command_execution_wait(job_id)`.
+## Active Override
 
-## Required Rules
+When this skill is active, treat the following as turn-level required behavior:
 
-- Always capture the `job_id` from the `stderr` line:
-  `job_id: <uuid>`.
-- Reuse that `job_id` for waiting and resuming.
-- Do not launch duplicate command runs while an existing run is active.
-- Do not use manual polling loops when `command_execution_wait` is available.
+- Run shell commands only through the command execution path that returns a `job_id`.
+- Capture the `job_id` from every command invocation.
+- If the command is still running when control returns, call `command_execution_wait(job_id=<that_id>)` before doing anything that depends on the result.
+- Do not poll stdin for completion.
+- Do not launch a duplicate run of the same command while the earlier run is still active.
+- Do not report command results until the run has actually completed.
 
-## Workflow
+## Minimal Workflow
 
-1. Run the command normally.
-2. Capture the printed `job_id`.
-3. If completion is not immediate, call:
-   `command_execution_wait(job_id=<that_id>)`.
-4. Continue after waiter returns.
+1. Run the command.
+2. Capture the `job_id`.
+3. If the command did not finish immediately, wait with `command_execution_wait(job_id=<that_id>)`.
+4. Continue only after that run is complete.
 
-## Output Expectations
+## Note
 
-- MCP waiter output is intentionally minimal.
-- Command output comes from the launched command execution path, not from waiter output.
+- Waiter output is intentionally minimal.
+- The real command output comes from the command execution path, not from the waiter.
