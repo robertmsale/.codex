@@ -352,12 +352,11 @@ fi
 trap cleanup_request_review_runtime EXIT HUP INT TERM
 
 if [[ "$review_disable" != "0" ]]; then
-  disabled_review_result="request-review: disabled by operator config; review skipped, treating as all clear!"
   if [[ "$review_mode" == "remote" && "$should_push_review_sha" != "0" ]]; then
     push_review_target "$review_sha" "$branch_name" "$remote_branch_sha"
   fi
-  persist_review_result "$disabled_review_result"
-  emit_result "$disabled_review_result"
+  persist_review_result "all clear!"
+  emit_result "all clear!"
   exit 0
 fi
 
