@@ -1,6 +1,6 @@
 ---
 name: command-parser
-description: Use `~/.codex/skills/command-parser/scripts/command-parser ...` when a command is noisy and you want a compact extraction instead of raw output. The skill is for how and when to use the tool, not how it works internally. [skill-hash:e3f2d4a]
+description: Use `~/.codex/skills/command-parser/scripts/command-parser ...` when a command is noisy and to receive a compact extraction instead of raw output. [skill-hash:f403e5b]
 ---
 
 # Command Parser

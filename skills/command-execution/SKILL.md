@@ -1,6 +1,6 @@
 ---
 name: command-execution
-description: Every command execution yields a stable `job_id`; if command completion is not immediate, wait with MCP `command_execution_wait(job_id)`. When this skill is active, treat its workflow as binding for the rest of the turn. [skill-hash:3a6d8f1]
+description: Every command execution yields a stable `job_id`; if command completion is not immediate, wait with MCP `command_execution_wait(job_id)`. Treat this workflow as binding for the rest of the turn. [skill-hash:4b7e902]
 ---
 
 # Command Execution
@@ -9,9 +9,8 @@ Use this skill for all command execution.
 
 ## Active Override
 
-When this skill is active, treat the following as turn-level required behavior:
+Treat the following as turn-level required behavior:
 
-- Run shell commands only through the command execution path that returns a `job_id`.
 - Capture the `job_id` from every command invocation.
 - If the command is still running when control returns, call `command_execution_wait(job_id=<that_id>)` before doing anything that depends on the result.
 - Do not poll stdin for completion.

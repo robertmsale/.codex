@@ -9,15 +9,6 @@ from pathlib import Path
 from robdex_orchestrator_mcp import server as robdex_server
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-SKILL_DIR = SCRIPT_DIR.parent
-RESOURCE_DIR = SKILL_DIR / "resources"
-ROLE_RESOURCE_NAMES = {
-    "orchestrator": "orchestrator.md",
-    "worker": "worker.md",
-}
-
-
 class _ScriptContext:
     def __init__(self, thread_id: str) -> None:
         self.session_id = f"robdex-script:{thread_id}"
@@ -28,17 +19,6 @@ def _require_thread_id() -> str:
     if not thread_id:
         raise SystemExit("robdex: CODEX_THREAD_ID is required")
     return thread_id
-
-
-def _load_role_instructions(thread_id: str, ctx: _ScriptContext) -> str:
-    role = robdex_server.robdex_current_role(from_thread_id=thread_id, ctx=ctx)
-    resource_name = ROLE_RESOURCE_NAMES.get(role)
-    if not resource_name:
-        raise RuntimeError(f"unsupported Robdex role: {role}")
-    resource_path = RESOURCE_DIR / resource_name
-    if not resource_path.is_file():
-        raise RuntimeError(f"missing role instructions: {resource_path}")
-    return resource_path.read_text(encoding="utf-8").rstrip()
 
 
 def _resolve_text_input(
@@ -72,15 +52,10 @@ def main() -> int:
             "Robdex orchestration CLI. Use it to coordinate workers, bookkeeping, "
             "and reasonable approval-routing/escalation requests."
         ),
-        epilog=(
-            "Run `robdex role-instructions` first when you need the role-specific "
-            "instructions for the current live thread."
-        ),
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("whoami")
-    sub.add_parser("role-instructions")
     sub.add_parser("list-projects")
 
     p_list = sub.add_parser("list-agents")
@@ -170,8 +145,6 @@ def main() -> int:
     try:
         if args.cmd == "whoami":
             out = robdex_server.robdex_whoami(from_thread_id=thread_id, ctx=ctx)
-        elif args.cmd == "role-instructions":
-            out = _load_role_instructions(thread_id, ctx)
         elif args.cmd == "list-projects":
             out = robdex_server.robdex_list_projects(from_thread_id=thread_id, ctx=ctx)
         elif args.cmd == "list-pending-approvals":
