@@ -10,7 +10,7 @@ Use this skill for Robdex-backed communication.
 ## Required Path
 
 - Use: `~/.codex/skills/robdex-orchestrator/scripts/robdex ...`
-- Do not call Robdex MCP tools directly for normal orchestration.
+- `CODEX_THREAD_ID` comes from the app-server environment and is required.
 
 ## Common Commands
 
@@ -41,10 +41,6 @@ Use this skill for Robdex-backed communication.
 
 ## Shared Guardrails
 
-- Keep orchestration within the bridge-authorized project scope.
+- Use the public `robdex` script surface.
 - Bridge-owned authorization decides who can list, message, archive, approve, or mutate bookkeeping state.
-- Use the public `robdex` script surface instead of inventing ad hoc bridge calls.
 - Prefer `--text-file` or `--text-stdin` for shell-sensitive message text.
-- If tooling fails in a non-input way, stop and escalate with the exact command, cwd, and output.
-- When the issue is upstream in Robdex rather than local config, forward it to `Robdex Orchestrator`.
-- Robdex runtime fixes are restart-bound until the app has actually been rebuilt and restarted from the integrated code.

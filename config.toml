@@ -9,7 +9,7 @@
 ###############################################################################
 
 model = "gpt-5.4"
-model_reasoning_effort = "high"
+model_reasoning_effort = "medium"
 background_terminal_max_timeout = 9223372036854775807
 project_root_markers = [".git", ".codex"]
 
@@ -116,6 +116,7 @@ view_image = true               # Handy, obvious
 unified_exec = true             # Enables uncapped command running
 steer = true                    # Enables mid-turn and inter-agent communication, vital feature
 apps = false                    # Need to find use for this (what apps are available/worthy of enablement)
+tui_app_server = true
 memories = false                # Disabled for now, worth considering, requires testing
 #memory_tool = false
 #sqlite = true                  # Potentially default enabled, don't wanna regress

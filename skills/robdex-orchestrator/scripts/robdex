@@ -2,12 +2,4 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-project_dir="${HOME}/.codex/mcp/robdex-orchestrator"
-python_bin="${project_dir}/.venv/bin/python3"
-
-if [[ ! -x "$python_bin" ]]; then
-  echo "robdex: missing virtualenv python at $python_bin" >&2
-  exit 1
-fi
-
-exec "$python_bin" "$script_dir/robdex.py" "$@"
+exec /usr/bin/env python3 "$script_dir/robdex.py" "$@"

@@ -1,24 +1,90 @@
-#!/Users/robertsale/.codex/mcp/robdex-orchestrator/.venv/bin/python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
-
-from robdex_orchestrator_mcp import server as robdex_server
-
-
-class _ScriptContext:
-    def __init__(self, thread_id: str) -> None:
-        self.session_id = f"robdex-script:{thread_id}"
+from typing import Any
 
 
 def _require_thread_id() -> str:
-    thread_id = (os.getenv("CODEX_THREAD_ID") or "").strip()
+    thread_id = os.environ["CODEX_THREAD_ID"].strip()
     if not thread_id:
-        raise SystemExit("robdex: CODEX_THREAD_ID is required")
+        raise SystemExit("robdex: CODEX_THREAD_ID is empty")
     return thread_id
+
+
+def _base_url() -> str:
+    host = (os.getenv("ROBDEX_BRIDGE_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    port = (os.getenv("ROBDEX_BRIDGE_PORT") or "42080").strip() or "42080"
+    return f"http://{host}:{port}"
+
+
+def _normalize_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    return trimmed or None
+
+
+def _normalize_path(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    return str(Path(trimmed).expanduser().resolve(strict=False))
+
+
+def _quoted(value: str) -> str:
+    return json.dumps(value, ensure_ascii=True)
+
+
+def _request_json(
+    method: str,
+    path: str,
+    *,
+    query: dict[str, str] | None = None,
+    body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    url = _base_url() + path
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    data = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        data = json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(request, timeout=30.0) as response:
+            payload = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace").strip()
+        try:
+            parsed = json.loads(detail)
+            if isinstance(parsed, dict) and parsed.get("error"):
+                message = str(parsed["error"]).strip()
+            else:
+                message = detail or f"HTTP {exc.code}"
+        except Exception:
+            message = detail or f"HTTP {exc.code}"
+        raise SystemExit(f"robdex: {message}") from exc
+    except Exception as exc:
+        raise SystemExit(f"robdex: request failed for {method.upper()} {path}: {exc}") from exc
+
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"robdex: invalid JSON response for {method.upper()} {path}") from exc
+    if not isinstance(decoded, dict):
+        raise SystemExit(f"robdex: unexpected response for {method.upper()} {path}")
+    return decoded
 
 
 def _resolve_text_input(
@@ -33,26 +99,352 @@ def _resolve_text_input(
     inline_value = getattr(args, inline_attr)
     if inline_value is not None:
         return inline_value
-
     file_path = getattr(args, file_attr)
     if file_path is not None:
         return Path(file_path).expanduser().read_text(encoding="utf-8")
-
     if getattr(args, stdin_attr):
         return sys.stdin.read()
-
     parser.error(f"{label} input is required")
-    return ""
+    raise AssertionError("unreachable")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        prog="robdex",
-        description=(
-            "Robdex orchestration CLI. Use it to coordinate workers, bookkeeping, "
-            "and reasonable approval-routing/escalation requests."
-        ),
+def _load_snapshot() -> dict[str, Any]:
+    return _request_json("GET", "/state/snapshot")
+
+
+def _list_visible_agents(thread_id: str) -> list[dict[str, Any]]:
+    payload = _request_json(
+        "GET",
+        "/orchestrator/agents",
+        query={"senderThreadId": thread_id, "includeArchived": "0"},
     )
+    items = payload.get("items")
+    return items if isinstance(items, list) else []
+
+
+def _resolve_recipient_for_project_filter(
+    *,
+    thread_id: str,
+    recipient_thread_id: str | None,
+    recipient_name: str | None,
+    project_path: str,
+) -> tuple[str | None, str | None]:
+    agents = _list_visible_agents(thread_id)
+    normalized_project = _normalize_path(project_path)
+    scoped = [item for item in agents if _normalize_path(str(item.get("projectPath") or "")) == normalized_project]
+    if recipient_thread_id:
+        for item in scoped:
+            if str(item.get("id") or "").strip() == recipient_thread_id:
+                return recipient_thread_id, None
+        raise SystemExit(f"robdex: thread not visible in project {_quoted(normalized_project or project_path)}: {recipient_thread_id}")
+    if recipient_name:
+        matches = []
+        lowered = recipient_name.casefold()
+        for item in scoped:
+            display_name = _normalize_text(str(item.get("displayName") or ""))
+            if display_name and display_name.casefold() == lowered:
+                matches.append(item)
+        if not matches:
+            raise SystemExit(f"robdex: no visible thread named {_quoted(recipient_name)} in project {_quoted(normalized_project or project_path)}")
+        if len(matches) > 1:
+            raise SystemExit(f"robdex: multiple visible threads named {_quoted(recipient_name)} in project {_quoted(normalized_project or project_path)}")
+        return str(matches[0].get("id") or "").strip(), None
+    raise SystemExit("robdex: provide to_thread_id or name")
+
+
+def _print_lines(lines: list[str]) -> None:
+    if lines:
+        print("\n".join(lines))
+
+
+def _cmd_whoami(thread_id: str) -> None:
+    payload = _request_json("GET", "/orchestrator/whoami", query={"senderThreadId": thread_id})
+    lines = [
+        f"role={payload.get('role') or 'unknown'}",
+        f"thread_id={payload.get('threadId') or thread_id}",
+    ]
+    display_name = _normalize_text(str(payload.get("displayName") or ""))
+    if display_name:
+        lines.append(f"display_name={display_name}")
+    project_path = _normalize_text(str(payload.get("projectPath") or ""))
+    if project_path:
+        lines.append(f"project_path={project_path}")
+    cwd = _normalize_text(str(payload.get("cwd") or ""))
+    if cwd:
+        lines.append(f"cwd={cwd}")
+    _print_lines(lines)
+
+
+def _cmd_list_projects() -> None:
+    snapshot = _load_snapshot()
+    state = snapshot.get("state")
+    projects = state.get("projects") if isinstance(state, dict) else None
+    if not isinstance(projects, dict) or not projects:
+        return
+    lines: list[str] = []
+    for _, raw in sorted(projects.items(), key=lambda item: str((item[1] or {}).get("name") or item[0]).casefold()):
+        if not isinstance(raw, dict) or raw.get("detached") is True:
+            continue
+        name = _normalize_text(str(raw.get("name") or "")) or "unnamed"
+        root = _normalize_text(str(raw.get("projectRoot") or ""))
+        cwd = _normalize_text(str(raw.get("cwd") or ""))
+        orchestrator = _normalize_text(str(raw.get("orchestratorThreadID") or ""))
+        parts = [name]
+        if root:
+            parts.append(f"root={root}")
+        if cwd:
+            parts.append(f"cwd={cwd}")
+        if orchestrator:
+            parts.append(f"orchestrator={orchestrator}")
+        lines.append(" | ".join(parts))
+    _print_lines(lines)
+
+
+def _cmd_list_agents(thread_id: str, project_path: str | None) -> None:
+    items = _list_visible_agents(thread_id)
+    normalized_project = _normalize_path(project_path)
+    if normalized_project:
+        items = [item for item in items if _normalize_path(str(item.get("projectPath") or "")) == normalized_project]
+    lines: list[str] = []
+    for item in items:
+        agent_id = _normalize_text(str(item.get("id") or "")) or "unknown-thread-id"
+        display_name = _normalize_text(str(item.get("displayName") or "")) or agent_id
+        role = "orchestrator" if bool(item.get("isOrchestrator")) else "worker"
+        status = "running" if bool(item.get("isRunning")) else "idle"
+        parts = [f"{display_name} ({agent_id})", role, status]
+        project = _normalize_text(str(item.get("projectPath") or ""))
+        if project:
+            parts.append(f"project={project}")
+        issue = item.get("issueNumber")
+        if isinstance(issue, int):
+            parts.append(f"issue=#{issue}")
+        pr_number = item.get("pullRequestNumber")
+        if isinstance(pr_number, int):
+            parts.append(f"pr=#{pr_number}")
+        blocked_reason = _normalize_text(str(item.get("blockedReason") or ""))
+        if blocked_reason:
+            blocked = f"blocked={_quoted(blocked_reason)}"
+            unblock_when = _normalize_text(str(item.get("unblockWhen") or ""))
+            if unblock_when:
+                blocked += f" until={_quoted(unblock_when)}"
+            parts.append(blocked)
+        lines.append(" | ".join(parts))
+    _print_lines(lines)
+
+
+def _cmd_list_pending_approvals(thread_id: str) -> None:
+    payload = _request_json("GET", "/orchestrator/pending-approvals", query={"senderThreadId": thread_id})
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return
+    lines: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        approval_id = _normalize_text(str(item.get("id") or "")) or "unknown-approval"
+        kind = _normalize_text(str(item.get("kind") or "")) or "unknown"
+        target_thread = _normalize_text(str(item.get("threadID") or "")) or "unknown-thread-id"
+        title = _normalize_text(str(item.get("title") or "")) or "Pending approval"
+        parts = [approval_id, f"kind={kind}", f"thread={target_thread}", title]
+        command = _normalize_text(str(item.get("command") or ""))
+        if command:
+            parts.append(f"command={_quoted(command)}")
+        command_cwd = _normalize_text(str(item.get("commandCWD") or ""))
+        if command_cwd:
+            parts.append(f"cwd={command_cwd}")
+        lines.append(" | ".join(parts))
+    _print_lines(lines)
+
+
+def _cmd_list_thread_groups(thread_id: str, project_path: str | None) -> None:
+    query = {"senderThreadId": thread_id}
+    normalized_project = _normalize_path(project_path)
+    if normalized_project:
+        query["projectPath"] = normalized_project
+    payload = _request_json("GET", "/orchestrator/thread-groups", query=query)
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return
+    lines: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        group_id = _normalize_text(str(item.get("id") or "")) or "unknown-group-id"
+        title = _normalize_text(str(item.get("title") or "")) or group_id
+        thread_ids = item.get("threadIDs")
+        thread_summary = ", ".join(str(entry).strip() for entry in thread_ids) if isinstance(thread_ids, list) and thread_ids else "(empty)"
+        collapsed = "collapsed" if bool(item.get("isCollapsed")) else "expanded"
+        lines.append(f"{title} ({group_id}) | {collapsed} | threads={thread_summary}")
+    _print_lines(lines)
+
+
+def _print_group_mutation(payload: dict[str, Any]) -> None:
+    project_path = _normalize_text(str(payload.get("projectPath") or ""))
+    changed = _normalize_text(str(payload.get("changedGroupId") or ""))
+    items = payload.get("items")
+    count = len(items) if isinstance(items, list) else 0
+    parts = [f"groups={count}"]
+    if project_path:
+        parts.append(f"project={project_path}")
+    if changed:
+        parts.append(f"changed={changed}")
+    print(" | ".join(parts))
+
+
+def _cmd_spawn_agent(thread_id: str, args: argparse.Namespace) -> None:
+    payload = _request_json(
+        "POST",
+        "/orchestrator/spawn-agent",
+        body={
+            "senderThreadId": thread_id,
+            "name": args.name,
+            "prompt": args.prompt,
+            "cwd": _normalize_path(args.cwd),
+            "issueNumber": args.issue_number,
+        },
+    )
+    agent = payload.get("agent")
+    if not isinstance(agent, dict):
+        raise SystemExit("robdex: spawn-agent response missing agent")
+    display_name = _normalize_text(str(agent.get("displayName") or "")) or args.name
+    spawned_thread_id = _normalize_text(str(agent.get("threadId") or "")) or "no-thread-id"
+    print(f"Spawned {_quoted(display_name)} ({spawned_thread_id})")
+
+
+def _cmd_archive_agent(thread_id: str, args: argparse.Namespace) -> None:
+    payload = _request_json(
+        "POST",
+        "/orchestrator/archive-agent",
+        body={
+            "senderThreadId": thread_id,
+            "recipientThreadId": _normalize_text(args.to_thread_id),
+            "recipientName": _normalize_text(args.name),
+            "projectPath": _normalize_path(args.project_path),
+        },
+    )
+    target_id = _normalize_text(str(payload.get("recipientThreadId") or "")) or "unknown-thread-id"
+    display_name = _normalize_text(str(payload.get("recipientDisplayName") or "")) or target_id
+    status = "Already archived" if bool(payload.get("alreadyArchived")) else "Archived"
+    print(f"{status} {_quoted(display_name)} ({target_id})")
+
+
+def _cmd_rename_agent(thread_id: str, args: argparse.Namespace) -> None:
+    payload = _request_json(
+        "POST",
+        "/orchestrator/rename-agent",
+        body={
+            "senderThreadId": thread_id,
+            "recipientThreadId": _normalize_text(args.to_thread_id),
+            "recipientName": _normalize_text(args.name),
+            "projectPath": _normalize_path(args.project_path),
+            "newName": args.new_name,
+        },
+    )
+    target_id = _normalize_text(str(payload.get("recipientThreadId") or "")) or "unknown-thread-id"
+    previous = _normalize_text(str(payload.get("previousDisplayName") or "")) or target_id
+    new_name = _normalize_text(str(payload.get("newName") or "")) or args.new_name
+    print(f"Renamed {_quoted(previous)} ({target_id}) -> {_quoted(new_name)}")
+
+
+def _cmd_send_message(thread_id: str, args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    text = _resolve_text_input(
+        parser,
+        args,
+        inline_attr="text",
+        file_attr="text_file",
+        stdin_attr="text_stdin",
+        label="send-message text",
+    )
+    recipient_thread_id = _normalize_text(args.to_thread_id)
+    recipient_name = _normalize_text(args.name)
+    project_path = _normalize_path(args.project_path)
+    if project_path:
+        recipient_thread_id, recipient_name = _resolve_recipient_for_project_filter(
+            thread_id=thread_id,
+            recipient_thread_id=recipient_thread_id,
+            recipient_name=recipient_name,
+            project_path=project_path,
+        )
+    payload = _request_json(
+        "POST",
+        "/orchestrator/agent-message",
+        body={
+            "senderThreadId": thread_id,
+            "recipientThreadId": recipient_thread_id,
+            "recipientName": recipient_name,
+            "text": text,
+        },
+    )
+    target_id = _normalize_text(str(payload.get("recipientThreadId") or "")) or recipient_thread_id or "unknown-thread-id"
+    display_name = _normalize_text(str(payload.get("recipientDisplayName") or "")) or recipient_name or target_id
+    print(f"Sent to {_quoted(display_name)} ({target_id})")
+
+
+def _cmd_set_worker_metadata(thread_id: str, args: argparse.Namespace) -> None:
+    payload = _request_json(
+        "POST",
+        "/orchestrator/worker-metadata",
+        body={
+            "senderThreadId": thread_id,
+            "recipientThreadId": _normalize_text(args.to_thread_id),
+            "recipientName": _normalize_text(args.name),
+            "projectPath": _normalize_path(args.project_path),
+            "issueNumber": args.issue_number,
+            "pullRequestNumber": args.pr_number,
+            "blockedReason": _normalize_text(args.blocked_reason),
+            "unblockWhen": _normalize_text(args.unblock_when),
+            "clearIssueNumber": bool(args.clear_issue_number),
+            "clearPullRequestNumber": bool(args.clear_pr_number),
+            "clearBlocked": bool(args.clear_blocked),
+        },
+    )
+    target_id = _normalize_text(str(payload.get("recipientThreadId") or "")) or _normalize_text(args.to_thread_id) or "unknown-thread-id"
+    display_name = _normalize_text(str(payload.get("recipientDisplayName") or "")) or _normalize_text(args.name) or target_id
+    summary_parts: list[str] = []
+    if isinstance(payload.get("issueNumber"), int):
+        summary_parts.append(f"issue=#{payload['issueNumber']}")
+    if isinstance(payload.get("pullRequestNumber"), int):
+        summary_parts.append(f"pr=#{payload['pullRequestNumber']}")
+    blocked_reason = _normalize_text(str(payload.get("blockedReason") or ""))
+    if blocked_reason:
+        blocked = f"blocked={_quoted(blocked_reason)}"
+        unblock_when = _normalize_text(str(payload.get("unblockWhen") or ""))
+        if unblock_when:
+            blocked += f" until={_quoted(unblock_when)}"
+        summary_parts.append(blocked)
+    summary = ", ".join(summary_parts) if summary_parts else "cleared"
+    print(f"Updated {_quoted(display_name)} ({target_id}): {summary}")
+
+
+def _cmd_approval_decision(thread_id: str, approval_id: str, decision: str, message: str | None) -> None:
+    payload = _request_json(
+        "POST",
+        "/orchestrator/approval-decision",
+        body={
+            "senderThreadId": thread_id,
+            "approvalId": approval_id,
+            "decision": decision,
+            "message": _normalize_text(message),
+        },
+    )
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise SystemExit("robdex: approval-decision response missing result")
+    suffix_parts: list[str] = []
+    if bool(result.get("followUpMessageRequested")):
+        suffix_parts.append("follow-up requested")
+    if bool(result.get("followUpMessageSent")):
+        suffix_parts.append("follow-up sent")
+    follow_up_error = _normalize_text(str(result.get("followUpError") or ""))
+    if follow_up_error:
+        suffix_parts.append(f"follow-up error={_quoted(follow_up_error)}")
+    suffix = f" | {'; '.join(suffix_parts)}" if suffix_parts else ""
+    verb = "Approved" if decision == "accept" else "Declined"
+    print(f"{verb} {_quoted(approval_id)}{suffix}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="robdex", description="Robdex bridge CLI.")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("whoami")
@@ -138,160 +530,109 @@ def main() -> int:
     p_decline.add_argument("--approval-id", required=True)
     p_decline.add_argument("--message")
 
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
     args = parser.parse_args()
     thread_id = _require_thread_id()
-    ctx = _ScriptContext(thread_id)
 
-    try:
-        if args.cmd == "whoami":
-            out = robdex_server.robdex_whoami(from_thread_id=thread_id, ctx=ctx)
-        elif args.cmd == "list-projects":
-            out = robdex_server.robdex_list_projects(from_thread_id=thread_id, ctx=ctx)
-        elif args.cmd == "list-pending-approvals":
-            out = robdex_server.robdex_list_pending_approvals(
-                from_thread_id=thread_id,
-                ctx=ctx,
-            )
-        elif args.cmd == "list-agents":
-            out = robdex_server.robdex_list_agents(
-                from_thread_id=thread_id,
-                include_archived=False,
-                include_all_projects=False,
-                project_path=args.project_path,
-                ctx=ctx,
-            )
-        elif args.cmd == "list-thread-groups":
-            out = robdex_server.robdex_list_thread_groups(
-                from_thread_id=thread_id,
-                project_path=args.project_path,
-                ctx=ctx,
-            )
-        elif args.cmd == "create-thread-group":
-            out = robdex_server.robdex_create_thread_group(
-                from_thread_id=thread_id,
-                title=args.title,
-                project_path=args.project_path,
-                seed_thread_id=args.seed_thread_id,
-                ctx=ctx,
-            )
-        elif args.cmd == "update-thread-group":
-            collapsed_state = None
-            if args.collapsed:
-                collapsed_state = True
-            elif args.expanded:
-                collapsed_state = False
-            out = robdex_server.robdex_update_thread_group(
-                from_thread_id=thread_id,
-                group_id=args.group_id,
-                title=args.title,
-                is_collapsed=collapsed_state,
-                project_path=args.project_path,
-                ctx=ctx,
-            )
-        elif args.cmd == "move-thread-to-group":
-            if args.remove and args.group_id:
-                parser.error("move-thread-to-group accepts either --group-id or --remove")
-            out = robdex_server.robdex_move_thread_to_group(
-                from_thread_id=thread_id,
-                thread_id=args.thread_id,
-                group_id=None if args.remove else args.group_id,
-                project_path=args.project_path,
-                ctx=ctx,
-            )
-        elif args.cmd == "delete-thread-group":
-            out = robdex_server.robdex_delete_thread_group(
-                from_thread_id=thread_id,
-                group_id=args.group_id,
-                project_path=args.project_path,
-                ctx=ctx,
-            )
-        elif args.cmd == "archive-thread-group":
-            out = robdex_server.robdex_archive_thread_group(
-                from_thread_id=thread_id,
-                group_id=args.group_id,
-                project_path=args.project_path,
-                ctx=ctx,
-            )
-        elif args.cmd == "spawn-agent":
-            out = robdex_server.robdex_spawn_agent(
-                from_thread_id=thread_id,
-                name=args.name,
-                prompt=args.prompt,
-                cwd=args.cwd,
-                issue_number=args.issue_number,
-                ctx=ctx,
-            )
-        elif args.cmd == "archive-agent":
-            out = robdex_server.robdex_archive_agent(
-                from_thread_id=thread_id,
-                to_thread_id=args.to_thread_id,
-                name=args.name,
-                project_path=args.project_path,
-                ctx=ctx,
-            )
-        elif args.cmd == "rename-agent":
-            out = robdex_server.robdex_rename_agent(
-                from_thread_id=thread_id,
-                new_name=args.new_name,
-                to_thread_id=args.to_thread_id,
-                name=args.name,
-                project_path=args.project_path,
-                ctx=ctx,
-            )
-        elif args.cmd == "send-message":
-            text = _resolve_text_input(
-                parser,
-                args,
-                inline_attr="text",
-                file_attr="text_file",
-                stdin_attr="text_stdin",
-                label="send-message text",
-            )
-            out = robdex_server.robdex_send_message(
-                from_thread_id=thread_id,
-                text=text,
-                to_thread_id=args.to_thread_id,
-                name=args.name,
-                project_path=args.project_path,
-                ctx=ctx,
-            )
-        elif args.cmd == "set-worker-metadata":
-            out = robdex_server.robdex_set_worker_metadata(
-                from_thread_id=thread_id,
-                issue_number=args.issue_number,
-                pull_request_number=args.pr_number,
-                blocked_reason=args.blocked_reason,
-                unblock_when=args.unblock_when,
-                clear_issue_number=args.clear_issue_number,
-                clear_pull_request_number=args.clear_pr_number,
-                clear_blocked=args.clear_blocked,
-                to_thread_id=args.to_thread_id,
-                name=args.name,
-                project_path=args.project_path,
-                ctx=ctx,
-            )
-        elif args.cmd == "approve-approval":
-            out = robdex_server.robdex_approve_approval(
-                from_thread_id=thread_id,
-                approval_id=args.approval_id,
-                ctx=ctx,
-            )
-        elif args.cmd == "decline-approval":
-            out = robdex_server.robdex_decline_approval(
-                from_thread_id=thread_id,
-                approval_id=args.approval_id,
-                message=args.message,
-                ctx=ctx,
-            )
-        else:
-            parser.error(f"unknown command: {args.cmd}")
-            return 2
-    except Exception as exc:  # noqa: BLE001
-        print(f"robdex: {exc}", file=sys.stderr)
-        return 1
-
-    if out:
-        print(out)
+    if args.cmd == "whoami":
+        _cmd_whoami(thread_id)
+    elif args.cmd == "list-projects":
+        _cmd_list_projects()
+    elif args.cmd == "list-agents":
+        _cmd_list_agents(thread_id, args.project_path)
+    elif args.cmd == "list-pending-approvals":
+        _cmd_list_pending_approvals(thread_id)
+    elif args.cmd == "list-thread-groups":
+        _cmd_list_thread_groups(thread_id, args.project_path)
+    elif args.cmd == "create-thread-group":
+        payload = _request_json(
+            "POST",
+            "/orchestrator/thread-groups/create",
+            body={
+                "senderThreadId": thread_id,
+                "projectPath": _normalize_path(args.project_path),
+                "title": args.title,
+                "seedThreadId": _normalize_text(args.seed_thread_id),
+            },
+        )
+        _print_group_mutation(payload)
+    elif args.cmd == "update-thread-group":
+        collapsed = True if args.collapsed else False if args.expanded else None
+        payload = _request_json(
+            "POST",
+            "/orchestrator/thread-groups/update",
+            body={
+                "senderThreadId": thread_id,
+                "projectPath": _normalize_path(args.project_path),
+                "groupId": args.group_id,
+                "title": _normalize_text(args.title),
+                "collapsed": collapsed,
+            },
+        )
+        _print_group_mutation(payload)
+    elif args.cmd == "move-thread-to-group":
+        if args.remove and args.group_id:
+            parser.error("move-thread-to-group accepts either --group-id or --remove")
+        payload = _request_json(
+            "POST",
+            "/orchestrator/thread-groups/move-thread",
+            body={
+                "senderThreadId": thread_id,
+                "projectPath": _normalize_path(args.project_path),
+                "threadId": args.thread_id,
+                "targetGroupId": None if args.remove else _normalize_text(args.group_id),
+            },
+        )
+        _print_group_mutation(payload)
+    elif args.cmd == "delete-thread-group":
+        payload = _request_json(
+            "POST",
+            "/orchestrator/thread-groups/delete",
+            body={
+                "senderThreadId": thread_id,
+                "projectPath": _normalize_path(args.project_path),
+                "groupId": args.group_id,
+            },
+        )
+        _print_group_mutation(payload)
+    elif args.cmd == "archive-thread-group":
+        payload = _request_json(
+            "POST",
+            "/orchestrator/thread-groups/archive",
+            body={
+                "senderThreadId": thread_id,
+                "projectPath": _normalize_path(args.project_path),
+                "groupId": args.group_id,
+            },
+        )
+        archived = payload.get("archivedThreadIds")
+        skipped = payload.get("skippedThreadIds")
+        title = _normalize_text(str(payload.get("title") or "")) or args.group_id
+        group_id = _normalize_text(str(payload.get("groupId") or "")) or args.group_id
+        archived_summary = ",".join(str(item).strip() for item in archived) if isinstance(archived, list) and archived else "(none)"
+        skipped_summary = ",".join(str(item).strip() for item in skipped) if isinstance(skipped, list) and skipped else "(none)"
+        print(f"Archived {_quoted(title)} ({group_id}) | archived={archived_summary}; skipped={skipped_summary}")
+    elif args.cmd == "spawn-agent":
+        _cmd_spawn_agent(thread_id, args)
+    elif args.cmd == "archive-agent":
+        _cmd_archive_agent(thread_id, args)
+    elif args.cmd == "rename-agent":
+        _cmd_rename_agent(thread_id, args)
+    elif args.cmd == "send-message":
+        _cmd_send_message(thread_id, args, parser)
+    elif args.cmd == "set-worker-metadata":
+        _cmd_set_worker_metadata(thread_id, args)
+    elif args.cmd == "approve-approval":
+        _cmd_approval_decision(thread_id, args.approval_id, "accept", None)
+    elif args.cmd == "decline-approval":
+        _cmd_approval_decision(thread_id, args.approval_id, "decline", args.message)
+    else:
+        parser.error(f"unknown command: {args.cmd}")
+        return 2
     return 0
 
 

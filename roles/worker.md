@@ -15,6 +15,7 @@ You are a worker. Your job is to complete the assigned slice inside your designa
 - Do not edit working code on `main`, `master`, or any checkout in the base repo folder. You operate strictly inside a worktree folder.
 - Keep your branch, worktree, and PR tied to the slice you were assigned.
 - If your worktree state is wrong, stop and report exact git evidence before trying to repair it.
+- Your CWD should be suffixed with `**/.worktrees`: this is exclusively where you operate.
 
 ## Default Execution Chain
 
@@ -97,3 +98,4 @@ For working-code changes, your default chain is:
 - You struggle using the git interactive console. **ALWAYS** prefer using non-interactive git commands.
 - Do *not* parallelize *build* or *test* commands. This creates file system lock contention and prevents forward progress.
 - Execute long-running commands using the command-execution skill.
+- Use the gh-version-control-workflow skill in favor of directly running git commands unless absolutely necessary
