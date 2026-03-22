@@ -181,6 +181,7 @@ load_operator_env() {
   unset REQUEST_REVIEW_IMAGE
   unset REQUEST_REVIEW_CODEX_VERSION
   unset REQUEST_REVIEW_INTEGRATION_BRANCHES
+  unset COMMAND_PARSER_IMAGE
 
   if [[ -f "$env_file" ]]; then
     set -a
@@ -191,17 +192,9 @@ load_operator_env() {
 }
 
 resolve_operator_env_file() {
-  local skill_dir="$1"
-  local codex_home="${CODEX_HOME:-$HOME/.codex}"
-  local canonical_env_file="$codex_home/skills/request-review/.env"
-  local local_env_file="$skill_dir/.env"
-
-  if [[ -f "$canonical_env_file" ]]; then
-    printf '%s\n' "$canonical_env_file"
-    return
-  fi
-
-  printf '%s\n' "$local_env_file"
+  local canonical_codex_home="$1"
+  local canonical_env_file="$canonical_codex_home/skills/request-review/.env"
+  printf '%s\n' "$canonical_env_file"
 }
 
 cli_use_existing_commit_flag=""
@@ -269,7 +262,8 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 skill_dir="$(cd "$script_dir/.." && pwd)"
-load_operator_env "$(resolve_operator_env_file "$skill_dir")"
+canonical_codex_home="$(cd "$skill_dir/../.." && pwd)"
+load_operator_env "$(resolve_operator_env_file "$canonical_codex_home")"
 
 review_mode="${REQUEST_REVIEW_MODE:-local}"
 bot_login="${REQUEST_REVIEW_BOT_LOGIN:-chatgpt-codex-connector[bot]}"
@@ -358,11 +352,12 @@ fi
 trap cleanup_request_review_runtime EXIT HUP INT TERM
 
 if [[ "$review_disable" != "0" ]]; then
+  disabled_review_result="request-review: disabled by operator config; review skipped, treating as all clear!"
   if [[ "$review_mode" == "remote" && "$should_push_review_sha" != "0" ]]; then
     push_review_target "$review_sha" "$branch_name" "$remote_branch_sha"
   fi
-  persist_review_result "all clear!"
-  emit_result "all clear!"
+  persist_review_result "$disabled_review_result"
+  emit_result "$disabled_review_result"
   exit 0
 fi
 
@@ -473,7 +468,7 @@ require_cmd docker
 
 local_tmp_output_path="$repo_root/.request-review.output.tmp"
 
-config_file="${HOME}/.codex/config.toml"
+config_file="${canonical_codex_home}/config.toml"
 if [[ ! -f "$config_file" ]]; then
   emit_result "request-review (local): missing config file: $config_file"
   exit 1
@@ -483,14 +478,14 @@ if ! rg -q "^\[profiles\.${local_profile}\]$" "$config_file"; then
   exit 1
 fi
 
-shared_builder="${HOME}/.codex/scripts/build-codex-agent-image"
+shared_builder="${canonical_codex_home}/scripts/build-codex-agent-image"
 if [[ ! -x "$shared_builder" ]]; then
   emit_result "request-review (local): missing shared Docker builder: $shared_builder"
   exit 1
 fi
 
 local_image_tag="${REQUEST_REVIEW_IMAGE:-${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}}"
-host_codex_home="${CODEX_HOME:-$HOME/.codex}"
+host_codex_home="$canonical_codex_home"
 docker_home="/tmp/request-review-home"
 docker_codex_home="/codex-home"
 request_review_temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/request-review.runtime.XXXXXX")"
