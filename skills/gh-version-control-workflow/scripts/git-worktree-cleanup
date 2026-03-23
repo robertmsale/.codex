@@ -16,6 +16,31 @@ fi
 worktree_path="$1"
 integration_branch_arg="${2:-}"
 
+remove_worktree_path() {
+  local repo_root="$1"
+  local wt_abs="$2"
+  local empty_dir=""
+
+  if git -C "$repo_root" worktree remove --force "$wt_abs" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ ! -e "$wt_abs" ]]; then
+    return 0
+  fi
+
+  if ! command -v rsync >/dev/null 2>&1; then
+    echo "git worktree remove failed and rsync is unavailable for fallback cleanup: $wt_abs" >&2
+    return 1
+  fi
+
+  empty_dir="$(mktemp -d "${TMPDIR:-/tmp}/git-worktree-cleanup-empty.XXXXXX")"
+  echo "git worktree remove failed for $wt_abs; retrying with empty-dir rsync fallback" >&2
+  rsync -a --delete "$empty_dir"/ "$wt_abs"/ >/dev/null
+  rmdir "$wt_abs"
+  rm -rf "$empty_dir"
+}
+
 if [[ ! -e "$worktree_path" ]]; then
   echo "all clear: worktree path is already missing"
   exit 0
@@ -46,7 +71,17 @@ if [[ -n "$stash_ref" ]]; then
   git -C "$repo_root" stash pop "$stash_ref" >/dev/null
 fi
 
-git -C "$repo_root" worktree remove --force "$wt_abs" >/dev/null
+remove_worktree_path "$repo_root" "$wt_abs"
 git -C "$repo_root" worktree prune --expire now >/dev/null
+
+if [[ -e "$wt_abs" ]]; then
+  echo "Worktree path still exists after cleanup: $wt_abs" >&2
+  exit 1
+fi
+
+if git -C "$repo_root" worktree list --porcelain | grep -Fx "worktree $wt_abs" >/dev/null; then
+  echo "Worktree is still registered after cleanup: $wt_abs" >&2
+  exit 1
+fi
 
 printf 'Synced %s to origin/%s and cleaned worktree: %s\n' "$repo_root" "$integration_branch" "$wt_abs"
