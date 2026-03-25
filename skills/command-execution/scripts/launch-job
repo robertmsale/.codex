@@ -1,5 +1,24 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
+
+strip_shim_path() {
+  local path_value="${1:-}"
+  local shim_dir="/opt/homebrew/shim"
+  local rebuilt=""
+  local entry=""
+  local old_ifs="$IFS"
+  IFS=':'
+  for entry in $path_value; do
+    [[ -z "$entry" || "$entry" == "$shim_dir" ]] && continue
+    if [[ -n "$rebuilt" ]]; then
+      rebuilt="${rebuilt}:$entry"
+    else
+      rebuilt="$entry"
+    fi
+  done
+  IFS="$old_ifs"
+  printf '%s\n' "$rebuilt"
+}
 
 usage() {
   cat <<'EOF'
@@ -21,6 +40,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 fi
 
 if [[ "${LAUNCH_JOB_PASSTHRU:-0}" == "1" ]]; then
+  export PATH="$(strip_shim_path "${PATH:-}")"
   if [[ "${1:-}" == "-lc" || "${1:-}" == "-c" ]]; then
     exec /bin/zsh "$@"
   fi
@@ -76,7 +96,7 @@ on_signal() {
 trap on_signal HUP INT TERM
 trap 'cleanup' EXIT
 
-LAUNCH_JOB_PASSTHRU=1 "$@" &
+PATH="$(strip_shim_path "${PATH:-}")" LAUNCH_JOB_PASSTHRU=1 "$@" &
 cmd_pid=$!
 
 if wait "$cmd_pid"; then

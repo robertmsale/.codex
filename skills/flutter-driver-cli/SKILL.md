@@ -34,13 +34,15 @@ Prefer the host-backed simulator broker:
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim session
 ```
 
-`reserve` and `restart` return the current DTD URI, so agents can hand it straight to `flutter-drive` without scraping logs.
+`reserve` and `restart` return both the current DTD URI and App URI. For broker-backed VM sessions, carry both into `flutter-drive`. Do not assume the raw app URI reported by DTD is reachable from the VM.
+
+`reserve` can take a while on cold builds. If the command is still running, wait for its final payload instead of treating the initial handoff as failure. The wrapper now prints an immediate progress line so the in-flight state is obvious.
 
 Example:
 
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reserve --target lib/flutter_driver_pilot_main.dart
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive widget-tree --dtd-uri ws://127.0.0.1:12344/efgh=
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive widget-tree --dtd-uri ws://host.internal:12344/efgh= --app-uri ws://host.internal:12345/ijkl=/ws
 ```
 
 Use the legacy tmux flow only when the broker is unavailable.
@@ -81,15 +83,15 @@ Use a longer wait on cold builds.
 
 ## Resolve and inspect
 
-Use the DTD URI directly on each command. The CLI resolves the current app from DTD on demand.
+For broker-backed VM sessions, use both the DTD URI and the App URI from `flutter-sim session` or `flutter-sim reserve`. If `--app-uri` is omitted and DTD only reports a loopback app URI, `flutter-drive` will stop and tell you to re-run with the broker App URI.
 
 Useful first commands:
 
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive apps --dtd-uri ws://127.0.0.1:12344/efgh=
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive widget-tree --dtd-uri ws://127.0.0.1:12344/efgh=
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver screenshot --dtd-uri ws://127.0.0.1:12344/efgh= --out /tmp/app.png
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver get_health --dtd-uri ws://127.0.0.1:12344/efgh=
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive widget-tree --dtd-uri ws://host.internal:12344/efgh= --app-uri ws://host.internal:12345/ijkl=/ws
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver screenshot --dtd-uri ws://host.internal:12344/efgh= --app-uri ws://host.internal:12345/ijkl=/ws --out /tmp/app.png
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver get_health --dtd-uri ws://host.internal:12344/efgh= --app-uri ws://host.internal:12345/ijkl=/ws
 ```
 
 ## Finder guidance

@@ -5,6 +5,24 @@ REPO_ROOT="/Users/robertsale/Code/flutter-driver-cli"
 DRIVER_ENTRYPOINT="/Users/robertsale/Code/flutter-driver-cli/bin/flutter_driver_cli.dart"
 CALLER_PWD="$PWD"
 
-cd "$REPO_ROOT"
+pick_runtime_repo() {
+  if [[ -w "$REPO_ROOT" ]]; then
+    printf '%s\n' "$REPO_ROOT"
+    return 0
+  fi
+
+  local shadow_root="/tmp/flutter-driver-cli-shadow"
+  mkdir -p "$shadow_root"
+  rsync -a --delete \
+    --exclude '.git' \
+    --exclude '.dart_tool' \
+    "$REPO_ROOT"/ "$shadow_root"/
+  printf '%s\n' "$shadow_root"
+}
+
+RUNTIME_REPO="$(pick_runtime_repo)"
+RUNTIME_ENTRYPOINT="$RUNTIME_REPO/bin/flutter_driver_cli.dart"
+
+cd "$RUNTIME_REPO"
 export FLUTTER_DRIVER_CLI_NAMESPACE="$CALLER_PWD"
-exec dart run "$DRIVER_ENTRYPOINT" "$@"
+exec dart run "$RUNTIME_ENTRYPOINT" "$@"

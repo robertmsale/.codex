@@ -210,6 +210,7 @@ clear_review_result() {
 
 cleanup_request_review_runtime() {
   rm -f "${local_tmp_output_path:-}" 2>/dev/null || true
+  rm -f "${local_error_path:-}" 2>/dev/null || true
 }
 
 load_operator_env() {
@@ -329,12 +330,13 @@ trigger_comment="${REQUEST_REVIEW_TRIGGER_COMMENT:-@codex review}"
 review_disable="${REQUEST_REVIEW_DISABLE:-0}"
 local_profile="${REQUEST_REVIEW_LOCAL_PROFILE:-local-review}"
 local_output_file="${REQUEST_REVIEW_LOCAL_OUTPUT_FILE:-review.log}"
-local_error_file="${REQUEST_REVIEW_LOCAL_ERROR_FILE:-review.err.log}"
 local_keep_debug_logs="${REQUEST_REVIEW_LOCAL_KEEP_DEBUG_LOGS:-0}"
 review_log_path="$repo_root/review.log"
 local_output_path="$repo_root/$local_output_file"
-local_error_path="$repo_root/$local_error_file"
-local_tmp_output_path="$repo_root/.request-review.output.tmp"
+tmp_root="${TMPDIR:-/tmp}"
+mkdir -p "$tmp_root"
+local_error_path="$(mktemp "${tmp_root%/}/request-review.error.XXXXXX")"
+local_tmp_output_path="$(mktemp "${tmp_root%/}/request-review.output.XXXXXX")"
 
 use_existing_commit_flag="0"
 existing_commit_sha_ref="HEAD"

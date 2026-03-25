@@ -46,6 +46,11 @@ request() {
   fi
 }
 
+log_progress() {
+  local message="$1"
+  printf '%s\n' "$message" >&2
+}
+
 render() {
   local payload="$1"
   local mode="$2"
@@ -121,12 +126,14 @@ case "$COMMAND" in
       echo "--target is required for reserve" >&2
       exit 64
     fi
+    log_progress "Requesting simulator reservation for $PATH_ARG on ${DEVICE_ID_ARG:-auto-selected device}. This can take a while on cold builds."
     BODY="$(python3 -c 'import json, sys; payload={"path":sys.argv[1],"target":sys.argv[2]}; 
 if sys.argv[3]: payload["device_id"]=sys.argv[3];
 print(json.dumps(payload))' "$PATH_ARG" "$TARGET_ARG" "$DEVICE_ID_ARG")"
     RESPONSE="$(request POST /reserve "$BODY")"
     ;;
   restart)
+    log_progress "Restarting simulator reservation for $PATH_ARG. Waiting for a fresh DTD session."
     BODY="$(python3 -c 'import json, sys; payload={"path":sys.argv[1]}; 
 if sys.argv[2]: payload["target"]=sys.argv[2];
 print(json.dumps(payload))' "$PATH_ARG" "$TARGET_ARG")"

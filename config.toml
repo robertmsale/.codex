@@ -95,8 +95,8 @@ model = "openai/gpt-oss-20b"
 model_base_instructions = "/codex-home/roles/command-parser.md"
 
 [profiles.command-parser]
-model = "gpt-5.1-codex-mini"
-model_reasoning_effort = "medium"
+model = "gpt-5.4-mini"
+model_reasoning_effort = "low"
 model_base_instructions = "/codex-home/roles/command-parser.md"
 
 [profiles.local-review]
@@ -218,4 +218,7 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/Users/robertsale/Code/flutter"]
+trust_level = "trusted"
+
+[projects."/private/tmp/zonemap-test"]
 trust_level = "trusted"
