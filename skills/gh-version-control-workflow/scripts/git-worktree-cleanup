@@ -47,8 +47,8 @@ if [[ ! -e "$worktree_path" ]]; then
 fi
 
 if ! git -C "$worktree_path" rev-parse --git-dir >/dev/null 2>&1; then
-  echo "Path is not a git worktree: $worktree_path" >&2
-  exit 2
+  http_gitops_op git_worktree_cleanup "worktree_path=$worktree_path"
+  exit 0
 fi
 
 resolved_output="$(resolve_worktree "$worktree_path")"

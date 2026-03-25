@@ -16,6 +16,11 @@ fi
 worktree_path="$1"
 base_branch="${2:-${GITOPS_INTEGRATION_BRANCH:-master}}"
 
+if ! have_local_git_repo "$worktree_path"; then
+  http_gitops_op git_sync_worktree "worktree_path=$worktree_path" "upstream=origin/$base_branch"
+  exit 0
+fi
+
 resolved_output="$(resolve_worktree "$worktree_path")"
 wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
 

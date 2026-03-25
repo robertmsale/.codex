@@ -16,6 +16,11 @@ fi
 worktree_path="$1"
 integration_branch_arg="${2:-}"
 
+if ! have_local_git_repo "$worktree_path"; then
+  echo "git-merge-worktree remains host-only. Run it from the host against the real git worktree." >&2
+  exit 2
+fi
+
 resolved_output="$(resolve_worktree "$worktree_path")"
 wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
 repo_root="$(printf '%s\n' "$resolved_output" | sed -n '2p')"

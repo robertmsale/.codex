@@ -85,7 +85,7 @@ developer_instructions = "You are the database query agent. The user set the DAT
 
 [profiles.command-parser-spark]
 model = "gpt-5.3-codex-spark"
-model_reasoning_effort = "medium"
+model_reasoning_effort = "low"
 
 [profiles.command-parser-local]
 model_provider = "lmstudio-local"
@@ -204,3 +204,12 @@ hide_rate_limit_model_nudge = true
 "/Users/robertsale/Code/ezra/ezra/.worktrees" = { trust_level = "trusted" }
 "/Users/robertsale/Code/robdex" = { trust_level = "trusted" }
 "/Users/robertsale/Code/robdex/.worktrees" = { trust_level = "trusted" }
+
+[projects."/Users/robertsale/Code/flutter-driver-cli"]
+trust_level = "trusted"
+
+[projects."/Users/robertsale/Code/parallels-sync"]
+trust_level = "trusted"
+
+[projects."/Users/robertsale/Code/flutter"]
+trust_level = "trusted"

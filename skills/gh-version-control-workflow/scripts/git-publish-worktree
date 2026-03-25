@@ -16,6 +16,15 @@ fi
 worktree_path="$1"
 base_branch="${2:-${GITOPS_INTEGRATION_BRANCH:-master}}"
 
+if ! have_local_git_repo "$worktree_path"; then
+  if [[ ! -f "$worktree_path/review.log" ]]; then
+    echo "Publish blocked: review.log not found in worktree root. Request review first." >&2
+    exit 2
+  fi
+  http_gitops_op git_publish_worktree "worktree_path=$worktree_path"
+  exit 0
+fi
+
 resolved_output="$(resolve_worktree "$worktree_path")"
 wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
 

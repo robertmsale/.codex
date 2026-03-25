@@ -38,6 +38,18 @@ if [[ -z "${message// }" ]]; then
 fi
 
 resolved_output="$(resolve_worktree "$worktree_path")"
+if ! have_local_git_repo "$worktree_path"; then
+  args=("worktree_path=$worktree_path" "message=$message")
+  if [[ "$allow_empty" -eq 1 ]]; then
+    args+=("allow_empty=true")
+  fi
+  if [[ "$do_add" -eq 0 ]]; then
+    args+=("add_all=false")
+  fi
+  http_gitops_op git_commit "${args[@]}"
+  exit 0
+fi
+
 wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
 
 branch="$(git -C "$wt_abs" rev-parse --abbrev-ref HEAD)"

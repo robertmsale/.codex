@@ -20,8 +20,12 @@ worktree_name="$4"
 
 repo_abs="$(cd "$repo_path" && pwd)"
 if ! git -C "$repo_abs" rev-parse --git-dir >/dev/null 2>&1; then
-  echo "Not a git repository: $repo_abs" >&2
-  exit 2
+  http_gitops_op git_worktree_create \
+    "repo_path=$repo_abs" \
+    "base_branch=$base_branch" \
+    "branch_name=$branch_name" \
+    "worktree_name=$worktree_name"
+  exit 0
 fi
 
 require_non_integration_branch "$branch_name"

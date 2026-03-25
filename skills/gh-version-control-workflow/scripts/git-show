@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -ne 2 ]]; then
+  echo "Usage: git-show <repo_or_worktree_path> <object>" >&2
+  exit 2
+fi
+
+path="$1"
+object="$2"
+
+if have_local_git_repo "$path"; then
+  git -C "$path" show --stat "$object"
+else
+  http_gitops_op visibility_git_show "repo_path=$path" "object=$object"
+fi

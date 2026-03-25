@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="/Users/robertsale/Code/flutter-driver-cli"
+DRIVER_ENTRYPOINT="/Users/robertsale/Code/flutter-driver-cli/bin/flutter_driver_cli.dart"
+CALLER_PWD="$PWD"
+
+cd "$REPO_ROOT"
+export FLUTTER_DRIVER_CLI_NAMESPACE="$CALLER_PWD"
+exec dart run "$DRIVER_ENTRYPOINT" "$@"

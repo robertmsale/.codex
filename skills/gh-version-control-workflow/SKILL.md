@@ -35,6 +35,29 @@ Use this workflow for branch/worktree/PR delivery.
 - Cleanup (stash dirty parent repo state, fast-forward the parent integration branch, restore the stash, then remove the worktree):
   - `~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup <worktree_path> [integration_branch]`
 
+When these scripts run inside a synced VM shadow checkout that is not a real git repository, they transparently forward to the host bridge at `http://host.internal:8765`.
+
+## Visibility And Recovery Scripts
+
+- Status:
+  - `~/.codex/skills/gh-version-control-workflow/scripts/git-status <repo_or_worktree_path>`
+- Branch list:
+  - `~/.codex/skills/gh-version-control-workflow/scripts/git-branch-list <repo_or_worktree_path> [--local-only]`
+- Diff:
+  - `~/.codex/skills/gh-version-control-workflow/scripts/git-diff <repo_or_worktree_path> [ref] [pathspec]`
+- Show object:
+  - `~/.codex/skills/gh-version-control-workflow/scripts/git-show <repo_or_worktree_path> <object>`
+- Resolve ref:
+  - `~/.codex/skills/gh-version-control-workflow/scripts/git-rev-parse <repo_or_worktree_path> [ref]`
+- Merge base:
+  - `~/.codex/skills/gh-version-control-workflow/scripts/git-merge-base <repo_or_worktree_path> <left> <right>`
+- Stage specific paths:
+  - `~/.codex/skills/gh-version-control-workflow/scripts/git-stage-paths <repo_or_worktree_path> <path> [path...]`
+- Unstage specific paths:
+  - `~/.codex/skills/gh-version-control-workflow/scripts/git-unstage-paths <repo_or_worktree_path> <path> [path...]`
+- Abort in-progress rebase:
+  - `~/.codex/skills/gh-version-control-workflow/scripts/git-rebase-abort <repo_or_worktree_path>`
+
 ## Review Requirement
 
 - Run request review via:
@@ -55,3 +78,4 @@ Use this workflow for branch/worktree/PR delivery.
 - One worker, one worktree, one branch, one PR.
 - Do not improvise alternate merge or cleanup paths.
 - If publish, review, or cleanup state is unclear, inspect the real state and continue with the canonical script instead of inventing a new flow.
+- On protected integration branches, only additive mutations and abort-style recovery are allowed.

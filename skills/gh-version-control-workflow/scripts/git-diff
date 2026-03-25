@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -lt 1 || $# -gt 3 ]]; then
+  echo "Usage: git-diff <repo_or_worktree_path> [ref] [pathspec]" >&2
+  exit 2
+fi
+
+path="$1"
+ref="${2:-}"
+pathspec="${3:-}"
+
+if have_local_git_repo "$path"; then
+  args=(diff)
+  if [[ -n "$ref" ]]; then
+    args+=("$ref")
+  fi
+  if [[ -n "$pathspec" ]]; then
+    args+=(-- "$pathspec")
+  fi
+  git -C "$path" "${args[@]}"
+else
+  args=("repo_path=$path")
+  if [[ -n "$ref" ]]; then
+    args+=("ref=$ref")
+  fi
+  if [[ -n "$pathspec" ]]; then
+    args+=("pathspec=$pathspec")
+  fi
+  http_gitops_op visibility_git_diff "${args[@]}"
+fi

@@ -1,6 +1,66 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+gitops_http_base_url() {
+  printf '%s\n' "${PARALLELS_SYNC_GITOPS_BASE_URL:-http://host.internal:8765}"
+}
+
+have_local_git_repo() {
+  local path="$1"
+  git -C "$path" rev-parse --git-dir >/dev/null 2>&1
+}
+
+json_escape() {
+  python3 - <<'PY' "$1"
+import json
+import sys
+print(json.dumps(sys.argv[1]))
+PY
+}
+
+json_build_request() {
+  python3 - <<'PY' "$@"
+import json
+import sys
+
+payload = {"args": {}}
+for item in sys.argv[1:]:
+    key, value = item.split("=", 1)
+    if value.startswith("json:"):
+        payload["args"][key] = json.loads(value[5:])
+    elif value in {"true", "false"}:
+        payload["args"][key] = value == "true"
+    else:
+        payload["args"][key] = value
+print(json.dumps(payload))
+PY
+}
+
+http_gitops_op() {
+  local op="$1"
+  shift
+  local payload
+  payload="$(json_build_request "$@")"
+  local url
+  url="$(gitops_http_base_url)/v1/ops/$op"
+  local response
+  response="$(curl -fsS -H 'Content-Type: application/json' -d "$payload" "$url")" || {
+    echo "gitops HTTP request failed for $op" >&2
+    return 1
+  }
+  python3 - <<'PY' "$response"
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+result = data.get("result", "")
+if isinstance(result, str):
+    print(result)
+else:
+    print(json.dumps(result))
+PY
+}
+
 integration_branches() {
   printf '%s\n' "${GITOPS_INTEGRATION_BRANCHES:-main master staging prod production master}"
 }
@@ -39,6 +99,18 @@ resolve_worktree() {
   fi
 
   printf '%s\n%s\n' "$wt_abs" "$repo_root"
+}
+
+resolve_worktree_or_bridge() {
+  local raw_path="$1"
+  if have_local_git_repo "$raw_path"; then
+    resolve_worktree "$raw_path"
+    return 0
+  fi
+
+  local wt_abs
+  wt_abs="$(cd "$raw_path" 2>/dev/null && pwd || printf '%s\n' "$raw_path")"
+  printf '%s\n%s\n' "$wt_abs" ""
 }
 
 resolve_integration_branch() {

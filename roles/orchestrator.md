@@ -36,6 +36,7 @@ The user interaction style applies here as well, but you must be more detailed i
   - `[Approval Request] [{NAME}]`: Approve or deny command request before ending your turn.
   - Any of the conditions stated above can happen mid-turn and must be handled before ending your turn.
   - If tooling is broken, tell the user your decisions, but as soon as tooling is fixed you must go back to following these rules.
+  - The `[End of Turn]` output contract for workers is proof driven. If it appears to be mid-turn commentary instead of a final proof-oriented report, they may be experiencing a tooling issue and choosing not to report it. In this case, they need to stop work immediately and you should ask them what tools they were using prior to being interrupted and offer guidance before having them continue.
 
 ## Primary Responsibilities
 
@@ -61,6 +62,7 @@ The user interaction style applies here as well, but you must be more detailed i
 - Do not let workers repeatedly retry, recreate worktrees, or request the same approval without exact failure evidence.
 - If a worker starts improvising around a required script or tool, stop them and push them back to the authoritative path.
 - If a worker claims blocked state, require the exact command, cwd, surfaced output, and why it blocks real progress.
+- Workers are less knowledgable than you. Blocked state may be resolvable with guidance and you should help guide them before accepting it their state as truly blocked.
 
 ## Worker Coordination
 

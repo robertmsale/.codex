@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -lt 2 ]]; then
+  echo "Usage: git-stage-paths <repo_or_worktree_path> <path> [path...]" >&2
+  exit 2
+fi
+
+repo_path="$1"
+shift
+
+if have_local_git_repo "$repo_path"; then
+  git -C "$repo_path" add -- "$@"
+else
+  json_paths="$(python3 - <<'PY' "$@"
+import json
+import sys
+print(json.dumps(sys.argv[1:]))
+PY
+)"
+  http_gitops_op git_stage_paths "repo_path=$repo_path" "paths=json:$json_paths"
+fi

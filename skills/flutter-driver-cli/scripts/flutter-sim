@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_URL="${FLUTTER_SIM_SERVER_BASE_URL:-http://host.internal:8767}"
+COMMAND="${1:-}"
+shift || true
+
+PATH_ARG="$PWD"
+TARGET_ARG=""
+DEVICE_ID_ARG=""
+JSON=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --path)
+      PATH_ARG="$2"
+      shift 2
+      ;;
+    --target)
+      TARGET_ARG="$2"
+      shift 2
+      ;;
+    --device-id)
+      DEVICE_ID_ARG="$2"
+      shift 2
+      ;;
+    --json)
+      JSON=1
+      shift
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 64
+      ;;
+  esac
+done
+
+request() {
+  local method="$1"
+  local endpoint="$2"
+  local body="${3:-}"
+  if [[ -n "$body" ]]; then
+    curl -fsS -X "$method" -H 'Content-Type: application/json' "$BASE_URL$endpoint" -d "$body"
+  else
+    curl -fsS -X "$method" "$BASE_URL$endpoint"
+  fi
+}
+
+render() {
+  local payload="$1"
+  local mode="$2"
+  PAYLOAD="$payload" python3 - "$mode" <<'PY'
+import json
+import os
+import sys
+
+mode = sys.argv[1]
+payload = json.loads(os.environ["PAYLOAD"])
+
+if mode == "json":
+    print(json.dumps(payload, indent=2))
+    raise SystemExit(0)
+
+if mode == "devices":
+    for device in payload.get("devices", []):
+        reservation = device.get("reservation_path") or "-"
+        print(f"{device.get('device_id')}\t{device.get('name')}\t{device.get('state')}\t{reservation}")
+    raise SystemExit(0)
+
+if mode == "session":
+    session = payload.get("session")
+    if not session:
+        print("No session.")
+        raise SystemExit(0)
+    print(f"Device: {session.get('device_name')} ({session.get('device_id')})")
+    print(f"State: {session.get('state')}")
+    print(f"Path: {session.get('path')}")
+    print(f"Target: {session.get('target')}")
+    if session.get("dtd_uri"):
+        print(f"DTD: {session.get('dtd_uri')}")
+    if session.get("app_uri"):
+        print(f"App: {session.get('app_uri')}")
+    if session.get("last_error"):
+        print(f"Error: {session.get('last_error')}")
+    raise SystemExit(0)
+
+print(payload.get("message", ""))
+session = payload.get("session")
+if session:
+    print(f"Device: {session.get('device_name')} ({session.get('device_id')})")
+    print(f"State: {session.get('state')}")
+    print(f"Path: {session.get('path')}")
+    print(f"Target: {session.get('target')}")
+    if session.get("dtd_uri"):
+        print(f"DTD: {session.get('dtd_uri')}")
+    if session.get("app_uri"):
+        print(f"App: {session.get('app_uri')}")
+    if session.get("last_error"):
+        print(f"Error: {session.get('last_error')}")
+available = payload.get("available_devices") or []
+if available:
+    print("Available:")
+    for device in available:
+        reservation = device.get("reservation_path") or "-"
+        print(f"{device.get('device_id')}\t{device.get('name')}\t{device.get('state')}\t{reservation}")
+if not payload.get("ok", True):
+    raise SystemExit(1)
+PY
+}
+
+case "$COMMAND" in
+  devices)
+    RESPONSE="$(request GET /devices)"
+    ;;
+  session)
+    ENCODED_PATH="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$PATH_ARG")"
+    RESPONSE="$(request GET "/session?path=$ENCODED_PATH")"
+    ;;
+  reserve)
+    if [[ -z "$TARGET_ARG" ]]; then
+      echo "--target is required for reserve" >&2
+      exit 64
+    fi
+    BODY="$(python3 -c 'import json, sys; payload={"path":sys.argv[1],"target":sys.argv[2]}; 
+if sys.argv[3]: payload["device_id"]=sys.argv[3];
+print(json.dumps(payload))' "$PATH_ARG" "$TARGET_ARG" "$DEVICE_ID_ARG")"
+    RESPONSE="$(request POST /reserve "$BODY")"
+    ;;
+  restart)
+    BODY="$(python3 -c 'import json, sys; payload={"path":sys.argv[1]}; 
+if sys.argv[2]: payload["target"]=sys.argv[2];
+print(json.dumps(payload))' "$PATH_ARG" "$TARGET_ARG")"
+    RESPONSE="$(request POST /restart "$BODY")"
+    ;;
+  release)
+    BODY="$(python3 -c 'import json, sys; print(json.dumps({"path":sys.argv[1]}))' "$PATH_ARG")"
+    RESPONSE="$(request POST /release "$BODY")"
+    ;;
+  *)
+    cat <<'EOF'
+Usage:
+  flutter-sim devices [--json]
+  flutter-sim session [--path <path>] [--json]
+  flutter-sim reserve --target <target> [--device-id <id>] [--path <path>] [--json]
+  flutter-sim restart [--target <target>] [--path <path>] [--json]
+  flutter-sim release [--path <path>] [--json]
+EOF
+    exit 64
+    ;;
+esac
+
+if [[ "$JSON" -eq 1 ]]; then
+  render "$RESPONSE" json
+else
+  case "$COMMAND" in
+    devices) render "$RESPONSE" devices ;;
+    session) render "$RESPONSE" session ;;
+    *) render "$RESPONSE" op ;;
+  esac
+fi

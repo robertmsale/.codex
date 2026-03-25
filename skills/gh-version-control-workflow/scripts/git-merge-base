@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -ne 3 ]]; then
+  echo "Usage: git-merge-base <repo_or_worktree_path> <left> <right>" >&2
+  exit 2
+fi
+
+path="$1"
+left="$2"
+right="$3"
+
+if have_local_git_repo "$path"; then
+  git -C "$path" merge-base "$left" "$right"
+else
+  http_gitops_op visibility_git_merge_base "repo_path=$path" "left=$left" "right=$right"
+fi
