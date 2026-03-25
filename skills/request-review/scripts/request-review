@@ -23,17 +23,101 @@ require_cmd() {
   }
 }
 
-path_is_within() {
-  local candidate_path="$1"
-  local parent_path="$2"
-  local normalized_parent="${parent_path%/}/"
-
-  [[ "$candidate_path" == "$parent_path" || "$candidate_path" == "$normalized_parent"* ]]
-}
-
 emit_result() {
   local message="$1"
   printf '%s\n' "$message"
+}
+
+gitops_http_base_url() {
+  printf '%s\n' "${PARALLELS_SYNC_GITOPS_BASE_URL:-http://host.internal:8765}"
+}
+
+json_build_request() {
+  python3 - <<'PY' "$@"
+import json
+import sys
+
+payload = {"args": {}}
+for item in sys.argv[1:]:
+    key, value = item.split("=", 1)
+    if value.startswith("json:"):
+        payload["args"][key] = json.loads(value[5:])
+    elif value in {"true", "false"}:
+        payload["args"][key] = value == "true"
+    else:
+        payload["args"][key] = value
+print(json.dumps(payload))
+PY
+}
+
+host_review_via_bridge() {
+  local repo_path="$1"
+  local title="$2"
+  local profile="$3"
+  local mode="$4"
+  local commit_ref="${5:-}"
+
+  require_cmd curl
+
+  local payload_args=(
+    "repo_path=$repo_path"
+    "title=$title"
+    "profile=$profile"
+  )
+  if [[ "$mode" == "uncommitted" ]]; then
+    payload_args+=("uncommitted=true")
+  else
+    payload_args+=("uncommitted=false" "commit_ref=$commit_ref")
+  fi
+
+  local payload
+  payload="$(json_build_request "${payload_args[@]}")"
+
+  local response
+  response="$(curl -fsS -H 'Content-Type: application/json' -d "$payload" "$(gitops_http_base_url)/v1/ops/request_host_review")"
+
+  python3 - <<'PY' "$response"
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+result = data.get("result") or {}
+message = (result.get("message") or "").strip()
+exit_code = int(result.get("exit_code") or 0)
+print(message)
+raise SystemExit(exit_code)
+PY
+}
+
+host_review_direct() {
+  local repo_root="$1"
+  local title="$2"
+  local profile="$3"
+  local output_path="$4"
+  local error_path="$5"
+  local mode="$6"
+  local commit_ref="${7:-}"
+
+  local cmd=(
+    codex exec review
+    --output-last-message "$output_path"
+    -C "$repo_root"
+    -s read-only
+    -p "$profile"
+    --title "$title"
+  )
+
+  if [[ "$mode" == "uncommitted" ]]; then
+    cmd+=(--uncommitted)
+  else
+    cmd+=(--commit "$commit_ref")
+  fi
+
+  : >"$error_path"
+  if "${cmd[@]}" > /dev/null 2>"$error_path"; then
+    return 0
+  fi
+  return $?
 }
 
 remote_terminal_error_comment_json() {
@@ -125,45 +209,7 @@ clear_review_result() {
 }
 
 cleanup_request_review_runtime() {
-  rm -rf "${request_review_temp_dir:-}" 2>/dev/null || true
-}
-
-extract_local_review_message() {
-  local raw_jsonl_path="$1"
-  local output_path="$2"
-
-  RAW_JSONL_PATH="$raw_jsonl_path" OUTPUT_PATH="$output_path" python3 - <<'PY'
-import json
-import os
-from pathlib import Path
-
-raw_path = Path(os.environ["RAW_JSONL_PATH"])
-out_path = Path(os.environ["OUTPUT_PATH"])
-
-text = raw_path.read_text(encoding="utf-8", errors="replace")
-message = ""
-for line in text.splitlines():
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        obj = json.loads(line)
-    except Exception:
-        continue
-    if obj.get("type") != "item.completed":
-        continue
-    item = obj.get("item") or {}
-    if item.get("type") != "agent_message":
-        continue
-    candidate = (item.get("text") or "").strip()
-    if candidate:
-        message = candidate
-
-if not message:
-    message = text.strip()
-
-out_path.write_text(message + ("\n" if message else ""), encoding="utf-8")
-PY
+  rm -f "${local_tmp_output_path:-}" 2>/dev/null || true
 }
 
 load_operator_env() {
@@ -178,10 +224,7 @@ load_operator_env() {
   unset REQUEST_REVIEW_LOCAL_OUTPUT_FILE
   unset REQUEST_REVIEW_LOCAL_ERROR_FILE
   unset REQUEST_REVIEW_LOCAL_KEEP_DEBUG_LOGS
-  unset REQUEST_REVIEW_IMAGE
-  unset REQUEST_REVIEW_CODEX_VERSION
   unset REQUEST_REVIEW_INTEGRATION_BRANCHES
-  unset COMMAND_PARSER_IMAGE
 
   if [[ -f "$env_file" ]]; then
     set -a
@@ -250,14 +293,25 @@ if [[ -z "$commit_message" ]]; then
   exit 2
 fi
 
-require_cmd git
 require_cmd codex
 require_cmd python3
 
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [[ -z "$repo_root" ]]; then
-  echo "request-review: must run inside a git repository" >&2
-  exit 2
+working_path="$(pwd -P)"
+bridge_review_mode=0
+if [[ "$working_path" == /home/* ]]; then
+  bridge_review_mode=1
+fi
+
+repo_root=""
+if [[ "$bridge_review_mode" == "0" ]]; then
+  require_cmd git
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -z "$repo_root" ]]; then
+    echo "request-review: must run inside a git repository" >&2
+    exit 2
+  fi
+else
+  repo_root="$working_path"
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -265,7 +319,10 @@ skill_dir="$(cd "$script_dir/.." && pwd)"
 canonical_codex_home="$(cd "$skill_dir/../.." && pwd)"
 load_operator_env "$(resolve_operator_env_file "$canonical_codex_home")"
 
-review_mode="${REQUEST_REVIEW_MODE:-local}"
+review_mode="${REQUEST_REVIEW_MODE:-host}"
+if [[ "$review_mode" == "local" ]]; then
+  review_mode="host"
+fi
 bot_login="${REQUEST_REVIEW_BOT_LOGIN:-chatgpt-codex-connector[bot]}"
 poll_interval_seconds="${REQUEST_REVIEW_POLL_INTERVAL_SECONDS:-20}"
 trigger_comment="${REQUEST_REVIEW_TRIGGER_COMMENT:-@codex review}"
@@ -277,7 +334,7 @@ local_keep_debug_logs="${REQUEST_REVIEW_LOCAL_KEEP_DEBUG_LOGS:-0}"
 review_log_path="$repo_root/review.log"
 local_output_path="$repo_root/$local_output_file"
 local_error_path="$repo_root/$local_error_file"
-local_raw_jsonl_path="$repo_root/.request-review.events.jsonl"
+local_tmp_output_path="$repo_root/.request-review.output.tmp"
 
 use_existing_commit_flag="0"
 existing_commit_sha_ref="HEAD"
@@ -287,30 +344,49 @@ fi
 if [[ -n "$cli_existing_commit_sha_ref" ]]; then
   existing_commit_sha_ref="$cli_existing_commit_sha_ref"
 fi
+
 remote_pr_number=""
 remote_pr_state=""
 remote_review_started_at=""
 remote_branch_sha=""
 remote_default_branch=""
 should_push_review_sha=0
-request_review_temp_dir=""
 clear_review_result
 cd "$repo_root"
-branch_name="$(git rev-parse --abbrev-ref HEAD)"
 
 echo "request-review: use the command-execution mcp to await review results"
 echo "request-review: do not poll stdin, do not kill the review, and do not treat a long-running cloud review as hung"
 
-integration_branches_raw="${REQUEST_REVIEW_INTEGRATION_BRANCHES:-main master staging prod production}"
-for protected_branch in $integration_branches_raw; do
-  if [[ "$branch_name" == "$protected_branch" ]]; then
-    echo "request-review: refusing to run on protected integration branch '$branch_name'" >&2
-    echo "request-review: switch to an issue/feature branch before requesting review" >&2
-    exit 2
-  fi
-done
+branch_name=""
+if [[ "$bridge_review_mode" == "0" ]]; then
+  branch_name="$(git rev-parse --abbrev-ref HEAD)"
+  integration_branches_raw="${REQUEST_REVIEW_INTEGRATION_BRANCHES:-main master staging prod production}"
+  for protected_branch in $integration_branches_raw; do
+    if [[ "$branch_name" == "$protected_branch" ]]; then
+      echo "request-review: refusing to run on protected integration branch '$branch_name'" >&2
+      echo "request-review: switch to an issue/feature branch before requesting review" >&2
+      exit 2
+    fi
+  done
+fi
+
+trap cleanup_request_review_runtime EXIT HUP INT TERM
+
+if [[ "$review_disable" != "0" ]]; then
+  persist_review_result "all clear!"
+  emit_result "all clear!"
+  exit 0
+fi
 
 if [[ "$review_mode" == "remote" ]]; then
+  if [[ "$bridge_review_mode" != "0" ]]; then
+    echo "request-review: remote review is not supported from VM shadow worktrees; use host review" >&2
+    exit 2
+  fi
+
+  require_cmd gh
+  require_cmd jq
+
   git fetch -q origin "refs/heads/$branch_name:refs/remotes/origin/$branch_name" 2>/dev/null || true
   remote_pr_number="$(gh pr view --json number --jq '.number' 2>/dev/null || true)"
   if [[ -n "$remote_pr_number" ]]; then
@@ -321,48 +397,30 @@ if [[ "$review_mode" == "remote" ]]; then
     remote_branch_sha="$(git ls-remote --heads origin "refs/heads/$branch_name" 2>/dev/null | awk 'NR==1 {print $1}')"
   fi
   remote_default_branch="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
-fi
 
-if [[ "$use_existing_commit_flag" != "0" ]]; then
-  review_sha="$(git rev-parse --verify "${existing_commit_sha_ref}^{commit}" 2>/dev/null || true)"
-  if [[ -z "$review_sha" ]]; then
-    echo "request-review: existing commit ref is not a valid commit: $existing_commit_sha_ref" >&2
-    exit 2
-  fi
-  if [[ "$review_mode" == "remote" && "$remote_branch_sha" != "$review_sha" ]]; then
-    should_push_review_sha=1
-  fi
-else
-  git add -A
-  if git diff --cached --quiet; then
-    review_sha="$(git rev-parse --verify HEAD)"
-    use_existing_commit_flag="1"
-    if [[ "$review_mode" == "remote" && "$remote_branch_sha" != "$review_sha" ]]; then
+  if [[ "$use_existing_commit_flag" != "0" ]]; then
+    review_sha="$(git rev-parse --verify "${existing_commit_sha_ref}^{commit}" 2>/dev/null || true)"
+    if [[ -z "$review_sha" ]]; then
+      echo "request-review: existing commit ref is not a valid commit: $existing_commit_sha_ref" >&2
+      exit 2
+    fi
+    if [[ "$remote_branch_sha" != "$review_sha" ]]; then
       should_push_review_sha=1
     fi
   else
-    git commit -m "$commit_message"
-    review_sha="$(git rev-parse --verify HEAD)"
-    if [[ "$review_mode" == "remote" ]]; then
+    git add -A
+    if git diff --cached --quiet; then
+      review_sha="$(git rev-parse --verify HEAD)"
+      use_existing_commit_flag="1"
+      if [[ "$remote_branch_sha" != "$review_sha" ]]; then
+        should_push_review_sha=1
+      fi
+    else
+      git commit -m "$commit_message"
+      review_sha="$(git rev-parse --verify HEAD)"
       should_push_review_sha=1
     fi
   fi
-fi
-
-trap cleanup_request_review_runtime EXIT HUP INT TERM
-
-if [[ "$review_disable" != "0" ]]; then
-  if [[ "$review_mode" == "remote" && "$should_push_review_sha" != "0" ]]; then
-    push_review_target "$review_sha" "$branch_name" "$remote_branch_sha"
-  fi
-  persist_review_result "all clear!"
-  emit_result "all clear!"
-  exit 0
-fi
-
-if [[ "$review_mode" == "remote" ]]; then
-  require_cmd gh
-  require_cmd jq
 
   if [[ "$should_push_review_sha" != "0" ]]; then
     push_review_target "$review_sha" "$branch_name" "$remote_branch_sha"
@@ -388,12 +446,12 @@ if [[ "$review_mode" == "remote" ]]; then
   fi
 
   repo_name="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
-
   remote_review_started_at="$(gh api --method POST "repos/$repo_name/issues/$pr_number/comments" -f body="$trigger_comment" --jq '.created_at' 2>/dev/null || true)"
   if [[ -z "$remote_review_started_at" ]]; then
     emit_result "request-review (remote): failed to post trigger comment '$trigger_comment' on PR #$pr_number"
     exit 1
   fi
+
   commit_timestamp=""
   for _ in $(seq 1 30); do
     commit_timestamp="$(gh api "repos/$repo_name/pulls/$pr_number/commits" --jq '.[] | select(.sha=="'"$review_sha"'") | .commit.committer.date' || true)"
@@ -458,122 +516,72 @@ if [[ "$review_mode" == "remote" ]]; then
   done
 fi
 
-if [[ "$review_mode" != "local" ]]; then
-  echo "request-review: unsupported configured review mode '$review_mode' (expected 'local' or 'remote')" >&2
+if [[ "$review_mode" != "host" ]]; then
+  echo "request-review: unsupported configured review mode '$review_mode' (expected 'host' or 'remote')" >&2
   exit 2
 fi
 
-require_cmd docker
-
-local_tmp_output_path="$repo_root/.request-review.output.tmp"
-
 config_file="${canonical_codex_home}/config.toml"
 if [[ ! -f "$config_file" ]]; then
-  emit_result "request-review (local): missing config file: $config_file"
+  emit_result "request-review (host): missing config file: $config_file"
   exit 1
 fi
 if ! rg -q "^\[profiles\.${local_profile}\]$" "$config_file"; then
-  emit_result "request-review (local): profile '$local_profile' not found in $config_file"
+  emit_result "request-review (host): profile '$local_profile' not found in $config_file"
   exit 1
 fi
 
-shared_builder="${canonical_codex_home}/scripts/build-codex-agent-image"
-if [[ ! -x "$shared_builder" ]]; then
-  emit_result "request-review (local): missing shared Docker builder: $shared_builder"
-  exit 1
-fi
-
-local_image_tag="${REQUEST_REVIEW_IMAGE:-${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}}"
-host_codex_home="$canonical_codex_home"
-docker_home="/tmp/request-review-home"
-docker_codex_home="/codex-home"
-request_review_temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/request-review.runtime.XXXXXX")"
-empty_skills_dir="$request_review_temp_dir/empty-skills"
-mkdir -p "$empty_skills_dir"
-absolute_git_dir="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
-common_git_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-extra_docker_mounts=()
-
-add_git_mount_if_needed() {
-  local mount_path="$1"
-  local existing_path
-
-  [[ -n "$mount_path" ]] || return 0
-  [[ -d "$mount_path" ]] || return 0
-  if path_is_within "$mount_path" "$repo_root"; then
-    return 0
+review_mode_for_host=""
+review_commit_ref=""
+if [[ "$bridge_review_mode" != "0" ]]; then
+  if [[ "$use_existing_commit_flag" != "0" ]]; then
+    review_mode_for_host="commit"
+    review_commit_ref="$existing_commit_sha_ref"
+  else
+    review_mode_for_host="uncommitted"
   fi
-
-  set +u
-  for existing_path in "${extra_docker_mounts[@]}"; do
-    if [[ "$existing_path" == "$mount_path:$mount_path:ro" ]]; then
-      set -u
-      return 0
-    fi
-  done
-  set -u
-
-  extra_docker_mounts+=("$mount_path:$mount_path:ro")
-}
-
-add_git_mount_if_needed "$absolute_git_dir"
-add_git_mount_if_needed "$common_git_dir"
-
-if ! docker image inspect "$local_image_tag" >/dev/null 2>&1; then
-  CODEX_AGENT_IMAGE="$local_image_tag" \
-  CODEX_AGENT_CODEX_VERSION="${REQUEST_REVIEW_CODEX_VERSION:-0.110.0}" \
-    "$shared_builder" >/dev/null
-fi
-
-cmd=(
-  docker run --rm -i
-  -u "$(id -u):$(id -g)"
-  -e "HOME=$docker_home"
-  -e "CODEX_HOME=$docker_codex_home"
-  -e "CODEX_NO_COLOR=1"
-  -v "$host_codex_home:$docker_codex_home:rw"
-  # Keep skills isolated from the host, but writable so codex can bootstrap
-  # its system skills into the temp directory.
-  -v "$empty_skills_dir:$docker_codex_home/skills:rw"
-  -v "$repo_root:/workspace:rw"
-)
-
-set +u
-for docker_mount in "${extra_docker_mounts[@]}"; do
-  cmd+=(-v "$docker_mount")
-done
-set -u
-
-cmd+=(
-  --workdir /workspace
-  "$local_image_tag"
-  codex exec
-  --skip-git-repo-check
-  --json
-  -C /workspace
-  -s read-only
-  -p "$local_profile"
-  review
-  --commit "$review_sha"
-  --title "$commit_message"
-)
-
-if "${cmd[@]}" >"$local_raw_jsonl_path" 2>"$local_error_path"; then
-  review_exit=0
 else
-  review_exit=$?
+  if [[ "$use_existing_commit_flag" != "0" ]]; then
+    review_sha="$(git rev-parse --verify "${existing_commit_sha_ref}^{commit}" 2>/dev/null || true)"
+    if [[ -z "$review_sha" ]]; then
+      echo "request-review: existing commit ref is not a valid commit: $existing_commit_sha_ref" >&2
+      exit 2
+    fi
+    review_mode_for_host="commit"
+    review_commit_ref="$review_sha"
+  else
+    git add -A
+    if git diff --cached --quiet; then
+      review_mode_for_host="commit"
+      review_commit_ref="$(git rev-parse --verify HEAD)"
+    else
+      review_mode_for_host="commit"
+      git commit -m "$commit_message"
+      review_commit_ref="$(git rev-parse --verify HEAD)"
+    fi
+  fi
 fi
 
-extract_local_review_message "$local_raw_jsonl_path" "$local_tmp_output_path"
+if [[ "$bridge_review_mode" != "0" ]]; then
+  if host_review_via_bridge "$repo_root" "$commit_message" "$local_profile" "$review_mode_for_host" "$review_commit_ref" >"$local_tmp_output_path"; then
+    review_exit=0
+  else
+    review_exit=$?
+  fi
+else
+  if host_review_direct "$repo_root" "$commit_message" "$local_profile" "$local_tmp_output_path" "$local_error_path" "$review_mode_for_host" "$review_commit_ref"; then
+    review_exit=0
+  else
+    review_exit=$?
+  fi
+fi
 
 if [[ ! -s "$local_tmp_output_path" ]]; then
-  emit_result "request-review (local): missing review output at $local_output_path (check $local_error_path)"
+  emit_result "request-review (host): missing review output at $local_tmp_output_path (check $local_error_path)"
   exit 1
 fi
 
 local_review_message="$(cat "$local_tmp_output_path")"
-rm -f "$local_tmp_output_path"
-
 if [[ "$review_exit" -ne 0 ]]; then
   emit_result "$local_review_message"
   exit "$review_exit"
@@ -583,7 +591,7 @@ persist_review_result "$local_review_message"
 emit_result "$local_review_message"
 
 if [[ "$local_keep_debug_logs" == "0" ]]; then
-  rm -f "$local_raw_jsonl_path"
+  rm -f "$local_tmp_output_path"
 fi
 
 exit 0
