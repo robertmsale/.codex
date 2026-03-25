@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -366,57 +367,19 @@ def _parse_output_with_codex(
 
     with tempfile.TemporaryDirectory(prefix="command-parser-mcp.") as temp_dir:
         temp_path = Path(temp_dir)
+        codex_home = _stage_parser_codex_home(temp_path)
         output_log = temp_path / "output.log"
         response_log = temp_path / "response.log"
         command_txt = temp_path / "command.txt"
-        agents_md = temp_path / "AGENTS.md"
 
         output_log.write_text(outcome.combined_output, encoding="utf-8", errors="replace")
         command_txt.write_text(" ".join(shlex.quote(arg) for arg in raw_command) + "\n", encoding="utf-8")
-        agents_md.write_text(
-            """You are command-parser, a CLI output extraction agent.
-
-Task:
-- Read ./output.log and extract errors (and warnings only if requested).
-- Prefer targeted search (`rg`, `grep`) before broad reads for huge files.
-- Read ./command.txt to determine whether this command should have used command-parser.
-
-Hard refusal (required):
-- If ./command.txt shows a non-noisy command (for example `cargo fmt`, `ls`, `rg`), output exactly:
-  Refusal: non-noisy command. Run this command directly instead of command-parser.
-- Do not apply this refusal to commands that are expected noisy parser targets, such as `flutter test`, `flutter drive`, or parser-routed wrapper commands that explicitly require command-parser like `db_test.sh test ...` or `db_test.sh exec ...`, even if the nested command is small.
-- Do not parse ./output.log when this refusal applies.
-
-Output rules:
-- If there are no errors at all:
-  - and no additional request: output exactly: No errors!
-  - and additional request exists: output `No errors!` first, then `## Requested Information`
-- Otherwise output:
-  - ## Errors
-  - one bullet per distinct error as: - <brief message> — <file:line(:col) when present>
-- Special case — unit test failures:
-  - Include failing test names and concise assertion/panic/trace lines that explain why a test failed.
-  - Include expected vs actual snippets when present.
-  - Do not include passing tests or non-error test noise.
-- If warnings are requested and present, add:
-  - ## Warnings
-  - one bullet per distinct warning as: - <brief message> — <file:line(:col) when present>
-- Additional request (optional):
-  - Only if an additional request is provided, append:
-    - ## Requested Information
-    - concise bullets answering only that request, anchored to log lines/files when present
-  - If requested information is not present, output: - Not found in output.
-- Preserve file paths and coordinates exactly as shown.
-- Do not include advice, fixes, commands, or extra headings.
-""",
-            encoding="utf-8",
-        )
 
         prompt = (
             f"Parse ./output.log from this raw command:\n{command_txt.read_text(encoding='utf-8')}\n"
             f"Include warnings: {'yes' if include_warnings else 'no'}\n\n"
             f"Additional request: {additional_request or '<none>'}\n\n"
-            "Return only the structured extraction format from AGENTS.md."
+            "Read the provided files and return only the extraction result."
         )
 
         cmd = [
@@ -519,7 +482,11 @@ Output rules:
             ]
         )
 
-        result = subprocess.run(cmd, text=True, capture_output=True)
+        parser_env = os.environ.copy()
+        parser_env["CODEX_HOME"] = str(codex_home)
+        parser_env["HOME"] = str(temp_path / "home")
+
+        result = subprocess.run(cmd, text=True, capture_output=True, env=parser_env)
         if result.returncode != 0:
             raise CommandParserError(
                 "codex exec parser failed: " + (result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}")
@@ -529,6 +496,23 @@ Output rules:
             raise CommandParserError("Missing parser response")
 
         return response_log.read_text(encoding="utf-8", errors="replace").strip()
+
+
+def _stage_parser_codex_home(temp_path: Path) -> Path:
+    source_codex_home = CODEX_CONFIG_FILE.expanduser().resolve().parent
+    source_role_file = source_codex_home / "roles" / "command-parser.md"
+    source_config_file = CODEX_CONFIG_FILE.expanduser().resolve()
+    if not source_config_file.exists():
+        raise CommandParserError(f"Missing Codex config for parser profile: {source_config_file}")
+    if not source_role_file.exists():
+        raise CommandParserError(f"Missing command-parser role instructions: {source_role_file}")
+
+    staged_codex_home = temp_path / "codex-home"
+    staged_role_file = staged_codex_home / "roles" / "command-parser.md"
+    staged_role_file.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_config_file, staged_codex_home / "config.toml")
+    shutil.copy2(source_role_file, staged_role_file)
+    return staged_codex_home
 
 
 def _raw_command_text(command: list[str]) -> str:
