@@ -86,15 +86,18 @@ developer_instructions = "You are the database query agent. The user set the DAT
 [profiles.command-parser-spark]
 model = "gpt-5.3-codex-spark"
 model_reasoning_effort = "low"
+model_base_instructions = "/codex-home/roles/command-parser.md"
 
 [profiles.command-parser-local]
 model_provider = "lmstudio-local"
 # model = "zai-org/glm-4.7-flash"
 model = "openai/gpt-oss-20b"
+model_base_instructions = "/codex-home/roles/command-parser.md"
 
 [profiles.command-parser]
 model = "gpt-5.1-codex-mini"
 model_reasoning_effort = "medium"
+model_base_instructions = "/codex-home/roles/command-parser.md"
 
 [profiles.local-review]
 model = "gpt-5.3-codex"
