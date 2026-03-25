@@ -17,8 +17,12 @@ worktree_path="$1"
 integration_branch_arg="${2:-}"
 
 if ! have_local_git_repo "$worktree_path"; then
-  echo "git-merge-worktree remains host-only. Run it from the host against the real git worktree." >&2
-  exit 2
+  args=("worktree_path=$worktree_path")
+  if [[ -n "$integration_branch_arg" ]]; then
+    args+=("integration_branch=$integration_branch_arg")
+  fi
+  http_gitops_op git_merge_worktree "${args[@]}"
+  exit 0
 fi
 
 resolved_output="$(resolve_worktree "$worktree_path")"
