@@ -155,6 +155,15 @@ ensure_parser_container() {
   local docker_spool_root="$7"
 
   mkdir -p "$host_spool_root" "$host_skills_shadow_dir"
+  chmod -R a+rwX "$host_skills_shadow_dir"
+
+  if docker container inspect "$container_name" >/dev/null 2>&1; then
+    local existing_codex_home_mount
+    existing_codex_home_mount="$(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "'"$docker_codex_home"'"}}{{.Source}}{{end}}{{end}}' "$container_name" 2>/dev/null || true)"
+    if [[ "$existing_codex_home_mount" != "$host_codex_home" ]]; then
+      docker rm -f "$container_name" >/dev/null 2>&1 || true
+    fi
+  fi
 
   if docker container inspect "$container_name" >/dev/null 2>&1; then
     local existing_image_id desired_image_id
@@ -191,6 +200,23 @@ ensure_parser_container() {
     echo "$run_output" >&2
     return 1
   fi
+}
+
+sync_codex_home_shadow() {
+  local source_codex_home="$1"
+  local shadow_codex_home="$2"
+
+  mkdir -p "$shadow_codex_home"
+  rm -f "$shadow_codex_home/config.toml" "$shadow_codex_home/auth.json"
+
+  if [[ -f "$source_codex_home/config.toml" ]]; then
+    cp "$source_codex_home/config.toml" "$shadow_codex_home/config.toml"
+  fi
+  if [[ -f "$source_codex_home/auth.json" ]]; then
+    cp "$source_codex_home/auth.json" "$shadow_codex_home/auth.json"
+  fi
+
+  chmod -R a+rwX "$shadow_codex_home"
 }
 
 additional_request="${COMMAND_PARSER_ADDITIONAL_REQUEST:-}"
@@ -267,11 +293,21 @@ if mkdir -p "$preferred_spool_root" 2>/dev/null; then
   host_spool_root="$preferred_spool_root"
 else
   tmp_root="${TMPDIR:-/tmp}"
-  host_spool_root="${tmp_root%/}/command-parser-spool"
+host_spool_root="${tmp_root%/}/command-parser-spool"
   mkdir -p "$host_spool_root"
 fi
-host_skills_shadow_dir="$host_spool_root/skills-shadow"
+tmp_dir="$(mktemp -d "$host_spool_root/run.XXXXXX")"
+chmod 777 "$tmp_dir"
+host_codex_home_shadow="$tmp_dir/codex-home-shadow-lite"
+host_skills_shadow_dir="$tmp_dir/skills-shadow"
 docker_spool_root="/tmp/command-parser-spool"
+cleanup() {
+  docker rm -f "$container_name" >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+sync_codex_home_shadow "$host_codex_home" "$host_codex_home_shadow"
 
 if ! docker image inspect "$image_tag" >/dev/null 2>&1; then
   "$build_script" >/dev/null
@@ -280,18 +316,11 @@ fi
 ensure_parser_container \
   "$container_name" \
   "$image_tag" \
-  "$host_codex_home" \
+  "$host_codex_home_shadow" \
   "$host_spool_root" \
   "$host_skills_shadow_dir" \
   "$docker_codex_home" \
   "$docker_spool_root"
-
-tmp_dir="$(mktemp -d "$host_spool_root/run.XXXXXX")"
-chmod 777 "$tmp_dir"
-cleanup() {
-  rm -rf "$tmp_dir"
-}
-trap cleanup EXIT
 
 if IS_USING_COMMAND_PARSER=true "$@" >"$tmp_dir/output.log" 2>&1; then
   command_exit=0
