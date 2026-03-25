@@ -287,6 +287,7 @@ ensure_parser_container \
   "$docker_spool_root"
 
 tmp_dir="$(mktemp -d "$host_spool_root/run.XXXXXX")"
+chmod 777 "$tmp_dir"
 cleanup() {
   rm -rf "$tmp_dir"
 }
