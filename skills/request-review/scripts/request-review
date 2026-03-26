@@ -99,11 +99,12 @@ host_review_direct() {
   local commit_ref="${7:-}"
 
   local cmd=(
-    codex exec review
-    --output-last-message "$output_path"
+    codex exec
     -C "$repo_root"
     -s read-only
     -p "$profile"
+    review
+    --output-last-message "$output_path"
     --title "$title"
   )
 

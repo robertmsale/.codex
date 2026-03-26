@@ -1,8 +1,19 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 gitops_http_base_url() {
   printf '%s\n' "${PARALLELS_SYNC_GITOPS_BASE_URL:-http://host.internal:8765}"
+}
+
+bridge_fallback_allowed() {
+  [[ "${PARALLELS_SYNC_GITOPS_NO_BRIDGE:-0}" != "1" ]]
+}
+
+remove_shadow_worktree_path() {
+  local worktree_path="$1"
+  [[ -n "$worktree_path" ]] || return 0
+  [[ -e "$worktree_path" ]] || return 0
+  rm -rf "$worktree_path"
 }
 
 have_local_git_repo() {

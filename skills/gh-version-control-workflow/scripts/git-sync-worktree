@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,6 +17,10 @@ worktree_path="$1"
 base_branch="${2:-${GITOPS_INTEGRATION_BRANCH:-master}}"
 
 if ! have_local_git_repo "$worktree_path"; then
+  if ! bridge_fallback_allowed; then
+    echo "Path is not a valid local git worktree: $worktree_path" >&2
+    exit 2
+  fi
   http_gitops_op git_sync_worktree "worktree_path=$worktree_path" "upstream=origin/$base_branch"
   exit 0
 fi

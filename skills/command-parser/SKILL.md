@@ -29,7 +29,7 @@ Recommended default:
 - Enable `--warnings` only when the user or task explicitly calls for it.
 
 Runtime notes:
-- On Linux, the wrapper automatically uses a rootful container with the real `CODEX_HOME` mounted writable and the parser itself running with `danger-full-access` inside the container.
+- On Linux, the wrapper automatically uses a fresh rootful container per invocation with the real `CODEX_HOME` mounted writable and the parser itself running with `danger-full-access` inside the container.
 - On macOS, the wrapper keeps the existing shadow/rootless path.
 - Override only for debugging with `COMMAND_PARSER_RUNTIME_MODE=shadow-rootless` or `COMMAND_PARSER_RUNTIME_MODE=linux-rootful`.
 

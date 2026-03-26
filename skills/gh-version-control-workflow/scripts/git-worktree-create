@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +20,10 @@ worktree_name="$4"
 
 repo_abs="$(cd "$repo_path" && pwd)"
 if ! git -C "$repo_abs" rev-parse --git-dir >/dev/null 2>&1; then
+  if ! bridge_fallback_allowed; then
+    echo "Path is not a valid local git repository: $repo_abs" >&2
+    exit 2
+  fi
   http_gitops_op git_worktree_create \
     "repo_path=$repo_abs" \
     "base_branch=$base_branch" \

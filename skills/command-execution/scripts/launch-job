@@ -20,6 +20,46 @@ strip_shim_path() {
   printf '%s\n' "$rebuilt"
 }
 
+swap_home_users_prefix() {
+  local path_value="${1:-}"
+  case "$path_value" in
+    /home/*)
+      printf '/Users/%s\n' "${path_value#/home/}"
+      ;;
+    /Users/*)
+      printf '/home/%s\n' "${path_value#/Users/}"
+      ;;
+    *)
+      printf '%s\n' "$path_value"
+      ;;
+  esac
+}
+
+normalize_cwd_alias() {
+  local current="${PWD:-}"
+  local alternate=""
+  [[ -n "$current" ]] || return 0
+
+  if [[ ! -d "$current" ]]; then
+    alternate="$(swap_home_users_prefix "$current")"
+    if [[ "$alternate" != "$current" && -d "$alternate" ]]; then
+      cd "$alternate"
+      return 0
+    fi
+  fi
+
+  case "$current" in
+    /home/*|/Users/*)
+      alternate="$(swap_home_users_prefix "$current")"
+      if [[ "$alternate" != "$current" && -d "$alternate" ]]; then
+        # Prefer the mirrored alias path so commands behave consistently across
+        # macOS/VM sessions that bounce between /Users and /home.
+        cd "$alternate"
+      fi
+      ;;
+  esac
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -59,6 +99,8 @@ if [[ "${1:-}" == "-lc" || "${1:-}" == "-c" ]]; then
   shift
   set -- "$shell_bin" "$mode" "$command_text" "$@"
 fi
+
+normalize_cwd_alias
 
 umask 077
 state_root="/tmp/codex-command-jobs"

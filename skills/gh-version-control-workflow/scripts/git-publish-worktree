@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,12 +24,21 @@ fi
 worktree_path="$1"
 base_branch="${2:-${GITOPS_INTEGRATION_BRANCH:-master}}"
 
+if [[ ! -d "$worktree_path" ]]; then
+  echo "Worktree path does not exist: $worktree_path" >&2
+  exit 2
+fi
+
 if ! have_local_git_repo "$worktree_path"; then
+  if ! bridge_fallback_allowed; then
+    echo "Path is not a valid local git worktree: $worktree_path" >&2
+    exit 2
+  fi
   if [[ ! -f "$worktree_path/review.log" ]]; then
     echo "Publish blocked: review.log not found in worktree root. Request review first." >&2
     exit 2
   fi
-  http_gitops_op git_publish_worktree "worktree_path=$worktree_path"
+  http_gitops_op git_publish_worktree "worktree_path=$worktree_path" "integration_branch=$base_branch"
   exit 0
 fi
 

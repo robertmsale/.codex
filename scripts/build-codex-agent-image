@@ -42,10 +42,8 @@ RUN mkdir -p /etc/apt/keyrings && \\
 
 RUN npm install -g "@openai/codex@${codex_version}"
 
-RUN groupadd -g 1000 codex && \\
-    useradd -m -u 1000 -g 1000 -s /bin/bash codex && \\
-    install -d -o 1000 -g 1000 /home/codex/.codex && \\
-    install -d -o 1000 -g 1000 /workspace
+RUN install -d /root/.codex && \\
+    install -d /workspace
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bash"]

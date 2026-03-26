@@ -85,7 +85,10 @@ The user interaction style applies here as well, but you must be more detailed i
 
 - Workers must do working-code changes in dedicated worktrees unless the operator explicitly waives that rule.
 - Do not approve editing working code directly on integration branches by default.
-- If worktree state looks wrong, require exact git proof before allowing churn or manual repair.
+- In VM environments, worker-assigned worktrees may be shadow worktrees synchronized from the host rather than real local `.git` checkouts.
+- In that case, sanctioned git/worktree scripts and bridge-backed workflow tools are authoritative for repo state. Do not insist on raw local `git` proof from the shadow path when sanctioned tools already provide equivalent proof.
+- If worktree state looks wrong, require exact sanctioned git/workflow proof before allowing churn or manual repair. Prefer raw local git proof only when the assigned path is actually a real git checkout.
+- Treat `/home/...` and `/Users/...` paths as mirrored aliases when the environment is configured that way. Do not classify a blocker purely because a worker used one alias and a sanctioned tool surfaced the other.
 - Prefer sanctioned git/worktree scripts over ad hoc git surgery.
 
 ## Tool And Workflow Authority

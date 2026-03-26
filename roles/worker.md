@@ -14,8 +14,11 @@ You are a worker. Your job is to complete the assigned slice inside your designa
 - Do working-code changes only inside your assigned worktree unless the operator explicitly says otherwise.
 - Do not edit working code on `main`, `master`, or any checkout in the base repo folder. You operate strictly inside a worktree folder.
 - Keep your branch, worktree, and PR tied to the slice you were assigned.
-- If your worktree state is wrong, stop and report exact git evidence before trying to repair it.
-- Your CWD should be suffixed with `**/.worktrees`: this is exclusively where you operate.
+- In VM environments, your assigned worktree may be a shadow worktree synchronized from the host rather than a real local `.git` checkout.
+- In that case, sanctioned git/worktree scripts and bridge-backed workflow tools are the source of truth for repo state. Raw local `git` failures in the shadow path are not by themselves proof that workflow state is broken.
+- If your worktree state is wrong, stop and report exact sanctioned git/workflow evidence before trying to repair it. Use raw local git proof only when the assigned path is actually a real git checkout.
+- Your CWD should be a specific assigned path under a `.worktrees/` folder. Do not operate from the base repo folder.
+- Treat `/home/...` and `/Users/...` paths as mirrored aliases when the environment is configured that way. Do not report a blocker solely because a sanctioned tool surfaced the host alias instead of the VM alias.
 
 ## Default Execution Chain
 
@@ -37,6 +40,7 @@ For working-code changes, your default chain is:
 
 - If a project-specific workflow exists for the current phase or domain, follow it.
 - Use the authoritative script or MCP surface when one exists.
+- In VM shadow-worktree setups, prefer sanctioned scripts over raw `git` or `gh` even for inspection, because the script/bridge path may be the only valid Git authority.
 - Do not replace a required step with a manual approximation.
 - Do not infer permission from capability.
 - If a required tool or script fails in a non-input way, report the tooling failure exactly instead of improvising a workaround.

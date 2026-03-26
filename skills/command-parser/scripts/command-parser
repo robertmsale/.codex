@@ -255,6 +255,33 @@ ensure_parser_container_linux_rootful() {
   fi
 }
 
+run_parser_linux_rootful() {
+  local image_tag="$1"
+  local host_codex_home="$2"
+  local host_spool_root="$3"
+  local docker_codex_home="$4"
+  local docker_spool_root="$5"
+  local tmp_dir="$6"
+  local profile="$7"
+  local parser_sandbox="$8"
+
+  local docker_tmp docker_home docker_tmpdir
+  docker_tmp="$docker_spool_root/$(basename "$tmp_dir")"
+  docker_home="/root"
+  docker_tmpdir="$docker_tmp/tmp"
+
+  docker run --rm \
+    -e HOME="$docker_home" \
+    -e TMPDIR="$docker_tmpdir" \
+    -e CODEX_HOME="$docker_codex_home" \
+    -e CODEX_NO_COLOR=1 \
+    -v "$host_codex_home:$docker_codex_home:rw" \
+    -v "$host_spool_root:$docker_spool_root:rw" \
+    --workdir "$docker_tmp" \
+    "$image_tag" \
+    sh ./parse.sh
+}
+
 sync_codex_home_shadow() {
   local source_codex_home="$1"
   local shadow_codex_home="$2"
@@ -378,7 +405,9 @@ host_skills_shadow_dir="$tmp_dir/skills-shadow"
 docker_spool_root="/tmp/command-parser-spool"
 parser_sandbox="read-only"
 cleanup() {
-  docker rm -f "$container_name" >/dev/null 2>&1 || true
+  if [[ "$runtime_mode" == "shadow-rootless" ]]; then
+    docker rm -f "$container_name" >/dev/null 2>&1 || true
+  fi
   rm -rf "$tmp_dir" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -495,20 +524,29 @@ chmod +x "$tmp_dir/parse.sh"
 printf '%s\n' "$prompt" >"$tmp_dir/prompt.txt"
 chmod -R a+rX "$tmp_dir"
 
-docker_exec_args=(
-  exec
-  -e "HOME=$docker_home"
-  -e "TMPDIR=$docker_tmpdir"
-  -e "CODEX_HOME=$docker_codex_home"
-  -e "CODEX_NO_COLOR=1"
-  --workdir "$docker_tmp"
-)
-if [[ "$runtime_mode" == "shadow-rootless" ]]; then
-  docker_exec_args+=(-u "$(id -u):$(id -g)")
+if [[ "$runtime_mode" == "linux-rootful" ]]; then
+  run_parser_linux_rootful \
+    "$image_tag" \
+    "$host_codex_home" \
+    "$host_spool_root" \
+    "$docker_codex_home" \
+    "$docker_spool_root" \
+    "$tmp_dir" \
+    "$profile" \
+    "$parser_sandbox"
+else
+  docker_exec_args=(
+    exec
+    -e "HOME=$docker_home"
+    -e "TMPDIR=$docker_tmpdir"
+    -e "CODEX_HOME=$docker_codex_home"
+    -e "CODEX_NO_COLOR=1"
+    --workdir "$docker_tmp"
+    -u "$(id -u):$(id -g)"
+    "$container_name" sh ./parse.sh
+  )
+  docker "${docker_exec_args[@]}"
 fi
-docker_exec_args+=("$container_name" sh ./parse.sh)
-
-docker "${docker_exec_args[@]}"
 
 extract_parser_response "$events_log" "$tmp_dir/response.log"
 cat "$tmp_dir/response.log"

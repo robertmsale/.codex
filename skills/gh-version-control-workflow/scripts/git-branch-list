@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,6 +22,10 @@ if have_local_git_repo "$path"; then
     git -C "$path" branch --all --verbose --verbose
   fi
 else
+  if ! bridge_fallback_allowed; then
+    echo "Path is not a valid local git repository: $path" >&2
+    exit 2
+  fi
   if [[ "$local_only" -eq 1 ]]; then
     http_gitops_op visibility_git_branch_list "repo_path=$path" "all=false"
   else

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,7 +47,13 @@ if [[ ! -e "$worktree_path" ]]; then
 fi
 
 if ! git -C "$worktree_path" rev-parse --git-dir >/dev/null 2>&1; then
-  http_gitops_op git_worktree_cleanup "worktree_path=$worktree_path"
+  if ! bridge_fallback_allowed; then
+    echo "Path is not a valid local git worktree: $worktree_path" >&2
+    exit 2
+  fi
+  cleanup_output="$(http_gitops_op git_worktree_cleanup "worktree_path=$worktree_path")"
+  remove_shadow_worktree_path "$worktree_path"
+  printf '%s\n' "$cleanup_output"
   exit 0
 fi
 
