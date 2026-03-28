@@ -36,11 +36,6 @@ request() {
   fi
 }
 
-log_progress() {
-  local message="$1"
-  printf '%s\n' "$message" >&2
-}
-
 render() {
   local payload="$1"
   local mode="$2"
@@ -58,66 +53,10 @@ if mode == "json":
 
 if mode == "devices":
     for device in payload.get("devices", []):
-        reservation = device.get("reservation_path") or "-"
-        print(f"{device.get('device_id')}\t{device.get('name')}\t{device.get('state')}\t{reservation}")
-    raise SystemExit(0)
-
-if mode == "session":
-    session = payload.get("session")
-    if not session:
-        print("No session.")
-        raise SystemExit(0)
-    print(f"Device: {session.get('device_name')} ({session.get('device_id')})")
-    print(f"State: {session.get('state')}")
-    print(f"Path: {session.get('path')}")
-    print(f"Launch Path: {session.get('launch_path')}")
-    if session.get("lane_root"):
-        print(f"Lane: {session.get('lane_root')}")
-    print(f"Target: {session.get('target')}")
-    if session.get("dtd_uri"):
-        print(f"DTD: {session.get('dtd_uri')}")
-    if session.get("app_uri"):
-        print(f"App: {session.get('app_uri')}")
-    api = session.get("api") or {}
-    if api.get("connection_domain"):
-        print(f"Connection Domain: {api.get('connection_domain')}")
-    if api.get("base_url"):
-        print(f"API: {api.get('base_url')}")
-    if api.get("login_email") or api.get("login_password"):
-        print(f"Login: {api.get('login_email')} / {api.get('login_password')}")
-    if session.get("last_error"):
-        print(f"Error: {session.get('last_error')}")
+        print(f"{device.get('device_id')}\t{device.get('name')}\t{device.get('state')}")
     raise SystemExit(0)
 
 print(payload.get("message", ""))
-session = payload.get("session")
-if session:
-    print(f"Device: {session.get('device_name')} ({session.get('device_id')})")
-    print(f"State: {session.get('state')}")
-    print(f"Path: {session.get('path')}")
-    print(f"Launch Path: {session.get('launch_path')}")
-    if session.get("lane_root"):
-        print(f"Lane: {session.get('lane_root')}")
-    print(f"Target: {session.get('target')}")
-    if session.get("dtd_uri"):
-        print(f"DTD: {session.get('dtd_uri')}")
-    if session.get("app_uri"):
-        print(f"App: {session.get('app_uri')}")
-    api = session.get("api") or {}
-    if api.get("connection_domain"):
-        print(f"Connection Domain: {api.get('connection_domain')}")
-    if api.get("base_url"):
-        print(f"API: {api.get('base_url')}")
-    if api.get("login_email") or api.get("login_password"):
-        print(f"Login: {api.get('login_email')} / {api.get('login_password')}")
-    if session.get("last_error"):
-        print(f"Error: {session.get('last_error')}")
-available = payload.get("available_devices") or []
-if available:
-    print("Available:")
-    for device in available:
-        reservation = device.get("reservation_path") or "-"
-        print(f"{device.get('device_id')}\t{device.get('name')}\t{device.get('state')}\t{reservation}")
 if not payload.get("ok", True):
     raise SystemExit(1)
 PY
@@ -127,20 +66,11 @@ case "$COMMAND" in
   devices)
     RESPONSE="$(request GET /devices)"
     ;;
-  session)
-    if [[ -z "$DEVICE_ID_ARG" ]]; then
-      echo "--device-id is required for session" >&2
-      exit 64
-    fi
-    ENCODED_DEVICE_ID="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$DEVICE_ID_ARG")"
-    RESPONSE="$(request GET "/session?device_id=$ENCODED_DEVICE_ID")"
-    ;;
   reserve)
     if [[ -z "$DEVICE_ID_ARG" ]]; then
       echo "--device-id is required for reserve" >&2
       exit 64
     fi
-    log_progress "Requesting runtime info for $DEVICE_ID_ARG. The broker will bootstrap the lane if it is not already running."
     BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
     RESPONSE="$(request POST /reserve "$BODY")"
     ;;
@@ -149,7 +79,6 @@ case "$COMMAND" in
       echo "--device-id is required for reboot" >&2
       exit 64
     fi
-    log_progress "Restarting the runtime for $DEVICE_ID_ARG. Waiting for a fresh DTD session."
     BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
     RESPONSE="$(request POST /reboot "$BODY")"
     ;;
@@ -157,7 +86,6 @@ case "$COMMAND" in
     cat <<'EOF'
 Usage:
   flutter-sim devices [--json]
-  flutter-sim session --device-id <id> [--json]
   flutter-sim reserve --device-id <id> [--json]
   flutter-sim reboot --device-id <id> [--json]
 EOF
@@ -170,7 +98,6 @@ if [[ "$JSON" -eq 1 ]]; then
 else
   case "$COMMAND" in
     devices) render "$RESPONSE" devices ;;
-    session) render "$RESPONSE" session ;;
     *) render "$RESPONSE" op ;;
   esac
 fi

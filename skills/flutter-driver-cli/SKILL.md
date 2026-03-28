@@ -1,6 +1,6 @@
 ---
 name: flutter-driver-cli
-description: Use this skill when you need to drive a native Flutter app on iOS through the simulator broker, including reserving a runtime, connecting with the returned DTD/App URIs, inspecting the widget tree, taking screenshots, and rebooting the runtime when a new build is needed. [skill-hash:6cc4fd4]
+description: Use this skill when you need to drive a native Flutter app on iOS through the simulator broker, including reserving a runtime, inspecting apps and widget trees, sending driver commands, taking screenshots, and rebooting a runtime when a fresh build is needed. [skill-hash:3e0d6ea]
 ---
 
 # Flutter Driver CLI
@@ -21,6 +21,9 @@ This skill is for native Flutter driving on iOS through the simulator broker.
 - Do not use `osascript` as part of this skill.
 - Do not reboot, reset, or otherwise manage simulators directly as part of this skill.
 - Do not launch `flutter run` manually as part of this skill.
+- Do not run multiple commands from this skill in parallel.
+- Run every command in strict sequence and wait for each one to finish before starting the next one.
+- Parallel driver calls make state observation unreliable and can invalidate QA results by racing taps, text entry, screenshots, and scroll state against each other.
 - If you do not already know the target simulator device ID, ask the user or use `flutter-sim devices`.
 
 ## Standard workflow
@@ -31,26 +34,21 @@ This skill is for native Flutter driving on iOS through the simulator broker.
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim devices
 ```
 
+Skip step 1 if the orchestrator provides you with a device directly.
+
 2. Reserve the target runtime:
 
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reserve --device-id <id>
 ```
 
-`reserve` is the main entrypoint. It waits for the broker to make the runtime ready and returns the connection details you need:
-- DTD URI
-- App URI
-- connection domain
-- API base URL
+`reserve` waits for the broker to make the runtime ready and returns the information needed to drive the app.
 
-If the runtime is already up, `reserve` returns the existing session details.
-
-3. Drive the app with the returned connection details:
+3. Drive the app by device ID:
 
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive widget-tree \
-  --dtd-uri <dtd-uri> \
-  --app-uri <app-uri>
+  --device-id <id>
 ```
 
 4. If fixes land and you need a fresh runtime, reboot it:
@@ -59,45 +57,24 @@ If the runtime is already up, `reserve` returns the existing session details.
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reboot --device-id <id>
 ```
 
-Then reconnect using the new DTD/App URIs returned by `reboot`.
-
-## Session checks
-
-Use `session` when you need to inspect the current runtime state for one device:
-
-```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim session --device-id <id>
-```
-
-Use this to confirm:
-- current state
-- DTD URI
-- App URI
-- connection domain
-- API base URL
-- last error
+Then continue using the same device ID with `flutter-drive`.
 
 ## Common driver commands
 
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive apps \
-  --dtd-uri <dtd-uri>
+  --device-id <id>
 
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive widget-tree \
-  --dtd-uri <dtd-uri> \
-  --app-uri <app-uri>
+  --device-id <id>
 
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver screenshot \
-  --dtd-uri <dtd-uri> \
-  --app-uri <app-uri> \
-  --out /tmp/app.png
+  --device-id <id> \
+  --out app.png
 
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver get_health \
-  --dtd-uri <dtd-uri> \
-  --app-uri <app-uri>
+  --device-id <id>
 ```
-
-Use both the DTD URI and the App URI returned by the broker. Do not assume the raw loopback app URI reported by DTD is sufficient on its own.
 
 ## Finder guidance
 
@@ -108,31 +85,16 @@ Prefer selectors in this order:
 3. `Ancestor` or `Descendant` when the visible text is only a child of the tappable widget
 4. `ByType` only when the tree clearly shows a unique runtime type
 
-Prefer `fill_text` over separate tap plus type flows for text fields.
-
-Examples:
-
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver get_text \
-  --dtd-uri <dtd-uri> \
+  --device-id <id> \
   --arg finderType=ByText \
   --arg 'text=Sales'
 ```
 
 ```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver fill_text \
-  --dtd-uri <dtd-uri> \
-  --app-uri <app-uri> \
-  --arg finderType=ByValueKey \
-  --arg keyValueString=domainField \
-  --arg keyValueType=String \
-  --arg 'text=https://example.test'
-```
-
-```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver tap \
-  --dtd-uri <dtd-uri> \
-  --app-uri <app-uri> \
+  --device-id <id> \
   --arg finderType=ByTooltipMessage \
   --arg 'text=Close chat'
 ```
@@ -141,10 +103,16 @@ For nested finders, prefer `--input` with one JSON object:
 
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver tap \
-  --dtd-uri <dtd-uri> \
-  --app-uri <app-uri> \
+  --device-id <id> \
   --input '{"finderType":"Ancestor","of":{"finderType":"ByText","text":"Export"},"matching":{"finderType":"ByType","type":"OutlinedButton"},"firstMatchOnly":"true","matchRoot":"false"}'
 ```
+
+For screenshots:
+
+- Provide only the image name with `--out`
+- The wrapper writes the file under `/tmp/flutter-driver-screenshots/<device-id>/<image-name>`
+- The command prints the absolute path to the created screenshot
+- For text entry, tap the field first and then run `enter_text` as a separate command
 
 ## Caveats
 

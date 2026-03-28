@@ -1,28 +1,318 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="/Users/robertsale/Code/flutter-driver-cli"
-DRIVER_ENTRYPOINT="/Users/robertsale/Code/flutter-driver-cli/bin/flutter_driver_cli.dart"
-CALLER_PWD="$PWD"
+BASE_URL="${FLUTTER_SIM_SERVER_BASE_URL:-http://127.0.0.1:8767}"
+COMMAND="${1:-}"
+shift || true
 
-pick_runtime_repo() {
-  if [[ -w "$REPO_ROOT" ]]; then
-    printf '%s\n' "$REPO_ROOT"
-    return 0
+DEVICE_ID_ARG=""
+JSON=0
+FULL=0
+SUMMARY=1
+STABLE_READS="1"
+MAX_ATTEMPTS="1"
+SETTLE_MS="300"
+TIMEOUT_MS="5000"
+OUT_PATH=""
+INPUT_JSON=""
+DRIVER_ARGS=()
+LEGACY_URI_WARNED=0
+SCREENSHOT_ROOT="/tmp/flutter-driver-screenshots"
+
+warn_legacy_uri_arg() {
+  local flag="$1"
+  local value="${2:-}"
+  if [[ "$LEGACY_URI_WARNED" -eq 0 ]]; then
+    printf 'warning: %s is no longer needed with the broker-backed wrapper and will be ignored.\n' "$flag" >&2
+    LEGACY_URI_WARNED=1
   fi
-
-  local shadow_root="/tmp/flutter-driver-cli-shadow"
-  mkdir -p "$shadow_root"
-  rsync -a --delete \
-    --exclude '.git' \
-    --exclude '.dart_tool' \
-    "$REPO_ROOT"/ "$shadow_root"/
-  printf '%s\n' "$shadow_root"
+  :
 }
 
-RUNTIME_REPO="$(pick_runtime_repo)"
-RUNTIME_ENTRYPOINT="$RUNTIME_REPO/bin/flutter_driver_cli.dart"
+normalize_screenshot_out_path() {
+  local device_id="$1"
+  local requested_path="$2"
+  if [[ -z "$requested_path" ]]; then
+    return 0
+  fi
+  local image_name
+  image_name="$(basename "$requested_path")"
+  if [[ -z "$image_name" || "$image_name" == "." || "$image_name" == ".." ]]; then
+    echo "Invalid screenshot image name." >&2
+    exit 64
+  fi
+  OUT_PATH="${SCREENSHOT_ROOT}/${device_id}/${image_name}"
+}
 
-cd "$RUNTIME_REPO"
-export FLUTTER_DRIVER_CLI_NAMESPACE="$CALLER_PWD"
-exec dart run "$RUNTIME_ENTRYPOINT" "$@"
+request() {
+  local method="$1"
+  local endpoint="$2"
+  local body="$3"
+  curl -fsS -X "$method" -H 'Content-Type: application/json' "$BASE_URL$endpoint" -d "$body"
+}
+
+render() {
+  local payload="$1"
+  local mode="$2"
+  local payload_file
+  payload_file="$(mktemp)"
+  printf '%s' "$payload" > "$payload_file"
+  python3 - "$mode" "$OUT_PATH" "$payload_file" <<'PY'
+import base64
+import json
+import sys
+from pathlib import Path
+
+mode = sys.argv[1]
+out_path = sys.argv[2]
+payload_path = Path(sys.argv[3])
+payload = json.loads(payload_path.read_text())
+
+if mode == "json":
+    print(json.dumps(payload, indent=2))
+    raise SystemExit(0 if payload.get("ok", True) else 1)
+
+if not payload.get("ok", True):
+    message = payload.get("message") or "Request failed."
+    if payload.get("stderr"):
+        message = f"{message}\n{payload['stderr']}"
+    elif payload.get("stdout"):
+        message = f"{message}\n{payload['stdout']}"
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+if mode == "apps":
+    apps = payload.get("apps") or []
+    if not apps:
+        print("No apps connected to DTD.")
+        raise SystemExit(0)
+    for app in apps:
+        uri = app.get("exposedUri") or app.get("uri") or "-"
+        name = app.get("name") or "-"
+        print(f"{name}\t{uri}")
+    raise SystemExit(0)
+
+if mode == "widget-tree":
+    tree = payload.get("tree")
+    print(json.dumps(tree, indent=2))
+    raise SystemExit(0)
+
+if mode == "screenshot":
+    data = payload.get("data_base64")
+    if not data:
+        print("Screenshot response did not include image data.", file=sys.stderr)
+        raise SystemExit(1)
+    target = out_path or payload.get("path")
+    if not target:
+        print("Screenshot response did not include an output path.", file=sys.stderr)
+        raise SystemExit(1)
+    path = Path(target)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(base64.b64decode(data))
+    print(str(path))
+    raise SystemExit(0)
+
+result = payload.get("result")
+if result is None:
+    print(json.dumps(payload, indent=2))
+    raise SystemExit(0)
+
+if isinstance(result, str):
+    print(result)
+    raise SystemExit(0)
+
+if isinstance(result, dict):
+    response = result.get("response")
+    if response is None:
+        print(json.dumps(result, indent=2))
+        raise SystemExit(0)
+    if isinstance(response, str):
+        print(response)
+        raise SystemExit(0)
+    if isinstance(response, (int, float)):
+        print(response)
+        raise SystemExit(0)
+    if isinstance(response, dict):
+        if "health" in response and len(response) == 1:
+            print(response["health"])
+            raise SystemExit(0)
+        print(json.dumps(result, indent=2))
+        raise SystemExit(0)
+
+print(json.dumps(result, indent=2))
+PY
+  local status=$?
+  rm -f "$payload_file"
+  return $status
+}
+
+case "$COMMAND" in
+  apps|widget-tree)
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --device-id)
+          DEVICE_ID_ARG="$2"
+          shift 2
+          ;;
+        --json)
+          JSON=1
+          shift
+          ;;
+        --full)
+          FULL=1
+          SUMMARY=0
+          shift
+          ;;
+        --summary)
+          SUMMARY=1
+          shift
+          ;;
+        --no-summary)
+          SUMMARY=0
+          shift
+          ;;
+        --stable-reads)
+          STABLE_READS="$2"
+          shift 2
+          ;;
+        --max-attempts)
+          MAX_ATTEMPTS="$2"
+          shift 2
+          ;;
+        --settle-ms)
+          SETTLE_MS="$2"
+          shift 2
+          ;;
+        --dtd-uri|--app-uri)
+          warn_legacy_uri_arg "$1" "${2:-}"
+          shift 2
+          ;;
+        *)
+          echo "Unknown argument: $1" >&2
+          exit 64
+          ;;
+      esac
+    done
+    ;;
+  driver)
+    DRIVER_COMMAND="${1:-}"
+    if [[ -z "$DRIVER_COMMAND" ]]; then
+      echo "driver requires a command" >&2
+      exit 64
+    fi
+    if [[ "$DRIVER_COMMAND" == "fill_text" ]]; then
+      echo "fill_text is not supported by this wrapper." >&2
+      exit 64
+    fi
+    shift
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --device-id)
+          DEVICE_ID_ARG="$2"
+          shift 2
+          ;;
+        --arg)
+          DRIVER_ARGS+=("$2")
+          shift 2
+          ;;
+        --input)
+          INPUT_JSON="$2"
+          shift 2
+          ;;
+        --timeout)
+          TIMEOUT_MS="$2"
+          shift 2
+          ;;
+        --out)
+          OUT_PATH="$2"
+          shift 2
+          ;;
+        --json)
+          JSON=1
+          shift
+          ;;
+        --dtd-uri|--app-uri)
+          warn_legacy_uri_arg "$1" "${2:-}"
+          shift 2
+          ;;
+        *)
+          echo "Unknown argument: $1" >&2
+          exit 64
+          ;;
+      esac
+    done
+    ;;
+  *)
+    cat <<'EOF'
+Usage:
+  flutter-drive apps --device-id <id> [--json]
+  flutter-drive widget-tree --device-id <id> [--summary|--full] [--stable-reads N] [--max-attempts N] [--settle-ms N] [--json]
+  flutter-drive driver <command> --device-id <id> [--arg key=value] [--input <json>] [--timeout <ms>] [--out <image-name>] [--json]
+EOF
+    exit 64
+    ;;
+esac
+
+if [[ -z "$DEVICE_ID_ARG" ]]; then
+  echo "--device-id is required" >&2
+  exit 64
+fi
+
+if [[ "$COMMAND" == "driver" && "$DRIVER_COMMAND" == "screenshot" ]]; then
+  normalize_screenshot_out_path "$DEVICE_ID_ARG" "$OUT_PATH"
+fi
+
+case "$COMMAND" in
+  apps)
+    BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
+    RESPONSE="$(request POST /driver/apps "$BODY")"
+    MODE="apps"
+    ;;
+  widget-tree)
+    BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1], "summary": sys.argv[2] == "1", "full": sys.argv[3] == "1", "stable_reads": int(sys.argv[4]), "max_attempts": int(sys.argv[5]), "settle_ms": int(sys.argv[6])}))' "$DEVICE_ID_ARG" "$SUMMARY" "$FULL" "$STABLE_READS" "$MAX_ATTEMPTS" "$SETTLE_MS")"
+    RESPONSE="$(request POST /driver/widget-tree "$BODY")"
+    MODE="widget-tree"
+    ;;
+  driver)
+    DRIVER_BODY_ARGS=("$DEVICE_ID_ARG" "$DRIVER_COMMAND" "$TIMEOUT_MS" "$OUT_PATH" "$INPUT_JSON")
+    if ((${#DRIVER_ARGS[@]} > 0)); then
+      DRIVER_BODY_ARGS+=("${DRIVER_ARGS[@]}")
+    fi
+    BODY="$(python3 - "${DRIVER_BODY_ARGS[@]}" <<'PY'
+import json
+import sys
+
+device_id = sys.argv[1]
+command = sys.argv[2]
+timeout_ms = int(sys.argv[3])
+out_path = sys.argv[4] or None
+input_json = sys.argv[5] or None
+args = sys.argv[6:]
+
+payload = {
+    "device_id": device_id,
+    "command": command,
+    "args": args,
+    "timeout_ms": timeout_ms,
+}
+if out_path is not None:
+    payload["out_path"] = out_path
+if input_json is not None:
+    payload["input"] = json.loads(input_json)
+print(json.dumps(payload))
+PY
+)"
+    RESPONSE="$(request POST /driver/command "$BODY")"
+    if [[ "$DRIVER_COMMAND" == "screenshot" ]]; then
+      MODE="screenshot"
+    else
+      MODE="driver"
+    fi
+    ;;
+esac
+
+if [[ "$JSON" -eq 1 ]]; then
+  render "$RESPONSE" json
+else
+  render "$RESPONSE" "$MODE"
+fi
