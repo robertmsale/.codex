@@ -17,6 +17,10 @@ class CommandExecutionError(RuntimeError):
 _JOB_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{7,127}$")
 
 
+def _marker_path(job_id: str) -> Path:
+    return JOB_DIR / f"{job_id}.job"
+
+
 @mcp.tool
 def command_execution_wait(job_id: str) -> str:
     """Block until the launch-job marker file disappears."""
@@ -26,7 +30,10 @@ def command_execution_wait(job_id: str) -> str:
     if not _JOB_ID_RE.fullmatch(jid):
         raise CommandExecutionError("invalid job_id format")
 
-    marker = JOB_DIR / f"{jid}.job"
+    marker = _marker_path(jid)
+    if not marker.exists():
+        return "all done"
+
     while marker.exists():
         time.sleep(2)
 
