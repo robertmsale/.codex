@@ -1,25 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${FLUTTER_SIM_SERVER_BASE_URL:-http://host.internal:8767}"
+BASE_URL="${FLUTTER_SIM_SERVER_BASE_URL:-http://127.0.0.1:8767}"
 COMMAND="${1:-}"
 shift || true
 
-PATH_ARG="$PWD"
-TARGET_ARG=""
 DEVICE_ID_ARG=""
 JSON=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --path)
-      PATH_ARG="$2"
-      shift 2
-      ;;
-    --target)
-      TARGET_ARG="$2"
-      shift 2
-      ;;
     --device-id)
       DEVICE_ID_ARG="$2"
       shift 2
@@ -80,11 +70,21 @@ if mode == "session":
     print(f"Device: {session.get('device_name')} ({session.get('device_id')})")
     print(f"State: {session.get('state')}")
     print(f"Path: {session.get('path')}")
+    print(f"Launch Path: {session.get('launch_path')}")
+    if session.get("lane_root"):
+        print(f"Lane: {session.get('lane_root')}")
     print(f"Target: {session.get('target')}")
     if session.get("dtd_uri"):
         print(f"DTD: {session.get('dtd_uri')}")
     if session.get("app_uri"):
         print(f"App: {session.get('app_uri')}")
+    api = session.get("api") or {}
+    if api.get("connection_domain"):
+        print(f"Connection Domain: {api.get('connection_domain')}")
+    if api.get("base_url"):
+        print(f"API: {api.get('base_url')}")
+    if api.get("login_email") or api.get("login_password"):
+        print(f"Login: {api.get('login_email')} / {api.get('login_password')}")
     if session.get("last_error"):
         print(f"Error: {session.get('last_error')}")
     raise SystemExit(0)
@@ -95,11 +95,21 @@ if session:
     print(f"Device: {session.get('device_name')} ({session.get('device_id')})")
     print(f"State: {session.get('state')}")
     print(f"Path: {session.get('path')}")
+    print(f"Launch Path: {session.get('launch_path')}")
+    if session.get("lane_root"):
+        print(f"Lane: {session.get('lane_root')}")
     print(f"Target: {session.get('target')}")
     if session.get("dtd_uri"):
         print(f"DTD: {session.get('dtd_uri')}")
     if session.get("app_uri"):
         print(f"App: {session.get('app_uri')}")
+    api = session.get("api") or {}
+    if api.get("connection_domain"):
+        print(f"Connection Domain: {api.get('connection_domain')}")
+    if api.get("base_url"):
+        print(f"API: {api.get('base_url')}")
+    if api.get("login_email") or api.get("login_password"):
+        print(f"Login: {api.get('login_email')} / {api.get('login_password')}")
     if session.get("last_error"):
         print(f"Error: {session.get('last_error')}")
 available = payload.get("available_devices") or []
@@ -118,39 +128,38 @@ case "$COMMAND" in
     RESPONSE="$(request GET /devices)"
     ;;
   session)
-    ENCODED_PATH="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$PATH_ARG")"
-    RESPONSE="$(request GET "/session?path=$ENCODED_PATH")"
-    ;;
-  reserve)
-    if [[ -z "$TARGET_ARG" ]]; then
-      echo "--target is required for reserve" >&2
+    if [[ -z "$DEVICE_ID_ARG" ]]; then
+      echo "--device-id is required for session" >&2
       exit 64
     fi
-    log_progress "Requesting simulator reservation for $PATH_ARG on ${DEVICE_ID_ARG:-auto-selected device}. This can take a while on cold builds."
-    BODY="$(python3 -c 'import json, sys; payload={"path":sys.argv[1],"target":sys.argv[2]}; 
-if sys.argv[3]: payload["device_id"]=sys.argv[3];
-print(json.dumps(payload))' "$PATH_ARG" "$TARGET_ARG" "$DEVICE_ID_ARG")"
+    ENCODED_DEVICE_ID="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$DEVICE_ID_ARG")"
+    RESPONSE="$(request GET "/session?device_id=$ENCODED_DEVICE_ID")"
+    ;;
+  reserve)
+    if [[ -z "$DEVICE_ID_ARG" ]]; then
+      echo "--device-id is required for reserve" >&2
+      exit 64
+    fi
+    log_progress "Requesting runtime info for $DEVICE_ID_ARG. The broker will bootstrap the lane if it is not already running."
+    BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
     RESPONSE="$(request POST /reserve "$BODY")"
     ;;
-  restart)
-    log_progress "Restarting simulator reservation for $PATH_ARG. Waiting for a fresh DTD session."
-    BODY="$(python3 -c 'import json, sys; payload={"path":sys.argv[1]}; 
-if sys.argv[2]: payload["target"]=sys.argv[2];
-print(json.dumps(payload))' "$PATH_ARG" "$TARGET_ARG")"
-    RESPONSE="$(request POST /restart "$BODY")"
-    ;;
-  release)
-    BODY="$(python3 -c 'import json, sys; print(json.dumps({"path":sys.argv[1]}))' "$PATH_ARG")"
-    RESPONSE="$(request POST /release "$BODY")"
+  reboot)
+    if [[ -z "$DEVICE_ID_ARG" ]]; then
+      echo "--device-id is required for reboot" >&2
+      exit 64
+    fi
+    log_progress "Restarting the runtime for $DEVICE_ID_ARG. Waiting for a fresh DTD session."
+    BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
+    RESPONSE="$(request POST /reboot "$BODY")"
     ;;
   *)
     cat <<'EOF'
 Usage:
   flutter-sim devices [--json]
-  flutter-sim session [--path <path>] [--json]
-  flutter-sim reserve --target <target> [--device-id <id>] [--path <path>] [--json]
-  flutter-sim restart [--target <target>] [--path <path>] [--json]
-  flutter-sim release [--path <path>] [--json]
+  flutter-sim session --device-id <id> [--json]
+  flutter-sim reserve --device-id <id> [--json]
+  flutter-sim reboot --device-id <id> [--json]
 EOF
     exit 64
     ;;

@@ -21,7 +21,7 @@ EOF
   exit 2
 fi
 
-worktree_path="$1"
+worktree_path="$(normalize_mirrored_path "$1")"
 integration_branch_arg="${2:-}"
 
 if ! have_local_git_repo "$worktree_path"; then

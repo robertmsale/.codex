@@ -13,13 +13,13 @@ EOF
   exit 2
 fi
 
-repo_path="$1"
+repo_path="$(normalize_mirrored_path "$1")"
 base_branch="$2"
 branch_name="$3"
 worktree_name="$4"
 
 repo_abs="$(cd "$repo_path" && pwd)"
-if ! git -C "$repo_abs" rev-parse --git-dir >/dev/null 2>&1; then
+if ! have_local_git_repo "$repo_abs"; then
   if ! bridge_fallback_allowed; then
     echo "Path is not a valid local git repository: $repo_abs" >&2
     exit 2

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export ROBDEX_BRIDGE_HOST="host.internal"
+export ROBDEX_BRIDGE_HOST="127.0.0.1"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec /usr/bin/env python3 "$script_dir/robdex.py" "$@"

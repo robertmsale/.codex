@@ -2,10 +2,10 @@
 prefix_rule(
     pattern = ["git", "push", "origin", ["main", "master", "staging", "develop", "production"]],
     decision = "forbidden",
-    justification = "Do not push directly to integration/protected branches; use issue branch + PR workflow.",
+    justification = "Use only sanctioned gitops scripts.",
 )
 prefix_rule(
     pattern = ["git", "push", ["-f", "--force"]],
     decision = "forbidden",
-    justification = "Force pushes are blocked; use normal PR workflow and gitops MCP cleanup tooling if needed.",
+    justification = "Force pushes are only allowed in sanctioned gitops scripts.",
 )

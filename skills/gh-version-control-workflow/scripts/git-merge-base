@@ -9,7 +9,7 @@ if [[ $# -ne 3 ]]; then
   exit 2
 fi
 
-path="$1"
+path="$(normalize_mirrored_path "$1")"
 left="$2"
 right="$3"
 

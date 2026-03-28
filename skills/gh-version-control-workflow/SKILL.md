@@ -25,6 +25,9 @@ Use this workflow for branch/worktree/PR delivery.
   - `~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-create <repo_path> <base_branch> <branch_name> <worktree_name>`
 - Sync worktree:
   - `~/.codex/skills/gh-version-control-workflow/scripts/git-sync-worktree <worktree_path> [integration_branch]`
+- QA fast-forward:
+  - `~/.codex/skills/gh-version-control-workflow/scripts/qa-fastforward <worktree_path> [integration_branch]`
+  - stashes scratch/untracked QA artifacts, updates the worktree onto the latest integration branch, then restores the stash
 - Commit:
   - `~/.codex/skills/gh-version-control-workflow/scripts/git-commit <worktree_path> "<message>"`
 - Publish (push + PR, force-with-lease on non-FF for non-integration branches):
@@ -34,8 +37,9 @@ Use this workflow for branch/worktree/PR delivery.
   - if the squash merge fails, the worktree and branch are left in place for conflict resolution or retry
 - Cleanup (stash dirty parent repo state, fast-forward the parent integration branch, restore the stash, then remove the worktree):
   - `~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup <worktree_path> [integration_branch]`
+  - dirty worktree content is also stashed before removal so scratch work is recoverable instead of being rejected
 
-When these scripts run inside a synced VM shadow checkout that is not a real git repository, they transparently forward to the host bridge at `http://host.internal:8765`.
+When these scripts need bridge-backed gitops, they transparently forward to the host bridge at `http://127.0.0.1:8765`.
 
 ## Visibility And Recovery Scripts
 

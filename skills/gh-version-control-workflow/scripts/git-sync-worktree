@@ -13,7 +13,7 @@ EOF
   exit 2
 fi
 
-worktree_path="$1"
+worktree_path="$(normalize_mirrored_path "$1")"
 base_branch="${2:-${GITOPS_INTEGRATION_BRANCH:-master}}"
 
 if ! have_local_git_repo "$worktree_path"; then

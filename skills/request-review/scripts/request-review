@@ -28,8 +28,8 @@ emit_result() {
   printf '%s\n' "$message"
 }
 
-gitops_http_base_url() {
-  printf '%s\n' "${PARALLELS_SYNC_GITOPS_BASE_URL:-http://host.internal:8765}"
+codex_aux_http_base_url() {
+  printf '%s\n' "${CODEX_AUX_SERVER_BASE_URL:-http://127.0.0.1:8771}"
 }
 
 json_build_request() {
@@ -37,20 +37,20 @@ json_build_request() {
 import json
 import sys
 
-payload = {"args": {}}
+payload = {}
 for item in sys.argv[1:]:
     key, value = item.split("=", 1)
     if value.startswith("json:"):
-        payload["args"][key] = json.loads(value[5:])
+        payload[key] = json.loads(value[5:])
     elif value in {"true", "false"}:
-        payload["args"][key] = value == "true"
+        payload[key] = value == "true"
     else:
-        payload["args"][key] = value
+        payload[key] = value
 print(json.dumps(payload))
 PY
 }
 
-host_review_via_bridge() {
+host_review_via_server() {
   local repo_path="$1"
   local title="$2"
   local profile="$3"
@@ -74,7 +74,7 @@ host_review_via_bridge() {
   payload="$(json_build_request "${payload_args[@]}")"
 
   local response
-  response="$(curl -fsS -H 'Content-Type: application/json' -d "$payload" "$(gitops_http_base_url)/v1/ops/request_host_review")"
+  response="$(curl -fsS -H 'Content-Type: application/json' -d "$payload" "$(codex_aux_http_base_url)/v1/request-review/run")"
 
   python3 - <<'PY' "$response"
 import json
@@ -87,38 +87,6 @@ exit_code = int(result.get("exit_code") or 0)
 print(message)
 raise SystemExit(exit_code)
 PY
-}
-
-host_review_direct() {
-  local repo_root="$1"
-  local title="$2"
-  local profile="$3"
-  local output_path="$4"
-  local error_path="$5"
-  local mode="$6"
-  local commit_ref="${7:-}"
-
-  local cmd=(
-    codex exec
-    -C "$repo_root"
-    -s read-only
-    -p "$profile"
-    review
-    --output-last-message "$output_path"
-    --title "$title"
-  )
-
-  if [[ "$mode" == "uncommitted" ]]; then
-    cmd+=(--uncommitted)
-  else
-    cmd+=(--commit "$commit_ref")
-  fi
-
-  : >"$error_path"
-  if "${cmd[@]}" > /dev/null 2>"$error_path"; then
-    return 0
-  fi
-  return $?
 }
 
 remote_terminal_error_comment_json() {
@@ -295,7 +263,6 @@ if [[ -z "$commit_message" ]]; then
   exit 2
 fi
 
-require_cmd codex
 require_cmd python3
 
 working_path="$(pwd -P)"
@@ -565,18 +532,10 @@ else
   fi
 fi
 
-if [[ "$bridge_review_mode" != "0" ]]; then
-  if host_review_via_bridge "$repo_root" "$commit_message" "$local_profile" "$review_mode_for_host" "$review_commit_ref" >"$local_tmp_output_path"; then
-    review_exit=0
-  else
-    review_exit=$?
-  fi
+if host_review_via_server "$repo_root" "$commit_message" "$local_profile" "$review_mode_for_host" "$review_commit_ref" >"$local_tmp_output_path"; then
+  review_exit=0
 else
-  if host_review_direct "$repo_root" "$commit_message" "$local_profile" "$local_tmp_output_path" "$local_error_path" "$review_mode_for_host" "$review_commit_ref"; then
-    review_exit=0
-  else
-    review_exit=$?
-  fi
+  review_exit=$?
 fi
 
 if [[ ! -s "$local_tmp_output_path" ]]; then

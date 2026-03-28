@@ -9,7 +9,7 @@ if [[ $# -lt 1 || $# -gt 3 ]]; then
   exit 2
 fi
 
-path="$1"
+path="$(normalize_mirrored_path "$1")"
 ref="${2:-}"
 pathspec="${3:-}"
 

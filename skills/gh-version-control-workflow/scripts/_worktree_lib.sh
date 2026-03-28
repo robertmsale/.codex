@@ -2,22 +2,57 @@
 set -euo pipefail
 
 gitops_http_base_url() {
-  printf '%s\n' "${PARALLELS_SYNC_GITOPS_BASE_URL:-http://host.internal:8765}"
+  printf '%s\n' "${PARALLELS_SYNC_GITOPS_BASE_URL:-http://127.0.0.1:8765}"
 }
 
 bridge_fallback_allowed() {
   [[ "${PARALLELS_SYNC_GITOPS_NO_BRIDGE:-0}" != "1" ]]
 }
 
+normalize_mirrored_path() {
+  local raw_path="$1"
+  local host_user="${HOME##*/}"
+  case "$raw_path" in
+    "/home/$host_user" | "/home/$host_user/"*)
+      printf '/Users/%s%s\n' "$host_user" "${raw_path#"/home/$host_user"}"
+      ;;
+    *)
+      printf '%s\n' "$raw_path"
+      ;;
+  esac
+}
+
 remove_shadow_worktree_path() {
   local worktree_path="$1"
+  local attempt
+  worktree_path="$(normalize_mirrored_path "$worktree_path")"
   [[ -n "$worktree_path" ]] || return 0
   [[ -e "$worktree_path" ]] || return 0
-  rm -rf "$worktree_path"
+
+  # macOS can transiently report "Directory not empty" immediately after writes.
+  # Shadow cleanup is best-effort and must not fail the higher-level workflow.
+  for attempt in 1 2 3; do
+    rm -rf "$worktree_path" 2>/dev/null || true
+    [[ ! -e "$worktree_path" ]] && return 0
+    sleep 0.2
+  done
+
+  if [[ -e "$worktree_path" ]]; then
+    echo "WARNING: shadow worktree path still exists after cleanup attempt: $worktree_path" >&2
+  fi
 }
 
 have_local_git_repo() {
-  local path="$1"
+  local path
+  path="$(normalize_mirrored_path "$1")"
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    case "$path" in
+      /home/*/.worktrees/*|/Users/*/.worktrees/*)
+        return 1
+        ;;
+    esac
+  fi
+
   git -C "$path" rev-parse --git-dir >/dev/null 2>&1
 }
 
@@ -96,7 +131,8 @@ require_non_integration_branch() {
 }
 
 resolve_worktree() {
-  local raw_path="$1"
+  local raw_path
+  raw_path="$(normalize_mirrored_path "$1")"
   local wt_abs
   wt_abs="$(cd "$raw_path" && pwd)"
 
@@ -113,7 +149,8 @@ resolve_worktree() {
 }
 
 resolve_worktree_or_bridge() {
-  local raw_path="$1"
+  local raw_path
+  raw_path="$(normalize_mirrored_path "$1")"
   if have_local_git_repo "$raw_path"; then
     resolve_worktree "$raw_path"
     return 0

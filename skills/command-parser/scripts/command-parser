@@ -8,9 +8,8 @@ Usage:
 
 Notes:
   - Runs the command directly on host.
-  - Captures command output to output.log.
-  - Parses output via codex exec running inside Docker.
-  - --request-additional is analysis-only; it cannot run commands.
+  - Captures command output locally.
+  - Sends the captured output to the local codex-aux-http server for extraction.
 EOF_USAGE
 }
 
@@ -84,239 +83,10 @@ if decision == "prompt":
 PY
 
   case "$status" in
-    0)
-      ;;
-    2)
-      exit 2
-      ;;
-    3)
-      exit 3
-      ;;
-    *)
-      exit "$status"
-      ;;
-  esac
-}
-
-extract_parser_response() {
-  local events_log="$1"
-  local response_log="$2"
-
-  python3 - "$events_log" "$response_log" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-events_path = Path(sys.argv[1])
-output_path = Path(sys.argv[2])
-last_completed_message = None
-last_message = None
-
-for raw_line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
-    line = raw_line.strip()
-    if not line:
-        continue
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        continue
-
-    if not isinstance(event, dict):
-        continue
-
-    event_type = event.get("type")
-    if event_type == "item.completed":
-        item = event.get("item")
-        if isinstance(item, dict) and item.get("type") == "agent_message":
-            text = item.get("text")
-            if isinstance(text, str) and text.strip():
-                last_completed_message = text
-                last_message = text
-    elif event_type == "agent_message":
-        text = event.get("text")
-        if isinstance(text, str) and text.strip():
-            last_message = text
-
-final_message = last_completed_message or last_message
-if not final_message:
-    raise SystemExit("command-parser: missing parser response")
-
-output_path.write_text(final_message.rstrip() + "\n", encoding="utf-8")
-PY
-}
-
-ensure_parser_container() {
-  local container_name="$1"
-  local image_tag="$2"
-  local host_codex_home="$3"
-  local host_spool_root="$4"
-  local host_skills_shadow_dir="$5"
-  local docker_codex_home="$6"
-  local docker_spool_root="$7"
-
-  mkdir -p "$host_spool_root" "$host_skills_shadow_dir"
-  chmod -R a+rwX "$host_skills_shadow_dir"
-
-  if docker container inspect "$container_name" >/dev/null 2>&1; then
-    local existing_codex_home_mount
-    existing_codex_home_mount="$(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "'"$docker_codex_home"'"}}{{.Source}}{{end}}{{end}}' "$container_name" 2>/dev/null || true)"
-    if [[ "$existing_codex_home_mount" != "$host_codex_home" ]]; then
-      docker rm -f "$container_name" >/dev/null 2>&1 || true
-    fi
-  fi
-
-  if docker container inspect "$container_name" >/dev/null 2>&1; then
-    local existing_image_id desired_image_id
-    existing_image_id="$(docker container inspect -f '{{.Image}}' "$container_name" 2>/dev/null || true)"
-    desired_image_id="$(docker image inspect -f '{{.Id}}' "$image_tag" 2>/dev/null || true)"
-    if [[ -n "$existing_image_id" && -n "$desired_image_id" && "$existing_image_id" != "$desired_image_id" ]]; then
-      echo "command-parser: reusing existing runtime container image id $existing_image_id; requested image $image_tag ($desired_image_id) will not take effect until the runtime container is replaced." >&2
-    fi
-    local running_state
-    running_state="$(docker container inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || true)"
-    if [[ "$running_state" != "true" ]]; then
-      docker start "$container_name" >/dev/null
-    fi
-    return
-  fi
-
-  local run_output=""
-  if ! run_output="$(
-    docker run -d \
-      --name "$container_name" \
-      -u "$(id -u):$(id -g)" \
-      -e HOME="/tmp/command-parser-home" \
-      -e CODEX_HOME="$docker_codex_home" \
-      -e CODEX_NO_COLOR=1 \
-      -v "$host_codex_home:$docker_codex_home:rw" \
-      -v "$host_skills_shadow_dir:$docker_codex_home/skills:rw" \
-      -v "$host_spool_root:$docker_spool_root:rw" \
-      "$image_tag" \
-      sh -lc 'while :; do sleep 3600; done' 2>&1
-  )"; then
-    if docker container inspect "$container_name" >/dev/null 2>&1; then
-      return
-    fi
-    echo "$run_output" >&2
-    return 1
-  fi
-}
-
-ensure_parser_container_linux_rootful() {
-  local container_name="$1"
-  local image_tag="$2"
-  local host_codex_home="$3"
-  local host_spool_root="$4"
-  local docker_codex_home="$5"
-  local docker_spool_root="$6"
-
-  mkdir -p "$host_spool_root"
-
-  if docker container inspect "$container_name" >/dev/null 2>&1; then
-    local existing_codex_home_mount
-    existing_codex_home_mount="$(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "'"$docker_codex_home"'"}}{{.Source}}{{end}}{{end}}' "$container_name" 2>/dev/null || true)"
-    if [[ "$existing_codex_home_mount" != "$host_codex_home" ]]; then
-      docker rm -f "$container_name" >/dev/null 2>&1 || true
-    fi
-  fi
-
-  if docker container inspect "$container_name" >/dev/null 2>&1; then
-    local existing_image_id desired_image_id
-    existing_image_id="$(docker container inspect -f '{{.Image}}' "$container_name" 2>/dev/null || true)"
-    desired_image_id="$(docker image inspect -f '{{.Id}}' "$image_tag" 2>/dev/null || true)"
-    if [[ -n "$existing_image_id" && -n "$desired_image_id" && "$existing_image_id" != "$desired_image_id" ]]; then
-      echo "command-parser: reusing existing runtime container image id $existing_image_id; requested image $image_tag ($desired_image_id) will not take effect until the runtime container is replaced." >&2
-    fi
-    local running_state
-    running_state="$(docker container inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || true)"
-    if [[ "$running_state" != "true" ]]; then
-      docker start "$container_name" >/dev/null
-    fi
-    return
-  fi
-
-  local run_output=""
-  if ! run_output="$(
-    docker run -d \
-      --name "$container_name" \
-      -e HOME="/tmp/command-parser-home" \
-      -e CODEX_HOME="$docker_codex_home" \
-      -e CODEX_NO_COLOR=1 \
-      -v "$host_codex_home:$docker_codex_home:rw" \
-      -v "$host_spool_root:$docker_spool_root:rw" \
-      "$image_tag" \
-      sh -lc 'umask 002; while :; do sleep 3600; done' 2>&1
-  )"; then
-    if docker container inspect "$container_name" >/dev/null 2>&1; then
-      return
-    fi
-    echo "$run_output" >&2
-    return 1
-  fi
-}
-
-run_parser_linux_rootful() {
-  local image_tag="$1"
-  local host_codex_home="$2"
-  local host_spool_root="$3"
-  local docker_codex_home="$4"
-  local docker_spool_root="$5"
-  local tmp_dir="$6"
-  local profile="$7"
-  local parser_sandbox="$8"
-
-  local docker_tmp docker_home docker_tmpdir
-  docker_tmp="$docker_spool_root/$(basename "$tmp_dir")"
-  docker_home="/root"
-  docker_tmpdir="$docker_tmp/tmp"
-
-  docker run --rm \
-    -e HOME="$docker_home" \
-    -e TMPDIR="$docker_tmpdir" \
-    -e CODEX_HOME="$docker_codex_home" \
-    -e CODEX_NO_COLOR=1 \
-    -v "$host_codex_home:$docker_codex_home:rw" \
-    -v "$host_spool_root:$docker_spool_root:rw" \
-    --workdir "$docker_tmp" \
-    "$image_tag" \
-    sh ./parse.sh
-}
-
-sync_codex_home_shadow() {
-  local source_codex_home="$1"
-  local shadow_codex_home="$2"
-
-  mkdir -p "$shadow_codex_home"
-  rm -f "$shadow_codex_home/config.toml" "$shadow_codex_home/auth.json"
-
-  if [[ -f "$source_codex_home/config.toml" ]]; then
-    cp "$source_codex_home/config.toml" "$shadow_codex_home/config.toml"
-  fi
-  if [[ -f "$source_codex_home/auth.json" ]]; then
-    cp "$source_codex_home/auth.json" "$shadow_codex_home/auth.json"
-  fi
-
-  chmod -R a+rwX "$shadow_codex_home"
-}
-
-resolve_runtime_mode() {
-  local configured_mode="${COMMAND_PARSER_RUNTIME_MODE:-auto}"
-
-  case "$configured_mode" in
-    auto)
-      if [[ "$(uname -s)" == "Linux" ]]; then
-        printf '%s\n' "linux-rootful"
-      else
-        printf '%s\n' "shadow-rootless"
-      fi
-      ;;
-    shadow-rootless|linux-rootful)
-      printf '%s\n' "$configured_mode"
-      ;;
-    *)
-      echo "command-parser: unsupported COMMAND_PARSER_RUNTIME_MODE: $configured_mode" >&2
-      exit 2
-      ;;
+    0) ;;
+    2) exit 2 ;;
+    3) exit 3 ;;
+    *) exit "$status" ;;
   esac
 }
 
@@ -367,8 +137,6 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 skill_dir="$(cd "$script_dir/.." && pwd)"
-build_script="$script_dir/build-command-parser-image"
-
 if [[ -f "$skill_dir/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
@@ -379,175 +147,66 @@ fi
 rule_file="${COMMAND_PARSER_RULE_FILE:-$skill_dir/command-parser.rule}"
 check_command_policy "$rule_file" "$@"
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Error: docker is required" >&2
-  exit 1
-fi
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "command-parser: missing required command: $1" >&2
+    exit 1
+  }
+}
 
-image_tag="${COMMAND_PARSER_IMAGE:-command-parser:0.110.0}"
+require_cmd curl
+require_cmd python3
+
 profile="${COMMAND_PARSER_PROFILE:-command-parser}"
-host_codex_home="$(cd "${HOME}/.codex" && pwd)"
-docker_codex_home="/codex-home"
-preferred_spool_root="/tmp/command-parser-spool"
-if mkdir -p "$preferred_spool_root" 2>/dev/null; then
-  host_spool_root="$preferred_spool_root"
-else
-  tmp_root="${TMPDIR:-/tmp}"
-host_spool_root="${tmp_root%/}/command-parser-spool"
-  mkdir -p "$host_spool_root"
-fi
-tmp_dir="$(mktemp -d "$host_spool_root/run.XXXXXX")"
-chmod 777 "$tmp_dir"
-runtime_mode="$(resolve_runtime_mode)"
-container_name="command-parser-runtime"
-host_codex_home_shadow="$tmp_dir/codex-home-shadow-lite"
-host_skills_shadow_dir="$tmp_dir/skills-shadow"
-docker_spool_root="/tmp/command-parser-spool"
-parser_sandbox="read-only"
+aux_base_url="${CODEX_AUX_SERVER_BASE_URL:-http://127.0.0.1:8771}"
+tmp_root="${TMPDIR:-/tmp}"
+tmp_dir="$(mktemp -d "${tmp_root%/}/command-parser.XXXXXX")"
 cleanup() {
-  if [[ "$runtime_mode" == "shadow-rootless" ]]; then
-    docker rm -f "$container_name" >/dev/null 2>&1 || true
-  fi
   rm -rf "$tmp_dir" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-if ! docker image inspect "$image_tag" >/dev/null 2>&1; then
-  "$build_script" >/dev/null
-fi
-
-case "$runtime_mode" in
-  shadow-rootless)
-    sync_codex_home_shadow "$host_codex_home" "$host_codex_home_shadow"
-    ensure_parser_container \
-      "$container_name" \
-      "$image_tag" \
-      "$host_codex_home_shadow" \
-      "$host_spool_root" \
-      "$host_skills_shadow_dir" \
-      "$docker_codex_home" \
-      "$docker_spool_root"
-    ;;
-  linux-rootful)
-    parser_sandbox="danger-full-access"
-    ensure_parser_container_linux_rootful \
-      "$container_name" \
-      "$image_tag" \
-      "$host_codex_home" \
-      "$host_spool_root" \
-      "$docker_codex_home" \
-      "$docker_spool_root"
-    ;;
-esac
-
 if IS_USING_COMMAND_PARSER=true "$@" >"$tmp_dir/output.log" 2>&1; then
-  command_exit=0
-else
-  command_exit=$?
+  :
 fi
 
-printf '%q ' "$@" >"$tmp_dir/command.txt"
-printf '\n' >>"$tmp_dir/command.txt"
+python3 - "$tmp_dir/request.json" "$profile" "$include_warnings" "$additional_request" "$tmp_dir/output.log" "$@" <<'PY'
+import json
+import pathlib
+import sys
 
-cat >"$tmp_dir/AGENTS.md" <<'EOF_AGENTS'
-You are command-parser, a CLI output extraction agent.
+request_path = pathlib.Path(sys.argv[1])
+profile = sys.argv[2]
+include_warnings = sys.argv[3] == "yes"
+additional_request = sys.argv[4] or None
+output_path = pathlib.Path(sys.argv[5])
+command = sys.argv[6:]
 
-Task:
-- Read ./output.log and extract errors (and warnings only if requested).
-- Prefer targeted search (`rg`, `grep`) before broad reads for huge files.
-- Read ./command.txt to determine whether this command should have used command-parser.
-- You cannot run commands. You cannot rerun commands. You cannot inspect anything outside the provided files.
+payload = {
+    "command": command,
+    "output": output_path.read_text(encoding="utf-8", errors="replace"),
+    "includeWarnings": include_warnings,
+    "additionalRequest": additional_request,
+    "profile": profile,
+}
+request_path.write_text(json.dumps(payload), encoding="utf-8")
+PY
 
-Output rules:
-- If there are no errors at all:
-  - and no additional request: output exactly: No errors!
-  - and additional request exists: output `No errors!` first, then `## Requested Information`
-- Otherwise output:
-  - ## Errors
-  - one bullet per distinct error as: - <brief message> — <file:line(:col) when present>
-- Special case — unit test failures:
-  - Include failing test names and concise assertion/panic/trace lines that explain why a test failed.
-  - Include expected vs actual snippets when present.
-  - Do not include passing tests or non-error test noise.
-- If warnings are requested and present, add:
-  - ## Warnings
-  - one bullet per distinct warning as: - <brief message> — <file:line(:col) when present>
-- Additional request (optional):
-  - Only if an additional request is provided, append:
-    - ## Requested Information
-    - concise bullets answering only that request, anchored to log lines/files when present
-  - If the additional request asks you to run, rerun, retry, execute, invoke, or test a command, output exactly:
-    - I cannot run commands, do not ask me again.
-  - If requested information is not present, output: - Not found in output.
-- Preserve file paths and coordinates exactly as shown.
-- Do not include advice, fixes, commands, or extra headings.
-EOF_AGENTS
-
-prompt="$(cat <<EOF_PROMPT
-Parse ./output.log from this raw command:
-$(cat "$tmp_dir/command.txt")
-
-Include warnings: $include_warnings
-
-Additional request: ${additional_request:-<none>}
-
-Return only the structured extraction format from AGENTS.md.
-EOF_PROMPT
+response="$(
+  curl -fsS \
+    -H 'Content-Type: application/json' \
+    --data @"$tmp_dir/request.json" \
+    "$aux_base_url/v1/command-parser/parse"
 )"
 
-docker_tmp="/tmp/command-parser"
-events_log="$tmp_dir/events.jsonl"
-docker_tmp="$docker_spool_root/$(basename "$tmp_dir")"
-docker_home="$docker_tmp/home"
-docker_tmpdir="$docker_tmp/tmp"
+python3 - "$response" <<'PY'
+import json
+import sys
 
-cat >"$tmp_dir/parse.sh" <<EOF_PARSE
-#!/bin/sh
-set -eu
-mkdir -p "\$HOME" "\$TMPDIR"
-prompt="\$(cat ./prompt.txt)"
-codex exec \
-  --skip-git-repo-check \
-  --ephemeral \
-  --json \
-  -s "$parser_sandbox" \
-  -C "$docker_tmp" \
-  -p "$profile" \
-  -c 'web_search="disabled"' \
-  -c "features.unified_exec=true" \
-  -c "features.multi_agent=false" \
-  -c "features.steer=false" \
-  -c "features.skills=false" \
-  "\$prompt" > ./events.jsonl
-EOF_PARSE
-chmod +x "$tmp_dir/parse.sh"
-printf '%s\n' "$prompt" >"$tmp_dir/prompt.txt"
-chmod -R a+rX "$tmp_dir"
-
-if [[ "$runtime_mode" == "linux-rootful" ]]; then
-  run_parser_linux_rootful \
-    "$image_tag" \
-    "$host_codex_home" \
-    "$host_spool_root" \
-    "$docker_codex_home" \
-    "$docker_spool_root" \
-    "$tmp_dir" \
-    "$profile" \
-    "$parser_sandbox"
-else
-  docker_exec_args=(
-    exec
-    -e "HOME=$docker_home"
-    -e "TMPDIR=$docker_tmpdir"
-    -e "CODEX_HOME=$docker_codex_home"
-    -e "CODEX_NO_COLOR=1"
-    --workdir "$docker_tmp"
-    -u "$(id -u):$(id -g)"
-    "$container_name" sh ./parse.sh
-  )
-  docker "${docker_exec_args[@]}"
-fi
-
-extract_parser_response "$events_log" "$tmp_dir/response.log"
-cat "$tmp_dir/response.log"
-exit "$command_exit"
+data = json.loads(sys.argv[1])
+if not data.get("ok"):
+    message = (data.get("error") or "command-parser server request failed").strip()
+    print(f"command-parser: {message}", file=sys.stderr)
+    raise SystemExit(1)
+print((data.get("message") or "").rstrip())
+PY

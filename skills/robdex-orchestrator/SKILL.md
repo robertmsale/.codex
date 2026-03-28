@@ -34,7 +34,7 @@ Use this skill for Robdex-backed communication.
   - `robdex approve-approval --approval-id <id>`
   - `robdex decline-approval --approval-id <id> [--message "<note>"]`
 - Agent lifecycle and bookkeeping:
-  - `robdex spawn-agent ...`
+  - `robdex spawn-agent --role worker|qa|hidden ...`
   - `robdex archive-agent ...`
   - `robdex rename-agent ...`
   - `robdex set-worker-metadata ...`
@@ -44,3 +44,4 @@ Use this skill for Robdex-backed communication.
 - Use the public `robdex` script surface.
 - Bridge-owned authorization decides who can list, message, archive, approve, or mutate bookkeeping state.
 - Prefer `--text-file` or `--text-stdin` for shell-sensitive message text.
+- `qa` is a non-implementer validation role. It follows worker-style communication rules but is meant to pilot stories and report usability/product issues rather than fix code.

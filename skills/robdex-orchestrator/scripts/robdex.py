@@ -209,7 +209,7 @@ def _cmd_list_agents(thread_id: str, project_path: str | None) -> None:
     for item in items:
         agent_id = _normalize_text(str(item.get("id") or "")) or "unknown-thread-id"
         display_name = _normalize_text(str(item.get("displayName") or "")) or agent_id
-        role = "orchestrator" if bool(item.get("isOrchestrator")) else "worker"
+        role = _normalize_text(str(item.get("role") or "")) or ("orchestrator" if bool(item.get("isOrchestrator")) else "worker")
         status = "running" if bool(item.get("isRunning")) else "idle"
         parts = [f"{display_name} ({agent_id})", role, status]
         project = _normalize_text(str(item.get("projectPath") or ""))
@@ -300,6 +300,7 @@ def _cmd_spawn_agent(thread_id: str, args: argparse.Namespace) -> None:
             "name": args.name,
             "prompt": args.prompt,
             "cwd": _normalize_path(args.cwd),
+            "role": _normalize_text(args.role),
             "issueNumber": args.issue_number,
         },
     )
@@ -489,6 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_spawn.add_argument("--name", required=True)
     p_spawn.add_argument("--prompt", default="")
     p_spawn.add_argument("--cwd")
+    p_spawn.add_argument("--role", choices=["worker", "qa", "hidden"], default="worker")
     p_spawn.add_argument("--issue-number", type=int)
 
     p_archive = sub.add_parser("archive-agent")

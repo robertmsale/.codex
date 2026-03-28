@@ -1,0 +1,122 @@
+#!/bin/bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_worktree_lib.sh
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  cat >&2 <<'EOF'
+Usage:
+  qa-fastforward <worktree_path> [integration_branch]
+EOF
+  exit 2
+fi
+
+worktree_path="$(normalize_mirrored_path "$1")"
+integration_branch_arg="${2:-}"
+
+stash_worktree_if_dirty() {
+  local worktree="$1"
+  local branch="$2"
+  local stash_name="$3"
+
+  if [[ -z "$(git -C "$worktree" status --short)" ]]; then
+    return 1
+  fi
+
+  git -C "$worktree" stash push -u -m "$stash_name" >/dev/null
+  printf '%s\n' "$stash_name"
+  return 0
+}
+
+restore_named_stash_if_present() {
+  local repo_root="$1"
+  local stash_name="$2"
+
+  [[ -n "$stash_name" ]] || return 0
+
+  local stash_ref=""
+  stash_ref="$(git -C "$repo_root" stash list --format='%gd %s' | awk -v target="$stash_name" '$0 ~ target { print $1; exit }')"
+  [[ -n "$stash_ref" ]] || return 0
+
+  git -C "$repo_root" stash apply "$stash_ref" >/dev/null || {
+    echo "Warning: fast-forward succeeded, but stash $stash_name could not be restored cleanly. It was left in git stash for manual recovery." >&2
+    return 1
+  }
+  git -C "$repo_root" stash drop "$stash_ref" >/dev/null
+}
+
+if ! have_local_git_repo "$worktree_path"; then
+  if ! bridge_fallback_allowed; then
+    echo "Path is not a valid local git worktree: $worktree_path" >&2
+    exit 2
+  fi
+  args=("worktree_path=$worktree_path")
+  if [[ -n "$integration_branch_arg" ]]; then
+    args+=("integration_branch=$integration_branch_arg")
+  fi
+  http_gitops_op qa_fastforward "${args[@]}"
+  exit 0
+fi
+
+resolved_output="$(resolve_worktree "$worktree_path")"
+wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
+repo_root="$(printf '%s\n' "$resolved_output" | sed -n '2p')"
+branch="$(git -C "$wt_abs" rev-parse --abbrev-ref HEAD)"
+integration_branch="$(resolve_integration_branch "$repo_root" "$integration_branch_arg")"
+stash_name=""
+stash_restore_ok=1
+
+stash_name="qa-fastforward-$branch-$(date +%s)"
+if ! stash_name="$(stash_worktree_if_dirty "$wt_abs" "$branch" "$stash_name")"; then
+  stash_name=""
+fi
+
+git -C "$wt_abs" fetch -q origin --prune
+
+local_head="$(git -C "$wt_abs" rev-parse HEAD)"
+remote_head="$(git -C "$wt_abs" rev-parse "origin/$integration_branch")"
+
+if [[ "$local_head" == "$remote_head" ]]; then
+  if ! restore_named_stash_if_present "$repo_root" "$stash_name"; then
+    stash_restore_ok=0
+  fi
+  if [[ -n "$stash_name" ]]; then
+    if [[ "$stash_restore_ok" -eq 0 ]] || git -C "$repo_root" stash list --format='%s' | grep -Fx "$stash_name" >/dev/null; then
+      printf 'Already aligned with origin/%s; stash %s was preserved for manual recovery\n' "$integration_branch" "$stash_name"
+    else
+      printf 'Already aligned with origin/%s and restored stash %s\n' "$integration_branch" "$stash_name"
+    fi
+  else
+    printf 'Already aligned with origin/%s\n' "$integration_branch"
+  fi
+  exit 0
+fi
+
+if is_integration_branch "$branch"; then
+  git -C "$wt_abs" merge --ff-only "origin/$integration_branch" >/dev/null
+else
+  git -C "$wt_abs" rebase --quiet "origin/$integration_branch"
+fi
+
+local_head="$(git -C "$wt_abs" rev-parse HEAD)"
+remote_head="$(git -C "$wt_abs" rev-parse "origin/$integration_branch")"
+if [[ "$local_head" != "$remote_head" ]]; then
+  echo "Fast-forward failed: $branch is not aligned with origin/$integration_branch" >&2
+  exit 1
+fi
+
+if ! restore_named_stash_if_present "$repo_root" "$stash_name"; then
+  stash_restore_ok=0
+fi
+
+if [[ -n "$stash_name" ]]; then
+  if [[ "$stash_restore_ok" -eq 0 ]] || git -C "$repo_root" stash list --format='%s' | grep -Fx "$stash_name" >/dev/null; then
+    printf 'Fast-forwarded %s onto origin/%s; stash %s was preserved for manual recovery\n' "$branch" "$integration_branch" "$stash_name"
+  else
+    printf 'Fast-forwarded %s onto origin/%s and restored stash %s\n' "$branch" "$integration_branch" "$stash_name"
+  fi
+else
+  printf 'Fast-forwarded %s onto origin/%s\n' "$branch" "$integration_branch"
+fi

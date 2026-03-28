@@ -2,15 +2,15 @@
 prefix_rule(
     pattern = ["git", "worktree", "remove"],
     decision = "forbidden",
-    justification = "Use gitops MCP tool: git_worktree_cleanup(...).",
+    justification = "Use gitops scripts",
 )
 prefix_rule(
     pattern = ["git", "branch", ["-d", "-D"]],
     decision = "forbidden",
-    justification = "Branch deletion is intentionally out of scope for git_worktree_cleanup (path-only trash + prune).",
+    justification = "Branch deletion must be handled with sanctioned gitops scripts.",
 )
 prefix_rule(
     pattern = ["git", "push", "origin", "--delete"],
     decision = "forbidden",
-    justification = "Remote branch deletion is intentionally out of scope for git_worktree_cleanup (path-only trash + prune).",
+    justification = "Remote branch deletion must be handled with sanctioned gitops scripts.",
 )

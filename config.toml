@@ -124,6 +124,7 @@ memories = false                # Disabled for now, worth considering, requires 
 #memory_tool = false
 #sqlite = true                  # Potentially default enabled, don't wanna regress
 plugins = false                 # Need to understand what makes this different from apps/skills/mcp
+codex_hooks = true              # Much better running-state tracker
 
 # Ones I don't
 multi_agent = false             # Wrecks weekly rate limits
@@ -218,7 +219,4 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/Users/robertsale/Code/flutter"]
-trust_level = "trusted"
-
-[projects."/private/tmp/zonemap-test"]
 trust_level = "trusted"

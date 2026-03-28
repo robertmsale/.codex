@@ -22,3 +22,4 @@ Role-specific guidance lives in the matching role file.
 - Do not kill the review because it is taking a long time.
 - Do not call MCP review tools or alternate legacy review commands.
 - Review behavior is operator-controlled.
+- Host review execution is delegated to the local `codex-aux-http` service; do not replace it with direct nested `codex exec`.

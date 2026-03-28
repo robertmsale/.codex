@@ -13,7 +13,7 @@ EOF
   exit 2
 fi
 
-worktree_path="$1"
+worktree_path="$(normalize_mirrored_path "$1")"
 message="$2"
 shift 2
 
@@ -37,7 +37,6 @@ if [[ -z "${message// }" ]]; then
   exit 2
 fi
 
-resolved_output="$(resolve_worktree "$worktree_path")"
 if ! have_local_git_repo "$worktree_path"; then
   args=("worktree_path=$worktree_path" "message=$message")
   if [[ "$allow_empty" -eq 1 ]]; then
@@ -50,6 +49,7 @@ if ! have_local_git_repo "$worktree_path"; then
   exit 0
 fi
 
+resolved_output="$(resolve_worktree "$worktree_path")"
 wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
 
 branch="$(git -C "$wt_abs" rev-parse --abbrev-ref HEAD)"

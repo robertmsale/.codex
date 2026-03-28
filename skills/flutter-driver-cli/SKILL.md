@@ -1,98 +1,103 @@
 ---
 name: flutter-driver-cli
-description: Use this skill when you need to drive a native Flutter app from the terminal via flutter_driver on macOS or iOS, including launching the app with flutter run in tmux, extracting the DTD URI from machine output, resolving the live app from DTD on each command, inspecting the widget tree, taking screenshots, and sending plaintext-first driver commands.
+description: Use this skill when you need to drive a native Flutter app on iOS through the simulator broker, including reserving a runtime, connecting with the returned DTD/App URIs, inspecting the widget tree, taking screenshots, and rebooting the runtime when a new build is needed. [skill-hash:6cc4fd4]
 ---
 
 # Flutter Driver CLI
 
-Use the local wrapper script:
+Use the local wrappers:
 
 ```sh
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim ...
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive ...
 ```
 
-This skill is for native Flutter app driving only:
-- macOS
-- iOS
+This skill is for native Flutter driving on iOS through the simulator broker.
 
-It is not for web automation, generic MCP server work, or broad Flutter CLI usage.
+## Hard requirements
 
-## Hard prohibitions
+- Do not use `flutter devices` for discovery as part of this skill.
+- Do not use `xcrun` for simulator management as part of this skill.
+- Do not use `osascript` as part of this skill.
+- Do not reboot, reset, or otherwise manage simulators directly as part of this skill.
+- Do not launch `flutter run` manually as part of this skill.
+- If you do not already know the target simulator device ID, ask the user or use `flutter-sim devices`.
 
-- Do not use `flutter devices` to list or discover devices as part of this skill.
-- Do not use `xcrun` commands for simulator or device management.
-- Do not restart, reboot, or otherwise reset the iOS Simulator.
-- If a usable iOS device ID is not already known from context, stop and ask the user instead of improvising discovery or simulator control commands.
+## Standard workflow
 
-## Preferred workflow
-
-Prefer the host-backed simulator broker:
+1. Check devices:
 
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim devices
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reserve --target lib/flutter_driver_pilot_main.dart
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim session
 ```
 
-`reserve` and `restart` return both the current DTD URI and App URI. For broker-backed VM sessions, carry both into `flutter-drive`. Do not assume the raw app URI reported by DTD is reachable from the VM.
-
-`reserve` can take a while on cold builds. If the command is still running, wait for its final payload instead of treating the initial handoff as failure. The wrapper now prints an immediate progress line so the in-flight state is obvious.
-
-Example:
+2. Reserve the target runtime:
 
 ```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reserve --target lib/flutter_driver_pilot_main.dart
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive widget-tree --dtd-uri ws://host.internal:12344/efgh= --app-uri ws://host.internal:12345/ijkl=/ws
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reserve --device-id <id>
 ```
 
-Use the legacy tmux flow only when the broker is unavailable.
+`reserve` is the main entrypoint. It waits for the broker to make the runtime ready and returns the connection details you need:
+- DTD URI
+- App URI
+- connection domain
+- API base URL
 
-## Legacy workflow
+If the runtime is already up, `reserve` returns the existing session details.
 
-1. Launch the target app in a dedicated `tmux` session with `flutter run --machine --print-dtd`.
-2. Wait for the build to settle.
-3. Extract `app.debugPort` and `app.dtd` from the tmux pane using `rg`.
-4. Use the DTD URI directly with `apps`, `widget-tree`, `screenshot`, and targeted `driver` commands.
-
-Prefer this over scrolling terminal history manually.
-
-## Launch in tmux
-
-Example for macOS:
+3. Drive the app with the returned connection details:
 
 ```sh
-tmux new-session -d -s my-flutter-driver \
-  'cd /absolute/path/to/app && flutter run --machine --print-dtd -d macos --target lib/flutter_driver_pilot_main.dart'
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive widget-tree \
+  --dtd-uri <dtd-uri> \
+  --app-uri <app-uri>
 ```
 
-Example for iOS simulator or device:
+4. If fixes land and you need a fresh runtime, reboot it:
 
 ```sh
-tmux new-session -d -s my-flutter-driver \
-  'cd /absolute/path/to/app && flutter run --machine --print-dtd -d <device-id> --target lib/flutter_driver_pilot_main.dart'
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reboot --device-id <id>
 ```
 
-Then wait before scraping:
+Then reconnect using the new DTD/App URIs returned by `reboot`.
+
+## Session checks
+
+Use `session` when you need to inspect the current runtime state for one device:
 
 ```sh
-sleep 20
-tmux capture-pane -pt my-flutter-driver:1 -S -200 | rg 'app.debugPort|app.dtd'
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim session --device-id <id>
 ```
 
-Use a longer wait on cold builds.
+Use this to confirm:
+- current state
+- DTD URI
+- App URI
+- connection domain
+- API base URL
+- last error
 
-## Resolve and inspect
-
-For broker-backed VM sessions, use both the DTD URI and the App URI from `flutter-sim session` or `flutter-sim reserve`. If `--app-uri` is omitted and DTD only reports a loopback app URI, `flutter-drive` will stop and tell you to re-run with the broker App URI.
-
-Useful first commands:
+## Common driver commands
 
 ```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive apps --dtd-uri ws://127.0.0.1:12344/efgh=
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive widget-tree --dtd-uri ws://host.internal:12344/efgh= --app-uri ws://host.internal:12345/ijkl=/ws
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver screenshot --dtd-uri ws://host.internal:12344/efgh= --app-uri ws://host.internal:12345/ijkl=/ws --out /tmp/app.png
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver get_health --dtd-uri ws://host.internal:12344/efgh= --app-uri ws://host.internal:12345/ijkl=/ws
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive apps \
+  --dtd-uri <dtd-uri>
+
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive widget-tree \
+  --dtd-uri <dtd-uri> \
+  --app-uri <app-uri>
+
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver screenshot \
+  --dtd-uri <dtd-uri> \
+  --app-uri <app-uri> \
+  --out /tmp/app.png
+
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver get_health \
+  --dtd-uri <dtd-uri> \
+  --app-uri <app-uri>
 ```
+
+Use both the DTD URI and the App URI returned by the broker. Do not assume the raw loopback app URI reported by DTD is sufficient on its own.
 
 ## Finder guidance
 
@@ -100,21 +105,34 @@ Prefer selectors in this order:
 
 1. `ByTooltipMessage` for icon buttons and header actions
 2. `ByText` for visible text controls
-3. `Ancestor` / `Descendant` when the visible text is only a child of the actual tappable widget
+3. `Ancestor` or `Descendant` when the visible text is only a child of the tappable widget
 4. `ByType` only when the tree clearly shows a unique runtime type
+
+Prefer `fill_text` over separate tap plus type flows for text fields.
 
 Examples:
 
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver get_text \
-  --dtd-uri ws://127.0.0.1:12344/efgh= \
+  --dtd-uri <dtd-uri> \
   --arg finderType=ByText \
   --arg 'text=Sales'
 ```
 
 ```sh
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver fill_text \
+  --dtd-uri <dtd-uri> \
+  --app-uri <app-uri> \
+  --arg finderType=ByValueKey \
+  --arg keyValueString=domainField \
+  --arg keyValueType=String \
+  --arg 'text=https://example.test'
+```
+
+```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver tap \
-  --dtd-uri ws://127.0.0.1:12344/efgh= \
+  --dtd-uri <dtd-uri> \
+  --app-uri <app-uri> \
   --arg finderType=ByTooltipMessage \
   --arg 'text=Close chat'
 ```
@@ -123,68 +141,16 @@ For nested finders, prefer `--input` with one JSON object:
 
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver tap \
-  --dtd-uri ws://127.0.0.1:12344/efgh= \
+  --dtd-uri <dtd-uri> \
+  --app-uri <app-uri> \
   --input '{"finderType":"Ancestor","of":{"finderType":"ByText","text":"Export"},"matching":{"finderType":"ByType","type":"OutlinedButton"},"firstMatchOnly":"true","matchRoot":"false"}'
 ```
 
-## Important caveats
+## Caveats
 
-`flutter_driver` can resolve widgets that exist in the tree but are not actually tappable in the current foreground state.
+`flutter_driver` can resolve widgets that are present in the tree but not actually tappable.
 
-This happens when:
-- an overlay is above the target
-- the target is outside the visible viewport
-- the finder matched a non-interactive child instead of the owning control
-
-Operational meaning:
-- `get_text` succeeding does not prove `tap` will succeed
-- a timed out `tap` or `waitForTappable` often means the widget is occluded, offscreen, or not the interactive node
-- after closing overlays, previously timing-out taps may start succeeding immediately
-
-Always cross-check with:
-- `widget-tree`
-- `driver screenshot`
-- `driver get_offset`
-
-## Output behavior
-
-The CLI is plaintext-first by default.
-
-Expect:
-- `get_text` prints just the text
-- `get_offset` prints `x,y`
-- `screenshot` prints the output path
-- some successful commands may print a compact JSON blob if the driver response has no obvious plaintext reduction
-
-`driver get_offset` defaults `offsetType` to `center`, so callers usually only need to pass the finder payload.
-
-Use `--json` only when raw structured output is actually needed.
-
-## Preconditions
-
-The target app must enable the Flutter driver extension in a dedicated entrypoint, typically something like:
-
-```dart
-import 'package:flutter_driver/driver_extension.dart';
-
-import 'main.dart' as app;
-
-Future<void> main() async {
-  enableFlutterDriverExtension();
-  await app.main();
-}
-```
-
-If the extension is not enabled, driver commands will fail.
-
-## Wrapper script
-
-The wrapper script lives at:
-
-[`/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive`](/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive)
-
-It executes the Dart entrypoint in:
-
-[`/Users/robertsale/Code/flutter-driver-cli/bin/flutter_driver_cli.dart`](/Users/robertsale/Code/flutter-driver-cli/bin/flutter_driver_cli.dart)
-
-If the repo moves, update the script.
+If a tap times out:
+- check `widget-tree`
+- take a screenshot
+- verify whether an overlay or offscreen state is blocking the target

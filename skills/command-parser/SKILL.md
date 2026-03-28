@@ -29,9 +29,9 @@ Recommended default:
 - Enable `--warnings` only when the user or task explicitly calls for it.
 
 Runtime notes:
-- On Linux, the wrapper automatically uses a fresh rootful container per invocation with the real `CODEX_HOME` mounted writable and the parser itself running with `danger-full-access` inside the container.
-- On macOS, the wrapper keeps the existing shadow/rootless path.
-- Override only for debugging with `COMMAND_PARSER_RUNTIME_MODE=shadow-rootless` or `COMMAND_PARSER_RUNTIME_MODE=linux-rootful`.
+- The wrapper runs the target command locally, then sends the captured output to the local `codex-aux-http` service for extraction.
+- The parser model executes outside the calling Codex sandbox, so nested-sandbox errors are avoided.
+- Override the server base URL with `CODEX_AUX_SERVER_BASE_URL` if needed.
 
 ## Guardrails
 
@@ -57,9 +57,8 @@ Runtime notes:
   - skill doc: `~/.codex/skills/command-parser/SKILL.md`
   - rule file: `~/.codex/skills/command-parser/command-parser.rule`
   - wrapper script: `~/.codex/skills/command-parser/scripts/command-parser`
-  - build script: `~/.codex/skills/command-parser/scripts/build-command-parser-image`
   - operator config: `~/.codex/skills/command-parser/.env`
-  - MCP server: `~/.codex/mcp/command-parser/src/command_parser_mcp/server.py`
+  - aux server: `/Users/robertsale/Code/parallels-sync/src/codex_aux_http.ts`
 - Profile changes are allowed only if you receive rate limit reports.
 - In that case, you may switch to the other non-local profile in `~/.codex/skills/command-parser/.env`.
 - Otherwise the profile stays on spark.
