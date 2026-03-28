@@ -6,7 +6,6 @@
           {
             "type": "command",
             "command": "/Users/robertsale/Code/parallels-sync/scripts/run-codex-turn-lifecycle-hook",
-            "timeout": 2,
             "statusMessage": "Notifying Robdex turn start"
           }
         ]
@@ -18,7 +17,6 @@
           {
             "type": "command",
             "command": "/Users/robertsale/Code/parallels-sync/scripts/run-codex-turn-lifecycle-hook",
-            "timeout": 2,
             "statusMessage": "Notifying Robdex turn stop"
           }
         ]
