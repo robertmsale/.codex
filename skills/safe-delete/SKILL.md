@@ -9,7 +9,7 @@ Use this skill whenever you need to remove files/directories without permanent d
 
 ## Required Path
 
-- Run: `~/.codex/skills/safe-delete/scripts/safe-delete <path...>`
+- Run: `safe-delete <path...>`
 - Do not call MCP safe-delete tools.
 - Do not run raw `rm` unless user explicitly asks for hard delete.
 

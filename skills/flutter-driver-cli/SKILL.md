@@ -1,124 +1,135 @@
 ---
 name: flutter-driver-cli
-description: Use this skill when you need to drive a native Flutter app on iOS through the simulator broker, including reserving a runtime, inspecting apps and widget trees, sending driver commands, taking screenshots, and rebooting a runtime when a fresh build is needed. [skill-hash:3e0d6ea]
+description: Use this skill when you need to drive broker-managed iOS QA simulators through the local wrapper scripts. The broker owns runtime lifecycle and uses idb for UI interaction. [skill-hash:3e0d6ea]
 ---
 
 # Flutter Driver CLI
 
-Use the local wrappers:
+Use only these scripts:
 
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim ...
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive ...
 ```
 
-This skill is for native Flutter driving on iOS through the simulator broker.
+`flutter-sim` talks to the broker lifecycle server.
+`flutter-drive` talks to the separate command server.
 
-## Hard requirements
+## Rules
 
-- Do not use `flutter devices` for discovery as part of this skill.
-- Do not use `xcrun` for simulator management as part of this skill.
-- Do not use `osascript` as part of this skill.
-- Do not reboot, reset, or otherwise manage simulators directly as part of this skill.
-- Do not launch `flutter run` manually as part of this skill.
-- Do not run multiple commands from this skill in parallel.
-- Run every command in strict sequence and wait for each one to finish before starting the next one.
-- Parallel driver calls make state observation unreliable and can invalidate QA results by racing taps, text entry, screenshots, and scroll state against each other.
-- If you do not already know the target simulator device ID, ask the user or use `flutter-sim devices`.
+- Do not use `flutter devices`.
+- Do not use `xcrun`, `simctl`, or `osascript` for simulator management.
+- Do not launch the app manually.
+- Do not issue parallel commands against the same device.
+- Keep simulators in portrait or landscape. The command server resolves tap coordinates by probing the matching rotation automatically.
 
-## Standard workflow
+## `flutter-sim`
 
-1. Check devices:
+Broker lifecycle commands:
 
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim devices
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reserve --device-id <udid>
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reboot --device-id <udid>
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim dump-logs --device-id <udid>
 ```
 
-Skip step 1 if the orchestrator provides you with a device directly.
+Use them like this:
 
-2. Reserve the target runtime:
+1. `devices`
+   - lists broker-known booted simulators
+2. `reserve`
+   - blocks until the runtime is ready
+   - returns API host plus login credentials
+3. `reboot`
+   - rebuilds the runtime on that simulator
+4. `dump-logs`
+   - snapshots broker, API, runtime, and driver artifacts into `/tmp/flutter-driver-screenshots/<udid>/logs`
+
+## `flutter-drive`
+
+UI interaction commands:
 
 ```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reserve --device-id <id>
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive hierarchy --device-id <udid>
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive screenshot --device-id <udid> --out current.png
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive command <name> --device-id <udid> [--input <json>] [--label <text>] [--out <file>]
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive flow --device-id <udid> --input <json-array> [--label <text>]
 ```
 
-`reserve` waits for the broker to make the runtime ready and returns the information needed to drive the app.
+Supported practical commands:
 
-3. Drive the app by device ID:
+- `tapOn`
+- `longPressOn`
+- `inputText`
+- `swipe`
+- `takeScreenshot`
+- `clearField`
+
+## Typical flow
 
 ```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive widget-tree \
-  --device-id <id>
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reserve --device-id <udid>
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive hierarchy --device-id <udid>
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive command tapOn --device-id <udid> --input '{"text":"Search"}'
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive command inputText --device-id <udid> --input '"query"'
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive screenshot --device-id <udid> --out result.png
 ```
 
-4. If fixes land and you need a fresh runtime, reboot it:
+## Hierarchy
+
+`hierarchy` prints a compact accessibility listing derived from `idb`.
+
+Each line may include:
+
+- visible label
+- `id=...` when present
+- `value=...` when present
+- role
+- bounds
+
+Use it to:
+
+- see what is on screen
+- choose a selector for `tapOn`
+- verify text field contents
+- inspect the current interactable screen state
+
+Use `--json` only for raw diagnostics.
+
+`tapOn` and `longPressOn` already return:
+
+- a short description of what was tapped
+- the post-tap hierarchy
+
+So agents usually do not need a separate `hierarchy` call immediately after tapping.
+
+## Text fields
+
+Preferred pattern:
+
+1. `tapOn` the field
+2. `inputText`
+3. verify with `hierarchy`
+
+To clear a field:
 
 ```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reboot --device-id <id>
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive command clearField \
+  --device-id <udid> \
+  --input '{"text":"Search customers, locations, jobs, estimates…"}'
 ```
 
-Then continue using the same device ID with `flutter-drive`.
+`clearField` tries:
 
-## Common driver commands
+1. focus
+2. hardware-keyboard `Cmd+A`
+3. backspace
 
-```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive apps \
-  --device-id <id>
+It does not use long-press or `Select All`.
 
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive widget-tree \
-  --device-id <id>
+## Notes
 
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver screenshot \
-  --device-id <id> \
-  --out app.png
-
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver get_health \
-  --device-id <id>
-```
-
-## Finder guidance
-
-Prefer selectors in this order:
-
-1. `ByTooltipMessage` for icon buttons and header actions
-2. `ByText` for visible text controls
-3. `Ancestor` or `Descendant` when the visible text is only a child of the tappable widget
-4. `ByType` only when the tree clearly shows a unique runtime type
-
-```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver get_text \
-  --device-id <id> \
-  --arg finderType=ByText \
-  --arg 'text=Sales'
-```
-
-```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver tap \
-  --device-id <id> \
-  --arg finderType=ByTooltipMessage \
-  --arg 'text=Close chat'
-```
-
-For nested finders, prefer `--input` with one JSON object:
-
-```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive driver tap \
-  --device-id <id> \
-  --input '{"finderType":"Ancestor","of":{"finderType":"ByText","text":"Export"},"matching":{"finderType":"ByType","type":"OutlinedButton"},"firstMatchOnly":"true","matchRoot":"false"}'
-```
-
-For screenshots:
-
-- Provide only the image name with `--out`
-- The wrapper writes the file under `/tmp/flutter-driver-screenshots/<device-id>/<image-name>`
-- The command prints the absolute path to the created screenshot
-- For text entry, tap the field first and then run `enter_text` as a separate command
-
-## Caveats
-
-`flutter_driver` can resolve widgets that are present in the tree but not actually tappable.
-
-If a tap times out:
-- check `widget-tree`
-- take a screenshot
-- verify whether an overlay or offscreen state is blocking the target
+- The broker uses per-device serialization only.
+- Different devices can be driven concurrently.
+- Coordinate transforms for brokered taps and swipes are handled internally for the supported orientations.

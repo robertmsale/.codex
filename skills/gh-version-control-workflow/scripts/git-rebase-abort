@@ -11,8 +11,4 @@ fi
 
 path="$(normalize_mirrored_path "$1")"
 
-if have_local_git_repo "$path"; then
-  git -C "$path" rebase --abort
-else
-  http_gitops_op git_rebase_abort "repo_path=$path"
-fi
+http_gitops_op git_rebase_abort "repo_path=$path"

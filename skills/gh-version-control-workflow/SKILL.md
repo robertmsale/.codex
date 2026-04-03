@@ -22,21 +22,21 @@ Use this workflow for branch/worktree/PR delivery.
 ## Core Scripts
 
 - Create worktree:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-create <repo_path> <base_branch> <branch_name> <worktree_name>`
+  - `git-worktree-create <repo_path> <base_branch> <branch_name> <worktree_name>`
 - Sync worktree:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-sync-worktree <worktree_path> [integration_branch]`
+  - `git-sync-worktree <worktree_path> [integration_branch]`
 - QA fast-forward:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/qa-fastforward <worktree_path> [integration_branch]`
+  - `qa-fastforward <worktree_path> [integration_branch]`
   - stashes scratch/untracked QA artifacts, updates the worktree onto the latest integration branch, then restores the stash
 - Commit:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-commit <worktree_path> "<message>"`
+  - `git-commit <worktree_path> "<message>"`
 - Publish (push + PR, force-with-lease on non-FF for non-integration branches):
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-publish-worktree <worktree_path> [integration_branch]`
+  - `git-publish-worktree <worktree_path> [integration_branch]`
 - Merge (squash merge the PR, delete the remote branch, remove the local worktree, prune worktree metadata, and delete the local branch):
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-merge-worktree <worktree_path> [integration_branch]`
+  - `git-merge-worktree <worktree_path> [integration_branch]`
   - if the squash merge fails, the worktree and branch are left in place for conflict resolution or retry
 - Cleanup (stash dirty parent repo state, fast-forward the parent integration branch, restore the stash, then remove the worktree):
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup <worktree_path> [integration_branch]`
+  - `git-worktree-cleanup <worktree_path> [integration_branch]`
   - dirty worktree content is also stashed before removal so scratch work is recoverable instead of being rejected
 
 When these scripts need bridge-backed gitops, they transparently forward to the host bridge at `http://127.0.0.1:8765`.
@@ -44,28 +44,28 @@ When these scripts need bridge-backed gitops, they transparently forward to the 
 ## Visibility And Recovery Scripts
 
 - Status:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-status <repo_or_worktree_path>`
+  - `git-status <repo_or_worktree_path>`
 - Branch list:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-branch-list <repo_or_worktree_path> [--local-only]`
+  - `git-branch-list <repo_or_worktree_path> [--local-only]`
 - Diff:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-diff <repo_or_worktree_path> [ref] [pathspec]`
+  - `git-diff <repo_or_worktree_path> [ref] [pathspec]`
 - Show object:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-show <repo_or_worktree_path> <object>`
+  - `git-show <repo_or_worktree_path> <object>`
 - Resolve ref:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-rev-parse <repo_or_worktree_path> [ref]`
+  - `git-rev-parse <repo_or_worktree_path> [ref]`
 - Merge base:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-merge-base <repo_or_worktree_path> <left> <right>`
+  - `git-merge-base <repo_or_worktree_path> <left> <right>`
 - Stage specific paths:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-stage-paths <repo_or_worktree_path> <path> [path...]`
+  - `git-stage-paths <repo_or_worktree_path> <path> [path...]`
 - Unstage specific paths:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-unstage-paths <repo_or_worktree_path> <path> [path...]`
+  - `git-unstage-paths <repo_or_worktree_path> <path> [path...]`
 - Abort in-progress rebase:
-  - `~/.codex/skills/gh-version-control-workflow/scripts/git-rebase-abort <repo_or_worktree_path>`
+  - `git-rebase-abort <repo_or_worktree_path>`
 
 ## Review Requirement
 
 - Run request review via:
-  - `~/.codex/skills/request-review/scripts/request-review "<commit message>"`
+  - `request-review "<commit message>"`
 - `git-publish-worktree` refuses when `review.log` is missing.
 
 ## Delivery Steps

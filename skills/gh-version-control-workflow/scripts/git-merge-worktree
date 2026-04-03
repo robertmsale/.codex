@@ -24,55 +24,8 @@ fi
 worktree_path="$(normalize_mirrored_path "$1")"
 integration_branch_arg="${2:-}"
 
-if ! have_local_git_repo "$worktree_path"; then
-  if ! bridge_fallback_allowed; then
-    echo "Path is not a valid local git worktree: $worktree_path" >&2
-    exit 2
-  fi
-  args=("worktree_path=$worktree_path")
-  if [[ -n "$integration_branch_arg" ]]; then
-    args+=("integration_branch=$integration_branch_arg")
-  fi
-  merge_output="$(http_gitops_op git_merge_worktree "${args[@]}")"
-  remove_shadow_worktree_path "$worktree_path"
-  printf '%s\n' "$merge_output"
-  exit 0
+args=("worktree_path=$worktree_path")
+if [[ -n "$integration_branch_arg" ]]; then
+  args+=("integration_branch=$integration_branch_arg")
 fi
-
-resolved_output="$(resolve_worktree "$worktree_path")"
-wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
-repo_root="$(printf '%s\n' "$resolved_output" | sed -n '2p')"
-branch="$(git -C "$wt_abs" rev-parse --abbrev-ref HEAD)"
-require_non_integration_branch "$branch"
-integration_branch="$(resolve_integration_branch "$repo_root" "$integration_branch_arg")"
-
-if [[ -n "$(git -C "$wt_abs" status --short)" ]]; then
-  echo "Refusing to merge a dirty worktree: $wt_abs" >&2
-  exit 2
-fi
-
-pr_number="$(cd "$wt_abs" && gh pr view --json number --jq '.number')"
-if [[ -z "$pr_number" ]]; then
-  echo "No PR found for worktree branch: $branch" >&2
-  exit 2
-fi
-
-(cd "$wt_abs" && gh pr merge "$pr_number" --squash >/dev/null)
-
-if git -C "$repo_root" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-  git -C "$repo_root" push -q origin --delete "$branch" >/dev/null
-fi
-
-cleanup_output="$("$script_dir/git-worktree-cleanup" "$wt_abs" "$integration_branch")"
-
-if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch"; then
-  git -C "$repo_root" branch -D "$branch" >/dev/null
-fi
-
-git -C "$repo_root" fetch -q origin --prune
-
-printf 'Squash-merged PR #%s, deleted origin/%s, removed local branch %s, and cleaned worktree. %s\n' \
-  "$pr_number" \
-  "$branch" \
-  "$branch" \
-  "$cleanup_output"
+http_gitops_op git_merge_worktree "${args[@]}"

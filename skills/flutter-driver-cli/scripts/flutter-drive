@@ -1,40 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${FLUTTER_SIM_SERVER_BASE_URL:-http://127.0.0.1:8767}"
+BASE_URL="${FLUTTER_DRIVE_SERVER_BASE_URL:-${FLUTTER_SIM_DRIVE_SERVER_BASE_URL:-http://127.0.0.1:8768}}"
 COMMAND="${1:-}"
 shift || true
 
 DEVICE_ID_ARG=""
 JSON=0
-FULL=0
-SUMMARY=1
-STABLE_READS="1"
-MAX_ATTEMPTS="1"
-SETTLE_MS="300"
-TIMEOUT_MS="5000"
 OUT_PATH=""
 INPUT_JSON=""
-DRIVER_ARGS=()
-LEGACY_URI_WARNED=0
+LABEL=""
 SCREENSHOT_ROOT="/tmp/flutter-driver-screenshots"
 
-warn_legacy_uri_arg() {
-  local flag="$1"
-  local value="${2:-}"
-  if [[ "$LEGACY_URI_WARNED" -eq 0 ]]; then
-    printf 'warning: %s is no longer needed with the broker-backed wrapper and will be ignored.\n' "$flag" >&2
-    LEGACY_URI_WARNED=1
+normalize_device_id() {
+  local value="$1"
+  if [[ "$value" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+    printf '%s' "$value" | tr '[:lower:]' '[:upper:]'
+  else
+    printf '%s' "$value"
   fi
-  :
 }
 
 normalize_screenshot_out_path() {
   local device_id="$1"
   local requested_path="$2"
-  if [[ -z "$requested_path" ]]; then
-    return 0
-  fi
   local image_name
   image_name="$(basename "$requested_path")"
   if [[ -z "$image_name" || "$image_name" == "." || "$image_name" == ".." ]]; then
@@ -69,7 +58,7 @@ payload_path = Path(sys.argv[3])
 payload = json.loads(payload_path.read_text())
 
 if mode == "json":
-    print(json.dumps(payload, indent=2))
+    print(json.dumps(payload, separators=(",", ":")))
     raise SystemExit(0 if payload.get("ok", True) else 1)
 
 if not payload.get("ok", True):
@@ -82,19 +71,70 @@ if not payload.get("ok", True):
     raise SystemExit(1)
 
 if mode == "apps":
-    apps = payload.get("apps") or []
-    if not apps:
-        print("No apps connected to DTD.")
-        raise SystemExit(0)
-    for app in apps:
-        uri = app.get("exposedUri") or app.get("uri") or "-"
-        name = app.get("name") or "-"
-        print(f"{name}\t{uri}")
+    for app in payload.get("apps") or []:
+        print(f"{app.get('name','-')}\t{app.get('appId','-')}")
     raise SystemExit(0)
 
-if mode == "widget-tree":
-    tree = payload.get("tree")
-    print(json.dumps(tree, indent=2))
+def parse_driver_hierarchy(raw: str):
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    start = raw.find("[")
+    if start == -1:
+        start = raw.find("{")
+    if start == -1:
+        return None
+    return json.loads(raw[start:])
+
+def compact_idb_element(element):
+    label = (element.get("AXLabel") or "").strip()
+    value = element.get("AXValue")
+    unique_id = (element.get("AXUniqueId") or "").strip()
+    role = (element.get("role_description") or element.get("type") or "").strip()
+    frame = element.get("frame") or {}
+    try:
+        left = int(round(float(frame.get("x", 0))))
+        top = int(round(float(frame.get("y", 0))))
+        width = int(round(float(frame.get("width", 0))))
+        height = int(round(float(frame.get("height", 0))))
+    except Exception:
+        left = top = width = height = 0
+    right = left + width
+    bottom = top + height
+
+    primary = label or (value.strip() if isinstance(value, str) and value.strip() else "") or unique_id or role or "<node>"
+    parts = [primary]
+    if unique_id:
+        parts.append(f"id=`{unique_id}`")
+    if isinstance(value, str) and value.strip() and value.strip() != primary:
+        parts.append(f"value={json.dumps(value)}")
+    if role and role.casefold() not in primary.casefold():
+        parts.append(f"role={json.dumps(role)}")
+    if element.get("enabled") is False:
+        parts.append("[disabled]")
+    parts.append(f"[{left},{top}][{right},{bottom}]")
+    return "- " + " ".join(parts)
+
+def compact_idb_hierarchy_lines(raw: str):
+    parsed = parse_driver_hierarchy(raw)
+    if not isinstance(parsed, list):
+        return raw, []
+    lines = []
+    for element in parsed:
+        if not isinstance(element, dict):
+            continue
+        if (element.get("AXLabel") or "").strip() == "keyboard-frame":
+            continue
+        lines.append(compact_idb_element(element))
+    return parsed, lines
+
+if mode == "hierarchy":
+    raw = payload.get("hierarchy", "")
+    parsed, lines = compact_idb_hierarchy_lines(raw)
+    if not isinstance(parsed, list):
+        print(raw)
+        raise SystemExit(0)
+    print("\n".join(lines))
     raise SystemExit(0)
 
 if mode == "screenshot":
@@ -112,127 +152,113 @@ if mode == "screenshot":
     print(str(path))
     raise SystemExit(0)
 
-result = payload.get("result")
-if result is None:
-    print(json.dumps(payload, indent=2))
+if mode == "flow":
+    for artifact in payload.get("artifacts") or []:
+        print(artifact)
     raise SystemExit(0)
 
-if isinstance(result, str):
-    print(result)
-    raise SystemExit(0)
-
-if isinstance(result, dict):
-    response = result.get("response")
-    if response is None:
-        print(json.dumps(result, indent=2))
-        raise SystemExit(0)
-    if isinstance(response, str):
-        print(response)
-        raise SystemExit(0)
-    if isinstance(response, (int, float)):
-        print(response)
-        raise SystemExit(0)
-    if isinstance(response, dict):
-        if "health" in response and len(response) == 1:
-            print(response["health"])
+if mode == "op":
+    tapped = payload.get("tapped_description")
+    post_hierarchy = payload.get("post_hierarchy")
+    if isinstance(tapped, str) and tapped:
+        print(f"Tapped: {tapped}")
+    if isinstance(post_hierarchy, str) and post_hierarchy:
+        _parsed, lines = compact_idb_hierarchy_lines(post_hierarchy)
+        if lines:
+            print("\n".join(lines))
             raise SystemExit(0)
-        print(json.dumps(result, indent=2))
-        raise SystemExit(0)
 
-print(json.dumps(result, indent=2))
+print(payload.get("message", ""))
 PY
   local status=$?
   rm -f "$payload_file"
   return $status
 }
 
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --device-id)
+      DEVICE_ID_ARG="$2"
+      shift 2
+      ;;
+    --json)
+      JSON=1
+      shift
+      ;;
+    --input)
+      INPUT_JSON="$2"
+      shift 2
+      ;;
+    --label)
+      LABEL="$2"
+      shift 2
+      ;;
+    --out)
+      OUT_PATH="$2"
+      shift 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [[ -n "$DEVICE_ID_ARG" ]]; then
+  DEVICE_ID_ARG="$(normalize_device_id "$DEVICE_ID_ARG")"
+fi
+
 case "$COMMAND" in
-  apps|widget-tree)
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --device-id)
-          DEVICE_ID_ARG="$2"
-          shift 2
-          ;;
-        --json)
-          JSON=1
-          shift
-          ;;
-        --full)
-          FULL=1
-          SUMMARY=0
-          shift
-          ;;
-        --summary)
-          SUMMARY=1
-          shift
-          ;;
-        --no-summary)
-          SUMMARY=0
-          shift
-          ;;
-        --stable-reads)
-          STABLE_READS="$2"
-          shift 2
-          ;;
-        --max-attempts)
-          MAX_ATTEMPTS="$2"
-          shift 2
-          ;;
-        --settle-ms)
-          SETTLE_MS="$2"
-          shift 2
-          ;;
-        --dtd-uri|--app-uri)
-          warn_legacy_uri_arg "$1" "${2:-}"
-          shift 2
-          ;;
-        *)
-          echo "Unknown argument: $1" >&2
-          exit 64
-          ;;
-      esac
-    done
+  apps)
+    if [[ -z "$DEVICE_ID_ARG" ]]; then
+      echo "--device-id is required for apps" >&2
+      exit 64
+    fi
+    BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
+    RESPONSE="$(request POST /maestro/apps "$BODY")"
+    MODE="apps"
     ;;
-  driver)
-    DRIVER_COMMAND="${1:-}"
-    if [[ -z "$DRIVER_COMMAND" ]]; then
-      echo "driver requires a command" >&2
+  hierarchy|widget-tree)
+    if [[ -z "$DEVICE_ID_ARG" ]]; then
+      echo "--device-id is required for hierarchy" >&2
       exit 64
     fi
-    if [[ "$DRIVER_COMMAND" == "fill_text" ]]; then
-      echo "fill_text is not supported by this wrapper." >&2
+    BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
+    RESPONSE="$(request POST /maestro/hierarchy "$BODY")"
+    MODE="hierarchy"
+    ;;
+  screenshot)
+    if [[ -z "$DEVICE_ID_ARG" || -z "$OUT_PATH" ]]; then
+      echo "--device-id and --out are required for screenshot" >&2
       exit 64
     fi
-    shift
+    normalize_screenshot_out_path "$DEVICE_ID_ARG" "$OUT_PATH"
+    BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1], "command": "takeScreenshot", "label": "screenshot"}))' "$DEVICE_ID_ARG")"
+    RESPONSE="$(request POST /maestro/command "$BODY")"
+    MODE="screenshot"
+    ;;
+  command|driver)
+    SUBCOMMAND="${1:-}"
+    if [[ -z "$SUBCOMMAND" ]]; then
+      echo "command requires a driver command name" >&2
+      exit 64
+    fi
+    shift || true
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --device-id)
           DEVICE_ID_ARG="$2"
-          shift 2
-          ;;
-        --arg)
-          DRIVER_ARGS+=("$2")
           shift 2
           ;;
         --input)
           INPUT_JSON="$2"
           shift 2
           ;;
-        --timeout)
-          TIMEOUT_MS="$2"
+        --label)
+          LABEL="$2"
           shift 2
           ;;
         --out)
           OUT_PATH="$2"
-          shift 2
-          ;;
-        --json)
-          JSON=1
-          shift
-          ;;
-        --dtd-uri|--app-uri)
-          warn_legacy_uri_arg "$1" "${2:-}"
           shift 2
           ;;
         *)
@@ -241,73 +267,86 @@ case "$COMMAND" in
           ;;
       esac
     done
+    if [[ -z "$DEVICE_ID_ARG" ]]; then
+      echo "--device-id is required for command" >&2
+      exit 64
+    fi
+    if [[ "$SUBCOMMAND" == "takeScreenshot" || "$SUBCOMMAND" == "screenshot" ]]; then
+      if [[ -z "$OUT_PATH" ]]; then
+        echo "--out is required for screenshot commands" >&2
+        exit 64
+      fi
+      normalize_screenshot_out_path "$DEVICE_ID_ARG" "$OUT_PATH"
+      SUBCOMMAND="takeScreenshot"
+    fi
+    BODY="$(python3 - "$DEVICE_ID_ARG" "$SUBCOMMAND" "$INPUT_JSON" "$LABEL" <<'PY'
+import json
+import sys
+
+device_id, command, input_json, label = sys.argv[1:]
+payload = {"device_id": device_id, "command": command}
+if input_json:
+    payload["input"] = json.loads(input_json)
+if label:
+    payload["label"] = label
+print(json.dumps(payload))
+PY
+)"
+    RESPONSE="$(request POST /maestro/command "$BODY")"
+    MODE="$([[ "$SUBCOMMAND" == "takeScreenshot" ]] && printf 'screenshot' || printf 'op')"
+    ;;
+  flow)
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --device-id)
+          DEVICE_ID_ARG="$2"
+          shift 2
+          ;;
+        --input)
+          INPUT_JSON="$2"
+          shift 2
+          ;;
+        --label)
+          LABEL="$2"
+          shift 2
+          ;;
+        *)
+          echo "Unknown argument: $1" >&2
+          exit 64
+          ;;
+      esac
+    done
+    if [[ -n "$DEVICE_ID_ARG" ]]; then
+      DEVICE_ID_ARG="$(normalize_device_id "$DEVICE_ID_ARG")"
+    fi
+    if [[ -z "$DEVICE_ID_ARG" || -z "$INPUT_JSON" ]]; then
+      echo "--device-id and --input are required for flow" >&2
+      exit 64
+    fi
+    BODY="$(python3 - "$DEVICE_ID_ARG" "$INPUT_JSON" "$LABEL" <<'PY'
+import json
+import sys
+
+device_id, commands_json, label = sys.argv[1:]
+payload = {"device_id": device_id, "commands": json.loads(commands_json)}
+if label:
+    payload["label"] = label
+print(json.dumps(payload))
+PY
+)"
+    RESPONSE="$(request POST /maestro/flow "$BODY")"
+    MODE="flow"
     ;;
   *)
     cat <<'EOF'
 Usage:
   flutter-drive apps --device-id <id> [--json]
-  flutter-drive widget-tree --device-id <id> [--summary|--full] [--stable-reads N] [--max-attempts N] [--settle-ms N] [--json]
-  flutter-drive driver <command> --device-id <id> [--arg key=value] [--input <json>] [--timeout <ms>] [--out <image-name>] [--json]
+  flutter-drive hierarchy --device-id <id> [--json]
+  flutter-drive screenshot --device-id <id> --out <image-name> [--json]
+  flutter-drive command <driver-command> --device-id <id> [--input <json>] [--label <text>] [--out <image-name>] [--json]
+  flutter-drive flow --device-id <id> --input <json-array> [--label <text>] [--json]
 EOF
     exit 64
-    ;;
-esac
-
-if [[ -z "$DEVICE_ID_ARG" ]]; then
-  echo "--device-id is required" >&2
-  exit 64
-fi
-
-if [[ "$COMMAND" == "driver" && "$DRIVER_COMMAND" == "screenshot" ]]; then
-  normalize_screenshot_out_path "$DEVICE_ID_ARG" "$OUT_PATH"
-fi
-
-case "$COMMAND" in
-  apps)
-    BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
-    RESPONSE="$(request POST /driver/apps "$BODY")"
-    MODE="apps"
-    ;;
-  widget-tree)
-    BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1], "summary": sys.argv[2] == "1", "full": sys.argv[3] == "1", "stable_reads": int(sys.argv[4]), "max_attempts": int(sys.argv[5]), "settle_ms": int(sys.argv[6])}))' "$DEVICE_ID_ARG" "$SUMMARY" "$FULL" "$STABLE_READS" "$MAX_ATTEMPTS" "$SETTLE_MS")"
-    RESPONSE="$(request POST /driver/widget-tree "$BODY")"
-    MODE="widget-tree"
-    ;;
-  driver)
-    DRIVER_BODY_ARGS=("$DEVICE_ID_ARG" "$DRIVER_COMMAND" "$TIMEOUT_MS" "$OUT_PATH" "$INPUT_JSON")
-    if ((${#DRIVER_ARGS[@]} > 0)); then
-      DRIVER_BODY_ARGS+=("${DRIVER_ARGS[@]}")
-    fi
-    BODY="$(python3 - "${DRIVER_BODY_ARGS[@]}" <<'PY'
-import json
-import sys
-
-device_id = sys.argv[1]
-command = sys.argv[2]
-timeout_ms = int(sys.argv[3])
-out_path = sys.argv[4] or None
-input_json = sys.argv[5] or None
-args = sys.argv[6:]
-
-payload = {
-    "device_id": device_id,
-    "command": command,
-    "args": args,
-    "timeout_ms": timeout_ms,
-}
-if out_path is not None:
-    payload["out_path"] = out_path
-if input_json is not None:
-    payload["input"] = json.loads(input_json)
-print(json.dumps(payload))
-PY
-)"
-    RESPONSE="$(request POST /driver/command "$BODY")"
-    if [[ "$DRIVER_COMMAND" == "screenshot" ]]; then
-      MODE="screenshot"
-    else
-      MODE="driver"
-    fi
     ;;
 esac
 

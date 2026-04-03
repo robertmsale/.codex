@@ -37,37 +37,11 @@ if [[ -z "${message// }" ]]; then
   exit 2
 fi
 
-if ! have_local_git_repo "$worktree_path"; then
-  args=("worktree_path=$worktree_path" "message=$message")
-  if [[ "$allow_empty" -eq 1 ]]; then
-    args+=("allow_empty=true")
-  fi
-  if [[ "$do_add" -eq 0 ]]; then
-    args+=("add_all=false")
-  fi
-  http_gitops_op git_commit "${args[@]}"
-  exit 0
-fi
-
-resolved_output="$(resolve_worktree "$worktree_path")"
-wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
-
-branch="$(git -C "$wt_abs" rev-parse --abbrev-ref HEAD)"
-require_non_integration_branch "$branch"
-
-if [[ "$do_add" -eq 1 ]]; then
-  git -C "$wt_abs" add -A
-fi
-
-if [[ "$allow_empty" -eq 0 ]] && git -C "$wt_abs" diff --cached --quiet; then
-  echo "No staged changes to commit." >&2
-  exit 2
-fi
-
+args=("worktree_path=$worktree_path" "message=$message")
 if [[ "$allow_empty" -eq 1 ]]; then
-  git -C "$wt_abs" commit --allow-empty -m "$message" >/dev/null
-else
-  git -C "$wt_abs" commit -m "$message" >/dev/null
+  args+=("allow_empty=true")
 fi
-
-git -C "$wt_abs" show --no-patch --oneline --quiet HEAD
+if [[ "$do_add" -eq 0 ]]; then
+  args+=("add_all=false")
+fi
+http_gitops_op git_commit "${args[@]}"

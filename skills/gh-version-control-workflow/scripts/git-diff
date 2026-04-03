@@ -13,22 +13,11 @@ path="$(normalize_mirrored_path "$1")"
 ref="${2:-}"
 pathspec="${3:-}"
 
-if have_local_git_repo "$path"; then
-  args=(diff)
-  if [[ -n "$ref" ]]; then
-    args+=("$ref")
-  fi
-  if [[ -n "$pathspec" ]]; then
-    args+=(-- "$pathspec")
-  fi
-  git -C "$path" "${args[@]}"
-else
-  args=("repo_path=$path")
-  if [[ -n "$ref" ]]; then
-    args+=("ref=$ref")
-  fi
-  if [[ -n "$pathspec" ]]; then
-    args+=("pathspec=$pathspec")
-  fi
-  http_gitops_op visibility_git_diff "${args[@]}"
+args=("repo_path=$path")
+if [[ -n "$ref" ]]; then
+  args+=("ref=$ref")
 fi
+if [[ -n "$pathspec" ]]; then
+  args+=("pathspec=$pathspec")
+fi
+http_gitops_op visibility_git_diff "${args[@]}"

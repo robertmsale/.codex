@@ -12,8 +12,4 @@ fi
 path="$(normalize_mirrored_path "$1")"
 ref="${2:-HEAD}"
 
-if have_local_git_repo "$path"; then
-  git -C "$path" rev-parse --verify "$ref"
-else
-  http_gitops_op visibility_git_rev_parse "repo_path=$path" "ref=$ref"
-fi
+http_gitops_op visibility_git_rev_parse "repo_path=$path" "ref=$ref"

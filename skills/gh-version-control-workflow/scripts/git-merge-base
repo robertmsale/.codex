@@ -13,8 +13,4 @@ path="$(normalize_mirrored_path "$1")"
 left="$2"
 right="$3"
 
-if have_local_git_repo "$path"; then
-  git -C "$path" merge-base "$left" "$right"
-else
-  http_gitops_op visibility_git_merge_base "repo_path=$path" "left=$left" "right=$right"
-fi
+http_gitops_op visibility_git_merge_base "repo_path=$path" "left=$left" "right=$right"

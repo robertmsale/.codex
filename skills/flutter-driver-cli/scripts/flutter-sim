@@ -25,6 +25,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "$DEVICE_ID_ARG" ]]; then
+  if [[ "$DEVICE_ID_ARG" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+    DEVICE_ID_ARG="$(printf '%s' "$DEVICE_ID_ARG" | tr '[:lower:]' '[:upper:]')"
+  fi
+fi
+
 request() {
   local method="$1"
   local endpoint="$2"
@@ -56,6 +62,13 @@ if mode == "devices":
         print(f"{device.get('device_id')}\t{device.get('name')}\t{device.get('state')}")
     raise SystemExit(0)
 
+if mode == "dump-logs":
+    for path in payload.get("paths", []):
+        print(path)
+    if not payload.get("ok", True):
+        raise SystemExit(1)
+    raise SystemExit(0)
+
 print(payload.get("message", ""))
 if not payload.get("ok", True):
     raise SystemExit(1)
@@ -82,12 +95,21 @@ case "$COMMAND" in
     BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
     RESPONSE="$(request POST /reboot "$BODY")"
     ;;
+  dump-logs)
+    if [[ -z "$DEVICE_ID_ARG" ]]; then
+      echo "--device-id is required for dump-logs" >&2
+      exit 64
+    fi
+    BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
+    RESPONSE="$(request POST /dump-logs "$BODY")"
+    ;;
   *)
     cat <<'EOF'
 Usage:
   flutter-sim devices [--json]
   flutter-sim reserve --device-id <id> [--json]
   flutter-sim reboot --device-id <id> [--json]
+  flutter-sim dump-logs --device-id <id> [--json]
 EOF
     exit 64
     ;;
@@ -98,6 +120,7 @@ if [[ "$JSON" -eq 1 ]]; then
 else
   case "$COMMAND" in
     devices) render "$RESPONSE" devices ;;
+    dump-logs) render "$RESPONSE" dump-logs ;;
     *) render "$RESPONSE" op ;;
   esac
 fi

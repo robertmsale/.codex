@@ -1,6 +1,6 @@
 ---
 name: robdex-orchestrator
-description: Use Robdex communication via `scripts/robdex`. This skill is only for the tool surface and shared usage rules. Role behavior lives in the base instructions. [skill-hash:5d0a9b3]
+description: Use Robdex communication via `robdex`. This skill is only for the tool surface and shared usage rules. Role behavior lives in the base instructions. [skill-hash:5d0a9b3]
 ---
 
 # Robdex Orchestrator
@@ -9,8 +9,7 @@ Use this skill for Robdex-backed communication.
 
 ## Required Path
 
-- Use: `~/.codex/skills/robdex-orchestrator/scripts/robdex ...`
-- `CODEX_THREAD_ID` comes from the app-server environment and is required.
+- Use: `robdex ...`
 
 ## Common Commands
 

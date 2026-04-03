@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+
+_codex_activate_root="${HOME}/.codex"
+if [[ $# -ge 1 && -d "${1}/skills" ]]; then
+  _codex_activate_root="$1"
+fi
+_codex_skills_dir="${_codex_activate_root}/skills"
+
+if [[ ! -d "${_codex_skills_dir}" ]]; then
+  echo "codex activate: skills directory not found: ${_codex_skills_dir}" >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+_codex_path_prefixes=()
+while IFS= read -r _codex_scripts_dir; do
+  _codex_path_prefixes+=("${_codex_scripts_dir}")
+done < <(find "${_codex_skills_dir}" -mindepth 1 -maxdepth 2 -type d -name scripts | sort)
+
+if [[ ${#_codex_path_prefixes[@]} -eq 0 ]]; then
+  echo "codex activate: no skill script directories found under ${_codex_skills_dir}" >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+_codex_joined_path=""
+for _codex_scripts_dir in "${_codex_path_prefixes[@]}"; do
+  if [[ -z "${_codex_joined_path}" ]]; then
+    _codex_joined_path="${_codex_scripts_dir}"
+  else
+    _codex_joined_path="${_codex_joined_path}:${_codex_scripts_dir}"
+  fi
+done
+
+if [[ -n "${PATH:-}" ]]; then
+  export PATH="${_codex_joined_path}:${PATH}"
+else
+  export PATH="${_codex_joined_path}"
+fi
+
+unset _codex_activate_root
+unset _codex_skills_dir
+unset _codex_path_prefixes
+unset _codex_scripts_dir
+unset _codex_joined_path

@@ -12,14 +12,10 @@ fi
 repo_path="$(normalize_mirrored_path "$1")"
 shift
 
-if have_local_git_repo "$repo_path"; then
-  git -C "$repo_path" add -- "$@"
-else
-  json_paths="$(python3 - <<'PY' "$@"
+json_paths="$(python3 - <<'PY' "$@"
 import json
 import sys
 print(json.dumps(sys.argv[1:]))
 PY
 )"
-  http_gitops_op git_stage_paths "repo_path=$repo_path" "paths=json:$json_paths"
-fi
+http_gitops_op git_stage_paths "repo_path=$repo_path" "paths=json:$json_paths"

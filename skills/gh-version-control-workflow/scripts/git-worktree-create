@@ -19,43 +19,8 @@ branch_name="$3"
 worktree_name="$4"
 
 repo_abs="$(cd "$repo_path" && pwd)"
-if ! have_local_git_repo "$repo_abs"; then
-  if ! bridge_fallback_allowed; then
-    echo "Path is not a valid local git repository: $repo_abs" >&2
-    exit 2
-  fi
-  http_gitops_op git_worktree_create \
-    "repo_path=$repo_abs" \
-    "base_branch=$base_branch" \
-    "branch_name=$branch_name" \
-    "worktree_name=$worktree_name"
-  exit 0
-fi
-
-require_non_integration_branch "$branch_name"
-
-if git -C "$repo_abs" show-ref --verify --quiet "refs/heads/$base_branch"; then
-  base_ref="$base_branch"
-elif git -C "$repo_abs" show-ref --verify --quiet "refs/remotes/origin/$base_branch"; then
-  base_ref="origin/$base_branch"
-else
-  echo "Base branch not found locally or on origin: $base_branch" >&2
-  exit 2
-fi
-
-worktrees_dir="$repo_abs/.worktrees"
-worktree_path="$worktrees_dir/$worktree_name"
-mkdir -p "$worktrees_dir"
-
-if [[ -e "$worktree_path" ]]; then
-  echo "Worktree path already exists: $worktree_path" >&2
-  exit 2
-fi
-
-if git -C "$repo_abs" show-ref --verify --quiet "refs/heads/$branch_name"; then
-  git -C "$repo_abs" worktree add --quiet "$worktree_path" "$branch_name"
-else
-  git -C "$repo_abs" worktree add --quiet -b "$branch_name" "$worktree_path" "$base_ref"
-fi
-
-printf '%s\n' "$worktree_path"
+http_gitops_op git_worktree_create \
+  "repo_path=$repo_abs" \
+  "base_branch=$base_branch" \
+  "branch_name=$branch_name" \
+  "worktree_name=$worktree_name"

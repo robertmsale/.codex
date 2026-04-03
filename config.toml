@@ -220,3 +220,6 @@ trust_level = "trusted"
 
 [projects."/Users/robertsale/Code/flutter"]
 trust_level = "trusted"
+
+[projects."/Users/robertsale"]
+trust_level = "trusted"

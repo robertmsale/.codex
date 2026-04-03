@@ -12,14 +12,19 @@ bridge_fallback_allowed() {
 normalize_mirrored_path() {
   local raw_path="$1"
   local host_user="${HOME##*/}"
+  local normalized="$raw_path"
   case "$raw_path" in
     "/home/$host_user" | "/home/$host_user/"*)
-      printf '/Users/%s%s\n' "$host_user" "${raw_path#"/home/$host_user"}"
-      ;;
-    *)
-      printf '%s\n' "$raw_path"
+      normalized="/Users/$host_user${raw_path#"/home/$host_user"}"
       ;;
   esac
+  if [[ ! -e "$normalized" && "$normalized" == "/Users/$host_user/Code/"* ]]; then
+    local without_code="/Users/$host_user/${normalized#"/Users/$host_user/Code/"}"
+    if [[ -e "$without_code" ]]; then
+      normalized="$without_code"
+    fi
+  fi
+  printf '%s\n' "$normalized"
 }
 
 remove_shadow_worktree_path() {
@@ -40,20 +45,6 @@ remove_shadow_worktree_path() {
   if [[ -e "$worktree_path" ]]; then
     echo "WARNING: shadow worktree path still exists after cleanup attempt: $worktree_path" >&2
   fi
-}
-
-have_local_git_repo() {
-  local path
-  path="$(normalize_mirrored_path "$1")"
-  if [[ "$(uname -s)" == "Linux" ]]; then
-    case "$path" in
-      /home/*/.worktrees/*|/Users/*/.worktrees/*)
-        return 1
-        ;;
-    esac
-  fi
-
-  git -C "$path" rev-parse --git-dir >/dev/null 2>&1
 }
 
 json_escape() {
@@ -89,11 +80,55 @@ http_gitops_op() {
   payload="$(json_build_request "$@")"
   local url
   url="$(gitops_http_base_url)/v1/ops/$op"
-  local response
-  response="$(curl -fsS -H 'Content-Type: application/json' -d "$payload" "$url")" || {
+  local response_body
+  local http_code
+  response_body="$(mktemp)"
+  http_code="$(
+    curl -sS \
+      -o "$response_body" \
+      -w '%{http_code}' \
+      -H 'Content-Type: application/json' \
+      -d "$payload" \
+      "$url"
+  )" || {
+    local curl_status=$?
+    rm -f "$response_body"
     echo "gitops HTTP request failed for $op" >&2
-    return 1
+    return "$curl_status"
   }
+  if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+    python3 - <<'PY' "$response_body" "$op" "$http_code" >&2
+import json
+import pathlib
+import sys
+
+body_path = pathlib.Path(sys.argv[1])
+op = sys.argv[2]
+http_code = sys.argv[3]
+raw = body_path.read_text(encoding="utf-8", errors="replace").strip()
+message = ""
+if raw:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        message = raw
+    else:
+        detail = payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            message = detail.strip()
+        else:
+            message = raw
+if not message:
+    message = f"gitops HTTP request failed for {op} with HTTP {http_code}"
+print(message)
+PY
+    local parse_status=$?
+    rm -f "$response_body"
+    return 1
+  fi
+  local response
+  response="$(cat "$response_body")"
+  rm -f "$response_body"
   python3 - <<'PY' "$response"
 import json
 import sys
@@ -105,90 +140,4 @@ if isinstance(result, str):
 else:
     print(json.dumps(result))
 PY
-}
-
-integration_branches() {
-  printf '%s\n' "${GITOPS_INTEGRATION_BRANCHES:-main master staging prod production master}"
-}
-
-is_integration_branch() {
-  local candidate="$1"
-  local protected
-  for protected in $(integration_branches); do
-    if [[ "$candidate" == "$protected" ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-require_non_integration_branch() {
-  local branch="$1"
-  if is_integration_branch "$branch"; then
-    echo "Command Rejected: You seem to be working in a restricted integration branch. Please move your file changes into a worktree and notify the user/orchestrator that the integration branch is dirty." >&2
-    exit 2
-  fi
-}
-
-resolve_worktree() {
-  local raw_path
-  raw_path="$(normalize_mirrored_path "$1")"
-  local wt_abs
-  wt_abs="$(cd "$raw_path" && pwd)"
-
-  local common_abs repo_root
-  common_abs="$(git -C "$wt_abs" rev-parse --path-format=absolute --git-common-dir)"
-  repo_root="${common_abs%/.git}"
-
-  if [[ "$wt_abs" == "$repo_root" ]]; then
-    echo "Refusing operation on repository root; provide a linked worktree path." >&2
-    exit 2
-  fi
-
-  printf '%s\n%s\n' "$wt_abs" "$repo_root"
-}
-
-resolve_worktree_or_bridge() {
-  local raw_path
-  raw_path="$(normalize_mirrored_path "$1")"
-  if have_local_git_repo "$raw_path"; then
-    resolve_worktree "$raw_path"
-    return 0
-  fi
-
-  local wt_abs
-  wt_abs="$(cd "$raw_path" 2>/dev/null && pwd || printf '%s\n' "$raw_path")"
-  printf '%s\n%s\n' "$wt_abs" ""
-}
-
-resolve_integration_branch() {
-  local repo_root="$1"
-  local explicit_branch="${2:-}"
-  local resolved_branch
-
-  if [[ -n "$explicit_branch" ]]; then
-    printf '%s\n' "$explicit_branch"
-    return
-  fi
-
-  resolved_branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  if [[ -n "$resolved_branch" && "$resolved_branch" != "HEAD" ]]; then
-    printf '%s\n' "$resolved_branch"
-    return
-  fi
-
-  resolved_branch="$(git -C "$repo_root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
-  if [[ -n "$resolved_branch" ]]; then
-    printf '%s\n' "$resolved_branch"
-    return
-  fi
-
-  resolved_branch="$(git -C "$repo_root" remote show origin 2>/dev/null | sed -n '/HEAD branch/s/.*: //p' | head -n 1)"
-  if [[ -n "$resolved_branch" ]]; then
-    printf '%s\n' "$resolved_branch"
-    return
-  fi
-
-  echo "Unable to resolve integration branch for repository root: $repo_root" >&2
-  exit 2
 }

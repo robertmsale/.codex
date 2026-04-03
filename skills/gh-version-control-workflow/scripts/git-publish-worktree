@@ -29,40 +29,9 @@ if [[ ! -d "$worktree_path" ]]; then
   exit 2
 fi
 
-if ! have_local_git_repo "$worktree_path"; then
-  if ! bridge_fallback_allowed; then
-    echo "Path is not a valid local git worktree: $worktree_path" >&2
-    exit 2
-  fi
-  if [[ ! -f "$worktree_path/review.log" ]]; then
-    echo "Publish blocked: review.log not found in worktree root. Request review first." >&2
-    exit 2
-  fi
-  http_gitops_op git_publish_worktree "worktree_path=$worktree_path" "integration_branch=$base_branch"
-  exit 0
-fi
-
-resolved_output="$(resolve_worktree "$worktree_path")"
-wt_abs="$(printf '%s\n' "$resolved_output" | sed -n '1p')"
-
-branch="$(git -C "$wt_abs" rev-parse --abbrev-ref HEAD)"
-require_non_integration_branch "$branch"
-
-if [[ ! -f "$wt_abs/review.log" ]]; then
+if [[ ! -f "$worktree_path/review.log" ]]; then
   echo "Publish blocked: review.log not found in worktree root. Request review first." >&2
   exit 2
 fi
 
-if git -C "$wt_abs" push -q -u origin "$branch"; then
-  :
-else
-  git -C "$wt_abs" push -q -u --force-with-lease origin "$branch"
-fi
-
-if (cd "$wt_abs" && gh pr view --json number >/dev/null 2>&1); then
-  :
-else
-  (cd "$wt_abs" && gh pr create --base "$base_branch" --head "$branch" --fill >/dev/null)
-fi
-
-(cd "$wt_abs" && gh pr view --json number,url --jq '"PR #\(.number): \(.url)"')
+http_gitops_op git_publish_worktree "worktree_path=$worktree_path" "integration_branch=$base_branch"

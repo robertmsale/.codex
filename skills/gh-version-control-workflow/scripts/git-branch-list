@@ -15,20 +15,8 @@ if [[ "${2:-}" == "--local-only" ]]; then
   local_only=1
 fi
 
-if have_local_git_repo "$path"; then
-  if [[ "$local_only" -eq 1 ]]; then
-    git -C "$path" branch --verbose --verbose
-  else
-    git -C "$path" branch --all --verbose --verbose
-  fi
+if [[ "$local_only" -eq 1 ]]; then
+  http_gitops_op visibility_git_branch_list "repo_path=$path" "all=false"
 else
-  if ! bridge_fallback_allowed; then
-    echo "Path is not a valid local git repository: $path" >&2
-    exit 2
-  fi
-  if [[ "$local_only" -eq 1 ]]; then
-    http_gitops_op visibility_git_branch_list "repo_path=$path" "all=false"
-  else
-    http_gitops_op visibility_git_branch_list "repo_path=$path" "all=true"
-  fi
+  http_gitops_op visibility_git_branch_list "repo_path=$path" "all=true"
 fi
