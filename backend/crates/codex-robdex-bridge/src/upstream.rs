@@ -35,6 +35,7 @@ pub enum UpstreamRuntimeEvent {
 pub struct UpstreamApplyResult {
     pub thread_cache_changed: bool,
     pub changed_thread_ids: Vec<String>,
+    pub running_state_changed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,14 +82,17 @@ impl RunningStateReducer {
     ) -> UpstreamApplyResult {
         let mut changed_thread_ids = BTreeSet::new();
         let mut changed = false;
+        let mut running_changed = false;
 
-        changed |= self.apply_running_notification(notification, thread_cache);
+        running_changed = self.apply_running_notification(notification, thread_cache);
+        changed |= running_changed;
         changed |= self.apply_message_notification(notification, thread_cache, &mut changed_thread_ids);
         changed |= self.apply_context_window_notification(notification, thread_cache, &mut changed_thread_ids);
 
         UpstreamApplyResult {
             thread_cache_changed: changed,
             changed_thread_ids: changed_thread_ids.into_iter().collect(),
+            running_state_changed: running_changed,
         }
     }
 

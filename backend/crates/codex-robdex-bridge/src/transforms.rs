@@ -35,8 +35,16 @@ pub fn merge_delta_text(existing: &str, incoming: &str) -> String {
         return existing.to_string();
     }
 
+    let incoming_boundaries = incoming
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(incoming.len()))
+        .collect::<Vec<_>>();
     let max_overlap = existing.len().min(incoming.len());
-    for overlap in (1..=max_overlap).rev() {
+    for overlap in incoming_boundaries.into_iter().rev() {
+        if overlap == 0 || overlap > max_overlap {
+            continue;
+        }
         if existing.ends_with(&incoming[..overlap]) {
             return format!("{existing}{}", &incoming[overlap..]);
         }
@@ -182,6 +190,12 @@ mod tests {
         assert_eq!(merge_delta_text("hello wor", "world"), "hello world");
         assert_eq!(merge_delta_text("hello", "hello"), "hello");
         assert_eq!(merge_delta_text("hello", "hello world"), "hello world");
+    }
+
+    #[test]
+    fn merge_delta_text_handles_unicode_boundaries() {
+        assert_eq!(merge_delta_text("I", "I’m"), "I’m");
+        assert_eq!(merge_delta_text("that", "’s fine"), "that’s fine");
     }
 
     #[test]

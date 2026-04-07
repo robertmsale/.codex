@@ -335,8 +335,10 @@ impl BridgeRuntime {
                     self.store
                         .save_thread_cache_delta(&thread_cache, &result.changed_thread_ids)
                         .await?;
-                    let state = self.state_document.read().await.clone();
-                    self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
+                    if result.running_state_changed {
+                        let state = self.state_document.read().await.clone();
+                        self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
+                    }
                     for thread_id in result.changed_thread_ids {
                         self.push_event(BridgeEvent::ThreadMessagesChanged {
                             payload: thread_messages_changed_payload(&thread_cache, &thread_id),

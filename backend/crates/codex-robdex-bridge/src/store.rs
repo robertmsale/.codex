@@ -326,11 +326,13 @@ impl RobdexBridgeStore {
 
 fn decode_thread_message_payload(thread_id: &str, raw: &str) -> Result<RobdexChatMessage> {
     let mut value = serde_json::from_str::<Value>(raw)?;
-    if let Value::Object(object) = &mut value
-        && !object.contains_key("threadId")
-        && !object.contains_key("threadID")
-    {
-        object.insert("threadId".to_string(), Value::String(thread_id.to_string()));
+    if let Value::Object(object) = &mut value {
+        if object.contains_key("threadId") && object.contains_key("threadID") {
+            object.remove("threadId");
+        }
+        if !object.contains_key("threadId") && !object.contains_key("threadID") {
+            object.insert("threadId".to_string(), Value::String(thread_id.to_string()));
+        }
     }
     Ok(serde_json::from_value(value)?)
 }

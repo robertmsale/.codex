@@ -33,6 +33,7 @@ use crate::{
 
 pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
     Router::new()
+        .route("/health", get(healthz))
         .route("/healthz", get(healthz))
         .route("/info", get(info))
         .route("/state/snapshot", get(snapshot))
