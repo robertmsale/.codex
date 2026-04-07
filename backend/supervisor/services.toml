@@ -1,0 +1,56 @@
+[[service]]
+name = "codex-aux-http"
+crate = "codex-aux-http"
+current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-codex-aux-http"
+current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/codex-aux-http.ini"
+port = 0
+status = "planned"
+
+[[service]]
+name = "parallels-sync-gitops-http"
+crate = "codex-gitops-http"
+current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-parallels-sync-gitops-http"
+current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/parallels-sync-gitops-http.ini"
+port = 8765
+status = "planned"
+
+[[service]]
+name = "parallels-sync-flutter-sim-http"
+crate = "codex-flutter-sim-http"
+current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-parallels-sync-flutter-sim-http"
+current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/parallels-sync-flutter-sim-http.ini"
+port = 8767
+status = "planned"
+
+[[service]]
+name = "parallels-sync-flutter-drive-http"
+crate = "codex-flutter-drive-http"
+current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-parallels-sync-flutter-drive-http"
+current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/parallels-sync-flutter-drive-http.ini"
+port = 8768
+status = "planned"
+
+[[service]]
+name = "parallels-sync-flutter-http"
+crate = "codex-flutter-http"
+current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-parallels-sync-flutter-http"
+current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/parallels-sync-flutter-http.ini"
+port = 8769
+status = "planned"
+
+[[service]]
+name = "robdex-app-server"
+crate = ""
+current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-robdex-app-server"
+current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/robdex-app-server.ini"
+port = 4200
+status = "out_of_scope"
+
+[[service]]
+name = "robdex-bridge-deno"
+crate = ""
+current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-robdex-bridge-deno"
+current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/robdex-bridge-deno.ini"
+port = 42080
+status = "out_of_scope"
+

@@ -1,0 +1,16 @@
+[package]
+name = "codex-app-server-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "codex_app_server_adapter"
+path = "src/lib.rs"
+
+[dependencies]
+codex-app-server-protocol = { path = "../../vendor/codex/codex-rs/app-server-protocol" }
+codex-protocol = { path = "../../vendor/codex/codex-rs/protocol" }
+anyhow.workspace = true
+serde_json.workspace = true

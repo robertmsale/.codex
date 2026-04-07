@@ -1,6 +1,6 @@
 ---
 name: command-parser
-description: Use `~/.codex/skills/command-parser/scripts/command-parser ...` when a command is noisy and to receive a compact extraction instead of raw output. [skill-hash:f403e5b]
+description: Use `command-parser ...` when a command is noisy and to receive a compact extraction instead of raw output. [skill-hash:0514f6c]
 ---
 
 # Command Parser
@@ -11,18 +11,18 @@ Do not use it for simple commands.
 ## Command
 
 Script path:
-- `~/.codex/skills/command-parser/scripts/command-parser`
+- `command-parser`
 
 ## Usage
 
 Default:
-- `~/.codex/skills/command-parser/scripts/command-parser <command...>`
+- `command-parser <command...>`
 
 With warnings:
-- `~/.codex/skills/command-parser/scripts/command-parser --warnings <command...>`
+- `command-parser --warnings <command...>`
 
 With additional analysis request:
-- `~/.codex/skills/command-parser/scripts/command-parser --request-additional "<analysis request>" <command...>`
+- `command-parser --request-additional "<analysis request>" <command...>`
 
 Recommended default:
 - Leave `--request-additional` empty.
@@ -56,7 +56,7 @@ Runtime notes:
 - Important files:
   - skill doc: `~/.codex/skills/command-parser/SKILL.md`
   - rule file: `~/.codex/skills/command-parser/command-parser.rule`
-  - wrapper script: `~/.codex/skills/command-parser/scripts/command-parser`
+  - wrapper script: `command-parser`
   - operator config: `~/.codex/skills/command-parser/.env`
   - aux server: `/Users/robertsale/Code/parallels-sync/src/codex_aux_http.ts`
 - Profile changes are allowed only if you receive rate limit reports.

@@ -1,0 +1,1462 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use codex_app_server_adapter::app_server_protocol::{
+    AgentMessageDeltaNotification, CommandExecutionOutputDeltaNotification, CommandExecutionStatus,
+    ContextCompactedNotification, FileChangeOutputDeltaNotification, ItemCompletedNotification,
+    ItemStartedNotification, McpToolCallStatus, ModelReroutedNotification, PatchApplyStatus,
+    PlanDeltaNotification, ReasoningSummaryPartAddedNotification, ReasoningSummaryTextDeltaNotification,
+    ReasoningTextDeltaNotification, ServerNotification, ServerRequest, TerminalInteractionNotification, Thread,
+    ThreadActiveFlag, ThreadClosedNotification, ThreadItem, ThreadStartedNotification, ThreadStatus,
+    ThreadStatusChangedNotification, ThreadTokenUsageUpdatedNotification, Turn, TurnCompletedNotification,
+    TurnDiffUpdatedNotification, TurnPlanStepStatus, TurnPlanUpdatedNotification, TurnStartedNotification,
+    TurnStatus,
+};
+
+use crate::{
+    models::{
+        BRIDGE_TRUNCATION_MARKER, MAX_MESSAGE_TEXT_CHARS, MAX_TOOL_OUTPUT_CHARS, MAX_TRANSPORT_MESSAGES_PER_THREAD,
+        MAX_TRANSPORT_THREAD_MESSAGES_BYTES, RobdexChatMessage, RobdexToolMetadata, ThreadCachePayload,
+        ThreadContextWindowStatus,
+    },
+    transforms::merge_delta_text,
+};
+
+const CONTEXT_WINDOW_BASELINE_TOKENS: i64 = 12_000;
+
+#[derive(Debug, Clone)]
+pub enum UpstreamRuntimeEvent {
+    ConnectionStatus(String),
+    Notification(ServerNotification),
+    ServerRequest(ServerRequest),
+    ClearRunningStateAfterDisconnect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamApplyResult {
+    pub thread_cache_changed: bool,
+    pub changed_thread_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpsertMode {
+    Merge,
+    Replace,
+}
+
+#[derive(Debug, Default)]
+pub struct RunningStateReducer {
+    active_turn_ids_by_thread: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl RunningStateReducer {
+    pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<String> {
+        self.active_turn_ids_by_thread
+            .get(thread_id)
+            .and_then(|turns| turns.iter().next().cloned())
+    }
+
+    pub fn set_thread_running_state(
+        &mut self,
+        thread_id: &str,
+        is_running: bool,
+        thread_cache: &mut ThreadCachePayload,
+    ) -> bool {
+        if !is_running {
+            self.active_turn_ids_by_thread.remove(thread_id);
+        }
+        self.set_running_state(thread_id, is_running, thread_cache)
+    }
+
+    pub fn clear_running_state(&mut self, thread_cache: &mut ThreadCachePayload) -> bool {
+        let had_running = !thread_cache.running_thread_ids.is_empty();
+        self.active_turn_ids_by_thread.clear();
+        thread_cache.running_thread_ids.clear();
+        had_running
+    }
+
+    pub fn apply_notification(
+        &mut self,
+        notification: &ServerNotification,
+        thread_cache: &mut ThreadCachePayload,
+    ) -> UpstreamApplyResult {
+        let mut changed_thread_ids = BTreeSet::new();
+        let mut changed = false;
+
+        changed |= self.apply_running_notification(notification, thread_cache);
+        changed |= self.apply_message_notification(notification, thread_cache, &mut changed_thread_ids);
+        changed |= self.apply_context_window_notification(notification, thread_cache, &mut changed_thread_ids);
+
+        UpstreamApplyResult {
+            thread_cache_changed: changed,
+            changed_thread_ids: changed_thread_ids.into_iter().collect(),
+        }
+    }
+
+    fn apply_running_notification(
+        &mut self,
+        notification: &ServerNotification,
+        thread_cache: &mut ThreadCachePayload,
+    ) -> bool {
+        match notification {
+            ServerNotification::ThreadStarted(payload) => self.apply_thread_started(payload, thread_cache),
+            ServerNotification::ThreadStatusChanged(payload) => {
+                self.apply_thread_status_changed(payload, thread_cache)
+            }
+            ServerNotification::TurnStarted(payload) => self.apply_turn_started(payload, thread_cache),
+            ServerNotification::TurnCompleted(payload) => self.apply_turn_completed(payload, thread_cache),
+            ServerNotification::ThreadClosed(payload) => self.apply_thread_closed(payload, thread_cache),
+            _ => false,
+        }
+    }
+
+    fn apply_message_notification(
+        &mut self,
+        notification: &ServerNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        match notification {
+            ServerNotification::ItemStarted(payload) => {
+                self.apply_item_notification(payload, UpsertMode::Merge, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::ItemCompleted(payload) => {
+                self.apply_item_notification(payload, UpsertMode::Replace, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::AgentMessageDelta(payload) => {
+                self.apply_agent_message_delta(payload, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::PlanDelta(payload) => {
+                self.apply_plan_delta(payload, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::ReasoningSummaryTextDelta(payload) => {
+                self.apply_reasoning_summary_text_delta(payload, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::ReasoningSummaryPartAdded(payload) => {
+                self.apply_reasoning_summary_part_added(payload, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::ReasoningTextDelta(payload) => {
+                self.apply_reasoning_text_delta(payload, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::TerminalInteraction(payload) => {
+                self.apply_terminal_interaction(payload, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::CommandExecutionOutputDelta(payload) => {
+                self.apply_command_execution_output_delta(payload, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::FileChangeOutputDelta(payload) => {
+                self.apply_file_change_output_delta(payload, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::TurnPlanUpdated(payload) => {
+                self.apply_turn_plan_updated(payload, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::TurnDiffUpdated(payload) => {
+                self.apply_turn_diff_updated(payload, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::ContextCompacted(payload) => {
+                self.apply_context_compacted(payload, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::ModelRerouted(payload) => {
+                self.apply_model_rerouted(payload, thread_cache, changed_thread_ids)
+            }
+            _ => false,
+        }
+    }
+
+    fn apply_context_window_notification(
+        &mut self,
+        notification: &ServerNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let ServerNotification::ThreadTokenUsageUpdated(payload) = notification else {
+            return false;
+        };
+
+        let fallback_window = thread_cache
+            .context_window_status_by_thread_id
+            .get(&payload.thread_id)
+            .and_then(|status| status.model_context_window);
+        let Some(next_status) = context_window_status_from_token_usage(payload, fallback_window) else {
+            return false;
+        };
+
+        let changed = thread_cache
+            .context_window_status_by_thread_id
+            .get(&payload.thread_id)
+            .map(|existing| existing != &next_status)
+            .unwrap_or(true);
+        if changed {
+            thread_cache
+                .context_window_status_by_thread_id
+                .insert(payload.thread_id.clone(), next_status);
+            changed_thread_ids.insert(payload.thread_id.clone());
+        }
+        changed
+    }
+
+    fn apply_thread_started(
+        &mut self,
+        payload: &ThreadStartedNotification,
+        thread_cache: &mut ThreadCachePayload,
+    ) -> bool {
+        self.set_running_state(
+            &payload.thread.id,
+            thread_is_running(&payload.thread),
+            thread_cache,
+        )
+    }
+
+    fn apply_thread_status_changed(
+        &mut self,
+        payload: &ThreadStatusChangedNotification,
+        thread_cache: &mut ThreadCachePayload,
+    ) -> bool {
+        let has_active_turns = self
+            .active_turn_ids_by_thread
+            .get(&payload.thread_id)
+            .map(|turns| !turns.is_empty())
+            .unwrap_or(false);
+        let should_run = has_active_turns || thread_status_is_running(&payload.status);
+        self.set_running_state(&payload.thread_id, should_run, thread_cache)
+    }
+
+    fn apply_turn_started(
+        &mut self,
+        payload: &TurnStartedNotification,
+        thread_cache: &mut ThreadCachePayload,
+    ) -> bool {
+        self.active_turn_ids_by_thread
+            .entry(payload.thread_id.clone())
+            .or_default()
+            .insert(payload.turn.id.clone());
+        self.set_running_state(&payload.thread_id, true, thread_cache)
+    }
+
+    fn apply_turn_completed(
+        &mut self,
+        payload: &TurnCompletedNotification,
+        thread_cache: &mut ThreadCachePayload,
+    ) -> bool {
+        let should_run = match self.active_turn_ids_by_thread.get_mut(&payload.thread_id) {
+            Some(turn_ids) => {
+                turn_ids.remove(&payload.turn.id);
+                !turn_ids.is_empty()
+            }
+            None => false,
+        };
+        if !should_run {
+            self.active_turn_ids_by_thread.remove(&payload.thread_id);
+        }
+        let should_run = should_run || thread_status_from_turn(&payload.turn) == Some(TurnStatus::InProgress);
+        self.set_running_state(&payload.thread_id, should_run, thread_cache)
+    }
+
+    fn apply_thread_closed(
+        &mut self,
+        payload: &ThreadClosedNotification,
+        thread_cache: &mut ThreadCachePayload,
+    ) -> bool {
+        self.active_turn_ids_by_thread.remove(&payload.thread_id);
+        self.set_running_state(&payload.thread_id, false, thread_cache)
+    }
+
+    fn apply_item_notification(
+        &self,
+        payload: &impl ItemNotification,
+        mode: UpsertMode,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let Some(message) = message_from_item(payload.item(), payload.thread_id()) else {
+            return false;
+        };
+        upsert_message(
+            thread_cache,
+            payload.thread_id(),
+            message,
+            mode,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_agent_message_delta(
+        &self,
+        payload: &AgentMessageDeltaNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let existing = find_message(thread_cache, &payload.thread_id, &payload.item_id);
+        let message = make_message(
+            payload.item_id.clone(),
+            payload.thread_id.clone(),
+            "assistant",
+            merge_delta_text(existing.map(|message| message.text.as_str()).unwrap_or(""), &payload.delta),
+            existing.and_then(|message| message.subtitle.clone()),
+            existing.and_then(|message| message.tool_metadata.clone()),
+            existing.map(|message| message.created_at),
+        );
+        upsert_message(
+            thread_cache,
+            &payload.thread_id,
+            message,
+            UpsertMode::Merge,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_plan_delta(
+        &self,
+        payload: &PlanDeltaNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let existing = find_message(thread_cache, &payload.thread_id, &payload.item_id);
+        let message = make_message(
+            payload.item_id.clone(),
+            payload.thread_id.clone(),
+            "system",
+            merge_delta_text(existing.map(|message| message.text.as_str()).unwrap_or(""), &payload.delta),
+            Some(existing.and_then(|message| message.subtitle.clone()).unwrap_or_else(|| "plan (draft)".to_string())),
+            existing.and_then(|message| message.tool_metadata.clone()),
+            existing.map(|message| message.created_at),
+        );
+        upsert_message(
+            thread_cache,
+            &payload.thread_id,
+            message,
+            UpsertMode::Merge,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_reasoning_summary_text_delta(
+        &self,
+        payload: &ReasoningSummaryTextDeltaNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let message_id = format!("{}-summary-{}", payload.item_id, payload.summary_index);
+        let existing = find_message(thread_cache, &payload.thread_id, &message_id);
+        let message = make_message(
+            message_id,
+            payload.thread_id.clone(),
+            "system",
+            merge_delta_text(existing.map(|message| message.text.as_str()).unwrap_or(""), &payload.delta),
+            Some(
+                existing
+                    .and_then(|message| message.subtitle.clone())
+                    .unwrap_or_else(|| "reasoning summary".to_string()),
+            ),
+            existing.and_then(|message| message.tool_metadata.clone()),
+            existing.map(|message| message.created_at),
+        );
+        upsert_message(
+            thread_cache,
+            &payload.thread_id,
+            message,
+            UpsertMode::Merge,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_reasoning_summary_part_added(
+        &self,
+        payload: &ReasoningSummaryPartAddedNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let message_id = format!("{}-summary-{}", payload.item_id, payload.summary_index);
+        let Some(existing) = find_message(thread_cache, &payload.thread_id, &message_id) else {
+            return false;
+        };
+        if existing.text.is_empty() || existing.text.ends_with("\n\n") {
+            return false;
+        }
+        let message = make_message(
+            message_id,
+            payload.thread_id.clone(),
+            "system",
+            format!("{}\n\n", existing.text),
+            Some(
+                existing
+                    .subtitle
+                    .clone()
+                    .unwrap_or_else(|| "reasoning summary".to_string()),
+            ),
+            existing.tool_metadata.clone(),
+            Some(existing.created_at),
+        );
+        upsert_message(
+            thread_cache,
+            &payload.thread_id,
+            message,
+            UpsertMode::Replace,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_reasoning_text_delta(
+        &self,
+        payload: &ReasoningTextDeltaNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let message_id = format!("{}-content-{}", payload.item_id, payload.content_index);
+        let existing = find_message(thread_cache, &payload.thread_id, &message_id);
+        let message = make_message(
+            message_id,
+            payload.thread_id.clone(),
+            "system",
+            merge_delta_text(existing.map(|message| message.text.as_str()).unwrap_or(""), &payload.delta),
+            Some(
+                existing
+                    .and_then(|message| message.subtitle.clone())
+                    .unwrap_or_else(|| "reasoning".to_string()),
+            ),
+            existing.and_then(|message| message.tool_metadata.clone()),
+            existing.map(|message| message.created_at),
+        );
+        upsert_message(
+            thread_cache,
+            &payload.thread_id,
+            message,
+            UpsertMode::Merge,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_terminal_interaction(
+        &self,
+        payload: &TerminalInteractionNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        self.apply_tool_output_delta(
+            &payload.thread_id,
+            &payload.item_id,
+            "commandExecution",
+            Some(payload.process_id.clone()),
+            &payload.stdin,
+            thread_cache,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_command_execution_output_delta(
+        &self,
+        payload: &CommandExecutionOutputDeltaNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        self.apply_tool_output_delta(
+            &payload.thread_id,
+            &payload.item_id,
+            "commandExecution",
+            None,
+            &payload.delta,
+            thread_cache,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_file_change_output_delta(
+        &self,
+        payload: &FileChangeOutputDeltaNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        self.apply_tool_output_delta(
+            &payload.thread_id,
+            &payload.item_id,
+            "fileChange",
+            None,
+            &payload.delta,
+            thread_cache,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_tool_output_delta(
+        &self,
+        thread_id: &str,
+        item_id: &str,
+        kind: &str,
+        process_id: Option<String>,
+        delta: &str,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        if delta.is_empty() {
+            return false;
+        }
+
+        let existing = find_message(thread_cache, thread_id, item_id);
+        let existing_output = existing
+            .and_then(|message| message.tool_metadata.as_ref())
+            .and_then(|metadata| metadata.output.as_deref())
+            .unwrap_or("");
+        let subtitle_default = match kind {
+            "fileChange" => "fileChange (in_progress)",
+            _ => "commandExecution (in_progress)",
+        };
+        let body_default = match kind {
+            "fileChange" => "Proposed file changes",
+            _ => "Shell command",
+        };
+        let tool_metadata = RobdexToolMetadata {
+            kind: kind.to_string(),
+            status: Some("in_progress".to_string()),
+            command: existing
+                .and_then(|message| message.tool_metadata.as_ref())
+                .and_then(|metadata| metadata.command.clone()),
+            output: Some(format!("{existing_output}{delta}")),
+            process_id: process_id.or_else(|| {
+                existing
+                    .and_then(|message| message.tool_metadata.as_ref())
+                    .and_then(|metadata| metadata.process_id.clone())
+            }),
+        };
+        let message = make_message(
+            item_id.to_string(),
+            thread_id.to_string(),
+            "tool",
+            existing
+                .map(|message| message.text.clone())
+                .unwrap_or_else(|| body_default.to_string()),
+            Some(
+                existing
+                    .and_then(|message| message.subtitle.clone())
+                    .unwrap_or_else(|| subtitle_default.to_string()),
+            ),
+            Some(tool_metadata),
+            existing.map(|message| message.created_at),
+        );
+        upsert_message(
+            thread_cache,
+            thread_id,
+            message,
+            UpsertMode::Merge,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_turn_plan_updated(
+        &self,
+        payload: &TurnPlanUpdatedNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let step_lines = payload
+            .plan
+            .iter()
+            .map(|step| format!("[{}] {}", turn_plan_status_label(step.status), step.step))
+            .collect::<Vec<_>>();
+        let body = [payload.explanation.as_deref().unwrap_or("").trim(), &step_lines.join("\n")]
+            .into_iter()
+            .filter(|entry| !entry.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if body.is_empty() {
+            return false;
+        }
+        let message = make_message(
+            format!("turn-plan-{}", payload.turn_id),
+            payload.thread_id.clone(),
+            "system",
+            body,
+            Some("turn plan".to_string()),
+            None,
+            None,
+        );
+        upsert_message(
+            thread_cache,
+            &payload.thread_id,
+            message,
+            UpsertMode::Replace,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_turn_diff_updated(
+        &self,
+        payload: &TurnDiffUpdatedNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let message = make_message(
+            format!("turn-diff-{}", payload.turn_id),
+            payload.thread_id.clone(),
+            "tool",
+            "Turn diff updated".to_string(),
+            Some("git diff".to_string()),
+            Some(RobdexToolMetadata {
+                kind: "fileChange".to_string(),
+                status: Some("in_progress".to_string()),
+                command: None,
+                output: Some(payload.diff.clone()),
+                process_id: None,
+            }),
+            None,
+        );
+        upsert_message(
+            thread_cache,
+            &payload.thread_id,
+            message,
+            UpsertMode::Replace,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_context_compacted(
+        &self,
+        payload: &ContextCompactedNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let message = make_message(
+            format!("context-compacted-{}", payload.turn_id),
+            payload.thread_id.clone(),
+            "system",
+            "Context compacted for this thread.".to_string(),
+            Some("context".to_string()),
+            None,
+            None,
+        );
+        upsert_message(
+            thread_cache,
+            &payload.thread_id,
+            message,
+            UpsertMode::Replace,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_model_rerouted(
+        &self,
+        payload: &ModelReroutedNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let message = make_message(
+            format!("model-rerouted-{}", payload.turn_id),
+            payload.thread_id.clone(),
+            "system",
+            format!(
+                "Model rerouted from {} to {} ({}).",
+                payload.from_model,
+                payload.to_model,
+                format!("{:?}", payload.reason).to_ascii_lowercase()
+            ),
+            Some("model reroute".to_string()),
+            None,
+            None,
+        );
+        upsert_message(
+            thread_cache,
+            &payload.thread_id,
+            message,
+            UpsertMode::Replace,
+            changed_thread_ids,
+        )
+    }
+
+    fn set_running_state(
+        &self,
+        thread_id: &str,
+        is_running: bool,
+        thread_cache: &mut ThreadCachePayload,
+    ) -> bool {
+        let mut running = thread_cache.running_thread_ids.iter().cloned().collect::<BTreeSet<_>>();
+        let changed = if is_running {
+            running.insert(thread_id.to_string())
+        } else {
+            running.remove(thread_id)
+        };
+        if changed {
+            thread_cache.running_thread_ids = running.into_iter().collect();
+        }
+        changed
+    }
+}
+
+trait ItemNotification {
+    fn thread_id(&self) -> &str;
+    fn item(&self) -> &ThreadItem;
+}
+
+impl ItemNotification for ItemStartedNotification {
+    fn thread_id(&self) -> &str {
+        &self.thread_id
+    }
+
+    fn item(&self) -> &ThreadItem {
+        &self.item
+    }
+}
+
+impl ItemNotification for ItemCompletedNotification {
+    fn thread_id(&self) -> &str {
+        &self.thread_id
+    }
+
+    fn item(&self) -> &ThreadItem {
+        &self.item
+    }
+}
+
+fn upsert_message(
+    thread_cache: &mut ThreadCachePayload,
+    thread_id: &str,
+    message: RobdexChatMessage,
+    mode: UpsertMode,
+    changed_thread_ids: &mut BTreeSet<String>,
+) -> bool {
+    let messages = thread_cache
+        .message_cache_by_thread_id
+        .entry(thread_id.to_string())
+        .or_default();
+    let next = match messages.iter().position(|entry| entry.id == message.id) {
+        Some(index) => {
+            let next_message = match mode {
+                UpsertMode::Merge => merge_chat_messages(messages[index].clone(), message),
+                UpsertMode::Replace => replace_message(messages[index].clone(), message),
+            };
+            if messages[index] == next_message {
+                return false;
+            }
+            messages[index] = next_message;
+            true
+        }
+        None => {
+            messages.push(message);
+            true
+        }
+    };
+    if next {
+        changed_thread_ids.insert(thread_id.to_string());
+    }
+    next
+}
+
+fn find_message<'a>(
+    thread_cache: &'a ThreadCachePayload,
+    thread_id: &str,
+    message_id: &str,
+) -> Option<&'a RobdexChatMessage> {
+    thread_cache
+        .message_cache_by_thread_id
+        .get(thread_id)
+        .and_then(|messages| messages.iter().find(|message| message.id == message_id))
+}
+
+fn replace_message(existing: RobdexChatMessage, incoming: RobdexChatMessage) -> RobdexChatMessage {
+    RobdexChatMessage {
+        created_at: existing.created_at,
+        ..incoming
+    }
+}
+
+fn merge_chat_messages(existing: RobdexChatMessage, incoming: RobdexChatMessage) -> RobdexChatMessage {
+    let merged_tool = match (existing.tool_metadata.as_ref(), incoming.tool_metadata.as_ref()) {
+        (None, None) => None,
+        (existing_tool, incoming_tool) => Some(RobdexToolMetadata {
+            kind: incoming_tool
+                .and_then(|metadata| Some(metadata.kind.clone()))
+                .or_else(|| existing_tool.map(|metadata| metadata.kind.clone()))
+                .unwrap_or_else(|| "other".to_string()),
+            status: incoming_tool
+                .and_then(|metadata| metadata.status.clone())
+                .or_else(|| existing_tool.and_then(|metadata| metadata.status.clone())),
+            command: prefer_merged_optional_text(
+                existing_tool.and_then(|metadata| metadata.command.as_deref()),
+                incoming_tool.and_then(|metadata| metadata.command.as_deref()),
+            ),
+            output: prefer_merged_optional_text(
+                existing_tool.and_then(|metadata| metadata.output.as_deref()),
+                incoming_tool.and_then(|metadata| metadata.output.as_deref()),
+            ),
+            process_id: incoming_tool
+                .and_then(|metadata| metadata.process_id.clone())
+                .or_else(|| existing_tool.and_then(|metadata| metadata.process_id.clone())),
+        }),
+    };
+
+    RobdexChatMessage {
+        id: existing.id,
+        thread_id: existing.thread_id,
+        role: incoming.role,
+        text: prefer_merged_text(&existing.text, &incoming.text),
+        created_at: existing.created_at,
+        subtitle: incoming.subtitle.or(existing.subtitle),
+        tool_metadata: merged_tool,
+        delivery_state: incoming.delivery_state,
+    }
+}
+
+fn prefer_merged_optional_text(existing: Option<&str>, incoming: Option<&str>) -> Option<String> {
+    let merged = prefer_merged_text(existing.unwrap_or(""), incoming.unwrap_or(""));
+    (!merged.trim().is_empty()).then_some(merged)
+}
+
+fn prefer_merged_text(existing: &str, incoming: &str) -> String {
+    if incoming.is_empty() {
+        return existing.to_string();
+    }
+    if existing.is_empty() {
+        return incoming.to_string();
+    }
+    if existing == incoming {
+        return existing.to_string();
+    }
+    if incoming.starts_with(existing) {
+        return incoming.to_string();
+    }
+    if existing.starts_with(incoming) || existing.contains(incoming) {
+        return existing.to_string();
+    }
+
+    let merged = merge_delta_text(existing, incoming);
+    if merged.len() > existing.len().max(incoming.len()) {
+        return merged;
+    }
+
+    if incoming.len() >= existing.len() {
+        incoming.to_string()
+    } else {
+        existing.to_string()
+    }
+}
+
+fn message_from_item(item: &ThreadItem, thread_id: &str) -> Option<RobdexChatMessage> {
+    match item {
+        ThreadItem::UserMessage { id, content } => {
+            let text = content
+                .iter()
+                .map(render_user_input)
+                .filter(|value| !value.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.trim().is_empty() {
+                return None;
+            }
+            Some(make_message(
+                id.clone(),
+                thread_id.to_string(),
+                "user",
+                text,
+                None,
+                None,
+                None,
+            ))
+        }
+        ThreadItem::AgentMessage { id, text, .. } => Some(make_message(
+            id.clone(),
+            thread_id.to_string(),
+            "assistant",
+            text.clone(),
+            None,
+            None,
+            None,
+        )),
+        ThreadItem::Plan { id, text } => Some(make_message(
+            id.clone(),
+            thread_id.to_string(),
+            "system",
+            text.clone(),
+            Some("plan (draft)".to_string()),
+            None,
+            None,
+        )),
+        ThreadItem::Reasoning { id, summary, content } => {
+            let mut body = Vec::new();
+            if !summary.is_empty() {
+                body.push(summary.join("\n\n"));
+            }
+            if !content.is_empty() {
+                body.push(content.join("\n\n"));
+            }
+            if body.is_empty() {
+                return None;
+            }
+            Some(make_message(
+                id.clone(),
+                thread_id.to_string(),
+                "system",
+                body.join("\n\n"),
+                Some("reasoning".to_string()),
+                None,
+                None,
+            ))
+        }
+        ThreadItem::CommandExecution {
+            id,
+            command,
+            process_id,
+            status,
+            aggregated_output,
+            ..
+        } => Some(make_message(
+            id.clone(),
+            thread_id.to_string(),
+            "tool",
+            command.clone(),
+            Some(format!("commandExecution ({})", command_execution_status_label(status))),
+            Some(RobdexToolMetadata {
+                kind: "commandExecution".to_string(),
+                status: Some(command_execution_status_label(status).to_string()),
+                command: Some(command.clone()),
+                output: aggregated_output.clone(),
+                process_id: process_id
+                    .clone()
+                    .or_else(|| command_execution_job_token(command, aggregated_output.as_deref())),
+            }),
+            None,
+        )),
+        ThreadItem::FileChange { id, status, .. } => Some(make_message(
+            id.clone(),
+            thread_id.to_string(),
+            "tool",
+            "Proposed file changes".to_string(),
+            Some(format!("fileChange ({})", patch_apply_status_label(status))),
+            Some(RobdexToolMetadata {
+                kind: "fileChange".to_string(),
+                status: Some(patch_apply_status_label(status).to_string()),
+                command: None,
+                output: None,
+                process_id: None,
+            }),
+            None,
+        )),
+        ThreadItem::McpToolCall {
+            id,
+            server,
+            tool,
+            status,
+            arguments,
+            result,
+            error,
+            ..
+        } => Some(make_message(
+            id.clone(),
+            thread_id.to_string(),
+            "tool",
+            format!("{server}.{tool}"),
+            Some(format!("{server}.{tool} ({})", mcp_tool_status_label(status))),
+            Some(RobdexToolMetadata {
+                kind: "mcpToolCall".to_string(),
+                status: Some(mcp_tool_status_label(status).to_string()),
+                command: serde_json::to_string_pretty(arguments).ok(),
+                output: result
+                    .as_ref()
+                    .and_then(|result| serde_json::to_string_pretty(result).ok())
+                    .or_else(|| error.as_ref().and_then(|error| serde_json::to_string_pretty(error).ok())),
+                process_id: None,
+            }),
+            None,
+        )),
+        ThreadItem::ContextCompaction { id } => Some(make_message(
+            id.clone(),
+            thread_id.to_string(),
+            "system",
+            "Context compacted for this thread.".to_string(),
+            Some("context".to_string()),
+            None,
+            None,
+        )),
+        _ => None,
+    }
+}
+
+fn render_user_input(input: &codex_app_server_adapter::app_server_protocol::UserInput) -> String {
+    match input {
+        codex_app_server_adapter::app_server_protocol::UserInput::Text { text, .. } => text.clone(),
+        codex_app_server_adapter::app_server_protocol::UserInput::Image { url } => format!("[image] {url}"),
+        codex_app_server_adapter::app_server_protocol::UserInput::LocalImage { path } => {
+            format!("[local-image] {}", path.display())
+        }
+        codex_app_server_adapter::app_server_protocol::UserInput::Skill { name, .. } => format!("${name}"),
+        codex_app_server_adapter::app_server_protocol::UserInput::Mention { name, .. } => format!("@{name}"),
+    }
+}
+
+fn make_message(
+    id: String,
+    thread_id: String,
+    role: &str,
+    text: String,
+    subtitle: Option<String>,
+    tool_metadata: Option<RobdexToolMetadata>,
+    created_at: Option<u64>,
+) -> RobdexChatMessage {
+    RobdexChatMessage {
+        id,
+        thread_id,
+        role: role.to_string(),
+        text: truncate_bridge_text(&text, MAX_MESSAGE_TEXT_CHARS),
+        created_at: created_at.unwrap_or_else(unix_now),
+        subtitle,
+        tool_metadata: sanitize_tool_metadata(tool_metadata),
+        delivery_state: "confirmed".to_string(),
+    }
+}
+
+fn sanitize_tool_metadata(tool_metadata: Option<RobdexToolMetadata>) -> Option<RobdexToolMetadata> {
+    tool_metadata.map(|metadata| RobdexToolMetadata {
+        kind: metadata.kind,
+        status: metadata.status,
+        command: metadata
+            .command
+            .map(|value| truncate_bridge_text(&value, MAX_MESSAGE_TEXT_CHARS)),
+        output: metadata
+            .output
+            .map(|value| truncate_bridge_text(&value, MAX_TOOL_OUTPUT_CHARS)),
+        process_id: metadata.process_id,
+    })
+}
+
+fn command_execution_job_token(command: &str, output: Option<&str>) -> Option<String> {
+    extract_job_id(command)
+        .or_else(|| output.and_then(extract_job_id))
+        .map(|job_id| format!("job:{job_id}"))
+}
+
+fn extract_job_id(text: &str) -> Option<String> {
+    let marker = "job_id:";
+    let index = text.find(marker)?;
+    let suffix = &text[index + marker.len()..];
+    let token = suffix
+        .trim_start()
+        .split_whitespace()
+        .next()
+        .unwrap_or("");
+    let normalized = token.trim_matches(|char: char| !(char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-'));
+    if normalized.len() >= 8
+        && normalized
+            .chars()
+            .all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-')
+    {
+        Some(normalized.to_string())
+    } else {
+        None
+    }
+}
+
+fn truncate_bridge_text(value: &str, hard_limit: usize) -> String {
+    if value.chars().count() <= hard_limit {
+        return value.to_string();
+    }
+    let allowed = hard_limit.saturating_sub(BRIDGE_TRUNCATION_MARKER.chars().count());
+    let prefix = value.chars().take(allowed).collect::<String>();
+    format!("{prefix}{BRIDGE_TRUNCATION_MARKER}")
+}
+
+pub fn transport_messages(
+    messages: &[RobdexChatMessage],
+    limit: usize,
+) -> Vec<RobdexChatMessage> {
+    let mut trimmed = if messages.len() <= limit {
+        messages.to_vec()
+    } else {
+        messages[messages.len() - limit..].to_vec()
+    };
+
+    while trimmed.len() > 1
+        && serde_json::to_vec(&trimmed)
+            .map(|encoded| encoded.len() > MAX_TRANSPORT_THREAD_MESSAGES_BYTES)
+            .unwrap_or(false)
+    {
+        trimmed.remove(0);
+    }
+
+    trimmed
+}
+
+fn context_window_status_from_token_usage(
+    payload: &ThreadTokenUsageUpdatedNotification,
+    fallback_model_context_window: Option<u64>,
+) -> Option<ThreadContextWindowStatus> {
+    let tokens_in_window = payload.token_usage.last.total_tokens.max(0) as u64;
+    let model_context_window = payload
+        .token_usage
+        .model_context_window
+        .map(|value| value.max(0) as u64)
+        .or(fallback_model_context_window);
+
+    let remaining_percent = match model_context_window {
+        None => 100,
+        Some(window) if window <= CONTEXT_WINDOW_BASELINE_TOKENS as u64 => 0,
+        Some(window) => {
+            let effective_window = window - CONTEXT_WINDOW_BASELINE_TOKENS as u64;
+            let used = tokens_in_window.saturating_sub(CONTEXT_WINDOW_BASELINE_TOKENS as u64);
+            let remaining = effective_window.saturating_sub(used);
+            ((remaining as f64 / effective_window as f64) * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as u32
+        }
+    };
+
+    Some(ThreadContextWindowStatus {
+        remaining_percent,
+        used_tokens_in_context_window: tokens_in_window,
+        model_context_window,
+    })
+}
+
+fn thread_is_running(thread: &Thread) -> bool {
+    thread_status_is_running(&thread.status)
+}
+
+fn thread_status_is_running(status: &ThreadStatus) -> bool {
+    matches!(
+        status,
+        ThreadStatus::Active { active_flags }
+            if active_flags.is_empty()
+                || active_flags.contains(&ThreadActiveFlag::WaitingOnApproval)
+                || active_flags.contains(&ThreadActiveFlag::WaitingOnUserInput)
+    )
+}
+
+fn thread_status_from_turn(turn: &Turn) -> Option<TurnStatus> {
+    Some(turn.status.clone())
+}
+
+fn turn_plan_status_label(status: TurnPlanStepStatus) -> &'static str {
+    match status {
+        TurnPlanStepStatus::Pending => "pending",
+        TurnPlanStepStatus::InProgress => "in_progress",
+        TurnPlanStepStatus::Completed => "completed",
+    }
+}
+
+fn command_execution_status_label(status: &CommandExecutionStatus) -> &'static str {
+    match status {
+        CommandExecutionStatus::InProgress => "in_progress",
+        CommandExecutionStatus::Completed => "completed",
+        CommandExecutionStatus::Failed => "failed",
+        CommandExecutionStatus::Declined => "declined",
+    }
+}
+
+fn patch_apply_status_label(status: &PatchApplyStatus) -> &'static str {
+    match status {
+        PatchApplyStatus::InProgress => "in_progress",
+        PatchApplyStatus::Completed => "completed",
+        PatchApplyStatus::Failed => "failed",
+        PatchApplyStatus::Declined => "declined",
+    }
+}
+
+fn mcp_tool_status_label(status: &McpToolCallStatus) -> &'static str {
+    match status {
+        McpToolCallStatus::InProgress => "in_progress",
+        McpToolCallStatus::Completed => "completed",
+        McpToolCallStatus::Failed => "failed",
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_app_server_adapter::app_server_protocol::{
+        GitInfo, ItemCompletedNotification, ItemStartedNotification, ServerNotification, SessionSource, Thread,
+        ThreadClosedNotification, ThreadStartedNotification, ThreadStatus, ThreadStatusChangedNotification,
+        ThreadTokenUsage, ThreadTokenUsageUpdatedNotification, TokenUsageBreakdown, Turn, TurnCompletedNotification,
+        TurnStartedNotification, TurnStatus,
+    };
+    use std::path::PathBuf;
+
+    fn sample_thread(status: ThreadStatus) -> Thread {
+        Thread {
+            id: "thread-1".to_string(),
+            preview: "demo".to_string(),
+            ephemeral: false,
+            model_provider: "openai".to_string(),
+            created_at: 1,
+            updated_at: 1,
+            status,
+            path: None,
+            cwd: PathBuf::from("/tmp"),
+            cli_version: "0.116.0".to_string(),
+            source: SessionSource::AppServer,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None::<GitInfo>,
+            name: Some("demo".to_string()),
+            turns: Vec::new(),
+        }
+    }
+
+    fn sample_turn(id: &str, status: TurnStatus) -> Turn {
+        Turn {
+            id: id.to_string(),
+            items: Vec::new(),
+            status,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn turn_started_marks_thread_running() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        let changed = reducer.apply_notification(
+            &ServerNotification::TurnStarted(TurnStartedNotification {
+                thread_id: "thread-1".to_string(),
+                turn: sample_turn("turn-1", TurnStatus::InProgress),
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        assert!(changed.changed_thread_ids.is_empty());
+        assert_eq!(cache.running_thread_ids, vec!["thread-1".to_string()]);
+    }
+
+    #[test]
+    fn turn_completed_clears_last_active_turn() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        reducer.apply_notification(
+            &ServerNotification::TurnStarted(TurnStartedNotification {
+                thread_id: "thread-1".to_string(),
+                turn: sample_turn("turn-1", TurnStatus::InProgress),
+            }),
+            &mut cache,
+        );
+
+        let changed = reducer.apply_notification(
+            &ServerNotification::TurnCompleted(TurnCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn: sample_turn("turn-1", TurnStatus::Completed),
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        assert!(cache.running_thread_ids.is_empty());
+    }
+
+    #[test]
+    fn active_thread_status_marks_running_without_turn_tracking() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        let changed = reducer.apply_notification(
+            &ServerNotification::ThreadStatusChanged(ThreadStatusChangedNotification {
+                thread_id: "thread-1".to_string(),
+                status: ThreadStatus::Active {
+                    active_flags: vec![ThreadActiveFlag::WaitingOnApproval],
+                },
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        assert_eq!(cache.running_thread_ids, vec!["thread-1".to_string()]);
+    }
+
+    #[test]
+    fn thread_closed_clears_running_state() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+        cache.running_thread_ids = vec!["thread-1".to_string()];
+
+        let changed = reducer.apply_notification(
+            &ServerNotification::ThreadClosed(ThreadClosedNotification {
+                thread_id: "thread-1".to_string(),
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        assert!(cache.running_thread_ids.is_empty());
+    }
+
+    #[test]
+    fn thread_started_uses_upstream_status() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        reducer.apply_notification(
+            &ServerNotification::ThreadStarted(ThreadStartedNotification {
+                thread: sample_thread(ThreadStatus::Active { active_flags: vec![] }),
+            }),
+            &mut cache,
+        );
+
+        assert_eq!(cache.running_thread_ids, vec!["thread-1".to_string()]);
+    }
+
+    #[test]
+    fn agent_message_delta_accumulates_text() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        reducer.apply_notification(
+            &ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-1".to_string(),
+                delta: "hello wor".to_string(),
+            }),
+            &mut cache,
+        );
+        let changed = reducer.apply_notification(
+            &ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-1".to_string(),
+                delta: "world".to_string(),
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        assert_eq!(changed.changed_thread_ids, vec!["thread-1".to_string()]);
+        assert_eq!(
+            cache.message_cache_by_thread_id["thread-1"][0].text,
+            "hello world"
+        );
+    }
+
+    #[test]
+    fn item_completed_replaces_streamed_tool_payload() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        reducer.apply_notification(
+            &ServerNotification::CommandExecutionOutputDelta(CommandExecutionOutputDeltaNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "cmd-1".to_string(),
+                delta: "stdout line\n".to_string(),
+            }),
+            &mut cache,
+        );
+
+        let changed = reducer.apply_notification(
+            &ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::CommandExecution {
+                    id: "cmd-1".to_string(),
+                    command: "cargo test".to_string(),
+                    cwd: PathBuf::from("/tmp"),
+                    process_id: Some("123".to_string()),
+                    status: CommandExecutionStatus::Completed,
+                    command_actions: Vec::new(),
+                    aggregated_output: Some("stdout line\ncompleted".to_string()),
+                    exit_code: Some(0),
+                    duration_ms: Some(10),
+                },
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        let message = &cache.message_cache_by_thread_id["thread-1"][0];
+        assert_eq!(message.subtitle.as_deref(), Some("commandExecution (completed)"));
+        assert_eq!(
+            message
+                .tool_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.output.as_deref()),
+            Some("stdout line\ncompleted")
+        );
+    }
+
+    #[test]
+    fn command_execution_job_token_is_derived_from_output_when_process_id_missing() {
+        let message = message_from_item(
+            &ThreadItem::CommandExecution {
+                id: "cmd-1".to_string(),
+                command: "command-parser cargo test".to_string(),
+                cwd: PathBuf::from("/tmp"),
+                process_id: None,
+                status: CommandExecutionStatus::InProgress,
+                command_actions: Vec::new(),
+                aggregated_output: Some(
+                    "job_id: 12345678-abcd-1234-abcd-1234567890ab\nstill running".to_string(),
+                ),
+                exit_code: None,
+                duration_ms: None,
+            },
+            "thread-1",
+        )
+        .expect("message");
+
+        assert_eq!(
+            message
+                .tool_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.process_id.as_deref()),
+            Some("job:12345678-abcd-1234-abcd-1234567890ab")
+        );
+    }
+
+    #[test]
+    fn token_usage_notification_updates_context_window() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        let changed = reducer.apply_notification(
+            &ServerNotification::ThreadTokenUsageUpdated(ThreadTokenUsageUpdatedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                token_usage: ThreadTokenUsage {
+                    total: TokenUsageBreakdown {
+                        total_tokens: 30_000,
+                        input_tokens: 0,
+                        cached_input_tokens: 0,
+                        output_tokens: 0,
+                        reasoning_output_tokens: 0,
+                    },
+                    last: TokenUsageBreakdown {
+                        total_tokens: 30_000,
+                        input_tokens: 0,
+                        cached_input_tokens: 0,
+                        output_tokens: 0,
+                        reasoning_output_tokens: 0,
+                    },
+                    model_context_window: Some(128_000),
+                },
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        assert_eq!(changed.changed_thread_ids, vec!["thread-1".to_string()]);
+        assert_eq!(
+            cache.context_window_status_by_thread_id["thread-1"].used_tokens_in_context_window,
+            30_000
+        );
+    }
+
+    #[test]
+    fn transport_messages_enforces_payload_budget() {
+        let messages = (0..60)
+            .map(|index| make_message(
+                format!("msg-{index}"),
+                "thread-1".to_string(),
+                "assistant",
+                format!("message-{index}"),
+                None,
+                None,
+                Some(index),
+            ))
+            .collect::<Vec<_>>();
+
+        let transported = transport_messages(&messages, MAX_TRANSPORT_MESSAGES_PER_THREAD);
+        assert_eq!(transported.len(), MAX_TRANSPORT_MESSAGES_PER_THREAD);
+        assert_eq!(transported.first().map(|message| message.id.as_str()), Some("msg-10"));
+    }
+}

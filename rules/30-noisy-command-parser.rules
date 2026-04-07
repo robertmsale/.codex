@@ -199,3 +199,9 @@ prefix_rule(
     justification = "absolutely never run code formatters",
 )
 
+prefix_rule(
+    pattern = ["find", ["/Users/robertsale", "~/", "/Users/robertsale/Library", "~/Library"]],
+    decision = "forbidden",
+    justification = "Do not run broad find commands in my home directory or ~/Library folder. Use `ls` and do targetted find commands instead."
+    
+)

@@ -1,0 +1,23 @@
+#!/bin/zsh
+set -euo pipefail
+
+repo_root="${0:A:h:h}"
+cd "$repo_root"
+
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/sync-services-uv-cache}"
+export PATH="/opt/homebrew/opt/ruby/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+log_root="${PARALLELS_SYNC_FLUTTER_HTTP_LOG_ROOT:-$HOME/Library/Logs/sync-flutter-http}"
+timestamp="$(date +%Y%m%d-%H%M%S)"
+launch_dir="$log_root/$timestamp"
+mkdir -p "$launch_dir"
+ln -sfn "$launch_dir" "$log_root/current"
+
+cat >"$launch_dir/launch.meta" <<EOF
+launched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+repo_root=$repo_root
+bind=${PARALLELS_SYNC_FLUTTER_HTTP_BIND:-0.0.0.0}
+port=${PARALLELS_SYNC_FLUTTER_HTTP_PORT:-8769}
+flutter_bin=${FLUTTER_BIN:-$(command -v flutter || true)}
+EOF
+
+exec /opt/homebrew/bin/uv run sync-flutter-http --host "${PARALLELS_SYNC_FLUTTER_HTTP_BIND:-0.0.0.0}" --port "${PARALLELS_SYNC_FLUTTER_HTTP_PORT:-8769}" >>"$launch_dir/server.stdout.log" 2>>"$launch_dir/server.stderr.log"

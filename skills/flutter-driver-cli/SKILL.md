@@ -10,10 +10,12 @@ Use only these scripts:
 ```sh
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim ...
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive ...
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter ...
 ```
 
 `flutter-sim` talks to the broker lifecycle server.
 `flutter-drive` talks to the separate command server.
+`flutter` talks to the separate host-side Flutter execution server.
 
 ## Rules
 
@@ -60,6 +62,7 @@ UI interaction commands:
 Supported practical commands:
 
 - `tapOn`
+- `tapPoint`
 - `longPressOn`
 - `inputText`
 - `swipe`
@@ -72,6 +75,7 @@ Supported practical commands:
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reserve --device-id <udid>
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive hierarchy --device-id <udid>
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive command tapOn --device-id <udid> --input '{"text":"Search"}'
+/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive command tapPoint --device-id <udid> --input '{"x":688,"y":66}'
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive command inputText --device-id <udid> --input '"query"'
 /Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive screenshot --device-id <udid> --out result.png
 ```
@@ -92,17 +96,22 @@ Use it to:
 
 - see what is on screen
 - choose a selector for `tapOn`
+- use bounds to choose an accessibility-space point for `tapPoint`
 - verify text field contents
 - inspect the current interactable screen state
 
 Use `--json` only for raw diagnostics.
 
-`tapOn` and `longPressOn` already return:
+`tapOn`, `tapPoint`, and `longPressOn` already return:
 
 - a short description of what was tapped
 - the post-tap hierarchy
 
 So agents usually do not need a separate `hierarchy` call immediately after tapping.
+
+`tapPoint` takes accessibility-space coordinates from the hierarchy, not raw
+`idb` coordinates. The command server applies the orientation transform
+internally.
 
 ## Text fields
 

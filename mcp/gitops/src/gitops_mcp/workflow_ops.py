@@ -98,8 +98,38 @@ def _branch_name_at(git_cwd: Path) -> str:
     return _run_git(git_cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).stdout
 
 
+def _branch_ref_at(git_cwd: Path) -> str | None:
+    result = _run_git(git_cwd, ["symbolic-ref", "-q", "--short", "HEAD"], check=False)
+    value = result.stdout.strip()
+    return value or None
+
+
+def _git_dir_at(git_cwd: Path) -> Path:
+    return Path(_run_git(git_cwd, ["rev-parse", "--git-dir"]).stdout).expanduser().resolve()
+
+
+def _branch_ref_from_rebase_metadata(git_cwd: Path) -> str | None:
+    git_dir = _git_dir_at(git_cwd)
+    for relative in ("rebase-merge/head-name", "rebase-apply/head-name"):
+        candidate = git_dir / relative
+        if not candidate.exists():
+            continue
+        raw = candidate.read_text(encoding="utf-8", errors="replace").strip()
+        normalized = _normalize_branch_ref(raw)
+        if normalized:
+            return normalized
+    return None
+
+
 def _ensure_branch_is_mutable_at(git_cwd: Path) -> str:
-    branch = _branch_name_at(git_cwd)
+    branch = _branch_ref_at(git_cwd)
+    if branch is None:
+        head_sha = _run_git(git_cwd, ["rev-parse", "--verify", "HEAD"], check=False).stdout.strip() or "unknown"
+        raise GitOpsOpsError(
+            "Detached HEAD detected. This operation requires an attached branch. "
+            f"Current HEAD: {head_sha}. "
+            "Use a sanctioned recovery path to reattach or continue the rebase before publishing/syncing."
+        )
     if branch in _protected_branches():
         raise GitOpsOpsError(
             "Command Rejected: You seem to be working in a restricted integration branch. "
@@ -348,15 +378,11 @@ def git_publish_worktree_op(worktree_path: str) -> str:
         raise GitOpsOpsError("Refusing operation on repository root; provide a linked worktree path.")
     branch = _ensure_branch_is_mutable_at(target_path)
 
-    push_result = _run_git(
-        target_path,
-        ["push", "--force-with-lease", "-u", "origin", "HEAD"],
-        check=False,
-    )
+    push_result = _run_git(target_path, ["push", "--force-with-lease", "-u", "origin", branch], check=False)
     if push_result.returncode != 0:
         detail = push_result.stderr or push_result.stdout or "unknown push error"
         raise GitOpsOpsError(
-            f"git push --force-with-lease -u origin HEAD failed on branch '{branch}': {detail}"
+            f"git push --force-with-lease -u origin {branch} failed on branch '{branch}': {detail}"
         )
 
     upstream_result = _run_git(
@@ -483,6 +509,28 @@ def git_rebase_op(
     return f"Rebased {branch} onto {normalized_upstream}"
 
 
+def git_rebase_continue_op(repo_path: str | None = None) -> str:
+    _, git_cwd = _resolve_repo_and_git_cwd(repo_path)
+    branch = _branch_ref_at(git_cwd) or _branch_ref_from_rebase_metadata(git_cwd)
+    if branch is None:
+        head_sha = _run_git(git_cwd, ["rev-parse", "--verify", "HEAD"], check=False).stdout.strip() or "unknown"
+        raise GitOpsOpsError(
+            "Detached HEAD detected and no rebase branch metadata was found. "
+            f"Current HEAD: {head_sha}. "
+            "Cannot continue a rebase without an attached branch or active rebase metadata."
+        )
+    if branch in _protected_branches():
+        raise GitOpsOpsError(
+            "Command Rejected: You seem to be working in a restricted integration branch. "
+            "Please move your file changes into a worktree and notify the user/orchestrator that the integration branch is dirty."
+        )
+    result = _run_git(git_cwd, ["rebase", "--continue"], check=False)
+    if result.returncode != 0:
+        detail = result.stderr or result.stdout or "unknown rebase continue error"
+        raise GitOpsOpsError(f"git rebase --continue failed on branch '{branch}': {detail}")
+    return f"Continued rebase on {branch}"
+
+
 def _cli() -> int:
     parser = argparse.ArgumentParser(description="Run gitops workflow operations outside MCP")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -525,6 +573,9 @@ def _cli() -> int:
     p_rebase.add_argument("--remote", default="origin")
     p_rebase.add_argument("--no-fetch-first", action="store_true")
     p_rebase.add_argument("--no-autostash", action="store_true")
+
+    p_rebase_continue = sub.add_parser("rebase-continue")
+    p_rebase_continue.add_argument("--repo-path")
 
     args = parser.parse_args()
     try:
@@ -580,6 +631,8 @@ def _cli() -> int:
                     autostash=not args.no_autostash,
                 )
             )
+        elif args.cmd == "rebase-continue":
+            print(git_rebase_continue_op(repo_path=args.repo_path))
         else:
             raise GitOpsOpsError(f"Unsupported command: {args.cmd}")
     except GitOpsOpsError as exc:

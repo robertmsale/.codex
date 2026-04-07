@@ -1,0 +1,18 @@
+#!/bin/zsh
+set -euo pipefail
+
+cd /Users/robertsale/Code/robdex/bridge-deno
+
+exec /opt/homebrew/bin/deno run \
+  --watch=bridge_server.ts,bridge_state_store.ts,deno.json \
+  --no-clear-screen \
+  --allow-net \
+  --allow-read \
+  --allow-write \
+  --allow-env \
+  bridge_server.ts \
+  --bridge-host :: \
+  --bridge-port 42080 \
+  --app-server-url ws://127.0.0.1:4200 \
+  --project-path /Users/robertsale/Code/robdex \
+  --cwd /Users/robertsale/Code/robdex

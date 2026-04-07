@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec /Users/robertsale/.codex/backend/target/release/codex-command-parser-client "$@"

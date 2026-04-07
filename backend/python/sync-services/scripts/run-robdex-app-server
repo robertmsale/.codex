@@ -1,0 +1,7 @@
+#!/bin/zsh
+set -euo pipefail
+
+cd /Users/robertsale/Code/robdex
+
+exec /usr/local/bin/codex app-server \
+  --listen "${ROBDEX_APP_SERVER_LISTEN:-ws://127.0.0.1:4200}"

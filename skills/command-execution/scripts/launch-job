@@ -108,6 +108,38 @@ normalize_cwd_alias() {
   esac
 }
 
+passthru_activation_prefix() {
+  cat <<'EOF'
+if [[ -f "$HOME/.codex/activate" ]]; then
+  source "$HOME/.codex/activate" "$HOME/.codex" >/dev/null 2>&1 || true
+
+  if [[ -n "${CODEX_THREAD_ID:-}" ]] && command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    __robdex_bridge_base_url="${ROBDEX_BRIDGE_BASE_URL:-http://127.0.0.1:42080}"
+    __robdex_payload="$(curl -fsS --max-time 2 "${__robdex_bridge_base_url%/}/orchestrator/whoami?threadId=${CODEX_THREAD_ID}" 2>/dev/null || true)"
+    if [[ -n "${__robdex_payload:-}" ]]; then
+      __robdex_cwd="$(python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); print(data.get("cwd",""))' <<<"${__robdex_payload}" 2>/dev/null || true)"
+      if [[ -n "${__robdex_cwd:-}" && -d "${__robdex_cwd}/.codex/skills" ]]; then
+        source "$HOME/.codex/activate" "${__robdex_cwd}/.codex" >/dev/null 2>&1 || true
+      fi
+    fi
+    unset __robdex_bridge_base_url __robdex_payload __robdex_cwd
+  fi
+
+  if [[ -n "${AGENT_CWD:-}" && -d "${AGENT_CWD}/.codex/skills" ]]; then
+    source "$HOME/.codex/activate" "${AGENT_CWD}/.codex" >/dev/null 2>&1 || true
+  fi
+fi
+
+case ":${PATH:-}:" in
+  *:/usr/local/bin:*)
+    ;;
+  *)
+    export PATH="${PATH:+${PATH}:}/usr/local/bin"
+    ;;
+esac
+EOF
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -128,9 +160,27 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 fi
 
 if [[ "${LAUNCH_JOB_PASSTHRU:-0}" == "1" ]]; then
-  export PATH="/usr/local/bin:$(strip_shim_path "${PATH:-}")"
+  export PATH="$(strip_shim_path "${PATH:-}")"
+  case ":${PATH:-}:" in
+    *:/usr/local/bin:*)
+      ;;
+    *)
+      export PATH="${PATH:+${PATH}:}/usr/local/bin"
+      ;;
+  esac
   if [[ "${1:-}" == "-lc" || "${1:-}" == "-c" ]]; then
-    exec /bin/zsh "$@"
+    mode="$1"
+    shift
+    if [[ $# -lt 1 ]]; then
+      usage >&2
+      exit 2
+    fi
+    command_text="$1"
+    shift
+    prefixed_command="$(passthru_activation_prefix)
+
+${command_text}"
+    exec /bin/zsh "$mode" "$prefixed_command" "$@"
   fi
   exec "$@"
 fi
@@ -145,7 +195,10 @@ if [[ "${1:-}" == "-lc" || "${1:-}" == "-c" ]]; then
   shell_bin="${LAUNCH_JOB_SHELL:-/bin/zsh}"
   command_text="$1"
   shift
-  set -- "$shell_bin" "$mode" "$command_text" "$@"
+  prefixed_command="$(passthru_activation_prefix)
+
+${command_text}"
+  set -- "$shell_bin" "$mode" "$prefixed_command" "$@"
 fi
 
 normalize_cwd_alias
@@ -165,6 +218,7 @@ job_file="$state_root/${job_id}.job"
   printf 'job_id=%s\n' "$job_id"
   printf 'cwd=%s\n' "$PWD"
   printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'launcher_pid=%s\n' "$$"
 } >"$job_file"
 
 printf 'job_id: %s\n' "$job_id" >&2
@@ -188,6 +242,10 @@ trap 'cleanup' EXIT
 
 PATH="$(strip_shim_path "${PATH:-}")" LAUNCH_JOB_PASSTHRU=1 "$@" &
 cmd_pid=$!
+
+{
+  printf 'cmd_pid=%s\n' "$cmd_pid"
+} >>"$job_file"
 
 if wait "$cmd_pid"; then
   exit 0

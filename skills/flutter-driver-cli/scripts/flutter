@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_URL="${FLUTTER_HTTP_SERVER_BASE_URL:-http://127.0.0.1:8769}"
+
+if [[ $# -eq 0 ]]; then
+  echo "Usage: flutter <args...>" >&2
+  exit 64
+fi
+
+BODY="$(
+  python3 - "$PWD" "$@" <<'PY'
+import json
+import sys
+
+cwd = sys.argv[1]
+argv = sys.argv[2:]
+print(json.dumps({"cwd": cwd, "argv": argv}))
+PY
+)"
+
+RESPONSE="$(curl -fsS -X POST -H 'Content-Type: application/json' "$BASE_URL/run" -d "$BODY")"
+
+python3 - "$RESPONSE" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+stdout = payload.get("stdout") or ""
+stderr = payload.get("stderr") or ""
+if stdout:
+    sys.stdout.write(stdout)
+if stderr:
+    sys.stderr.write(stderr)
+raise SystemExit(int(payload.get("returncode", 1)))
+PY
