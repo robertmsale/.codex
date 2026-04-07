@@ -1,226 +1,157 @@
-# Codex Home
+# Codex Home 🛠️
 
-This repository is the live `~/.codex` home directory for a heavily customized
-Codex setup. It is not just a static config bundle. It contains:
+This is the live `~/.codex` control plane for a heavily customized Codex setup.
+It is not just dotfiles. It is the runtime home for:
 
-- operator-owned Codex configuration
+- agent config and profiles
 - local skills and workflow wrappers
 - local MCP servers
-- execution policy rules
-- Robdex orchestration/runtime integration (mcp currently unavailable)
+- the Robdex bridge/runtime state
+- backend services that support Codex operations
 
-## What This Repo Is For
+Think of this directory as operational infrastructure 🚦
 
-This repo exists to make the local Codex runtime programmable and reviewable.
-The main moving parts are:
+## What Lives Here
 
-- `config.toml`: the primary Codex configuration
-- `AGENTS.md`: global agent instructions for this repo
-- `skills/`: local skills, workflow docs, and script wrappers
-- `mcp/`: local MCP server implementations
-- `rules/`: command approval / execpolicy rules
+### Core config ⚙️
 
-The operating model is script-first:
+- [`config.toml`](~/.codex/config.toml)
+  Main Codex configuration. Profiles, model defaults, sandbox defaults, MCP registration, and runtime behavior start here.
 
-- use skills for workflows instead of ad hoc commands
-- use local wrappers for gitops/orchestration whenever possible
-- keep operator-controlled config in canonical files
-- test workflow changes directly in this repo before relying on them elsewhere
-- scripts are rigorously tested, and therefore allowed using the ./rules API
+- [`AGENTS.md`](~/.codex/AGENTS.md)
+  Global operating rules for agents working in this home directory.
 
-## High-Level Layout
+- [`roles/`](~/.codex/roles)
+  Base instructions and role-specific prompt files.
 
-### Core Config
+- [`configs/`](~/.codex/configs)
+  Extra config fragments and local overrides.
 
-- [`config.toml`](/Users/robertsale/.codex/config.toml)
-  The primary Codex runtime config. This controls model defaults, sandbox
-  defaults, notifications, MCP server registration, features, and profile
-  definitions.
+### Skills 🧰
 
-- [`AGENTS.md`](/Users/robertsale/.codex/AGENTS.md)
-  The repo-local operating contract for agents working in this environment.
-  This is where command execution, skill usage, noisy-command handling, and
-  workflow rules are enforced.
+- [`skills/`](~/.codex/skills)
+  Local skill library. Each skill usually contains a `SKILL.md` plus scripts and supporting assets.
 
-- [`configs/`](/Users/robertsale/.codex/configs)
-  Additional project-specific config fragments.
-
-### Skills
-
-- [`skills/`](/Users/robertsale/.codex/skills)
-  Local skill library. Each skill usually includes:
-  - `SKILL.md` instructions
-  - `scripts/` wrappers
-  - optional `tests/`
-
-Current important skills include:
+Important skills in active use:
 
 - `command-execution`
-  Required execution model: every command run yields a stable `job_id`, and
-  long-running commands must be resumed via `command_execution_wait`. This is a
-  shell manipulation technique, replacing zsh with `launch-job` earlier in PATH
-  so the job_id is always visible to agents and cannot be circumvented.
+  Job-based execution model with stable `job_id`s.
 
 - `command-parser`
-  Required wrapper for noisy build/test/lint-style commands when parser
-  coverage exists. Positive rules allow trivial/additive/reversable operations
-  to run via command parser without approval, non-noisy commands are blocked,
-  noisy commands are allowed, interactively guiding agents to use it properly.
-
-- `gh-version-control-workflow`
-  Script-first gitops workflow for worktree creation, commit, publish, sync,
-  and cleanup. Approvals for all additive operations are allowed. Irreversable
-  and destructive commands require approval.
+  Wrapper for noisy commands like builds, tests, and lint-like tooling.
 
 - `request-review`
-  Review wrapper used before publishing working-code changes. This now supports
-  one-shot-safe review behavior and treats the operator-owned canonical `.env`
-  as the source of truth for review mode.
+  Review wrapper for code changes.
 
 - `robdex-orchestrator`
-  Local orchestration workflow for worker agents and Robdex messaging. MCP server
-  implementation currently gitignored while under development.
+  Robdex messaging and worker orchestration surface.
 
-- `flutter-commands`
-  Project-wide guardrails for Flutter usage, including the ban on
-  `flutter analyze`.
+- `gh-version-control-workflow`
+  Script-first worktree and publish workflow.
 
 - `safe-delete`
-  Non-destructive delete workflow. Throws files in /tmp while avoiding collisions,
-  allowing recovery, and respecting sandbox.
-  
+  Non-destructive delete flow.
 
-### MCP Servers
+### Backend services 🚀
 
-- [`mcp/`](/Users/robertsale/.codex/mcp)
-  Local MCP implementations used by this runtime. Current notable servers:
-  - `command-execution`
+- [`backend/`](~/.codex/backend)
+  Codex-owned service workspace.
 
-These are real local implementations, not placeholders. Changes here can alter
-runtime behavior immediately if the calling path imports them directly, or
-after restart if a host/runtime process snapshots them.
+Current layout:
 
-### Rules
+- Rust workspace for high-performance local services
+- Python staging area for sync/flutter helper services
+- vendored Codex source used by the Rust Robdex bridge adapter
+- supervisor templates and launch scripts
 
-- [`rules/`](/Users/robertsale/.codex/rules)
-  Execpolicy / allowlist rules for approved command patterns. These are part of
-  the local safety and automation model.
+Notable pieces:
 
-Examples:
+- Rust Robdex bridge
+- Rust aux HTTP server for `command-parser` and `request-review`
+- Python sync services for gitops/flutter helpers
 
-- gitops wrapper allowances
-- command-parser allowances for approved noisy command families
-- branch-protection / workflow-specific policy
+See [`backend/README.md`](~/.codex/backend/README.md) for the service-level breakdown.
 
-Rule edits typically require restart to affect normal approval flow. The usual
-pre-restart validation path is `codex execpolicy`.
+### MCP servers 🔌
 
-### Runtime State
+- [`mcp/`](~/.codex/mcp)
+  Local MCP server implementations used by this environment.
 
-- [`robdex/`](/Users/robertsale/.codex/robdex)
-  Robdex state, including thread/project metadata used by orchestration.
+These are live behavior surfaces, not placeholders.
 
-- [`sessions/`](/Users/robertsale/.codex/sessions)
-- [`archived_sessions/`](/Users/robertsale/.codex/archived_sessions)
-- [`state/`](/Users/robertsale/.codex/state)
-- [`shell_snapshots/`](/Users/robertsale/.codex/shell_snapshots)
-- [`history.jsonl`](/Users/robertsale/.codex/history.jsonl)
+### Robdex state 🧭
 
-These are runtime artifacts, not hand-maintained source files.
+- [`robdex/`](~/.codex/robdex)
+  Live Robdex bridge state and caches.
 
-## Current Workflow Model
+Important files:
 
-### Command Execution
+- [`robdex/robdex.json`](~/.codex/robdex/robdex.json)
+  Project, agent, and orchestration state.
 
-- Treat command execution as job-based.
-- Capture `job_id` on every command.
-- If the command is still running, wait on the same job rather than rerunning.
+- [`robdex/robdex.sqlite`](~/.codex/robdex/robdex.sqlite)
+  Thread cache and bridge-side persisted data.
 
-### Noisy Commands
+- [`robdex/migration-backups/`](~/.codex/robdex/migration-backups)
+  Manual backups taken before risky bridge cutovers.
 
-- Use `command-parser` for noisy commands when parser coverage exists.
-- Do not run formatting tools by default.
+### Runtime artifacts 📦
 
-### GitOps
+These are generated/runtime-owned, not hand-maintained source:
 
-- The normal path is worktree-first and script-first.
-- Working-code changes should go through review before publish.
-- `git-merge-worktree` is the standard merge wrapper after publish:
-  - squash merge the PR
-  - delete the remote branch
-  - sync the parent integration branch
-  - remove and prune the local worktree
-  - delete the local feature branch
-  - leave branch/worktree state intact if the squash merge itself fails
-- `git-worktree-cleanup` now also syncs the parent integration branch after a
-  successful remote merge:
-  - resolve integration branch from the parent repo by default
-  - stash dirty parent-repo changes, including untracked files
-  - fast-forward from `origin`
-  - restore the stash
-  - remove the worktree
+- [`sessions/`](~/.codex/sessions)
+- [`archived_sessions/`](~/.codex/archived_sessions)
+- [`sqlite/`](~/.codex/sqlite)
+- [`shell_snapshots/`](~/.codex/shell_snapshots)
+- [`history.jsonl`](~/.codex/history.jsonl)
+- [`tmp/`](~/.codex/tmp)
 
-### Review
+## Current Operating Model 🧠
 
-- `request-review` is the standard review wrapper.
-- In remote mode it is now one-shot-safe:
-  - dirty worktree: commit, push, create/use PR, request review
-  - clean worktree: review existing `HEAD` instead of refusing
-  - explicit existing-commit review is supported without silently pushing newer
-    commits
-- The canonical operator config file at
-  `~/.codex/skills/request-review/.env` is the source of truth for review mode
-  and related operator settings.
+### Command execution
+
+- Commands are job-based.
+- Long-running work should be awaited via the job workflow, not rerun.
+
+### Noisy commands
+
+- Use `command-parser` when coverage exists.
+- Treat raw noisy output as a last resort.
 
 ### Robdex
 
-- Robdex is the native app/runtime wrapper around `codex app-server` in this
-  setup.
-- This repo contains Robdex-facing orchestration logic.
-- Local config/tooling bugs are fixed here first; upstream Robdex app bugs may
-  still require Robdex-side changes and a full app restart.
+- The Rust bridge is the live bridge implementation.
+- Bridge state is owned here in `~/.codex`.
+- The GUI should receive snapshots/events and send narrow intent commands.
 
-## Important Files To Treat Carefully
+### Services
 
-- [`config.toml`](/Users/robertsale/.codex/config.toml)
-  Operator-owned runtime config.
+- Supervisor-managed support services are part of this environment.
+- Rust and Python services both live under `backend/`.
+- Restart-sensitive changes should be treated like production ops 🔥
 
-- [`robdex/robdex.json`](/Users/robertsale/.codex/robdex/robdex.json)
-  Live orchestration/runtime state.
+## Files To Treat Carefully ⚠️
 
-- [`rules/`](/Users/robertsale/.codex/rules)
-  Approval policy changes can alter what agents can run.
+- [`config.toml`](~/.codex/config.toml)
+- [`AGENTS.md`](~/.codex/AGENTS.md)
+- [`robdex/robdex.json`](~/.codex/robdex/robdex.json)
+- [`robdex/robdex.sqlite`](~/.codex/robdex/robdex.sqlite)
+- [`rules/`](~/.codex/rules)
 
-- [`skills/request-review/.env.example`](/Users/robertsale/.codex/skills/request-review/.env.example)
-  Example shape only. The real operator-owned `.env` may exist outside git and
-  should be treated as authoritative when present.
+Changes here can affect active agents, approvals, orchestration, or bridge behavior immediately.
 
-## How To Validate Changes
+## Validation Guide ✅
 
-Validation depends on what changed.
+Use the real surface you changed.
 
-Typical examples:
+Examples:
 
-- shell wrapper changes:
-  - `bash -n path/to/script`
-  - run the script-specific shell test, if present
+- shell scripts: `bash -n ...`
+- Rust services: `cargo check` or targeted tests
+- Python services: `python3 -m py_compile ...`
+- bridge/service changes: hit the live HTTP/websocket surface after restart
+- workflow wrappers: run the actual wrapper, not just unit tests
 
-- Python MCP changes:
-  - `python3 -m py_compile ...`
-  - targeted `unittest` runs
+## Short version ✨
 
-- rule changes:
-  - `codex execpolicy check ...`
-
-- workflow changes:
-  - exercise the real wrapper path, not just unit tests
-
-This repo is full of workflow code. For many changes, the real validation is
-"did the actual wrapper perform the full workflow safely?"
-
-## Short Version
-
-This repo is the live control plane for a customized Codex + Robdex
-environment. The important source files are under `skills/`, `mcp/`, `rules/`,
-`config.toml`, and `AGENTS.md`. The rest includes a mix of supporting artifacts. Treat it like operational infrastructure, not a toy
-dotfiles repo.
+`~/.codex` is the live home directory for Codex, Robdex, local skills, bridge state, MCP servers, and service infrastructure. Treat it like a small local platform, not a passive config folder.
