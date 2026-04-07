@@ -135,6 +135,7 @@ pub async fn make_app_state_snapshot(
     };
     if !include_message_cache {
         thread_cache.message_cache_by_thread_id.clear();
+        thread_cache.context_window_status_by_thread_id.clear();
     }
     let persisted_state_value = runtime.state_document_value().await;
     let state = parse_state(&persisted_state_value);
@@ -423,7 +424,18 @@ pub async fn execute_bridge_command(
                 "persistExtendedHistory": true
             });
             let result = app_server_request_json(runtime, "thread/resume", params).await?;
-            Ok(success(json!({"type":"thread","payload": result.get("thread").cloned().unwrap_or(result)})))
+            let mut state = parse_state(&runtime.state_document_value().await);
+            if update_tracked_thread_session_config(
+                &mut state,
+                &thread_id,
+                payload.get("approvalPolicy").and_then(Value::as_str),
+                payload.get("sandbox").and_then(Value::as_str),
+                payload.get("networkAccess").and_then(Value::as_bool),
+                payload.get("cwd").and_then(Value::as_str),
+            ) {
+                persist_state(runtime, &state).await?;
+            }
+            Ok(success(json!({"type":"thread","payload": summarize_thread_payload(&result)})))
         }
         "threadFork" => {
             let state = parse_state(&runtime.state_document_value().await);
@@ -467,6 +479,30 @@ pub async fn execute_bridge_command(
             let thread_id = required_string(&payload, "threadId")?;
             let git_info = payload.get("gitInfo").cloned().unwrap_or(Value::Null);
             let result = app_server_request_json(runtime, "thread/metadata/update", json!({"threadId": thread_id, "gitInfo": git_info})).await?;
+            let mut state = parse_state(&runtime.state_document_value().await);
+            if let Some(agent) = state
+                .projects
+                .values_mut()
+                .find_map(|project| project.agents.get_mut(&thread_id))
+            {
+                if payload.get("approvalPolicy").is_some() {
+                    agent.approval_policy = payload
+                        .get("approvalPolicy")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                }
+                if payload.get("sandboxMode").is_some() {
+                    agent.sandbox_mode = payload
+                        .get("sandboxMode")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                }
+                if payload.get("networkAccess").is_some() {
+                    agent.network_access = payload.get("networkAccess").and_then(Value::as_bool);
+                }
+                state.updated_at = Some(unix_now());
+                persist_state(runtime, &state).await?;
+            }
             Ok(success(json!({"type":"threadMetadata","payload": result})))
         }
         "threadCompactStart" => {
@@ -1026,6 +1062,60 @@ fn set_tracked_thread_display_name(state: &mut PersistedState, thread_id: &str, 
             break;
         }
     }
+}
+
+fn update_tracked_thread_session_config(
+    state: &mut PersistedState,
+    thread_id: &str,
+    approval_policy: Option<&str>,
+    sandbox_mode: Option<&str>,
+    network_access: Option<bool>,
+    cwd: Option<&str>,
+) -> bool {
+    for project in state.projects.values_mut() {
+        if let Some(agent) = project.agents.get_mut(thread_id) {
+            let mut changed = false;
+            if let Some(approval_policy) = approval_policy {
+                let next = Some(approval_policy.to_string());
+                if agent.approval_policy != next {
+                    agent.approval_policy = next;
+                    changed = true;
+                }
+            }
+            if let Some(sandbox_mode) = sandbox_mode {
+                let next = Some(sandbox_mode.to_string());
+                if agent.sandbox_mode != next {
+                    agent.sandbox_mode = next;
+                    changed = true;
+                }
+            }
+            if agent.network_access != network_access {
+                agent.network_access = network_access;
+                changed = true;
+            }
+            if let Some(cwd) = cwd {
+                let next = Some(cwd.to_string());
+                if agent.cwd != next {
+                    agent.cwd = next;
+                    changed = true;
+                }
+            }
+            if changed {
+                project.updated_at = Some(unix_now());
+                state.updated_at = Some(unix_now());
+            }
+            return changed;
+        }
+    }
+    false
+}
+
+fn summarize_thread_payload(result: &Value) -> Value {
+    let mut thread = result.get("thread").cloned().unwrap_or_else(|| result.clone());
+    if let Some(object) = thread.as_object_mut() {
+        object.insert("turns".to_string(), Value::Array(Vec::new()));
+    }
+    thread
 }
 
 fn synthesized_agents(
