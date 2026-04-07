@@ -29,6 +29,7 @@ pub enum UpstreamRuntimeEvent {
     Notification(ServerNotification),
     ServerRequest(ServerRequest),
     ClearRunningStateAfterDisconnect,
+    FlushPendingThreadCacheWrites,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -910,9 +911,8 @@ fn message_from_item(item: &ThreadItem, thread_id: &str) -> Option<RobdexChatMes
                 status: Some(command_execution_status_label(status).to_string()),
                 command: Some(command.clone()),
                 output: aggregated_output.clone(),
-                process_id: process_id
-                    .clone()
-                    .or_else(|| command_execution_job_token(command, aggregated_output.as_deref())),
+                process_id: command_execution_job_token(command, aggregated_output.as_deref())
+                    .or_else(|| process_id.clone()),
             }),
             None,
         )),
@@ -1386,6 +1386,35 @@ mod tests {
                 command: "command-parser cargo test".to_string(),
                 cwd: PathBuf::from("/tmp"),
                 process_id: None,
+                status: CommandExecutionStatus::InProgress,
+                command_actions: Vec::new(),
+                aggregated_output: Some(
+                    "job_id: 12345678-abcd-1234-abcd-1234567890ab\nstill running".to_string(),
+                ),
+                exit_code: None,
+                duration_ms: None,
+            },
+            "thread-1",
+        )
+        .expect("message");
+
+        assert_eq!(
+            message
+                .tool_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.process_id.as_deref()),
+            Some("job:12345678-abcd-1234-abcd-1234567890ab")
+        );
+    }
+
+    #[test]
+    fn command_execution_job_token_is_preferred_over_numeric_process_id() {
+        let message = message_from_item(
+            &ThreadItem::CommandExecution {
+                id: "cmd-1".to_string(),
+                command: "command-parser cargo test".to_string(),
+                cwd: PathBuf::from("/tmp"),
+                process_id: Some("93456".to_string()),
                 status: CommandExecutionStatus::InProgress,
                 command_actions: Vec::new(),
                 aggregated_output: Some(

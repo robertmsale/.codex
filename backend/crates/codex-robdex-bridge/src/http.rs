@@ -18,7 +18,7 @@ use tracing::error;
 
 use crate::{
     commands::{
-        execute_bridge_command, make_app_state_snapshot, orchestrator_agents, orchestrator_approval_decision,
+        execute_bridge_command, make_app_state_snapshot, make_event_replay_response, orchestrator_agents, orchestrator_approval_decision,
         orchestrator_archive_agent, orchestrator_lookup, orchestrator_pending_approvals, orchestrator_rename_agent,
         orchestrator_send_message, orchestrator_spawn_agent, orchestrator_thread_group_archive,
         orchestrator_thread_group_create, orchestrator_thread_group_delete, orchestrator_thread_group_move_thread,
@@ -107,8 +107,11 @@ struct ReplayQuery {
 async fn replay_events(
     State(runtime): State<Arc<BridgeRuntime>>,
     Query(query): Query<ReplayQuery>,
-) -> Json<crate::models::EventReplayResponse> {
-    Json(runtime.replay_events(query.since).await)
+) -> impl IntoResponse {
+    match make_event_replay_response(&runtime, query.since).await {
+        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]

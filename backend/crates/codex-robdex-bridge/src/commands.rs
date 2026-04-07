@@ -102,6 +102,18 @@ struct ScopedContext {
     visible: Vec<crate::models::ScopedAgentRecord>,
 }
 
+#[derive(Debug, Clone)]
+struct SenderThreadContext {
+    project_path: String,
+    project_cwd: String,
+    cwd: String,
+    approval_policy: Option<String>,
+    sandbox_mode: Option<String>,
+    network_access: Option<bool>,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+}
+
 pub async fn make_app_state_snapshot(
     runtime: &BridgeRuntime,
     include_message_cache: bool,
@@ -135,6 +147,49 @@ pub async fn make_app_state_snapshot(
         active_instance_id: Some(runtime.settings().project_path.display().to_string()),
         generated_at: unix_now(),
     })
+}
+
+pub async fn make_event_replay_response(runtime: &BridgeRuntime, since: Option<u64>) -> Result<Value> {
+    let replay = runtime.replay_events(since).await;
+    let mut events = Vec::with_capacity(replay.events.len());
+    for sequenced in replay.events {
+        let event = match sequenced.event {
+            crate::models::BridgeEvent::ConnectionStatus { message } => {
+                json!({
+                    "sequence": sequenced.sequence,
+                    "event": {
+                        "name": "connectionStatus",
+                        "message": message,
+                    }
+                })
+            }
+            crate::models::BridgeEvent::ThreadMessagesChanged { payload } => {
+                json!({
+                    "sequence": sequenced.sequence,
+                    "event": {
+                        "name": "threadMessagesChanged",
+                        "data": payload,
+                    }
+                })
+            }
+            crate::models::BridgeEvent::AppStateSnapshot { .. } => {
+                json!({
+                    "sequence": sequenced.sequence,
+                    "event": {
+                        "name": "appStateSnapshot",
+                        "data": make_app_state_snapshot(runtime, false).await?,
+                    }
+                })
+            }
+        };
+        events.push(event);
+    }
+
+    Ok(json!({
+        "events": events,
+        "latestSequence": replay.latest_sequence,
+        "requiresSnapshot": replay.requires_snapshot,
+    }))
 }
 
 fn bridge_state_payload(state: &PersistedState) -> Value {
@@ -326,8 +381,7 @@ pub async fn execute_bridge_command(
         "threadSelectionSet" => Ok(success(json!({"type":"empty"}))),
         "eventReplay" => {
             let since = payload.get("sinceSequence").and_then(Value::as_u64);
-            let replay = runtime.replay_events(since).await;
-            Ok(success(json!({"type":"eventReplay","payload": replay})))
+            Ok(success(json!({"type":"eventReplay","payload": make_event_replay_response(runtime, since).await?})))
         }
         "threadStart" => {
             let state = parse_state(&runtime.state_document_value().await);
@@ -384,7 +438,8 @@ pub async fn execute_bridge_command(
             Ok(success(json!({"type":"thread","payload": result.get("thread").cloned().unwrap_or(result)})))
         }
         "threadArchive" => {
-            app_server_request_json(runtime, "thread/archive", json!({"threadId": required_string(&payload, "threadId")?})).await?;
+            let thread_id = required_string(&payload, "threadId")?;
+            archive_thread(runtime, &thread_id).await?;
             Ok(success(json!({"type":"empty"})))
         }
         "threadUnarchive" => {
@@ -589,8 +644,10 @@ pub async fn execute_bridge_command(
             Ok(success(json!({"type":"turn","payload": result})))
         }
         "commandExecutionTerminate" => {
-            if let Some(process_id) = payload.get("processId").and_then(Value::as_str) {
-                terminate_process_group_by_pid(process_id)?;
+            let thread_id = required_string(&payload, "threadId")?;
+            let item_id = payload.get("itemId").and_then(Value::as_str);
+            if let Some(target) = resolve_command_termination_target(runtime, &thread_id, item_id).await? {
+                terminate_process_group_by_pid(&target)?;
             }
             Ok(success(json!({"type":"empty"})))
         }
@@ -1135,6 +1192,105 @@ fn tracked_project_path_for_thread(state: &PersistedState, thread_id: &str) -> O
     })
 }
 
+fn sender_thread_context(state: &PersistedState, thread_id: &str) -> Option<SenderThreadContext> {
+    let default_approval_policy = state
+        .global_configs
+        .get("approvalPolicy")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let default_sandbox_mode = state
+        .global_configs
+        .get("sandboxMode")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let default_network_access = state
+        .global_configs
+        .get("networkAccess")
+        .and_then(Value::as_bool);
+
+    for project in state.projects.values() {
+        let agent = project.agents.get(thread_id);
+        if agent.is_none() && project.orchestrator_thread_id.as_deref() != Some(thread_id) {
+            continue;
+        }
+        let project_path = normalize_path(project.project_root.clone().unwrap_or_default());
+        let project_cwd = normalize_path(project.cwd.clone().unwrap_or_else(|| project_path.clone()));
+        let cwd = normalize_path(
+            agent
+                .and_then(|agent| agent.cwd.clone())
+                .unwrap_or_else(|| project_cwd.clone()),
+        );
+        let sandbox_mode = agent
+            .and_then(|agent| agent.sandbox_mode.clone())
+            .or(default_sandbox_mode.clone());
+        let network_access = effective_network_access_for_sandbox(
+            sandbox_mode.as_deref(),
+            agent.and_then(|agent| agent.network_access),
+            default_network_access,
+        );
+        return Some(SenderThreadContext {
+            project_path,
+            project_cwd,
+            cwd,
+            approval_policy: agent
+                .and_then(|agent| agent.approval_policy.clone())
+                .or(default_approval_policy.clone()),
+            sandbox_mode,
+            network_access,
+            model: agent.and_then(|agent| agent.model.clone()),
+            reasoning_effort: agent.and_then(|agent| agent.reasoning_effort.clone()),
+        });
+    }
+    None
+}
+
+fn effective_network_access_for_sandbox(
+    sandbox_mode: Option<&str>,
+    explicit_network_access: Option<bool>,
+    default_network_access: Option<bool>,
+) -> Option<bool> {
+    match sandbox_mode {
+        Some("workspace-write") | Some("external-sandbox") => {
+            if explicit_network_access == Some(true) || default_network_access == Some(true) {
+                Some(true)
+            } else if explicit_network_access == Some(false) || default_network_access == Some(false) {
+                Some(false)
+            } else {
+                Some(true)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn sandbox_policy_for_spawn(
+    sandbox_mode: Option<&str>,
+    network_access: Option<bool>,
+    cwd: Option<&str>,
+) -> Option<Value> {
+    match sandbox_mode {
+        Some("danger-full-access") => Some(json!({ "type": "dangerFullAccess" })),
+        Some("read-only") => Some(json!({
+            "type": "readOnly",
+            "access": { "type": "fullAccess" },
+            "networkAccess": network_access.unwrap_or(false),
+        })),
+        Some("workspace-write") => Some(json!({
+            "type": "workspaceWrite",
+            "writableRoots": cwd.map(|value| vec![value]).unwrap_or_default(),
+            "readOnlyAccess": { "type": "fullAccess" },
+            "networkAccess": network_access.unwrap_or(true),
+            "excludeTmpdirEnvVar": false,
+            "excludeSlashTmp": false,
+        })),
+        Some("external-sandbox") => Some(json!({
+            "type": "externalSandbox",
+            "networkAccess": if network_access.unwrap_or(true) { "enabled" } else { "restricted" },
+        })),
+        _ => None,
+    }
+}
+
 fn role_default_model(state: &PersistedState, project_path: Option<&str>, role: Option<&str>) -> Option<String> {
     let key = match role {
         Some("qa") => "qa",
@@ -1265,6 +1421,7 @@ async fn send_thread_input(
 
     let cwd = tracked_cwd_for_thread(state, thread_id);
     let approval_policy = tracked_approval_policy_for_thread(state, thread_id);
+    let sandbox_policy = tracked_sandbox_policy_for_thread(state, thread_id);
     let response = app_server_request_json(
         runtime,
         "turn/start",
@@ -1273,6 +1430,7 @@ async fn send_thread_input(
             "input": [{"type":"text","text": text}],
             "cwd": cwd,
             "approvalPolicy": approval_policy,
+            "sandboxPolicy": sandbox_policy,
             "model": model,
             "effort": effort,
         }),
@@ -1296,7 +1454,46 @@ fn tracked_cwd_for_thread(state: &PersistedState, thread_id: &str) -> Option<Str
 fn tracked_approval_policy_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
     for project in state.projects.values() {
         if let Some(agent) = project.agents.get(thread_id) {
-            return agent.approval_policy.clone();
+            return agent
+                .approval_policy
+                .clone()
+                .or_else(|| {
+                    state
+                        .global_configs
+                        .get("approvalPolicy")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
+        }
+    }
+    None
+}
+
+fn tracked_sandbox_policy_for_thread(state: &PersistedState, thread_id: &str) -> Option<Value> {
+    let default_sandbox_mode = state
+        .global_configs
+        .get("sandboxMode")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let default_network_access = state.global_configs.get("networkAccess").and_then(Value::as_bool);
+
+    for project in state.projects.values() {
+        if let Some(agent) = project.agents.get(thread_id) {
+            let sandbox_mode = agent
+                .sandbox_mode
+                .clone()
+                .or_else(|| default_sandbox_mode.clone());
+            let network_access = effective_network_access_for_sandbox(
+                sandbox_mode.as_deref(),
+                agent.network_access,
+                default_network_access,
+            );
+            let cwd = agent
+                .cwd
+                .clone()
+                .or_else(|| project.cwd.clone())
+                .or_else(|| project.project_root.clone());
+            return sandbox_policy_for_spawn(sandbox_mode.as_deref(), network_access, cwd.as_deref());
         }
     }
     None
@@ -1338,11 +1535,48 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
         .map(str::to_string)
         .unwrap_or_else(|| runtime.settings().cwd.display().to_string());
     let display_name = payload.get("displayName").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty());
+    let approval_policy = payload
+        .get("approvalPolicy")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            state
+                .global_configs
+                .get("approvalPolicy")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    let sandbox_mode = payload
+        .get("sandboxMode")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            state
+                .global_configs
+                .get("sandboxMode")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    let default_network_access = state.global_configs.get("networkAccess").and_then(Value::as_bool);
+    let network_access = effective_network_access_for_sandbox(
+        sandbox_mode.as_deref(),
+        payload.get("networkAccess").and_then(Value::as_bool),
+        default_network_access,
+    );
+    let model = payload
+        .get("modelID")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| role_default_model(&state, Some(project_path.as_str()), role));
+    let reasoning_effort = payload
+        .get("reasoningEffort")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let params = json!({
         "cwd": cwd,
-        "approvalPolicy": Value::Null,
-        "sandbox": Value::Null,
-        "model": role_default_model(&state, Some(project_path.as_str()), role).map(Value::String).unwrap_or(Value::Null),
+        "approvalPolicy": approval_policy,
+        "sandbox": sandbox_mode,
+        "model": model,
         "developerInstructions": developer_instructions_for_role(&state, role, Some(project_path.as_str()), Some(cwd.as_str())),
         "baseInstructions": resolve_role_instructions_for(role)?,
         "persistExtendedHistory": true,
@@ -1375,8 +1609,16 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
             "projectPath": project_path,
             "preferredCWD": cwd,
             "role": role.unwrap_or("worker"),
+            "approvalPolicy": approval_policy,
+            "sandboxMode": sandbox_mode,
+            "networkAccess": network_access,
+            "modelID": model,
+            "reasoningEffort": reasoning_effort,
         }),
     )?;
+    if let Some(display_name) = display_name {
+        set_tracked_thread_display_name(&mut state, &thread_id, display_name);
+    }
     persist_state(runtime, &state).await?;
 
     if let Some(initial_prompt) = payload.get("initialPrompt").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()) {
@@ -1429,15 +1671,7 @@ async fn close_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
         &thread_id,
     )
     .ok_or_else(|| anyhow::anyhow!("Unknown agent `{thread_id}`"))?;
-    let _ = app_server_request_json(
-        runtime,
-        "thread/archive",
-        json!({"threadId": thread_id}),
-    )
-    .await;
-    remove_tracked_thread(&mut state, &thread_id);
-    persist_state(runtime, &state).await?;
-    let _ = runtime.set_manual_thread_running_state(&thread_id, false).await;
+    archive_thread(runtime, &thread_id).await?;
     agent.status = "closed".to_string();
     agent.last_event = Some("Closed".to_string());
     Ok(agent)
@@ -2087,7 +2321,8 @@ pub async fn orchestrator_spawn_agent(
     let payload = json!({
         "displayName": name,
         "initialPrompt": prompt,
-        "cwd": cwd.or_else(|| sender.get("cwd").and_then(Value::as_str)),
+        "cwd": cwd
+            .or_else(|| sender.get("cwd").and_then(Value::as_str)),
         "projectPath": sender.get("projectPath").and_then(Value::as_str),
         "role": role.unwrap_or("worker"),
         "parentAgentId": sender_thread_id,
@@ -2115,7 +2350,7 @@ pub async fn orchestrator_archive_agent(
     recipient_name: Option<&str>,
     project_path: Option<&str>,
 ) -> Result<Value> {
-    let mut state = parse_state(&runtime.state_document_value().await);
+    let state = parse_state(&runtime.state_document_value().await);
     let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
     let records = all_agent_records(&state, &running);
     let scoped = scoped_agent_context(&records, sender_thread_id, true)?;
@@ -2130,24 +2365,10 @@ pub async fn orchestrator_archive_agent(
     let already_archived = state
         .projects
         .values()
-        .find_map(|project| project.agents.get(&recipient.thread_id))
-        .and_then(|agent| agent.archived)
-        .unwrap_or(false);
+        .all(|project| !project.agents.contains_key(&recipient.thread_id))
+        && records.iter().all(|record| record.thread_id != recipient.thread_id || record.is_archived);
     if !already_archived {
-        if let Some(agent) = state
-            .projects
-            .values_mut()
-            .find_map(|project| project.agents.get_mut(&recipient.thread_id))
-        {
-            agent.archived = Some(true);
-        }
-        persist_state(runtime, &state).await?;
-        let _ = app_server_request_json(
-            runtime,
-            "thread/archive",
-            json!({"threadId": recipient.thread_id}),
-        )
-        .await;
+        archive_thread(runtime, &recipient.thread_id).await?;
     }
     Ok(json!({
         "recipientThreadId": recipient.thread_id,
@@ -2193,6 +2414,60 @@ pub async fn orchestrator_rename_agent(
         "previousDisplayName": previous,
         "newName": new_name,
     }))
+}
+
+async fn archive_thread(runtime: &BridgeRuntime, thread_id: &str) -> Result<()> {
+    let mut state = parse_state(&runtime.state_document_value().await);
+    let pruned = prune_archived_thread_locally(&mut state, thread_id);
+    if pruned {
+        persist_state(runtime, &state).await?;
+        runtime.prune_thread_local(thread_id).await?;
+    }
+    if let Err(error) = app_server_request_json(runtime, "thread/archive", json!({"threadId": thread_id})).await {
+        let message = error.to_string();
+        if !message.contains("no rollout found for thread id") && !message.contains("\"code\": -32600") {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+fn prune_archived_thread_locally(state: &mut PersistedState, thread_id: &str) -> bool {
+    let mut changed = false;
+    for project in state.projects.values_mut() {
+        let mut project_changed = false;
+        if project.agents.remove(thread_id).is_some() {
+            project_changed = true;
+        }
+        if project.orchestrator_thread_id.as_deref() == Some(thread_id) {
+            project.orchestrator_thread_id = None;
+            project_changed = true;
+        }
+        let mut next_groups = Vec::new();
+        for mut group in project.thread_groups.clone() {
+            let original = group.thread_ids.len();
+            group.thread_ids.retain(|id| id != thread_id);
+            let filtered_len = group.thread_ids.len();
+            if !group.thread_ids.is_empty() {
+                next_groups.push(group);
+            }
+            if filtered_len != original {
+                project_changed = true;
+            }
+        }
+        if project.thread_groups != next_groups {
+            project.thread_groups = next_groups;
+            project_changed = true;
+        }
+        if project_changed {
+            project.updated_at = Some(unix_now());
+            changed = true;
+        }
+    }
+    if changed {
+        state.updated_at = Some(unix_now());
+    }
+    changed
 }
 
 pub async fn orchestrator_update_worker_metadata(
@@ -2310,6 +2585,69 @@ pub async fn orchestrator_approval_decision(
 
 fn basename(path: &str) -> String {
     path.rsplit('/').next().filter(|value| !value.is_empty()).unwrap_or("project").to_string()
+}
+
+async fn resolve_command_termination_target(
+    runtime: &BridgeRuntime,
+    thread_id: &str,
+    item_id: Option<&str>,
+) -> Result<Option<String>> {
+    let normalized_item_id = item_id.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(item_id) = normalized_item_id {
+        if let Some(target) = command_termination_target_for_item(runtime, thread_id, item_id).await {
+            return Ok(Some(target));
+        }
+    }
+
+    Ok(latest_command_termination_target(runtime, thread_id).await)
+}
+
+async fn command_termination_target_for_item(
+    runtime: &BridgeRuntime,
+    thread_id: &str,
+    item_id: &str,
+) -> Option<String> {
+    let snapshot = runtime.snapshot().await.ok()?.thread_cache;
+    snapshot
+        .message_cache_by_thread_id
+        .get(thread_id)
+        .and_then(|messages| {
+            messages.iter().find(|message| message.id == item_id).and_then(command_message_target)
+        })
+}
+
+async fn latest_command_termination_target(runtime: &BridgeRuntime, thread_id: &str) -> Option<String> {
+    let snapshot = runtime.snapshot().await.ok()?.thread_cache;
+    snapshot
+        .message_cache_by_thread_id
+        .get(thread_id)
+        .and_then(|messages| {
+            messages
+                .iter()
+                .rev()
+                .find(|message| {
+                    message.role == "tool"
+                        && message
+                            .tool_metadata
+                            .as_ref()
+                            .map(|metadata| metadata.kind == "commandExecution")
+                            .unwrap_or(false)
+                })
+                .and_then(command_message_target)
+        })
+}
+
+fn command_message_target(message: &crate::models::RobdexChatMessage) -> Option<String> {
+    let metadata = message.tool_metadata.as_ref()?;
+    if metadata.kind != "commandExecution" {
+        return None;
+    }
+    metadata
+        .process_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn terminate_process_group_by_pid(process_id: &str) -> Result<()> {
@@ -2666,6 +3004,82 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn command_execution_terminate_prefers_item_target() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+
+        runtime
+            .upstream_sender()
+            .send(UpstreamRuntimeEvent::Notification(ServerNotification::ItemCompleted(
+                codex_app_server_adapter::app_server_protocol::ItemCompletedNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item: codex_app_server_adapter::app_server_protocol::ThreadItem::CommandExecution {
+                        id: "cmd-1".to_string(),
+                        command: "command-parser cargo test".to_string(),
+                        cwd: PathBuf::from("/tmp"),
+                        process_id: Some("93456".to_string()),
+                        status: codex_app_server_adapter::app_server_protocol::CommandExecutionStatus::InProgress,
+                        command_actions: Vec::new(),
+                        aggregated_output: Some(
+                            "job_id: 12345678-abcd-1234-abcd-1234567890ab\nstill running".to_string(),
+                        ),
+                        exit_code: None,
+                        duration_ms: None,
+                    },
+                },
+            )))
+            .await
+            .expect("item");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let target = resolve_command_termination_target(&runtime, "thread-1", Some("cmd-1"))
+            .await
+            .expect("target");
+        assert_eq!(target.as_deref(), Some("job:12345678-abcd-1234-abcd-1234567890ab"));
+    }
+
+    #[tokio::test]
+    async fn command_execution_terminate_falls_back_to_latest_thread_target() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+
+        runtime
+            .upstream_sender()
+            .send(UpstreamRuntimeEvent::Notification(ServerNotification::ItemCompleted(
+                codex_app_server_adapter::app_server_protocol::ItemCompletedNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item: codex_app_server_adapter::app_server_protocol::ThreadItem::CommandExecution {
+                        id: "cmd-1".to_string(),
+                        command: "command-parser cargo test".to_string(),
+                        cwd: PathBuf::from("/tmp"),
+                        process_id: Some("93456".to_string()),
+                        status: codex_app_server_adapter::app_server_protocol::CommandExecutionStatus::InProgress,
+                        command_actions: Vec::new(),
+                        aggregated_output: Some(
+                            "job_id: 12345678-abcd-1234-abcd-1234567890ab\nstill running".to_string(),
+                        ),
+                        exit_code: None,
+                        duration_ms: None,
+                    },
+                },
+            )))
+            .await
+            .expect("item");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let target = resolve_command_termination_target(&runtime, "thread-1", None)
+            .await
+            .expect("target");
+        assert_eq!(target.as_deref(), Some("job:12345678-abcd-1234-abcd-1234567890ab"));
+    }
+
     async fn spawn_ws_server(
         handler: impl FnOnce(WebSocketStream<tokio::net::TcpStream>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
         + Send
@@ -2970,6 +3384,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn event_replay_serializes_full_app_state_snapshot_shape() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+
+        runtime
+            .push_event(crate::models::BridgeEvent::AppStateSnapshot {
+                state: json!({"projects": {}}),
+            })
+            .await;
+
+        let replay = make_event_replay_response(&runtime, None).await.expect("replay");
+        let event = &replay["events"][1]["event"];
+        assert_eq!(event["name"], "appStateSnapshot");
+        assert!(event["data"]["state"].is_object());
+        assert!(event["data"]["pendingApprovals"].is_array());
+        assert!(event["data"]["agents"].is_array());
+    }
+
+    #[tokio::test]
     async fn skills_list_passthrough_returns_upstream_shape() {
         let temp = TempDir::new().expect("tempdir");
         let (request_tx, request_rx) = oneshot::channel();
@@ -3149,5 +3584,70 @@ mod tests {
         }
 
         transport.abort();
+    }
+
+    #[test]
+    fn prune_archived_thread_locally_removes_agent_and_group_membership() {
+        let mut state = PersistedState::default();
+        let mut project = PersistedProjectState {
+            project_root: Some("/alpha".to_string()),
+            cwd: Some("/alpha".to_string()),
+            orchestrator_thread_id: Some("orch-a".to_string()),
+            thread_groups: vec![ThreadGroupState {
+                id: "group-1".to_string(),
+                title: "Workers".to_string(),
+                thread_ids: vec!["worker-1".to_string(), "worker-2".to_string()],
+                ..Default::default()
+                }],
+            ..Default::default()
+        };
+        project.agents.insert(
+            "worker-1".to_string(),
+            PersistedAgentState {
+                display_name: Some("Worker One".to_string()),
+                role: Some("worker".to_string()),
+                project_root: Some("/alpha".to_string()),
+                ..Default::default()
+            },
+        );
+        project.agents.insert(
+            "worker-2".to_string(),
+            PersistedAgentState {
+                display_name: Some("Worker Two".to_string()),
+                role: Some("worker".to_string()),
+                project_root: Some("/alpha".to_string()),
+                ..Default::default()
+            },
+        );
+        state.projects.insert("alpha".to_string(), project);
+
+        assert!(prune_archived_thread_locally(&mut state, "worker-1"));
+        let project = state.projects.get("alpha").expect("project");
+        assert!(!project.agents.contains_key("worker-1"));
+        assert_eq!(project.thread_groups.len(), 1);
+        assert_eq!(project.thread_groups[0].thread_ids, vec!["worker-2".to_string()]);
+    }
+
+    #[test]
+    fn tracked_thread_display_name_can_be_overridden_after_registration() {
+        let mut state = PersistedState::default();
+        register_tracked_thread(
+            &mut state,
+            &json!({
+                "thread": {"id": "worker-1", "title": "worker-1"},
+                "projectPath": "/alpha",
+                "preferredCWD": "/alpha",
+                "role": "worker"
+            }),
+        )
+        .expect("register");
+        set_tracked_thread_display_name(&mut state, "worker-1", "Bridge Agent Smoke");
+
+        let display_name = state
+            .projects
+            .get("alpha")
+            .and_then(|project| project.agents.get("worker-1"))
+            .and_then(|agent| agent.display_name.clone());
+        assert_eq!(display_name.as_deref(), Some("Bridge Agent Smoke"));
     }
 }

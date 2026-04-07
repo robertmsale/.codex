@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use codex_app_server_adapter::app_server_protocol::RequestId;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 fn deserialize_timestamp<'de, D>(deserializer: D) -> Result<u64, D::Error>
@@ -137,15 +137,70 @@ pub struct BridgeApprovalResult {
     pub follow_up_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingApprovalKind {
     CommandExecution,
     FileChange,
     ToolUserInput,
     DynamicToolCall,
-    #[serde(rename = "chatGPTAuthRefresh")]
     ChatGptAuthRefresh,
+}
+
+impl PendingApprovalKind {
+    fn wire_name(&self) -> &'static str {
+        match self {
+            Self::CommandExecution => "commandExecution",
+            Self::FileChange => "fileChange",
+            Self::ToolUserInput => "toolUserInput",
+            Self::DynamicToolCall => "dynamicToolCall",
+            Self::ChatGptAuthRefresh => "chatGPTAuthRefresh",
+        }
+    }
+
+    fn from_wire_name(value: &str) -> Option<Self> {
+        match value {
+            "commandExecution" => Some(Self::CommandExecution),
+            "fileChange" => Some(Self::FileChange),
+            "toolUserInput" => Some(Self::ToolUserInput),
+            "dynamicToolCall" => Some(Self::DynamicToolCall),
+            "chatGPTAuthRefresh" => Some(Self::ChatGptAuthRefresh),
+            _ => None,
+        }
+    }
+}
+
+impl Serialize for PendingApprovalKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = BTreeMap::new();
+        map.insert(self.wire_name(), serde_json::Map::<String, Value>::new());
+        map.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for PendingApprovalKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        match value {
+            Value::String(text) => {
+                Self::from_wire_name(text.trim()).ok_or_else(|| serde::de::Error::custom("invalid approval kind"))
+            }
+            Value::Object(map) => {
+                if map.len() != 1 {
+                    return Err(serde::de::Error::custom("invalid approval kind object"));
+                }
+                let key = map.keys().next().cloned().unwrap_or_default();
+                Self::from_wire_name(key.trim())
+                    .ok_or_else(|| serde::de::Error::custom("invalid approval kind object"))
+            }
+            _ => Err(serde::de::Error::custom("invalid approval kind payload")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -187,7 +242,7 @@ pub struct PendingApproval {
     pub tool_name: Option<String>,
     pub tool_arguments: Option<Value>,
     #[serde(default)]
-    pub tool_questions: Vec<Value>,
+    pub tool_questions: Vec<BridgeToolQuestion>,
     pub auth_refresh_reason: Option<String>,
     pub command: Option<String>,
     #[serde(rename = "commandCWD", alias = "commandCwd")]
@@ -195,6 +250,13 @@ pub struct PendingApproval {
     pub file_grant_root: Option<String>,
     #[serde(default)]
     pub file_changes: Vec<PendingApprovalFileChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeToolQuestion {
+    pub id: String,
+    pub prompt: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

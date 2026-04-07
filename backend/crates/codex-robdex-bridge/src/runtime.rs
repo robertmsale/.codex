@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::atomic::{AtomicU64, Ordering},
     sync::Arc,
     time::Duration,
@@ -23,9 +23,9 @@ use tokio::{
 use crate::{
     config::BridgeSettings,
     models::{
-        BridgeApprovalResult, BridgeEvent, BridgeInfo, BridgeSnapshot, EventReplayResponse, MAX_EVENT_HISTORY,
-        MAX_TRANSPORT_MESSAGES_PER_THREAD, PROTOCOL_VERSION, PendingApproval, PendingApprovalFileChange,
-        PendingApprovalFileChangeKind, PendingApprovalKind, SERVER_NAME, SERVER_VERSION, SequencedEvent,
+        BridgeApprovalResult, BridgeEvent, BridgeInfo, BridgeSnapshot, BridgeToolQuestion, EventReplayResponse,
+        MAX_EVENT_HISTORY, MAX_TRANSPORT_MESSAGES_PER_THREAD, PROTOCOL_VERSION, PendingApproval,
+        PendingApprovalFileChange, PendingApprovalFileChangeKind, PendingApprovalKind, SERVER_NAME, SERVER_VERSION, SequencedEvent,
         ThreadCachePayload, ThreadMessagesResponse,
     },
     store::RobdexBridgeStore,
@@ -34,6 +34,7 @@ use crate::{
 };
 
 const DISCONNECT_RUNNING_STATE_CLEAR_DELAY_MS: u64 = 15_000;
+const THREAD_CACHE_FLUSH_DEBOUNCE_MS: u64 = 200;
 
 #[derive(Debug)]
 pub struct BridgeRuntime {
@@ -50,8 +51,13 @@ pub struct BridgeRuntime {
     running_state: RwLock<RunningStateReducer>,
     pending_approvals: RwLock<BTreeMap<String, PendingApproval>>,
     file_changes_by_item: RwLock<BTreeMap<String, Vec<PendingApprovalFileChange>>>,
+    auto_routed_turn_keys: RwLock<BTreeSet<String>>,
+    auto_routed_approval_keys: RwLock<BTreeSet<String>>,
     disconnect_running_state_clear_delay: Duration,
     disconnect_clear_task: Mutex<Option<JoinHandle<()>>>,
+    pending_thread_cache_flush_ids: Mutex<BTreeSet<String>>,
+    thread_cache_flush_delay: Duration,
+    thread_cache_flush_task: Mutex<Option<JoinHandle<()>>>,
     next_transport_request_id: AtomicU64,
 }
 
@@ -91,8 +97,13 @@ impl BridgeRuntime {
             running_state: RwLock::new(RunningStateReducer::default()),
             pending_approvals: RwLock::new(BTreeMap::new()),
             file_changes_by_item: RwLock::new(BTreeMap::new()),
+            auto_routed_turn_keys: RwLock::new(BTreeSet::new()),
+            auto_routed_approval_keys: RwLock::new(BTreeSet::new()),
             disconnect_running_state_clear_delay,
             disconnect_clear_task: Mutex::new(None),
+            pending_thread_cache_flush_ids: Mutex::new(BTreeSet::new()),
+            thread_cache_flush_delay: Duration::from_millis(THREAD_CACHE_FLUSH_DEBOUNCE_MS),
+            thread_cache_flush_task: Mutex::new(None),
             next_transport_request_id: AtomicU64::new(10_000),
         });
         runtime.clone().spawn_upstream_worker(upstream_rx);
@@ -168,6 +179,42 @@ impl BridgeRuntime {
         tokio::fs::write(&self.settings.paths.state_json, encoded)
             .await
             .with_context(|| format!("failed to write {}", self.settings.paths.state_json.display()))?;
+        Ok(())
+    }
+
+    pub async fn prune_thread_local(&self, thread_id: &str) -> Result<()> {
+        let removed_pending = {
+            let mut pending = self.pending_approvals.write().await;
+            let before = pending.len();
+            pending.retain(|_, approval| approval.thread_id != thread_id);
+            pending.len() != before
+        };
+
+        self.file_changes_by_item
+            .write()
+            .await
+            .retain(|key, _| !key.starts_with(&format!("{thread_id}|")));
+
+        let payload = {
+            let mut thread_cache = self.thread_cache.write().await;
+            self.running_state
+                .write()
+                .await
+                .set_thread_running_state(thread_id, false, &mut thread_cache);
+            thread_cache.message_cache_by_thread_id.remove(thread_id);
+            thread_cache.context_window_status_by_thread_id.remove(thread_id);
+            thread_cache.updated_at = Some(unix_now());
+            thread_messages_changed_payload(&thread_cache, thread_id)
+        };
+
+        self.store.delete_thread_cache(thread_id).await?;
+        self.persist_thread_cache_now(&[]).await?;
+
+        self.push_event(BridgeEvent::ThreadMessagesChanged { payload }).await;
+        if removed_pending {
+            let state = self.state_document.read().await.clone();
+            self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
+        }
         Ok(())
     }
 
@@ -248,11 +295,11 @@ impl BridgeRuntime {
             .set_thread_running_state(thread_id, is_running, &mut thread_cache);
         if changed {
             thread_cache.updated_at = Some(unix_now());
-            self.store
-                .save_thread_cache_delta(&thread_cache, &Vec::new())
-                .await?;
+            drop(thread_cache);
+            self.persist_thread_cache_now(&[]).await?;
             let state = self.state_document.read().await.clone();
             self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
+            let thread_cache = self.thread_cache.read().await;
             self.push_event(BridgeEvent::ThreadMessagesChanged {
                 payload: thread_messages_changed_payload(&thread_cache, thread_id),
             })
@@ -318,10 +365,19 @@ impl BridgeRuntime {
             UpstreamRuntimeEvent::ClearRunningStateAfterDisconnect => {
                 self.handle_disconnect_running_state_clear().await?;
             }
+            UpstreamRuntimeEvent::FlushPendingThreadCacheWrites => {
+                self.flush_pending_thread_cache_writes().await?;
+            }
             UpstreamRuntimeEvent::ServerRequest(request) => {
                 self.handle_server_request(request).await?;
             }
             UpstreamRuntimeEvent::Notification(notification) => {
+                let turn_completed = match &notification {
+                    ServerNotification::TurnCompleted(payload) => {
+                        Some((payload.thread_id.clone(), payload.turn.id.clone()))
+                    }
+                    _ => None,
+                };
                 let mut thread_cache = self.thread_cache.write().await;
                 self.capture_item_file_changes(&notification).await;
                 let result = self
@@ -332,19 +388,31 @@ impl BridgeRuntime {
                 self.handle_request_resolved_notification(&notification).await;
                 if result.thread_cache_changed {
                     thread_cache.updated_at = Some(unix_now());
-                    self.store
-                        .save_thread_cache_delta(&thread_cache, &result.changed_thread_ids)
-                        .await?;
+                    let changed_thread_ids = result.changed_thread_ids.clone();
+                    let should_debounce_flush =
+                        is_streaming_notification(&notification) && !result.running_state_changed;
+                    drop(thread_cache);
+                    if should_debounce_flush {
+                        self.mark_thread_cache_dirty(&changed_thread_ids).await;
+                        self.schedule_thread_cache_flush().await;
+                    } else {
+                        self.persist_thread_cache_now(&changed_thread_ids).await?;
+                    }
                     if result.running_state_changed {
                         let state = self.state_document.read().await.clone();
                         self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
                     }
-                    for thread_id in result.changed_thread_ids {
+                    let thread_cache = self.thread_cache.read().await;
+                    for thread_id in changed_thread_ids {
                         self.push_event(BridgeEvent::ThreadMessagesChanged {
                             payload: thread_messages_changed_payload(&thread_cache, &thread_id),
                         })
                         .await;
                     }
+                }
+                if let Some((thread_id, turn_id)) = turn_completed {
+                    self.maybe_auto_route_reply_to_orchestrator(&thread_id, &turn_id)
+                        .await;
                 }
             }
         }
@@ -357,7 +425,8 @@ impl BridgeRuntime {
             self.pending_approvals
                 .write()
                 .await
-                .insert(approval.id.clone(), approval);
+                .insert(approval.id.clone(), approval.clone());
+            self.maybe_route_approval_to_orchestrator(&approval).await;
             let state = self.state_document.read().await.clone();
             self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
         }
@@ -430,13 +499,58 @@ impl BridgeRuntime {
             .clear_running_state(&mut thread_cache);
         if changed {
             thread_cache.updated_at = Some(unix_now());
-            self.store
-                .save_thread_cache_delta(&thread_cache, &Vec::new())
-                .await?;
+            drop(thread_cache);
+            self.persist_thread_cache_now(&[]).await?;
             let state = self.state_document.read().await.clone();
             self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
         }
         Ok(())
+    }
+
+    async fn mark_thread_cache_dirty(&self, changed_thread_ids: &[String]) {
+        let mut pending = self.pending_thread_cache_flush_ids.lock().await;
+        pending.extend(changed_thread_ids.iter().cloned());
+    }
+
+    async fn schedule_thread_cache_flush(&self) {
+        let mut task = self.thread_cache_flush_task.lock().await;
+        if task.is_some() {
+            return;
+        }
+        let tx = self.upstream_sender();
+        let delay = self.thread_cache_flush_delay;
+        *task = Some(tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = tx
+                .send(UpstreamRuntimeEvent::FlushPendingThreadCacheWrites)
+                .await;
+        }));
+    }
+
+    async fn cancel_thread_cache_flush(&self) {
+        let mut task = self.thread_cache_flush_task.lock().await;
+        if let Some(handle) = task.take() {
+            handle.abort();
+        }
+    }
+
+    async fn persist_thread_cache_now(&self, changed_thread_ids: &[String]) -> Result<()> {
+        self.cancel_thread_cache_flush().await;
+        let mut merged_ids = {
+            let mut pending = self.pending_thread_cache_flush_ids.lock().await;
+            let mut merged = std::mem::take(&mut *pending);
+            merged.extend(changed_thread_ids.iter().cloned());
+            merged.into_iter().collect::<Vec<_>>()
+        };
+        merged_ids.sort();
+        let thread_cache = self.thread_cache.read().await.clone();
+        self.store
+            .save_thread_cache_delta(&thread_cache, &merged_ids)
+            .await
+    }
+
+    async fn flush_pending_thread_cache_writes(&self) -> Result<()> {
+        self.persist_thread_cache_now(&[]).await
     }
 
     async fn handle_request_resolved_notification(&self, notification: &ServerNotification) {
@@ -526,6 +640,135 @@ impl BridgeRuntime {
             )),
             _ => None,
         }
+    }
+
+    async fn maybe_auto_route_reply_to_orchestrator(&self, thread_id: &str, turn_id: &str) {
+        let dedupe_key = format!("{thread_id}|{turn_id}");
+        {
+            let routed = self.auto_routed_turn_keys.read().await;
+            if routed.contains(&dedupe_key) {
+                return;
+            }
+        }
+
+        let state = self.state_document.read().await.clone();
+        let Some(project) = tracked_project_for_thread(&state, thread_id) else {
+            return;
+        };
+        if !project.auto_route_replies {
+            return;
+        }
+        if tracked_role_for_thread(&state, thread_id).as_deref() == Some("hidden") {
+            return;
+        }
+        let Some(orchestrator_thread_id) = project.orchestrator_thread_id.filter(|id| id != thread_id) else {
+            return;
+        };
+        let Some(assistant_text) = self.latest_assistant_text_for_thread(thread_id).await else {
+            return;
+        };
+
+        let routed_text = compose_auto_routed_reply(
+            &assistant_text,
+            &sender_label_for_thread(&state, thread_id),
+        );
+        if routed_text.trim().is_empty() {
+            return;
+        }
+
+        if self
+            .request_app_server_json(
+                "turn/start",
+                json!({
+                    "threadId": orchestrator_thread_id,
+                    "input": [{"type":"text","text": routed_text}],
+                    "cwd": tracked_cwd_for_thread_value(&state, &orchestrator_thread_id)
+                        .or(project.cwd)
+                        .or(project.project_root),
+                    "approvalPolicy": tracked_approval_policy_for_thread_value(&state, &orchestrator_thread_id),
+                    "model": tracked_model_for_thread_value(&state, &orchestrator_thread_id),
+                    "effort": tracked_reasoning_for_thread_value(&state, &orchestrator_thread_id),
+                }),
+            )
+            .await
+            .is_ok()
+        {
+            self.auto_routed_turn_keys
+                .write()
+                .await
+                .insert(dedupe_key);
+        }
+    }
+
+    async fn maybe_route_approval_to_orchestrator(&self, approval: &PendingApproval) {
+        {
+            let routed = self.auto_routed_approval_keys.read().await;
+            if routed.contains(&approval.id) {
+                return;
+            }
+        }
+
+        let state = self.state_document.read().await.clone();
+        let Some(project) = tracked_project_for_thread(&state, &approval.thread_id) else {
+            return;
+        };
+        if !project.route_approval_requests {
+            return;
+        }
+        if tracked_role_for_thread(&state, &approval.thread_id).as_deref() == Some("hidden") {
+            return;
+        }
+        let Some(orchestrator_thread_id) = project
+            .orchestrator_thread_id
+            .filter(|id| id != &approval.thread_id)
+        else {
+            return;
+        };
+
+        let routed_text = compose_auto_routed_approval_request(
+            approval,
+            &sender_label_for_thread(&state, &approval.thread_id),
+        );
+        if routed_text.trim().is_empty() {
+            return;
+        }
+
+        if self
+            .request_app_server_json(
+                "turn/start",
+                json!({
+                    "threadId": orchestrator_thread_id,
+                    "input": [{"type":"text","text": routed_text}],
+                    "cwd": tracked_cwd_for_thread_value(&state, &orchestrator_thread_id)
+                        .or(project.cwd)
+                        .or(project.project_root),
+                    "approvalPolicy": tracked_approval_policy_for_thread_value(&state, &orchestrator_thread_id),
+                    "model": tracked_model_for_thread_value(&state, &orchestrator_thread_id),
+                    "effort": tracked_reasoning_for_thread_value(&state, &orchestrator_thread_id),
+                }),
+            )
+            .await
+            .is_ok()
+        {
+            self.auto_routed_approval_keys
+                .write()
+                .await
+                .insert(approval.id.clone());
+        }
+    }
+
+    async fn latest_assistant_text_for_thread(&self, thread_id: &str) -> Option<String> {
+        let thread_cache = self.thread_cache.read().await;
+        thread_cache
+            .message_cache_by_thread_id
+            .get(thread_id)
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == "assistant" && !message.text.trim().is_empty())
+                    .map(|message| message.text.trim().to_string())
+            })
     }
 }
 
@@ -634,7 +877,10 @@ fn tool_user_input_from_request(
     let tool_questions = params
         .questions
         .into_iter()
-        .filter_map(|question| serde_json::to_value(question).ok())
+        .map(|question| BridgeToolQuestion {
+            id: question.id,
+            prompt: question.question,
+        })
         .collect();
     PendingApproval {
         id: approval_id_for_request(&instance_id, &request_id),
@@ -944,6 +1190,190 @@ fn should_schedule_disconnect_running_state_clear(status: &str) -> bool {
         || status == "disconnected"
 }
 
+#[derive(Clone)]
+struct RoutedProjectState {
+    project_root: Option<String>,
+    cwd: Option<String>,
+    auto_route_replies: bool,
+    route_approval_requests: bool,
+    orchestrator_thread_id: Option<String>,
+}
+
+fn tracked_project_for_thread(state: &Value, thread_id: &str) -> Option<RoutedProjectState> {
+    let projects = state.get("projects")?.as_object()?;
+    for project in projects.values() {
+        let project_object = project.as_object()?;
+        let agents = project_object.get("agents").and_then(Value::as_object);
+        let orchestrator = project_object
+            .get("orchestratorThreadID")
+            .or_else(|| project_object.get("orchestratorThreadId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if agents.map(|agents| agents.contains_key(thread_id)).unwrap_or(false)
+            || orchestrator.as_deref() == Some(thread_id)
+        {
+            return Some(RoutedProjectState {
+                project_root: project_object
+                    .get("projectRoot")
+                    .or_else(|| project_object.get("project_root"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                cwd: project_object.get("cwd").and_then(Value::as_str).map(str::to_string),
+                auto_route_replies: project_object
+                    .get("autoRouteReplies")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                route_approval_requests: project_object
+                    .get("routeApprovalRequests")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                orchestrator_thread_id: orchestrator,
+            });
+        }
+    }
+    None
+}
+
+fn tracked_agent_value<'a>(state: &'a Value, thread_id: &str) -> Option<&'a serde_json::Map<String, Value>> {
+    let projects = state.get("projects")?.as_object()?;
+    for project in projects.values() {
+        let project_object = project.as_object()?;
+        if let Some(agent) = project_object
+            .get("agents")
+            .and_then(Value::as_object)
+            .and_then(|agents| agents.get(thread_id))
+            .and_then(Value::as_object)
+        {
+            return Some(agent);
+        }
+    }
+    None
+}
+
+fn tracked_role_for_thread(state: &Value, thread_id: &str) -> Option<String> {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("role"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            tracked_project_for_thread(state, thread_id).and_then(|project| {
+                if project.orchestrator_thread_id.as_deref() == Some(thread_id) {
+                    Some("orchestrator".to_string())
+                } else {
+                    None
+                }
+            })
+        })
+}
+
+fn tracked_cwd_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("cwd"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| tracked_project_for_thread(state, thread_id).and_then(|project| project.cwd.or(project.project_root)))
+}
+
+fn tracked_approval_policy_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("approvalPolicy"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn tracked_model_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("model"))
+        .or_else(|| tracked_agent_value(state, thread_id).and_then(|agent| agent.get("modelID")))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn tracked_reasoning_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("reasoningEffort"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn sender_label_for_thread(state: &Value, thread_id: &str) -> String {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("displayName"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| thread_id.to_string())
+}
+
+fn compose_auto_routed_reply(text: &str, sender_label: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let prefixed = if trimmed.starts_with('[') && trimmed.contains("]: ") {
+        trimmed.to_string()
+    } else {
+        format!("[{sender_label}]: {trimmed}")
+    };
+    let body = if prefixed.starts_with("[End of Turn] ") {
+        prefixed
+    } else {
+        format!("[End of Turn] {prefixed}")
+    };
+    format!(
+        "{body}\n\n**CRITICAL**: This agent is STOPPED. You must use `robdex send-message --name \"{sender_label}\" --text-stdin` following the $robdex-orchestrator instructions if you need to respond to this agent."
+    )
+}
+
+fn compose_auto_routed_approval_request(
+    approval: &PendingApproval,
+    sender_label: &str,
+) -> String {
+    let mut lines = Vec::new();
+    let headline = match approval.kind {
+        PendingApprovalKind::CommandExecution => "Command approval required".to_string(),
+        PendingApprovalKind::FileChange => "File approval required".to_string(),
+        _ => approval.title.clone(),
+    };
+    match approval.kind {
+        PendingApprovalKind::CommandExecution => {
+            if let Some(command) = compact_optional_text(approval.command.as_deref()) {
+                lines.push(format!("Command: {command}"));
+            }
+            if let Some(cwd) = compact_optional_text(approval.command_cwd.as_deref()) {
+                lines.push(format!("CWD: {cwd}"));
+            }
+        }
+        PendingApprovalKind::FileChange => {
+            if let Some(root) = compact_optional_text(approval.file_grant_root.as_deref()) {
+                lines.push(format!("Grant root: {root}"));
+            }
+            if approval.file_changes.len() <= 5 {
+                for change in &approval.file_changes {
+                    lines.push(format!("- {} {}", file_change_label(&change.kind), change.path));
+                }
+            } else {
+                lines.push(format!("Files: {}", approval.file_changes.len()));
+            }
+        }
+        _ => {}
+    }
+    if let Some(reason) = compact_optional_text(approval.approval_reason.as_deref()) {
+        lines.push(format!("Why: {reason}"));
+    }
+    lines.push(format!("Approval ID: {}", approval.id));
+    lines.push("Review the request in Robdex and decide whether it should be accepted or declined.".to_string());
+    lines.push(String::new());
+    lines.push(format!(
+        "**CRITICAL**: This agent is STOPPED. You must use `robdex approve-approval --approval-id {}` or `robdex decline-approval --approval-id {} [--message \"<note>\"]` following the $robdex-orchestrator instructions before responding to the user.",
+        approval.id, approval.id
+    ));
+    format!("[Approval Request] [{sender_label}]: {headline}\n{}", lines.join("\n"))
+}
+
 fn thread_messages_changed_payload(
     thread_cache: &ThreadCachePayload,
     thread_id: &str,
@@ -964,6 +1394,22 @@ fn thread_messages_changed_payload(
     }
 }
 
+fn is_streaming_notification(notification: &ServerNotification) -> bool {
+    matches!(
+        notification,
+        ServerNotification::AgentMessageDelta(_)
+            | ServerNotification::PlanDelta(_)
+            | ServerNotification::ReasoningSummaryTextDelta(_)
+            | ServerNotification::ReasoningSummaryPartAdded(_)
+            | ServerNotification::ReasoningTextDelta(_)
+            | ServerNotification::TerminalInteraction(_)
+            | ServerNotification::CommandExecutionOutputDelta(_)
+            | ServerNotification::FileChangeOutputDelta(_)
+            | ServerNotification::TurnPlanUpdated(_)
+            | ServerNotification::TurnDiffUpdated(_)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -971,9 +1417,10 @@ mod tests {
     use crate::transport::run_transport_loop;
     use crate::upstream::UpstreamRuntimeEvent;
     use codex_app_server_adapter::app_server_protocol::{
-        AgentMessageDeltaNotification, ServerNotification, ThreadClosedNotification, ThreadStartedNotification,
-        ThreadStatus, ThreadStatusChangedNotification, ThreadTokenUsage, ThreadTokenUsageUpdatedNotification,
-        TokenUsageBreakdown, Turn, TurnCompletedNotification, TurnStartedNotification, TurnStatus,
+        AgentMessageDeltaNotification, RequestId, ServerNotification, ServerRequest, ThreadClosedNotification,
+        ThreadStartedNotification, ThreadStatus, ThreadStatusChangedNotification, ThreadTokenUsage,
+        ThreadTokenUsageUpdatedNotification, TokenUsageBreakdown, ToolRequestUserInputParams,
+        ToolRequestUserInputQuestion, Turn, TurnCompletedNotification, TurnStartedNotification, TurnStatus,
     };
     use codex_backend_core::HttpArgs;
     use futures_util::{SinkExt, StreamExt};
@@ -1105,6 +1552,91 @@ mod tests {
         let snapshot = runtime.snapshot().await.expect("snapshot");
         assert!(snapshot.thread_cache.running_thread_ids.is_empty());
         assert_eq!(snapshot.connection_status, "disconnected");
+    }
+
+    #[tokio::test]
+    async fn file_approval_auto_route_lists_each_file_once() {
+        let approval = PendingApproval {
+            id: "approval-1".to_string(),
+            instance_id: "instance".to_string(),
+            request_id: RequestId::Integer(1),
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item_id: "item-1".to_string(),
+            kind: PendingApprovalKind::FileChange,
+            title: "File approval: create /tmp/example".to_string(),
+            detail: None,
+            approval_reason: None,
+            tool_name: None,
+            tool_arguments: None,
+            tool_questions: Vec::new(),
+            auth_refresh_reason: None,
+            command: None,
+            command_cwd: None,
+            file_grant_root: None,
+            file_changes: vec![PendingApprovalFileChange {
+                path: "/tmp/example".to_string(),
+                kind: PendingApprovalFileChangeKind::Create,
+                diff: None,
+            }],
+        };
+
+        let text = compose_auto_routed_approval_request(&approval, "Worker");
+        assert!(text.contains("File approval required"));
+        assert_eq!(text.matches("/tmp/example").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn tool_user_input_questions_match_bridge_shape() {
+        let approval = tool_user_input_from_request(
+            "instance".to_string(),
+            RequestId::Integer(7),
+            ToolRequestUserInputParams {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-1".to_string(),
+                questions: vec![ToolRequestUserInputQuestion {
+                    id: "q1".to_string(),
+                    header: "Need input".to_string(),
+                    question: "Choose a path".to_string(),
+                    is_other: false,
+                    is_secret: false,
+                    options: None,
+                }],
+            },
+        );
+
+        let json = serde_json::to_value(&approval).expect("approval json");
+        assert_eq!(json["toolQuestions"][0]["id"], "q1");
+        assert_eq!(json["toolQuestions"][0]["prompt"], "Choose a path");
+        assert!(json["toolQuestions"][0].get("header").is_none());
+    }
+
+    #[tokio::test]
+    async fn approval_kind_matches_swift_enum_codable_shape() {
+        let approval = command_approval_from_request(
+            "instance".to_string(),
+            RequestId::Integer(9),
+            CommandExecutionRequestApprovalParams {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-1".to_string(),
+                approval_id: None,
+                command: Some("git add -A".to_string()),
+                cwd: None,
+                reason: None,
+                network_approval_context: None,
+                command_actions: None,
+                additional_permissions: None,
+                skill_metadata: None,
+                proposed_execpolicy_amendment: None,
+                proposed_network_policy_amendments: None,
+                available_decisions: None,
+            },
+        );
+
+        let json = serde_json::to_value(&approval).expect("approval json");
+        assert_eq!(json["kind"], serde_json::json!({"commandExecution": {}}));
     }
 
     #[tokio::test]
@@ -1350,5 +1882,38 @@ mod tests {
         let snapshot = runtime.snapshot().await.expect("snapshot");
         assert_eq!(snapshot.thread_cache.running_thread_ids, vec!["thread-1".to_string()]);
         assert_eq!(snapshot.connection_status, "connected");
+    }
+
+    #[test]
+    fn auto_routed_reply_uses_end_of_turn_prefix_and_sender_label() {
+        let routed = compose_auto_routed_reply("hi", "Bridge Agent Smoke");
+        assert!(routed.starts_with("[End of Turn] [Bridge Agent Smoke]: hi"));
+        assert!(routed.contains("robdex send-message --name \"Bridge Agent Smoke\" --text-stdin"));
+    }
+
+    #[test]
+    fn tracked_project_for_thread_reads_route_flags_and_orchestrator() {
+        let state = json!({
+            "projects": {
+                "alpha": {
+                    "projectRoot": "/alpha",
+                    "cwd": "/alpha",
+                    "autoRouteReplies": true,
+                    "routeApprovalRequests": true,
+                    "orchestratorThreadID": "orch-a",
+                    "agents": {
+                        "worker-1": {
+                            "role": "worker",
+                            "displayName": "Worker One"
+                        }
+                    }
+                }
+            }
+        });
+
+        let project = tracked_project_for_thread(&state, "worker-1").expect("project");
+        assert!(project.auto_route_replies);
+        assert!(project.route_approval_requests);
+        assert_eq!(project.orchestrator_thread_id.as_deref(), Some("orch-a"));
     }
 }
