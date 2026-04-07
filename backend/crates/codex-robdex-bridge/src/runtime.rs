@@ -58,6 +58,7 @@ pub struct BridgeRuntime {
     pending_thread_cache_flush_ids: Mutex<BTreeSet<String>>,
     thread_cache_flush_delay: Duration,
     thread_cache_flush_task: Mutex<Option<JoinHandle<()>>>,
+    state_mutation_lock: Mutex<()>,
     next_transport_request_id: AtomicU64,
 }
 
@@ -104,6 +105,7 @@ impl BridgeRuntime {
             pending_thread_cache_flush_ids: Mutex::new(BTreeSet::new()),
             thread_cache_flush_delay: Duration::from_millis(THREAD_CACHE_FLUSH_DEBOUNCE_MS),
             thread_cache_flush_task: Mutex::new(None),
+            state_mutation_lock: Mutex::new(()),
             next_transport_request_id: AtomicU64::new(10_000),
         });
         runtime.clone().spawn_upstream_worker(upstream_rx);
@@ -180,6 +182,10 @@ impl BridgeRuntime {
             .await
             .with_context(|| format!("failed to write {}", self.settings.paths.state_json.display()))?;
         Ok(())
+    }
+
+    pub async fn lock_state_mutation(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.state_mutation_lock.lock().await
     }
 
     pub async fn prune_thread_local(&self, thread_id: &str) -> Result<()> {

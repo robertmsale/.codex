@@ -4,9 +4,10 @@ use anyhow::{Context, Result, bail};
 use codex_app_server_adapter::app_server_protocol::RequestId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::time::timeout;
 
 use crate::{
-    models::{BridgeAgentSummary, BridgeAppStateSnapshot, BridgeInstanceSummary, PendingApproval},
+    models::{BridgeAgentSummary, BridgeAppStateSnapshot, BridgeInstanceSummary, PendingApproval, ThreadCachePayload},
     runtime::BridgeRuntime,
     transforms::{prune_thread_cache_payload, resolve_role_instructions, summarize_scoped_agent_record},
 };
@@ -118,7 +119,20 @@ pub async fn make_app_state_snapshot(
     runtime: &BridgeRuntime,
     include_message_cache: bool,
 ) -> Result<BridgeAppStateSnapshot> {
-    let mut thread_cache = runtime.snapshot().await?.thread_cache;
+    let instance_id = runtime.settings().project_path.display().to_string();
+    let snapshot = timeout(Duration::from_millis(250), runtime.snapshot()).await;
+    let (mut thread_cache, is_running) = match snapshot {
+        Ok(Ok(snapshot)) => (
+            snapshot.thread_cache,
+            snapshot.connection_status == "connected",
+        ),
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            tracing::warn!("appStateSnapshot degraded to empty thread cache because runtime snapshot was busy");
+            let connection_status = runtime.info().await.connection_status;
+            (ThreadCachePayload::default(), connection_status == "connected")
+        }
+    };
     if !include_message_cache {
         thread_cache.message_cache_by_thread_id.clear();
     }
@@ -135,10 +149,10 @@ pub async fn make_app_state_snapshot(
         state: state_value,
         thread_cache: thread_cache.clone(),
         instances: vec![BridgeInstanceSummary {
-            id: runtime.settings().project_path.display().to_string(),
-            project_path: runtime.settings().project_path.display().to_string(),
+            id: instance_id.clone(),
+            project_path: instance_id,
             cwd: runtime.settings().cwd.display().to_string(),
-            is_running: runtime.info().await.connection_status == "connected",
+            is_running,
             experimental_api_enabled: true,
         }],
         agents: synthesized_agents(&state, &thread_cache.running_thread_ids, &runtime.settings().project_path.display().to_string()),
@@ -335,13 +349,7 @@ pub async fn execute_bridge_command(
             })))
         }
         "savePersistedState" => {
-            let next = if payload.get("state").is_some() {
-                payload.get("state").cloned().unwrap_or(Value::Null)
-            } else {
-                payload
-            };
-            runtime.persist_state_document(next).await?;
-            runtime.push_event(crate::models::BridgeEvent::AppStateSnapshot { state: runtime.state_document_value().await }).await;
+            tracing::warn!("ignoring deprecated savePersistedState blob write from GUI");
             Ok(success(json!({"type":"empty"})))
         }
         "saveProjectCatalog" => {
@@ -1522,6 +1530,7 @@ async fn send_follow_up_message(
 }
 
 async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeAgentSummary> {
+    let _state_guard = runtime.lock_state_mutation().await;
     let mut state = parse_state(&runtime.state_document_value().await);
     let role = payload.get("role").and_then(Value::as_str);
     let project_path = payload
