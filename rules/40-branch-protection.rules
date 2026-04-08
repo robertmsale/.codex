@@ -10,6 +10,7 @@ prefix_rule(
     justification = "Force pushes are only allowed in sanctioned gitops scripts.",
 )
 prefix_rule(
-    pattern = ["gh", ["pr", "issue"]],
-    decision = "allow",
+    pattern = ["gh"],
+    decision = "forbidden",
+    justification = "Use the sanctioned gitops scripts.",
 )

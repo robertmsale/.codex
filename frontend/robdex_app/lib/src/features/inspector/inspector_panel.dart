@@ -13,6 +13,7 @@ class InspectorPanel extends StatelessWidget {
     required this.onRunningStateChanged,
     required this.onRenameThread,
     required this.onArchiveThread,
+    required this.onWarmHandoff,
     required this.onCreateThreadGroup,
     required this.onRenameThreadGroup,
     required this.onDeleteThreadGroup,
@@ -29,6 +30,7 @@ class InspectorPanel extends StatelessWidget {
   final ValueChanged<bool> onRunningStateChanged;
   final ValueChanged<String> onRenameThread;
   final VoidCallback onArchiveThread;
+  final ValueChanged<String> onWarmHandoff;
   final ValueChanged<String> onCreateThreadGroup;
   final Future<void> Function(ThreadGroupItem group) onRenameThreadGroup;
   final ValueChanged<String> onDeleteThreadGroup;
@@ -60,6 +62,7 @@ class InspectorPanel extends StatelessWidget {
                 onRunningStateChanged: onRunningStateChanged,
                 onRenameThread: onRenameThread,
                 onArchiveThread: onArchiveThread,
+                onWarmHandoff: onWarmHandoff,
               ),
               const SizedBox(height: 10),
               _ProjectGroupsCard(
@@ -128,6 +131,7 @@ class _ThreadSettingsCard extends StatefulWidget {
     required this.onRunningStateChanged,
     required this.onRenameThread,
     required this.onArchiveThread,
+    required this.onWarmHandoff,
   });
 
   final WorkspaceSelection selection;
@@ -136,6 +140,7 @@ class _ThreadSettingsCard extends StatefulWidget {
   final ValueChanged<bool> onRunningStateChanged;
   final ValueChanged<String> onRenameThread;
   final VoidCallback onArchiveThread;
+  final ValueChanged<String> onWarmHandoff;
 
   @override
   State<_ThreadSettingsCard> createState() => _ThreadSettingsCardState();
@@ -499,6 +504,40 @@ Future<String?> _promptInline(BuildContext context, String title, String initial
   return result;
 }
 
+Future<String?> _promptWarmHandoff(BuildContext context) async {
+  final controller = TextEditingController();
+  final result = await showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Warm Handoff'),
+      content: SizedBox(
+        width: 440,
+        child: TextField(
+          controller: controller,
+          minLines: 4,
+          maxLines: 10,
+          decoration: const InputDecoration(
+            labelText: 'New Initial Prompt',
+            alignLabelWithHint: true,
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(controller.text),
+          child: const Text('Replace Agent'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  return result;
+}
+
 class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
   late TextEditingController _nameController;
   late String _role;
@@ -578,6 +617,10 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final enabled = widget.selection.threadId != null;
+    final canWarmHandoff =
+        enabled &&
+        widget.selection.projectOrchestratorThreadId != null &&
+        widget.selection.threadRole != 'orchestrator';
     String titleCaseWords(String value) => value
         .split(RegExp(r'[\s_-]+'))
         .where((part) => part.isNotEmpty)
@@ -602,8 +645,8 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
     }
     String networkLabel(bool? enabled) => inheritedLabel(
           switch (enabled) {
-            true => 'Networking Enabled',
-            false => 'Networking Disabled',
+            true => 'Enabled',
+            false => 'Disabled',
             null => 'System',
           },
         );
@@ -658,6 +701,7 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                 SizedBox(
                   width: 128,
                   child: DropdownButtonFormField<String>(
+                    key: ValueKey('role-${widget.selection.threadId}-$_role'),
                     initialValue: _role,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Role'),
@@ -680,6 +724,7 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                 SizedBox(
                   width: 128,
                   child: DropdownButtonFormField<String>(
+                    key: ValueKey('approval-${widget.selection.threadId}-$_approvalPolicy'),
                     initialValue: _approvalPolicy,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Approval'),
@@ -705,6 +750,7 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                 SizedBox(
                   width: 128,
                   child: DropdownButtonFormField<String>(
+                    key: ValueKey('sandbox-${widget.selection.threadId}-$_sandboxMode'),
                     initialValue: _sandboxMode,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Sandbox'),
@@ -728,6 +774,7 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                 SizedBox(
                   width: 128,
                   child: DropdownButtonFormField<String>(
+                    key: ValueKey('network-${widget.selection.threadId}-$_networkAccessMode'),
                     initialValue: _networkAccessMode,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Network'),
@@ -751,6 +798,7 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                 SizedBox(
                   width: 128,
                   child: DropdownButtonFormField<String>(
+                    key: ValueKey('model-${widget.selection.threadId}-$_modelId'),
                     initialValue: modelItems.any((item) => item.value == _modelId) ? _modelId : '',
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Model'),
@@ -767,6 +815,7 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                 SizedBox(
                   width: 128,
                   child: DropdownButtonFormField<String>(
+                    key: ValueKey('reasoning-${widget.selection.threadId}-$_reasoningEffort'),
                     initialValue: _reasoningEffort,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Reasoning'),
@@ -817,6 +866,17 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                 FilledButton.tonal(
                   onPressed: enabled ? widget.onArchiveThread : null,
                   child: const Text('Archive'),
+                ),
+                OutlinedButton(
+                  onPressed: canWarmHandoff
+                      ? () async {
+                          final prompt = await _promptWarmHandoff(context);
+                          if (prompt != null && prompt.trim().isNotEmpty) {
+                            widget.onWarmHandoff(prompt.trim());
+                          }
+                        }
+                      : null,
+                  child: const Text('Warm Handoff'),
                 ),
               ],
             ),

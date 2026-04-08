@@ -39,5 +39,6 @@ part 'thread_history_state_signal.dart';
 part 'update_project_signal.dart';
 part 'update_thread_settings_signal.dart';
 part 'update_worker_metadata_signal.dart';
+part 'warm_handoff_signal.dart';
 part 'workbench_state_signal.dart';
 part 'signal_handlers.dart';

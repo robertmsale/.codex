@@ -229,6 +229,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
           onRunningStateChanged: _controller.setThreadRunningState,
           onRenameThread: _controller.renameThread,
           onArchiveThread: _controller.archiveThread,
+          onWarmHandoff: _controller.warmHandoff,
           onSetProjectOrchestrator: () {
             final view = _controller.view;
             final selection = view?.selection;

@@ -24,6 +24,7 @@ use crate::{
         orchestrator_send_message, orchestrator_spawn_agent, orchestrator_thread_group_archive,
         orchestrator_thread_group_create, orchestrator_thread_group_delete, orchestrator_thread_group_move_thread,
         orchestrator_thread_group_update, orchestrator_thread_groups, orchestrator_threads,
+        orchestrator_warm_handoff,
         orchestrator_update_worker_metadata, orchestrator_whoami,
     },
     models::{
@@ -67,6 +68,7 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/orchestrator/thread-groups/delete", post(orchestrator_thread_group_delete_route))
         .route("/orchestrator/thread-groups/archive", post(orchestrator_thread_group_archive_route))
         .route("/orchestrator/spawn-agent", post(orchestrator_spawn_agent_route))
+        .route("/orchestrator/warm-handoff", post(orchestrator_warm_handoff_route))
         .route("/orchestrator/agent-message", post(orchestrator_agent_message_route))
         .route("/orchestrator/archive-agent", post(orchestrator_archive_agent_route))
         .route("/orchestrator/rename-agent", post(orchestrator_rename_agent_route))
@@ -656,6 +658,35 @@ async fn orchestrator_agent_message_route(
         },
         (Err(error), _) => map_bad_request(error),
         (_, None) => map_bad_request("text is required"),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OrchestratorWarmHandoffPayload {
+    sender_thread_id: String,
+    recipient_thread_id: Option<String>,
+    recipient_name: Option<String>,
+    project_path: Option<String>,
+    prompt: String,
+}
+
+async fn orchestrator_warm_handoff_route(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<OrchestratorWarmHandoffPayload>,
+) -> impl IntoResponse {
+    match orchestrator_warm_handoff(
+        &runtime,
+        &payload.sender_thread_id,
+        payload.recipient_thread_id.as_deref(),
+        payload.recipient_name.as_deref(),
+        payload.project_path.as_deref(),
+        &payload.prompt,
+    )
+    .await
+    {
+        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+        Err(error) => map_orchestrator_error(error.to_string()),
     }
 }
 

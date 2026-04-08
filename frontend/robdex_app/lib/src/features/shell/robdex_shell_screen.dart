@@ -25,6 +25,7 @@ class RobdexShellScreen extends StatelessWidget {
     required this.onRunningStateChanged,
     required this.onRenameThread,
     required this.onArchiveThread,
+    required this.onWarmHandoff,
     required this.onSetProjectOrchestrator,
     required this.onCreateThreadGroup,
     required this.onRenameThreadGroup,
@@ -51,6 +52,7 @@ class RobdexShellScreen extends StatelessWidget {
   final ValueChanged<bool> onRunningStateChanged;
   final ValueChanged<String> onRenameThread;
   final VoidCallback onArchiveThread;
+  final ValueChanged<String> onWarmHandoff;
   final VoidCallback onSetProjectOrchestrator;
   final ValueChanged<String> onCreateThreadGroup;
   final Future<void> Function(ThreadGroupItem group) onRenameThreadGroup;
@@ -125,6 +127,7 @@ class RobdexShellScreen extends StatelessWidget {
                               onRunningStateChanged: onRunningStateChanged,
                               onRenameThread: onRenameThread,
                               onArchiveThread: onArchiveThread,
+                              onWarmHandoff: onWarmHandoff,
                               onSetProjectOrchestrator: onSetProjectOrchestrator,
                               onCreateThreadGroup: onCreateThreadGroup,
                               onRenameThreadGroup: onRenameThreadGroup,
@@ -151,6 +154,7 @@ class RobdexShellScreen extends StatelessWidget {
                               onRunningStateChanged: onRunningStateChanged,
                               onRenameThread: onRenameThread,
                               onArchiveThread: onArchiveThread,
+                              onWarmHandoff: onWarmHandoff,
                               onSetProjectOrchestrator: onSetProjectOrchestrator,
                               onCreateThreadGroup: onCreateThreadGroup,
                               onRenameThreadGroup: onRenameThreadGroup,
@@ -188,6 +192,7 @@ class _WideShell extends StatefulWidget {
     required this.onRunningStateChanged,
     required this.onRenameThread,
     required this.onArchiveThread,
+    required this.onWarmHandoff,
     required this.onSetProjectOrchestrator,
     required this.onCreateThreadGroup,
     required this.onRenameThreadGroup,
@@ -213,6 +218,7 @@ class _WideShell extends StatefulWidget {
   final ValueChanged<bool> onRunningStateChanged;
   final ValueChanged<String> onRenameThread;
   final VoidCallback onArchiveThread;
+  final ValueChanged<String> onWarmHandoff;
   final VoidCallback onSetProjectOrchestrator;
   final ValueChanged<String> onCreateThreadGroup;
   final Future<void> Function(ThreadGroupItem group) onRenameThreadGroup;
@@ -292,6 +298,7 @@ class _WideShellState extends State<_WideShell> {
                     onRunningStateChanged: widget.onRunningStateChanged,
                     onRenameThread: widget.onRenameThread,
                     onArchiveThread: widget.onArchiveThread,
+                    onWarmHandoff: widget.onWarmHandoff,
                     onSetProjectOrchestrator: widget.onSetProjectOrchestrator,
                     onCreateThreadGroup: widget.onCreateThreadGroup,
                     onRenameThreadGroup: widget.onRenameThreadGroup,
@@ -332,6 +339,7 @@ class _CompactShell extends StatefulWidget {
     required this.onRunningStateChanged,
     required this.onRenameThread,
     required this.onArchiveThread,
+    required this.onWarmHandoff,
     required this.onSetProjectOrchestrator,
     required this.onCreateThreadGroup,
     required this.onRenameThreadGroup,
@@ -357,6 +365,7 @@ class _CompactShell extends StatefulWidget {
   final ValueChanged<bool> onRunningStateChanged;
   final ValueChanged<String> onRenameThread;
   final VoidCallback onArchiveThread;
+  final ValueChanged<String> onWarmHandoff;
   final VoidCallback onSetProjectOrchestrator;
   final ValueChanged<String> onCreateThreadGroup;
   final Future<void> Function(ThreadGroupItem group) onRenameThreadGroup;
@@ -605,6 +614,7 @@ class _CompactShellState extends State<_CompactShell> {
                 onRunningStateChanged: widget.onRunningStateChanged,
                 onRenameThread: widget.onRenameThread,
                 onArchiveThread: widget.onArchiveThread,
+                onWarmHandoff: widget.onWarmHandoff,
                 onSetProjectOrchestrator: widget.onSetProjectOrchestrator,
                 onCreateThreadGroup: widget.onCreateThreadGroup,
                 onRenameThreadGroup: widget.onRenameThreadGroup,
@@ -667,8 +677,8 @@ class _DesktopThreadControls extends StatelessWidget {
     }
     String networkLabel(bool? enabled) => inheritedLabel(
           switch (enabled) {
-            true => 'Networking Enabled',
-            false => 'Networking Disabled',
+            true => 'Enabled',
+            false => 'Disabled',
             null => 'System',
           },
         );
@@ -822,6 +832,7 @@ class _CompactDropdown extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final safeValue = items.any((item) => item.value == value) ? value : items.first.value ?? '';
     return SizedBox(
       width: width,
@@ -836,6 +847,12 @@ class _CompactDropdown extends StatelessWidget {
             value: safeValue,
             isDense: true,
             isExpanded: true,
+            style: theme.textTheme.labelSmall?.copyWith(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: theme.colorScheme.onSurface,
+            ),
+            menuMaxHeight: 320,
             items: items,
             onChanged: enabled
                 ? (value) {
@@ -1024,6 +1041,7 @@ Future<void> _showInspectorDialog(
   required ValueChanged<bool> onRunningStateChanged,
   required ValueChanged<String> onRenameThread,
   required VoidCallback onArchiveThread,
+  required ValueChanged<String> onWarmHandoff,
   required VoidCallback onSetProjectOrchestrator,
   required ValueChanged<String> onCreateThreadGroup,
   required Future<void> Function(ThreadGroupItem group) onRenameThreadGroup,
@@ -1049,6 +1067,7 @@ Future<void> _showInspectorDialog(
             onRunningStateChanged: onRunningStateChanged,
             onRenameThread: onRenameThread,
             onArchiveThread: onArchiveThread,
+            onWarmHandoff: onWarmHandoff,
             onCreateThreadGroup: onCreateThreadGroup,
             onRenameThreadGroup: onRenameThreadGroup,
             onDeleteThreadGroup: onDeleteThreadGroup,
@@ -1071,6 +1090,7 @@ Future<void> _showInspectorSheet(
   required ValueChanged<bool> onRunningStateChanged,
   required ValueChanged<String> onRenameThread,
   required VoidCallback onArchiveThread,
+  required ValueChanged<String> onWarmHandoff,
   required VoidCallback onSetProjectOrchestrator,
   required ValueChanged<String> onCreateThreadGroup,
   required Future<void> Function(ThreadGroupItem group) onRenameThreadGroup,
@@ -1096,6 +1116,7 @@ Future<void> _showInspectorSheet(
             onRunningStateChanged: onRunningStateChanged,
             onRenameThread: onRenameThread,
             onArchiveThread: onArchiveThread,
+            onWarmHandoff: onWarmHandoff,
             onCreateThreadGroup: onCreateThreadGroup,
             onRenameThreadGroup: onRenameThreadGroup,
             onDeleteThreadGroup: onDeleteThreadGroup,

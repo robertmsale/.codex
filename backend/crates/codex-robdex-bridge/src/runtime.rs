@@ -1,5 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    env,
+    path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     sync::Arc,
     time::Duration,
@@ -30,6 +32,7 @@ use crate::{
     },
     store::RobdexBridgeStore,
     transport::{DEFAULT_RECONNECT_DELAY_MS, TransportControlMessage, run_transport_loop},
+    transforms::resolve_role_instructions,
     upstream::{RunningStateReducer, UpstreamRuntimeEvent, transport_messages},
 };
 
@@ -476,11 +479,33 @@ impl BridgeRuntime {
         let state = self.state_document.read().await;
         let thread_ids = tracked_thread_ids_from_state(&state);
         for thread_id in thread_ids {
+            let cwd = tracked_cwd_for_thread_value(&state, &thread_id);
+            let approval_policy = tracked_approval_policy_for_thread_value(&state, &thread_id);
+            let model = tracked_model_for_thread_value(&state, &thread_id);
+            let effort = tracked_reasoning_for_thread_value(&state, &thread_id);
+            let sandbox_mode = tracked_sandbox_mode_for_thread_value(&state, &thread_id);
+            let network_access = tracked_network_access_for_thread_value(&state, &thread_id);
+            let sandbox_policy = sandbox_policy_for_resume_value(
+                sandbox_mode.as_deref(),
+                network_access,
+                cwd.as_deref(),
+            );
+            let base_instructions = tracked_base_instructions_for_thread_value(&state, &thread_id);
+            let developer_instructions =
+                tracked_developer_instructions_for_thread_value(&state, &thread_id);
             if let Err(error) = self
                 .request_app_server_json(
                     "thread/resume",
                     json!({
                         "threadId": thread_id,
+                        "cwd": cwd,
+                        "approvalPolicy": approval_policy,
+                        "sandbox": sandbox_mode,
+                        "sandboxPolicy": sandbox_policy,
+                        "model": model,
+                        "effort": effort,
+                        "baseInstructions": base_instructions,
+                        "developerInstructions": developer_instructions,
                         "persistExtendedHistory": true,
                     }),
                 )
@@ -716,6 +741,7 @@ impl BridgeRuntime {
                         .or(project.cwd)
                         .or(project.project_root),
                     "approvalPolicy": tracked_approval_policy_for_thread_value(&state, &orchestrator_thread_id),
+                    "sandboxPolicy": tracked_sandbox_policy_for_thread_value(&state, &orchestrator_thread_id),
                     "model": tracked_model_for_thread_value(&state, &orchestrator_thread_id),
                     "effort": tracked_reasoning_for_thread_value(&state, &orchestrator_thread_id),
                 }),
@@ -773,6 +799,7 @@ impl BridgeRuntime {
                         .or(project.cwd)
                         .or(project.project_root),
                     "approvalPolicy": tracked_approval_policy_for_thread_value(&state, &orchestrator_thread_id),
+                    "sandboxPolicy": tracked_sandbox_policy_for_thread_value(&state, &orchestrator_thread_id),
                     "model": tracked_model_for_thread_value(&state, &orchestrator_thread_id),
                     "effort": tracked_reasoning_for_thread_value(&state, &orchestrator_thread_id),
                 }),
@@ -1227,6 +1254,7 @@ struct RoutedProjectState {
     auto_route_replies: bool,
     route_approval_requests: bool,
     orchestrator_thread_id: Option<String>,
+    role_defaults: Value,
 }
 
 fn tracked_project_for_thread(state: &Value, thread_id: &str) -> Option<RoutedProjectState> {
@@ -1260,6 +1288,11 @@ fn tracked_project_for_thread(state: &Value, thread_id: &str) -> Option<RoutedPr
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 orchestrator_thread_id: orchestrator,
+                role_defaults: project_object
+                    .get("configs")
+                    .and_then(|value| value.get("roleModelReasoningDefaults"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
             });
         }
     }
@@ -1311,6 +1344,150 @@ fn tracked_approval_policy_for_thread_value(state: &Value, thread_id: &str) -> O
         .and_then(|agent| agent.get("approvalPolicy"))
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| {
+            state
+                .get("globalConfigs")
+                .and_then(|value| value.get("approvalPolicy"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+}
+
+fn role_defaults_key_for_thread(state: &Value, thread_id: &str) -> &'static str {
+    match tracked_role_for_thread(state, thread_id).as_deref() {
+        Some("qa") => "qa",
+        Some("orchestrator") => "orchestrator",
+        Some("worker") | Some("hidden") | Some("operator") | _ => "worker",
+    }
+}
+
+fn role_default_model_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    let key = role_defaults_key_for_thread(state, thread_id);
+    tracked_project_for_thread(state, thread_id)
+        .and_then(|project| project.role_defaults.get(key).cloned())
+        .and_then(|value| value.get("modelID").cloned())
+        .and_then(|value| value.as_str().map(str::to_string))
+}
+
+fn role_default_reasoning_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    let key = role_defaults_key_for_thread(state, thread_id);
+    tracked_project_for_thread(state, thread_id)
+        .and_then(|project| project.role_defaults.get(key).cloned())
+        .and_then(|value| value.get("reasoningEffort").cloned())
+        .and_then(|value| value.as_str().map(str::to_string))
+}
+
+fn tracked_sandbox_mode_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("sandboxMode"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            state
+                .get("globalConfigs")
+                .and_then(|value| value.get("sandboxMode"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+}
+
+fn effective_network_access_for_sandbox_value(
+    sandbox_mode: Option<&str>,
+    explicit_network_access: Option<bool>,
+    default_network_access: Option<bool>,
+) -> Option<bool> {
+    match sandbox_mode {
+        Some("workspace-write") | Some("external-sandbox") => {
+            if explicit_network_access == Some(true) || default_network_access == Some(true) {
+                Some(true)
+            } else if explicit_network_access == Some(false) || default_network_access == Some(false) {
+                Some(false)
+            } else {
+                Some(true)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn tracked_network_access_for_thread_value(state: &Value, thread_id: &str) -> Option<bool> {
+    let sandbox_mode = tracked_sandbox_mode_for_thread_value(state, thread_id);
+    let default_network_access = state
+        .get("globalConfigs")
+        .and_then(|value| value.get("networkAccess"))
+        .and_then(Value::as_bool);
+    effective_network_access_for_sandbox_value(
+        sandbox_mode.as_deref(),
+        tracked_agent_value(state, thread_id)
+            .and_then(|agent| agent.get("networkAccess"))
+            .and_then(Value::as_bool),
+        default_network_access,
+    )
+}
+
+fn tracked_sandbox_policy_for_thread_value(state: &Value, thread_id: &str) -> Option<Value> {
+    let sandbox_mode = tracked_sandbox_mode_for_thread_value(state, thread_id);
+    let network_access = tracked_network_access_for_thread_value(state, thread_id);
+    let cwd = tracked_cwd_for_thread_value(state, thread_id);
+    sandbox_policy_for_resume_value(sandbox_mode.as_deref(), network_access, cwd.as_deref())
+}
+
+fn sandbox_policy_for_resume_value(
+    sandbox_mode: Option<&str>,
+    network_access: Option<bool>,
+    cwd: Option<&str>,
+) -> Option<Value> {
+    match sandbox_mode {
+        Some("danger-full-access") => Some(json!({ "type": "dangerFullAccess" })),
+        Some("read-only") => Some(json!({
+            "type": "readOnly",
+            "access": { "type": "fullAccess" },
+            "networkAccess": network_access.unwrap_or(false),
+        })),
+        Some("workspace-write") => Some(json!({
+            "type": "workspaceWrite",
+            "writableRoots": cwd.map(|value| vec![value]).unwrap_or_default(),
+            "readOnlyAccess": { "type": "fullAccess" },
+            "networkAccess": network_access.unwrap_or(true),
+            "excludeTmpdirEnvVar": false,
+            "excludeSlashTmp": false,
+        })),
+        Some("external-sandbox") => Some(json!({
+            "type": "externalSandbox",
+            "networkAccess": if network_access.unwrap_or(true) { "enabled" } else { "restricted" },
+        })),
+        _ => None,
+    }
+}
+
+fn tracked_developer_instructions_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    let role = tracked_role_for_thread(state, thread_id)?;
+    if matches!(role.as_str(), "hidden" | "orchestrator" | "operator") {
+        return None;
+    }
+    let project = tracked_project_for_thread(state, thread_id)?;
+    if project.orchestrator_thread_id.is_none() {
+        return None;
+    }
+    let mut guidance = Vec::new();
+    if project.auto_route_replies {
+        guidance.push("Final assistant replies are auto-forwarded to this project's orchestrator. Mid-turn messages and coordination are fine, but do not manually send a redundant final handoff when your turn ends unless you need to add distinct information.");
+    } else {
+        guidance.push("Final assistant replies are not auto-forwarded. If the orchestrator needs your final status, use $robdex-orchestrator to send it manually.");
+    }
+    if project.route_approval_requests {
+        guidance.push("Command and file-change approval requests are forwarded to this project's orchestrator so they can guide approval decisions in real time.");
+    }
+    Some(guidance.join(" "))
+}
+
+fn tracked_base_instructions_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    let role = tracked_role_for_thread(state, thread_id)?;
+    if role == "operator" {
+        return None;
+    }
+    let home = env::var_os("HOME").map(PathBuf::from);
+    resolve_role_instructions(home, Some(role.as_str())).ok().flatten()
 }
 
 fn tracked_model_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
@@ -1319,6 +1496,7 @@ fn tracked_model_for_thread_value(state: &Value, thread_id: &str) -> Option<Stri
         .or_else(|| tracked_agent_value(state, thread_id).and_then(|agent| agent.get("modelID")))
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| role_default_model_for_thread_value(state, thread_id))
 }
 
 fn tracked_reasoning_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
@@ -1326,6 +1504,7 @@ fn tracked_reasoning_for_thread_value(state: &Value, thread_id: &str) -> Option<
         .and_then(|agent| agent.get("reasoningEffort"))
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| role_default_reasoning_for_thread_value(state, thread_id))
 }
 
 fn sender_label_for_thread(state: &Value, thread_id: &str) -> String {
@@ -1817,7 +1996,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let thread_messages = runtime
-            .thread_messages("thread-1")
+            .thread_messages("thread-1", Some(50))
             .await
             .expect("thread_messages")
             .expect("thread present");

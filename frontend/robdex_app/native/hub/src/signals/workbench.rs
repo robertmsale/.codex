@@ -151,6 +151,11 @@ pub struct RenameThreadSignal {
 #[derive(Deserialize, DartSignal)]
 pub struct ArchiveThreadSignal;
 
+#[derive(Deserialize, DartSignal)]
+pub struct WarmHandoffSignal {
+    pub prompt: String,
+}
+
 #[derive(Serialize, RustSignal)]
 pub struct WorkbenchStateSignal {
     pub view_json: String,

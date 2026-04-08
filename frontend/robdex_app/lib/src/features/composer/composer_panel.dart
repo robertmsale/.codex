@@ -66,6 +66,12 @@ class _ComposerPanelState extends State<ComposerPanel> {
       _ => false,
     };
     final showsInterrupt = widget.isRunning && !_hasDraftText;
+    final actionBackground = showsInterrupt
+        ? theme.colorScheme.error
+        : theme.colorScheme.primary;
+    final actionForeground = showsInterrupt
+        ? theme.colorScheme.onError
+        : const Color(0xFF08111A);
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -108,20 +114,28 @@ class _ComposerPanelState extends State<ComposerPanel> {
                       enabled: widget.enabled,
                       minLines: 1,
                       maxLines: 4,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontSize: 11,
+                        height: 1.3,
+                      ),
                       onSubmitted: (_) {
                         if (!isDesktopPlatform) {
                           return;
                         }
                         _submit();
                       },
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         hintText: 'Send a message to the selected thread',
+                        hintStyle: theme.textTheme.bodySmall?.copyWith(
+                          fontSize: 11,
+                          color: theme.colorScheme.onSurface.withValues(alpha: 0.48),
+                        ),
                       ),
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
-                IconButton.filledTonal(
+                IconButton(
                   onPressed: widget.enabled
                       ? (showsInterrupt ? widget.onInterrupt : _submit)
                       : null,
@@ -131,7 +145,16 @@ class _ComposerPanelState extends State<ComposerPanel> {
                         : Icons.arrow_upward_rounded,
                     size: 18,
                   ),
-                  color: showsInterrupt ? theme.colorScheme.error : null,
+                  style: IconButton.styleFrom(
+                    backgroundColor: actionBackground,
+                    foregroundColor: actionForeground,
+                    disabledBackgroundColor:
+                        theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
+                    disabledForegroundColor:
+                        theme.colorScheme.onSurface.withValues(alpha: 0.4),
+                    minimumSize: const Size(42, 42),
+                    shape: const CircleBorder(),
+                  ),
                   tooltip: showsInterrupt ? 'Interrupt' : 'Send',
                 ),
               ],

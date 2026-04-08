@@ -359,212 +359,72 @@ prefix_rule(
 # Low-noise commands: refuse command-parser use
 # ------------------------------------------
 prefix_rule(
-    pattern = ["ls"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["dir"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["pwd"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["cd"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["tree"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["find"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["fd"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["fdfind"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["locate"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["which"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["whereis"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["realpath"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["readlink"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["basename"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["dirname"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["file"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["stat"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["du"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["df"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["rg"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["grep"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["egrep"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["fgrep"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["ag"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["ack"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["git"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["cat"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["head"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["tail"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["sed"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["awk"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["wc"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["sort"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["uniq"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["cut"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["xargs"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["ps"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["top"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["htop"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["pgrep"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["pstree"],
-    decision = "forbidden",
-    justification = "run directly.",
-)
-prefix_rule(
-    pattern = ["printenv"],
+    pattern = [[
+        "ls",
+        "dir",
+        "pwd",
+        "cd",
+        "tree",
+        "find",
+        "fd",
+        "fdfind",
+        "locate",
+        "which",
+        "whereis",
+        "realpath",
+        "readlink",
+        "basename",
+        "dirname",
+        "file",
+        "stat",
+        "du",
+        "df",
+        "rg",
+        "grep",
+        "egrep",
+        "fgrep",
+        "ag",
+        "ack",
+        "git",
+        "cat",
+        "head",
+        "tail",
+        "sed",
+        "awk",
+        "wc",
+        "sort",
+        "uniq",
+        "cut",
+        "xargs",
+        "ps",
+        "top",
+        "htop",
+        "pgrep",
+        "pstree",
+        "printenv",
+        "flutter-sim",
+        "flutter-driver",
+        "git-branch-list",
+        "git-commit",
+        "git-diff",
+        "git-merge-base",
+        "git-merge-worktree",
+        "git-publish-worktree",
+        "git-rebase-abort",
+        "git-rebase-continue",
+        "git-rev-parse",
+        "git-show",
+        "git-stage-paths",
+        "git-status",
+        "git-sync-worktree",
+        "git-unstage-paths",
+        "git-worktree-cleanup",
+        "git-worktree-create",
+        "qa-fastforward",
+        "robdex",
+        "safe-delete",
+        "request-review",
+    ]],
     decision = "forbidden",
     justification = "run directly.",
 )

@@ -373,6 +373,38 @@ impl WorkbenchClient {
         build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
     }
 
+    pub async fn warm_handoff(
+        &mut self,
+        sender_thread_id: &str,
+        recipient_thread_id: &str,
+        project_path: &str,
+        prompt: &str,
+    ) -> Result<WorkbenchViewData> {
+        let payload = self
+            .client
+            .post(self.endpoint.http_base.join("/orchestrator/warm-handoff")?)
+            .json(&json!({
+                "senderThreadId": sender_thread_id,
+                "recipientThreadId": recipient_thread_id,
+                "projectPath": project_path,
+                "prompt": prompt,
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        let replacement_thread_id = payload
+            .get("replacementThreadId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let snapshot = self.fetch_snapshot_json().await?;
+        self.selected_thread_id = replacement_thread_id
+            .clone()
+            .or_else(|| self.selected_thread_id.clone());
+        build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
+    }
+
     pub async fn send_message(&self, thread_id: &str, text: &str) -> Result<()> {
         self.client
             .post(

@@ -290,6 +290,13 @@ class WorkbenchController extends ChangeNotifier {
     const ArchiveThreadSignal().sendSignalToRust();
   }
 
+  void warmHandoff(String prompt) {
+    if (prompt.trim().isEmpty) {
+      return;
+    }
+    WarmHandoffSignal(prompt: prompt.trim()).sendSignalToRust();
+  }
+
   void disconnect() {
     _subscription?.cancel();
     _subscription = null;

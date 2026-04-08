@@ -429,11 +429,34 @@ pub async fn execute_bridge_command(
             let role = payload.get("role").and_then(Value::as_str);
             let project_path = payload.get("projectPath").and_then(Value::as_str);
             let cwd = required_string(&payload, "cwd")?;
+            let sandbox_mode = payload
+                .get("sandbox")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    state
+                        .global_configs
+                        .get("sandboxMode")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
+            let network_access = effective_network_access_for_sandbox(
+                sandbox_mode.as_deref(),
+                payload.get("networkAccess").and_then(Value::as_bool),
+                state.global_configs.get("networkAccess").and_then(Value::as_bool),
+            );
+            let reasoning_effort = payload
+                .get("reasoningEffort")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| role_default_reasoning_effort(&state, project_path, role));
             let params = json!({
                 "cwd": cwd,
                 "approvalPolicy": payload.get("approvalPolicy").cloned().unwrap_or(Value::Null),
-                "sandbox": payload.get("sandbox").cloned().unwrap_or(Value::Null),
+                "sandbox": sandbox_mode,
+                "sandboxPolicy": sandbox_policy_for_spawn(sandbox_mode.as_deref(), network_access, Some(cwd.as_str())),
                 "model": payload.get("model").cloned().unwrap_or(role_default_model(&state, project_path, role).map(Value::String).unwrap_or(Value::Null)),
+                "effort": reasoning_effort,
                 "developerInstructions": developer_instructions_for_role(&state, role, project_path, Some(cwd.as_str())),
                 "baseInstructions": resolve_role_instructions_for(role)?,
                 "persistExtendedHistory": true
@@ -445,14 +468,47 @@ pub async fn execute_bridge_command(
             let state = parse_state(&runtime.state_document_value().await);
             let thread_id = required_string(&payload, "threadId")?;
             let role = effective_role_for_thread(&state, &thread_id, payload.get("role").and_then(Value::as_str));
+            let cwd = payload
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_cwd_for_thread(&state, &thread_id));
+            let approval_policy = payload
+                .get("approvalPolicy")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_approval_policy_for_thread(&state, &thread_id));
+            let sandbox_mode = payload
+                .get("sandbox")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_sandbox_mode_for_thread(&state, &thread_id));
+            let network_access = effective_network_access_for_sandbox(
+                sandbox_mode.as_deref(),
+                payload.get("networkAccess").and_then(Value::as_bool)
+                    .or_else(|| tracked_network_access_for_thread(&state, &thread_id)),
+                state.global_configs.get("networkAccess").and_then(Value::as_bool),
+            );
+            let model = payload
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_model_for_thread(&state, &thread_id));
+            let reasoning_effort = payload
+                .get("reasoningEffort")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_reasoning_effort_for_thread(&state, &thread_id));
             let params = json!({
                 "threadId": thread_id,
-                "cwd": payload.get("cwd").cloned().unwrap_or(Value::Null),
-                "approvalPolicy": payload.get("approvalPolicy").cloned().unwrap_or(Value::Null),
-                "sandbox": payload.get("sandbox").cloned().unwrap_or(Value::Null),
-                "model": payload.get("model").cloned().unwrap_or(Value::Null),
+                "cwd": cwd,
+                "approvalPolicy": approval_policy,
+                "sandbox": sandbox_mode,
+                "sandboxPolicy": sandbox_policy_for_spawn(sandbox_mode.as_deref(), network_access, cwd.as_deref()),
+                "model": model,
+                "effort": reasoning_effort,
                 "baseInstructions": resolve_role_instructions_for(role.as_deref())?,
-                "developerInstructions": developer_instructions_for_role(&state, role.as_deref(), tracked_project_path_for_thread(&state, &thread_id).as_deref(), payload.get("cwd").and_then(Value::as_str)),
+                "developerInstructions": developer_instructions_for_role(&state, role.as_deref(), tracked_project_path_for_thread(&state, &thread_id).as_deref(), cwd.as_deref()),
                 "persistExtendedHistory": true
             });
             let result = app_server_request_json(runtime, "thread/resume", params).await?;
@@ -473,17 +529,44 @@ pub async fn execute_bridge_command(
             let state = parse_state(&runtime.state_document_value().await);
             let thread_id = required_string(&payload, "threadId")?;
             let role = effective_role_for_thread(&state, &thread_id, payload.get("role").and_then(Value::as_str));
+            let cwd = payload
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_cwd_for_thread(&state, &thread_id));
+            let approval_policy = payload
+                .get("approvalPolicy")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_approval_policy_for_thread(&state, &thread_id));
+            let sandbox_mode = payload
+                .get("sandbox")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_sandbox_mode_for_thread(&state, &thread_id));
+            let network_access = effective_network_access_for_sandbox(
+                sandbox_mode.as_deref(),
+                payload.get("networkAccess").and_then(Value::as_bool)
+                    .or_else(|| tracked_network_access_for_thread(&state, &thread_id)),
+                state.global_configs.get("networkAccess").and_then(Value::as_bool),
+            );
+            let model = payload
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_model_for_thread(&state, &thread_id));
             let params = json!({
                 "threadId": thread_id,
                 "path": payload.get("path").cloned().unwrap_or(Value::Null),
-                "model": payload.get("model").cloned().unwrap_or(Value::Null),
+                "model": model,
                 "modelProvider": payload.get("modelProvider").cloned().unwrap_or(Value::Null),
-                "cwd": payload.get("cwd").cloned().unwrap_or(Value::Null),
-                "approvalPolicy": payload.get("approvalPolicy").cloned().unwrap_or(Value::Null),
-                "sandbox": payload.get("sandbox").cloned().unwrap_or(Value::Null),
+                "cwd": cwd,
+                "approvalPolicy": approval_policy,
+                "sandbox": sandbox_mode,
+                "sandboxPolicy": sandbox_policy_for_spawn(sandbox_mode.as_deref(), network_access, cwd.as_deref()),
                 "config": payload.get("config").cloned().unwrap_or(Value::Null),
                 "baseInstructions": resolve_role_instructions_for(role.as_deref())?,
-                "developerInstructions": developer_instructions_for_role(&state, role.as_deref(), tracked_project_path_for_thread(&state, &thread_id).as_deref(), payload.get("cwd").and_then(Value::as_str)),
+                "developerInstructions": developer_instructions_for_role(&state, role.as_deref(), tracked_project_path_for_thread(&state, &thread_id).as_deref(), cwd.as_deref()),
                 "persistExtendedHistory": payload.get("persistExtendedHistory").cloned().unwrap_or(Value::Bool(true))
             });
             let result = app_server_request_json(runtime, "thread/fork", params).await?;
@@ -505,6 +588,11 @@ pub async fn execute_bridge_command(
             let mut state = parse_state(&runtime.state_document_value().await);
             set_tracked_thread_display_name(&mut state, &thread_id, &name);
             persist_state(runtime, &state).await?;
+            runtime
+                .push_event(crate::models::BridgeEvent::AppStateSnapshot {
+                    state: runtime.state_document_value().await,
+                })
+                .await;
             Ok(success(json!({"type":"empty"})))
         }
         "threadMetadataUpdate" => {
@@ -552,6 +640,11 @@ pub async fn execute_bridge_command(
                 }
                 state.updated_at = Some(unix_now());
                 persist_state(runtime, &state).await?;
+                runtime
+                    .push_event(crate::models::BridgeEvent::AppStateSnapshot {
+                        state: runtime.state_document_value().await,
+                    })
+                    .await;
             }
             Ok(success(json!({"type":"threadMetadata","payload": result})))
         }
@@ -589,17 +682,44 @@ pub async fn execute_bridge_command(
             Ok(success(json!({"type":"threadLoadedList","payload": result})))
         }
         "turnStart" => {
+            let state = parse_state(&runtime.state_document_value().await);
+            let thread_id = required_string(&payload, "threadId")?;
+            let cwd = payload
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_cwd_for_thread(&state, &thread_id));
+            let approval_policy = payload
+                .get("approvalPolicy")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_approval_policy_for_thread(&state, &thread_id));
+            let sandbox_policy = payload
+                .get("sandboxPolicy")
+                .cloned()
+                .filter(|value| !value.is_null())
+                .or_else(|| tracked_sandbox_policy_for_thread(&state, &thread_id));
+            let model = payload
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_model_for_thread(&state, &thread_id));
+            let effort = payload
+                .get("effort")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_reasoning_effort_for_thread(&state, &thread_id));
             let result = app_server_request_json(
                 runtime,
                 "turn/start",
                 json!({
-                    "threadId": required_string(&payload, "threadId")?,
+                    "threadId": thread_id,
                     "input": [{"type":"text","text": required_string(&payload, "text")?}],
-                    "cwd": payload.get("cwd").cloned().unwrap_or(Value::Null),
-                    "model": payload.get("model").cloned().unwrap_or(Value::Null),
-                    "effort": payload.get("effort").cloned().unwrap_or(Value::Null),
-                    "approvalPolicy": payload.get("approvalPolicy").cloned().unwrap_or(Value::Null),
-                    "sandboxPolicy": payload.get("sandboxPolicy").cloned().unwrap_or(Value::Null),
+                    "cwd": cwd,
+                    "model": model,
+                    "effort": effort,
+                    "approvalPolicy": approval_policy,
+                    "sandboxPolicy": sandbox_policy,
                 }),
             )
             .await?;
@@ -1642,6 +1762,29 @@ fn role_default_model(state: &PersistedState, project_path: Option<&str>, role: 
         .map(str::to_string)
 }
 
+fn role_default_reasoning_effort(
+    state: &PersistedState,
+    project_path: Option<&str>,
+    role: Option<&str>,
+) -> Option<String> {
+    let key = match role {
+        Some("qa") => "qa",
+        Some("orchestrator") => "orchestrator",
+        Some("worker") | Some("hidden") | Some("operator") | _ => "worker",
+    };
+    let project = state
+        .projects
+        .values()
+        .find(|project| project.project_root.as_deref() == project_path)?;
+    project
+        .configs
+        .get("roleModelReasoningDefaults")
+        .and_then(|value| value.get(key))
+        .and_then(|value| value.get("reasoningEffort"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 fn developer_instructions_for_role(
     state: &PersistedState,
     role: Option<&str>,
@@ -1846,22 +1989,69 @@ fn tracked_approval_policy_for_thread(state: &PersistedState, thread_id: &str) -
     None
 }
 
-fn tracked_model_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
+fn tracked_sandbox_mode_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
+    let default_sandbox_mode = state
+        .global_configs
+        .get("sandboxMode")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     for project in state.projects.values() {
         if let Some(agent) = project.agents.get(thread_id) {
-            return agent.model.clone();
+            return agent.sandbox_mode.clone().or_else(|| default_sandbox_mode.clone());
         }
     }
-    None
+    default_sandbox_mode
+}
+
+fn tracked_network_access_for_thread(state: &PersistedState, thread_id: &str) -> Option<bool> {
+    let default_network_access = state.global_configs.get("networkAccess").and_then(Value::as_bool);
+    for project in state.projects.values() {
+        if let Some(agent) = project.agents.get(thread_id) {
+            let sandbox_mode = agent
+                .sandbox_mode
+                .clone()
+                .or_else(|| {
+                    state
+                        .global_configs
+                        .get("sandboxMode")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
+            return effective_network_access_for_sandbox(
+                sandbox_mode.as_deref(),
+                agent.network_access,
+                default_network_access,
+            );
+        }
+    }
+    default_network_access
+}
+
+fn tracked_model_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
+    let role = effective_role_for_thread(state, thread_id, None);
+    let project_path = tracked_project_path_for_thread(state, thread_id);
+    for project in state.projects.values() {
+        if let Some(agent) = project.agents.get(thread_id) {
+            return agent
+                .model
+                .clone()
+                .or_else(|| role_default_model(state, project_path.as_deref(), role.as_deref()));
+        }
+    }
+    role_default_model(state, project_path.as_deref(), role.as_deref())
 }
 
 fn tracked_reasoning_effort_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
+    let role = effective_role_for_thread(state, thread_id, None);
+    let project_path = tracked_project_path_for_thread(state, thread_id);
     for project in state.projects.values() {
         if let Some(agent) = project.agents.get(thread_id) {
-            return agent.reasoning_effort.clone();
+            return agent.reasoning_effort.clone().or_else(|| {
+                role_default_reasoning_effort(state, project_path.as_deref(), role.as_deref())
+            });
         }
     }
-    None
+    role_default_reasoning_effort(state, project_path.as_deref(), role.as_deref())
 }
 
 fn tracked_sandbox_policy_for_thread(state: &PersistedState, thread_id: &str) -> Option<Value> {
@@ -1967,12 +2157,15 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
     let reasoning_effort = payload
         .get("reasoningEffort")
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(str::to_string)
+        .or_else(|| role_default_reasoning_effort(&state, Some(project_path.as_str()), role));
     let params = json!({
         "cwd": cwd,
         "approvalPolicy": approval_policy,
         "sandbox": sandbox_mode,
+        "sandboxPolicy": sandbox_policy_for_spawn(sandbox_mode.as_deref(), network_access, Some(cwd.as_str())),
         "model": model,
+        "effort": reasoning_effort,
         "developerInstructions": developer_instructions_for_role(&state, role, Some(project_path.as_str()), Some(cwd.as_str())),
         "baseInstructions": resolve_role_instructions_for(role)?,
         "persistExtendedHistory": true,
@@ -2804,6 +2997,127 @@ pub async fn orchestrator_spawn_agent(
     }
     agent.parent_agent_id = Some(sender_thread_id.to_string());
     Ok(json!({ "agent": agent }))
+}
+
+pub async fn orchestrator_warm_handoff(
+    runtime: &BridgeRuntime,
+    sender_thread_id: &str,
+    recipient_thread_id: Option<&str>,
+    recipient_name: Option<&str>,
+    project_path: Option<&str>,
+    prompt: &str,
+) -> Result<Value> {
+    let state = parse_state(&runtime.state_document_value().await);
+    let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
+    let records = all_agent_records(&state, &running);
+    let scoped = scoped_agent_context(&records, sender_thread_id, true)?;
+    let sender = scoped.sender;
+    let recipient =
+        resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?;
+    if !sender.is_orchestrator || sender.project_path != recipient.project_path {
+        bail!(
+            "Only the configured orchestrator thread for project `{}` can warm handoff agents in that project.",
+            recipient.project_path
+        );
+    }
+    if recipient.is_orchestrator {
+        bail!("Warm handoff is only supported for non-orchestrator agents.");
+    }
+
+    let mut recipient_state = None;
+    let mut carried_group_ids = Vec::new();
+    let mut project_root = None;
+    let mut project_cwd = None;
+    for project in state.projects.values() {
+        if project.agents.contains_key(&recipient.thread_id) {
+            recipient_state = project.agents.get(&recipient.thread_id).cloned();
+            project_root = project.project_root.clone();
+            project_cwd = project.cwd.clone();
+            carried_group_ids = project
+                .thread_groups
+                .iter()
+                .filter(|group| group.thread_ids.iter().any(|value| value == &recipient.thread_id))
+                .map(|group| group.id.clone())
+                .collect();
+            break;
+        }
+    }
+    let recipient_state =
+        recipient_state.ok_or_else(|| anyhow::anyhow!("Recipient `{}` is not tracked.", recipient.thread_id))?;
+    let role = recipient_state
+        .role
+        .clone()
+        .unwrap_or_else(|| recipient.role.clone());
+    let project_path_value = project_root
+        .clone()
+        .unwrap_or_else(|| recipient.project_path.clone());
+    let cwd = recipient_state
+        .cwd
+        .clone()
+        .or(project_cwd.clone())
+        .or(project_root.clone())
+        .unwrap_or_else(|| recipient.cwd.clone());
+    let spawn_payload = json!({
+        "displayName": recipient_state.display_name.clone().or(recipient.display_name.clone()),
+        "initialPrompt": prompt,
+        "cwd": cwd,
+        "projectPath": project_path_value,
+        "role": role,
+        "approvalPolicy": recipient_state.approval_policy,
+        "sandboxMode": recipient_state.sandbox_mode,
+        "networkAccess": recipient_state.network_access,
+        "modelID": recipient_state.model,
+        "reasoningEffort": recipient_state.reasoning_effort,
+        "parentAgentId": sender_thread_id,
+    });
+    let mut replacement = spawn_agent(runtime, &spawn_payload).await?;
+
+    let mut next_state = parse_state(&runtime.state_document_value().await);
+    let mut archived_old = false;
+    if let Some(project) = next_state
+        .projects
+        .values_mut()
+        .find(|project| project.agents.contains_key(&recipient.thread_id))
+    {
+        if let Some(new_agent_state) = project.agents.get_mut(&replacement.id) {
+            new_agent_state.issue_number = recipient_state.issue_number;
+            new_agent_state.pull_request_number = recipient_state.pull_request_number;
+            new_agent_state.blocked_reason = recipient_state.blocked_reason.clone();
+            new_agent_state.unblock_when = recipient_state.unblock_when.clone();
+            for (key, value) in &recipient_state.extras {
+                new_agent_state.extras.insert(key.clone(), value.clone());
+            }
+        }
+        if let Some(old_agent_state) = project.agents.get_mut(&recipient.thread_id) {
+            old_agent_state.archived = Some(true);
+            archived_old = true;
+        }
+        for group in &mut project.thread_groups {
+            if group.thread_ids.iter().any(|value| value == &recipient.thread_id)
+                && !group.thread_ids.iter().any(|value| value == &replacement.id)
+            {
+                group.thread_ids.push(replacement.id.clone());
+            }
+        }
+        project.updated_at = Some(unix_now());
+    }
+    next_state.updated_at = Some(unix_now());
+    persist_state(runtime, &next_state).await?;
+    if archived_old {
+        let _ = app_server_request_json(
+            runtime,
+            "thread/archive",
+            json!({"threadId": recipient.thread_id}),
+        )
+        .await;
+    }
+    replacement.parent_agent_id = Some(sender_thread_id.to_string());
+    Ok(json!({
+        "previousThreadId": recipient.thread_id,
+        "replacementThreadId": replacement.id,
+        "groupIds": carried_group_ids,
+        "agent": replacement,
+    }))
 }
 
 pub async fn orchestrator_archive_agent(

@@ -18,7 +18,7 @@ use crate::signals::{
     RenameThreadGroupSignal, RenameThreadSignal, SelectProjectSignal, SelectThreadSignal,
     SendThreadMessageSignal, SetProjectOrchestratorSignal, SetThreadRunningStateSignal,
     SpawnAgentSignal, UpdateProjectSignal, UpdateThreadSettingsSignal, UpdateWorkerMetadataSignal,
-    InterruptThreadSignal, ThreadHistoryStateSignal, WorkbenchStateSignal,
+    InterruptThreadSignal, ThreadHistoryStateSignal, WarmHandoffSignal, WorkbenchStateSignal,
 };
 
 enum Action {
@@ -101,6 +101,7 @@ enum Action {
     SetThreadRunningState(bool),
     RenameThread(String),
     ArchiveThread,
+    WarmHandoff(String),
 }
 
 pub async fn run() {
@@ -427,7 +428,8 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
     spawn_map::<RenameThreadSignal, _>(tx.clone(), |signal| {
         Action::RenameThread(signal.message.name)
     });
-    spawn_unit::<ArchiveThreadSignal, _>(tx, || Action::ArchiveThread);
+    spawn_unit::<ArchiveThreadSignal, _>(tx.clone(), || Action::ArchiveThread);
+    spawn_map::<WarmHandoffSignal, _>(tx, |signal| Action::WarmHandoff(signal.message.prompt));
 }
 
 fn spawn_unit<TSignal, F>(tx: mpsc::UnboundedSender<Action>, map: F)
@@ -788,6 +790,31 @@ async fn handle_action(
                 .ok_or_else(|| anyhow!("No thread selected"))?;
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.archive_thread(&thread_id).await?;
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.load_initial_view().await
+        }
+        Action::WarmHandoff(prompt) => {
+            let view = current_view
+                .as_ref()
+                .ok_or_else(|| anyhow!("Not connected"))?;
+            let sender_thread_id = view
+                .selection
+                .project_orchestrator_thread_id
+                .clone()
+                .ok_or_else(|| anyhow!("No project orchestrator configured"))?;
+            let recipient_thread_id = view
+                .selection
+                .thread_id
+                .clone()
+                .ok_or_else(|| anyhow!("No thread selected"))?;
+            let project_path = view
+                .selection
+                .project_root_path
+                .clone()
+                .ok_or_else(|| anyhow!("No project path available"))?;
+            client
+                .as_mut()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .warm_handoff(&sender_thread_id, &recipient_thread_id, &project_path, &prompt)
+                .await
         }
     }
 }
