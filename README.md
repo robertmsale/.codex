@@ -16,16 +16,13 @@ Think of this directory as operational infrastructure 🚦
 ### Core config ⚙️
 
 - [`config.toml`](~/.codex/config.toml)
-  Main Codex configuration. Profiles, model defaults, sandbox defaults, MCP registration, and runtime behavior start here.
+  Main Codex configuration. Profiles, model defaults, sandbox defaults, MCP registration, and runtime behavior start here. `danger-full-access` is set, but is not used in practice.
 
 - [`AGENTS.md`](~/.codex/AGENTS.md)
   Global operating rules for agents working in this home directory.
 
 - [`roles/`](~/.codex/roles)
   Base instructions and role-specific prompt files.
-
-- [`configs/`](~/.codex/configs)
-  Extra config fragments and local overrides.
 
 ### Skills 🧰
 
@@ -35,10 +32,10 @@ Think of this directory as operational infrastructure 🚦
 Important skills in active use:
 
 - `command-execution`
-  Job-based execution model with stable `job_id`s.
+  Job-based execution model with stable `job_id`s. This allows agents to run long-running commands without constantly polling, wasting tokens, and potentially terminating a good running process that just takes more than 60 seconds to complete.
 
 - `command-parser`
-  Wrapper for noisy commands like builds, tests, and lint-like tooling.
+  Wrapper for noisy commands like builds, tests, and lint-like tooling. Uses a smaller, cheaper model to parse tool call outputs for a coding agent so their context does not fill with garbage.
 
 - `request-review`
   Review wrapper for code changes.
@@ -47,10 +44,10 @@ Important skills in active use:
   Robdex messaging and worker orchestration surface.
 
 - `gh-version-control-workflow`
-  Script-first worktree and publish workflow.
+  Script-first worktree and publish workflow. All of these scripts are designed around additive commands that are not destructive.
 
 - `safe-delete`
-  Non-destructive delete flow.
+  Non-destructive delete flow. Throws items into `/tmp` to be reconciled manually or on reboot.
 
 ### Backend services 🚀
 
@@ -70,6 +67,10 @@ Notable pieces:
 - Rust aux HTTP server for `command-parser` and `request-review`
 - Python sync services for gitops/flutter helpers
 
+Rationale:
+
+- Having privileged services expose CLI tooling allows for workspace-write sandbox with sensible escape hatches.
+
 See [`backend/README.md`](~/.codex/backend/README.md) for the service-level breakdown.
 
 ### MCP servers 🔌
@@ -77,12 +78,13 @@ See [`backend/README.md`](~/.codex/backend/README.md) for the service-level brea
 - [`mcp/`](~/.codex/mcp)
   Local MCP server implementations used by this environment.
 
-These are live behavior surfaces, not placeholders.
+- [`mcp/command-execution`](~/.codex/mcp/command-execution)
+  The one and only MCP server. This is the most important one. It allows agents to await long-running commands without polling stdin. Designed to be used in conjunction with the skill script.
 
 ### Robdex state 🧭
 
 - [`robdex/`](~/.codex/robdex)
-  Live Robdex bridge state and caches.
+  Live Robdex bridge state and caches. These are intentionally ignored, but generated when running the backend and using it.
 
 Important files:
 
@@ -95,28 +97,23 @@ Important files:
 - [`robdex/migration-backups/`](~/.codex/robdex/migration-backups)
   Manual backups taken before risky bridge cutovers.
 
-### Runtime artifacts 📦
-
-These are generated/runtime-owned, not hand-maintained source:
-
-- [`sessions/`](~/.codex/sessions)
-- [`archived_sessions/`](~/.codex/archived_sessions)
-- [`sqlite/`](~/.codex/sqlite)
-- [`shell_snapshots/`](~/.codex/shell_snapshots)
-- [`history.jsonl`](~/.codex/history.jsonl)
-- [`tmp/`](~/.codex/tmp)
-
 ## Current Operating Model 🧠
 
 ### Command execution
 
 - Commands are job-based.
 - Long-running work should be awaited via the job workflow, not rerun.
+- `launch-job` script is symlinked as `zsh` somewhere.
+- `/bin/zsh` is symlinked as `hsz` somewhere and `chsh .../hsz`
+- Codex launches, detects `hsz` is the login shell, reacts by fetching `launch-job` as `zsh` from modified PATH.
+- All commands now produce a stable job_id that the agents must await using the MCP tool.
 
 ### Noisy commands
 
 - Use `command-parser` when coverage exists.
 - Treat raw noisy output as a last resort.
+- Positive and Negative rulesets prevent command parser from being used for trivial commands like `ls`, while preventing noisy commands from being ran directly.
+- Rules have justifications pointing to this tool.
 
 ### Robdex
 
@@ -140,18 +137,6 @@ These are generated/runtime-owned, not hand-maintained source:
 
 Changes here can affect active agents, approvals, orchestration, or bridge behavior immediately.
 
-## Validation Guide ✅
-
-Use the real surface you changed.
-
-Examples:
-
-- shell scripts: `bash -n ...`
-- Rust services: `cargo check` or targeted tests
-- Python services: `python3 -m py_compile ...`
-- bridge/service changes: hit the live HTTP/websocket surface after restart
-- workflow wrappers: run the actual wrapper, not just unit tests
-
 ## Short version ✨
 
-`~/.codex` is the live home directory for Codex, Robdex, local skills, bridge state, MCP servers, and service infrastructure. Treat it like a small local platform, not a passive config folder.
+`~/.codex` is the live home directory for Codex, Robdex, local skills, bridge state, MCP servers, and service infrastructure. Treat it like a small local platform, not a passive config folder. This is an operating system for agentic work.
