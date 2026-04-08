@@ -116,3 +116,4 @@ session_index.jsonl
 *.log
 robdex-thread-project-locks.json
 state_5.sqlite*
+memories/
