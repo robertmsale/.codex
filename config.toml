@@ -14,9 +14,7 @@ background_terminal_max_timeout = 9223372036854775807
 project_root_markers = [".git", ".codex"]
 
 web_search = "live"
-notify = ["python3", "/Users/robertsale/.codex/notify.py"]
 personality = "pragmatic"
-#zsh_path = "/usr/local/bin/launch-job"
 
 ###############################################################################
 #                                                                             #
@@ -79,19 +77,13 @@ base_url = "http://localhost:1234/v1"
 wire_api = "responses"
 
 [profiles.psql]
-model = "gpt-5.1-codex-mini"
+model = "gpt-5.4-mini"
 model_reasoning_effort = "medium"
 developer_instructions = "You are the database query agent. The user set the DATABASE_URL environment variable and you will be tasked with executing SELECT queries using `psql`. When the user asks to 'copy data', this means piping to `| pbcopy` so it is in the user's clipboard."
 
 [profiles.command-parser-spark]
 model = "gpt-5.3-codex-spark"
 model_reasoning_effort = "low"
-model_instructions_file = "/Users/robertsale/.codex/roles/command-parser.md"
-
-[profiles.command-parser-local]
-model_provider = "lmstudio-local"
-# model = "zai-org/glm-4.7-flash"
-model = "openai/gpt-oss-20b"
 model_instructions_file = "/Users/robertsale/.codex/roles/command-parser.md"
 
 [profiles.command-parser]
@@ -161,18 +153,6 @@ args = ["--project", "/Users/robertsale/.codex/mcp/command-execution", "run", "c
 startup_timeout_sec = 20.0
 tool_timeout_sec = 9223372036854776000.0
 
-[mcp_servers.XcodeBuildMCP]
-command = "xcodebuildmcp"
-args = ["mcp"]
-enabled = false
-startup_timeout_sec = 20.0
-tool_timeout_sec = 9223372036854776000.0
-
-[mcp_servers.xcode]
-command = "xcrun"
-args = ["mcpbridge"]
-enabled = false
-
 ###############################################################################
 #                                                                             #
 #        @@@@@@@   @@@@@@  @@@@@@@  @@@@@@@   @@@@@@   @@@@@@@  @@@@@@@@      #
@@ -209,17 +189,3 @@ enabled = false
 [projects]
 "/Users/robertsale/Code/ezra/ezra" = { trust_level = "trusted" }
 "/Users/robertsale/Code/ezra/ezra/.worktrees" = { trust_level = "trusted" }
-"/Users/robertsale/Code/robdex" = { trust_level = "trusted" }
-"/Users/robertsale/Code/robdex/.worktrees" = { trust_level = "trusted" }
-
-[projects."/Users/robertsale/Code/flutter-driver-cli"]
-trust_level = "trusted"
-
-[projects."/Users/robertsale/Code/parallels-sync"]
-trust_level = "trusted"
-
-[projects."/Users/robertsale/Code/flutter"]
-trust_level = "trusted"
-
-[projects."/Users/robertsale"]
-trust_level = "trusted"
