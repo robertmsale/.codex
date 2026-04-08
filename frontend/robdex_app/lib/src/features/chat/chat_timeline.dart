@@ -1,0 +1,592 @@
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:highlight/highlight.dart' as hl;
+
+import '../../core/models/workbench_models.dart';
+import '../composer/composer_panel.dart';
+
+class ChatTimeline extends StatefulWidget {
+  const ChatTimeline({
+    super.key,
+    required this.threadId,
+    required this.entries,
+    required this.title,
+    required this.contextWindowRemainingPercent,
+    required this.onSend,
+    required this.onInterrupt,
+    required this.composerEnabled,
+    required this.isRunning,
+    this.showComposer = true,
+    this.headerControls,
+    this.overlay,
+    this.leading,
+  });
+
+  final String? threadId;
+  final List<ChatEntry> entries;
+  final String title;
+  final int? contextWindowRemainingPercent;
+  final ValueChanged<String> onSend;
+  final VoidCallback onInterrupt;
+  final bool composerEnabled;
+  final bool isRunning;
+  final bool showComposer;
+  final Widget? headerControls;
+  final Widget? overlay;
+  final Widget? leading;
+
+  @override
+  State<ChatTimeline> createState() => _ChatTimelineState();
+}
+
+class _ChatTimelineState extends State<ChatTimeline> {
+  late final ScrollController _scrollController;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            if (widget.leading != null) ...[
+              widget.leading!,
+              const SizedBox(width: 8),
+            ],
+            Expanded(
+              child: Text(
+                widget.title,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            Text(
+              widget.contextWindowRemainingPercent == null
+                  ? '--% Remaining'
+                  : '${widget.contextWindowRemainingPercent!}% Remaining',
+              style: theme.textTheme.labelSmall,
+            ),
+          ],
+        ),
+        if (widget.headerControls != null) ...[
+          const SizedBox(height: 6),
+          widget.headerControls!,
+        ],
+        const SizedBox(height: 8),
+        Expanded(
+          child: Stack(
+            children: [
+              SelectionArea(
+                child: ListView.separated(
+                  key: PageStorageKey<String>('chat-list-${widget.threadId ?? "none"}'),
+                  controller: _scrollController,
+                  itemCount: widget.entries.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 6),
+                  itemBuilder: (context, index) {
+                    return _ChatBubble(entry: widget.entries[index]);
+                  },
+                ),
+              ),
+              if (widget.overlay != null)
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: widget.overlay!,
+                ),
+            ],
+          ),
+        ),
+        if (widget.showComposer) ...[
+          const SizedBox(height: 8),
+          ComposerPanel(
+            enabled: widget.composerEnabled,
+            isRunning: widget.isRunning,
+            onSend: widget.onSend,
+            onInterrupt: widget.onInterrupt,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _ChatBubble extends StatelessWidget {
+  const _ChatBubble({required this.entry});
+
+  final ChatEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isConversation = !entry.isTool &&
+        (entry.author == 'User' || entry.author == 'Assistant' || entry.author == 'Operator');
+
+    if (!isConversation) {
+      return _InlineEventRow(entry: entry);
+    }
+
+    final isUser = entry.author == 'User' || entry.author == 'Operator';
+    final isPending = entry.deliveryState == 'pending';
+    final bubbleColor = isUser
+        ? theme.colorScheme.primary.withValues(alpha: isPending ? 0.1 : 0.18)
+        : theme.colorScheme.surface.withValues(alpha: 0.9);
+
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 680),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: bubbleColor,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isUser
+                  ? theme.colorScheme.primary.withValues(alpha: isPending ? 0.28 : 0.45)
+                  : theme.colorScheme.outline,
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Wrap(
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 6,
+                        runSpacing: 2,
+                        children: [
+                          Text(
+                            entry.displayLabel,
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: isPending
+                                  ? theme.colorScheme.onSurface.withValues(alpha: 0.68)
+                                  : null,
+                            ),
+                          ),
+                          Text(entry.timestampLabel, style: theme.textTheme.labelSmall),
+                          if (isPending)
+                            Text(
+                              'Sending...',
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: theme.colorScheme.secondary,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          if (entry.isStreaming)
+                            const SizedBox(
+                              width: 8,
+                              height: 8,
+                              child: CircularProgressIndicator(strokeWidth: 1.5),
+                            ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => _copyBubbleText(context, entry.body),
+                      icon: const Icon(Icons.content_copy_rounded, size: 14),
+                      tooltip: 'Copy',
+                      splashRadius: 14,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints.tightFor(width: 22, height: 22),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                SelectionArea(
+                  child: MarkdownBody(
+                    data: entry.body,
+                    selectable: false,
+                    styleSheet: _conversationMarkdownStyle(theme, isPending),
+                    syntaxHighlighter: _ChatCodeSyntaxHighlighter(theme),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+void _copyBubbleText(BuildContext context, String text) {
+  Clipboard.setData(ClipboardData(text: text));
+  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Text('Copied'),
+      duration: Duration(milliseconds: 900),
+    ),
+  );
+}
+
+MarkdownStyleSheet _conversationMarkdownStyle(ThemeData theme, bool isPending) {
+  final baseBody = theme.textTheme.bodySmall?.copyWith(
+    height: 1.35,
+    color: isPending
+        ? theme.colorScheme.onSurface.withValues(alpha: 0.8)
+        : null,
+  );
+
+  return MarkdownStyleSheet.fromTheme(theme).copyWith(
+    p: baseBody,
+    code: (theme.textTheme.bodySmall ?? const TextStyle()).copyWith(
+      fontFamily: 'monospace',
+      fontSize: (theme.textTheme.bodySmall?.fontSize ?? 12) * 0.94,
+      height: 1.35,
+      color: theme.colorScheme.onSurface,
+      backgroundColor: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.9),
+    ),
+    codeblockPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+    codeblockDecoration: BoxDecoration(
+      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(
+        color: theme.colorScheme.outline.withValues(alpha: 0.5),
+      ),
+    ),
+    blockquote: theme.textTheme.bodySmall?.copyWith(
+      height: 1.35,
+      color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
+    ),
+    listBullet: theme.textTheme.bodySmall?.copyWith(
+      height: 1.35,
+    ),
+  );
+}
+
+class _ChatCodeSyntaxHighlighter extends SyntaxHighlighter {
+  _ChatCodeSyntaxHighlighter(this.theme);
+
+  final ThemeData theme;
+
+  @override
+  TextSpan format(String source) {
+    final baseStyle = (theme.textTheme.bodySmall ?? const TextStyle()).copyWith(
+      fontFamily: 'monospace',
+      fontSize: (theme.textTheme.bodySmall?.fontSize ?? 12) * 0.94,
+      height: 1.45,
+      color: theme.colorScheme.onSurface,
+    );
+
+    try {
+      final result = hl.highlight.parse(source, autoDetection: true);
+      final nodes = result.nodes;
+      if (nodes == null || nodes.isEmpty) {
+        return TextSpan(text: source, style: baseStyle);
+      }
+      return TextSpan(
+        style: baseStyle,
+        children: _highlightNodesToSpans(nodes, baseStyle, theme),
+      );
+    } catch (_) {
+      return TextSpan(text: source, style: baseStyle);
+    }
+  }
+}
+
+List<InlineSpan> _highlightNodesToSpans(
+  List<hl.Node> nodes,
+  TextStyle baseStyle,
+  ThemeData theme,
+) {
+  return nodes.map((node) => _highlightNodeToSpan(node, baseStyle, theme)).toList();
+}
+
+InlineSpan _highlightNodeToSpan(
+  hl.Node node,
+  TextStyle baseStyle,
+  ThemeData theme,
+) {
+  final style = baseStyle.merge(_highlightStyleForClass(node.className, theme));
+  if (node.children != null && node.children!.isNotEmpty) {
+    return TextSpan(
+      style: style,
+      children: _highlightNodesToSpans(node.children!, style, theme),
+    );
+  }
+  return TextSpan(
+    text: node.value ?? '',
+    style: style,
+  );
+}
+
+TextStyle? _highlightStyleForClass(String? className, ThemeData theme) {
+  if (className == null || className.isEmpty) {
+    return null;
+  }
+
+  final keywordColor = Colors.pink.shade300;
+  final stringColor = Colors.green.shade300;
+  final numberColor = Colors.orange.shade300;
+  final commentColor = theme.colorScheme.onSurface.withValues(alpha: 0.58);
+  final typeColor = Colors.cyan.shade300;
+  final functionColor = Colors.blue.shade300;
+  final literalColor = Colors.purple.shade200;
+  final metaColor = Colors.amber.shade300;
+
+  if (className.contains('comment')) {
+    return TextStyle(color: commentColor, fontStyle: FontStyle.italic);
+  }
+  if (className.contains('string') || className.contains('regexp')) {
+    return TextStyle(color: stringColor);
+  }
+  if (className.contains('number')) {
+    return TextStyle(color: numberColor);
+  }
+  if (className.contains('keyword') ||
+      className.contains('selector-tag') ||
+      className.contains('built_in')) {
+    return TextStyle(color: keywordColor, fontWeight: FontWeight.w600);
+  }
+  if (className.contains('literal') || className.contains('symbol')) {
+    return TextStyle(color: literalColor);
+  }
+  if (className.contains('type') ||
+      className.contains('class') ||
+      className.contains('section')) {
+    return TextStyle(color: typeColor);
+  }
+  if (className.contains('title') || className.contains('function')) {
+    return TextStyle(color: functionColor);
+  }
+  if (className.contains('meta') || className.contains('doctag')) {
+    return TextStyle(color: metaColor);
+  }
+  if (className.contains('attr') || className.contains('attribute')) {
+    return TextStyle(color: Colors.tealAccent.shade200);
+  }
+  if (className.contains('subst') || className.contains('params')) {
+    return TextStyle(color: theme.colorScheme.onSurface.withValues(alpha: 0.9));
+  }
+
+  return null;
+}
+
+class _InlineEventRow extends StatefulWidget {
+  const _InlineEventRow({required this.entry});
+
+  final ChatEntry entry;
+
+  @override
+  State<_InlineEventRow> createState() => _InlineEventRowState();
+}
+
+class _InlineEventRowState extends State<_InlineEventRow> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final entry = widget.entry;
+    final detailRows = <Widget>[
+      if (_shouldShowSummary(entry))
+        _DetailLine(
+          label: 'Summary',
+          value: entry.body,
+          expanded: _expanded,
+        ),
+      if (_hasValue(entry.command))
+        _DetailLine(
+          label: entry.kind == 'mcpToolCall' ? 'Input' : entry.kind == 'fileChange' ? 'Files' : 'Command',
+          value: entry.command!,
+          expanded: _expanded,
+        ),
+      if (_hasValue(entry.output))
+        _DetailLine(
+          label: entry.kind == 'fileChange' ? 'Diff' : 'Output',
+          value: entry.output!,
+          expanded: _expanded,
+        ),
+    ];
+    final canExpand = detailRows.isNotEmpty &&
+        (detailRows.length > 1 ||
+            _needsExpansion(entry.body) ||
+            _needsExpansion(entry.command) ||
+            _needsExpansion(entry.output));
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border(
+          left: BorderSide(
+            color: _eventAccentColor(theme, entry),
+            width: 2,
+          ),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 2, 0, 2),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(
+                  entry.displayLabel,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                if (_hasValue(entry.subtitle)) ...[
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      entry.subtitle!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: _eventAccentColor(theme, entry),
+                      ),
+                    ),
+                  ),
+                ] else
+                  const Spacer(),
+                const SizedBox(width: 6),
+                Text(entry.timestampLabel, style: theme.textTheme.labelSmall),
+                if (entry.isStreaming && entry.displayLabel != 'Diff') ...[
+                  const SizedBox(width: 6),
+                  const SizedBox(
+                    width: 8,
+                    height: 8,
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  ),
+                ],
+                if (canExpand) ...[
+                  const SizedBox(width: 4),
+                  TextButton(
+                    onPressed: () => setState(() => _expanded = !_expanded),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 0),
+                      minimumSize: const Size(0, 20),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    child: Text(_expanded ? 'Less' : 'More'),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 3),
+            ...detailRows,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailLine extends StatelessWidget {
+  const _DetailLine({
+    required this.label,
+    required this.value,
+    required this.expanded,
+  });
+
+  final String label;
+  final String value;
+  final bool expanded;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final text = expanded ? value : _compactPreview(value);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Text.rich(
+        TextSpan(
+          style: theme.textTheme.bodySmall?.copyWith(
+            fontFamily: 'monospace',
+            height: 1.3,
+            color: theme.colorScheme.onSurface,
+          ),
+          children: [
+            TextSpan(
+              text: '$label ',
+              style: theme.textTheme.labelSmall?.copyWith(
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.w700,
+                color: _eventAccentColor(theme, null),
+              ),
+            ),
+            TextSpan(text: text),
+          ],
+        ),
+        textScaler: MediaQuery.textScalerOf(context),
+      ),
+    );
+  }
+}
+
+bool _hasValue(String? value) => value != null && value.trim().isNotEmpty;
+
+Color _eventAccentColor(ThemeData theme, ChatEntry? entry) {
+  if (entry?.displayLabel == 'Diff') {
+    return theme.colorScheme.outline;
+  }
+  final status = entry?.status?.toLowerCase();
+  if (status == null || status.isEmpty) {
+    return theme.colorScheme.secondary;
+  }
+  if (status.contains('fail') || status.contains('error') || status.contains('reject')) {
+    return theme.colorScheme.error;
+  }
+  if (status.contains('progress') || status.contains('pending') || status.contains('running')) {
+    return Colors.amber.shade700;
+  }
+  if (status.contains('complete') || status.contains('success') || status.contains('approved')) {
+    return Colors.green.shade700;
+  }
+  return theme.colorScheme.secondary;
+}
+
+bool _needsExpansion(String? value) {
+  if (!_hasValue(value)) {
+    return false;
+  }
+  final trimmed = value!.trim();
+  return trimmed.contains('\n') || trimmed.length > 160;
+}
+
+bool _shouldShowSummary(ChatEntry entry) {
+  final body = entry.body.trim();
+  if (body.isEmpty) {
+    return false;
+  }
+  if (entry.kind == 'commandExecution' && entry.command?.trim() == body) {
+    return false;
+  }
+  return true;
+}
+
+String _compactPreview(String value) {
+  final normalized = value
+      .trim()
+      .replaceAll('\r\n', '\n')
+      .replaceAll('\n', '  ');
+  if (normalized.length <= 160) {
+    return normalized;
+  }
+  return '${normalized.substring(0, 157)}...';
+}

@@ -1,0 +1,355 @@
+class WorkspaceSelection {
+  const WorkspaceSelection({
+    required this.projectId,
+    required this.projectRootPath,
+    required this.projectOrchestratorThreadId,
+    required this.projectOrchestratorName,
+    required this.threadId,
+    required this.threadRole,
+    required this.projectName,
+    required this.threadName,
+    required this.connectionLabel,
+    this.sandboxMode,
+    this.networkAccess,
+    this.approvalPolicy,
+    this.model,
+    this.reasoningEffort,
+    this.isRunning = false,
+  });
+
+  final String? projectId;
+  final String? projectRootPath;
+  final String? projectOrchestratorThreadId;
+  final String? projectOrchestratorName;
+  final String? threadId;
+  final String? threadRole;
+  final String projectName;
+  final String threadName;
+  final String connectionLabel;
+  final String? sandboxMode;
+  final bool? networkAccess;
+  final String? approvalPolicy;
+  final String? model;
+  final String? reasoningEffort;
+  final bool isRunning;
+
+  factory WorkspaceSelection.fromJson(Map<String, dynamic> json) {
+    return WorkspaceSelection(
+      projectId: json['projectId'] as String?,
+      projectRootPath: json['projectRootPath'] as String?,
+      projectOrchestratorThreadId: json['projectOrchestratorThreadId'] as String?,
+      projectOrchestratorName: json['projectOrchestratorName'] as String?,
+      threadId: json['threadId'] as String?,
+      threadRole: json['threadRole'] as String?,
+      projectName: (json['projectName'] as String?) ?? 'No Project',
+      threadName: (json['threadName'] as String?) ?? 'No Thread Selected',
+      connectionLabel: (json['connectionLabel'] as String?) ?? 'Bridge Unknown',
+      sandboxMode: json['sandboxMode'] as String?,
+      networkAccess: json['networkAccess'] as bool?,
+      approvalPolicy: json['approvalPolicy'] as String?,
+      model: json['model'] as String?,
+      reasoningEffort: json['reasoningEffort'] as String?,
+      isRunning: json['isRunning'] as bool? ?? false,
+    );
+  }
+}
+
+class ThreadGroupItem {
+  const ThreadGroupItem({
+    required this.id,
+    required this.title,
+    required this.threadIds,
+    required this.isCollapsed,
+  });
+
+  final String id;
+  final String title;
+  final List<String> threadIds;
+  final bool isCollapsed;
+
+  factory ThreadGroupItem.fromJson(Map<String, dynamic> json) {
+    return ThreadGroupItem(
+      id: json['id'] as String? ?? '',
+      title: json['title'] as String? ?? 'Group',
+      threadIds: (json['threadIds'] as List<dynamic>? ?? const [])
+          .whereType<String>()
+          .toList(growable: false),
+      isCollapsed: json['isCollapsed'] as bool? ?? false,
+    );
+  }
+}
+
+class WorkerMetadata {
+  const WorkerMetadata({
+    required this.threadId,
+    this.issueNumber,
+    this.pullRequestNumber,
+    this.blockedReason,
+    this.unblockWhen,
+  });
+
+  final String threadId;
+  final int? issueNumber;
+  final int? pullRequestNumber;
+  final String? blockedReason;
+  final String? unblockWhen;
+
+  factory WorkerMetadata.fromJson(Map<String, dynamic> json) {
+    return WorkerMetadata(
+      threadId: json['threadId'] as String? ?? '',
+      issueNumber: json['issueNumber'] as int?,
+      pullRequestNumber: json['pullRequestNumber'] as int?,
+      blockedReason: json['blockedReason'] as String?,
+      unblockWhen: json['unblockWhen'] as String?,
+    );
+  }
+}
+
+class ProjectItem {
+  const ProjectItem({
+    required this.id,
+    required this.name,
+    required this.rootPath,
+    required this.defaultCwd,
+    required this.autoRouteReplies,
+    required this.routeApprovalRequests,
+    required this.preferredModelProvider,
+    required this.orchestratorDefaultModel,
+    required this.orchestratorDefaultReasoningEffort,
+    required this.workerDefaultModel,
+    required this.workerDefaultReasoningEffort,
+    required this.qaDefaultModel,
+    required this.qaDefaultReasoningEffort,
+    required this.isSelected,
+  });
+
+  final String id;
+  final String name;
+  final String rootPath;
+  final String defaultCwd;
+  final bool autoRouteReplies;
+  final bool routeApprovalRequests;
+  final String? preferredModelProvider;
+  final String? orchestratorDefaultModel;
+  final String? orchestratorDefaultReasoningEffort;
+  final String? workerDefaultModel;
+  final String? workerDefaultReasoningEffort;
+  final String? qaDefaultModel;
+  final String? qaDefaultReasoningEffort;
+  final bool isSelected;
+
+  factory ProjectItem.fromJson(Map<String, dynamic> json) {
+    return ProjectItem(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      rootPath: json['rootPath'] as String? ?? '',
+      defaultCwd: json['defaultCwd'] as String? ?? '',
+      autoRouteReplies: json['autoRouteReplies'] as bool? ?? false,
+      routeApprovalRequests: json['routeApprovalRequests'] as bool? ?? false,
+      preferredModelProvider: json['preferredModelProvider'] as String?,
+      orchestratorDefaultModel: json['orchestratorDefaultModel'] as String?,
+      orchestratorDefaultReasoningEffort:
+          json['orchestratorDefaultReasoningEffort'] as String?,
+      workerDefaultModel: json['workerDefaultModel'] as String?,
+      workerDefaultReasoningEffort: json['workerDefaultReasoningEffort'] as String?,
+      qaDefaultModel: json['qaDefaultModel'] as String?,
+      qaDefaultReasoningEffort: json['qaDefaultReasoningEffort'] as String?,
+      isSelected: json['isSelected'] as bool? ?? false,
+    );
+  }
+}
+
+class ThreadItem {
+  const ThreadItem({
+    required this.id,
+    required this.title,
+    required this.role,
+    required this.projectName,
+    required this.preview,
+    required this.isRunning,
+    required this.unreadCount,
+  });
+
+  final String id;
+  final String title;
+  final String role;
+  final String projectName;
+  final String preview;
+  final bool isRunning;
+  final int unreadCount;
+
+  factory ThreadItem.fromJson(Map<String, dynamic> json) {
+    return ThreadItem(
+      id: json['id'] as String? ?? '',
+      title: json['title'] as String? ?? '',
+      role: json['role'] as String? ?? 'worker',
+      projectName: json['projectName'] as String? ?? '',
+      preview: json['preview'] as String? ?? '',
+      isRunning: json['isRunning'] as bool? ?? false,
+      unreadCount: json['unreadCount'] as int? ?? 0,
+    );
+  }
+}
+
+class ModelItem {
+  const ModelItem({
+    required this.id,
+    required this.name,
+    required this.hidden,
+  });
+
+  final String id;
+  final String? name;
+  final bool hidden;
+
+  factory ModelItem.fromJson(Map<String, dynamic> json) {
+    return ModelItem(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String?,
+      hidden: json['hidden'] as bool? ?? false,
+    );
+  }
+}
+
+class ChatEntry {
+  const ChatEntry({
+    required this.id,
+    required this.author,
+    required this.displayLabel,
+    required this.timestampLabel,
+    required this.body,
+    this.subtitle,
+    this.kind,
+    this.status,
+    this.command,
+    this.output,
+    this.deliveryState,
+    this.isStreaming = false,
+    this.isTool = false,
+  });
+
+  final String id;
+  final String author;
+  final String displayLabel;
+  final String timestampLabel;
+  final String body;
+  final String? subtitle;
+  final String? kind;
+  final String? status;
+  final String? command;
+  final String? output;
+  final String? deliveryState;
+  final bool isStreaming;
+  final bool isTool;
+
+  factory ChatEntry.fromJson(Map<String, dynamic> json) {
+    return ChatEntry(
+      id: json['id'] as String? ?? '',
+      author: json['author'] as String? ?? 'Unknown',
+      displayLabel: json['displayLabel'] as String? ?? json['author'] as String? ?? 'Unknown',
+      timestampLabel: json['timestampLabel'] as String? ?? 'now',
+      body: json['body'] as String? ?? '',
+      subtitle: json['subtitle'] as String?,
+      kind: json['kind'] as String?,
+      status: json['status'] as String?,
+      command: json['command'] as String?,
+      output: json['output'] as String?,
+      deliveryState: json['deliveryState'] as String?,
+      isStreaming: json['isStreaming'] as bool? ?? false,
+      isTool: json['isTool'] as bool? ?? false,
+    );
+  }
+}
+
+class WorkspaceFile {
+  const WorkspaceFile({
+    required this.path,
+    required this.kind,
+    required this.status,
+  });
+
+  final String path;
+  final String kind;
+  final String status;
+
+  factory WorkspaceFile.fromJson(Map<String, dynamic> json) {
+    return WorkspaceFile(
+      path: json['path'] as String? ?? '',
+      kind: json['kind'] as String? ?? '',
+      status: json['status'] as String? ?? '',
+    );
+  }
+}
+
+class InspectorFact {
+  const InspectorFact({
+    required this.label,
+    required this.value,
+  });
+
+  final String label;
+  final String value;
+
+  factory InspectorFact.fromJson(Map<String, dynamic> json) {
+    return InspectorFact(
+      label: json['label'] as String? ?? '',
+      value: json['value'] as String? ?? '',
+    );
+  }
+}
+
+class PendingApprovalItem {
+  const PendingApprovalItem({
+    required this.id,
+    required this.threadId,
+    required this.kind,
+    required this.title,
+    required this.detail,
+    this.command,
+    this.commandCwd,
+    this.filePaths = const <String>[],
+  });
+
+  final String id;
+  final String threadId;
+  final String kind;
+  final String title;
+  final String? detail;
+  final String? command;
+  final String? commandCwd;
+  final List<String> filePaths;
+
+  factory PendingApprovalItem.fromJson(Map<String, dynamic> json) {
+    final filePaths = (json['filePaths'] as List<dynamic>? ?? const [])
+        .whereType<String>()
+        .toList(growable: false);
+    return PendingApprovalItem(
+      id: json['id'] as String? ?? '',
+      threadId: json['threadId'] as String? ?? '',
+      kind: json['kind'] as String? ?? 'approval',
+      title: json['title'] as String? ?? 'Approval Request',
+      detail: json['detail'] as String?,
+      command: json['command'] as String?,
+      commandCwd: json['commandCwd'] as String?,
+      filePaths: filePaths,
+    );
+  }
+}
+
+class WorkbenchData {
+  const WorkbenchData({
+    required this.selection,
+    required this.threads,
+    required this.threadGroups,
+    required this.chatEntries,
+    required this.workspaceFiles,
+    required this.inspectorFacts,
+  });
+
+  final WorkspaceSelection selection;
+  final List<ThreadItem> threads;
+  final List<ThreadGroupItem> threadGroups;
+  final List<ChatEntry> chatEntries;
+  final List<WorkspaceFile> workspaceFiles;
+  final List<InspectorFact> inspectorFacts;
+}

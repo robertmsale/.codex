@@ -1,0 +1,9 @@
+message BridgeCommand {
+  string kind;
+  string data_json;
+}
+
+message BridgeEvent {
+  string kind;
+  string data_json;
+}

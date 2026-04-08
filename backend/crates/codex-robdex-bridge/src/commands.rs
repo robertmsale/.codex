@@ -360,6 +360,38 @@ pub async fn execute_bridge_command(
             persist_state(runtime, &state).await?;
             Ok(success(json!({"type":"empty"})))
         }
+        "projectCreate" => {
+            let mut state = parse_state(&runtime.state_document_value().await);
+            create_project(&mut state, &payload)?;
+            persist_state(runtime, &state).await?;
+            Ok(success(json!({"type":"empty"})))
+        }
+        "projectUpdate" => {
+            let mut state = parse_state(&runtime.state_document_value().await);
+            update_project(&mut state, &payload)?;
+            persist_state(runtime, &state).await?;
+            Ok(success(json!({"type":"empty"})))
+        }
+        "projectSelect" => {
+            let mut state = parse_state(&runtime.state_document_value().await);
+            select_project(&mut state, payload.get("projectId").and_then(Value::as_str))?;
+            persist_state(runtime, &state).await?;
+            Ok(success(json!({"type":"empty"})))
+        }
+        "projectDelete" => {
+            let mut state = parse_state(&runtime.state_document_value().await);
+            delete_project(&mut state, payload.get("projectId").and_then(Value::as_str))?;
+            persist_state(runtime, &state).await?;
+            Ok(success(json!({"type":"empty"})))
+        }
+        "threadCreate" => {
+            let payload = create_thread(runtime, &payload).await?;
+            Ok(success(json!({"type":"threadCreate","payload": payload})))
+        }
+        "threadMessageCreate" => {
+            let payload = create_thread_message(runtime, &payload).await?;
+            Ok(success(json!({"type":"threadMessageCreate","payload": payload})))
+        }
         "setOrchestratorThread" => {
             let mut state = parse_state(&runtime.state_document_value().await);
             set_orchestrator_thread(
@@ -485,6 +517,12 @@ pub async fn execute_bridge_command(
                 .values_mut()
                 .find_map(|project| project.agents.get_mut(&thread_id))
             {
+                if payload.get("role").is_some() {
+                    agent.role = payload
+                        .get("role")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                }
                 if payload.get("approvalPolicy").is_some() {
                     agent.approval_policy = payload
                         .get("approvalPolicy")
@@ -499,6 +537,18 @@ pub async fn execute_bridge_command(
                 }
                 if payload.get("networkAccess").is_some() {
                     agent.network_access = payload.get("networkAccess").and_then(Value::as_bool);
+                }
+                if payload.get("modelID").is_some() {
+                    agent.model = payload
+                        .get("modelID")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                }
+                if payload.get("reasoningEffort").is_some() {
+                    agent.reasoning_effort = payload
+                        .get("reasoningEffort")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
                 }
                 state.updated_at = Some(unix_now());
                 persist_state(runtime, &state).await?;
@@ -964,6 +1014,193 @@ fn save_project_catalog(state: &mut PersistedState, catalog: &Value) -> Result<(
     state.selected_project_id = catalog.get("selectedProjectID").and_then(Value::as_str).map(str::to_string);
     state.updated_at = Some(unix_now());
     Ok(())
+}
+
+fn create_project(state: &mut PersistedState, payload: &Value) -> Result<()> {
+    let root_path = required_string(payload, "rootPath")?;
+    let default_cwd = payload
+        .get("defaultCWD")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(root_path.as_str())
+        .to_string();
+    let normalized_name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| basename(&root_path));
+
+    let key = normalize_path(root_path.clone());
+    if key.is_empty() {
+        bail!("project rootPath is required");
+    }
+    if state
+        .projects
+        .values()
+        .any(|project| project.project_root.as_deref() == Some(root_path.as_str()))
+    {
+        bail!("project already exists");
+    }
+
+    state.projects.insert(
+        key,
+        PersistedProjectState {
+            id: Some(uuid()),
+            name: Some(normalized_name),
+            project_root: Some(root_path),
+            cwd: Some(default_cwd),
+            auto_route_replies: Some(payload.get("autoRouteReplies").and_then(Value::as_bool).unwrap_or(false)),
+            route_approval_requests: Some(payload.get("routeApprovalRequests").and_then(Value::as_bool).unwrap_or(false)),
+            preferred_model_provider: payload
+                .get("preferredModelProvider")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            configs: json!({}),
+            agents: BTreeMap::new(),
+            orchestrator_thread_id: None,
+            thread_groups: Vec::new(),
+            archived: Some(false),
+            detached: Some(false),
+            updated_at: Some(unix_now()),
+            created_at: Some(unix_now()),
+            extras: BTreeMap::new(),
+        },
+    );
+    state.selected_project_id = state
+        .projects
+        .values()
+        .find(|project| project.project_root.as_deref() == payload.get("rootPath").and_then(Value::as_str))
+        .and_then(|project| project.id.clone());
+    state.updated_at = Some(unix_now());
+    Ok(())
+}
+
+fn select_project(state: &mut PersistedState, project_id: Option<&str>) -> Result<()> {
+    match project_id {
+        Some(project_id) if !project_id.trim().is_empty() => {
+            if state
+                .projects
+                .values()
+                .any(|project| project.id.as_deref() == Some(project_id))
+            {
+                state.selected_project_id = Some(project_id.to_string());
+                state.updated_at = Some(unix_now());
+                Ok(())
+            } else {
+                bail!("project not found");
+            }
+        }
+        _ => {
+            state.selected_project_id = None;
+            state.updated_at = Some(unix_now());
+            Ok(())
+        }
+    }
+}
+
+fn update_project(state: &mut PersistedState, payload: &Value) -> Result<()> {
+    let project_id = required_string(payload, "projectId")?;
+    let project = state
+        .projects
+        .values_mut()
+        .find(|project| project.id.as_deref() == Some(project_id.as_str()))
+        .ok_or_else(|| anyhow::anyhow!("project not found"))?;
+
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("project name is required"))?;
+    let default_cwd = payload
+        .get("defaultCWD")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("defaultCWD is required"))?;
+
+    project.name = Some(name.to_string());
+    project.cwd = Some(default_cwd.to_string());
+    if payload.get("autoRouteReplies").is_some() {
+        project.auto_route_replies = Some(
+            payload
+                .get("autoRouteReplies")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        );
+    }
+    if payload.get("routeApprovalRequests").is_some() {
+        project.route_approval_requests = Some(
+            payload
+                .get("routeApprovalRequests")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        );
+    }
+    if payload.get("preferredModelProvider").is_some() {
+        project.preferred_model_provider = payload
+            .get("preferredModelProvider")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+    }
+    if let Some(role_defaults) = payload
+        .get("roleModelReasoningDefaults")
+        .cloned()
+        .filter(|value| value.is_object())
+    {
+        let mut configs = project.configs.as_object().cloned().unwrap_or_default();
+        configs.insert("roleModelReasoningDefaults".to_string(), role_defaults);
+        project.configs = Value::Object(configs);
+    }
+    project.updated_at = Some(unix_now());
+    state.updated_at = Some(unix_now());
+    Ok(())
+}
+
+fn delete_project(state: &mut PersistedState, project_id: Option<&str>) -> Result<()> {
+    let project_id = project_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("projectId is required"))?;
+    let key = state
+        .projects
+        .iter()
+        .find(|(_, project)| project.id.as_deref() == Some(project_id))
+        .map(|(key, _)| key.clone())
+        .ok_or_else(|| anyhow::anyhow!("project not found"))?;
+    state.projects.remove(&key);
+    if state.selected_project_id.as_deref() == Some(project_id) {
+        state.selected_project_id = state.projects.values().find_map(|project| project.id.clone());
+    }
+    state.updated_at = Some(unix_now());
+    Ok(())
+}
+
+fn selected_or_requested_project<'a>(
+    state: &'a PersistedState,
+    project_id: Option<&str>,
+) -> Result<(&'a String, &'a PersistedProjectState)> {
+    if let Some(project_id) = project_id.map(str::trim).filter(|value| !value.is_empty()) {
+        return state
+            .projects
+            .iter()
+            .find(|(_, project)| project.id.as_deref() == Some(project_id))
+            .ok_or_else(|| anyhow::anyhow!("project not found"));
+    }
+    let selected_project_id = state
+        .selected_project_id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("no selected project"))?;
+    state
+        .projects
+        .iter()
+        .find(|(_, project)| project.id.as_deref() == Some(selected_project_id))
+        .ok_or_else(|| anyhow::anyhow!("selected project not found"))
 }
 
 fn set_orchestrator_thread(state: &mut PersistedState, thread_id: Option<&str>, project_path: Option<&str>) {
@@ -1507,19 +1744,27 @@ async fn send_thread_input(
             }),
         )
         .await;
-        if steer_result.is_ok() {
-            return Ok(json!({
-                "id": active_turn_id,
-                "items": [],
-                "status": "inProgress",
-                "error": null,
-            }));
+        if let Ok(result) = steer_result {
+            if steer_result_acknowledged(&result, &active_turn_id) {
+                return Ok(json!({
+                    "id": active_turn_id,
+                    "items": [],
+                    "status": "inProgress",
+                    "error": null,
+                }));
+            }
         }
     }
 
     let cwd = tracked_cwd_for_thread(state, thread_id);
     let approval_policy = tracked_approval_policy_for_thread(state, thread_id);
     let sandbox_policy = tracked_sandbox_policy_for_thread(state, thread_id);
+    let effective_model = model
+        .map(str::to_string)
+        .or_else(|| tracked_model_for_thread(state, thread_id));
+    let effective_effort = effort
+        .map(str::to_string)
+        .or_else(|| tracked_reasoning_effort_for_thread(state, thread_id));
     let response = app_server_request_json(
         runtime,
         "turn/start",
@@ -1529,12 +1774,46 @@ async fn send_thread_input(
             "cwd": cwd,
             "approvalPolicy": approval_policy,
             "sandboxPolicy": sandbox_policy,
-            "model": model,
-            "effort": effort,
+            "model": effective_model,
+            "effort": effective_effort,
         }),
     )
     .await?;
     Ok(response.get("turn").cloned().unwrap_or(response))
+}
+
+fn steer_result_acknowledged(result: &Value, active_turn_id: &str) -> bool {
+    if result.is_null() {
+        return false;
+    }
+    if result
+        .get("turnId")
+        .and_then(Value::as_str)
+        .map(|value| value == active_turn_id)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if result
+        .get("id")
+        .and_then(Value::as_str)
+        .map(|value| value == active_turn_id)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if result
+        .get("status")
+        .and_then(Value::as_str)
+        .map(|value| matches!(value, "inProgress" | "in_progress"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    result
+        .get("accepted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn tracked_cwd_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
@@ -1562,6 +1841,24 @@ fn tracked_approval_policy_for_thread(state: &PersistedState, thread_id: &str) -
                         .and_then(Value::as_str)
                         .map(str::to_string)
                 });
+        }
+    }
+    None
+}
+
+fn tracked_model_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
+    for project in state.projects.values() {
+        if let Some(agent) = project.agents.get(thread_id) {
+            return agent.model.clone();
+        }
+    }
+    None
+}
+
+fn tracked_reasoning_effort_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
+    for project in state.projects.values() {
+        if let Some(agent) = project.agents.get(thread_id) {
+            return agent.reasoning_effort.clone();
         }
     }
     None
@@ -1733,6 +2030,62 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
     .ok_or_else(|| anyhow::anyhow!("spawned thread was not registered"))?;
     agent.parent_agent_id = payload.get("parentAgentId").and_then(Value::as_str).map(str::to_string);
     Ok(agent)
+}
+
+async fn create_thread(runtime: &BridgeRuntime, payload: &Value) -> Result<Value> {
+    let state = parse_state(&runtime.state_document_value().await);
+    let (_, project) = selected_or_requested_project(&state, payload.get("projectId").and_then(Value::as_str))?;
+    let project_path = project
+        .project_root
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("project root missing"))?;
+    let cwd = project
+        .cwd
+        .clone()
+        .unwrap_or_else(|| project_path.clone());
+    let role = payload
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("worker");
+    let spawn_payload = json!({
+        "displayName": payload.get("title").and_then(Value::as_str),
+        "initialPrompt": payload.get("initialPrompt").and_then(Value::as_str),
+        "cwd": cwd,
+        "projectPath": project_path,
+        "role": role,
+        "approvalPolicy": payload.get("approvalPolicy").cloned().unwrap_or(Value::Null),
+        "sandboxMode": payload.get("sandboxMode").cloned().unwrap_or(Value::Null),
+        "networkAccess": payload.get("networkAccess").cloned().unwrap_or(Value::Null),
+        "modelID": payload.get("modelID").cloned().unwrap_or(Value::Null),
+        "reasoningEffort": payload.get("reasoningEffort").cloned().unwrap_or(Value::Null),
+    });
+    let agent = spawn_agent(runtime, &spawn_payload).await?;
+    Ok(json!({
+        "threadId": agent.id,
+        "displayName": agent.display_name,
+        "role": agent.role,
+        "projectPath": agent.project_path,
+        "cwd": agent.cwd,
+    }))
+}
+
+async fn create_thread_message(runtime: &BridgeRuntime, payload: &Value) -> Result<Value> {
+    let state = parse_state(&runtime.state_document_value().await);
+    let thread_id = required_string(payload, "threadId")?;
+    let text = required_string(payload, "text")?;
+    let result = send_thread_input(
+        runtime,
+        &state,
+        &thread_id,
+        &text,
+        payload.get("modelID").and_then(Value::as_str),
+        payload.get("reasoningEffort").and_then(Value::as_str),
+    )
+    .await?;
+    Ok(json!({
+        "threadId": thread_id,
+        "turn": result,
+    }))
 }
 
 async fn wait_for_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeAgentSummary> {
@@ -2412,17 +2765,28 @@ pub async fn orchestrator_spawn_agent(
     sender_thread_id: &str,
     name: &str,
     prompt: &str,
-    cwd: Option<&str>,
+    _cwd: Option<&str>,
     role: Option<&str>,
     issue_number: Option<u64>,
 ) -> Result<Value> {
-    let sender = orchestrator_whoami(runtime, sender_thread_id).await?;
+    let state = parse_state(&runtime.state_document_value().await);
+    let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
+    let records = all_agent_records(&state, &running);
+    let sender = records
+        .iter()
+        .find(|record| record.thread_id == sender_thread_id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Thread `{sender_thread_id}` is not tracked by the bridge."))?;
+    if !sender.is_orchestrator {
+        bail!("Only orchestrator threads can spawn agents.");
+    }
+    let sender_context = sender_thread_context(&state, sender_thread_id)
+        .ok_or_else(|| anyhow::anyhow!("Thread `{sender_thread_id}` has no persisted project context."))?;
     let payload = json!({
         "displayName": name,
         "initialPrompt": prompt,
-        "cwd": cwd
-            .or_else(|| sender.get("cwd").and_then(Value::as_str)),
-        "projectPath": sender.get("projectPath").and_then(Value::as_str),
+        "cwd": sender_context.project_cwd,
+        "projectPath": sender_context.project_path,
         "role": role.unwrap_or("worker"),
         "parentAgentId": sender_thread_id,
     });

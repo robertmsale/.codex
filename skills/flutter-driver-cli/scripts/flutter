@@ -2,10 +2,27 @@
 set -euo pipefail
 
 BASE_URL="${FLUTTER_HTTP_SERVER_BASE_URL:-http://127.0.0.1:8769}"
+REAL_FLUTTER_BIN="${REAL_FLUTTER_BIN:-/Users/robertsale/Code/flutter/bin/flutter}"
+BROKER_ROOTS=(
+  "/Users/robertsale/Code/ezra/ezra"
+  "/Users/robertsale/Code/ezra/qa"
+)
 
 if [[ $# -eq 0 ]]; then
   echo "Usage: flutter <args...>" >&2
   exit 64
+fi
+
+should_use_broker=false
+for root in "${BROKER_ROOTS[@]}"; do
+  if [[ "$PWD" == "$root" || "$PWD" == "$root"/* ]]; then
+    should_use_broker=true
+    break
+  fi
+done
+
+if [[ "$should_use_broker" != true ]]; then
+  exec "$REAL_FLUTTER_BIN" "$@"
 fi
 
 BODY="$(

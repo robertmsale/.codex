@@ -3,12 +3,13 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     extract::{
+        Path,
         Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,7 @@ use tracing::error;
 
 use crate::{
     commands::{
-        execute_bridge_command, make_app_state_snapshot, make_event_replay_response, orchestrator_agents, orchestrator_approval_decision,
+        CommandOutcome, execute_bridge_command, make_app_state_snapshot, make_event_replay_response, orchestrator_agents, orchestrator_approval_decision,
         orchestrator_archive_agent, orchestrator_lookup, orchestrator_pending_approvals, orchestrator_rename_agent,
         orchestrator_send_message, orchestrator_spawn_agent, orchestrator_thread_group_archive,
         orchestrator_thread_group_create, orchestrator_thread_group_delete, orchestrator_thread_group_move_thread,
@@ -26,7 +27,7 @@ use crate::{
         orchestrator_update_worker_metadata, orchestrator_whoami,
     },
     models::{
-        BridgeEvent, PROTOCOL_VERSION, SequencedEvent, SERVER_NAME, SERVER_VERSION, ThreadMessagesResponse,
+        BridgeEvent, MAX_TRANSPORT_MESSAGES_PER_THREAD, PROTOCOL_VERSION, SequencedEvent, SERVER_NAME, SERVER_VERSION, ThreadMessagesResponse,
     },
     runtime::BridgeRuntime,
 };
@@ -36,7 +37,22 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/health", get(healthz))
         .route("/healthz", get(healthz))
         .route("/info", get(info))
+        .route("/models", get(models))
+        .route("/state/app", get(app_state))
         .route("/state/snapshot", get(snapshot))
+        .route("/workbench/bootstrap", get(workbench_bootstrap))
+        .route("/state/project-catalog", post(save_project_catalog_http))
+        .route("/projects", post(project_create_http))
+        .route("/projects/select", post(project_select_http))
+        .route("/projects/{project_id}", post(project_update_http).delete(project_delete_http))
+        .route("/projects/{project_id}/orchestrator", post(project_orchestrator_http))
+        .route("/threads", post(thread_create_http))
+        .route("/threads/{thread_id}", delete(thread_archive_http))
+        .route("/threads/{thread_id}/name", post(thread_name_set_http))
+        .route("/threads/{thread_id}/metadata", post(thread_metadata_update_http))
+        .route("/threads/{thread_id}/running-state", post(thread_running_state_http))
+        .route("/threads/{thread_id}/interrupt", post(thread_interrupt_http))
+        .route("/threads/{thread_id}/messages", post(thread_message_create_http))
         .route("/threads/messages", get(thread_messages))
         .route("/events/replay", get(replay_events))
         .route("/orchestrator/whoami", get(orchestrator_whoami_route))
@@ -57,6 +73,7 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/orchestrator/worker-metadata", post(orchestrator_worker_metadata_route))
         .route("/orchestrator/approval-decision", post(orchestrator_approval_decision_route))
         .route("/ws", get(ws_upgrade))
+        .route("/workbench/ws", get(workbench_ws_upgrade))
         .with_state(runtime)
 }
 
@@ -83,16 +100,269 @@ async fn snapshot(State(runtime): State<Arc<BridgeRuntime>>) -> impl IntoRespons
     }
 }
 
+async fn app_state(State(runtime): State<Arc<BridgeRuntime>>) -> impl IntoResponse {
+    (StatusCode::OK, Json(runtime.state_document_value().await)).into_response()
+}
+
+async fn models(State(runtime): State<Arc<BridgeRuntime>>) -> impl IntoResponse {
+    match execute_bridge_command(&runtime, "modelList", json!({})).await {
+        Ok(outcome) => (
+            StatusCode::OK,
+            Json(outcome.payload.get("payload").cloned().unwrap_or(Value::Array(vec![]))),
+        )
+            .into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn workbench_bootstrap(State(runtime): State<Arc<BridgeRuntime>>) -> impl IntoResponse {
+    (StatusCode::OK, Json(runtime.workbench_snapshot_value().await)).into_response()
+}
+
+async fn save_project_catalog_http(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(catalog): Json<Value>,
+) -> impl IntoResponse {
+    match execute_bridge_command(
+        &runtime,
+        "saveProjectCatalog",
+        json!({
+            "projectCatalog": catalog,
+        }),
+    )
+    .await
+    {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn project_create_http(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    match execute_bridge_command(&runtime, "projectCreate", payload).await {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn project_select_http(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    match execute_bridge_command(&runtime, "projectSelect", payload).await {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn project_update_http(
+    Path(project_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    let body = match payload {
+        Value::Object(mut object) => {
+            object.insert("projectId".to_string(), Value::String(project_id));
+            Value::Object(object)
+        }
+        _ => json!({ "projectId": project_id }),
+    };
+    match execute_bridge_command(&runtime, "projectUpdate", body).await {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn project_delete_http(
+    Path(project_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+) -> impl IntoResponse {
+    match execute_bridge_command(
+        &runtime,
+        "projectDelete",
+        json!({ "projectId": project_id }),
+    )
+    .await
+    {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn project_orchestrator_http(
+    Path(_project_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    match execute_bridge_command(
+        &runtime,
+        "setOrchestratorThread",
+        json!({
+            "threadId": payload.get("threadId").cloned().unwrap_or(Value::Null),
+            "projectPath": payload.get("projectPath").cloned().unwrap_or(Value::Null),
+        }),
+    )
+    .await
+    {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn thread_create_http(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    match execute_bridge_command(&runtime, "threadCreate", payload).await {
+        Ok(outcome) => (StatusCode::OK, Json(outcome.payload["payload"].clone())).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn thread_message_create_http(
+    Path(thread_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    let body = match payload {
+        Value::Object(mut object) => {
+            object.insert("threadId".to_string(), Value::String(thread_id));
+            Value::Object(object)
+        }
+        _ => json!({ "threadId": thread_id }),
+    };
+    match execute_bridge_command(&runtime, "threadMessageCreate", body).await {
+        Ok(outcome) => (StatusCode::OK, Json(outcome.payload["payload"].clone())).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn thread_archive_http(
+    Path(thread_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+) -> impl IntoResponse {
+    match execute_bridge_command(&runtime, "threadArchive", json!({ "threadId": thread_id })).await {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn thread_name_set_http(
+    Path(thread_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    match execute_bridge_command(
+        &runtime,
+        "threadNameSet",
+        json!({
+            "threadId": thread_id,
+            "name": payload.get("name").cloned().unwrap_or(Value::Null),
+        }),
+    )
+    .await
+    {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn thread_metadata_update_http(
+    Path(thread_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    match execute_bridge_command(
+        &runtime,
+        "threadMetadataUpdate",
+        json!({
+        "threadId": thread_id,
+        "role": payload.get("role").cloned().unwrap_or(Value::Null),
+        "approvalPolicy": payload.get("approvalPolicy").cloned().unwrap_or(Value::Null),
+        "sandboxMode": payload.get("sandboxMode").cloned().unwrap_or(Value::Null),
+            "networkAccess": payload.get("networkAccess").cloned().unwrap_or(Value::Null),
+            "modelID": payload.get("modelID").cloned().unwrap_or(Value::Null),
+            "reasoningEffort": payload.get("reasoningEffort").cloned().unwrap_or(Value::Null),
+        }),
+    )
+    .await
+    {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn thread_running_state_http(
+    Path(thread_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    match execute_bridge_command(
+        &runtime,
+        "threadRunningStateSet",
+        json!({
+            "threadId": thread_id,
+            "running": payload.get("running").cloned().unwrap_or(Value::Bool(false)),
+        }),
+    )
+    .await
+    {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn thread_interrupt_http(
+    Path(thread_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+) -> impl IntoResponse {
+    match execute_bridge_command(
+        &runtime,
+        "turnInterrupt",
+        json!({
+            "threadId": thread_id,
+        }),
+    )
+    .await
+    {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ThreadMessagesQuery {
-    thread_id: String,
+    #[serde(rename = "threadId")]
+    thread_id_camel: Option<String>,
+    thread_id: Option<String>,
+    limit: Option<String>,
 }
 
 async fn thread_messages(
     State(runtime): State<Arc<BridgeRuntime>>,
     Query(query): Query<ThreadMessagesQuery>,
 ) -> impl IntoResponse {
-    match runtime.thread_messages(&query.thread_id).await {
+    let thread_id = query
+        .thread_id_camel
+        .as_deref()
+        .or(query.thread_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(thread_id) = thread_id else {
+        return (StatusCode::BAD_REQUEST, "threadId is required").into_response();
+    };
+
+    let limit = match query.limit.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        Some(raw) => match raw.parse::<usize>() {
+            Ok(value) => Some(value),
+            Err(_) => return (StatusCode::BAD_REQUEST, "limit must be an integer").into_response(),
+        },
+        None => None,
+    };
+
+    match runtime.thread_messages(thread_id, limit).await {
         Ok(Some(messages)) => (StatusCode::OK, Json(messages)).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "thread not found").into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
@@ -498,6 +768,13 @@ async fn ws_upgrade(
     ws.on_upgrade(move |socket| handle_socket(socket, runtime))
 }
 
+async fn workbench_ws_upgrade(
+    ws: WebSocketUpgrade,
+    State(runtime): State<Arc<BridgeRuntime>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_workbench_socket(socket, runtime))
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BridgeCapabilities {
@@ -549,6 +826,33 @@ struct OutboundSequencedEvent {
 enum OutboundEnvelope {
     HelloAck(HelloAck),
     Event(OutboundSequencedEvent),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "name", rename_all = "camelCase")]
+enum WorkbenchOutboundEvent {
+    #[serde(rename = "appStateSnapshot")]
+    AppStateSnapshot { data: Value },
+    #[serde(rename = "connectionStatus")]
+    ConnectionStatus { message: String },
+    #[serde(rename = "threadMessagesChanged")]
+    ThreadMessagesChanged { data: ThreadMessagesResponse },
+    #[serde(rename = "commandResult")]
+    CommandResult { data: CommandResultPayload },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkbenchOutboundSequencedEvent {
+    sequence: Option<u64>,
+    event: WorkbenchOutboundEvent,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", content = "payload", rename_all = "camelCase")]
+enum WorkbenchOutboundEnvelope {
+    HelloAck(HelloAck),
+    Event(WorkbenchOutboundSequencedEvent),
 }
 
 #[derive(Debug, Deserialize)]
@@ -635,9 +939,82 @@ async fn handle_socket(socket: WebSocket, runtime: Arc<BridgeRuntime>) {
                 if should_send_event(&event, selected_thread_id.as_deref()) {
                     let envelope = match outbound_envelope_from_event(&runtime, event).await {
                         Ok(envelope) => envelope,
-                        Err(_) => break,
+                        Err(_) => {
+                            error!("dropping outbound bridge event after serialization/build failure");
+                            continue;
+                        }
                     };
                     if send_envelope(&mut sender, envelope).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn handle_workbench_socket(socket: WebSocket, runtime: Arc<BridgeRuntime>) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut event_rx = runtime.subscribe_events();
+    let mut selected_thread_id: Option<String> = None;
+
+    if send_workbench_envelope(
+        &mut sender,
+        WorkbenchOutboundEnvelope::HelloAck(make_hello_ack(&runtime).await),
+    )
+    .await
+    .is_err()
+    {
+        error!("workbench ws helloAck send failed");
+        return;
+    }
+
+    if send_workbench_envelope(
+        &mut sender,
+        WorkbenchOutboundEnvelope::Event(WorkbenchOutboundSequencedEvent {
+            sequence: None,
+            event: WorkbenchOutboundEvent::AppStateSnapshot {
+                data: runtime.workbench_snapshot_value().await,
+            },
+        }),
+    )
+    .await
+    .is_err()
+    {
+        error!("workbench ws initial appStateSnapshot send failed");
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            incoming = receiver.next() => {
+                let Some(Ok(message)) = incoming else {
+                    break;
+                };
+                match handle_workbench_incoming_message(message, &runtime, &mut sender, &mut selected_thread_id).await {
+                    Ok(should_continue) => {
+                        if !should_continue {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            outgoing = event_rx.recv() => {
+                let event = match outgoing {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                if should_send_event(&event, selected_thread_id.as_deref()) {
+                    let envelope = match workbench_outbound_envelope_from_event(&runtime, event).await {
+                        Ok(envelope) => envelope,
+                        Err(_) => {
+                            error!("dropping outbound workbench event after serialization/build failure");
+                            continue;
+                        }
+                    };
+                    if send_workbench_envelope(&mut sender, envelope).await.is_err() {
                         break;
                     }
                 }
@@ -694,7 +1071,10 @@ async fn handle_command(
         *selected_thread_id = thread_id.clone();
 
         if let Some(thread_id) = thread_id {
-            if let Ok(Some(messages)) = runtime.thread_messages(&thread_id).await {
+            if let Ok(Some(messages)) = runtime
+                .thread_messages(&thread_id, Some(MAX_TRANSPORT_MESSAGES_PER_THREAD))
+                .await
+            {
                 send_envelope(
                     sender,
                     OutboundEnvelope::Event(OutboundSequencedEvent {
@@ -707,9 +1087,13 @@ async fn handle_command(
             }
         }
     }
-    let outcome = execute_bridge_command(runtime, &command.command.name, command.command.payload.clone())
-        .await
-        .map_err(|_| ())?;
+    let outcome = match execute_bridge_command(runtime, &command.command.name, command.command.payload.clone()).await {
+        Ok(outcome) => outcome,
+        Err(error) => CommandOutcome {
+            payload: json!({"type":"empty"}),
+            error_message: Some(error.to_string()),
+        },
+    };
 
     send_envelope(
         sender,
@@ -728,11 +1112,104 @@ async fn handle_command(
     .map_err(|_| ())
 }
 
+async fn handle_workbench_incoming_message(
+    message: Message,
+    runtime: &Arc<BridgeRuntime>,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    selected_thread_id: &mut Option<String>,
+) -> Result<bool, ()> {
+    match message {
+        Message::Text(text) => {
+            let envelope = serde_json::from_str::<InboundEnvelope>(&text).map_err(|_| ())?;
+            match envelope {
+                InboundEnvelope::Hello(_) => {
+                    send_workbench_envelope(
+                        sender,
+                        WorkbenchOutboundEnvelope::HelloAck(make_hello_ack(runtime).await),
+                    )
+                    .await
+                    .map_err(|_| ())?;
+                }
+                InboundEnvelope::Command(command) => {
+                    handle_workbench_command(command, runtime, sender, selected_thread_id).await?;
+                }
+            }
+            Ok(true)
+        }
+        Message::Close(_) => Ok(false),
+        Message::Ping(payload) => {
+            sender.send(Message::Pong(payload)).await.map_err(|_| ())?;
+            Ok(true)
+        }
+        Message::Pong(_) | Message::Binary(_) => Ok(true),
+    }
+}
+
+async fn handle_workbench_command(
+    command: InboundCommand,
+    runtime: &Arc<BridgeRuntime>,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    selected_thread_id: &mut Option<String>,
+) -> Result<(), ()> {
+    if command.command.name == "threadSelectionSet" {
+        let thread_id = command
+            .command
+            .payload
+            .get("threadId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        *selected_thread_id = thread_id.clone();
+
+        if let Some(thread_id) = thread_id {
+            if let Ok(Some(messages)) = runtime
+                .thread_messages(&thread_id, Some(MAX_TRANSPORT_MESSAGES_PER_THREAD))
+                .await
+            {
+                send_workbench_envelope(
+                    sender,
+                    WorkbenchOutboundEnvelope::Event(WorkbenchOutboundSequencedEvent {
+                        sequence: None,
+                        event: WorkbenchOutboundEvent::ThreadMessagesChanged { data: messages },
+                    }),
+                )
+                .await
+                .map_err(|_| ())?;
+            }
+        }
+    }
+
+    let outcome = match execute_bridge_command(runtime, &command.command.name, command.command.payload.clone()).await {
+        Ok(outcome) => outcome,
+        Err(error) => CommandOutcome {
+            payload: json!({"type":"empty"}),
+            error_message: Some(error.to_string()),
+        },
+    };
+
+    send_workbench_envelope(
+        sender,
+        WorkbenchOutboundEnvelope::Event(WorkbenchOutboundSequencedEvent {
+            sequence: None,
+            event: WorkbenchOutboundEvent::CommandResult {
+                data: CommandResultPayload {
+                    id: command.id,
+                    payload: outcome.payload,
+                    error_message: outcome.error_message,
+                },
+            },
+        }),
+    )
+    .await
+    .map_err(|_| ())
+}
+
 fn should_send_event(event: &SequencedEvent, selected_thread_id: Option<&str>) -> bool {
     match &event.event {
         BridgeEvent::ThreadMessagesChanged { payload } => match selected_thread_id {
             Some(selected) => selected.trim() == payload.thread_id,
-            None => true,
+            None => false,
         },
         _ => true,
     }
@@ -757,6 +1234,25 @@ async fn outbound_envelope_from_event(
     }))
 }
 
+async fn workbench_outbound_envelope_from_event(
+    runtime: &Arc<BridgeRuntime>,
+    event: SequencedEvent,
+) -> Result<WorkbenchOutboundEnvelope, ()> {
+    let outbound = match event.event {
+        BridgeEvent::ConnectionStatus { message } => WorkbenchOutboundEvent::ConnectionStatus { message },
+        BridgeEvent::AppStateSnapshot { .. } => WorkbenchOutboundEvent::AppStateSnapshot {
+            data: runtime.workbench_snapshot_value().await,
+        },
+        BridgeEvent::ThreadMessagesChanged { payload } => {
+            WorkbenchOutboundEvent::ThreadMessagesChanged { data: payload }
+        }
+    };
+    Ok(WorkbenchOutboundEnvelope::Event(WorkbenchOutboundSequencedEvent {
+        sequence: Some(event.sequence),
+        event: outbound,
+    }))
+}
+
 async fn make_hello_ack(runtime: &Arc<BridgeRuntime>) -> HelloAck {
     let info = runtime.info().await;
     HelloAck {
@@ -775,6 +1271,14 @@ async fn make_hello_ack(runtime: &Arc<BridgeRuntime>) -> HelloAck {
 async fn send_envelope(
     sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     envelope: OutboundEnvelope,
+) -> Result<(), ()> {
+    let payload = serde_json::to_string(&envelope).map_err(|_| ())?;
+    sender.send(Message::Text(payload.into())).await.map_err(|_| ())
+}
+
+async fn send_workbench_envelope(
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    envelope: WorkbenchOutboundEnvelope,
 ) -> Result<(), ()> {
     let payload = serde_json::to_string(&envelope).map_err(|_| ())?;
     sender.send(Message::Text(payload.into())).await.map_err(|_| ())

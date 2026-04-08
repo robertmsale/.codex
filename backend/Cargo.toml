@@ -10,6 +10,9 @@ members = [
   "crates/codex-flutter-drive-http",
   "crates/codex-flutter-http",
   "crates/codex-supervisor",
+  "crates/robdex-protocol",
+  "crates/robdex-client-core",
+  "crates/robdex-rinf-bridge",
 ]
 exclude = ["vendor/codex"]
 resolver = "2"
@@ -36,3 +39,4 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 tempfile = "3"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
+url = "2"

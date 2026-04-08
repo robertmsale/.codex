@@ -150,7 +150,30 @@ impl BridgeRuntime {
         })
     }
 
-    pub async fn thread_messages(&self, thread_id: &str) -> Result<Option<ThreadMessagesResponse>> {
+    pub async fn workbench_snapshot_value(&self) -> Value {
+        let state = self.state_document.read().await.clone();
+        let connection_status = self.connection_status.read().await.clone();
+        let latest_sequence = self.event_log.read().await.latest_sequence;
+        let thread_cache = self.thread_cache.read().await.clone();
+        let running_thread_ids = thread_cache.running_thread_ids.clone();
+        let pending_approvals = self.pending_approvals().await;
+        json!({
+            "state": state,
+            "threadCache": {
+                "runningThreadIDs": running_thread_ids,
+                "contextWindowStatusByThreadID": thread_cache.context_window_status_by_thread_id,
+            },
+            "pendingApprovals": pending_approvals,
+            "connectionStatus": connection_status,
+            "latestSequence": latest_sequence,
+        })
+    }
+
+    pub async fn thread_messages(
+        &self,
+        thread_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Option<ThreadMessagesResponse>> {
         let snapshot = self.thread_cache.read().await.clone();
         let messages = snapshot
             .message_cache_by_thread_id
@@ -160,7 +183,10 @@ impl BridgeRuntime {
         if messages.is_empty() {
             return Ok(None);
         }
-        let messages = transport_messages(&messages, MAX_TRANSPORT_MESSAGES_PER_THREAD);
+        let messages = match limit {
+            Some(limit) => transport_messages(&messages, limit),
+            None => messages,
+        };
         Ok(Some(ThreadMessagesResponse {
             thread_id: thread_id.to_string(),
             version: snapshot.updated_at.unwrap_or(0),
@@ -305,11 +331,6 @@ impl BridgeRuntime {
             self.persist_thread_cache_now(&[]).await?;
             let state = self.state_document.read().await.clone();
             self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
-            let thread_cache = self.thread_cache.read().await;
-            self.push_event(BridgeEvent::ThreadMessagesChanged {
-                payload: thread_messages_changed_payload(&thread_cache, thread_id),
-            })
-            .await;
         }
         Ok(())
     }
@@ -384,20 +405,23 @@ impl BridgeRuntime {
                     }
                     _ => None,
                 };
-                let mut thread_cache = self.thread_cache.write().await;
                 self.capture_item_file_changes(&notification).await;
-                let result = self
-                    .running_state
-                    .write()
-                    .await
-                    .apply_notification(&notification, &mut thread_cache);
+                let result = {
+                    let mut thread_cache = self.thread_cache.write().await;
+                    self.running_state
+                        .write()
+                        .await
+                        .apply_notification(&notification, &mut thread_cache)
+                };
                 self.handle_request_resolved_notification(&notification).await;
                 if result.thread_cache_changed {
-                    thread_cache.updated_at = Some(unix_now());
+                    {
+                        let mut thread_cache = self.thread_cache.write().await;
+                        thread_cache.updated_at = Some(unix_now());
+                    }
                     let changed_thread_ids = result.changed_thread_ids.clone();
                     let should_debounce_flush =
                         is_streaming_notification(&notification) && !result.running_state_changed;
-                    drop(thread_cache);
                     if should_debounce_flush {
                         self.mark_thread_cache_dirty(&changed_thread_ids).await;
                         self.schedule_thread_cache_flush().await;

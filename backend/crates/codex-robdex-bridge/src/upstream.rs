@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use codex_app_server_adapter::app_server_protocol::{
     AgentMessageDeltaNotification, CommandExecutionOutputDeltaNotification, CommandExecutionStatus,
-    ContextCompactedNotification, FileChangeOutputDeltaNotification, ItemCompletedNotification,
+    ContextCompactedNotification, FileChangeOutputDeltaNotification, FileUpdateChange, ItemCompletedNotification,
     ItemStartedNotification, McpToolCallStatus, ModelReroutedNotification, PatchApplyStatus,
     PlanDeltaNotification, ReasoningSummaryPartAddedNotification, ReasoningSummaryTextDeltaNotification,
     ReasoningTextDeltaNotification, ServerNotification, ServerRequest, TerminalInteractionNotification, Thread,
@@ -916,7 +916,12 @@ fn message_from_item(item: &ThreadItem, thread_id: &str) -> Option<RobdexChatMes
             }),
             None,
         )),
-        ThreadItem::FileChange { id, status, .. } => Some(make_message(
+        ThreadItem::FileChange {
+            id,
+            status,
+            changes,
+            ..
+        } => Some(make_message(
             id.clone(),
             thread_id.to_string(),
             "tool",
@@ -925,8 +930,8 @@ fn message_from_item(item: &ThreadItem, thread_id: &str) -> Option<RobdexChatMes
             Some(RobdexToolMetadata {
                 kind: "fileChange".to_string(),
                 status: Some(patch_apply_status_label(status).to_string()),
-                command: None,
-                output: None,
+                command: summarize_file_change_paths(changes),
+                output: summarize_file_change_diffs(changes),
                 process_id: None,
             }),
             None,
@@ -1016,6 +1021,45 @@ fn sanitize_tool_metadata(tool_metadata: Option<RobdexToolMetadata>) -> Option<R
             .map(|value| truncate_bridge_text(&value, MAX_TOOL_OUTPUT_CHARS)),
         process_id: metadata.process_id,
     })
+}
+
+fn summarize_file_change_paths(changes: &[FileUpdateChange]) -> Option<String> {
+    let mut paths = changes
+        .iter()
+        .map(|change| change.path.trim())
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+    paths.sort_unstable();
+    paths.dedup();
+    if paths.is_empty() {
+        return None;
+    }
+    Some(paths.join("\n"))
+}
+
+fn summarize_file_change_diffs(changes: &[FileUpdateChange]) -> Option<String> {
+    let combined = changes
+        .iter()
+        .filter_map(|change| {
+            let path = change.path.trim();
+            let diff = change.diff.trim();
+            if diff.is_empty() {
+                return None;
+            }
+            Some(if path.is_empty() {
+                diff.to_string()
+            } else {
+                format!("{path}\n{diff}")
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let trimmed = combined.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn command_execution_job_token(command: &str, output: Option<&str>) -> Option<String> {

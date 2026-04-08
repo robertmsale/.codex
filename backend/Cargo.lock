@@ -2649,6 +2649,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "robdex-client-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "reqwest",
+ "robdex-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "url",
+]
+
+[[package]]
+name = "robdex-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "robdex-rinf-bridge"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "robdex-client-core",
+ "robdex-protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

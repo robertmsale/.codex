@@ -1,0 +1,14 @@
+[package]
+name = "robdex-rinf-bridge"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+robdex-client-core = { path = "../robdex-client-core" }
+robdex-protocol = { path = "../robdex-protocol" }
+serde.workspace = true
+serde_json.workspace = true
