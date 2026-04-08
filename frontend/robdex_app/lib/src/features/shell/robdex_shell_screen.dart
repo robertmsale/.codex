@@ -61,71 +61,109 @@ class RobdexShellScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Scaffold(
-      body: ColoredBox(
-        color: theme.colorScheme.surface,
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Color(0xFF071018),
+              Color(0xFF0C1622),
+              Color(0xFF101D2B),
+            ],
+            stops: [0.0, 0.44, 1.0],
+          ),
+        ),
         child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final isCompact = constraints.maxWidth < 860;
-              return Padding(
-                padding: const EdgeInsets.all(8),
-                child: isCompact
-                    ? RepaintBoundary(
-                        child: _CompactShell(
-                            workbench: workbench,
-                            onThreadSelected: onThreadSelected,
-                            onDisconnect: onDisconnect,
-                            onCreateProject: onCreateProject,
-                            onProjectSettings: onProjectSettings,
-                            onCreateThread: onCreateThread,
-                            onSpawnAgent: onSpawnAgent,
-                            onSendMessage: onSendMessage,
-                            onOpenHistory: onOpenHistory,
-                            onInterruptThread: onInterruptThread,
-                            onApprovalDecision: onApprovalDecision,
-                            onSettingsChanged: onSettingsChanged,
-                            onRunningStateChanged: onRunningStateChanged,
-                            onRenameThread: onRenameThread,
-                            onArchiveThread: onArchiveThread,
-                            onSetProjectOrchestrator: onSetProjectOrchestrator,
-                            onCreateThreadGroup: onCreateThreadGroup,
-                            onRenameThreadGroup: onRenameThreadGroup,
-                            onDeleteThreadGroup: onDeleteThreadGroup,
-                            onArchiveThreadGroup: onArchiveThreadGroup,
-                            onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
-                            onUpdateWorkerMetadata: onUpdateWorkerMetadata,
+          child: Stack(
+            children: [
+              const Positioned(
+                top: -120,
+                left: -80,
+                child: _BackdropOrb(
+                  size: 360,
+                  colors: [Color(0x6637C8FF), Color(0x00102535)],
+                ),
+              ),
+              const Positioned(
+                bottom: -160,
+                right: -110,
+                child: _BackdropOrb(
+                  size: 420,
+                  colors: [Color(0x66F3A43B), Color(0x00102535)],
+                ),
+              ),
+              const Positioned(
+                top: 150,
+                right: 240,
+                child: _BackdropOrb(
+                  size: 220,
+                  colors: [Color(0x331FE0A5), Color(0x00102535)],
+                ),
+              ),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final isCompact = constraints.maxWidth < 860;
+                  return Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: isCompact
+                        ? RepaintBoundary(
+                            child: _CompactShell(
+                              workbench: workbench,
+                              onThreadSelected: onThreadSelected,
+                              onDisconnect: onDisconnect,
+                              onCreateProject: onCreateProject,
+                              onProjectSettings: onProjectSettings,
+                              onCreateThread: onCreateThread,
+                              onSpawnAgent: onSpawnAgent,
+                              onSendMessage: onSendMessage,
+                              onOpenHistory: onOpenHistory,
+                              onInterruptThread: onInterruptThread,
+                              onApprovalDecision: onApprovalDecision,
+                              onSettingsChanged: onSettingsChanged,
+                              onRunningStateChanged: onRunningStateChanged,
+                              onRenameThread: onRenameThread,
+                              onArchiveThread: onArchiveThread,
+                              onSetProjectOrchestrator: onSetProjectOrchestrator,
+                              onCreateThreadGroup: onCreateThreadGroup,
+                              onRenameThreadGroup: onRenameThreadGroup,
+                              onDeleteThreadGroup: onDeleteThreadGroup,
+                              onArchiveThreadGroup: onArchiveThreadGroup,
+                              onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
+                              onUpdateWorkerMetadata: onUpdateWorkerMetadata,
+                            ),
+                          )
+                        : RepaintBoundary(
+                            child: _WideShell(
+                              workbench: workbench,
+                              onThreadSelected: onThreadSelected,
+                              onDisconnect: onDisconnect,
+                              onCreateProject: onCreateProject,
+                              onProjectSettings: onProjectSettings,
+                              onCreateThread: onCreateThread,
+                              onSpawnAgent: onSpawnAgent,
+                              onSendMessage: onSendMessage,
+                              onOpenHistory: onOpenHistory,
+                              onInterruptThread: onInterruptThread,
+                              onApprovalDecision: onApprovalDecision,
+                              onSettingsChanged: onSettingsChanged,
+                              onRunningStateChanged: onRunningStateChanged,
+                              onRenameThread: onRenameThread,
+                              onArchiveThread: onArchiveThread,
+                              onSetProjectOrchestrator: onSetProjectOrchestrator,
+                              onCreateThreadGroup: onCreateThreadGroup,
+                              onRenameThreadGroup: onRenameThreadGroup,
+                              onDeleteThreadGroup: onDeleteThreadGroup,
+                              onArchiveThreadGroup: onArchiveThreadGroup,
+                              onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
+                              onUpdateWorkerMetadata: onUpdateWorkerMetadata,
+                            ),
                           ),
-                      )
-                    : RepaintBoundary(
-                        child: _WideShell(
-                            workbench: workbench,
-                            onThreadSelected: onThreadSelected,
-                            onDisconnect: onDisconnect,
-                            onCreateProject: onCreateProject,
-                            onProjectSettings: onProjectSettings,
-                            onCreateThread: onCreateThread,
-                            onSpawnAgent: onSpawnAgent,
-                            onSendMessage: onSendMessage,
-                            onOpenHistory: onOpenHistory,
-                            onInterruptThread: onInterruptThread,
-                            onApprovalDecision: onApprovalDecision,
-                            onSettingsChanged: onSettingsChanged,
-                            onRunningStateChanged: onRunningStateChanged,
-                            onRenameThread: onRenameThread,
-                            onArchiveThread: onArchiveThread,
-                            onSetProjectOrchestrator: onSetProjectOrchestrator,
-                            onCreateThreadGroup: onCreateThreadGroup,
-                            onRenameThreadGroup: onRenameThreadGroup,
-                            onDeleteThreadGroup: onDeleteThreadGroup,
-                            onArchiveThreadGroup: onArchiveThreadGroup,
-                            onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
-                            onUpdateWorkerMetadata: onUpdateWorkerMetadata,
-                          ),
-                      ),
-              );
-            },
+                  );
+                },
+              ),
+            ],
           ),
         ),
       ),
@@ -133,7 +171,7 @@ class RobdexShellScreen extends StatelessWidget {
   }
 }
 
-class _WideShell extends StatelessWidget {
+class _WideShell extends StatefulWidget {
   const _WideShell({
     required this.workbench,
     required this.onThreadSelected,
@@ -184,67 +222,90 @@ class _WideShell extends StatelessWidget {
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
 
   @override
+  State<_WideShell> createState() => _WideShellState();
+}
+
+class _WideShellState extends State<_WideShell> {
+  double _sidebarWidth = 360;
+
+  void _resizeSidebar(double delta) {
+    setState(() {
+      _sidebarWidth = (_sidebarWidth + delta).clamp(280, 520);
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final workbench = widget.workbench;
     return Row(
       children: [
-        SizedBox(
-          width: 340,
-          child: RepaintBoundary(
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          width: _sidebarWidth,
+          child: _PaneSurface(
+            accent: const Color(0xFF53C6FF),
+            child: RepaintBoundary(
               child: ThreadListPanel(
-              selection: workbench.selection,
-              projects: workbench.projects,
-              threads: workbench.threads,
-              pendingApprovals: workbench.pendingApprovals,
-              onDisconnect: onDisconnect,
-              onThreadSelected: onThreadSelected,
-              onCreateProject: onCreateProject,
-              onProjectSettings: onProjectSettings,
-              onCreateThread: onCreateThread,
-              onSpawnAgent: onSpawnAgent,
+                selection: workbench.selection,
+                projects: workbench.projects,
+                threads: workbench.threads,
+                pendingApprovals: workbench.pendingApprovals,
+                onDisconnect: widget.onDisconnect,
+                onThreadSelected: widget.onThreadSelected,
+                onCreateProject: widget.onCreateProject,
+                onProjectSettings: widget.onProjectSettings,
+                onCreateThread: widget.onCreateThread,
+                onSpawnAgent: widget.onSpawnAgent,
+              ),
             ),
           ),
         ),
+        _SidebarResizeHandle(onDrag: _resizeSidebar),
         const SizedBox(width: 10),
         Expanded(
-          child: RepaintBoundary(
-            child: ChatTimeline(
-              threadId: workbench.selection.threadId,
-              entries: workbench.chatEntries,
-              title: workbench.selection.threadName,
-              contextWindowRemainingPercent:
-                  workbench.contextWindowRemainingPercent,
-              onSend: onSendMessage,
-              onInterrupt: onInterruptThread,
-              composerEnabled: workbench.selection.threadId != null,
-              isRunning: workbench.selection.isRunning,
-              headerControls: _DesktopThreadControls(
-                selection: workbench.selection,
-                availableModels: workbench.availableModels,
-                pendingApprovalCount: workbench.pendingApprovals.length,
-                onOpenHistory: onOpenHistory,
-                onSettingsChanged: onSettingsChanged,
-                onRunningStateChanged: onRunningStateChanged,
-                onMore: () => _showInspectorDialog(
-                  context,
-                  workbench: workbench,
-                  onApprovalDecision: onApprovalDecision,
-                  onSettingsChanged: onSettingsChanged,
-                  onRunningStateChanged: onRunningStateChanged,
-                  onRenameThread: onRenameThread,
-                  onArchiveThread: onArchiveThread,
-                  onSetProjectOrchestrator: onSetProjectOrchestrator,
-                  onCreateThreadGroup: onCreateThreadGroup,
-                  onRenameThreadGroup: onRenameThreadGroup,
-                  onDeleteThreadGroup: onDeleteThreadGroup,
-                  onArchiveThreadGroup: onArchiveThreadGroup,
-                  onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
-                  onUpdateWorkerMetadata: onUpdateWorkerMetadata,
+          child: _PaneSurface(
+            accent: const Color(0xFFF3A43B),
+            child: RepaintBoundary(
+              child: ChatTimeline(
+                threadId: workbench.selection.threadId,
+                entries: workbench.chatEntries,
+                title: workbench.selection.threadName,
+                contextWindowRemainingPercent:
+                    workbench.contextWindowRemainingPercent,
+                onSend: widget.onSendMessage,
+                onInterrupt: widget.onInterruptThread,
+                composerEnabled: workbench.selection.threadId != null,
+                isRunning: workbench.selection.isRunning,
+                headerControls: _DesktopThreadControls(
+                  selection: workbench.selection,
+                  availableModels: workbench.availableModels,
+                  pendingApprovalCount: workbench.pendingApprovals.length,
+                  onOpenHistory: widget.onOpenHistory,
+                  onSettingsChanged: widget.onSettingsChanged,
+                  onRunningStateChanged: widget.onRunningStateChanged,
+                  onMore: () => _showInspectorDialog(
+                    context,
+                    workbench: workbench,
+                    onApprovalDecision: widget.onApprovalDecision,
+                    onSettingsChanged: widget.onSettingsChanged,
+                    onRunningStateChanged: widget.onRunningStateChanged,
+                    onRenameThread: widget.onRenameThread,
+                    onArchiveThread: widget.onArchiveThread,
+                    onSetProjectOrchestrator: widget.onSetProjectOrchestrator,
+                    onCreateThreadGroup: widget.onCreateThreadGroup,
+                    onRenameThreadGroup: widget.onRenameThreadGroup,
+                    onDeleteThreadGroup: widget.onDeleteThreadGroup,
+                    onArchiveThreadGroup: widget.onArchiveThreadGroup,
+                    onMoveSelectedThreadToGroup: widget.onMoveSelectedThreadToGroup,
+                    onUpdateWorkerMetadata: widget.onUpdateWorkerMetadata,
+                  ),
                 ),
-              ),
-              overlay: _ApprovalOverlay(
-                selection: workbench.selection,
-                pendingApprovals: workbench.pendingApprovals,
-                onApprovalDecision: onApprovalDecision,
+                overlay: _ApprovalOverlay(
+                  selection: workbench.selection,
+                  pendingApprovals: workbench.pendingApprovals,
+                  onApprovalDecision: widget.onApprovalDecision,
+                ),
               ),
             ),
           ),
@@ -306,6 +367,158 @@ class _CompactShell extends StatefulWidget {
 
   @override
   State<_CompactShell> createState() => _CompactShellState();
+}
+
+class _PaneSurface extends StatelessWidget {
+  const _PaneSurface({
+    required this.child,
+    required this.accent,
+  });
+
+  final Widget child;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(22),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              theme.colorScheme.surface.withValues(alpha: 0.96),
+              theme.colorScheme.surfaceContainer.withValues(alpha: 0.9),
+            ],
+          ),
+          border: Border.all(
+            color: accent.withValues(alpha: 0.2),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.18),
+              blurRadius: 28,
+              offset: const Offset(0, 18),
+            ),
+          ],
+        ),
+        child: Stack(
+          children: [
+            Positioned(
+              top: -70,
+              right: -30,
+              child: IgnorePointer(
+                child: Container(
+                  width: 180,
+                  height: 180,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: RadialGradient(
+                      colors: [
+                        accent.withValues(alpha: 0.2),
+                        accent.withValues(alpha: 0.0),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              left: -60,
+              bottom: -80,
+              child: IgnorePointer(
+                child: Transform.rotate(
+                  angle: -0.3,
+                  child: Container(
+                    width: 180,
+                    height: 180,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(40),
+                      gradient: LinearGradient(
+                        colors: [
+                          const Color(0xFF1A2B3C).withValues(alpha: 0.36),
+                          Colors.transparent,
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: child,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BackdropOrb extends StatelessWidget {
+  const _BackdropOrb({
+    required this.size,
+    required this.colors,
+  });
+
+  final double size;
+  final List<Color> colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: RadialGradient(colors: colors),
+        ),
+      ),
+    );
+  }
+}
+
+class _SidebarResizeHandle extends StatelessWidget {
+  const _SidebarResizeHandle({required this.onDrag});
+
+  final ValueChanged<double> onDrag;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeColumn,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onHorizontalDragUpdate: (details) => onDrag(details.delta.dx),
+        child: SizedBox(
+          width: 10,
+          child: Center(
+            child: Container(
+              width: 4,
+              height: 72,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    theme.colorScheme.secondary.withValues(alpha: 0.15),
+                    theme.colorScheme.primary.withValues(alpha: 0.5),
+                    theme.colorScheme.secondary.withValues(alpha: 0.15),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _CompactShellState extends State<_CompactShell> {
@@ -430,6 +643,35 @@ class _DesktopThreadControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final enabled = selection.threadId != null;
+    String titleCaseWords(String value) => value
+        .split(RegExp(r'[\s_-]+'))
+        .where((part) => part.isNotEmpty)
+        .map((part) => part[0].toUpperCase() + part.substring(1))
+        .join(' ');
+    String inheritedLabel(String value) => '(${titleCaseWords(value)})';
+    String inheritedOrSystem(String? value, {String system = 'System'}) =>
+        inheritedLabel((value?.trim().isNotEmpty ?? false) ? value! : system);
+    String modelLabel(String? modelId) {
+      if (modelId == null || modelId.trim().isEmpty) {
+        return inheritedOrSystem(null);
+      }
+      ModelItem? match;
+      for (final model in availableModels) {
+        if (model.id == modelId) {
+          match = model;
+          break;
+        }
+      }
+      final display = match?.name?.trim().isNotEmpty == true ? match!.name! : modelId;
+      return inheritedLabel(display);
+    }
+    String networkLabel(bool? enabled) => inheritedLabel(
+          switch (enabled) {
+            true => 'Networking Enabled',
+            false => 'Networking Disabled',
+            null => 'System',
+          },
+        );
     ThreadSettingsDraft draft({
       String? role,
       String? approvalPolicy,
@@ -462,7 +704,10 @@ class _DesktopThreadControls extends StatelessWidget {
           value: selection.model ?? '',
           enabled: enabled,
           items: [
-            const DropdownMenuItem(value: '', child: Text('Default')),
+            DropdownMenuItem(
+              value: '',
+              child: Text(modelLabel(selection.effectiveModel)),
+            ),
             ...availableModels
                 .where((model) => !model.hidden || model.id == (selection.model ?? ''))
                 .map(
@@ -479,11 +724,14 @@ class _DesktopThreadControls extends StatelessWidget {
           label: 'Reasoning',
           value: selection.reasoningEffort ?? '',
           enabled: enabled,
-          items: const [
-            DropdownMenuItem(value: '', child: Text('Default')),
-            DropdownMenuItem(value: 'low', child: Text('Low')),
-            DropdownMenuItem(value: 'medium', child: Text('Medium')),
-            DropdownMenuItem(value: 'high', child: Text('High')),
+          items: [
+            DropdownMenuItem(
+              value: '',
+              child: Text(inheritedOrSystem(selection.effectiveReasoningEffort)),
+            ),
+            const DropdownMenuItem(value: 'low', child: Text('Low')),
+            const DropdownMenuItem(value: 'medium', child: Text('Medium')),
+            const DropdownMenuItem(value: 'high', child: Text('High')),
           ],
           onChanged: (value) => onSettingsChanged(draft(reasoningEffort: value)),
         ),
@@ -492,10 +740,13 @@ class _DesktopThreadControls extends StatelessWidget {
           label: 'Sandbox',
           value: selection.sandboxMode ?? '',
           enabled: enabled,
-          items: const [
-            DropdownMenuItem(value: '', child: Text('Default')),
-            DropdownMenuItem(value: 'workspace-write', child: Text('Workspace')),
-            DropdownMenuItem(value: 'danger-full-access', child: Text('Danger')),
+          items: [
+            DropdownMenuItem(
+              value: '',
+              child: Text(inheritedOrSystem(selection.effectiveSandboxMode)),
+            ),
+            const DropdownMenuItem(value: 'workspace-write', child: Text('Workspace')),
+            const DropdownMenuItem(value: 'danger-full-access', child: Text('Danger')),
           ],
           onChanged: (value) => onSettingsChanged(draft(sandboxMode: value)),
         ),
@@ -506,10 +757,13 @@ class _DesktopThreadControls extends StatelessWidget {
               ? 'default'
               : (selection.networkAccess! ? 'enabled' : 'disabled'),
           enabled: enabled,
-          items: const [
-            DropdownMenuItem(value: 'default', child: Text('Default')),
-            DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
-            DropdownMenuItem(value: 'disabled', child: Text('Disabled')),
+          items: [
+            DropdownMenuItem(
+              value: 'default',
+              child: Text(networkLabel(selection.effectiveNetworkAccess)),
+            ),
+            const DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
+            const DropdownMenuItem(value: 'disabled', child: Text('Disabled')),
           ],
           onChanged: (value) => onSettingsChanged(draft(networkAccessMode: value)),
         ),
@@ -517,6 +771,23 @@ class _DesktopThreadControls extends StatelessWidget {
           onPressed: enabled ? () => onRunningStateChanged(!selection.isRunning) : null,
           tooltip: selection.isRunning ? 'Mark idle' : 'Mark running',
           icon: Icon(selection.isRunning ? Icons.pause_circle_outline : Icons.play_arrow),
+        ),
+        _CompactDropdown(
+          width: 144,
+          label: 'Approval',
+          value: selection.approvalPolicy ?? '',
+          enabled: enabled,
+          items: [
+            DropdownMenuItem(
+              value: '',
+              child: Text(inheritedOrSystem(selection.effectiveApprovalPolicy)),
+            ),
+            const DropdownMenuItem(value: 'untrusted', child: Text('untrusted')),
+            const DropdownMenuItem(value: 'on-failure', child: Text('on-failure')),
+            const DropdownMenuItem(value: 'on-request', child: Text('on-request')),
+            const DropdownMenuItem(value: 'never', child: Text('never')),
+          ],
+          onChanged: (value) => onSettingsChanged(draft(approvalPolicy: value)),
         ),
         TextButton(
           onPressed: enabled ? onOpenHistory : null,

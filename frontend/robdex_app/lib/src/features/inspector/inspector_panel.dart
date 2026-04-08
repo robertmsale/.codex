@@ -578,8 +578,40 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final enabled = widget.selection.threadId != null;
+    String titleCaseWords(String value) => value
+        .split(RegExp(r'[\s_-]+'))
+        .where((part) => part.isNotEmpty)
+        .map((part) => part[0].toUpperCase() + part.substring(1))
+        .join(' ');
+    String inheritedLabel(String value) => '(${titleCaseWords(value)})';
+    String inheritedOrSystem(String? value, {String system = 'System'}) =>
+        inheritedLabel((value?.trim().isNotEmpty ?? false) ? value! : system);
+    String modelLabel(String? modelId) {
+      if (modelId == null || modelId.trim().isEmpty) {
+        return inheritedOrSystem(null);
+      }
+      ModelItem? match;
+      for (final model in widget.availableModels) {
+        if (model.id == modelId) {
+          match = model;
+          break;
+        }
+      }
+      final display = match?.name?.trim().isNotEmpty == true ? match!.name! : modelId;
+      return inheritedLabel(display);
+    }
+    String networkLabel(bool? enabled) => inheritedLabel(
+          switch (enabled) {
+            true => 'Networking Enabled',
+            false => 'Networking Disabled',
+            null => 'System',
+          },
+        );
     final modelItems = [
-      const DropdownMenuItem<String>(value: '', child: Text('Default')),
+      DropdownMenuItem<String>(
+        value: '',
+        child: Text(modelLabel(widget.selection.effectiveModel)),
+      ),
       ...widget.availableModels
           .where((model) => !model.hidden || model.id == _modelId)
           .map(
@@ -651,12 +683,15 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                     initialValue: _approvalPolicy,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Approval'),
-                    items: const [
-                      DropdownMenuItem(value: '', child: Text('Default')),
-                      DropdownMenuItem(value: 'untrusted', child: Text('untrusted')),
-                      DropdownMenuItem(value: 'on-failure', child: Text('on-failure')),
-                      DropdownMenuItem(value: 'on-request', child: Text('on-request')),
-                      DropdownMenuItem(value: 'never', child: Text('never')),
+                    items: [
+                      DropdownMenuItem(
+                        value: '',
+                        child: Text(inheritedOrSystem(widget.selection.effectiveApprovalPolicy)),
+                      ),
+                      const DropdownMenuItem(value: 'untrusted', child: Text('untrusted')),
+                      const DropdownMenuItem(value: 'on-failure', child: Text('on-failure')),
+                      const DropdownMenuItem(value: 'on-request', child: Text('on-request')),
+                      const DropdownMenuItem(value: 'never', child: Text('never')),
                     ],
                     onChanged: enabled
                         ? (value) {
@@ -673,10 +708,13 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                     initialValue: _sandboxMode,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Sandbox'),
-                    items: const [
-                      DropdownMenuItem(value: '', child: Text('Default')),
-                      DropdownMenuItem(value: 'workspace-write', child: Text('workspace-write')),
-                      DropdownMenuItem(value: 'danger-full-access', child: Text('danger-full-access')),
+                    items: [
+                      DropdownMenuItem(
+                        value: '',
+                        child: Text(inheritedOrSystem(widget.selection.effectiveSandboxMode)),
+                      ),
+                      const DropdownMenuItem(value: 'workspace-write', child: Text('workspace-write')),
+                      const DropdownMenuItem(value: 'danger-full-access', child: Text('danger-full-access')),
                     ],
                     onChanged: enabled
                         ? (value) {
@@ -693,10 +731,13 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                     initialValue: _networkAccessMode,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Network'),
-                    items: const [
-                      DropdownMenuItem(value: 'default', child: Text('Default')),
-                      DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
-                      DropdownMenuItem(value: 'disabled', child: Text('Disabled')),
+                    items: [
+                      DropdownMenuItem(
+                        value: 'default',
+                        child: Text(networkLabel(widget.selection.effectiveNetworkAccess)),
+                      ),
+                      const DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
+                      const DropdownMenuItem(value: 'disabled', child: Text('Disabled')),
                     ],
                     onChanged: enabled
                         ? (value) {
@@ -729,11 +770,14 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                     initialValue: _reasoningEffort,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Reasoning'),
-                    items: const [
-                      DropdownMenuItem(value: '', child: Text('Default')),
-                      DropdownMenuItem(value: 'low', child: Text('low')),
-                      DropdownMenuItem(value: 'medium', child: Text('medium')),
-                      DropdownMenuItem(value: 'high', child: Text('high')),
+                    items: [
+                      DropdownMenuItem(
+                        value: '',
+                        child: Text(inheritedOrSystem(widget.selection.effectiveReasoningEffort)),
+                      ),
+                      const DropdownMenuItem(value: 'low', child: Text('low')),
+                      const DropdownMenuItem(value: 'medium', child: Text('medium')),
+                      const DropdownMenuItem(value: 'high', child: Text('high')),
                     ],
                     onChanged: enabled
                         ? (value) {

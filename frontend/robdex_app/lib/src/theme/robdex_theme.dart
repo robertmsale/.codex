@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 
 ThemeData buildRobdexTheme() {
-  const shell = Color(0xFF0B1017);
-  const panel = Color(0xFF101821);
-  const accent = Color(0xFFEBA434);
-  const text = Color(0xFFE8EEF5);
-  const stroke = Color(0xFF243445);
+  const shell = Color(0xFF09111A);
+  const panel = Color(0xFF0E1824);
+  const panelRaised = Color(0xFF142233);
+  const accent = Color(0xFFF3A43B);
+  const accentCool = Color(0xFF53C6FF);
+  const text = Color(0xFFF2F5F9);
+  const muted = Color(0xFF9BAABD);
+  const stroke = Color(0xFF233447);
 
   final base = ThemeData.dark(useMaterial3: true);
 
@@ -13,8 +16,10 @@ ThemeData buildRobdexTheme() {
     scaffoldBackgroundColor: shell,
     colorScheme: const ColorScheme.dark(
       primary: accent,
-      secondary: Color(0xFF53D4A5),
+      secondary: accentCool,
       surface: panel,
+      surfaceContainer: panelRaised,
+      surfaceContainerHighest: Color(0xFF1A2B3C),
       onSurface: text,
       outline: stroke,
     ),
@@ -22,6 +27,15 @@ ThemeData buildRobdexTheme() {
       bodyColor: text,
       displayColor: text,
       fontFamily: '.AppleSystemUIFont',
+    ),
+    appBarTheme: const AppBarTheme(
+      backgroundColor: Colors.transparent,
+      foregroundColor: text,
+      elevation: 0,
+    ),
+    iconTheme: const IconThemeData(
+      color: muted,
+      size: 18,
     ),
     textButtonTheme: TextButtonThemeData(
       style: TextButton.styleFrom(
@@ -57,26 +71,26 @@ ThemeData buildRobdexTheme() {
     inputDecorationTheme: InputDecorationTheme(
       isDense: true,
       filled: true,
-      fillColor: const Color(0xFF0F1720),
+      fillColor: const Color(0xFF0D1620),
       contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(10),
         borderSide: const BorderSide(color: stroke),
       ),
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(10),
         borderSide: const BorderSide(color: stroke),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(10),
         borderSide: const BorderSide(color: accent),
       ),
       labelStyle: const TextStyle(
-        color: const Color(0xFF9FB0C2),
+        color: muted,
         fontSize: 11,
       ),
       hintStyle: const TextStyle(
-        color: const Color(0xFF7E8EA0),
+        color: Color(0xFF7E8EA0),
         fontSize: 11,
       ),
     ),
@@ -90,11 +104,11 @@ ThemeData buildRobdexTheme() {
       ),
     ),
     chipTheme: base.chipTheme.copyWith(
-      backgroundColor: const Color(0xFF182330),
+      backgroundColor: panelRaised,
       side: const BorderSide(color: stroke),
       labelStyle: const TextStyle(
         fontFamily: 'monospace',
-        color: const Color(0xFF90A2B5),
+        color: Color(0xFF90A2B5),
         fontSize: 10,
         fontWeight: FontWeight.w500,
       ),

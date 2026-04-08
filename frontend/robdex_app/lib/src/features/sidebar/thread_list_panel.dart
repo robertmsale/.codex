@@ -50,28 +50,58 @@ class ThreadListPanel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                'Threads',
-                style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w800),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                theme.colorScheme.secondary.withValues(alpha: 0.14),
+                theme.colorScheme.primary.withValues(alpha: 0.08),
+                theme.colorScheme.surface.withValues(alpha: 0.0),
+              ],
+            ),
+            border: Border.all(
+              color: theme.colorScheme.outline.withValues(alpha: 0.6),
+            ),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Threads',
+                      style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${threads.length} agents across ${projects.length} projects',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.72),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            TextButton.icon(
-              onPressed: onCreateProject,
-              icon: const Icon(Icons.create_new_folder_outlined, size: 14),
-              label: const Text('Project'),
-            ),
-            const SizedBox(width: 4),
-            IconButton(
-              onPressed: onDisconnect,
-              tooltip: 'Disconnect',
-              icon: const Icon(Icons.link_off, size: 18),
-            ),
-          ],
+              TextButton.icon(
+                onPressed: onCreateProject,
+                icon: const Icon(Icons.create_new_folder_outlined, size: 14),
+                label: const Text('Project'),
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                onPressed: onDisconnect,
+                tooltip: 'Disconnect',
+                icon: const Icon(Icons.link_off, size: 18),
+              ),
+            ],
+          ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 10),
         Expanded(
           child: ListView.builder(
             itemCount: orderedProjects.length,
@@ -120,59 +150,69 @@ class _ProjectSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: RichText(
-                text: TextSpan(
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
-                  ),
-                  children: [
-                    TextSpan(
-                      text: project.name,
-                      style: const TextStyle(fontWeight: FontWeight.w800),
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        color: theme.colorScheme.surface.withValues(alpha: 0.34),
+        border: Border.all(
+          color: theme.colorScheme.outline.withValues(alpha: 0.45),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: RichText(
+                  text: TextSpan(
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
                     ),
-                    TextSpan(
-                      text: '  ${project.defaultCwd}',
-                      style: TextStyle(
-                        fontFamily: 'monospace',
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.62),
+                    children: [
+                      TextSpan(
+                        text: project.name,
+                        style: const TextStyle(fontWeight: FontWeight.w800),
                       ),
-                    ),
-                  ],
+                      TextSpan(
+                        text: '  ${project.defaultCwd}',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          color: theme.colorScheme.onSurface.withValues(alpha: 0.62),
+                        ),
+                      ),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
               ),
-            ),
-            IconButton(
-              onPressed: onProjectSettings,
-              tooltip: 'Project settings for ${project.name}',
-              icon: const Icon(Icons.settings_outlined, size: 16),
-              visualDensity: VisualDensity.compact,
-            ),
-            IconButton(
-              onPressed: onCreateThread,
-              tooltip: 'Create thread in ${project.name}',
-              icon: const Icon(Icons.add, size: 16),
-              visualDensity: VisualDensity.compact,
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        ...threads.map(
-          (thread) => _ThreadTile(
-            thread: thread,
-            hasPendingApproval: pendingApprovals.any((approval) => approval.threadId == thread.id),
-            isSelected: thread.id == selectedThreadId,
-            onTap: () => onThreadSelected(thread.id),
+              IconButton(
+                onPressed: onProjectSettings,
+                tooltip: 'Project settings for ${project.name}',
+                icon: const Icon(Icons.settings_outlined, size: 16),
+                visualDensity: VisualDensity.compact,
+              ),
+              IconButton(
+                onPressed: onCreateThread,
+                tooltip: 'Create thread in ${project.name}',
+                icon: const Icon(Icons.add, size: 16),
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
           ),
-        ),
-      ],
+          const SizedBox(height: 6),
+          ...threads.map(
+            (thread) => _ThreadTile(
+              thread: thread,
+              hasPendingApproval: pendingApprovals.any((approval) => approval.threadId == thread.id),
+              isSelected: thread.id == selectedThreadId,
+              onTap: () => onThreadSelected(thread.id),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

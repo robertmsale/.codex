@@ -14,6 +14,11 @@ class WorkspaceSelection {
     this.approvalPolicy,
     this.model,
     this.reasoningEffort,
+    this.effectiveSandboxMode,
+    this.effectiveNetworkAccess,
+    this.effectiveApprovalPolicy,
+    this.effectiveModel,
+    this.effectiveReasoningEffort,
     this.isRunning = false,
   });
 
@@ -31,6 +36,11 @@ class WorkspaceSelection {
   final String? approvalPolicy;
   final String? model;
   final String? reasoningEffort;
+  final String? effectiveSandboxMode;
+  final bool? effectiveNetworkAccess;
+  final String? effectiveApprovalPolicy;
+  final String? effectiveModel;
+  final String? effectiveReasoningEffort;
   final bool isRunning;
 
   factory WorkspaceSelection.fromJson(Map<String, dynamic> json) {
@@ -49,6 +59,11 @@ class WorkspaceSelection {
       approvalPolicy: json['approvalPolicy'] as String?,
       model: json['model'] as String?,
       reasoningEffort: json['reasoningEffort'] as String?,
+      effectiveSandboxMode: json['effectiveSandboxMode'] as String?,
+      effectiveNetworkAccess: json['effectiveNetworkAccess'] as bool?,
+      effectiveApprovalPolicy: json['effectiveApprovalPolicy'] as String?,
+      effectiveModel: json['effectiveModel'] as String?,
+      effectiveReasoningEffort: json['effectiveReasoningEffort'] as String?,
       isRunning: json['isRunning'] as bool? ?? false,
     );
   }

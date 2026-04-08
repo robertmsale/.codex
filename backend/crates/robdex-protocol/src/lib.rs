@@ -105,6 +105,11 @@ pub struct UiWorkspaceSelection {
     pub approval_policy: Option<String>,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub effective_sandbox_mode: Option<String>,
+    pub effective_network_access: Option<bool>,
+    pub effective_approval_policy: Option<String>,
+    pub effective_model: Option<String>,
+    pub effective_reasoning_effort: Option<String>,
     pub is_running: bool,
 }
 

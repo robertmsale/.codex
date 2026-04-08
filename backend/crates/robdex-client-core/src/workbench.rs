@@ -639,6 +639,35 @@ pub async fn build_workbench(
             .map(|value| value as u32)
     });
 
+    let selected_project_record = selected
+        .and_then(|value| {
+            extract_project_records(&snapshot)
+                .into_iter()
+                .find(|project| project.id == value.project_id)
+        })
+        .or_else(|| selected_project(&snapshot, selected_project_id.as_deref()));
+    let global_defaults = extract_global_defaults(&snapshot);
+    let effective_sandbox_mode = selected
+        .and_then(|value| value.sandbox_mode.clone())
+        .or_else(|| global_defaults.sandbox_mode.clone());
+    let effective_network_access = selected
+        .and_then(|value| value.network_access)
+        .or(global_defaults.network_access);
+    let effective_approval_policy = selected
+        .and_then(|value| value.approval_policy.clone())
+        .or_else(|| global_defaults.approval_policy.clone());
+    let effective_model = selected
+        .and_then(|value| value.model.clone())
+        .or_else(|| role_default_model(selected_project_record.as_ref(), selected.map(|value| value.role.as_str())));
+    let effective_reasoning_effort = selected
+        .and_then(|value| value.reasoning_effort.clone())
+        .or_else(|| {
+            role_default_reasoning_effort(
+                selected_project_record.as_ref(),
+                selected.map(|value| value.role.as_str()),
+            )
+        });
+
     let selection = UiWorkspaceSelection {
         project_id: selected
             .map(|value| value.project_id.clone())
@@ -678,6 +707,11 @@ pub async fn build_workbench(
         approval_policy: selected.and_then(|value| value.approval_policy.clone()),
         model: selected.and_then(|value| value.model.clone()),
         reasoning_effort: selected.and_then(|value| value.reasoning_effort.clone()),
+        effective_sandbox_mode,
+        effective_network_access,
+        effective_approval_policy,
+        effective_model,
+        effective_reasoning_effort,
         is_running: selected.map(|value| running_ids.contains(&value.id)).unwrap_or(false),
     };
 
@@ -927,6 +961,13 @@ struct ProjectRecord {
     qa_default_reasoning_effort: Option<String>,
 }
 
+#[derive(Clone)]
+struct GlobalDefaults {
+    approval_policy: Option<String>,
+    sandbox_mode: Option<String>,
+    network_access: Option<bool>,
+}
+
 fn extract_thread_records(snapshot: &Value) -> Vec<ThreadRecord> {
     let mut records = Vec::new();
     let Some(projects) = snapshot
@@ -1144,6 +1185,51 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
     }
     records.sort_by(|left, right| left.name.cmp(&right.name));
     records
+}
+
+fn extract_global_defaults(snapshot: &Value) -> GlobalDefaults {
+    let state = snapshot.get("state").and_then(Value::as_object);
+    let configs = state.and_then(|value| value.get("globalConfigs"));
+    GlobalDefaults {
+        approval_policy: configs
+            .and_then(|value| value.get("approvalPolicy"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        sandbox_mode: configs
+            .and_then(|value| value.get("sandboxMode"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        network_access: configs
+            .and_then(|value| value.get("networkAccess"))
+            .and_then(Value::as_bool),
+    }
+}
+
+fn role_default_model(project: Option<&ProjectRecord>, role: Option<&str>) -> Option<String> {
+    match role {
+        Some("orchestrator") => project.and_then(|value| value.orchestrator_default_model.clone()),
+        Some("worker") | Some("hidden") | Some("operator") => {
+            project.and_then(|value| value.worker_default_model.clone())
+        }
+        Some("qa") => project.and_then(|value| value.qa_default_model.clone()),
+        _ => None,
+    }
+}
+
+fn role_default_reasoning_effort(
+    project: Option<&ProjectRecord>,
+    role: Option<&str>,
+) -> Option<String> {
+    match role {
+        Some("orchestrator") => {
+            project.and_then(|value| value.orchestrator_default_reasoning_effort.clone())
+        }
+        Some("worker") | Some("hidden") | Some("operator") => {
+            project.and_then(|value| value.worker_default_reasoning_effort.clone())
+        }
+        Some("qa") => project.and_then(|value| value.qa_default_reasoning_effort.clone()),
+        _ => None,
+    }
 }
 
 fn selected_project<'a>(snapshot: &'a Value, selected_project_id: Option<&str>) -> Option<ProjectRecord> {
