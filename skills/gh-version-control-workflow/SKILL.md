@@ -32,6 +32,7 @@ Use this workflow for branch/worktree/PR delivery.
   - `git-commit <worktree_path> "<message>"`
 - Publish (push + PR, force-with-lease on non-FF for non-integration branches):
   - `git-publish-worktree <worktree_path> [integration_branch]`
+  - Publish output is the sanctioned PR metadata artifact. It includes the PR number, URL, state, draft flag, branch, base branch, and title when GitHub has a PR for the branch.
 - Merge (squash merge the PR, delete the remote branch, remove the local worktree, prune worktree metadata, and delete the local branch):
   - `git-merge-worktree <worktree_path> [integration_branch]`
   - if the squash merge fails, the worktree and branch are left in place for conflict resolution or retry

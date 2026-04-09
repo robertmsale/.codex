@@ -720,6 +720,21 @@ fn upsert_message(
         .message_cache_by_thread_id
         .entry(thread_id.to_string())
         .or_default();
+    if message.role == "user"
+        && let Some(index) = messages.iter().position(|entry| {
+            entry.id.starts_with("local-user-")
+                && entry.role == "user"
+                && entry.text.trim() == message.text.trim()
+        })
+    {
+        let next_message = replace_message(messages[index].clone(), message);
+        if messages[index] == next_message {
+            return false;
+        }
+        messages[index] = next_message;
+        changed_thread_ids.insert(thread_id.to_string());
+        return true;
+    }
     let next = match messages.iter().position(|entry| entry.id == message.id) {
         Some(index) => {
             let next_message = match mode {

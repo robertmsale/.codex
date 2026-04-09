@@ -2327,6 +2327,7 @@ async fn create_thread_message(runtime: &BridgeRuntime, payload: &Value) -> Resu
         payload.get("reasoningEffort").and_then(Value::as_str),
     )
     .await?;
+    runtime.append_local_user_message(&thread_id, &text).await?;
     Ok(json!({
         "threadId": thread_id,
         "turn": result,

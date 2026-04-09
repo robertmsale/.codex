@@ -28,6 +28,29 @@ emit_result() {
   printf '%s\n' "$message"
 }
 
+normalize_repo_path() {
+  local raw_path="$1"
+  local host_user normalized without_code
+
+  host_user="${HOME##*/}"
+  normalized="$raw_path"
+
+  case "$raw_path" in
+    "/home/$host_user"|"/home/$host_user/"*)
+      normalized="/Users/$host_user${raw_path#"/home/$host_user"}"
+      ;;
+  esac
+
+  if [[ ! -e "$normalized" && "$normalized" == "/Users/$host_user/Code/"* ]]; then
+    without_code="/Users/$host_user/${normalized#"/Users/$host_user/Code/"}"
+    if [[ -e "$without_code" ]]; then
+      normalized="$without_code"
+    fi
+  fi
+
+  printf '%s\n' "$normalized"
+}
+
 codex_aux_http_base_url() {
   printf '%s\n' "${CODEX_AUX_SERVER_BASE_URL:-http://127.0.0.1:8771}"
 }
@@ -265,7 +288,7 @@ fi
 
 require_cmd python3
 
-working_path="$(pwd -P)"
+working_path="$(normalize_repo_path "$(pwd -P)")"
 bridge_review_mode=0
 if [[ "$working_path" == /home/* ]]; then
   bridge_review_mode=1

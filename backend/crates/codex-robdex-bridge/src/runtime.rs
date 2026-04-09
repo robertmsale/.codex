@@ -28,7 +28,7 @@ use crate::{
         BridgeApprovalResult, BridgeEvent, BridgeInfo, BridgeSnapshot, BridgeToolQuestion, EventReplayResponse,
         MAX_EVENT_HISTORY, MAX_TRANSPORT_MESSAGES_PER_THREAD, PROTOCOL_VERSION, PendingApproval,
         PendingApprovalFileChange, PendingApprovalFileChangeKind, PendingApprovalKind, SERVER_NAME, SERVER_VERSION, SequencedEvent,
-        ThreadCachePayload, ThreadMessagesResponse,
+        RobdexChatMessage, ThreadCachePayload, ThreadMessagesResponse,
     },
     store::RobdexBridgeStore,
     transport::{DEFAULT_RECONNECT_DELAY_MS, TransportControlMessage, run_transport_loop},
@@ -197,6 +197,49 @@ impl BridgeRuntime {
             context_window_status: snapshot.context_window_status_by_thread_id.get(thread_id).cloned(),
             generated_at: snapshot.updated_at.unwrap_or(0),
         }))
+    }
+
+    pub async fn append_local_user_message(&self, thread_id: &str, text: &str) -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(());
+        }
+
+        let now = unix_now();
+        let sequence = self.next_transport_request_id.fetch_add(1, Ordering::Relaxed);
+        let message = RobdexChatMessage {
+            id: format!("local-user-{now}-{sequence}"),
+            thread_id: thread_id.to_string(),
+            role: "user".to_string(),
+            text: text.to_string(),
+            created_at: now,
+            subtitle: None,
+            tool_metadata: None,
+            delivery_state: "sent".to_string(),
+        };
+
+        let payload = {
+            let mut thread_cache = self.thread_cache.write().await;
+            let messages = thread_cache
+                .message_cache_by_thread_id
+                .entry(thread_id.to_string())
+                .or_default();
+            if messages
+                .iter()
+                .rev()
+                .take(20)
+                .any(|existing| existing.role == "user" && existing.text.trim() == text)
+            {
+                return Ok(());
+            }
+            messages.push(message);
+            thread_cache.updated_at = Some(now);
+            thread_messages_changed_payload(&thread_cache, thread_id)
+        };
+
+        self.persist_thread_cache_now(&[thread_id.to_string()]).await?;
+        self.push_event(BridgeEvent::ThreadMessagesChanged { payload }).await;
+        Ok(())
     }
 
     pub async fn state_document_value(&self) -> Value {
