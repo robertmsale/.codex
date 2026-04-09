@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:rinf/rinf.dart';
 
@@ -32,6 +33,9 @@ class RobdexWorkbench extends StatefulWidget {
 }
 
 class _RobdexWorkbenchState extends State<RobdexWorkbench> {
+  static const _hostPreferenceKey = 'bridge_host';
+  static const _portPreferenceKey = 'bridge_port';
+
   late final WorkbenchController _controller;
   late final AppLifecycleListener _listener;
   bool _didRequestConnect = false;
@@ -44,6 +48,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
     _controller = WorkbenchController();
     _hostController = TextEditingController(text: '127.0.0.1');
     _portController = TextEditingController(text: '42080');
+    _restoreBridgeSettings();
     _listener = AppLifecycleListener(
       onExitRequested: () async {
         finalizeRust();
@@ -54,11 +59,72 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
 
   @override
   void dispose() {
+    _persistBridgeSettings();
     _listener.dispose();
     _hostController.dispose();
     _portController.dispose();
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<void> _restoreBridgeSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final host = prefs.getString(_hostPreferenceKey);
+    final port = prefs.getInt(_portPreferenceKey);
+    if (!mounted) {
+      return;
+    }
+    if ((host?.trim().isNotEmpty ?? false) || port != null) {
+      setState(() {
+        if (host?.trim().isNotEmpty ?? false) {
+          _hostController.text = host!.trim();
+        }
+        if (port != null && port > 0) {
+          _portController.text = port.toString();
+        }
+      });
+    }
+  }
+
+  Future<void> _persistBridgeSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final host = _hostController.text.trim();
+    final port = int.tryParse(_portController.text.trim());
+    await prefs.setString(
+      _hostPreferenceKey,
+      host.isEmpty ? '127.0.0.1' : host,
+    );
+    if (port != null && port > 0) {
+      await prefs.setInt(_portPreferenceKey, port);
+    } else {
+      await prefs.setInt(_portPreferenceKey, 42080);
+    }
+  }
+
+  Future<void> _attemptConnect() async {
+    final port = int.tryParse(_portController.text.trim());
+    if (port == null) {
+      return;
+    }
+    await _persistBridgeSettings();
+    if (mounted) {
+      setState(() {
+        _didRequestConnect = true;
+      });
+    }
+    _controller.start(
+      host: _hostController.text.trim(),
+      port: port,
+    );
+  }
+
+  void _returnToLogin() {
+    _controller.disconnect();
+    if (mounted) {
+      setState(() {
+        _didRequestConnect = false;
+      });
+    }
   }
 
   @override
@@ -92,25 +158,12 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
                       Row(
                         children: [
                           TextButton(
-                            onPressed: () {
-                              setState(() {
-                                _didRequestConnect = false;
-                              });
-                            },
+                            onPressed: _returnToLogin,
                             child: const Text('Back'),
                           ),
                           const SizedBox(width: 8),
                           FilledButton(
-                            onPressed: () {
-                              final port = int.tryParse(_portController.text.trim());
-                              if (port == null) {
-                                return;
-                              }
-                              _controller.start(
-                                host: _hostController.text.trim(),
-                                port: port,
-                              );
-                            },
+                            onPressed: _attemptConnect,
                             child: const Text('Retry'),
                           ),
                         ],
@@ -165,19 +218,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
                             ),
                           ),
                           FilledButton(
-                            onPressed: () {
-                              final port = int.tryParse(_portController.text.trim());
-                              if (port == null) {
-                                return;
-                              }
-                              setState(() {
-                                _didRequestConnect = true;
-                              });
-                              _controller.start(
-                                host: _hostController.text.trim(),
-                                port: port,
-                              );
-                            },
+                            onPressed: _attemptConnect,
                             child: const Text('Connect'),
                           ),
                         ],
@@ -199,10 +240,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
           onThreadSelected: _controller.selectThread,
           onProjectSelected: _controller.selectProject,
           onDisconnect: () {
-            _controller.disconnect();
-            setState(() {
-              _didRequestConnect = false;
-            });
+            _returnToLogin();
           },
           onCreateProject: _showCreateProjectDialog,
           onProjectSettings: _showProjectSettingsDialog,

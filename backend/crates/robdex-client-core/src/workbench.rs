@@ -46,6 +46,22 @@ impl WorkbenchClient {
         build_workbench(snapshot, Some(&thread_id), None, &self.endpoint).await
     }
 
+    pub async fn refresh_thread_with_preserved_messages(
+        &mut self,
+        thread_id: String,
+        preserved_messages: Vec<UiChatEntry>,
+    ) -> Result<WorkbenchViewData> {
+        let snapshot = self.fetch_snapshot_json().await?;
+        self.selected_thread_id = Some(thread_id.clone());
+        build_workbench(
+            snapshot,
+            Some(&thread_id),
+            Some(preserved_messages),
+            &self.endpoint,
+        )
+        .await
+    }
+
     pub async fn fetch_thread_history(&self, thread_id: &str) -> Result<Vec<UiChatEntry>> {
         fetch_thread_messages(&self.endpoint, thread_id, None).await
     }

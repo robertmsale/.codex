@@ -597,48 +597,8 @@ pub async fn execute_bridge_command(
         }
         "threadMetadataUpdate" => {
             let thread_id = required_string(&payload, "threadId")?;
-            let git_info = payload.get("gitInfo").cloned().unwrap_or(Value::Null);
-            let result = app_server_request_json(runtime, "thread/metadata/update", json!({"threadId": thread_id, "gitInfo": git_info})).await?;
             let mut state = parse_state(&runtime.state_document_value().await);
-            if let Some(agent) = state
-                .projects
-                .values_mut()
-                .find_map(|project| project.agents.get_mut(&thread_id))
-            {
-                if payload.get("role").is_some() {
-                    agent.role = payload
-                        .get("role")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                }
-                if payload.get("approvalPolicy").is_some() {
-                    agent.approval_policy = payload
-                        .get("approvalPolicy")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                }
-                if payload.get("sandboxMode").is_some() {
-                    agent.sandbox_mode = payload
-                        .get("sandboxMode")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                }
-                if payload.get("networkAccess").is_some() {
-                    agent.network_access = payload.get("networkAccess").and_then(Value::as_bool);
-                }
-                if payload.get("modelID").is_some() {
-                    agent.model = payload
-                        .get("modelID")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                }
-                if payload.get("reasoningEffort").is_some() {
-                    agent.reasoning_effort = payload
-                        .get("reasoningEffort")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                }
-                state.updated_at = Some(unix_now());
+            if update_tracked_thread_metadata(&mut state, &thread_id, &payload) {
                 persist_state(runtime, &state).await?;
                 runtime
                     .push_event(crate::models::BridgeEvent::AppStateSnapshot {
@@ -646,7 +606,7 @@ pub async fn execute_bridge_command(
                     })
                     .await;
             }
-            Ok(success(json!({"type":"threadMetadata","payload": result})))
+            Ok(success(json!({"type":"threadMetadata","payload": {"threadId": thread_id}})))
         }
         "threadCompactStart" => {
             app_server_request_json(
@@ -1344,6 +1304,98 @@ fn set_orchestrator_thread(state: &mut PersistedState, thread_id: Option<&str>, 
         }
     }
     state.updated_at = Some(unix_now());
+}
+
+fn update_tracked_thread_metadata(state: &mut PersistedState, thread_id: &str, payload: &Value) -> bool {
+    for project in state.projects.values_mut() {
+        let is_project_orchestrator = project.orchestrator_thread_id.as_deref() == Some(thread_id);
+        if !project.agents.contains_key(thread_id) && !is_project_orchestrator {
+            continue;
+        }
+
+        let default_display_name = if is_project_orchestrator {
+            project
+                .name
+                .clone()
+                .map(|name| format!("{name} Orchestrator"))
+                .unwrap_or_else(|| thread_id.to_string())
+        } else {
+            thread_id.to_string()
+        };
+        let default_role = if is_project_orchestrator {
+            "orchestrator".to_string()
+        } else {
+            "worker".to_string()
+        };
+        let project_root = project.project_root.clone();
+        let project_cwd = project.cwd.clone().or_else(|| project_root.clone());
+
+        let next_role = payload
+            .get("role")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        {
+            let agent = project
+                .agents
+                .entry(thread_id.to_string())
+                .or_insert_with(|| PersistedAgentState {
+                    display_name: Some(default_display_name),
+                    role: Some(default_role),
+                    project_root,
+                    cwd: project_cwd,
+                    ..PersistedAgentState::default()
+                });
+
+            if payload.get("role").is_some() {
+                agent.role = next_role.clone();
+            }
+            if payload.get("approvalPolicy").is_some() {
+                agent.approval_policy = payload
+                    .get("approvalPolicy")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+            if payload.get("sandboxMode").is_some() {
+                agent.sandbox_mode = payload
+                    .get("sandboxMode")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+            if payload.get("networkAccess").is_some() {
+                agent.network_access = payload.get("networkAccess").and_then(Value::as_bool);
+            }
+            if payload.get("modelID").is_some() {
+                agent.model = payload
+                    .get("modelID")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+            if payload.get("reasoningEffort").is_some() {
+                agent.reasoning_effort = payload
+                    .get("reasoningEffort")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+        }
+        if payload.get("role").is_some() {
+            if next_role.as_deref() == Some("orchestrator") {
+                project.orchestrator_thread_id = Some(thread_id.to_string());
+                for (agent_thread_id, other_agent) in &mut project.agents {
+                    if agent_thread_id != thread_id
+                        && other_agent.role.as_deref() == Some("orchestrator")
+                    {
+                        other_agent.role = Some("worker".to_string());
+                    }
+                }
+            } else if project.orchestrator_thread_id.as_deref() == Some(thread_id) {
+                project.orchestrator_thread_id = None;
+            }
+        }
+        project.updated_at = Some(unix_now());
+        state.updated_at = Some(unix_now());
+        return true;
+    }
+    false
 }
 
 fn register_tracked_thread(state: &mut PersistedState, payload: &Value) -> Result<()> {
@@ -3020,10 +3072,6 @@ pub async fn orchestrator_warm_handoff(
             recipient.project_path
         );
     }
-    if recipient.is_orchestrator {
-        bail!("Warm handoff is only supported for non-orchestrator agents.");
-    }
-
     let mut recipient_state = None;
     let mut carried_group_ids = Vec::new();
     let mut project_root = None;

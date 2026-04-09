@@ -617,10 +617,6 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final enabled = widget.selection.threadId != null;
-    final canWarmHandoff =
-        enabled &&
-        widget.selection.projectOrchestratorThreadId != null &&
-        widget.selection.threadRole != 'orchestrator';
     String titleCaseWords(String value) => value
         .split(RegExp(r'[\s_-]+'))
         .where((part) => part.isNotEmpty)
@@ -684,14 +680,6 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
               controller: _nameController,
               enabled: enabled,
               decoration: const InputDecoration(labelText: 'Agent name'),
-              onSubmitted: enabled
-                  ? (value) {
-                      final trimmed = value.trim();
-                      if (trimmed.isNotEmpty) {
-                        widget.onRenameThread(trimmed);
-                      }
-                    }
-                  : null,
             ),
             const SizedBox(height: 8),
             Wrap(
@@ -716,7 +704,6 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                         ? (value) {
                             if (value == null) return;
                             setState(() => _role = value);
-                            _emitSettings();
                           }
                         : null,
                   ),
@@ -742,7 +729,6 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                         ? (value) {
                             if (value == null) return;
                             setState(() => _approvalPolicy = value);
-                            _emitSettings();
                           }
                         : null,
                   ),
@@ -766,7 +752,6 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                         ? (value) {
                             if (value == null) return;
                             setState(() => _sandboxMode = value);
-                            _emitSettings();
                           }
                         : null,
                   ),
@@ -790,7 +775,6 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                         ? (value) {
                             if (value == null) return;
                             setState(() => _networkAccessMode = value);
-                            _emitSettings();
                           }
                         : null,
                   ),
@@ -807,7 +791,6 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                         ? (value) {
                             if (value == null) return;
                             setState(() => _modelId = value);
-                            _emitSettings();
                           }
                         : null,
                   ),
@@ -832,7 +815,6 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                         ? (value) {
                             if (value == null) return;
                             setState(() => _reasoningEffort = value);
-                            _emitSettings();
                           }
                         : null,
                   ),
@@ -856,19 +838,21 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                   onPressed: enabled
                       ? () {
                           final trimmed = _nameController.text.trim();
-                          if (trimmed.isNotEmpty) {
+                          if (trimmed.isNotEmpty &&
+                              trimmed != widget.selection.threadName) {
                             widget.onRenameThread(trimmed);
                           }
+                          _emitSettings();
                         }
                       : null,
-                  child: const Text('Save Name'),
+                  child: const Text('Save Changes'),
                 ),
                 FilledButton.tonal(
                   onPressed: enabled ? widget.onArchiveThread : null,
                   child: const Text('Archive'),
                 ),
                 OutlinedButton(
-                  onPressed: canWarmHandoff
+                  onPressed: enabled
                       ? () async {
                           final prompt = await _promptWarmHandoff(context);
                           if (prompt != null && prompt.trim().isNotEmpty) {

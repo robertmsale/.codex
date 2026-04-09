@@ -696,12 +696,25 @@ async fn handle_action(
                 .await
         }
         Action::SendMessage(text) => {
+            let preserved_messages = current_view.as_ref().and_then(|view| {
+                view.selection
+                    .thread_id
+                    .as_ref()
+                    .map(|_| view.chat_entries.clone())
+            });
             let thread_id = current_view
                 .as_ref()
                 .and_then(|view| view.selection.thread_id.clone())
                 .ok_or_else(|| anyhow!("No thread selected"))?;
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.send_message(&thread_id, &text).await?;
-            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.select_thread(thread_id).await
+            let client = client.as_mut().ok_or_else(|| anyhow!("Not connected"))?;
+            if let Some(messages) = preserved_messages {
+                client
+                    .refresh_thread_with_preserved_messages(thread_id, messages)
+                    .await
+            } else {
+                client.select_thread(thread_id).await
+            }
         }
         Action::InterruptThread => {
             let thread_id = current_view
@@ -795,16 +808,20 @@ async fn handle_action(
             let view = current_view
                 .as_ref()
                 .ok_or_else(|| anyhow!("Not connected"))?;
-            let sender_thread_id = view
-                .selection
-                .project_orchestrator_thread_id
-                .clone()
-                .ok_or_else(|| anyhow!("No project orchestrator configured"))?;
             let recipient_thread_id = view
                 .selection
                 .thread_id
                 .clone()
                 .ok_or_else(|| anyhow!("No thread selected"))?;
+            let sender_thread_id = view
+                .selection
+                .project_orchestrator_thread_id
+                .clone()
+                .or_else(|| {
+                    (view.selection.thread_role.as_deref() == Some("orchestrator"))
+                        .then_some(recipient_thread_id.clone())
+                })
+                .ok_or_else(|| anyhow!("No project orchestrator configured"))?;
             let project_path = view
                 .selection
                 .project_root_path
