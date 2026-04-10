@@ -1,6 +1,4 @@
 #!/bin/zsh
 set -euo pipefail
 
-cd /Users/robertsale/.codex/backend
-exec cargo run --release -p codex-gitops-http -- "$@"
-
+exec /Users/robertsale/.codex/backend/python/codex-services/scripts/run-codex-gitops-http "$@"

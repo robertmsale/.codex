@@ -24,6 +24,7 @@ use tokio::{
 
 use crate::{
     app_server_overrides::{AppServerThreadOverrides, AppServerTurnOverrides, simple_sandbox_policy},
+    commands::{parse_state, persist_state, prune_archived_thread_locally},
     config::BridgeSettings,
     models::{
         BridgeApprovalResult, BridgeEvent, BridgeInfo, BridgeSnapshot, BridgeToolQuestion, EventReplayResponse,
@@ -523,43 +524,73 @@ impl BridgeRuntime {
     }
 
     async fn resume_tracked_threads(&self) {
-        let state = self.state_document.read().await;
-        let thread_ids = tracked_thread_ids_from_state(&state);
-        for thread_id in thread_ids {
-            let cwd = tracked_cwd_for_thread_value(&state, &thread_id);
-            let approval_policy = tracked_approval_policy_for_thread_value(&state, &thread_id);
-            let model = tracked_model_for_thread_value(&state, &thread_id);
-            let model_provider = tracked_model_provider_for_thread_value(&state, &thread_id);
-            let effort = tracked_reasoning_for_thread_value(&state, &thread_id);
-            let sandbox_mode = tracked_sandbox_mode_for_thread_value(&state, &thread_id);
-            let base_instructions = tracked_base_instructions_for_thread_value(&state, &thread_id);
-            let developer_instructions =
-                tracked_developer_instructions_for_thread_value(&state, &thread_id);
-            let params = AppServerThreadOverrides {
-                cwd,
-                approval_policy: approval_policy.map(Value::String),
-                sandbox: sandbox_mode,
-                model,
-                model_provider,
-                reasoning_effort: effort,
-                service_tier: tracked_service_tier_for_thread_value(&state, &thread_id),
-                approvals_reviewer: tracked_approvals_reviewer_for_thread_value(&state, &thread_id),
-                personality: tracked_personality_for_thread_value(&state, &thread_id),
-                config: tracked_config_for_thread_value(&state, &thread_id),
-                base_instructions,
-                developer_instructions,
-                persist_extended_history: tracked_persist_extended_history_for_thread_value(&state, &thread_id)
-                    .or(Some(true)),
-                ..Default::default()
-            }
-            .thread_resume_params(thread_id.clone(), None, None);
-            if let Err(error) = self
-                .request_app_server_json("thread/resume", params)
-                .await
-            {
+        let resume_requests = {
+            let state = self.state_document.read().await;
+            let thread_ids = tracked_thread_ids_from_state(&state);
+            thread_ids
+                .into_iter()
+                .map(|thread_id| {
+                    let cwd = tracked_cwd_for_thread_value(&state, &thread_id);
+                    let approval_policy =
+                        tracked_approval_policy_for_thread_value(&state, &thread_id);
+                    let model = tracked_model_for_thread_value(&state, &thread_id);
+                    let model_provider = tracked_model_provider_for_thread_value(&state, &thread_id);
+                    let effort = tracked_reasoning_for_thread_value(&state, &thread_id);
+                    let sandbox_mode = tracked_sandbox_mode_for_thread_value(&state, &thread_id);
+                    let base_instructions =
+                        tracked_base_instructions_for_thread_value(&state, &thread_id);
+                    let developer_instructions =
+                        tracked_developer_instructions_for_thread_value(&state, &thread_id);
+                    let params = AppServerThreadOverrides {
+                        cwd,
+                        approval_policy: approval_policy.map(Value::String),
+                        sandbox: sandbox_mode,
+                        model,
+                        model_provider,
+                        reasoning_effort: effort,
+                        service_tier: tracked_service_tier_for_thread_value(&state, &thread_id),
+                        approvals_reviewer: tracked_approvals_reviewer_for_thread_value(&state, &thread_id),
+                        personality: tracked_personality_for_thread_value(&state, &thread_id),
+                        config: tracked_config_for_thread_value(&state, &thread_id),
+                        base_instructions,
+                        developer_instructions,
+                        persist_extended_history: tracked_persist_extended_history_for_thread_value(&state, &thread_id)
+                            .or(Some(true)),
+                        ..Default::default()
+                    }
+                    .thread_resume_params(thread_id.clone(), None, None);
+                    (thread_id, params)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        for (thread_id, params) in resume_requests {
+            if let Err(error) = self.request_app_server_json("thread/resume", params).await {
+                if resume_error_means_missing_rollout(&error) {
+                    if let Err(prune_error) = self.prune_missing_tracked_thread(&thread_id).await {
+                        tracing::warn!(
+                            "resume tracked thread prune failed: {thread_id}: {prune_error}"
+                        );
+                    }
+                    continue;
+                }
                 tracing::warn!("resume tracked thread failed: {thread_id}: {error}");
             }
         }
+    }
+
+    async fn prune_missing_tracked_thread(&self, thread_id: &str) -> Result<()> {
+        let _guard = self.lock_state_mutation().await;
+        let mut state = parse_state(&self.state_document_value().await);
+        let pruned = prune_archived_thread_locally(&mut state, thread_id);
+        if pruned {
+            persist_state(self, &state).await?;
+            self.prune_thread_local(thread_id).await?;
+            tracing::warn!(
+                "pruned tracked thread after missing rollout from app-server: {thread_id}"
+            );
+        }
+        Ok(())
     }
 
     async fn reconcile_running_threads_with_app_server(&self) -> Result<()> {
@@ -953,6 +984,11 @@ impl BridgeRuntime {
                     .map(|message| message.text.trim().to_string())
             })
     }
+}
+
+fn resume_error_means_missing_rollout(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("no rollout found for thread id") || message.contains("\"code\": -32600")
 }
 
 fn file_change_cache_key(thread_id: &str, item_id: &str) -> String {

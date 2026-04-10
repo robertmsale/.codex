@@ -1,0 +1,406 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+show_usage() {
+  cat <<'EOF'
+Usage:
+  flutterq <flutter-command...>
+
+Examples:
+  flutterq analyze
+  flutterq test test/widget_test.dart
+  flutterq run -d macos
+  flutterq build macos
+  flutterq pub get
+  flutterq devices
+
+Notes:
+  - Injects low-noise Flutter flags by default.
+  - Uses machine output for analyze/test where supported.
+  - For build commands, runs directly first and only parses failures.
+EOF
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "flutterq: missing required command: $1" >&2
+    exit 1
+  }
+}
+
+deny_command() {
+  local command_name="$1"
+  echo "flutterq: forbidden command: $command_name" >&2
+  exit 2
+}
+
+contains_arg() {
+  local needle="$1"
+  shift
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+contains_prefix_arg() {
+  local prefix="$1"
+  shift
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == "$prefix"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+append_if_missing() {
+  local needle="$1"
+  shift
+  local -n target_ref="$1"
+  shift
+  if ! contains_arg "$needle" "${target_ref[@]}"; then
+    target_ref+=("$needle")
+  fi
+}
+
+append_if_absent_by_prefix() {
+  local prefix="$1"
+  shift
+  local -n target_ref="$1"
+  shift
+  if ! contains_prefix_arg "$prefix" "${target_ref[@]}"; then
+    target_ref+=("$prefix")
+  fi
+}
+
+load_command_parser_env() {
+  local skill_dir="/Users/robertsale/.codex/skills/command-parser"
+  if [[ -f "$skill_dir/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$skill_dir/.env"
+    set +a
+  fi
+}
+
+parse_captured_output() {
+  local output_path="$1"
+  shift
+
+  require_cmd curl
+  require_cmd python3
+  load_command_parser_env
+
+  local profile="${COMMAND_PARSER_PROFILE:-command-parser}"
+  local aux_base_url="${CODEX_AUX_SERVER_BASE_URL:-http://127.0.0.1:8771}"
+  local tmp_root="${TMPDIR:-/tmp}"
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${tmp_root%/}/flutterq.XXXXXX")"
+  trap 'rm -rf "$tmp_dir" >/dev/null 2>&1 || true' RETURN
+
+  python3 - "$tmp_dir/request.json" "$profile" "$output_path" "$@" <<'PY'
+import json
+import pathlib
+import sys
+
+request_path = pathlib.Path(sys.argv[1])
+profile = sys.argv[2]
+output_path = pathlib.Path(sys.argv[3])
+command = sys.argv[4:]
+
+payload = {
+    "command": command,
+    "output": output_path.read_text(encoding="utf-8", errors="replace"),
+    "includeWarnings": False,
+    "additionalRequest": (
+        "Summarize only the root build failure(s). Prefer concise file/line "
+        "references and ignore successful phases plus noisy compiler/linker cascades."
+    ),
+    "profile": profile,
+}
+request_path.write_text(json.dumps(payload), encoding="utf-8")
+PY
+
+  local response
+  response="$(
+    curl -fsS \
+      -H 'Content-Type: application/json' \
+      --data @"$tmp_dir/request.json" \
+      "$aux_base_url/v1/command-parser/parse"
+  )"
+
+  python3 - "$response" <<'PY'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+if not data.get("ok"):
+    message = (data.get("error") or "command-parser server request failed").strip()
+    print(f"flutterq: {message}", file=sys.stderr)
+    raise SystemExit(1)
+print((data.get("message") or "").rstrip())
+PY
+}
+
+run_build_command() {
+  local -a build_cmd=("$@")
+  local tmp_root="${TMPDIR:-/tmp}"
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${tmp_root%/}/flutterq-build.XXXXXX")"
+  local output_path="$tmp_dir/output.log"
+
+  if IS_USING_COMMAND_PARSER=true "${build_cmd[@]}" >"$output_path" 2>&1; then
+    echo "build successful"
+    rm -rf "$tmp_dir" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  parse_captured_output "$output_path" "${build_cmd[@]}"
+  local status=$?
+  rm -rf "$tmp_dir" >/dev/null 2>&1 || true
+  return "$status"
+}
+
+run_devices_command() {
+  local -a devices_cmd=("$@")
+  local output
+  local status=0
+
+  output="$("${devices_cmd[@]}" 2>&1)" || status=$?
+
+  if [[ "$status" -ne 0 ]]; then
+    printf '%s\n' "$output"
+    return "$status"
+  fi
+
+  python3 - <<'PY' "$output"
+import sys
+
+raw = sys.argv[1]
+lines = raw.splitlines()
+
+header_index = None
+for i, line in enumerate(lines):
+    if line.startswith("Found ") and " connected devices" in line:
+        header_index = i
+        break
+
+if header_index is None:
+    print(raw.rstrip())
+    raise SystemExit(0)
+
+selected = [lines[header_index]]
+for line in lines[header_index + 1:]:
+    if line.startswith("Error:"):
+        break
+    if line.startswith('Run "flutter emulators"') or line.startswith('If you expected another device'):
+        break
+    selected.append(line)
+
+print("\n".join(selected).rstrip())
+PY
+}
+
+run_test_command() {
+  local -a test_cmd=("$@")
+  local output
+  local status=0
+
+  output="$("${test_cmd[@]}" 2>&1)" || status=$?
+
+  python3 - <<'PY' "$status" "$output"
+import json
+import sys
+
+status = int(sys.argv[1])
+raw = sys.argv[2]
+lines = [line for line in raw.splitlines() if line.strip()]
+
+events = []
+non_json = []
+for line in lines:
+    try:
+        parsed = json.loads(line)
+    except json.JSONDecodeError:
+        if not line.startswith('[{"event":"test.startedProcess"'):
+            non_json.append(line)
+        continue
+    if isinstance(parsed, dict):
+        events.append(parsed)
+    elif (
+        isinstance(parsed, list)
+        and len(parsed) == 1
+        and isinstance(parsed[0], dict)
+        and parsed[0].get("event") == "test.startedProcess"
+    ):
+        continue
+    else:
+        non_json.append(line)
+
+if not events:
+    print(raw.rstrip())
+    raise SystemExit(status)
+
+tests = {}
+prints = {}
+failures = []
+
+for event in events:
+    event_type = event.get("type")
+    if event_type == "testStart":
+      test = event.get("test") or {}
+      tests[test.get("id")] = test
+    elif event_type == "print":
+      test_id = event.get("testID")
+      if test_id is not None:
+          prints.setdefault(test_id, []).append(event.get("message", ""))
+    elif event_type == "error" and event.get("testID") is not None:
+      failures.append(event)
+
+if status == 0:
+    print("tests passed")
+    raise SystemExit(0)
+
+if non_json:
+    for line in non_json[:12]:
+        print(line)
+
+seen_ids = set()
+for failure in failures:
+    test_id = failure.get("testID")
+    if test_id in seen_ids:
+        continue
+    seen_ids.add(test_id)
+    test = tests.get(test_id, {})
+    name = test.get("name") or f"test {test_id}"
+    url = test.get("url") or ""
+    print(f"FAIL: {name}")
+    if url:
+        print(f"  file: {url}")
+
+    error = (failure.get("error") or "").rstrip()
+    if error:
+        for line in error.splitlines()[:6]:
+            print(f"  {line}")
+
+    stack = (failure.get("stackTrace") or "").splitlines()
+    if stack:
+        print(f"  stack: {stack[0]}")
+        if len(stack) > 1:
+            print(f"  at: {stack[1]}")
+
+    test_prints = prints.get(test_id) or []
+    if test_prints:
+        print("  stdout:")
+        head = test_prints[:4]
+        tail = test_prints[-2:] if len(test_prints) > 4 else []
+        for line in head:
+            print(f"    {line}")
+        omitted = len(test_prints) - len(head) - len(tail)
+        if omitted > 0:
+            print(f"    ... {omitted} more line(s) omitted ...")
+        for line in tail:
+            print(f"    {line}")
+
+print(f"{len(failures)} failure event(s)")
+raise SystemExit(status)
+PY
+}
+
+if [[ $# -eq 0 ]]; then
+  show_usage >&2
+  exit 2
+fi
+
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+  show_usage
+  exit 0
+fi
+
+require_cmd flutter
+
+if [[ "$1" == "help" ]] || contains_arg "--help" "$@" || contains_arg "-h" "$@"; then
+  exec flutter "$@"
+fi
+
+base_args=(
+  "--suppress-analytics"
+  "--no-version-check"
+  "--quiet"
+  "--no-color"
+  "--no-wrap"
+)
+
+args=("$@")
+command="$1"
+subcommand="${2:-}"
+
+if ! contains_arg "--suppress-analytics" "${args[@]}"; then
+  args=("${base_args[@]}" "${args[@]}")
+fi
+
+case "$command" in
+  format)
+    deny_command "format"
+    ;;
+  analyze)
+    if ! contains_arg "--machine" "${args[@]}"; then
+      args+=("--machine")
+    fi
+    if ! contains_arg "--congratulate" "${args[@]}" && ! contains_arg "--no-congratulate" "${args[@]}"; then
+      args+=("--no-congratulate")
+    fi
+    if ! contains_arg "--preamble" "${args[@]}" && ! contains_arg "--no-preamble" "${args[@]}"; then
+      args+=("--no-preamble")
+    fi
+    if ! contains_arg "--suggestions" "${args[@]}" && ! contains_arg "--no-suggestions" "${args[@]}"; then
+      args+=("--no-suggestions")
+    fi
+    exec flutter "${args[@]}"
+    ;;
+  test)
+    if ! contains_arg "--machine" "${args[@]}"; then
+      args+=("--machine")
+    fi
+    if ! contains_arg "--fail-fast" "${args[@]}" && ! contains_arg "--no-fail-fast" "${args[@]}"; then
+      args+=("--fail-fast")
+    fi
+    run_test_command flutter "${args[@]}"
+    ;;
+  emulators)
+    exec flutter "${args[@]}"
+    ;;
+  run)
+    deny_command "run"
+    ;;
+  devices)
+    if ! contains_arg "--device-connection" "${args[@]}"; then
+      args+=("--device-connection" "attached")
+    fi
+    if ! contains_prefix_arg "--device-timeout" "${args[@]}"; then
+      args+=("--device-timeout" "5")
+    fi
+    run_devices_command flutter "${args[@]}"
+    ;;
+  emulators)
+    exec flutter "${args[@]}"
+    ;;
+  pub)
+    exec flutter "${args[@]}"
+    ;;
+  build)
+    if [[ -z "$subcommand" ]]; then
+      echo "flutterq: missing build subcommand" >&2
+      exit 2
+    fi
+    run_build_command flutter "${args[@]}"
+    ;;
+  *)
+    exec flutter "${args[@]}"
+    ;;
+esac

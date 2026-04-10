@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "Usage: git-fetch <repo_or_worktree_path> [remote]" >&2
+  exit 2
+fi
+
+path="$(normalize_mirrored_path "$1")"
+remote="${2:-origin}"
+
+http_gitops_op git_fetch "repo_path=$path" "remote=$remote"

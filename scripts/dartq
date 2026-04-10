@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+show_usage() {
+  cat <<'EOF'
+Usage:
+  dartq <dart-command...>
+
+Examples:
+  dartq run bin/tool.dart
+  dartq test
+  dartq compile exe bin/tool.dart -o bin/tool
+  dartq pub outdated
+  dartq pub deps
+
+Notes:
+  - Injects low-noise Dart flags by default.
+  - Uses command-parser only for compile failures.
+  - Prefers machine-readable output for pub outdated.
+EOF
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "dartq: missing required command: $1" >&2
+    exit 1
+  }
+}
+
+deny_command() {
+  local command_name="$1"
+  echo "dartq: forbidden command: $command_name" >&2
+  exit 2
+}
+
+contains_arg() {
+  local needle="$1"
+  shift
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+contains_prefix_arg() {
+  local prefix="$1"
+  shift
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == "$prefix"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+load_command_parser_env() {
+  local skill_dir="/Users/robertsale/.codex/skills/command-parser"
+  if [[ -f "$skill_dir/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$skill_dir/.env"
+    set +a
+  fi
+}
+
+parse_captured_output() {
+  local output_path="$1"
+  shift
+
+  require_cmd curl
+  require_cmd python3
+  load_command_parser_env
+
+  local profile="${COMMAND_PARSER_PROFILE:-command-parser}"
+  local aux_base_url="${CODEX_AUX_SERVER_BASE_URL:-http://127.0.0.1:8771}"
+  local tmp_root="${TMPDIR:-/tmp}"
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${tmp_root%/}/dartq.XXXXXX")"
+  trap 'rm -rf "$tmp_dir" >/dev/null 2>&1 || true' RETURN
+
+  python3 - "$tmp_dir/request.json" "$profile" "$output_path" "$@" <<'PY'
+import json
+import pathlib
+import sys
+
+request_path = pathlib.Path(sys.argv[1])
+profile = sys.argv[2]
+output_path = pathlib.Path(sys.argv[3])
+command = sys.argv[4:]
+
+payload = {
+    "command": command,
+    "output": output_path.read_text(encoding="utf-8", errors="replace"),
+    "includeWarnings": False,
+    "additionalRequest": (
+        "Summarize only the root compiler/build failure(s). Prefer concise "
+        "file/line references and suppress long cascades."
+    ),
+    "profile": profile,
+}
+request_path.write_text(json.dumps(payload), encoding="utf-8")
+PY
+
+  local response
+  response="$(
+    curl -fsS \
+      -H 'Content-Type: application/json' \
+      --data @"$tmp_dir/request.json" \
+      "$aux_base_url/v1/command-parser/parse"
+  )"
+
+  python3 - "$response" <<'PY'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+if not data.get("ok"):
+    message = (data.get("error") or "command-parser server request failed").strip()
+    print(f"dartq: {message}", file=sys.stderr)
+    raise SystemExit(1)
+print((data.get("message") or "").rstrip())
+PY
+}
+
+run_compile_command() {
+  local -a compile_cmd=("$@")
+  local tmp_root="${TMPDIR:-/tmp}"
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${tmp_root%/}/dartq-compile.XXXXXX")"
+  local output_path="$tmp_dir/output.log"
+
+  if IS_USING_COMMAND_PARSER=true "${compile_cmd[@]}" >"$output_path" 2>&1; then
+    echo "compile successful"
+    rm -rf "$tmp_dir" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  parse_captured_output "$output_path" "${compile_cmd[@]}"
+  local status=$?
+  rm -rf "$tmp_dir" >/dev/null 2>&1 || true
+  return "$status"
+}
+
+if [[ $# -eq 0 ]]; then
+  show_usage >&2
+  exit 2
+fi
+
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+  show_usage
+  exit 0
+fi
+
+require_cmd dart
+
+if [[ "$1" == "help" ]] || contains_arg "--help" "$@" || contains_arg "-h" "$@"; then
+  exec dart "$@"
+fi
+
+base_args=(
+  "--suppress-analytics"
+)
+
+args=("$@")
+command="$1"
+subcommand="${2:-}"
+
+if ! contains_arg "--suppress-analytics" "${args[@]}"; then
+  args=("${base_args[@]}" "${args[@]}")
+fi
+
+case "$command" in
+  format)
+    deny_command "format"
+    ;;
+  run)
+    deny_command "run"
+    ;;
+  test)
+    exec dart "${args[@]}"
+    ;;
+  compile)
+    if [[ -n "$subcommand" ]] && ! contains_prefix_arg "--verbosity" "${args[@]}"; then
+      args=("${args[@]:0:3}" "--verbosity=warning" "${args[@]:3}")
+    fi
+    run_compile_command dart "${args[@]}"
+    ;;
+  pub)
+    case "$subcommand" in
+      outdated)
+        if ! contains_arg "--json" "${args[@]}"; then
+          args+=("--json")
+        fi
+        exec dart "${args[@]}"
+        ;;
+      deps|get|upgrade|workspace|add|remove|bump|unpack)
+        if ! contains_arg "--no-color" "${args[@]}" && ! contains_arg "--color" "${args[@]}"; then
+          args=("${args[@]:0:2}" "--no-color" "${args[@]:2}")
+        fi
+        exec dart "${args[@]}"
+        ;;
+      *)
+        exec dart "${args[@]}"
+        ;;
+    esac
+    ;;
+  info|installed)
+    exec dart "${args[@]}"
+    ;;
+  *)
+    exec dart "${args[@]}"
+    ;;
+esac

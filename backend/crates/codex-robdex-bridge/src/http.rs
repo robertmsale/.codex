@@ -55,6 +55,7 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/threads/{thread_id}/commands/terminate", post(thread_command_terminate_http))
         .route("/threads/{thread_id}/running-state", post(thread_running_state_http))
         .route("/threads/{thread_id}/interrupt", post(thread_interrupt_http))
+        .route("/mcp/refresh", post(mcp_refresh_http))
         .route("/threads/{thread_id}/messages", post(thread_message_create_http))
         .route("/threads/messages", get(thread_messages))
         .route("/events/replay", get(replay_events))
@@ -371,6 +372,13 @@ async fn thread_interrupt_http(
     .await
     {
         Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn mcp_refresh_http(State(runtime): State<Arc<BridgeRuntime>>) -> impl IntoResponse {
+    match execute_bridge_command(&runtime, "mcpRefresh", json!({})).await {
+        Ok(outcome) => (StatusCode::OK, Json(outcome.payload["payload"].clone())).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
     }
 }

@@ -148,8 +148,7 @@ max_threads = 1
 url = "https://developers.openai.com/mcp"
 
 [mcp_servers.commandExecution]
-command = "uv"
-args = ["--project", "/Users/robertsale/.codex/mcp/command-execution", "run", "command-execution-mcp"]
+url = "http://127.0.0.1:8772"
 startup_timeout_sec = 20.0
 tool_timeout_sec = 9223372036854776000.0
 

@@ -220,8 +220,7 @@ The user will provide you with some sort of user story list. This is how you man
 
 ### Cross-Project Agents
 
-- `Codex Config Operator`: Manages tooling in ~/.codex/skills folder. Tooling bugs reported by workers or QA, if the scripts they're using live here, you must notify this Operator of the issue. They will let you know when a fix lands and whether it requires agents to restart anything.
-- `Sync Operator`: Manages the QA simulator piloting and gitops services. Piloting tooling bugs or recommendations should be reported here. This agent will let you know if bugs or recommendations land in piloting code and whether they require QA to restart their work.
+- `Codex Config Operator`: Manages all tooling for global skills. If you receive tooling errors from workers in your project, pass them along to this agent so they can implement a fix.
 
 ## Closeout Rule
 

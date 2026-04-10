@@ -206,22 +206,80 @@ normalize_cwd_alias
 umask 077
 state_root="/tmp/codex-command-jobs"
 mkdir -p "$state_root"
+command_execution_base_url="${CODEX_COMMAND_EXECUTION_BASE_URL:-http://127.0.0.1:8772}"
+started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+placeholder_job_file="$state_root/.pending-${$}-${RANDOM}.job"
+: >"$placeholder_job_file"
+command_execution_available=1
+job_id=""
+job_file=""
 
-if command -v uuidgen >/dev/null 2>&1; then
-  job_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+build_command_execution_payload() {
+  python3 - "$@" <<'PY'
+import json
+import sys
+
+payload = {}
+for pair in sys.argv[1:]:
+    key, value = pair.split("=", 1)
+    if value == "":
+        continue
+    if key in {"launcher_pid", "cmd_pid"}:
+        payload[key] = int(value)
+    else:
+        payload[key] = value
+print(json.dumps(payload, separators=(",", ":")))
+PY
+}
+
+reserve_payload="$(build_command_execution_payload \
+  "job_file=$placeholder_job_file" \
+  "cwd=$PWD" \
+  "started_at=$started_at" \
+  "launcher_pid=$$")"
+
+reserve_response="$(curl -fsS \
+  -H 'Content-Type: application/json' \
+  -X POST \
+  "${command_execution_base_url%/}/reserve" \
+  -d "$reserve_payload" 2>/dev/null || true)"
+
+if [[ -n "$reserve_response" ]]; then
+  if job_id="$(python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); print(data["job_id"])' <<<"$reserve_response" 2>/dev/null)"; then
+    job_file="$state_root/${job_id}.job"
+
+    {
+      printf 'job_id=%s\n' "$job_id"
+      printf 'cwd=%s\n' "$PWD"
+      printf 'started_at=%s\n' "$started_at"
+      printf 'launcher_pid=%s\n' "$$"
+    } >"$job_file"
+
+    update_payload="$(build_command_execution_payload "job_file=$job_file")"
+    if ! curl -fsS \
+      -H 'Content-Type: application/json' \
+      -X POST \
+      "${command_execution_base_url%/}/jobs/${job_id}" \
+      -d "$update_payload" >/dev/null 2>&1; then
+      command_execution_available=0
+      rm -f "$job_file"
+      job_file=""
+      job_id=""
+    fi
+  else
+    command_execution_available=0
+  fi
 else
-  job_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+  command_execution_available=0
 fi
 
-job_file="$state_root/${job_id}.job"
-{
-  printf 'job_id=%s\n' "$job_id"
-  printf 'cwd=%s\n' "$PWD"
-  printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'launcher_pid=%s\n' "$$"
-} >"$job_file"
+rm -f "$placeholder_job_file"
 
-printf 'job_id: %s\n' "$job_id" >&2
+if [[ "$command_execution_available" == "1" && -n "$job_id" ]]; then
+  printf 'job_id: %s\n' "$job_id" >&2
+else
+  printf '**TOOLING BLOCK**: Stop immediately after this command finshes and report "command_execution server down" as a TOOLING BLOCK to your orchestrator.\n' >&2
+fi
 
 cleanup() {
   rm -f "$job_file"
@@ -240,12 +298,26 @@ on_signal() {
 trap on_signal HUP INT TERM
 trap 'cleanup' EXIT
 
-PATH="$(strip_shim_path "${PATH:-}")" LAUNCH_JOB_PASSTHRU=1 "$@" &
+PATH="$(strip_shim_path "${PATH:-}")" LAUNCH_JOB_PASSTHRU=1 /opt/homebrew/bin/rtk "$@" &
 cmd_pid=$!
 
-{
-  printf 'cmd_pid=%s\n' "$cmd_pid"
-} >>"$job_file"
+if [[ "$command_execution_available" == "1" && -n "$job_id" && -n "$job_file" ]]; then
+  {
+    printf 'cmd_pid=%s\n' "$cmd_pid"
+  } >>"$job_file"
+
+  update_payload="$(build_command_execution_payload \
+    "job_file=$job_file" \
+    "cmd_pid=$cmd_pid")"
+  if ! curl -fsS \
+    -H 'Content-Type: application/json' \
+    -X POST \
+    "${command_execution_base_url%/}/jobs/${job_id}" \
+    -d "$update_payload" >/dev/null 2>&1; then
+    printf '**TOOLING BLOCK**: Stop immediately after this command finshes and report "command_execution server down" as a TOOLING BLOCK to your orchestrator.\n' >&2
+    command_execution_available=0
+  fi
+fi
 
 if wait "$cmd_pid"; then
   exit 0

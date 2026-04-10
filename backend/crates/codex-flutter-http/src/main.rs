@@ -8,10 +8,10 @@ use tracing::info;
 
 #[derive(Debug, Parser)]
 struct Args {
-    #[arg(long, env = "PARALLELS_SYNC_FLUTTER_HTTP_BIND", default_value = "127.0.0.1")]
+    #[arg(long, env = "CODEX_FLUTTER_HTTP_BIND", default_value = "127.0.0.1")]
     host: std::net::IpAddr,
 
-    #[arg(long, env = "PARALLELS_SYNC_FLUTTER_HTTP_PORT", default_value_t = 8769)]
+    #[arg(long, env = "CODEX_FLUTTER_HTTP_PORT", default_value_t = 8769)]
     port: u16,
 }
 

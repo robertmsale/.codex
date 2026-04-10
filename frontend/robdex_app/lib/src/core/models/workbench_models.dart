@@ -261,6 +261,7 @@ class ChatEntry {
     this.command,
     this.output,
     this.deliveryState,
+    this.planItems = const <PlanChecklistItem>[],
     this.isStreaming = false,
     this.isTool = false,
   });
@@ -277,8 +278,11 @@ class ChatEntry {
   final String? command;
   final String? output;
   final String? deliveryState;
+  final List<PlanChecklistItem> planItems;
   final bool isStreaming;
   final bool isTool;
+
+  bool get hasPlanItems => planItems.isNotEmpty;
 
   factory ChatEntry.fromJson(Map<String, dynamic> json) {
     return ChatEntry(
@@ -294,8 +298,34 @@ class ChatEntry {
       command: json['command'] as String?,
       output: json['output'] as String?,
       deliveryState: json['deliveryState'] as String?,
+      planItems: (json['planItems'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(PlanChecklistItem.fromJson)
+          .toList(growable: false),
       isStreaming: json['isStreaming'] as bool? ?? false,
       isTool: json['isTool'] as bool? ?? false,
+    );
+  }
+}
+
+class PlanChecklistItem {
+  const PlanChecklistItem({
+    required this.text,
+    required this.completed,
+    this.status,
+  });
+
+  final String text;
+  final bool completed;
+  final String? status;
+
+  bool get isInProgress => status?.toLowerCase() == 'in_progress';
+
+  factory PlanChecklistItem.fromJson(Map<String, dynamic> json) {
+    return PlanChecklistItem(
+      text: json['text'] as String? ?? '',
+      completed: json['completed'] as bool? ?? false,
+      status: json['status'] as String?,
     );
   }
 }

@@ -549,16 +549,122 @@ class BridgeWorkbenchGateway implements WorkbenchGateway {
     }
     return messages
         .whereType<Map<String, dynamic>>()
-        .map((message) => ChatEntry(
-              id: (message['id'] as String?) ?? 'message',
-              author: _authorForRole(message['role'] as String?),
-              displayLabel: _authorForRole(message['role'] as String?),
-              timestampLabel: _formatTimestamp(message['createdAt']),
-              body: (message['text'] as String?) ?? '',
-              isTool: (message['role'] as String?) == 'tool',
-              isStreaming: _isStreaming(message),
-            ))
+        .map(_chatEntryFromMessage)
         .toList();
+  }
+
+  ChatEntry _chatEntryFromMessage(Map<String, dynamic> message) {
+    final role = message['role'] as String?;
+    final toolMetadata = message['toolMetadata'] as Map<String, dynamic>?;
+    final kind = toolMetadata?['kind'] as String?;
+    final status = toolMetadata?['status'] as String?;
+    final body = (message['text'] as String?) ?? '';
+    final subtitle = message['subtitle'] as String?;
+    final author = _authorForRole(role);
+
+    return ChatEntry(
+      id: (message['id'] as String?) ?? 'message',
+      author: author,
+      displayLabel: _displayLabelForMessage(author, kind, subtitle, body),
+      timestampLabel: _formatTimestamp(message['createdAt']),
+      body: body,
+      subtitle: subtitle,
+      kind: kind,
+      status: status,
+      processId: toolMetadata?['processId'] as String?,
+      command: toolMetadata?['command'] as String?,
+      output: toolMetadata?['output'] as String?,
+      planItems: _parsePlanItems(message, kind, body),
+      isTool: role == 'tool',
+      isStreaming: _isStreaming(message),
+    );
+  }
+
+  List<PlanChecklistItem> _parsePlanItems(
+    Map<String, dynamic> message,
+    String? kind,
+    String body,
+  ) {
+    final toolMetadata = message['toolMetadata'] as Map<String, dynamic>?;
+    final items = toolMetadata?['items'];
+    if (kind == 'todoList' || kind == 'todo_list') {
+      final parsed = _parseStructuredPlanItems(items);
+      if (parsed.isNotEmpty) {
+        return parsed;
+      }
+    }
+    return _parsePlaintextPlanItems(body);
+  }
+
+  List<PlanChecklistItem> _parseStructuredPlanItems(Object? items) {
+    if (items is! List) {
+      return const <PlanChecklistItem>[];
+    }
+    return items
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (item) => PlanChecklistItem(
+            text: (item['text'] as String?) ?? '',
+            completed: item['completed'] as bool? ?? false,
+            status: item['status'] as String?,
+          ),
+        )
+        .where((item) => item.text.trim().isNotEmpty)
+        .toList(growable: false);
+  }
+
+  List<PlanChecklistItem> _parsePlaintextPlanItems(String body) {
+    final lines = body.replaceAll('\r\n', '\n').split('\n');
+    final items = <PlanChecklistItem>[];
+    final pattern = RegExp(r'^\[(pending|in_progress|completed)\]\s+(.*)$');
+    for (final rawLine in lines) {
+      final line = rawLine.trim();
+      final match = pattern.firstMatch(line);
+      if (match == null) {
+        continue;
+      }
+      final status = match.group(1);
+      final text = match.group(2)?.trim() ?? '';
+      if (text.isEmpty) {
+        continue;
+      }
+      items.add(
+        PlanChecklistItem(
+          text: text,
+          completed: status == 'completed',
+          status: status,
+        ),
+      );
+    }
+    return items;
+  }
+
+  String _displayLabelForMessage(
+    String author,
+    String? kind,
+    String? subtitle,
+    String body,
+  ) {
+    if (kind == null || kind.isEmpty) {
+      return author;
+    }
+    if (kind == 'todoList' || kind == 'todo_list') {
+      return 'Plan';
+    }
+    switch (kind) {
+      case 'commandExecution':
+        return 'Command';
+      case 'mcpToolCall':
+        return subtitle?.trim().isNotEmpty == true ? subtitle!.trim() : 'MCP Tool';
+      case 'fileChange':
+        if (body.trim().toLowerCase() == 'turn diff updated' ||
+            (subtitle?.toLowerCase().contains('git diff') ?? false)) {
+          return 'Diff';
+        }
+        return 'File Change';
+      default:
+        return kind;
+    }
   }
 
   String _authorForRole(String? role) {
@@ -593,7 +699,17 @@ class BridgeWorkbenchGateway implements WorkbenchGateway {
   bool _isStreaming(Map<String, dynamic> message) {
     final toolMetadata = message['toolMetadata'];
     if (toolMetadata is Map<String, dynamic>) {
-      return toolMetadata['status'] == 'inProgress';
+      final kind = toolMetadata['kind'] as String?;
+      final subtitle = (message['subtitle'] as String?) ?? '';
+      final body = (message['text'] as String?) ?? '';
+      final isTurnDiff = kind == 'fileChange' &&
+          (body.toLowerCase() == 'turn diff updated' ||
+              subtitle.toLowerCase().contains('git diff'));
+      if (isTurnDiff) {
+        return false;
+      }
+      return toolMetadata['status'] == 'inProgress' ||
+          toolMetadata['status'] == 'in_progress';
     }
     return false;
   }

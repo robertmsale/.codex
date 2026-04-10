@@ -44,6 +44,7 @@ class ChatTimeline extends StatefulWidget {
 
 class _ChatTimelineState extends State<ChatTimeline> {
   late final ScrollController _scrollController;
+  final Set<String> _expandedEntryKeys = <String>{};
 
   @override
   void initState() {
@@ -55,6 +56,47 @@ class _ChatTimelineState extends State<ChatTimeline> {
   void dispose() {
     _scrollController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatTimeline oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    final currentKeys = widget.entries
+        .map(_entryStorageKey)
+        .toSet();
+    _expandedEntryKeys.removeWhere((key) => !currentKeys.contains(key));
+
+    final threadChanged = widget.threadId != oldWidget.threadId;
+    final entriesChanged = widget.entries.length != oldWidget.entries.length ||
+        !_sameEntryIdentity(widget.entries, oldWidget.entries);
+
+    if (!threadChanged && !entriesChanged) {
+      return;
+    }
+
+    final shouldStickToBottom = threadChanged || _isNearBottom();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients || !shouldStickToBottom) {
+        return;
+      }
+      final position = _scrollController.position;
+      final target = position.maxScrollExtent.clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      );
+      if ((position.pixels - target).abs() > 1) {
+        _scrollController.jumpTo(target);
+      }
+    });
+  }
+
+  bool _isNearBottom() {
+    if (!_scrollController.hasClients) {
+      return true;
+    }
+    final position = _scrollController.position;
+    return position.maxScrollExtent - position.pixels < 96;
   }
 
   @override
@@ -96,13 +138,25 @@ class _ChatTimelineState extends State<ChatTimeline> {
             children: [
               SelectionArea(
                 child: ListView.separated(
-                  key: PageStorageKey<String>('chat-list-${widget.threadId ?? "none"}'),
                   controller: _scrollController,
                   itemCount: widget.entries.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 6),
                   itemBuilder: (context, index) {
+                    final entry = widget.entries[index];
+                    final entryKey = _entryStorageKey(entry);
                     return _ChatBubble(
-                      entry: widget.entries[index],
+                      key: ValueKey(entryKey),
+                      entry: entry,
+                      expanded: _expandedEntryKeys.contains(entryKey),
+                      onExpandedChanged: (expanded) {
+                        setState(() {
+                          if (expanded) {
+                            _expandedEntryKeys.add(entryKey);
+                          } else {
+                            _expandedEntryKeys.remove(entryKey);
+                          }
+                        });
+                      },
                       onTerminateCommandExecution: widget.onTerminateCommandExecution,
                     );
                   },
@@ -132,13 +186,41 @@ class _ChatTimelineState extends State<ChatTimeline> {
   }
 }
 
+bool _sameEntryIdentity(List<ChatEntry> a, List<ChatEntry> b) {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i += 1) {
+    if (_entryStorageKey(a[i]) != _entryStorageKey(b[i]) ||
+        a[i].body != b[i].body ||
+        a[i].output != b[i].output ||
+        a[i].status != b[i].status ||
+        a[i].isStreaming != b[i].isStreaming) {
+      return false;
+    }
+  }
+  return true;
+}
+
+String _entryStorageKey(ChatEntry entry) {
+  final stableId = entry.id.trim().isNotEmpty
+      ? entry.id.trim()
+      : '${entry.kind}|${entry.timestampLabel}|${entry.processId ?? ''}|${entry.command ?? entry.body}';
+  return stableId;
+}
+
 class _ChatBubble extends StatelessWidget {
   const _ChatBubble({
+    super.key,
     required this.entry,
+    required this.expanded,
+    required this.onExpandedChanged,
     this.onTerminateCommandExecution,
   });
 
   final ChatEntry entry;
+  final bool expanded;
+  final ValueChanged<bool> onExpandedChanged;
   final ValueChanged<String>? onTerminateCommandExecution;
 
   @override
@@ -147,9 +229,15 @@ class _ChatBubble extends StatelessWidget {
     final isConversation = !entry.isTool &&
         (entry.author == 'User' || entry.author == 'Assistant' || entry.author == 'Operator');
 
+    if (entry.hasPlanItems) {
+      return _PlanUpdateCard(entry: entry);
+    }
+
     if (!isConversation) {
       return _InlineEventRow(
         entry: entry,
+        expanded: expanded,
+        onExpandedChanged: onExpandedChanged,
         onTerminateCommandExecution: onTerminateCommandExecution,
       );
     }
@@ -239,6 +327,175 @@ class _ChatBubble extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _PlanUpdateCard extends StatelessWidget {
+  const _PlanUpdateCard({
+    required this.entry,
+  });
+
+  final ChatEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final note = _planSummary(entry.body);
+    final accent = entry.isStreaming
+        ? Colors.amber.shade700
+        : theme.colorScheme.primary;
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: accent.withValues(alpha: 0.35),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: theme.colorScheme.shadow.withValues(alpha: 0.08),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 24,
+                      height: 24,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: accent.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(7),
+                      ),
+                      child: Text(
+                        '◻',
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          color: accent,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        entry.displayLabel,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    Text(entry.timestampLabel, style: theme.textTheme.labelSmall),
+                    if (entry.isStreaming) ...[
+                      const SizedBox(width: 8),
+                      const SizedBox(
+                        width: 10,
+                        height: 10,
+                        child: CircularProgressIndicator(strokeWidth: 1.6),
+                      ),
+                    ],
+                  ],
+                ),
+                if (note != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    note,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.8),
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 10),
+                ...entry.planItems.map(
+                  (item) => Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: _PlanChecklistRow(item: item),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PlanChecklistRow extends StatelessWidget {
+  const _PlanChecklistRow({
+    required this.item,
+  });
+
+  final PlanChecklistItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final accent = item.completed
+        ? Colors.green.shade700
+        : item.isInProgress
+            ? Colors.amber.shade800
+            : theme.colorScheme.onSurface.withValues(alpha: 0.72);
+    final glyph = item.completed ? '☑' : '◻';
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1),
+          child: Text(
+            glyph,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: accent,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            item.text,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              height: 1.35,
+              color: item.completed
+                  ? theme.colorScheme.onSurface.withValues(alpha: 0.68)
+                  : theme.colorScheme.onSurface,
+              decoration: item.completed ? TextDecoration.lineThrough : null,
+              decorationColor: accent.withValues(alpha: 0.7),
+            ),
+          ),
+        ),
+        if (item.isInProgress) ...[
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              'Active',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: accent,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ],
     );
   }
 }
@@ -397,32 +654,29 @@ TextStyle? _highlightStyleForClass(String? className, ThemeData theme) {
   return null;
 }
 
-class _InlineEventRow extends StatefulWidget {
+class _InlineEventRow extends StatelessWidget {
   const _InlineEventRow({
     required this.entry,
+    required this.expanded,
+    required this.onExpandedChanged,
     this.onTerminateCommandExecution,
   });
 
   final ChatEntry entry;
+  final bool expanded;
+  final ValueChanged<bool> onExpandedChanged;
   final ValueChanged<String>? onTerminateCommandExecution;
-
-  @override
-  State<_InlineEventRow> createState() => _InlineEventRowState();
-}
-
-class _InlineEventRowState extends State<_InlineEventRow> {
-  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final entry = widget.entry;
+    final entry = this.entry;
     final detailRows = <Widget>[
       if (_shouldShowSummary(entry))
         _DetailLine(
           label: 'Summary',
           value: entry.body,
-          expanded: _expanded,
+          expanded: expanded,
         ),
       if (_hasValue(entry.processId))
         _DetailLine(
@@ -434,13 +688,13 @@ class _InlineEventRowState extends State<_InlineEventRow> {
         _DetailLine(
           label: entry.kind == 'mcpToolCall' ? 'Input' : entry.kind == 'fileChange' ? 'Files' : 'Command',
           value: entry.command!,
-          expanded: _expanded,
+          expanded: expanded,
         ),
       if (_hasValue(entry.output))
         _DetailLine(
           label: entry.kind == 'fileChange' ? 'Diff' : 'Output',
           value: entry.output!,
-          expanded: _expanded,
+          expanded: expanded,
         ),
     ];
     final canExpand = detailRows.isNotEmpty &&
@@ -452,7 +706,7 @@ class _InlineEventRowState extends State<_InlineEventRow> {
         (entry.isStreaming || _isInProgressStatus(entry.status)) &&
         (entry.processId?.trim().isNotEmpty ?? false) &&
         entry.id.trim().isNotEmpty &&
-        widget.onTerminateCommandExecution != null;
+        onTerminateCommandExecution != null;
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -503,7 +757,7 @@ class _InlineEventRowState extends State<_InlineEventRow> {
                 if (canTerminate) ...[
                   const SizedBox(width: 4),
                   IconButton(
-                    onPressed: () => widget.onTerminateCommandExecution?.call(entry.processId!),
+                    onPressed: () => onTerminateCommandExecution?.call(entry.processId!),
                     icon: const Icon(Icons.stop_circle_outlined, size: 16),
                     tooltip: 'Terminate command',
                     splashRadius: 14,
@@ -516,14 +770,14 @@ class _InlineEventRowState extends State<_InlineEventRow> {
                 if (canExpand) ...[
                   const SizedBox(width: 4),
                   TextButton(
-                    onPressed: () => setState(() => _expanded = !_expanded),
+                    onPressed: () => onExpandedChanged(!expanded),
                     style: TextButton.styleFrom(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 0),
                       minimumSize: const Size(0, 20),
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       visualDensity: VisualDensity.compact,
                     ),
-                    child: Text(_expanded ? 'Less' : 'More'),
+                    child: Text(expanded ? 'Less' : 'More'),
                   ),
                 ],
               ],
@@ -620,6 +874,9 @@ bool _isInProgressStatus(String? status) {
 }
 
 bool _shouldShowSummary(ChatEntry entry) {
+  if (entry.hasPlanItems) {
+    return false;
+  }
   final body = entry.body.trim();
   if (body.isEmpty) {
     return false;
@@ -639,4 +896,18 @@ String _compactPreview(String value) {
     return normalized;
   }
   return '${normalized.substring(0, 157)}...';
+}
+
+String? _planSummary(String body) {
+  final lines = body
+      .replaceAll('\r\n', '\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .where((line) => line.isNotEmpty)
+      .where((line) => !RegExp(r'^\[(pending|in_progress|completed)\]\s+').hasMatch(line))
+      .toList(growable: false);
+  if (lines.isEmpty) {
+    return null;
+  }
+  return lines.join(' ');
 }

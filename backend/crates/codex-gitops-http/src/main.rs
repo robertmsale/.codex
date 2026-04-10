@@ -8,10 +8,10 @@ use tracing::info;
 
 #[derive(Debug, Parser)]
 struct Args {
-    #[arg(long, env = "PARALLELS_SYNC_GITOPS_BIND", default_value = "127.0.0.1")]
+    #[arg(long, env = "CODEX_GITOPS_BIND", default_value = "127.0.0.1")]
     host: std::net::IpAddr,
 
-    #[arg(long, env = "PARALLELS_SYNC_GITOPS_PORT", default_value_t = 8765)]
+    #[arg(long, env = "CODEX_GITOPS_PORT", default_value_t = 8765)]
     port: u16,
 }
 

@@ -21,7 +21,7 @@ pub struct CommandOutcome {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PersistedState {
+pub(crate) struct PersistedState {
     #[serde(default)]
     global_configs: Value,
     #[serde(default)]
@@ -865,6 +865,45 @@ pub async fn execute_bridge_command(
             app_server_request_json(runtime, "turn/interrupt", json!({"threadId": thread_id, "turnId": turn_id})).await?;
             Ok(success(json!({"type":"empty"})))
         }
+        "mcpRefresh" => {
+            let running_thread_ids = runtime.snapshot().await?.thread_cache.running_thread_ids;
+            let mut interrupted_thread_ids = Vec::new();
+            let mut interrupt_errors = Vec::new();
+
+            for thread_id in running_thread_ids {
+                let Some(turn_id) = runtime.active_turn_id_for_thread(&thread_id).await else {
+                    continue;
+                };
+
+                match app_server_request_json(
+                    runtime,
+                    "turn/interrupt",
+                    json!({
+                        "threadId": thread_id,
+                        "turnId": turn_id,
+                    }),
+                )
+                .await
+                {
+                    Ok(_) => interrupted_thread_ids.push(thread_id),
+                    Err(error) => interrupt_errors.push(json!({
+                        "threadId": thread_id,
+                        "error": error.to_string(),
+                    })),
+                }
+            }
+
+            app_server_request_json(runtime, "config/mcpServer/reload", json!({})).await?;
+
+            Ok(success(json!({
+                "type": "mcpRefresh",
+                "payload": {
+                    "interruptedThreadIDs": interrupted_thread_ids,
+                    "interruptErrors": interrupt_errors,
+                    "refreshed": true,
+                }
+            })))
+        }
         "commandApproval" => {
             let request_id = required_request_id(&payload, "requestId")?;
             let decision = required_string(&payload, "decision")?;
@@ -1148,7 +1187,7 @@ async fn app_server_request_json(
     runtime.request_app_server_json(method, params).await
 }
 
-fn parse_state(value: &Value) -> PersistedState {
+pub(crate) fn parse_state(value: &Value) -> PersistedState {
     serde_json::from_value(value.clone()).unwrap_or_default()
 }
 
@@ -1189,7 +1228,7 @@ where
     }
 }
 
-async fn persist_state(runtime: &BridgeRuntime, state: &PersistedState) -> Result<()> {
+pub(crate) async fn persist_state(runtime: &BridgeRuntime, state: &PersistedState) -> Result<()> {
     runtime
         .persist_state_document(serde_json::to_value(state)?)
         .await?;
@@ -3599,9 +3638,14 @@ pub async fn orchestrator_warm_handoff(
     let sender = scoped.sender;
     let recipient =
         resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?;
-    if !sender.is_orchestrator || sender.project_path != recipient.project_path {
+    let self_handoff_allowed = sender.thread_id == recipient.thread_id
+        && sender.project_path == recipient.project_path
+        && matches!(sender.role.as_str(), "orchestrator" | "operator" | "hidden");
+    let project_orchestrator_handoff_allowed =
+        sender.is_orchestrator && sender.project_path == recipient.project_path;
+    if !self_handoff_allowed && !project_orchestrator_handoff_allowed {
         bail!(
-            "Only the configured orchestrator thread for project `{}` can warm handoff agents in that project.",
+            "Only the configured orchestrator thread for project `{}` can warm handoff agents in that project, except self-handoff for orchestrator, operator, and hidden threads.",
             recipient.project_path
         );
     }
@@ -3665,7 +3709,7 @@ pub async fn orchestrator_warm_handoff(
     let mut replacement = spawn_agent(runtime, &spawn_payload).await?;
 
     let mut next_state = parse_state(&runtime.state_document_value().await);
-    let mut archived_old = false;
+    let mut old_was_project_orchestrator = false;
     if let Some(project) = next_state
         .projects
         .values_mut()
@@ -3680,10 +3724,8 @@ pub async fn orchestrator_warm_handoff(
                 new_agent_state.extras.insert(key.clone(), value.clone());
             }
         }
-        if let Some(old_agent_state) = project.agents.get_mut(&recipient.thread_id) {
-            old_agent_state.archived = Some(true);
-            archived_old = true;
-        }
+        old_was_project_orchestrator =
+            project.orchestrator_thread_id.as_deref() == Some(recipient.thread_id.as_str());
         for group in &mut project.thread_groups {
             if group.thread_ids.iter().any(|value| value == &recipient.thread_id)
                 && !group.thread_ids.iter().any(|value| value == &replacement.id)
@@ -3693,16 +3735,27 @@ pub async fn orchestrator_warm_handoff(
         }
         project.updated_at = Some(unix_now());
     }
+    let pruned_old = prune_archived_thread_locally(&mut next_state, &recipient.thread_id);
+    if old_was_project_orchestrator {
+        for project in next_state.projects.values_mut() {
+            if project.agents.contains_key(&replacement.id) {
+                project.orchestrator_thread_id = Some(replacement.id.clone());
+                project.updated_at = Some(unix_now());
+                break;
+            }
+        }
+    }
     next_state.updated_at = Some(unix_now());
     persist_state(runtime, &next_state).await?;
-    if archived_old {
-        let _ = app_server_request_json(
-            runtime,
-            "thread/archive",
-            json!({"threadId": recipient.thread_id}),
-        )
-        .await;
+    if pruned_old {
+        runtime.prune_thread_local(&recipient.thread_id).await?;
     }
+    let _ = app_server_request_json(
+        runtime,
+        "thread/archive",
+        json!({"threadId": recipient.thread_id}),
+    )
+    .await;
     replacement.parent_agent_id = Some(sender_thread_id.to_string());
     Ok(json!({
         "previousThreadId": recipient.thread_id,
@@ -3801,7 +3854,7 @@ async fn archive_thread(runtime: &BridgeRuntime, thread_id: &str) -> Result<()> 
     Ok(())
 }
 
-fn prune_archived_thread_locally(state: &mut PersistedState, thread_id: &str) -> bool {
+pub(crate) fn prune_archived_thread_locally(state: &mut PersistedState, thread_id: &str) -> bool {
     let mut changed = false;
     for project in state.projects.values_mut() {
         let mut project_changed = false;

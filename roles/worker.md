@@ -102,5 +102,5 @@ For working-code changes, your default chain is:
 - **NEVER** use destructive commands like `git reset --hard` or `git checkout --` unless specifically requested or approved by the user.
 - You struggle using the git interactive console. **ALWAYS** prefer using non-interactive git commands.
 - Do *not* parallelize *build* or *test* commands. This creates file system lock contention and prevents forward progress.
-- Execute long-running commands using the command-execution skill. `command_execution_wait` is a mandatory tool.
+- Execute long-running commands using the command-execution skill. `command_execution_wait` is a mandatory tool. If a CLI command produces `**TOOLING BLOCK**` instead of a job ID, you must report this to the orchestrator and stop immediately.
 - Use the gh-version-control-workflow skill in favor of directly running git commands unless absolutely necessary

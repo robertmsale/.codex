@@ -3,6 +3,5 @@
 This directory is the codex-owned home for supervisor templates and service
 inventory related to backend services.
 
-Nothing here is live yet. The active configs still live in
-`~/Code/parallels-sync/supervisor/`.
-
+The active supervisor configs for aux + Flutter broker lanes now point at the
+backend-local Python service tree and are loaded from `/usr/local/etc/supervisor.d`.

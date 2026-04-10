@@ -1,4 +1,4 @@
-# Allow noisy commands when correctly routed through command-parser.
+# Allow noisy commands through the sanctioned tool surfaces.
 prefix_rule(
     pattern = ["cargo", ["check", "test", "clippy", "build", "bench", "nextest"]],
     decision = "forbidden",
@@ -12,14 +12,6 @@ prefix_rule(
 )
 prefix_rule(
     pattern = [
-    "flutter", ["build", "test", "drive"]
-    ],
-    decision = "forbidden",
-    justification = "Use command-parser skill: ~/.codex/skills/command-parser/SKILL.md and run ~/.codex/skills/command-parser/scripts/command-parser <command>.",
-)
-prefix_rule(
-    pattern = [
-    ["command-parser", "~/.codex/skills/command-parser/scripts/command-parser", "/Users/robertsale/.codex/skills/command-parser/scripts/command-parser"],
     "flutter", ["build", "test", "drive"]
     ],
     decision = "allow",
@@ -62,11 +54,11 @@ prefix_rule(
     decision = "allow",
 )
 
-# Direct noisy commands must not bypass command-parser.
+# Flutter commands are allowed because the PATH wrapper and broker apply the
+# sanctioned low-noise handling.
 prefix_rule(
     pattern = ["flutter", ["analyze"]],
-    decision = "forbidden",
-    justification = "Use the project's local code validation script instead.",
+    decision = "allow",
 )
 # prefix_rule(
 #     pattern = ["npm", "run", ["build", "test", "check", "lint"]],

@@ -15,10 +15,10 @@ Current goal:
 Live service inventory at scaffold time:
 
 - `codex-aux-http`
-- `sync-gitops-http`
-- `sync-flutter-sim-http`
-- `sync-flutter-drive-http`
-- `sync-flutter-http`
+- `codex-gitops-http`
+- `codex-flutter-sim-http`
+- `codex-flutter-drive-http`
+- `codex-flutter-http`
 - `robdex-app-server`
 - `robdex-bridge-deno`
 
@@ -34,18 +34,18 @@ remain external until you decide to migrate them.
 - `crates/codex-flutter-drive-http`: driver/control service
 - `crates/codex-flutter-http`: generic Flutter execution service
 - `crates/codex-supervisor`: supervisor config inventory and future management tooling
-- `python/sync-services`: staged Python service code copied from the
-  old `~/Code/parallels-sync` home so it is now within codex backend scope
+- `python/codex-services`: backend-local Python service code for the current
+  Codex auxiliary servers
 - `docs/`: migration notes and implementation sequencing
 - `supervisor/`: codex-owned supervisor templates and inventories
 
-## Non-Goals
+## Migration Note
 
-- no live service cutover
-- no supervisor restart
-- no edits to the currently running services in `~/Code/parallels-sync`
+The backend-local Python services now own the active auxiliary service surface
+for aux + Flutter broker lanes. Historical references to the old
+`~/Code/parallels-sync` home remain only for provenance.
 
 ## Next Step
 
-Implement one service at a time behind the existing ports and env contracts,
-starting with the smallest/highest-confidence server.
+Finish the gitops cutover by restoring the missing `gitops_mcp` dependency or
+replacing that dependency with a backend-owned implementation.

@@ -1,6 +1,4 @@
 #!/bin/zsh
 set -euo pipefail
 
-cd /Users/robertsale/.codex/backend
-exec cargo run --release -p codex-flutter-http -- "$@"
-
+exec /Users/robertsale/.codex/backend/python/codex-services/scripts/run-codex-flutter-http "$@"

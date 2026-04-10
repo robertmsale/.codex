@@ -37,10 +37,13 @@ Use this skill for Robdex-backed communication.
   - `robdex archive-agent ...`
   - `robdex rename-agent ...`
   - `robdex set-worker-metadata ...`
+  - `robdex handoff --help`
 
 ## Shared Guardrails
 
 - Use the public `robdex` script surface.
 - Bridge-owned authorization decides who can list, message, archive, approve, or mutate bookkeeping state.
 - Prefer `--text-file` or `--text-stdin` for shell-sensitive message text.
+- Before using warm handoff, run `robdex handoff --help` and follow the role-specific handoff guidance it prints.
+- Use warm handoff only when the user explicitly asks for it.
 - `qa` is a non-implementer validation role. It follows worker-style communication rules but is meant to pilot stories and report usability/product issues rather than fix code.

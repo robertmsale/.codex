@@ -1,56 +1,63 @@
 [[service]]
 name = "codex-aux-http"
 crate = "codex-aux-http"
-current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-codex-aux-http"
-current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/codex-aux-http.ini"
+current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-aux-http"
+current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-aux-http.ini"
 port = 0
 status = "planned"
 
 [[service]]
-name = "parallels-sync-gitops-http"
+name = "codex-command-execution-http"
+crate = "codex-command-execution-http"
+current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-command-execution-http"
+current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-command-execution-http.ini"
+port = 8772
+status = "planned"
+
+[[service]]
+name = "codex-gitops-http"
 crate = "codex-gitops-http"
-current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-parallels-sync-gitops-http"
-current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/parallels-sync-gitops-http.ini"
+current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-gitops-http"
+current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-gitops-http.ini"
 port = 8765
 status = "planned"
 
 [[service]]
-name = "parallels-sync-flutter-sim-http"
+name = "codex-flutter-sim-http"
 crate = "codex-flutter-sim-http"
-current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-parallels-sync-flutter-sim-http"
-current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/parallels-sync-flutter-sim-http.ini"
+current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-flutter-sim-http"
+current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-flutter-sim-http.ini"
 port = 8767
 status = "planned"
 
 [[service]]
-name = "parallels-sync-flutter-drive-http"
+name = "codex-flutter-drive-http"
 crate = "codex-flutter-drive-http"
-current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-parallels-sync-flutter-drive-http"
-current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/parallels-sync-flutter-drive-http.ini"
+current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-flutter-drive-http"
+current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-flutter-drive-http.ini"
 port = 8768
 status = "planned"
 
 [[service]]
-name = "parallels-sync-flutter-http"
+name = "codex-flutter-http"
 crate = "codex-flutter-http"
-current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-parallels-sync-flutter-http"
-current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/parallels-sync-flutter-http.ini"
+current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-flutter-http"
+current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-flutter-http.ini"
 port = 8769
 status = "planned"
 
 [[service]]
 name = "robdex-app-server"
 crate = ""
-current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-robdex-app-server"
-current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/robdex-app-server.ini"
+current_runner = "/Users/robertsale/.codex/backend/python/codex-services/scripts/run-robdex-app-server"
+current_supervisor = "/Users/robertsale/.codex/backend/python/codex-services/supervisor/robdex-app-server.ini"
 port = 4200
 status = "out_of_scope"
 
 [[service]]
 name = "robdex-bridge-deno"
 crate = ""
-current_runner = "/Users/robertsale/Code/parallels-sync/scripts/run-robdex-bridge-deno"
-current_supervisor = "/Users/robertsale/Code/parallels-sync/supervisor/robdex-bridge-deno.ini"
+current_runner = "/Users/robertsale/.codex/backend/python/codex-services/scripts/run-robdex-bridge-deno"
+current_supervisor = "/Users/robertsale/.codex/backend/python/codex-services/supervisor/robdex-bridge-deno.ini"
 port = 42080
 status = "out_of_scope"
-

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BASE_URL="${FLUTTER_HTTP_SERVER_BASE_URL:-http://127.0.0.1:8769}"
-REAL_FLUTTER_BIN="${REAL_FLUTTER_BIN:-/Users/robertsale/Code/flutter/bin/flutter}"
+REAL_FLUTTER_BIN="${REAL_FLUTTER_BIN:-/Users/robertsale/.codex/scripts/flutterq}"
 BROKER_ROOTS=(
   "/Users/robertsale/Code/ezra/ezra"
   "/Users/robertsale/Code/ezra/qa"

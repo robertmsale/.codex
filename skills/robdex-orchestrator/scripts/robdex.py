@@ -11,6 +11,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+RESOURCE_DIR = SCRIPT_DIR.parent / "resources"
+
 
 def _require_thread_id() -> str:
     thread_id = os.environ["CODEX_THREAD_ID"].strip()
@@ -87,6 +90,15 @@ def _request_json(
     return decoded
 
 
+def _read_resource_text(*parts: str) -> str:
+    path = RESOURCE_DIR.joinpath(*parts)
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _whoami(thread_id: str) -> dict[str, Any]:
+    return _request_json("GET", "/orchestrator/whoami", query={"senderThreadId": thread_id})
+
+
 def _resolve_text_input(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -158,7 +170,7 @@ def _print_lines(lines: list[str]) -> None:
 
 
 def _cmd_whoami(thread_id: str) -> None:
-    payload = _request_json("GET", "/orchestrator/whoami", query={"senderThreadId": thread_id})
+    payload = _whoami(thread_id)
     lines = [
         f"role={payload.get('role') or 'unknown'}",
         f"thread_id={payload.get('threadId') or thread_id}",
@@ -173,6 +185,73 @@ def _cmd_whoami(thread_id: str) -> None:
     if cwd:
         lines.append(f"cwd={cwd}")
     _print_lines(lines)
+
+
+def _current_role(thread_id: str) -> str:
+    payload = _whoami(thread_id)
+    role = _normalize_text(str(payload.get("role") or ""))
+    return role or "unknown"
+
+
+def _handoff_guidance_text(role: str) -> str:
+    chunks = [_read_resource_text("handoff", "shared.md")]
+    role_map = {
+        "orchestrator": "orchestrator.md",
+        "operator": "operator.md",
+        "hidden": "hidden.md",
+    }
+    role_file = role_map.get(role)
+    if role_file:
+        chunks.append(_read_resource_text("handoff", role_file))
+    return "\n\n".join(chunk for chunk in chunks if chunk)
+
+
+def _print_handoff_help(parser: argparse.ArgumentParser, thread_id: str) -> None:
+    parser.print_help()
+    try:
+        role = _current_role(thread_id)
+        guidance = _handoff_guidance_text(role)
+    except SystemExit as exc:
+        guidance = _read_resource_text("handoff", "shared.md")
+        print(f"\nRole-specific guidance unavailable: {exc}", file=sys.stderr)
+    print()
+    print(guidance)
+
+
+def _cmd_handoff(thread_id: str, args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    payload = _whoami(thread_id)
+    role = _normalize_text(str(payload.get("role") or "")) or "unknown"
+    if role in {"worker", "qa"}:
+        raise SystemExit(f"robdex: handoff is not available for role {_quoted(role)}")
+
+    project_path = _normalize_path(str(payload.get("projectPath") or ""))
+    if not project_path:
+        raise SystemExit("robdex: current thread is not attached to a project")
+
+    prompt = _resolve_text_input(
+        parser,
+        args,
+        inline_attr="prompt",
+        file_attr="prompt_file",
+        stdin_attr="prompt_stdin",
+        label="handoff prompt",
+    ).strip()
+    if not prompt:
+        raise SystemExit("robdex: handoff prompt is empty")
+
+    response = _request_json(
+        "POST",
+        "/orchestrator/warm-handoff",
+        body={
+            "senderThreadId": thread_id,
+            "recipientThreadId": thread_id,
+            "projectPath": project_path,
+            "prompt": prompt,
+        },
+    )
+    replacement_thread_id = _normalize_text(str(response.get("replacementThreadId") or "")) or "unknown-thread-id"
+    previous_thread_id = _normalize_text(str(response.get("previousThreadId") or "")) or thread_id
+    print(f"Warmed handoff {previous_thread_id} -> {replacement_thread_id}")
 
 
 def _cmd_list_projects() -> None:
@@ -444,7 +523,19 @@ def _cmd_approval_decision(thread_id: str, approval_id: str, decision: str, mess
     print(f"{verb} {_quoted(approval_id)}{suffix}")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def _add_handoff_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> argparse.ArgumentParser:
+    parser = sub.add_parser(
+        "handoff",
+        help="Warm handoff the current thread into a replacement thread with a fresh initial prompt.",
+    )
+    prompt_group = parser.add_mutually_exclusive_group(required=True)
+    prompt_group.add_argument("--prompt")
+    prompt_group.add_argument("--prompt-file")
+    prompt_group.add_argument("--prompt-stdin", action="store_true")
+    return parser
+
+
+def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     parser = argparse.ArgumentParser(prog="robdex", description="Robdex bridge CLI.")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -525,6 +616,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_meta.add_argument("--unblock-when")
     p_meta.add_argument("--clear-blocked", action="store_true")
 
+    p_handoff = _add_handoff_parser(sub)
+
     p_approve = sub.add_parser("approve-approval")
     p_approve.add_argument("--approval-id", required=True)
 
@@ -532,11 +625,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_decline.add_argument("--approval-id", required=True)
     p_decline.add_argument("--message")
 
-    return parser
+    return parser, p_handoff
 
 
 def main() -> int:
-    parser = build_parser()
+    parser, handoff_parser = build_parser()
+    if len(sys.argv) >= 2 and sys.argv[1] == "handoff" and any(flag in sys.argv[2:] for flag in ("-h", "--help")):
+        _print_handoff_help(handoff_parser, _require_thread_id())
+        return 0
     args = parser.parse_args()
     thread_id = _require_thread_id()
 
@@ -628,6 +724,8 @@ def main() -> int:
         _cmd_send_message(thread_id, args, parser)
     elif args.cmd == "set-worker-metadata":
         _cmd_set_worker_metadata(thread_id, args)
+    elif args.cmd == "handoff":
+        _cmd_handoff(thread_id, args, parser)
     elif args.cmd == "approve-approval":
         _cmd_approval_decision(thread_id, args.approval_id, "accept", None)
     elif args.cmd == "decline-approval":

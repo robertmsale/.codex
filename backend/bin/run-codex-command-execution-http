@@ -1,0 +1,6 @@
+#!/bin/zsh
+set -euo pipefail
+
+cd /Users/robertsale/.codex/backend
+export PATH="/Users/robertsale/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+exec /Users/robertsale/.cargo/bin/cargo run --release -p codex-command-execution-http -- "$@"
