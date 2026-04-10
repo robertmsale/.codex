@@ -17,8 +17,9 @@ use crate::signals::{
     FetchThreadHistorySignal, InitializeWorkbenchSignal, MoveSelectedThreadToGroupSignal, ReloadWorkbenchSignal,
     RenameThreadGroupSignal, RenameThreadSignal, SelectProjectSignal, SelectThreadSignal,
     SendThreadMessageSignal, SetProjectOrchestratorSignal, SetThreadRunningStateSignal,
-    SpawnAgentSignal, UpdateProjectSignal, UpdateThreadSettingsSignal, UpdateWorkerMetadataSignal,
-    InterruptThreadSignal, ThreadHistoryStateSignal, WarmHandoffSignal, WorkbenchStateSignal,
+    SpawnAgentSignal, TerminateCommandExecutionSignal, ThreadCompactSignal, UpdateProjectSignal,
+    UpdateThreadSettingsSignal, UpdateWorkerMetadataSignal, InterruptThreadSignal, ThreadHistoryStateSignal,
+    WarmHandoffSignal, WorkbenchStateSignal,
 };
 
 enum Action {
@@ -26,6 +27,8 @@ enum Action {
     Reload,
     SelectThread(String),
     FetchThreadHistory,
+    ThreadCompact,
+    TerminateCommandExecution(String),
     CreateProject {
         name: String,
         root_path: String,
@@ -46,6 +49,11 @@ enum Action {
         worker_reasoning_effort: Option<String>,
         qa_model_id: Option<String>,
         qa_reasoning_effort: Option<String>,
+        orchestrator_developer_instructions: Option<String>,
+        worker_developer_instructions: Option<String>,
+        qa_developer_instructions: Option<String>,
+        operator_developer_instructions: Option<String>,
+        hidden_developer_instructions: Option<String>,
     },
     CreateThread {
         project_id: String,
@@ -97,6 +105,7 @@ enum Action {
         network_access: Option<bool>,
         model_id: Option<String>,
         reasoning_effort: Option<String>,
+        service_tier: Option<String>,
     },
     SetThreadRunningState(bool),
     RenameThread(String),
@@ -190,6 +199,7 @@ fn apply_optimistic_action(current_view: &mut Option<WorkbenchViewData>, action:
         subtitle: Some("Sending...".to_string()),
         kind: None,
         status: Some("pending".to_string()),
+        process_id: None,
         command: None,
         output: None,
         delivery_state: Some("pending".to_string()),
@@ -224,6 +234,10 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
         Action::SelectThread(signal.message.thread_id)
     });
     spawn_unit::<FetchThreadHistorySignal, _>(tx.clone(), || Action::FetchThreadHistory);
+    spawn_unit::<ThreadCompactSignal, _>(tx.clone(), || Action::ThreadCompact);
+    spawn_map::<TerminateCommandExecutionSignal, _>(tx.clone(), |signal| {
+        Action::TerminateCommandExecution(signal.message.process_id)
+    });
     spawn_map::<CreateProjectSignal, _>(tx.clone(), |signal| Action::CreateProject {
         name: signal.message.name,
         root_path: signal.message.root_path,
@@ -280,6 +294,31 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
             None
         } else {
             Some(signal.message.qa_reasoning_effort)
+        },
+        orchestrator_developer_instructions: if signal.message.orchestrator_developer_instructions.is_empty() {
+            None
+        } else {
+            Some(signal.message.orchestrator_developer_instructions)
+        },
+        worker_developer_instructions: if signal.message.worker_developer_instructions.is_empty() {
+            None
+        } else {
+            Some(signal.message.worker_developer_instructions)
+        },
+        qa_developer_instructions: if signal.message.qa_developer_instructions.is_empty() {
+            None
+        } else {
+            Some(signal.message.qa_developer_instructions)
+        },
+        operator_developer_instructions: if signal.message.operator_developer_instructions.is_empty() {
+            None
+        } else {
+            Some(signal.message.operator_developer_instructions)
+        },
+        hidden_developer_instructions: if signal.message.hidden_developer_instructions.is_empty() {
+            None
+        } else {
+            Some(signal.message.hidden_developer_instructions)
         },
     });
     spawn_map::<CreateThreadSignal, _>(tx.clone(), |signal| Action::CreateThread {
@@ -413,6 +452,11 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
         } else {
             Some(signal.message.reasoning_effort)
         };
+        let service_tier = if signal.message.service_tier.is_empty() {
+            None
+        } else {
+            Some(signal.message.service_tier)
+        };
         Action::UpdateThreadSettings {
             role,
             approval_policy,
@@ -420,6 +464,7 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
             network_access,
             model_id,
             reasoning_effort,
+            service_tier,
         }
     });
     spawn_map::<SetThreadRunningStateSignal, _>(tx.clone(), |signal| {
@@ -491,6 +536,34 @@ async fn handle_action(
             }
             current_view.clone().ok_or_else(|| anyhow!("No current view"))
         }
+        Action::ThreadCompact => {
+            let thread_id = current_view
+                .as_ref()
+                .and_then(|view| view.selection.thread_id.clone())
+                .ok_or_else(|| anyhow!("No thread selected"))?;
+            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
+                .thread_compact(&thread_id)
+                .await?;
+            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
+                .select_thread(thread_id)
+                .await
+        }
+        Action::TerminateCommandExecution(process_id) => {
+            let thread_id = current_view
+                .as_ref()
+                .and_then(|view| view.selection.thread_id.clone())
+                .ok_or_else(|| anyhow!("No thread selected"))?;
+            client
+                .as_ref()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .terminate_command_execution(&thread_id, &process_id)
+                .await?;
+            client
+                .as_mut()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .select_thread(thread_id)
+                .await
+        }
         Action::CreateProject {
             name,
             root_path,
@@ -511,6 +584,11 @@ async fn handle_action(
             worker_reasoning_effort,
             qa_model_id,
             qa_reasoning_effort,
+            orchestrator_developer_instructions,
+            worker_developer_instructions,
+            qa_developer_instructions,
+            operator_developer_instructions,
+            hidden_developer_instructions,
         } => client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
             .update_project(
                 project_id,
@@ -525,6 +603,11 @@ async fn handle_action(
                 worker_reasoning_effort,
                 qa_model_id,
                 qa_reasoning_effort,
+                orchestrator_developer_instructions,
+                worker_developer_instructions,
+                qa_developer_instructions,
+                operator_developer_instructions,
+                hidden_developer_instructions,
             )
             .await,
         Action::CreateThread {
@@ -756,6 +839,7 @@ async fn handle_action(
             network_access,
             model_id,
             reasoning_effort,
+            service_tier,
         } => {
             let thread_id = current_view
                 .as_ref()
@@ -770,6 +854,7 @@ async fn handle_action(
                     network_access,
                     model_id.as_deref(),
                     reasoning_effort.as_deref(),
+                    service_tier.as_deref(),
                 )
                 .await?;
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?

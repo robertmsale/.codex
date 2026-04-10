@@ -105,11 +105,13 @@ pub struct UiWorkspaceSelection {
     pub approval_policy: Option<String>,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub service_tier: Option<String>,
     pub effective_sandbox_mode: Option<String>,
     pub effective_network_access: Option<bool>,
     pub effective_approval_policy: Option<String>,
     pub effective_model: Option<String>,
     pub effective_reasoning_effort: Option<String>,
+    pub effective_service_tier: Option<String>,
     pub is_running: bool,
 }
 
@@ -129,6 +131,11 @@ pub struct UiProjectItem {
     pub worker_default_reasoning_effort: Option<String>,
     pub qa_default_model: Option<String>,
     pub qa_default_reasoning_effort: Option<String>,
+    pub orchestrator_developer_instructions: Option<String>,
+    pub worker_developer_instructions: Option<String>,
+    pub qa_developer_instructions: Option<String>,
+    pub operator_developer_instructions: Option<String>,
+    pub hidden_developer_instructions: Option<String>,
     pub is_selected: bool,
 }
 
@@ -155,6 +162,7 @@ pub struct UiChatEntry {
     pub subtitle: Option<String>,
     pub kind: Option<String>,
     pub status: Option<String>,
+    pub process_id: Option<String>,
     pub command: Option<String>,
     pub output: Option<String>,
     pub delivery_state: Option<String>,

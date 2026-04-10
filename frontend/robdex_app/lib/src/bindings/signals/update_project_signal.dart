@@ -17,6 +17,11 @@ class UpdateProjectSignal {
     required this.workerReasoningEffort,
     required this.qaModelId,
     required this.qaReasoningEffort,
+    required this.orchestratorDeveloperInstructions,
+    required this.workerDeveloperInstructions,
+    required this.qaDeveloperInstructions,
+    required this.operatorDeveloperInstructions,
+    required this.hiddenDeveloperInstructions,
   });
 
   static UpdateProjectSignal deserialize(BinaryDeserializer deserializer) {
@@ -34,6 +39,11 @@ class UpdateProjectSignal {
       workerReasoningEffort: deserializer.deserializeString(),
       qaModelId: deserializer.deserializeString(),
       qaReasoningEffort: deserializer.deserializeString(),
+      orchestratorDeveloperInstructions: deserializer.deserializeString(),
+      workerDeveloperInstructions: deserializer.deserializeString(),
+      qaDeveloperInstructions: deserializer.deserializeString(),
+      operatorDeveloperInstructions: deserializer.deserializeString(),
+      hiddenDeveloperInstructions: deserializer.deserializeString(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -60,6 +70,11 @@ class UpdateProjectSignal {
   final String workerReasoningEffort;
   final String qaModelId;
   final String qaReasoningEffort;
+  final String orchestratorDeveloperInstructions;
+  final String workerDeveloperInstructions;
+  final String qaDeveloperInstructions;
+  final String operatorDeveloperInstructions;
+  final String hiddenDeveloperInstructions;
 
   UpdateProjectSignal copyWith({
     String? projectId,
@@ -74,6 +89,11 @@ class UpdateProjectSignal {
     String? workerReasoningEffort,
     String? qaModelId,
     String? qaReasoningEffort,
+    String? orchestratorDeveloperInstructions,
+    String? workerDeveloperInstructions,
+    String? qaDeveloperInstructions,
+    String? operatorDeveloperInstructions,
+    String? hiddenDeveloperInstructions,
   }) {
     return UpdateProjectSignal(
       projectId: projectId ?? this.projectId,
@@ -88,6 +108,15 @@ class UpdateProjectSignal {
       workerReasoningEffort: workerReasoningEffort ?? this.workerReasoningEffort,
       qaModelId: qaModelId ?? this.qaModelId,
       qaReasoningEffort: qaReasoningEffort ?? this.qaReasoningEffort,
+      orchestratorDeveloperInstructions:
+          orchestratorDeveloperInstructions ?? this.orchestratorDeveloperInstructions,
+      workerDeveloperInstructions:
+          workerDeveloperInstructions ?? this.workerDeveloperInstructions,
+      qaDeveloperInstructions: qaDeveloperInstructions ?? this.qaDeveloperInstructions,
+      operatorDeveloperInstructions:
+          operatorDeveloperInstructions ?? this.operatorDeveloperInstructions,
+      hiddenDeveloperInstructions:
+          hiddenDeveloperInstructions ?? this.hiddenDeveloperInstructions,
     );
   }
 
@@ -105,6 +134,11 @@ class UpdateProjectSignal {
     serializer.serializeString(workerReasoningEffort);
     serializer.serializeString(qaModelId);
     serializer.serializeString(qaReasoningEffort);
+    serializer.serializeString(orchestratorDeveloperInstructions);
+    serializer.serializeString(workerDeveloperInstructions);
+    serializer.serializeString(qaDeveloperInstructions);
+    serializer.serializeString(operatorDeveloperInstructions);
+    serializer.serializeString(hiddenDeveloperInstructions);
     serializer.decreaseContainerDepth();
   }
 
@@ -131,7 +165,12 @@ class UpdateProjectSignal {
       && workerModelId == other.workerModelId
       && workerReasoningEffort == other.workerReasoningEffort
       && qaModelId == other.qaModelId
-      && qaReasoningEffort == other.qaReasoningEffort;
+      && qaReasoningEffort == other.qaReasoningEffort
+      && orchestratorDeveloperInstructions == other.orchestratorDeveloperInstructions
+      && workerDeveloperInstructions == other.workerDeveloperInstructions
+      && qaDeveloperInstructions == other.qaDeveloperInstructions
+      && operatorDeveloperInstructions == other.operatorDeveloperInstructions
+      && hiddenDeveloperInstructions == other.hiddenDeveloperInstructions;
   }
 
   @override
@@ -148,6 +187,11 @@ class UpdateProjectSignal {
         workerReasoningEffort,
         qaModelId,
         qaReasoningEffort,
+        orchestratorDeveloperInstructions,
+        workerDeveloperInstructions,
+        qaDeveloperInstructions,
+        operatorDeveloperInstructions,
+        hiddenDeveloperInstructions,
       );
 
   @override
@@ -167,7 +211,12 @@ class UpdateProjectSignal {
         'workerModelId: $workerModelId, '
         'workerReasoningEffort: $workerReasoningEffort, '
         'qaModelId: $qaModelId, '
-        'qaReasoningEffort: $qaReasoningEffort'
+        'qaReasoningEffort: $qaReasoningEffort, '
+        'orchestratorDeveloperInstructions: $orchestratorDeveloperInstructions, '
+        'workerDeveloperInstructions: $workerDeveloperInstructions, '
+        'qaDeveloperInstructions: $qaDeveloperInstructions, '
+        'operatorDeveloperInstructions: $operatorDeveloperInstructions, '
+        'hiddenDeveloperInstructions: $hiddenDeveloperInstructions'
         ')';
       return true;
     }());

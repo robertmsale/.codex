@@ -14,11 +14,13 @@ class WorkspaceSelection {
     this.approvalPolicy,
     this.model,
     this.reasoningEffort,
+    this.serviceTier,
     this.effectiveSandboxMode,
     this.effectiveNetworkAccess,
     this.effectiveApprovalPolicy,
     this.effectiveModel,
     this.effectiveReasoningEffort,
+    this.effectiveServiceTier,
     this.isRunning = false,
   });
 
@@ -36,11 +38,13 @@ class WorkspaceSelection {
   final String? approvalPolicy;
   final String? model;
   final String? reasoningEffort;
+  final String? serviceTier;
   final String? effectiveSandboxMode;
   final bool? effectiveNetworkAccess;
   final String? effectiveApprovalPolicy;
   final String? effectiveModel;
   final String? effectiveReasoningEffort;
+  final String? effectiveServiceTier;
   final bool isRunning;
 
   factory WorkspaceSelection.fromJson(Map<String, dynamic> json) {
@@ -59,11 +63,13 @@ class WorkspaceSelection {
       approvalPolicy: json['approvalPolicy'] as String?,
       model: json['model'] as String?,
       reasoningEffort: json['reasoningEffort'] as String?,
+      serviceTier: json['serviceTier'] as String?,
       effectiveSandboxMode: json['effectiveSandboxMode'] as String?,
       effectiveNetworkAccess: json['effectiveNetworkAccess'] as bool?,
       effectiveApprovalPolicy: json['effectiveApprovalPolicy'] as String?,
       effectiveModel: json['effectiveModel'] as String?,
       effectiveReasoningEffort: json['effectiveReasoningEffort'] as String?,
+      effectiveServiceTier: json['effectiveServiceTier'] as String?,
       isRunning: json['isRunning'] as bool? ?? false,
     );
   }
@@ -135,6 +141,11 @@ class ProjectItem {
     required this.workerDefaultReasoningEffort,
     required this.qaDefaultModel,
     required this.qaDefaultReasoningEffort,
+    required this.orchestratorDeveloperInstructions,
+    required this.workerDeveloperInstructions,
+    required this.qaDeveloperInstructions,
+    required this.operatorDeveloperInstructions,
+    required this.hiddenDeveloperInstructions,
     required this.isSelected,
   });
 
@@ -151,6 +162,11 @@ class ProjectItem {
   final String? workerDefaultReasoningEffort;
   final String? qaDefaultModel;
   final String? qaDefaultReasoningEffort;
+  final String? orchestratorDeveloperInstructions;
+  final String? workerDeveloperInstructions;
+  final String? qaDeveloperInstructions;
+  final String? operatorDeveloperInstructions;
+  final String? hiddenDeveloperInstructions;
   final bool isSelected;
 
   factory ProjectItem.fromJson(Map<String, dynamic> json) {
@@ -169,6 +185,11 @@ class ProjectItem {
       workerDefaultReasoningEffort: json['workerDefaultReasoningEffort'] as String?,
       qaDefaultModel: json['qaDefaultModel'] as String?,
       qaDefaultReasoningEffort: json['qaDefaultReasoningEffort'] as String?,
+      orchestratorDeveloperInstructions: json['orchestratorDeveloperInstructions'] as String?,
+      workerDeveloperInstructions: json['workerDeveloperInstructions'] as String?,
+      qaDeveloperInstructions: json['qaDeveloperInstructions'] as String?,
+      operatorDeveloperInstructions: json['operatorDeveloperInstructions'] as String?,
+      hiddenDeveloperInstructions: json['hiddenDeveloperInstructions'] as String?,
       isSelected: json['isSelected'] as bool? ?? false,
     );
   }
@@ -236,6 +257,7 @@ class ChatEntry {
     this.subtitle,
     this.kind,
     this.status,
+    this.processId,
     this.command,
     this.output,
     this.deliveryState,
@@ -251,6 +273,7 @@ class ChatEntry {
   final String? subtitle;
   final String? kind;
   final String? status;
+  final String? processId;
   final String? command;
   final String? output;
   final String? deliveryState;
@@ -267,6 +290,7 @@ class ChatEntry {
       subtitle: json['subtitle'] as String?,
       kind: json['kind'] as String?,
       status: json['status'] as String?,
+      processId: json['processId'] as String?,
       command: json['command'] as String?,
       output: json['output'] as String?,
       deliveryState: json['deliveryState'] as String?,

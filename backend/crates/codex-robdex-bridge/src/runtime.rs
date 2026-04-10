@@ -23,6 +23,7 @@ use tokio::{
 };
 
 use crate::{
+    app_server_overrides::{AppServerThreadOverrides, AppServerTurnOverrides, simple_sandbox_policy},
     config::BridgeSettings,
     models::{
         BridgeApprovalResult, BridgeEvent, BridgeInfo, BridgeSnapshot, BridgeToolQuestion, EventReplayResponse,
@@ -513,6 +514,9 @@ impl BridgeRuntime {
         if status == "connected" {
             self.cancel_disconnect_running_state_clear().await;
             self.resume_tracked_threads().await;
+            if let Err(error) = self.reconcile_running_threads_with_app_server().await {
+                tracing::warn!("running state reconciliation failed: {error}");
+            }
         } else if should_schedule_disconnect_running_state_clear(status) {
             self.schedule_disconnect_running_state_clear().await;
         }
@@ -525,38 +529,109 @@ impl BridgeRuntime {
             let cwd = tracked_cwd_for_thread_value(&state, &thread_id);
             let approval_policy = tracked_approval_policy_for_thread_value(&state, &thread_id);
             let model = tracked_model_for_thread_value(&state, &thread_id);
+            let model_provider = tracked_model_provider_for_thread_value(&state, &thread_id);
             let effort = tracked_reasoning_for_thread_value(&state, &thread_id);
             let sandbox_mode = tracked_sandbox_mode_for_thread_value(&state, &thread_id);
-            let network_access = tracked_network_access_for_thread_value(&state, &thread_id);
-            let sandbox_policy = sandbox_policy_for_resume_value(
-                sandbox_mode.as_deref(),
-                network_access,
-                cwd.as_deref(),
-            );
             let base_instructions = tracked_base_instructions_for_thread_value(&state, &thread_id);
             let developer_instructions =
                 tracked_developer_instructions_for_thread_value(&state, &thread_id);
+            let params = AppServerThreadOverrides {
+                cwd,
+                approval_policy: approval_policy.map(Value::String),
+                sandbox: sandbox_mode,
+                model,
+                model_provider,
+                reasoning_effort: effort,
+                service_tier: tracked_service_tier_for_thread_value(&state, &thread_id),
+                approvals_reviewer: tracked_approvals_reviewer_for_thread_value(&state, &thread_id),
+                personality: tracked_personality_for_thread_value(&state, &thread_id),
+                config: tracked_config_for_thread_value(&state, &thread_id),
+                base_instructions,
+                developer_instructions,
+                persist_extended_history: tracked_persist_extended_history_for_thread_value(&state, &thread_id)
+                    .or(Some(true)),
+                ..Default::default()
+            }
+            .thread_resume_params(thread_id.clone(), None, None);
             if let Err(error) = self
-                .request_app_server_json(
-                    "thread/resume",
-                    json!({
-                        "threadId": thread_id,
-                        "cwd": cwd,
-                        "approvalPolicy": approval_policy,
-                        "sandbox": sandbox_mode,
-                        "sandboxPolicy": sandbox_policy,
-                        "model": model,
-                        "effort": effort,
-                        "baseInstructions": base_instructions,
-                        "developerInstructions": developer_instructions,
-                        "persistExtendedHistory": true,
-                    }),
-                )
+                .request_app_server_json("thread/resume", params)
                 .await
             {
                 tracing::warn!("resume tracked thread failed: {thread_id}: {error}");
             }
         }
+    }
+
+    async fn reconcile_running_threads_with_app_server(&self) -> Result<()> {
+        let running_thread_ids = {
+            let thread_cache = self.thread_cache.read().await;
+            thread_cache.running_thread_ids.clone()
+        };
+        if running_thread_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut live_active_turn_ids = BTreeMap::new();
+        for thread_id in &running_thread_ids {
+            match self
+                .request_app_server_json(
+                    "thread/read",
+                    json!({
+                        "threadId": thread_id,
+                        "includeTurns": true,
+                    }),
+                )
+                .await
+            {
+                Ok(payload) => {
+                    if let Some(turn_id) = active_turn_id_from_thread_read_payload(&payload) {
+                        live_active_turn_ids.insert(thread_id.clone(), turn_id);
+                    } else if thread_read_payload_is_running(&payload) {
+                        tracing::warn!(
+                            "clearing running state for {thread_id}: app-server reports active but no in-progress turn was present"
+                        );
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "clearing stale running state after thread/read failed for {thread_id}: {error}"
+                    );
+                }
+            }
+        }
+
+        let payloads = {
+            let mut thread_cache = self.thread_cache.write().await;
+            let before = thread_cache.running_thread_ids.iter().cloned().collect::<BTreeSet<_>>();
+            let live_running_ids = live_active_turn_ids.keys().cloned().collect::<BTreeSet<_>>();
+            if before == live_running_ids {
+                return Ok(());
+            }
+            {
+                let mut running_state = self.running_state.write().await;
+                for thread_id in before.union(&live_running_ids) {
+                    running_state.set_thread_active_turn_state(
+                        thread_id,
+                        live_active_turn_ids.get(thread_id).cloned(),
+                        &mut thread_cache,
+                    );
+                }
+            }
+            thread_cache.running_thread_ids = live_running_ids.iter().cloned().collect();
+            thread_cache.updated_at = Some(unix_now());
+            before
+                .union(&live_running_ids)
+                .map(|thread_id| thread_messages_changed_payload(&thread_cache, thread_id))
+                .collect::<Vec<_>>()
+        };
+
+        self.persist_thread_cache_now(&running_thread_ids).await?;
+        let state = self.state_document.read().await.clone();
+        self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
+        for payload in payloads {
+            self.push_event(BridgeEvent::ThreadMessagesChanged { payload }).await;
+        }
+        Ok(())
     }
 
     async fn schedule_disconnect_running_state_clear(&self) {
@@ -774,23 +849,27 @@ impl BridgeRuntime {
             return;
         }
 
-        if self
-            .request_app_server_json(
-                "turn/start",
-                json!({
-                    "threadId": orchestrator_thread_id,
-                    "input": [{"type":"text","text": routed_text}],
-                    "cwd": tracked_cwd_for_thread_value(&state, &orchestrator_thread_id)
-                        .or(project.cwd)
-                        .or(project.project_root),
-                    "approvalPolicy": tracked_approval_policy_for_thread_value(&state, &orchestrator_thread_id),
-                    "sandboxPolicy": tracked_sandbox_policy_for_thread_value(&state, &orchestrator_thread_id),
-                    "model": tracked_model_for_thread_value(&state, &orchestrator_thread_id),
-                    "effort": tracked_reasoning_for_thread_value(&state, &orchestrator_thread_id),
-                }),
-            )
-            .await
-            .is_ok()
+        let cwd = tracked_cwd_for_thread_value(&state, &orchestrator_thread_id)
+            .or(project.cwd)
+            .or(project.project_root);
+        let params = AppServerTurnOverrides {
+            cwd,
+            approval_policy: tracked_approval_policy_for_thread_value(&state, &orchestrator_thread_id)
+                .map(Value::String),
+            sandbox_policy: tracked_sandbox_policy_for_thread_value(&state, &orchestrator_thread_id),
+            model: tracked_model_for_thread_value(&state, &orchestrator_thread_id),
+            effort: tracked_reasoning_for_thread_value(&state, &orchestrator_thread_id),
+            service_tier: tracked_service_tier_for_thread_value(&state, &orchestrator_thread_id),
+            approvals_reviewer: tracked_approvals_reviewer_for_thread_value(&state, &orchestrator_thread_id),
+            personality: tracked_personality_for_thread_value(&state, &orchestrator_thread_id),
+            ..Default::default()
+        }
+        .turn_start_params(
+            orchestrator_thread_id.clone(),
+            json!([{"type":"text","text": routed_text}]),
+        );
+
+        if self.request_app_server_json("turn/start", params).await.is_ok()
         {
             self.auto_routed_turn_keys
                 .write()
@@ -832,23 +911,27 @@ impl BridgeRuntime {
             return;
         }
 
-        if self
-            .request_app_server_json(
-                "turn/start",
-                json!({
-                    "threadId": orchestrator_thread_id,
-                    "input": [{"type":"text","text": routed_text}],
-                    "cwd": tracked_cwd_for_thread_value(&state, &orchestrator_thread_id)
-                        .or(project.cwd)
-                        .or(project.project_root),
-                    "approvalPolicy": tracked_approval_policy_for_thread_value(&state, &orchestrator_thread_id),
-                    "sandboxPolicy": tracked_sandbox_policy_for_thread_value(&state, &orchestrator_thread_id),
-                    "model": tracked_model_for_thread_value(&state, &orchestrator_thread_id),
-                    "effort": tracked_reasoning_for_thread_value(&state, &orchestrator_thread_id),
-                }),
-            )
-            .await
-            .is_ok()
+        let cwd = tracked_cwd_for_thread_value(&state, &orchestrator_thread_id)
+            .or(project.cwd)
+            .or(project.project_root);
+        let params = AppServerTurnOverrides {
+            cwd,
+            approval_policy: tracked_approval_policy_for_thread_value(&state, &orchestrator_thread_id)
+                .map(Value::String),
+            sandbox_policy: tracked_sandbox_policy_for_thread_value(&state, &orchestrator_thread_id),
+            model: tracked_model_for_thread_value(&state, &orchestrator_thread_id),
+            effort: tracked_reasoning_for_thread_value(&state, &orchestrator_thread_id),
+            service_tier: tracked_service_tier_for_thread_value(&state, &orchestrator_thread_id),
+            approvals_reviewer: tracked_approvals_reviewer_for_thread_value(&state, &orchestrator_thread_id),
+            personality: tracked_personality_for_thread_value(&state, &orchestrator_thread_id),
+            ..Default::default()
+        }
+        .turn_start_params(
+            orchestrator_thread_id.clone(),
+            json!([{"type":"text","text": routed_text}]),
+        );
+
+        if self.request_app_server_json("turn/start", params).await.is_ok()
         {
             self.auto_routed_approval_keys
                 .write()
@@ -1290,6 +1373,57 @@ fn should_schedule_disconnect_running_state_clear(status: &str) -> bool {
         || status == "disconnected"
 }
 
+fn thread_read_payload_is_running(payload: &Value) -> bool {
+    payload
+        .get("thread")
+        .and_then(|thread| thread.get("status"))
+        .map(thread_status_value_is_running)
+        .unwrap_or(false)
+}
+
+fn active_turn_id_from_thread_read_payload(payload: &Value) -> Option<String> {
+    payload
+        .get("thread")
+        .and_then(|thread| thread.get("turns"))
+        .and_then(Value::as_array)
+        .and_then(|turns| {
+            turns.iter().rev().find_map(|turn| {
+                let is_in_progress = turn
+                    .get("status")
+                    .map(turn_status_value_is_in_progress)
+                    .unwrap_or(false);
+                if !is_in_progress {
+                    return None;
+                }
+                turn.get("id").and_then(Value::as_str).map(str::to_string)
+            })
+        })
+}
+
+fn thread_status_value_is_running(status: &Value) -> bool {
+    match status {
+        Value::String(value) => matches!(value.as_str(), "active" | "inProgress" | "in_progress" | "running"),
+        Value::Object(object) => object
+            .get("type")
+            .and_then(Value::as_str)
+            .map(|value| matches!(value, "active" | "inProgress" | "in_progress" | "running"))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn turn_status_value_is_in_progress(status: &Value) -> bool {
+    match status {
+        Value::String(value) => matches!(value.as_str(), "inProgress" | "in_progress" | "running"),
+        Value::Object(object) => object
+            .get("type")
+            .and_then(Value::as_str)
+            .map(|value| matches!(value, "inProgress" | "in_progress" | "running"))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 #[derive(Clone)]
 struct RoutedProjectState {
     project_root: Option<String>,
@@ -1358,6 +1492,27 @@ fn tracked_agent_value<'a>(state: &'a Value, thread_id: &str) -> Option<&'a serd
     None
 }
 
+fn project_value_for_thread<'a>(state: &'a Value, thread_id: &str, key: &str) -> Option<&'a Value> {
+    let projects = state.get("projects")?.as_object()?;
+    for project in projects.values() {
+        let project_object = project.as_object()?;
+        let contains_thread = project_object
+            .get("agents")
+            .and_then(Value::as_object)
+            .map(|agents| agents.contains_key(thread_id))
+            .unwrap_or(false)
+            || project_object
+                .get("orchestratorThreadID")
+                .or_else(|| project_object.get("orchestratorThreadId"))
+                .and_then(Value::as_str)
+                == Some(thread_id);
+        if contains_thread {
+            return project_object.get(key);
+        }
+    }
+    None
+}
+
 fn tracked_role_for_thread(state: &Value, thread_id: &str) -> Option<String> {
     tracked_agent_value(state, thread_id)
         .and_then(|agent| agent.get("role"))
@@ -1391,6 +1546,19 @@ fn tracked_approval_policy_for_thread_value(state: &Value, thread_id: &str) -> O
             state
                 .get("globalConfigs")
                 .and_then(|value| value.get("approvalPolicy"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+}
+
+fn tracked_model_provider_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("modelProvider"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            tracked_project_for_thread(state, thread_id)
+                .and_then(|project| project_value_for_thread(state, thread_id, "preferredModelProvider"))
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
@@ -1480,30 +1648,17 @@ fn sandbox_policy_for_resume_value(
     network_access: Option<bool>,
     cwd: Option<&str>,
 ) -> Option<Value> {
-    match sandbox_mode {
-        Some("danger-full-access") => Some(json!({ "type": "dangerFullAccess" })),
-        Some("read-only") => Some(json!({
-            "type": "readOnly",
-            "access": { "type": "fullAccess" },
-            "networkAccess": network_access.unwrap_or(false),
-        })),
-        Some("workspace-write") => Some(json!({
-            "type": "workspaceWrite",
-            "writableRoots": cwd.map(|value| vec![value]).unwrap_or_default(),
-            "readOnlyAccess": { "type": "fullAccess" },
-            "networkAccess": network_access.unwrap_or(true),
-            "excludeTmpdirEnvVar": false,
-            "excludeSlashTmp": false,
-        })),
-        Some("external-sandbox") => Some(json!({
-            "type": "externalSandbox",
-            "networkAccess": if network_access.unwrap_or(true) { "enabled" } else { "restricted" },
-        })),
-        _ => None,
-    }
+    simple_sandbox_policy(sandbox_mode, network_access, cwd)
 }
 
 fn tracked_developer_instructions_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    if let Some(value) = tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("developerInstructions"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        return Some(value);
+    }
     let role = tracked_role_for_thread(state, thread_id)?;
     if matches!(role.as_str(), "hidden" | "orchestrator" | "operator") {
         return None;
@@ -1525,6 +1680,13 @@ fn tracked_developer_instructions_for_thread_value(state: &Value, thread_id: &st
 }
 
 fn tracked_base_instructions_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    if let Some(value) = tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("baseInstructions"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        return Some(value);
+    }
     let role = tracked_role_for_thread(state, thread_id)?;
     if role == "operator" {
         return None;
@@ -1548,6 +1710,40 @@ fn tracked_reasoning_for_thread_value(state: &Value, thread_id: &str) -> Option<
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| role_default_reasoning_for_thread_value(state, thread_id))
+}
+
+fn tracked_service_tier_for_thread_value(state: &Value, thread_id: &str) -> Option<Value> {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("serviceTier"))
+        .cloned()
+        .filter(|value| !value.is_null())
+}
+
+fn tracked_approvals_reviewer_for_thread_value(state: &Value, thread_id: &str) -> Option<Value> {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("approvalsReviewer"))
+        .cloned()
+        .filter(|value| !value.is_null())
+}
+
+fn tracked_personality_for_thread_value(state: &Value, thread_id: &str) -> Option<Value> {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("personality"))
+        .cloned()
+        .filter(|value| !value.is_null())
+}
+
+fn tracked_config_for_thread_value(state: &Value, thread_id: &str) -> Option<Value> {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("config"))
+        .cloned()
+        .filter(|value| !value.is_null())
+}
+
+fn tracked_persist_extended_history_for_thread_value(state: &Value, thread_id: &str) -> Option<bool> {
+    tracked_agent_value(state, thread_id)
+        .and_then(|agent| agent.get("persistExtendedHistory"))
+        .and_then(Value::as_bool)
 }
 
 fn sender_label_for_thread(state: &Value, thread_id: &str) -> String {

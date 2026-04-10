@@ -51,6 +51,8 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/threads/{thread_id}", delete(thread_archive_http))
         .route("/threads/{thread_id}/name", post(thread_name_set_http))
         .route("/threads/{thread_id}/metadata", post(thread_metadata_update_http))
+        .route("/threads/{thread_id}/compact", post(thread_compact_http))
+        .route("/threads/{thread_id}/commands/terminate", post(thread_command_terminate_http))
         .route("/threads/{thread_id}/running-state", post(thread_running_state_http))
         .route("/threads/{thread_id}/interrupt", post(thread_interrupt_http))
         .route("/threads/{thread_id}/messages", post(thread_message_create_http))
@@ -287,6 +289,45 @@ async fn thread_metadata_update_http(
             "networkAccess": payload.get("networkAccess").cloned().unwrap_or(Value::Null),
             "modelID": payload.get("modelID").cloned().unwrap_or(Value::Null),
             "reasoningEffort": payload.get("reasoningEffort").cloned().unwrap_or(Value::Null),
+            "serviceTier": payload.get("serviceTier").cloned().unwrap_or(Value::Null),
+        }),
+    )
+    .await
+    {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn thread_compact_http(
+    Path(thread_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+) -> impl IntoResponse {
+    match execute_bridge_command(
+        &runtime,
+        "threadCompactStart",
+        json!({
+            "threadId": thread_id,
+        }),
+    )
+    .await
+    {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn thread_command_terminate_http(
+    Path(thread_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    match execute_bridge_command(
+        &runtime,
+        "commandExecutionTerminate",
+        json!({
+            "threadId": thread_id,
+            "processId": payload.get("processId").cloned().unwrap_or(Value::Null),
         }),
     )
     .await

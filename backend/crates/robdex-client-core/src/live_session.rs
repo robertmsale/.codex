@@ -7,7 +7,10 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{
     bridge::BridgeEndpoint,
-    workbench::build_workbench,
+    workbench::{
+        build_workbench_with_models, chat_entries_from_thread_payload,
+        context_window_remaining_percent_from_thread_payload,
+    },
 };
 use robdex_protocol::WorkbenchViewData;
 
@@ -154,7 +157,7 @@ async fn run_live_session(
 
 async fn reduce_message(
     text: &str,
-    _current_view: &WorkbenchViewData,
+    current_view: &WorkbenchViewData,
     selected_thread_id: Option<&str>,
     endpoint: &BridgeEndpoint,
 ) -> Result<Option<WorkbenchViewData>> {
@@ -173,7 +176,12 @@ async fn reduce_message(
 
     match event.get("name").and_then(Value::as_str) {
         Some("appStateSnapshot") => {
-            let next_view = refresh_selected_view(selected_thread_id, endpoint).await?;
+            let next_view = refresh_selected_view(
+                selected_thread_id,
+                endpoint,
+                Some(current_view.available_models.clone()),
+            )
+            .await?;
             Ok(Some(next_view))
         }
         Some("threadMessagesChanged") => {
@@ -190,7 +198,10 @@ async fn reduce_message(
             if thread_id.is_none() {
                 return Ok(None);
             }
-            let next_view = refresh_selected_view(selected_thread_id, endpoint).await?;
+            let mut next_view = current_view.clone();
+            next_view.chat_entries = chat_entries_from_thread_payload(&payload);
+            next_view.context_window_remaining_percent =
+                context_window_remaining_percent_from_thread_payload(&payload);
             Ok(Some(next_view))
         }
         _ => Ok(None),
@@ -200,6 +211,7 @@ async fn reduce_message(
 async fn refresh_selected_view(
     selected_thread_id: Option<&str>,
     endpoint: &BridgeEndpoint,
+    available_models_override: Option<Vec<robdex_protocol::UiModelItem>>,
 ) -> Result<WorkbenchViewData> {
     let snapshot = reqwest::Client::new()
         .get(endpoint.workbench_bootstrap_url()?)
@@ -208,7 +220,14 @@ async fn refresh_selected_view(
         .error_for_status()?
         .json::<Value>()
         .await?;
-    build_workbench(snapshot, selected_thread_id, None, endpoint).await
+    build_workbench_with_models(
+        snapshot,
+        selected_thread_id,
+        None,
+        endpoint,
+        available_models_override,
+    )
+    .await
 }
 
 async fn send_json(

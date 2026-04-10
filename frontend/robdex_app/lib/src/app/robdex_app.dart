@@ -248,6 +248,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
           onSpawnAgent: _showSpawnAgentDialog,
           onSendMessage: _controller.sendMessage,
           onOpenHistory: _showHistorySheet,
+          onCompactThread: _controller.compactThread,
+          onTerminateCommandExecution: _controller.terminateCommandExecution,
           onInterruptThread: _controller.interruptThread,
           onApprovalDecision: (approval, decision, message) async {
             _controller.decideApproval(
@@ -263,6 +265,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
             networkAccessMode: draft.networkAccessMode,
             modelId: draft.modelId,
             reasoningEffort: draft.reasoningEffort,
+            serviceTier: draft.serviceTier,
           ),
           onRunningStateChanged: _controller.setThreadRunningState,
           onRenameThread: _controller.renameThread,
@@ -603,6 +606,21 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
     String workerReasoningEffort = project.workerDefaultReasoningEffort ?? '';
     String qaModelId = project.qaDefaultModel ?? '';
     String qaReasoningEffort = project.qaDefaultReasoningEffort ?? '';
+    final orchestratorDeveloperInstructionsController = TextEditingController(
+      text: project.orchestratorDeveloperInstructions ?? '',
+    );
+    final workerDeveloperInstructionsController = TextEditingController(
+      text: project.workerDeveloperInstructions ?? '',
+    );
+    final qaDeveloperInstructionsController = TextEditingController(
+      text: project.qaDeveloperInstructions ?? '',
+    );
+    final operatorDeveloperInstructionsController = TextEditingController(
+      text: project.operatorDeveloperInstructions ?? '',
+    );
+    final hiddenDeveloperInstructionsController = TextEditingController(
+      text: project.hiddenDeveloperInstructions ?? '',
+    );
 
     final result = await showDialog<bool>(
       context: context,
@@ -645,6 +663,21 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
               DropdownMenuItem(value: 'high', child: Text('High')),
             ],
             onChanged: (value) => onChanged(value ?? ''),
+          );
+        }
+
+        Widget developerInstructionsField(
+          String label,
+          TextEditingController controller,
+        ) {
+          return TextField(
+            controller: controller,
+            minLines: 2,
+            maxLines: 5,
+            decoration: InputDecoration(
+              labelText: '$label Developer Instructions',
+              alignLabelWithHint: true,
+            ),
           );
         }
 
@@ -708,6 +741,11 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
                       const SizedBox(height: 8),
                       reasoningDropdown('Reasoning', orchestratorReasoningEffort,
                           (value) => setDialogState(() => orchestratorReasoningEffort = value)),
+                      const SizedBox(height: 8),
+                      developerInstructionsField(
+                        'Orchestrator',
+                        orchestratorDeveloperInstructionsController,
+                      ),
                       const SizedBox(height: 16),
                       Text('Worker Defaults',
                           style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
@@ -717,6 +755,11 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
                       const SizedBox(height: 8),
                       reasoningDropdown('Reasoning', workerReasoningEffort,
                           (value) => setDialogState(() => workerReasoningEffort = value)),
+                      const SizedBox(height: 8),
+                      developerInstructionsField(
+                        'Worker',
+                        workerDeveloperInstructionsController,
+                      ),
                       const SizedBox(height: 16),
                       Text('QA Defaults',
                           style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
@@ -726,6 +769,27 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
                       const SizedBox(height: 8),
                       reasoningDropdown('Reasoning', qaReasoningEffort,
                           (value) => setDialogState(() => qaReasoningEffort = value)),
+                      const SizedBox(height: 8),
+                      developerInstructionsField(
+                        'QA',
+                        qaDeveloperInstructionsController,
+                      ),
+                      const SizedBox(height: 16),
+                      Text('Operator Defaults',
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 8),
+                      developerInstructionsField(
+                        'Operator',
+                        operatorDeveloperInstructionsController,
+                      ),
+                      const SizedBox(height: 16),
+                      Text('Hidden Defaults',
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 8),
+                      developerInstructionsField(
+                        'Hidden',
+                        hiddenDeveloperInstructionsController,
+                      ),
                     ],
                   ),
                 ),
@@ -748,6 +812,11 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
 
     nameController.dispose();
     cwdController.dispose();
+    orchestratorDeveloperInstructionsController.dispose();
+    workerDeveloperInstructionsController.dispose();
+    qaDeveloperInstructionsController.dispose();
+    operatorDeveloperInstructionsController.dispose();
+    hiddenDeveloperInstructionsController.dispose();
 
     if (result != true) {
       return;
@@ -766,6 +835,15 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
       workerReasoningEffort: workerReasoningEffort,
       qaModelId: qaModelId,
       qaReasoningEffort: qaReasoningEffort,
+      orchestratorDeveloperInstructions:
+          orchestratorDeveloperInstructionsController.text.trim(),
+      workerDeveloperInstructions:
+          workerDeveloperInstructionsController.text.trim(),
+      qaDeveloperInstructions: qaDeveloperInstructionsController.text.trim(),
+      operatorDeveloperInstructions:
+          operatorDeveloperInstructionsController.text.trim(),
+      hiddenDeveloperInstructions:
+          hiddenDeveloperInstructionsController.text.trim(),
     );
   }
 

@@ -19,6 +19,8 @@ class RobdexShellScreen extends StatelessWidget {
     required this.onSpawnAgent,
     required this.onSendMessage,
     required this.onOpenHistory,
+    required this.onCompactThread,
+    required this.onTerminateCommandExecution,
     required this.onInterruptThread,
     required this.onApprovalDecision,
     required this.onSettingsChanged,
@@ -45,6 +47,8 @@ class RobdexShellScreen extends StatelessWidget {
   final VoidCallback onSpawnAgent;
   final ValueChanged<String> onSendMessage;
   final VoidCallback onOpenHistory;
+  final VoidCallback onCompactThread;
+  final ValueChanged<String> onTerminateCommandExecution;
   final VoidCallback onInterruptThread;
   final Future<void> Function(PendingApprovalItem approval, String decision, String? message)
       onApprovalDecision;
@@ -121,6 +125,8 @@ class RobdexShellScreen extends StatelessWidget {
                               onSpawnAgent: onSpawnAgent,
                               onSendMessage: onSendMessage,
                               onOpenHistory: onOpenHistory,
+                              onCompactThread: onCompactThread,
+                              onTerminateCommandExecution: onTerminateCommandExecution,
                               onInterruptThread: onInterruptThread,
                               onApprovalDecision: onApprovalDecision,
                               onSettingsChanged: onSettingsChanged,
@@ -148,6 +154,8 @@ class RobdexShellScreen extends StatelessWidget {
                               onSpawnAgent: onSpawnAgent,
                               onSendMessage: onSendMessage,
                               onOpenHistory: onOpenHistory,
+                              onCompactThread: onCompactThread,
+                              onTerminateCommandExecution: onTerminateCommandExecution,
                               onInterruptThread: onInterruptThread,
                               onApprovalDecision: onApprovalDecision,
                               onSettingsChanged: onSettingsChanged,
@@ -186,6 +194,8 @@ class _WideShell extends StatefulWidget {
     required this.onSpawnAgent,
     required this.onSendMessage,
     required this.onOpenHistory,
+    required this.onCompactThread,
+    required this.onTerminateCommandExecution,
     required this.onInterruptThread,
     required this.onApprovalDecision,
     required this.onSettingsChanged,
@@ -211,6 +221,8 @@ class _WideShell extends StatefulWidget {
   final VoidCallback onSpawnAgent;
   final ValueChanged<String> onSendMessage;
   final VoidCallback onOpenHistory;
+  final VoidCallback onCompactThread;
+  final ValueChanged<String> onTerminateCommandExecution;
   final VoidCallback onInterruptThread;
   final Future<void> Function(PendingApprovalItem approval, String decision, String? message)
       onApprovalDecision;
@@ -281,6 +293,7 @@ class _WideShellState extends State<_WideShell> {
                     workbench.contextWindowRemainingPercent,
                 onSend: widget.onSendMessage,
                 onInterrupt: widget.onInterruptThread,
+                onTerminateCommandExecution: widget.onTerminateCommandExecution,
                 composerEnabled: workbench.selection.threadId != null,
                 isRunning: workbench.selection.isRunning,
                 headerControls: _DesktopThreadControls(
@@ -288,6 +301,7 @@ class _WideShellState extends State<_WideShell> {
                   availableModels: workbench.availableModels,
                   pendingApprovalCount: workbench.pendingApprovals.length,
                   onOpenHistory: widget.onOpenHistory,
+                  onCompactThread: widget.onCompactThread,
                   onSettingsChanged: widget.onSettingsChanged,
                   onRunningStateChanged: widget.onRunningStateChanged,
                   onMore: () => _showInspectorDialog(
@@ -333,6 +347,8 @@ class _CompactShell extends StatefulWidget {
     required this.onSpawnAgent,
     required this.onSendMessage,
     required this.onOpenHistory,
+    required this.onCompactThread,
+    required this.onTerminateCommandExecution,
     required this.onInterruptThread,
     required this.onApprovalDecision,
     required this.onSettingsChanged,
@@ -358,6 +374,8 @@ class _CompactShell extends StatefulWidget {
   final VoidCallback onSpawnAgent;
   final ValueChanged<String> onSendMessage;
   final VoidCallback onOpenHistory;
+  final VoidCallback onCompactThread;
+  final ValueChanged<String> onTerminateCommandExecution;
   final VoidCallback onInterruptThread;
   final Future<void> Function(PendingApprovalItem approval, String decision, String? message)
       onApprovalDecision;
@@ -579,6 +597,7 @@ class _CompactShellState extends State<_CompactShell> {
           widget.workbench.contextWindowRemainingPercent,
       onSend: widget.onSendMessage,
       onInterrupt: widget.onInterruptThread,
+      onTerminateCommandExecution: widget.onTerminateCommandExecution,
       composerEnabled: true,
       isRunning: widget.workbench.selection.isRunning,
       overlay: _ApprovalOverlay(
@@ -602,6 +621,11 @@ class _CompactShellState extends State<_CompactShell> {
             TextButton(
               onPressed: widget.onOpenHistory,
               child: const Text('History'),
+            ),
+            IconButton(
+              icon: const Icon(Icons.compress_rounded),
+              tooltip: 'Compact thread',
+              onPressed: widget.onCompactThread,
             ),
             IconButton(
               icon: const Icon(Icons.more_horiz),
@@ -637,6 +661,7 @@ class _DesktopThreadControls extends StatelessWidget {
     required this.availableModels,
     required this.pendingApprovalCount,
     required this.onOpenHistory,
+    required this.onCompactThread,
     required this.onSettingsChanged,
     required this.onRunningStateChanged,
     required this.onMore,
@@ -646,6 +671,7 @@ class _DesktopThreadControls extends StatelessWidget {
   final List<ModelItem> availableModels;
   final int pendingApprovalCount;
   final VoidCallback onOpenHistory;
+  final VoidCallback onCompactThread;
   final ValueChanged<ThreadSettingsDraft> onSettingsChanged;
   final ValueChanged<bool> onRunningStateChanged;
   final VoidCallback onMore;
@@ -689,6 +715,7 @@ class _DesktopThreadControls extends StatelessWidget {
       String? networkAccessMode,
       String? modelId,
       String? reasoningEffort,
+      String? serviceTier,
     }) {
       return ThreadSettingsDraft(
         role: role ?? (selection.threadRole ?? 'worker'),
@@ -700,6 +727,7 @@ class _DesktopThreadControls extends StatelessWidget {
                 : (selection.networkAccess! ? 'enabled' : 'disabled')),
         modelId: modelId ?? (selection.model ?? ''),
         reasoningEffort: reasoningEffort ?? (selection.reasoningEffort ?? ''),
+        serviceTier: serviceTier ?? (selection.serviceTier ?? ''),
       );
     }
 
@@ -744,6 +772,21 @@ class _DesktopThreadControls extends StatelessWidget {
             const DropdownMenuItem(value: 'high', child: Text('High')),
           ],
           onChanged: (value) => onSettingsChanged(draft(reasoningEffort: value)),
+        ),
+        _CompactDropdown(
+          width: 112,
+          label: 'Tier',
+          value: selection.serviceTier ?? '',
+          enabled: enabled,
+          items: [
+            DropdownMenuItem(
+              value: '',
+              child: Text(inheritedOrSystem(selection.effectiveServiceTier)),
+            ),
+            const DropdownMenuItem(value: 'fast', child: Text('Fast')),
+            const DropdownMenuItem(value: 'flex', child: Text('Flex')),
+          ],
+          onChanged: (value) => onSettingsChanged(draft(serviceTier: value)),
         ),
         _CompactDropdown(
           width: 142,
@@ -802,6 +845,11 @@ class _DesktopThreadControls extends StatelessWidget {
         TextButton(
           onPressed: enabled ? onOpenHistory : null,
           child: const Text('History'),
+        ),
+        IconButton.outlined(
+          onPressed: enabled ? onCompactThread : null,
+          tooltip: 'Compact thread',
+          icon: const Icon(Icons.compress_rounded),
         ),
         TextButton.icon(
           onPressed: enabled ? onMore : null,

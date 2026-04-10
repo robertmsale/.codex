@@ -97,6 +97,7 @@ class ThreadSettingsDraft {
     required this.networkAccessMode,
     required this.modelId,
     required this.reasoningEffort,
+    required this.serviceTier,
   });
 
   final String role;
@@ -105,6 +106,7 @@ class ThreadSettingsDraft {
   final String networkAccessMode;
   final String modelId;
   final String reasoningEffort;
+  final String serviceTier;
 }
 
 class WorkerMetadataDraft {
@@ -546,6 +548,7 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
   late String _networkAccessMode;
   late String _modelId;
   late String _reasoningEffort;
+  late String _serviceTier;
 
   @override
   void initState() {
@@ -563,6 +566,7 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
         oldWidget.selection.networkAccess != widget.selection.networkAccess ||
         oldWidget.selection.model != widget.selection.model ||
         oldWidget.selection.reasoningEffort != widget.selection.reasoningEffort ||
+        oldWidget.selection.serviceTier != widget.selection.serviceTier ||
         oldWidget.selection.threadName != widget.selection.threadName) {
       _syncFromSelection();
     }
@@ -583,6 +587,7 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
     };
     _modelId = widget.selection.model ?? '';
     _reasoningEffort = widget.selection.reasoningEffort ?? '';
+    _serviceTier = widget.selection.serviceTier ?? '';
   }
 
   bool get _isNameControllerInitialized {
@@ -609,6 +614,7 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
         networkAccessMode: _networkAccessMode,
         modelId: _modelId,
         reasoningEffort: _reasoningEffort,
+        serviceTier: _serviceTier,
       ),
     );
   }
@@ -625,6 +631,7 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
     String inheritedLabel(String value) => '(${titleCaseWords(value)})';
     String inheritedOrSystem(String? value, {String system = 'System'}) =>
         inheritedLabel((value?.trim().isNotEmpty ?? false) ? value! : system);
+    String serviceTierLabel(String? value) => inheritedOrSystem(value);
     String modelLabel(String? modelId) {
       if (modelId == null || modelId.trim().isEmpty) {
         return inheritedOrSystem(null);
@@ -775,6 +782,29 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                         ? (value) {
                             if (value == null) return;
                             setState(() => _networkAccessMode = value);
+                          }
+                        : null,
+                  ),
+                ),
+                SizedBox(
+                  width: 128,
+                  child: DropdownButtonFormField<String>(
+                    key: ValueKey('service-tier-${widget.selection.threadId}-$_serviceTier'),
+                    initialValue: _serviceTier,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Service Tier'),
+                    items: [
+                      DropdownMenuItem(
+                        value: '',
+                        child: Text(serviceTierLabel(widget.selection.effectiveServiceTier)),
+                      ),
+                      const DropdownMenuItem(value: 'fast', child: Text('fast')),
+                      const DropdownMenuItem(value: 'flex', child: Text('flex')),
+                    ],
+                    onChanged: enabled
+                        ? (value) {
+                            if (value == null) return;
+                            setState(() => _serviceTier = value);
                           }
                         : null,
                   ),

@@ -88,6 +88,17 @@ class WorkbenchController extends ChangeNotifier {
     const FetchThreadHistorySignal().sendSignalToRust();
   }
 
+  void compactThread() {
+    const ThreadCompactSignal().sendSignalToRust();
+  }
+
+  void terminateCommandExecution(String processId) {
+    if (processId.trim().isEmpty) {
+      return;
+    }
+    TerminateCommandExecutionSignal(processId: processId).sendSignalToRust();
+  }
+
   void createProject({
     required String name,
     required String rootPath,
@@ -217,6 +228,11 @@ class WorkbenchController extends ChangeNotifier {
     required String workerReasoningEffort,
     required String qaModelId,
     required String qaReasoningEffort,
+    required String orchestratorDeveloperInstructions,
+    required String workerDeveloperInstructions,
+    required String qaDeveloperInstructions,
+    required String operatorDeveloperInstructions,
+    required String hiddenDeveloperInstructions,
   }) {
     UpdateProjectSignal(
       projectId: projectId,
@@ -231,6 +247,11 @@ class WorkbenchController extends ChangeNotifier {
       workerReasoningEffort: workerReasoningEffort,
       qaModelId: qaModelId,
       qaReasoningEffort: qaReasoningEffort,
+      orchestratorDeveloperInstructions: orchestratorDeveloperInstructions,
+      workerDeveloperInstructions: workerDeveloperInstructions,
+      qaDeveloperInstructions: qaDeveloperInstructions,
+      operatorDeveloperInstructions: operatorDeveloperInstructions,
+      hiddenDeveloperInstructions: hiddenDeveloperInstructions,
     ).sendSignalToRust();
   }
 
@@ -264,6 +285,7 @@ class WorkbenchController extends ChangeNotifier {
     required String networkAccessMode,
     required String modelId,
     required String reasoningEffort,
+    required String serviceTier,
   }) {
     UpdateThreadSettingsSignal(
       role: role,
@@ -272,6 +294,7 @@ class WorkbenchController extends ChangeNotifier {
       networkAccessMode: networkAccessMode,
       modelId: modelId,
       reasoningEffort: reasoningEffort,
+      serviceTier: serviceTier,
     ).sendSignalToRust();
   }
 

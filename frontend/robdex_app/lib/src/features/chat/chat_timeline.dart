@@ -21,6 +21,7 @@ class ChatTimeline extends StatefulWidget {
     this.headerControls,
     this.overlay,
     this.leading,
+    this.onTerminateCommandExecution,
   });
 
   final String? threadId;
@@ -35,6 +36,7 @@ class ChatTimeline extends StatefulWidget {
   final Widget? headerControls;
   final Widget? overlay;
   final Widget? leading;
+  final ValueChanged<String>? onTerminateCommandExecution;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -99,7 +101,10 @@ class _ChatTimelineState extends State<ChatTimeline> {
                   itemCount: widget.entries.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 6),
                   itemBuilder: (context, index) {
-                    return _ChatBubble(entry: widget.entries[index]);
+                    return _ChatBubble(
+                      entry: widget.entries[index],
+                      onTerminateCommandExecution: widget.onTerminateCommandExecution,
+                    );
                   },
                 ),
               ),
@@ -128,9 +133,13 @@ class _ChatTimelineState extends State<ChatTimeline> {
 }
 
 class _ChatBubble extends StatelessWidget {
-  const _ChatBubble({required this.entry});
+  const _ChatBubble({
+    required this.entry,
+    this.onTerminateCommandExecution,
+  });
 
   final ChatEntry entry;
+  final ValueChanged<String>? onTerminateCommandExecution;
 
   @override
   Widget build(BuildContext context) {
@@ -139,7 +148,10 @@ class _ChatBubble extends StatelessWidget {
         (entry.author == 'User' || entry.author == 'Assistant' || entry.author == 'Operator');
 
     if (!isConversation) {
-      return _InlineEventRow(entry: entry);
+      return _InlineEventRow(
+        entry: entry,
+        onTerminateCommandExecution: onTerminateCommandExecution,
+      );
     }
 
     final isUser = entry.author == 'User' || entry.author == 'Operator';
@@ -386,9 +398,13 @@ TextStyle? _highlightStyleForClass(String? className, ThemeData theme) {
 }
 
 class _InlineEventRow extends StatefulWidget {
-  const _InlineEventRow({required this.entry});
+  const _InlineEventRow({
+    required this.entry,
+    this.onTerminateCommandExecution,
+  });
 
   final ChatEntry entry;
+  final ValueChanged<String>? onTerminateCommandExecution;
 
   @override
   State<_InlineEventRow> createState() => _InlineEventRowState();
@@ -408,6 +424,12 @@ class _InlineEventRowState extends State<_InlineEventRow> {
           value: entry.body,
           expanded: _expanded,
         ),
+      if (_hasValue(entry.processId))
+        _DetailLine(
+          label: 'PID',
+          value: entry.processId!,
+          expanded: true,
+        ),
       if (_hasValue(entry.command))
         _DetailLine(
           label: entry.kind == 'mcpToolCall' ? 'Input' : entry.kind == 'fileChange' ? 'Files' : 'Command',
@@ -426,6 +448,11 @@ class _InlineEventRowState extends State<_InlineEventRow> {
             _needsExpansion(entry.body) ||
             _needsExpansion(entry.command) ||
             _needsExpansion(entry.output));
+    final canTerminate = entry.kind == 'commandExecution' &&
+        (entry.isStreaming || _isInProgressStatus(entry.status)) &&
+        (entry.processId?.trim().isNotEmpty ?? false) &&
+        entry.id.trim().isNotEmpty &&
+        widget.onTerminateCommandExecution != null;
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -471,6 +498,19 @@ class _InlineEventRowState extends State<_InlineEventRow> {
                     width: 8,
                     height: 8,
                     child: CircularProgressIndicator(strokeWidth: 1.5),
+                  ),
+                ],
+                if (canTerminate) ...[
+                  const SizedBox(width: 4),
+                  IconButton(
+                    onPressed: () => widget.onTerminateCommandExecution?.call(entry.processId!),
+                    icon: const Icon(Icons.stop_circle_outlined, size: 16),
+                    tooltip: 'Terminate command',
+                    splashRadius: 14,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(width: 22, height: 22),
+                    visualDensity: VisualDensity.compact,
+                    color: theme.colorScheme.error,
                   ),
                 ],
                 if (canExpand) ...[
@@ -567,6 +607,16 @@ bool _needsExpansion(String? value) {
   }
   final trimmed = value!.trim();
   return trimmed.contains('\n') || trimmed.length > 160;
+}
+
+bool _isInProgressStatus(String? status) {
+  final normalized = status?.toLowerCase();
+  if (normalized == null || normalized.isEmpty) {
+    return false;
+  }
+  return normalized.contains('progress') ||
+      normalized.contains('pending') ||
+      normalized.contains('running');
 }
 
 bool _shouldShowSummary(ChatEntry entry) {

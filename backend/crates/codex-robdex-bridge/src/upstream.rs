@@ -69,6 +69,24 @@ impl RunningStateReducer {
         self.set_running_state(thread_id, is_running, thread_cache)
     }
 
+    pub fn set_thread_active_turn_state(
+        &mut self,
+        thread_id: &str,
+        active_turn_id: Option<String>,
+        thread_cache: &mut ThreadCachePayload,
+    ) -> bool {
+        match active_turn_id {
+            Some(turn_id) => {
+                self.active_turn_ids_by_thread
+                    .entry(thread_id.to_string())
+                    .or_default()
+                    .insert(turn_id);
+                self.set_running_state(thread_id, true, thread_cache)
+            }
+            None => self.set_thread_running_state(thread_id, false, thread_cache),
+        }
+    }
+
     pub fn clear_running_state(&mut self, thread_cache: &mut ThreadCachePayload) -> bool {
         let had_running = !thread_cache.running_thread_ids.is_empty();
         self.active_turn_ids_by_thread.clear();
@@ -926,8 +944,7 @@ fn message_from_item(item: &ThreadItem, thread_id: &str) -> Option<RobdexChatMes
                 status: Some(command_execution_status_label(status).to_string()),
                 command: Some(command.clone()),
                 output: aggregated_output.clone(),
-                process_id: command_execution_job_token(command, aggregated_output.as_deref())
-                    .or_else(|| process_id.clone()),
+                process_id: process_id.clone(),
             }),
             None,
         )),
@@ -1075,12 +1092,6 @@ fn summarize_file_change_diffs(changes: &[FileUpdateChange]) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
-}
-
-fn command_execution_job_token(command: &str, output: Option<&str>) -> Option<String> {
-    extract_job_id(command)
-        .or_else(|| output.and_then(extract_job_id))
-        .map(|job_id| format!("job:{job_id}"))
 }
 
 fn extract_job_id(text: &str) -> Option<String> {
@@ -1434,64 +1445,6 @@ mod tests {
                 .as_ref()
                 .and_then(|metadata| metadata.output.as_deref()),
             Some("stdout line\ncompleted")
-        );
-    }
-
-    #[test]
-    fn command_execution_job_token_is_derived_from_output_when_process_id_missing() {
-        let message = message_from_item(
-            &ThreadItem::CommandExecution {
-                id: "cmd-1".to_string(),
-                command: "command-parser cargo test".to_string(),
-                cwd: PathBuf::from("/tmp"),
-                process_id: None,
-                status: CommandExecutionStatus::InProgress,
-                command_actions: Vec::new(),
-                aggregated_output: Some(
-                    "job_id: 12345678-abcd-1234-abcd-1234567890ab\nstill running".to_string(),
-                ),
-                exit_code: None,
-                duration_ms: None,
-            },
-            "thread-1",
-        )
-        .expect("message");
-
-        assert_eq!(
-            message
-                .tool_metadata
-                .as_ref()
-                .and_then(|metadata| metadata.process_id.as_deref()),
-            Some("job:12345678-abcd-1234-abcd-1234567890ab")
-        );
-    }
-
-    #[test]
-    fn command_execution_job_token_is_preferred_over_numeric_process_id() {
-        let message = message_from_item(
-            &ThreadItem::CommandExecution {
-                id: "cmd-1".to_string(),
-                command: "command-parser cargo test".to_string(),
-                cwd: PathBuf::from("/tmp"),
-                process_id: Some("93456".to_string()),
-                status: CommandExecutionStatus::InProgress,
-                command_actions: Vec::new(),
-                aggregated_output: Some(
-                    "job_id: 12345678-abcd-1234-abcd-1234567890ab\nstill running".to_string(),
-                ),
-                exit_code: None,
-                duration_ms: None,
-            },
-            "thread-1",
-        )
-        .expect("message");
-
-        assert_eq!(
-            message
-                .tool_metadata
-                .as_ref()
-                .and_then(|metadata| metadata.process_id.as_deref()),
-            Some("job:12345678-abcd-1234-abcd-1234567890ab")
         );
     }
 

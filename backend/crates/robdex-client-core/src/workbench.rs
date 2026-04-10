@@ -127,6 +127,11 @@ impl WorkbenchClient {
         worker_reasoning_effort: Option<String>,
         qa_model_id: Option<String>,
         qa_reasoning_effort: Option<String>,
+        orchestrator_developer_instructions: Option<String>,
+        worker_developer_instructions: Option<String>,
+        qa_developer_instructions: Option<String>,
+        operator_developer_instructions: Option<String>,
+        hidden_developer_instructions: Option<String>,
     ) -> Result<WorkbenchViewData> {
         self.client
             .post(self.endpoint.http_base.join(&format!("/projects/{project_id}"))?)
@@ -149,6 +154,13 @@ impl WorkbenchClient {
                         "modelID": qa_model_id,
                         "reasoningEffort": qa_reasoning_effort,
                     }
+                },
+                "roleDeveloperInstructionsDefaults": {
+                    "orchestrator": orchestrator_developer_instructions,
+                    "worker": worker_developer_instructions,
+                    "qa": qa_developer_instructions,
+                    "operator": operator_developer_instructions,
+                    "hidden": hidden_developer_instructions,
                 }
             }))
             .send()
@@ -435,6 +447,20 @@ impl WorkbenchClient {
         Ok(())
     }
 
+    pub async fn terminate_command_execution(&self, thread_id: &str, process_id: &str) -> Result<()> {
+        self.client
+            .post(
+                self.endpoint
+                    .http_base
+                    .join(&format!("/threads/{thread_id}/commands/terminate"))?,
+            )
+            .json(&json!({ "processId": process_id }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
     pub async fn decide_approval(
         &self,
         sender_thread_id: &str,
@@ -465,6 +491,7 @@ impl WorkbenchClient {
         network_access: Option<bool>,
         model_id: Option<&str>,
         reasoning_effort: Option<&str>,
+        service_tier: Option<&str>,
     ) -> Result<()> {
         self.client
             .post(
@@ -479,7 +506,21 @@ impl WorkbenchClient {
                 "networkAccess": network_access,
                 "modelID": model_id,
                 "reasoningEffort": reasoning_effort,
+                "serviceTier": service_tier,
             }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn thread_compact(&self, thread_id: &str) -> Result<()> {
+        self.client
+            .post(
+                self.endpoint
+                    .http_base
+                    .join(&format!("/threads/{thread_id}/compact"))?,
+            )
             .send()
             .await?
             .error_for_status()?;
@@ -604,11 +645,34 @@ pub async fn build_workbench(
     preserved_messages: Option<Vec<UiChatEntry>>,
     endpoint: &BridgeEndpoint,
 ) -> Result<WorkbenchViewData> {
+    build_workbench_with_models(
+        snapshot,
+        selected_thread_id,
+        preserved_messages,
+        endpoint,
+        None,
+    )
+    .await
+}
+
+pub async fn build_workbench_with_models(
+    snapshot: Value,
+    selected_thread_id: Option<&str>,
+    preserved_messages: Option<Vec<UiChatEntry>>,
+    endpoint: &BridgeEndpoint,
+    available_models_override: Option<Vec<UiModelItem>>,
+) -> Result<WorkbenchViewData> {
     let connection_status = snapshot
         .get("connectionStatus")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    let available_models = fetch_available_models(endpoint).await.unwrap_or_default();
+    let available_models = available_models_override
+        .unwrap_or_else(|| Vec::new());
+    let available_models = if available_models.is_empty() {
+        fetch_available_models(endpoint).await.unwrap_or_default()
+    } else {
+        available_models
+    };
     let selected_project_id = selected_project_id(&snapshot);
     let running_ids = running_thread_ids(&snapshot);
     let project_records = extract_project_records(&snapshot);
@@ -630,6 +694,11 @@ pub async fn build_workbench(
             worker_default_reasoning_effort: record.worker_default_reasoning_effort.clone(),
             qa_default_model: record.qa_default_model.clone(),
             qa_default_reasoning_effort: record.qa_default_reasoning_effort.clone(),
+            orchestrator_developer_instructions: record.orchestrator_developer_instructions.clone(),
+            worker_developer_instructions: record.worker_developer_instructions.clone(),
+            qa_developer_instructions: record.qa_developer_instructions.clone(),
+            operator_developer_instructions: record.operator_developer_instructions.clone(),
+            hidden_developer_instructions: record.hidden_developer_instructions.clone(),
             is_selected: Some(record.id.as_str()) == selected_project_id.as_deref(),
         })
         .collect::<Vec<_>>();
@@ -715,6 +784,7 @@ pub async fn build_workbench(
                 selected.map(|value| value.role.as_str()),
             )
         });
+    let effective_service_tier = selected.and_then(|value| value.service_tier.clone());
 
     let selection = UiWorkspaceSelection {
         project_id: selected
@@ -755,11 +825,13 @@ pub async fn build_workbench(
         approval_policy: selected.and_then(|value| value.approval_policy.clone()),
         model: selected.and_then(|value| value.model.clone()),
         reasoning_effort: selected.and_then(|value| value.reasoning_effort.clone()),
+        service_tier: selected.and_then(|value| value.service_tier.clone()),
         effective_sandbox_mode,
         effective_network_access,
         effective_approval_policy,
         effective_model,
         effective_reasoning_effort,
+        effective_service_tier,
         is_running: selected.map(|value| running_ids.contains(&value.id)).unwrap_or(false),
     };
 
@@ -836,6 +908,20 @@ pub async fn build_workbench(
     })
 }
 
+pub fn context_window_remaining_percent_from_thread_payload(payload: &Value) -> Option<u32> {
+    payload
+        .get("contextWindowStatus")
+        .or_else(|| payload.get("context_window_status"))
+        .and_then(Value::as_object)
+        .and_then(|status| {
+            status
+                .get("remainingPercent")
+                .or_else(|| status.get("remaining_percent"))
+        })
+        .and_then(Value::as_u64)
+        .map(|value| value as u32)
+}
+
 pub async fn fetch_thread_messages(
     endpoint: &BridgeEndpoint,
     thread_id: &str,
@@ -861,6 +947,7 @@ pub async fn fetch_thread_messages(
             subtitle: None,
             kind: None,
             status: None,
+            process_id: None,
             command: None,
             output: None,
             delivery_state: None,
@@ -918,6 +1005,10 @@ fn chat_entry_from_message(message: &serde_json::Map<String, Value>) -> UiChatEn
         subtitle,
         kind,
         status,
+        process_id: tool_metadata
+            .and_then(|tool| tool.get("processId"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
         command: tool_metadata
             .and_then(|tool| tool.get("command"))
             .and_then(Value::as_str)
@@ -984,6 +1075,7 @@ struct ThreadRecord {
     approval_policy: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    service_tier: Option<String>,
     issue_number: Option<u64>,
     pull_request_number: Option<u64>,
     blocked_reason: Option<String>,
@@ -1007,6 +1099,11 @@ struct ProjectRecord {
     worker_default_reasoning_effort: Option<String>,
     qa_default_model: Option<String>,
     qa_default_reasoning_effort: Option<String>,
+    orchestrator_developer_instructions: Option<String>,
+    worker_developer_instructions: Option<String>,
+    qa_developer_instructions: Option<String>,
+    operator_developer_instructions: Option<String>,
+    hidden_developer_instructions: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1093,6 +1190,10 @@ fn extract_thread_records(snapshot: &Value) -> Vec<ThreadRecord> {
                     .get("reasoningEffort")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                service_tier: agent
+                    .get("serviceTier")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 issue_number: agent.get("issueNumber").and_then(Value::as_u64),
                 pull_request_number: agent.get("pullRequestNumber").and_then(Value::as_u64),
                 blocked_reason: agent
@@ -1165,6 +1266,11 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
             .and_then(|value| value.get("roleModelReasoningDefaults"))
             .cloned()
             .unwrap_or(Value::Null);
+        let developer_defaults = project
+            .get("configs")
+            .and_then(|value| value.get("roleDeveloperInstructionsDefaults"))
+            .cloned()
+            .unwrap_or(Value::Null);
         records.push(ProjectRecord {
             id: project
                 .get("id")
@@ -1221,6 +1327,26 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
             qa_default_reasoning_effort: role_defaults
                 .get("qa")
                 .and_then(|value| value.get("reasoningEffort"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            orchestrator_developer_instructions: developer_defaults
+                .get("orchestrator")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            worker_developer_instructions: developer_defaults
+                .get("worker")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            qa_developer_instructions: developer_defaults
+                .get("qa")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            operator_developer_instructions: developer_defaults
+                .get("operator")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            hidden_developer_instructions: developer_defaults
+                .get("hidden")
                 .and_then(Value::as_str)
                 .map(str::to_string),
             root_path,

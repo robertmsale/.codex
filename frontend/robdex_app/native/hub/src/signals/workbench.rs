@@ -19,6 +19,14 @@ pub struct SelectThreadSignal {
 pub struct FetchThreadHistorySignal;
 
 #[derive(Deserialize, DartSignal)]
+pub struct ThreadCompactSignal;
+
+#[derive(Deserialize, DartSignal)]
+pub struct TerminateCommandExecutionSignal {
+    pub process_id: String,
+}
+
+#[derive(Deserialize, DartSignal)]
 pub struct CreateProjectSignal {
     pub name: String,
     pub root_path: String,
@@ -49,6 +57,11 @@ pub struct UpdateProjectSignal {
     pub worker_reasoning_effort: String,
     pub qa_model_id: String,
     pub qa_reasoning_effort: String,
+    pub orchestrator_developer_instructions: String,
+    pub worker_developer_instructions: String,
+    pub qa_developer_instructions: String,
+    pub operator_developer_instructions: String,
+    pub hidden_developer_instructions: String,
 }
 
 #[derive(Deserialize, DartSignal)]
@@ -136,6 +149,7 @@ pub struct UpdateThreadSettingsSignal {
     pub network_access_mode: String,
     pub model_id: String,
     pub reasoning_effort: String,
+    pub service_tier: String,
 }
 
 #[derive(Deserialize, DartSignal)]

@@ -35,6 +35,8 @@ part 'send_thread_message_signal.dart';
 part 'set_project_orchestrator_signal.dart';
 part 'set_thread_running_state_signal.dart';
 part 'spawn_agent_signal.dart';
+part 'terminate_command_execution_signal.dart';
+part 'thread_compact_signal.dart';
 part 'thread_history_state_signal.dart';
 part 'update_project_signal.dart';
 part 'update_thread_settings_signal.dart';

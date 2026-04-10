@@ -97,6 +97,88 @@ def _idb_probe_matches_element(*, probed: dict[str, Any] | None, element: dict[s
     return isinstance(probed_frame, dict) and isinstance(element_frame, dict) and probed_frame == element_frame
 
 
+def _element_role_priority(element: dict[str, Any]) -> int:
+    role = str(element.get("role_description") or element.get("type") or "").strip().casefold()
+    if role in {"button", "text field", "switch", "tab", "link", "cell", "checkbox"}:
+        return 0
+    if role in {"image", "icon"}:
+        return 1
+    if role in {"text", "statictext", "group"}:
+        return 3
+    return 2
+
+
+def _element_frame_bounds(element: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    frame = element.get("frame")
+    if not isinstance(frame, dict):
+        return None
+    try:
+        left = float(frame.get("x", 0))
+        top = float(frame.get("y", 0))
+        width = float(frame.get("width", 0))
+        height = float(frame.get("height", 0))
+    except Exception:
+        return None
+    return left, top, left + width, top + height
+
+
+def _element_area(element: dict[str, Any]) -> float:
+    bounds = _element_frame_bounds(element)
+    if bounds is None:
+        return float("inf")
+    left, top, right, bottom = bounds
+    return max(0.0, right - left) * max(0.0, bottom - top)
+
+
+def _matching_elements_for_selector(*, elements: list[dict[str, Any]], selector: Any) -> list[dict[str, Any]]:
+    candidates = _route_selector_candidates(selector)
+    matches: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    for field, expected in candidates:
+        expected_variants = _normalized_accessibility_strings(expected)
+        expected_folded = {variant.casefold() for variant in expected_variants}
+        for element in elements:
+            actual = element.get(field)
+            if not isinstance(actual, str):
+                continue
+            actual_variants = _normalized_accessibility_strings(actual)
+            if any(variant.casefold() in expected_folded for variant in actual_variants):
+                marker = id(element)
+                if marker in seen_ids:
+                    continue
+                seen_ids.add(marker)
+                matches.append(element)
+    return matches
+
+
+def _best_matching_element(matches: list[dict[str, Any]]) -> dict[str, Any]:
+    if not matches:
+        raise BridgeError("No matching accessibility elements were found.")
+    return min(
+        matches,
+        key=lambda element: (
+            _element_role_priority(element),
+            _element_area(element),
+        ),
+    )
+
+
+def _element_contains_point(*, element: dict[str, Any], point: tuple[int, int]) -> bool:
+    bounds = _element_frame_bounds(element)
+    if bounds is None:
+        return False
+    left, top, right, bottom = bounds
+    x, y = point
+    return left <= x <= right and top <= y <= bottom
+
+
+def _best_element_containing_point(*, elements: list[dict[str, Any]], point: tuple[int, int]) -> dict[str, Any] | None:
+    matches = [element for element in elements if _element_contains_point(element=element, point=point)]
+    if not matches:
+        return None
+    return _best_matching_element(matches)
+
+
 def _normalized_accessibility_strings(value: str) -> list[str]:
     raw = value.strip()
     if not raw:
@@ -151,17 +233,9 @@ def _route_selector_candidates(selector: Any) -> list[tuple[str, str]]:
 
 
 def _route_find_idb_element(*, elements: list[dict[str, Any]], selector: Any) -> dict[str, Any]:
-    candidates = _route_selector_candidates(selector)
-    for field, expected in candidates:
-        expected_variants = _normalized_accessibility_strings(expected)
-        expected_folded = {variant.casefold() for variant in expected_variants}
-        for element in elements:
-            actual = element.get(field)
-            if not isinstance(actual, str):
-                continue
-            actual_variants = _normalized_accessibility_strings(actual)
-            if any(variant.casefold() in expected_folded for variant in actual_variants):
-                return element
+    matches = _matching_elements_for_selector(elements=elements, selector=selector)
+    if matches:
+        return _best_matching_element(matches)
     raise BridgeError(f"Could not find an accessibility element matching {selector!r}.")
 
 
@@ -310,11 +384,13 @@ def _idb_tap_point(
 ) -> dict[str, Any]:
     manager = service.manager
     elements = manager._idb_describe_all(reservation=reservation)  # noqa: SLF001
+    expected_element = _best_element_containing_point(elements=elements, point=point)
     tap_point, probes, probed, _ = _idb_resolve_tap_point(
         service=service,
         reservation=reservation,
         elements=elements,
         point=point,
+        expected_element=expected_element,
     )
     argv = ["ui", "tap"]
     if duration is not None:
@@ -336,7 +412,7 @@ def _idb_tap_point(
     )
     if result.returncode != 0:
         raise BridgeError((result.stderr or result.stdout or "idb ui tap failed").strip())
-    return {"point": point, "tap_point": tap_point, "element": probed}
+    return {"point": point, "tap_point": tap_point, "element": probed or expected_element}
 
 
 def _compact_element_summary(element: dict[str, Any]) -> str:

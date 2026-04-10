@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use tokio::time::timeout;
 
 use crate::{
+    app_server_overrides::{AppServerThreadOverrides, AppServerTurnOverrides, simple_sandbox_policy},
     models::{BridgeAgentSummary, BridgeAppStateSnapshot, BridgeInstanceSummary, PendingApproval, ThreadCachePayload},
     runtime::BridgeRuntime,
     transforms::{prune_thread_cache_payload, resolve_role_instructions, summarize_scoped_agent_record},
@@ -72,7 +73,18 @@ struct PersistedAgentState {
     sandbox_mode: Option<String>,
     network_access: Option<bool>,
     model: Option<String>,
+    model_provider: Option<String>,
     reasoning_effort: Option<String>,
+    service_tier: Option<Value>,
+    approvals_reviewer: Option<Value>,
+    personality: Option<Value>,
+    config: Option<Value>,
+    base_instructions: Option<String>,
+    developer_instructions: Option<String>,
+    persist_extended_history: Option<bool>,
+    service_name: Option<String>,
+    ephemeral: Option<bool>,
+    dynamic_tools: Option<Value>,
     issue_number: Option<u64>,
     pull_request_number: Option<u64>,
     blocked_reason: Option<String>,
@@ -112,7 +124,15 @@ struct SenderThreadContext {
     sandbox_mode: Option<String>,
     network_access: Option<bool>,
     model: Option<String>,
+    model_provider: Option<String>,
     reasoning_effort: Option<String>,
+    service_tier: Option<Value>,
+    approvals_reviewer: Option<Value>,
+    personality: Option<Value>,
+    config: Option<Value>,
+    base_instructions: Option<String>,
+    developer_instructions: Option<String>,
+    persist_extended_history: Option<bool>,
 }
 
 pub async fn make_app_state_snapshot(
@@ -278,7 +298,18 @@ fn bridge_state_payload(state: &PersistedState) -> Value {
                     "projectRootPath": agent.project_root,
                     "preferredCWD": agent.cwd,
                     "modelID": agent.model,
+                    "modelProvider": agent.model_provider,
                     "reasoningEffort": agent.reasoning_effort,
+                    "serviceTier": agent.service_tier,
+                    "approvalsReviewer": agent.approvals_reviewer,
+                    "personality": agent.personality,
+                    "config": agent.config,
+                    "baseInstructions": agent.base_instructions,
+                    "developerInstructions": agent.developer_instructions,
+                    "persistExtendedHistory": agent.persist_extended_history,
+                    "serviceName": agent.service_name,
+                    "ephemeral": agent.ephemeral,
+                    "dynamicTools": agent.dynamic_tools,
                 }),
             );
         }
@@ -440,28 +471,82 @@ pub async fn execute_bridge_command(
                         .and_then(Value::as_str)
                         .map(str::to_string)
                 });
-            let network_access = effective_network_access_for_sandbox(
-                sandbox_mode.as_deref(),
-                payload.get("networkAccess").and_then(Value::as_bool),
-                state.global_configs.get("networkAccess").and_then(Value::as_bool),
-            );
             let reasoning_effort = payload
                 .get("reasoningEffort")
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| role_default_reasoning_effort(&state, project_path, role));
-            let params = json!({
-                "cwd": cwd,
-                "approvalPolicy": payload.get("approvalPolicy").cloned().unwrap_or(Value::Null),
-                "sandbox": sandbox_mode,
-                "sandboxPolicy": sandbox_policy_for_spawn(sandbox_mode.as_deref(), network_access, Some(cwd.as_str())),
-                "model": payload.get("model").cloned().unwrap_or(role_default_model(&state, project_path, role).map(Value::String).unwrap_or(Value::Null)),
-                "effort": reasoning_effort,
-                "developerInstructions": developer_instructions_for_role(&state, role, project_path, Some(cwd.as_str())),
-                "baseInstructions": resolve_role_instructions_for(role)?,
-                "persistExtendedHistory": true
-            });
+            let params = AppServerThreadOverrides {
+                cwd: Some(cwd.clone()),
+                approval_policy: payload.get("approvalPolicy").cloned(),
+                sandbox: sandbox_mode,
+                model: payload
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| role_default_model(&state, project_path, role)),
+                reasoning_effort,
+                developer_instructions: payload
+                    .get("developerInstructions")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| developer_instructions_for_role(&state, role, project_path, Some(cwd.as_str()))),
+                base_instructions: payload
+                    .get("baseInstructions")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| resolve_role_instructions_for(role).ok().flatten()),
+                config: payload.get("config").cloned(),
+                service_tier: payload.get("serviceTier").cloned(),
+                model_provider: payload
+                    .get("modelProvider")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| {
+                        state
+                            .projects
+                            .values()
+                            .find(|project| project.project_root.as_deref() == project_path)
+                            .and_then(|project| project.preferred_model_provider.clone())
+                    }),
+                approvals_reviewer: payload.get("approvalsReviewer").cloned(),
+                personality: payload.get("personality").cloned(),
+                service_name: payload.get("serviceName").and_then(Value::as_str).map(str::to_string),
+                ephemeral: payload.get("ephemeral").and_then(Value::as_bool),
+                dynamic_tools: payload.get("dynamicTools").cloned(),
+                ..Default::default()
+            }
+            .thread_start_params();
             let result = app_server_request_json(runtime, "thread/start", params).await?;
+            if let Some(project_path) = project_path {
+                let mut next_state = parse_state(&runtime.state_document_value().await);
+                register_tracked_thread(
+                    &mut next_state,
+                    &json!({
+                        "thread": result.get("thread").cloned().unwrap_or(result.clone()),
+                        "projectPath": project_path,
+                        "preferredCWD": cwd,
+                        "role": role.unwrap_or("worker"),
+                        "approvalPolicy": payload.get("approvalPolicy").cloned().unwrap_or(Value::Null),
+                        "sandboxMode": payload.get("sandbox").cloned().unwrap_or(Value::Null),
+                        "networkAccess": payload.get("networkAccess").cloned().unwrap_or(Value::Null),
+                        "modelID": payload.get("model").cloned().unwrap_or(Value::Null),
+                        "modelProvider": payload.get("modelProvider").cloned().unwrap_or(Value::Null),
+                        "reasoningEffort": payload.get("reasoningEffort").cloned().unwrap_or(Value::Null),
+                        "serviceTier": payload.get("serviceTier").cloned().unwrap_or(Value::Null),
+                        "approvalsReviewer": payload.get("approvalsReviewer").cloned().unwrap_or(Value::Null),
+                        "personality": payload.get("personality").cloned().unwrap_or(Value::Null),
+                        "config": payload.get("config").cloned().unwrap_or(Value::Null),
+                        "baseInstructions": payload.get("baseInstructions").cloned().unwrap_or(Value::Null),
+                        "developerInstructions": payload.get("developerInstructions").cloned().unwrap_or(Value::Null),
+                        "persistExtendedHistory": payload.get("persistExtendedHistory").cloned().unwrap_or(Value::Null),
+                        "serviceName": payload.get("serviceName").cloned().unwrap_or(Value::Null),
+                        "ephemeral": payload.get("ephemeral").cloned().unwrap_or(Value::Null),
+                        "dynamicTools": payload.get("dynamicTools").cloned().unwrap_or(Value::Null),
+                    }),
+                )?;
+                persist_state(runtime, &next_state).await?;
+            }
             Ok(success(json!({"type":"thread","payload": result.get("thread").cloned().unwrap_or(result)})))
         }
         "threadResume" => {
@@ -473,22 +558,13 @@ pub async fn execute_bridge_command(
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| tracked_cwd_for_thread(&state, &thread_id));
-            let approval_policy = payload
-                .get("approvalPolicy")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| tracked_approval_policy_for_thread(&state, &thread_id));
+            let approval_policy =
+                payload_value_or_string(&payload, "approvalPolicy", tracked_approval_policy_for_thread(&state, &thread_id));
             let sandbox_mode = payload
                 .get("sandbox")
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| tracked_sandbox_mode_for_thread(&state, &thread_id));
-            let network_access = effective_network_access_for_sandbox(
-                sandbox_mode.as_deref(),
-                payload.get("networkAccess").and_then(Value::as_bool)
-                    .or_else(|| tracked_network_access_for_thread(&state, &thread_id)),
-                state.global_configs.get("networkAccess").and_then(Value::as_bool),
-            );
             let model = payload
                 .get("model")
                 .and_then(Value::as_str)
@@ -499,28 +575,55 @@ pub async fn execute_bridge_command(
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| tracked_reasoning_effort_for_thread(&state, &thread_id));
-            let params = json!({
-                "threadId": thread_id,
-                "cwd": cwd,
-                "approvalPolicy": approval_policy,
-                "sandbox": sandbox_mode,
-                "sandboxPolicy": sandbox_policy_for_spawn(sandbox_mode.as_deref(), network_access, cwd.as_deref()),
-                "model": model,
-                "effort": reasoning_effort,
-                "baseInstructions": resolve_role_instructions_for(role.as_deref())?,
-                "developerInstructions": developer_instructions_for_role(&state, role.as_deref(), tracked_project_path_for_thread(&state, &thread_id).as_deref(), cwd.as_deref()),
-                "persistExtendedHistory": true
-            });
+            let params = AppServerThreadOverrides {
+                cwd: cwd.clone(),
+                approval_policy,
+                sandbox: sandbox_mode,
+                model,
+                reasoning_effort,
+                base_instructions: payload
+                    .get("baseInstructions")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| tracked_base_instructions_for_thread(&state, &thread_id)),
+                developer_instructions: payload
+                    .get("developerInstructions")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| tracked_developer_instructions_for_thread(&state, &thread_id))
+                    .or_else(|| developer_instructions_for_role(
+                    &state,
+                    role.as_deref(),
+                    tracked_project_path_for_thread(&state, &thread_id).as_deref(),
+                    cwd.as_deref(),
+                )),
+                config: payload.get("config").cloned().or_else(|| tracked_config_for_thread(&state, &thread_id)),
+                service_tier: payload.get("serviceTier").cloned().or_else(|| tracked_service_tier_for_thread(&state, &thread_id)),
+                model_provider: payload
+                    .get("modelProvider")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| tracked_model_provider_for_thread(&state, &thread_id)),
+                approvals_reviewer: payload
+                    .get("approvalsReviewer")
+                    .cloned()
+                    .or_else(|| tracked_approvals_reviewer_for_thread(&state, &thread_id)),
+                personality: payload.get("personality").cloned().or_else(|| tracked_personality_for_thread(&state, &thread_id)),
+                persist_extended_history: payload
+                    .get("persistExtendedHistory")
+                    .and_then(Value::as_bool)
+                    .or_else(|| tracked_persist_extended_history_for_thread(&state, &thread_id))
+                    .or(Some(true)),
+                ..Default::default()
+            }
+            .thread_resume_params(
+                thread_id.clone(),
+                payload.get("history").cloned(),
+                payload.get("path").cloned(),
+            );
             let result = app_server_request_json(runtime, "thread/resume", params).await?;
             let mut state = parse_state(&runtime.state_document_value().await);
-            if update_tracked_thread_session_config(
-                &mut state,
-                &thread_id,
-                payload.get("approvalPolicy").and_then(Value::as_str),
-                payload.get("sandbox").and_then(Value::as_str),
-                payload.get("networkAccess").and_then(Value::as_bool),
-                payload.get("cwd").and_then(Value::as_str),
-            ) {
+            if update_tracked_thread_session_config(&mut state, &thread_id, &payload) {
                 persist_state(runtime, &state).await?;
             }
             Ok(success(json!({"type":"thread","payload": summarize_thread_payload(&result)})))
@@ -534,42 +637,96 @@ pub async fn execute_bridge_command(
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| tracked_cwd_for_thread(&state, &thread_id));
-            let approval_policy = payload
-                .get("approvalPolicy")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| tracked_approval_policy_for_thread(&state, &thread_id));
+            let approval_policy =
+                payload_value_or_string(&payload, "approvalPolicy", tracked_approval_policy_for_thread(&state, &thread_id));
             let sandbox_mode = payload
                 .get("sandbox")
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| tracked_sandbox_mode_for_thread(&state, &thread_id));
-            let network_access = effective_network_access_for_sandbox(
-                sandbox_mode.as_deref(),
-                payload.get("networkAccess").and_then(Value::as_bool)
-                    .or_else(|| tracked_network_access_for_thread(&state, &thread_id)),
-                state.global_configs.get("networkAccess").and_then(Value::as_bool),
-            );
             let model = payload
                 .get("model")
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| tracked_model_for_thread(&state, &thread_id));
-            let params = json!({
-                "threadId": thread_id,
-                "path": payload.get("path").cloned().unwrap_or(Value::Null),
-                "model": model,
-                "modelProvider": payload.get("modelProvider").cloned().unwrap_or(Value::Null),
-                "cwd": cwd,
-                "approvalPolicy": approval_policy,
-                "sandbox": sandbox_mode,
-                "sandboxPolicy": sandbox_policy_for_spawn(sandbox_mode.as_deref(), network_access, cwd.as_deref()),
-                "config": payload.get("config").cloned().unwrap_or(Value::Null),
-                "baseInstructions": resolve_role_instructions_for(role.as_deref())?,
-                "developerInstructions": developer_instructions_for_role(&state, role.as_deref(), tracked_project_path_for_thread(&state, &thread_id).as_deref(), cwd.as_deref()),
-                "persistExtendedHistory": payload.get("persistExtendedHistory").cloned().unwrap_or(Value::Bool(true))
-            });
+            let reasoning_effort = payload
+                .get("reasoningEffort")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| tracked_reasoning_effort_for_thread(&state, &thread_id));
+            let params = AppServerThreadOverrides {
+                cwd: cwd.clone(),
+                approval_policy,
+                sandbox: sandbox_mode,
+                model,
+                reasoning_effort,
+                model_provider: payload
+                    .get("modelProvider")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| tracked_model_provider_for_thread(&state, &thread_id)),
+                config: payload.get("config").cloned().or_else(|| tracked_config_for_thread(&state, &thread_id)),
+                base_instructions: payload
+                    .get("baseInstructions")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| tracked_base_instructions_for_thread(&state, &thread_id)),
+                developer_instructions: payload
+                    .get("developerInstructions")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| tracked_developer_instructions_for_thread(&state, &thread_id))
+                    .or_else(|| developer_instructions_for_role(
+                    &state,
+                    role.as_deref(),
+                    tracked_project_path_for_thread(&state, &thread_id).as_deref(),
+                    cwd.as_deref(),
+                )),
+                service_tier: payload.get("serviceTier").cloned().or_else(|| tracked_service_tier_for_thread(&state, &thread_id)),
+                approvals_reviewer: payload
+                    .get("approvalsReviewer")
+                    .cloned()
+                    .or_else(|| tracked_approvals_reviewer_for_thread(&state, &thread_id)),
+                personality: payload.get("personality").cloned().or_else(|| tracked_personality_for_thread(&state, &thread_id)),
+                ephemeral: payload.get("ephemeral").and_then(Value::as_bool),
+                persist_extended_history: payload
+                    .get("persistExtendedHistory")
+                    .and_then(Value::as_bool)
+                    .or_else(|| tracked_persist_extended_history_for_thread(&state, &thread_id))
+                    .or(Some(true)),
+                ..Default::default()
+            }
+            .thread_fork_params(thread_id.clone(), payload.get("path").cloned());
             let result = app_server_request_json(runtime, "thread/fork", params).await?;
+            if let Some(new_thread) = result.get("thread").cloned() {
+                let mut next_state = parse_state(&runtime.state_document_value().await);
+                register_tracked_thread(
+                    &mut next_state,
+                    &json!({
+                        "thread": new_thread,
+                        "projectPath": tracked_project_path_for_thread(&state, &thread_id).unwrap_or_else(|| cwd.clone().unwrap_or_default()),
+                        "preferredCWD": cwd,
+                        "role": role,
+                        "approvalPolicy": payload.get("approvalPolicy").cloned().unwrap_or(Value::Null),
+                        "sandboxMode": payload.get("sandbox").cloned().unwrap_or(Value::Null),
+                        "networkAccess": payload.get("networkAccess").cloned().unwrap_or(Value::Null),
+                        "modelID": payload.get("model").cloned().unwrap_or(Value::Null),
+                        "modelProvider": payload.get("modelProvider").cloned().unwrap_or(Value::Null),
+                        "reasoningEffort": payload.get("reasoningEffort").cloned().unwrap_or(Value::Null),
+                        "serviceTier": payload.get("serviceTier").cloned().unwrap_or(Value::Null),
+                        "approvalsReviewer": payload.get("approvalsReviewer").cloned().unwrap_or(Value::Null),
+                        "personality": payload.get("personality").cloned().unwrap_or(Value::Null),
+                        "config": payload.get("config").cloned().unwrap_or(Value::Null),
+                        "baseInstructions": payload.get("baseInstructions").cloned().unwrap_or(Value::Null),
+                        "developerInstructions": payload.get("developerInstructions").cloned().unwrap_or(Value::Null),
+                        "persistExtendedHistory": payload.get("persistExtendedHistory").cloned().unwrap_or(Value::Null),
+                        "serviceName": payload.get("serviceName").cloned().unwrap_or(Value::Null),
+                        "ephemeral": payload.get("ephemeral").cloned().unwrap_or(Value::Null),
+                        "dynamicTools": payload.get("dynamicTools").cloned().unwrap_or(Value::Null),
+                    }),
+                )?;
+                persist_state(runtime, &next_state).await?;
+            }
             Ok(success(json!({"type":"thread","payload": result.get("thread").cloned().unwrap_or(result)})))
         }
         "threadArchive" => {
@@ -649,11 +806,8 @@ pub async fn execute_bridge_command(
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| tracked_cwd_for_thread(&state, &thread_id));
-            let approval_policy = payload
-                .get("approvalPolicy")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| tracked_approval_policy_for_thread(&state, &thread_id));
+            let approval_policy =
+                payload_value_or_string(&payload, "approvalPolicy", tracked_approval_policy_for_thread(&state, &thread_id));
             let sandbox_policy = payload
                 .get("sandboxPolicy")
                 .cloned()
@@ -669,20 +823,24 @@ pub async fn execute_bridge_command(
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| tracked_reasoning_effort_for_thread(&state, &thread_id));
-            let result = app_server_request_json(
-                runtime,
-                "turn/start",
-                json!({
-                    "threadId": thread_id,
-                    "input": [{"type":"text","text": required_string(&payload, "text")?}],
-                    "cwd": cwd,
-                    "model": model,
-                    "effort": effort,
-                    "approvalPolicy": approval_policy,
-                    "sandboxPolicy": sandbox_policy,
-                }),
-            )
-            .await?;
+            let params = AppServerTurnOverrides {
+                cwd,
+                model,
+                effort,
+                approval_policy,
+                sandbox_policy,
+                service_tier: payload.get("serviceTier").cloned().or_else(|| tracked_service_tier_for_thread(&state, &thread_id)),
+                approvals_reviewer: payload
+                    .get("approvalsReviewer")
+                    .cloned()
+                    .or_else(|| tracked_approvals_reviewer_for_thread(&state, &thread_id)),
+                summary: payload.get("summary").cloned(),
+                personality: payload.get("personality").cloned().or_else(|| tracked_personality_for_thread(&state, &thread_id)),
+                output_schema: payload.get("outputSchema").cloned(),
+                collaboration_mode: payload.get("collaborationMode").cloned(),
+            }
+            .turn_start_params(thread_id, json!([{"type":"text","text": required_string(&payload, "text")?}]));
+            let result = app_server_request_json(runtime, "turn/start", params).await?;
             Ok(success(json!({"type":"turn","payload": result.get("turn").cloned().unwrap_or(result)})))
         }
         "commandExec" => {
@@ -819,10 +977,9 @@ pub async fn execute_bridge_command(
         }
         "commandExecutionTerminate" => {
             let thread_id = required_string(&payload, "threadId")?;
-            let item_id = payload.get("itemId").and_then(Value::as_str);
-            if let Some(target) = resolve_command_termination_target(runtime, &thread_id, item_id).await? {
-                terminate_process_group_by_pid(&target)?;
-            }
+            let process_id = required_string(&payload, "processId")?;
+            let cmd_pid = resolve_launch_job_cmd_pid(runtime, &thread_id, &process_id).await?;
+            terminate_pid(&cmd_pid)?;
             Ok(success(json!({"type":"empty"})))
         }
         "modelList" => {
@@ -1237,6 +1394,15 @@ fn update_project(state: &mut PersistedState, payload: &Value) -> Result<()> {
         configs.insert("roleModelReasoningDefaults".to_string(), role_defaults);
         project.configs = Value::Object(configs);
     }
+    if let Some(role_defaults) = payload
+        .get("roleDeveloperInstructionsDefaults")
+        .cloned()
+        .filter(|value| value.is_object())
+    {
+        let mut configs = project.configs.as_object().cloned().unwrap_or_default();
+        configs.insert("roleDeveloperInstructionsDefaults".to_string(), role_defaults);
+        project.configs = Value::Object(configs);
+    }
     project.updated_at = Some(unix_now());
     state.updated_at = Some(unix_now());
     Ok(())
@@ -1370,11 +1536,59 @@ fn update_tracked_thread_metadata(state: &mut PersistedState, thread_id: &str, p
                     .and_then(Value::as_str)
                     .map(str::to_string);
             }
+            if payload.get("modelProvider").is_some() {
+                agent.model_provider = payload
+                    .get("modelProvider")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
             if payload.get("reasoningEffort").is_some() {
                 agent.reasoning_effort = payload
                     .get("reasoningEffort")
                     .and_then(Value::as_str)
                     .map(str::to_string);
+            }
+            if payload.get("serviceTier").is_some() {
+                agent.service_tier = payload.get("serviceTier").cloned().filter(|value| !value.is_null());
+            }
+            if payload.get("approvalsReviewer").is_some() {
+                agent.approvals_reviewer = payload
+                    .get("approvalsReviewer")
+                    .cloned()
+                    .filter(|value| !value.is_null());
+            }
+            if payload.get("personality").is_some() {
+                agent.personality = payload.get("personality").cloned().filter(|value| !value.is_null());
+            }
+            if payload.get("config").is_some() {
+                agent.config = payload.get("config").cloned().filter(|value| !value.is_null());
+            }
+            if payload.get("baseInstructions").is_some() {
+                agent.base_instructions = payload
+                    .get("baseInstructions")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+            if payload.get("developerInstructions").is_some() {
+                agent.developer_instructions = payload
+                    .get("developerInstructions")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+            if payload.get("persistExtendedHistory").is_some() {
+                agent.persist_extended_history = payload.get("persistExtendedHistory").and_then(Value::as_bool);
+            }
+            if payload.get("serviceName").is_some() {
+                agent.service_name = payload
+                    .get("serviceName")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+            if payload.get("ephemeral").is_some() {
+                agent.ephemeral = payload.get("ephemeral").and_then(Value::as_bool);
+            }
+            if payload.get("dynamicTools").is_some() {
+                agent.dynamic_tools = payload.get("dynamicTools").cloned().filter(|value| !value.is_null());
             }
         }
         if payload.get("role").is_some() {
@@ -1445,7 +1659,18 @@ fn register_tracked_thread(state: &mut PersistedState, payload: &Value) -> Resul
             sandbox_mode: payload.get("sandboxMode").and_then(Value::as_str).map(str::to_string),
             network_access: payload.get("networkAccess").and_then(Value::as_bool),
             model: payload.get("modelID").and_then(Value::as_str).map(str::to_string),
+            model_provider: payload.get("modelProvider").and_then(Value::as_str).map(str::to_string),
             reasoning_effort: payload.get("reasoningEffort").and_then(Value::as_str).map(str::to_string),
+            service_tier: payload.get("serviceTier").cloned().filter(|value| !value.is_null()),
+            approvals_reviewer: payload.get("approvalsReviewer").cloned().filter(|value| !value.is_null()),
+            personality: payload.get("personality").cloned().filter(|value| !value.is_null()),
+            config: payload.get("config").cloned().filter(|value| !value.is_null()),
+            base_instructions: payload.get("baseInstructions").and_then(Value::as_str).map(str::to_string),
+            developer_instructions: payload.get("developerInstructions").and_then(Value::as_str).map(str::to_string),
+            persist_extended_history: payload.get("persistExtendedHistory").and_then(Value::as_bool),
+            service_name: payload.get("serviceName").and_then(Value::as_str).map(str::to_string),
+            ephemeral: payload.get("ephemeral").and_then(Value::as_bool),
+            dynamic_tools: payload.get("dynamicTools").cloned().filter(|value| !value.is_null()),
             issue_number: payload.get("issueNumber").and_then(Value::as_u64),
             pull_request_number: payload.get("pullRequestNumber").and_then(Value::as_u64),
             blocked_reason: payload.get("blockedReason").and_then(Value::as_str).map(str::to_string),
@@ -1476,36 +1701,120 @@ fn set_tracked_thread_display_name(state: &mut PersistedState, thread_id: &str, 
 fn update_tracked_thread_session_config(
     state: &mut PersistedState,
     thread_id: &str,
-    approval_policy: Option<&str>,
-    sandbox_mode: Option<&str>,
-    network_access: Option<bool>,
-    cwd: Option<&str>,
+    payload: &Value,
 ) -> bool {
     for project in state.projects.values_mut() {
         if let Some(agent) = project.agents.get_mut(thread_id) {
             let mut changed = false;
-            if let Some(approval_policy) = approval_policy {
+            if let Some(approval_policy) = payload.get("approvalPolicy").and_then(Value::as_str) {
                 let next = Some(approval_policy.to_string());
                 if agent.approval_policy != next {
                     agent.approval_policy = next;
                     changed = true;
                 }
             }
-            if let Some(sandbox_mode) = sandbox_mode {
+            if let Some(sandbox_mode) = payload.get("sandbox").and_then(Value::as_str) {
                 let next = Some(sandbox_mode.to_string());
                 if agent.sandbox_mode != next {
                     agent.sandbox_mode = next;
                     changed = true;
                 }
             }
+            let network_access = payload.get("networkAccess").and_then(Value::as_bool);
             if agent.network_access != network_access {
                 agent.network_access = network_access;
                 changed = true;
             }
-            if let Some(cwd) = cwd {
+            if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
                 let next = Some(cwd.to_string());
                 if agent.cwd != next {
                     agent.cwd = next;
+                    changed = true;
+                }
+            }
+            if payload.get("model").is_some() || payload.get("modelID").is_some() {
+                let next = payload
+                    .get("model")
+                    .or_else(|| payload.get("modelID"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if agent.model != next {
+                    agent.model = next;
+                    changed = true;
+                }
+            }
+            if payload.get("modelProvider").is_some() {
+                let next = payload.get("modelProvider").and_then(Value::as_str).map(str::to_string);
+                if agent.model_provider != next {
+                    agent.model_provider = next;
+                    changed = true;
+                }
+            }
+            if payload.get("reasoningEffort").is_some() {
+                let next = payload
+                    .get("reasoningEffort")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if agent.reasoning_effort != next {
+                    agent.reasoning_effort = next;
+                    changed = true;
+                }
+            }
+            if payload.get("serviceTier").is_some() {
+                let next = payload.get("serviceTier").cloned().filter(|value| !value.is_null());
+                if agent.service_tier != next {
+                    agent.service_tier = next;
+                    changed = true;
+                }
+            }
+            if payload.get("approvalsReviewer").is_some() {
+                let next = payload
+                    .get("approvalsReviewer")
+                    .cloned()
+                    .filter(|value| !value.is_null());
+                if agent.approvals_reviewer != next {
+                    agent.approvals_reviewer = next;
+                    changed = true;
+                }
+            }
+            if payload.get("personality").is_some() {
+                let next = payload.get("personality").cloned().filter(|value| !value.is_null());
+                if agent.personality != next {
+                    agent.personality = next;
+                    changed = true;
+                }
+            }
+            if payload.get("config").is_some() {
+                let next = payload.get("config").cloned().filter(|value| !value.is_null());
+                if agent.config != next {
+                    agent.config = next;
+                    changed = true;
+                }
+            }
+            if payload.get("baseInstructions").is_some() {
+                let next = payload
+                    .get("baseInstructions")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if agent.base_instructions != next {
+                    agent.base_instructions = next;
+                    changed = true;
+                }
+            }
+            if payload.get("developerInstructions").is_some() {
+                let next = payload
+                    .get("developerInstructions")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if agent.developer_instructions != next {
+                    agent.developer_instructions = next;
+                    changed = true;
+                }
+            }
+            if payload.get("persistExtendedHistory").is_some() {
+                let next = payload.get("persistExtendedHistory").and_then(Value::as_bool);
+                if agent.persist_extended_history != next {
+                    agent.persist_extended_history = next;
                     changed = true;
                 }
             }
@@ -1745,7 +2054,17 @@ fn sender_thread_context(state: &PersistedState, thread_id: &str) -> Option<Send
             sandbox_mode,
             network_access,
             model: agent.and_then(|agent| agent.model.clone()),
+            model_provider: agent
+                .and_then(|agent| agent.model_provider.clone())
+                .or(project.preferred_model_provider.clone()),
             reasoning_effort: agent.and_then(|agent| agent.reasoning_effort.clone()),
+            service_tier: agent.and_then(|agent| agent.service_tier.clone()),
+            approvals_reviewer: agent.and_then(|agent| agent.approvals_reviewer.clone()),
+            personality: agent.and_then(|agent| agent.personality.clone()),
+            config: agent.and_then(|agent| agent.config.clone()),
+            base_instructions: agent.and_then(|agent| agent.base_instructions.clone()),
+            developer_instructions: agent.and_then(|agent| agent.developer_instructions.clone()),
+            persist_extended_history: agent.and_then(|agent| agent.persist_extended_history),
         });
     }
     None
@@ -1775,27 +2094,7 @@ fn sandbox_policy_for_spawn(
     network_access: Option<bool>,
     cwd: Option<&str>,
 ) -> Option<Value> {
-    match sandbox_mode {
-        Some("danger-full-access") => Some(json!({ "type": "dangerFullAccess" })),
-        Some("read-only") => Some(json!({
-            "type": "readOnly",
-            "access": { "type": "fullAccess" },
-            "networkAccess": network_access.unwrap_or(false),
-        })),
-        Some("workspace-write") => Some(json!({
-            "type": "workspaceWrite",
-            "writableRoots": cwd.map(|value| vec![value]).unwrap_or_default(),
-            "readOnlyAccess": { "type": "fullAccess" },
-            "networkAccess": network_access.unwrap_or(true),
-            "excludeTmpdirEnvVar": false,
-            "excludeSlashTmp": false,
-        })),
-        Some("external-sandbox") => Some(json!({
-            "type": "externalSandbox",
-            "networkAccess": if network_access.unwrap_or(true) { "enabled" } else { "restricted" },
-        })),
-        _ => None,
-    }
+    simple_sandbox_policy(sandbox_mode, network_access, cwd)
 }
 
 fn role_default_model(state: &PersistedState, project_path: Option<&str>, role: Option<&str>) -> Option<String> {
@@ -1844,25 +2143,32 @@ fn developer_instructions_for_role(
     cwd: Option<&str>,
 ) -> Option<String> {
     let role = role?;
-    if matches!(role, "hidden" | "orchestrator" | "operator") {
-        return None;
-    }
     let project = state.projects.values().find(|project| {
         project.project_root.as_deref() == project_path || project.project_root.as_deref() == cwd
     })?;
-    if project.orchestrator_thread_id.is_none() {
-        return None;
+    let configured = project
+        .configs
+        .get("roleDeveloperInstructionsDefaults")
+        .and_then(|value| value.get(role))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let mut segments = Vec::new();
+    if let Some(configured) = configured {
+        segments.push(configured);
     }
-    let mut guidance = Vec::new();
-    if project.auto_route_replies.unwrap_or(false) {
-        guidance.push("Final assistant replies are auto-forwarded to this project's orchestrator. Mid-turn messages and coordination are fine, but do not manually send a redundant final handoff when your turn ends unless you need to add distinct information.");
-    } else {
-        guidance.push("Final assistant replies are not auto-forwarded. If the orchestrator needs your final status, use $robdex-orchestrator to send it manually.");
+    if role != "orchestrator" && project.orchestrator_thread_id.is_some() {
+        if project.auto_route_replies.unwrap_or(false) {
+            segments.push("Final assistant replies are auto-forwarded to this project's orchestrator. Mid-turn messages and coordination are fine, but do not manually send a redundant final handoff when your turn ends unless you need to add distinct information.".to_string());
+        } else {
+            segments.push("Final assistant replies are not auto-forwarded. If the orchestrator needs your final status, use $robdex-orchestrator to send it manually.".to_string());
+        }
+        if project.route_approval_requests.unwrap_or(false) {
+            segments.push("Command and file-change approval requests are forwarded to this project's orchestrator so they can guide approval decisions in real time.".to_string());
+        }
     }
-    if project.route_approval_requests.unwrap_or(false) {
-        guidance.push("Command and file-change approval requests are forwarded to this project's orchestrator so they can guide approval decisions in real time.");
-    }
-    Some(guidance.join(" "))
+    (!segments.is_empty()).then(|| segments.join("\n\n"))
 }
 
 fn resolve_role_instructions_for(role: Option<&str>) -> Result<Option<String>> {
@@ -1884,12 +2190,105 @@ fn required_string(payload: &Value, field: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("Missing {field}"))
 }
 
+fn payload_value_or_string(payload: &Value, field: &str, fallback: Option<String>) -> Option<Value> {
+    payload
+        .get(field)
+        .cloned()
+        .filter(|value| !value.is_null())
+        .or_else(|| fallback.map(Value::String))
+}
+
 fn required_request_id(payload: &Value, field: &str) -> Result<RequestId> {
     let value = payload
         .get(field)
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("Missing {field}"))?;
     Ok(serde_json::from_value(value)?)
+}
+
+async fn resolve_launch_job_cmd_pid(
+    runtime: &BridgeRuntime,
+    thread_id: &str,
+    process_id: &str,
+) -> Result<String> {
+    let snapshot = runtime.snapshot().await?;
+    let messages = snapshot
+        .thread_cache
+        .message_cache_by_thread_id
+        .get(thread_id)
+        .ok_or_else(|| anyhow::anyhow!("No cached messages for thread {thread_id}"))?;
+    let command_message = messages
+        .iter()
+        .rev()
+        .find(|message| {
+            message
+                .tool_metadata
+                .as_ref()
+                .map(|metadata| {
+                    metadata.kind == "commandExecution"
+                        && metadata.process_id.as_deref() == Some(process_id)
+                })
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| anyhow::anyhow!("No command execution found for thread {thread_id} / processId {process_id}"))?;
+    let job_id = command_message
+        .tool_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.output.as_deref())
+        .and_then(extract_job_id)
+        .or_else(|| extract_job_id(&command_message.text))
+        .ok_or_else(|| anyhow::anyhow!("No launch-job job_id found for command execution {process_id}"))?;
+    let job_file = launch_job_file_path(&job_id);
+    let contents = fs::read_to_string(&job_file)
+        .with_context(|| format!("Failed to read launch-job file {}", job_file.display()))?;
+    parse_job_file_value(&contents, "cmd_pid")
+        .ok_or_else(|| anyhow::anyhow!("Launch-job file {} did not contain cmd_pid", job_file.display()))
+}
+
+fn launch_job_file_path(job_id: &str) -> PathBuf {
+    PathBuf::from("/tmp/codex-command-jobs").join(format!("{job_id}.job"))
+}
+
+fn extract_job_id(text: &str) -> Option<String> {
+    let marker = "job_id:";
+    let index = text.find(marker)?;
+    let suffix = &text[index + marker.len()..];
+    let token = suffix.trim_start().split_whitespace().next().unwrap_or("");
+    let normalized =
+        token.trim_matches(|char: char| !(char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-'));
+    looks_like_job_id(normalized).then(|| normalized.to_string())
+}
+
+fn parse_job_file_value(contents: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    contents
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn looks_like_job_id(value: &str) -> bool {
+    value.len() >= 8
+        && value
+            .chars()
+            .all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-')
+}
+
+fn terminate_pid(pid: &str) -> Result<()> {
+    if !pid.chars().all(|char| char.is_ascii_digit()) {
+        bail!("Invalid pid {pid:?}");
+    }
+    let status = Command::new("kill")
+        .args(["-TERM", pid])
+        .status()
+        .with_context(|| format!("Failed to invoke kill for pid {pid}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("kill -TERM {pid} exited with status {status}");
+    }
 }
 
 fn sender_display_name_for_thread(state: &PersistedState, thread_id: Option<&str>) -> Option<String> {
@@ -1960,20 +2359,19 @@ async fn send_thread_input(
     let effective_effort = effort
         .map(str::to_string)
         .or_else(|| tracked_reasoning_effort_for_thread(state, thread_id));
-    let response = app_server_request_json(
-        runtime,
-        "turn/start",
-        json!({
-            "threadId": thread_id,
-            "input": [{"type":"text","text": text}],
-            "cwd": cwd,
-            "approvalPolicy": approval_policy,
-            "sandboxPolicy": sandbox_policy,
-            "model": effective_model,
-            "effort": effective_effort,
-        }),
-    )
-    .await?;
+    let params = AppServerTurnOverrides {
+        cwd,
+        approval_policy: approval_policy.map(Value::String),
+        sandbox_policy,
+        model: effective_model,
+        effort: effective_effort,
+        service_tier: tracked_service_tier_for_thread(state, thread_id),
+        approvals_reviewer: tracked_approvals_reviewer_for_thread(state, thread_id),
+        personality: tracked_personality_for_thread(state, thread_id),
+        ..Default::default()
+    }
+    .turn_start_params(thread_id, json!([{"type":"text","text": text}]));
+    let response = app_server_request_json(runtime, "turn/start", params).await?;
     Ok(response.get("turn").cloned().unwrap_or(response))
 }
 
@@ -2093,6 +2491,18 @@ fn tracked_model_for_thread(state: &PersistedState, thread_id: &str) -> Option<S
     role_default_model(state, project_path.as_deref(), role.as_deref())
 }
 
+fn tracked_model_provider_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
+    for project in state.projects.values() {
+        if let Some(agent) = project.agents.get(thread_id) {
+            return agent
+                .model_provider
+                .clone()
+                .or_else(|| project.preferred_model_provider.clone());
+        }
+    }
+    None
+}
+
 fn tracked_reasoning_effort_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
     let role = effective_role_for_thread(state, thread_id, None);
     let project_path = tracked_project_path_for_thread(state, thread_id);
@@ -2104,6 +2514,72 @@ fn tracked_reasoning_effort_for_thread(state: &PersistedState, thread_id: &str) 
         }
     }
     role_default_reasoning_effort(state, project_path.as_deref(), role.as_deref())
+}
+
+fn tracked_service_tier_for_thread(state: &PersistedState, thread_id: &str) -> Option<Value> {
+    state
+        .projects
+        .values()
+        .find_map(|project| project.agents.get(thread_id).and_then(|agent| agent.service_tier.clone()))
+}
+
+fn tracked_approvals_reviewer_for_thread(state: &PersistedState, thread_id: &str) -> Option<Value> {
+    state.projects.values().find_map(|project| {
+        project
+            .agents
+            .get(thread_id)
+            .and_then(|agent| agent.approvals_reviewer.clone())
+    })
+}
+
+fn tracked_personality_for_thread(state: &PersistedState, thread_id: &str) -> Option<Value> {
+    state
+        .projects
+        .values()
+        .find_map(|project| project.agents.get(thread_id).and_then(|agent| agent.personality.clone()))
+}
+
+fn tracked_config_for_thread(state: &PersistedState, thread_id: &str) -> Option<Value> {
+    state
+        .projects
+        .values()
+        .find_map(|project| project.agents.get(thread_id).and_then(|agent| agent.config.clone()))
+}
+
+fn tracked_base_instructions_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
+    for project in state.projects.values() {
+        if let Some(agent) = project.agents.get(thread_id)
+            && agent.base_instructions.is_some()
+        {
+            return agent.base_instructions.clone();
+        }
+    }
+    resolve_role_instructions_for(effective_role_for_thread(state, thread_id, None).as_deref()).ok().flatten()
+}
+
+fn tracked_developer_instructions_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
+    for project in state.projects.values() {
+        if let Some(agent) = project.agents.get(thread_id)
+            && agent.developer_instructions.is_some()
+        {
+            return agent.developer_instructions.clone();
+        }
+    }
+    developer_instructions_for_role(
+        state,
+        effective_role_for_thread(state, thread_id, None).as_deref(),
+        tracked_project_path_for_thread(state, thread_id).as_deref(),
+        tracked_cwd_for_thread(state, thread_id).as_deref(),
+    )
+}
+
+fn tracked_persist_extended_history_for_thread(state: &PersistedState, thread_id: &str) -> Option<bool> {
+    state.projects.values().find_map(|project| {
+        project
+            .agents
+            .get(thread_id)
+            .and_then(|agent| agent.persist_extended_history)
+    })
 }
 
 fn tracked_sandbox_policy_for_thread(state: &PersistedState, thread_id: &str) -> Option<Value> {
@@ -2206,22 +2682,54 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| role_default_model(&state, Some(project_path.as_str()), role));
+    let model_provider = payload
+        .get("modelProvider")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            state
+                .projects
+                .values()
+                .find(|project| project.project_root.as_deref() == Some(project_path.as_str()))
+                .and_then(|project| project.preferred_model_provider.clone())
+        });
     let reasoning_effort = payload
         .get("reasoningEffort")
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| role_default_reasoning_effort(&state, Some(project_path.as_str()), role));
-    let params = json!({
-        "cwd": cwd,
-        "approvalPolicy": approval_policy,
-        "sandbox": sandbox_mode,
-        "sandboxPolicy": sandbox_policy_for_spawn(sandbox_mode.as_deref(), network_access, Some(cwd.as_str())),
-        "model": model,
-        "effort": reasoning_effort,
-        "developerInstructions": developer_instructions_for_role(&state, role, Some(project_path.as_str()), Some(cwd.as_str())),
-        "baseInstructions": resolve_role_instructions_for(role)?,
-        "persistExtendedHistory": true,
-    });
+    let params = AppServerThreadOverrides {
+        cwd: Some(cwd.clone()),
+        approval_policy: approval_policy.clone().map(Value::String),
+        sandbox: sandbox_mode.clone(),
+        model: model.clone(),
+        reasoning_effort: reasoning_effort.clone(),
+        developer_instructions: payload
+            .get("developerInstructions")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| developer_instructions_for_role(
+                &state,
+                role,
+                Some(project_path.as_str()),
+                Some(cwd.as_str()),
+            )),
+        base_instructions: payload
+            .get("baseInstructions")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| resolve_role_instructions_for(role).ok().flatten()),
+        config: payload.get("config").cloned(),
+        service_tier: payload.get("serviceTier").cloned(),
+        model_provider,
+        approvals_reviewer: payload.get("approvalsReviewer").cloned(),
+        personality: payload.get("personality").cloned(),
+        service_name: payload.get("serviceName").and_then(Value::as_str).map(str::to_string),
+        ephemeral: payload.get("ephemeral").and_then(Value::as_bool),
+        dynamic_tools: payload.get("dynamicTools").cloned(),
+        ..Default::default()
+    }
+    .thread_start_params();
     let result = app_server_request_json(runtime, "thread/start", params).await?;
     let thread = result
         .get("thread")
@@ -2302,7 +2810,18 @@ async fn create_thread(runtime: &BridgeRuntime, payload: &Value) -> Result<Value
         "sandboxMode": payload.get("sandboxMode").cloned().unwrap_or(Value::Null),
         "networkAccess": payload.get("networkAccess").cloned().unwrap_or(Value::Null),
         "modelID": payload.get("modelID").cloned().unwrap_or(Value::Null),
+        "modelProvider": payload.get("modelProvider").cloned().unwrap_or_else(|| project.preferred_model_provider.clone().map(Value::String).unwrap_or(Value::Null)),
         "reasoningEffort": payload.get("reasoningEffort").cloned().unwrap_or(Value::Null),
+        "serviceTier": payload.get("serviceTier").cloned().unwrap_or(Value::Null),
+        "approvalsReviewer": payload.get("approvalsReviewer").cloned().unwrap_or(Value::Null),
+        "personality": payload.get("personality").cloned().unwrap_or(Value::Null),
+        "config": payload.get("config").cloned().unwrap_or(Value::Null),
+        "baseInstructions": payload.get("baseInstructions").cloned().unwrap_or(Value::Null),
+        "developerInstructions": payload.get("developerInstructions").cloned().unwrap_or(Value::Null),
+        "persistExtendedHistory": payload.get("persistExtendedHistory").cloned().unwrap_or(Value::Null),
+        "serviceName": payload.get("serviceName").cloned().unwrap_or(Value::Null),
+        "ephemeral": payload.get("ephemeral").cloned().unwrap_or(Value::Null),
+        "dynamicTools": payload.get("dynamicTools").cloned().unwrap_or(Value::Null),
     });
     let agent = spawn_agent(runtime, &spawn_payload).await?;
     Ok(json!({
@@ -3035,6 +3554,19 @@ pub async fn orchestrator_spawn_agent(
         "projectPath": sender_context.project_path,
         "role": role.unwrap_or("worker"),
         "parentAgentId": sender_thread_id,
+        "approvalPolicy": sender_context.approval_policy,
+        "sandboxMode": sender_context.sandbox_mode,
+        "networkAccess": sender_context.network_access,
+        "modelID": sender_context.model,
+        "modelProvider": sender_context.model_provider,
+        "reasoningEffort": sender_context.reasoning_effort,
+        "serviceTier": sender_context.service_tier,
+        "approvalsReviewer": sender_context.approvals_reviewer,
+        "personality": sender_context.personality,
+        "config": sender_context.config,
+        "baseInstructions": sender_context.base_instructions,
+        "developerInstructions": sender_context.developer_instructions,
+        "persistExtendedHistory": sender_context.persist_extended_history,
     });
     let mut agent = spawn_agent(runtime, &payload).await?;
     if let Some(issue_number) = issue_number {
@@ -3112,11 +3644,22 @@ pub async fn orchestrator_warm_handoff(
         "cwd": cwd,
         "projectPath": project_path_value,
         "role": role,
-        "approvalPolicy": recipient_state.approval_policy,
-        "sandboxMode": recipient_state.sandbox_mode,
+        "approvalPolicy": recipient_state.approval_policy.clone(),
+        "sandboxMode": recipient_state.sandbox_mode.clone(),
         "networkAccess": recipient_state.network_access,
-        "modelID": recipient_state.model,
-        "reasoningEffort": recipient_state.reasoning_effort,
+        "modelID": recipient_state.model.clone(),
+        "modelProvider": recipient_state.model_provider.clone(),
+        "reasoningEffort": recipient_state.reasoning_effort.clone(),
+        "serviceTier": recipient_state.service_tier.clone(),
+        "approvalsReviewer": recipient_state.approvals_reviewer.clone(),
+        "personality": recipient_state.personality.clone(),
+        "config": recipient_state.config.clone(),
+        "baseInstructions": recipient_state.base_instructions.clone(),
+        "developerInstructions": recipient_state.developer_instructions.clone(),
+        "persistExtendedHistory": recipient_state.persist_extended_history,
+        "serviceName": recipient_state.service_name.clone(),
+        "ephemeral": recipient_state.ephemeral,
+        "dynamicTools": recipient_state.dynamic_tools.clone(),
         "parentAgentId": sender_thread_id,
     });
     let mut replacement = spawn_agent(runtime, &spawn_payload).await?;
@@ -3413,138 +3956,6 @@ fn basename(path: &str) -> String {
     path.rsplit('/').next().filter(|value| !value.is_empty()).unwrap_or("project").to_string()
 }
 
-async fn resolve_command_termination_target(
-    runtime: &BridgeRuntime,
-    thread_id: &str,
-    item_id: Option<&str>,
-) -> Result<Option<String>> {
-    let normalized_item_id = item_id.map(str::trim).filter(|value| !value.is_empty());
-    if let Some(item_id) = normalized_item_id {
-        if let Some(target) = command_termination_target_for_item(runtime, thread_id, item_id).await {
-            return Ok(Some(target));
-        }
-    }
-
-    Ok(latest_command_termination_target(runtime, thread_id).await)
-}
-
-async fn command_termination_target_for_item(
-    runtime: &BridgeRuntime,
-    thread_id: &str,
-    item_id: &str,
-) -> Option<String> {
-    let snapshot = runtime.snapshot().await.ok()?.thread_cache;
-    snapshot
-        .message_cache_by_thread_id
-        .get(thread_id)
-        .and_then(|messages| {
-            messages.iter().find(|message| message.id == item_id).and_then(command_message_target)
-        })
-}
-
-async fn latest_command_termination_target(runtime: &BridgeRuntime, thread_id: &str) -> Option<String> {
-    let snapshot = runtime.snapshot().await.ok()?.thread_cache;
-    snapshot
-        .message_cache_by_thread_id
-        .get(thread_id)
-        .and_then(|messages| {
-            messages
-                .iter()
-                .rev()
-                .find(|message| {
-                    message.role == "tool"
-                        && message
-                            .tool_metadata
-                            .as_ref()
-                            .map(|metadata| metadata.kind == "commandExecution")
-                            .unwrap_or(false)
-                })
-                .and_then(command_message_target)
-        })
-}
-
-fn command_message_target(message: &crate::models::RobdexChatMessage) -> Option<String> {
-    let metadata = message.tool_metadata.as_ref()?;
-    if metadata.kind != "commandExecution" {
-        return None;
-    }
-    metadata
-        .process_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn terminate_process_group_by_pid(process_id: &str) -> Result<()> {
-    let normalized = process_id.trim();
-    if let Some(job_id) = normalized.strip_prefix("job:") {
-        return terminate_process_group_for_job(job_id);
-    }
-    if looks_like_job_id(normalized) {
-        return terminate_process_group_for_job(normalized);
-    }
-    if !normalized.chars().all(|char| char.is_ascii_digit()) {
-        bail!("Unsupported non-numeric process ID `{process_id}`.");
-    }
-    terminate_numeric_process_group(normalized)
-}
-
-fn terminate_process_group_for_job(job_id: &str) -> Result<()> {
-    let marker = PathBuf::from("/tmp/codex-command-jobs").join(format!("{job_id}.job"));
-    let contents = fs::read_to_string(&marker)
-        .with_context(|| format!("failed to read {}", marker.display()))?;
-    let cmd_pid = parse_job_file_value(&contents, "cmd_pid")
-        .ok_or_else(|| anyhow::anyhow!("Job `{job_id}` does not contain cmd_pid."))?;
-    if !cmd_pid.chars().all(|char| char.is_ascii_digit()) {
-        bail!("Job `{job_id}` contains invalid cmd_pid `{cmd_pid}`.");
-    }
-    terminate_numeric_process_group(&cmd_pid)
-}
-
-fn terminate_numeric_process_group(normalized: &str) -> Result<()> {
-    let target = format!("-{normalized}");
-    let term = run_kill(["-TERM", "--", target.as_str()])?;
-    if !term.status.success() {
-        let stderr = String::from_utf8_lossy(&term.stderr);
-        if stderr.contains("No such process") {
-            return Ok(());
-        }
-        bail!(stderr.trim().to_string());
-    }
-    std::thread::sleep(std::time::Duration::from_millis(750));
-    let probe = run_kill(["-0", "--", target.as_str()])?;
-    if !probe.status.success() {
-        return Ok(());
-    }
-    let kill = run_kill(["-KILL", "--", target.as_str()])?;
-    if !kill.status.success() {
-        let stderr = String::from_utf8_lossy(&kill.stderr);
-        if !stderr.contains("No such process") {
-            bail!(stderr.trim().to_string());
-        }
-    }
-    Ok(())
-}
-
-fn parse_job_file_value(contents: &str, key: &str) -> Option<String> {
-    contents
-        .lines()
-        .find_map(|line| line.strip_prefix(&format!("{key}=")).map(str::trim))
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn looks_like_job_id(value: &str) -> bool {
-    value.len() >= 8
-        && value
-            .chars()
-            .all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-')
-}
-
-fn run_kill<const N: usize>(args: [&str; N]) -> Result<std::process::Output> {
-    Ok(Command::new("/bin/kill").args(args).output()?)
-}
 
 fn uuid() -> String {
     format!(
@@ -3828,82 +4239,6 @@ mod tests {
                 .and_then(|value| value.get("recipient"))
                 .is_none()
         );
-    }
-
-    #[tokio::test]
-    async fn command_execution_terminate_prefers_item_target() {
-        let temp = TempDir::new().expect("tempdir");
-        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
-            .await
-            .expect("runtime");
-
-        runtime
-            .upstream_sender()
-            .send(UpstreamRuntimeEvent::Notification(ServerNotification::ItemCompleted(
-                codex_app_server_adapter::app_server_protocol::ItemCompletedNotification {
-                    thread_id: "thread-1".to_string(),
-                    turn_id: "turn-1".to_string(),
-                    item: codex_app_server_adapter::app_server_protocol::ThreadItem::CommandExecution {
-                        id: "cmd-1".to_string(),
-                        command: "command-parser cargo test".to_string(),
-                        cwd: PathBuf::from("/tmp"),
-                        process_id: Some("93456".to_string()),
-                        status: codex_app_server_adapter::app_server_protocol::CommandExecutionStatus::InProgress,
-                        command_actions: Vec::new(),
-                        aggregated_output: Some(
-                            "job_id: 12345678-abcd-1234-abcd-1234567890ab\nstill running".to_string(),
-                        ),
-                        exit_code: None,
-                        duration_ms: None,
-                    },
-                },
-            )))
-            .await
-            .expect("item");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let target = resolve_command_termination_target(&runtime, "thread-1", Some("cmd-1"))
-            .await
-            .expect("target");
-        assert_eq!(target.as_deref(), Some("job:12345678-abcd-1234-abcd-1234567890ab"));
-    }
-
-    #[tokio::test]
-    async fn command_execution_terminate_falls_back_to_latest_thread_target() {
-        let temp = TempDir::new().expect("tempdir");
-        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
-            .await
-            .expect("runtime");
-
-        runtime
-            .upstream_sender()
-            .send(UpstreamRuntimeEvent::Notification(ServerNotification::ItemCompleted(
-                codex_app_server_adapter::app_server_protocol::ItemCompletedNotification {
-                    thread_id: "thread-1".to_string(),
-                    turn_id: "turn-1".to_string(),
-                    item: codex_app_server_adapter::app_server_protocol::ThreadItem::CommandExecution {
-                        id: "cmd-1".to_string(),
-                        command: "command-parser cargo test".to_string(),
-                        cwd: PathBuf::from("/tmp"),
-                        process_id: Some("93456".to_string()),
-                        status: codex_app_server_adapter::app_server_protocol::CommandExecutionStatus::InProgress,
-                        command_actions: Vec::new(),
-                        aggregated_output: Some(
-                            "job_id: 12345678-abcd-1234-abcd-1234567890ab\nstill running".to_string(),
-                        ),
-                        exit_code: None,
-                        duration_ms: None,
-                    },
-                },
-            )))
-            .await
-            .expect("item");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let target = resolve_command_termination_target(&runtime, "thread-1", None)
-            .await
-            .expect("target");
-        assert_eq!(target.as_deref(), Some("job:12345678-abcd-1234-abcd-1234567890ab"));
     }
 
     async fn spawn_ws_server(

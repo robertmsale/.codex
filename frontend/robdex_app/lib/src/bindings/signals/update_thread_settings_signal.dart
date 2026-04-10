@@ -11,6 +11,7 @@ class UpdateThreadSettingsSignal {
     required this.networkAccessMode,
     required this.modelId,
     required this.reasoningEffort,
+    required this.serviceTier,
   });
 
   static UpdateThreadSettingsSignal deserialize(BinaryDeserializer deserializer) {
@@ -22,6 +23,7 @@ class UpdateThreadSettingsSignal {
       networkAccessMode: deserializer.deserializeString(),
       modelId: deserializer.deserializeString(),
       reasoningEffort: deserializer.deserializeString(),
+      serviceTier: deserializer.deserializeString(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -42,6 +44,7 @@ class UpdateThreadSettingsSignal {
   final String networkAccessMode;
   final String modelId;
   final String reasoningEffort;
+  final String serviceTier;
 
   UpdateThreadSettingsSignal copyWith({
     String? role,
@@ -50,6 +53,7 @@ class UpdateThreadSettingsSignal {
     String? networkAccessMode,
     String? modelId,
     String? reasoningEffort,
+    String? serviceTier,
   }) {
     return UpdateThreadSettingsSignal(
       role: role ?? this.role,
@@ -58,6 +62,7 @@ class UpdateThreadSettingsSignal {
       networkAccessMode: networkAccessMode ?? this.networkAccessMode,
       modelId: modelId ?? this.modelId,
       reasoningEffort: reasoningEffort ?? this.reasoningEffort,
+      serviceTier: serviceTier ?? this.serviceTier,
     );
   }
 
@@ -69,6 +74,7 @@ class UpdateThreadSettingsSignal {
     serializer.serializeString(networkAccessMode);
     serializer.serializeString(modelId);
     serializer.serializeString(reasoningEffort);
+    serializer.serializeString(serviceTier);
     serializer.decreaseContainerDepth();
   }
 
@@ -89,7 +95,8 @@ class UpdateThreadSettingsSignal {
       && sandboxMode == other.sandboxMode
       && networkAccessMode == other.networkAccessMode
       && modelId == other.modelId
-      && reasoningEffort == other.reasoningEffort;
+      && reasoningEffort == other.reasoningEffort
+      && serviceTier == other.serviceTier;
   }
 
   @override
@@ -100,6 +107,7 @@ class UpdateThreadSettingsSignal {
         networkAccessMode,
         modelId,
         reasoningEffort,
+        serviceTier,
       );
 
   @override
@@ -113,7 +121,8 @@ class UpdateThreadSettingsSignal {
         'sandboxMode: $sandboxMode, '
         'networkAccessMode: $networkAccessMode, '
         'modelId: $modelId, '
-        'reasoningEffort: $reasoningEffort'
+        'reasoningEffort: $reasoningEffort, '
+        'serviceTier: $serviceTier'
         ')';
       return true;
     }());
