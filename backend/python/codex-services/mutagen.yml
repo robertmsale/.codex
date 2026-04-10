@@ -1,0 +1,23 @@
+sync:
+  ezra-qa-repo:
+    alpha: /Users/robertsale/Code/ezra/ezra
+    beta: /Users/robertsale/Code/ezra/qa/repo
+    mode: one-way-replica
+    flushOnCreate: true
+    permissions:
+      mode: portable
+    ignore:
+      vcs: false
+      paths:
+        - .git
+        - .git/
+        - "*/.git"
+        - "*/.git/"
+        - "**/.git"
+        - "**/.git/"
+        - .worktrees
+        - .worktrees/
+        - "*/.worktrees"
+        - "*/.worktrees/"
+        - "**/.worktrees"
+        - "**/.worktrees/"

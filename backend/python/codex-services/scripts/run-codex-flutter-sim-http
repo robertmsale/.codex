@@ -1,0 +1,25 @@
+#!/bin/zsh
+set -euo pipefail
+
+repo_root="${0:A:h:h}"
+cd "$repo_root"
+
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/codex-services-uv-cache}"
+export PATH="/opt/homebrew/opt/ruby/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+export IDB_BIN="${IDB_BIN:-/Users/robertsale/.local/bin/idb}"
+log_root="${CODEX_FLUTTER_SIM_LOG_ROOT:-$HOME/Library/Logs/codex-flutter-sim-http}"
+timestamp="$(date +%Y%m%d-%H%M%S)"
+launch_dir="$log_root/$timestamp"
+mkdir -p "$launch_dir/devices" "$launch_dir/api" "$launch_dir/runtime"
+ln -sfn "$launch_dir" "$log_root/current"
+export CODEX_FLUTTER_SIM_LOG_DIR="$launch_dir"
+
+cat >"$launch_dir/launch.meta" <<EOF
+launched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+repo_root=$repo_root
+bind=${CODEX_FLUTTER_SIM_BIND:-0.0.0.0}
+port=${CODEX_FLUTTER_SIM_PORT:-8767}
+idb_bin=$IDB_BIN
+EOF
+
+exec /opt/homebrew/bin/uv run codex-flutter-sim-http --host "${CODEX_FLUTTER_SIM_BIND:-0.0.0.0}" --port "${CODEX_FLUTTER_SIM_PORT:-8767}" >>"$launch_dir/broker.stdout.log" 2>>"$launch_dir/broker.stderr.log"

@@ -1,0 +1,23 @@
+#!/bin/zsh
+set -euo pipefail
+
+repo_root="${0:A:h:h}"
+cd "$repo_root"
+
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/codex-services-uv-cache}"
+export PATH="/opt/homebrew/opt/ruby/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+log_root="${CODEX_FLUTTER_HTTP_LOG_ROOT:-$HOME/Library/Logs/codex-flutter-http}"
+timestamp="$(date +%Y%m%d-%H%M%S)"
+launch_dir="$log_root/$timestamp"
+mkdir -p "$launch_dir"
+ln -sfn "$launch_dir" "$log_root/current"
+
+cat >"$launch_dir/launch.meta" <<EOF
+launched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+repo_root=$repo_root
+bind=${CODEX_FLUTTER_HTTP_BIND:-0.0.0.0}
+port=${CODEX_FLUTTER_HTTP_PORT:-8769}
+flutter_wrapper_bin=${FLUTTER_WRAPPER_BIN:-/Users/robertsale/.codex/scripts/flutterq}
+EOF
+
+exec /opt/homebrew/bin/uv run codex-flutter-http --host "${CODEX_FLUTTER_HTTP_BIND:-0.0.0.0}" --port "${CODEX_FLUTTER_HTTP_PORT:-8769}" >>"$launch_dir/server.stdout.log" 2>>"$launch_dir/server.stderr.log"
