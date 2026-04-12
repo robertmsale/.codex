@@ -45,6 +45,8 @@ def _run_flutter(request: FlutterRunRequest) -> dict[str, Any]:
     if not request.argv:
         raise BridgeError("argv must be a non-empty list.")
     cwd = _safe_cwd(request.cwd)
+    env = os.environ.copy()
+    env["CODEX_FLUTTER_HTTP_ACTIVE"] = "1"
     master_fd, slave_fd = pty.openpty()
     os.set_blocking(master_fd, False)
     try:
@@ -55,7 +57,7 @@ def _run_flutter(request: FlutterRunRequest) -> dict[str, Any]:
             stdout=slave_fd,
             stderr=slave_fd,
             text=False,
-            env=os.environ.copy(),
+            env=env,
             start_new_session=True,
         )
     finally:

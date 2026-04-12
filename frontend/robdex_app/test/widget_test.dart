@@ -3,7 +3,6 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:robdex_app/src/core/models/mock_workbench_data.dart';
 import 'package:robdex_app/src/features/chat/chat_timeline.dart';
-import 'package:robdex_app/src/features/inspector/inspector_panel.dart';
 import 'package:robdex_app/src/features/shell/robdex_shell_screen.dart';
 
 void main() {
@@ -29,7 +28,7 @@ void main() {
           onCompactThread: () {},
           onTerminateCommandExecution: (_) {},
           onInterruptThread: () {},
-          onApprovalDecision: (_, __, ___) async {},
+          onApprovalDecision: (_, _, _) async {},
           onSettingsChanged: (_) {},
           onRunningStateChanged: (_) {},
           onRenameThread: (_) {},
@@ -71,6 +70,11 @@ void main() {
     );
     await tester.pump();
 
+    expect(find.text('Plan Update'), findsOneWidget);
+    expect(find.text('0 done'), findsOneWidget);
+    expect(find.text('1 active'), findsOneWidget);
+    expect(find.text('2 queued'), findsOneWidget);
+    expect(find.text('Checklist'), findsOneWidget);
     expect(find.text('Resume the three blocked workers with exact scope and proof constraints.'), findsOneWidget);
     expect(find.text('Keep the three QA agents held on warm simulator state pending their paired fixes.'), findsOneWidget);
     expect(find.text('Active'), findsOneWidget);

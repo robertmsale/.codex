@@ -99,13 +99,13 @@ impl CommandParserRuntime {
         let codex_home = PathBuf::from(
             env::var("CODEX_HOME").unwrap_or_else(|_| format!("{}/.codex", env::var("HOME").unwrap_or_default())),
         );
-        let skill_dir = codex_home.join("skills/command-parser");
+        let scripts_dir = codex_home.join("scripts");
         Self {
-            skill_env_file: env_path("COMMAND_PARSER_SKILL_ENV_FILE", skill_dir.join(".env")),
+            skill_env_file: env_path("COMMAND_PARSER_SKILL_ENV_FILE", scripts_dir.join("command-parser.env")),
             config_file: env_path("COMMAND_PARSER_CODEX_CONFIG_FILE", codex_home.join("config.toml")),
             role_file: codex_home.join("roles/command-parser.md"),
             auth_file: codex_home.join("auth.json"),
-            rule_file: env_path("COMMAND_PARSER_RULE_FILE", skill_dir.join("command-parser.rule")),
+            rule_file: env_path("COMMAND_PARSER_RULE_FILE", scripts_dir.join("command-parser.rule")),
             usage_log_file: env_path("COMMAND_PARSER_USAGE_LOG_FILE", codex_home.join("command-parser-usage.log")),
             default_profile: "command-parser".to_string(),
         }

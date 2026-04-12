@@ -1,10 +1,15 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:rinf/rinf.dart';
 
+import '../bindings/bindings.dart';
 import '../core/state/workbench_controller.dart';
 import '../core/models/workbench_models.dart';
 import '../features/chat/chat_timeline.dart';
@@ -38,6 +43,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
 
   late final WorkbenchController _controller;
   late final AppLifecycleListener _listener;
+  StreamSubscription<RustSignalPack<HookToastSignal>>? _hookToastSubscription;
   bool _didRequestConnect = false;
   late final TextEditingController _hostController;
   late final TextEditingController _portController;
@@ -49,6 +55,30 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
     _hostController = TextEditingController(text: '127.0.0.1');
     _portController = TextEditingController(text: '42080');
     _restoreBridgeSettings();
+    _hookToastSubscription = HookToastSignal.rustSignalStream.listen((pack) {
+      final signal = pack.message;
+      if (!mounted) {
+        return;
+      }
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            signal.detail.trim().isEmpty
+                ? signal.message
+                : '${signal.message}\n${signal.detail}',
+          ),
+          duration: Duration(milliseconds: signal.durationMs),
+          action: SnackBarAction(
+            label: 'Copy',
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: signal.copyText));
+            },
+          ),
+        ),
+      );
+    });
     _listener = AppLifecycleListener(
       onExitRequested: () async {
         finalizeRust();
@@ -61,6 +91,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
   void dispose() {
     _persistBridgeSettings();
     _listener.dispose();
+    _hookToastSubscription?.cancel();
     _hostController.dispose();
     _portController.dispose();
     _controller.dispose();
@@ -116,6 +147,41 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
       host: _hostController.text.trim(),
       port: port,
     );
+  }
+
+  Uri get _bridgeBaseUri {
+    final host = _hostController.text.trim().isEmpty
+        ? '127.0.0.1'
+        : _hostController.text.trim();
+    final port = int.tryParse(_portController.text.trim()) ?? 42080;
+    return Uri.parse('http://$host:$port');
+  }
+
+  Future<List<_HookLogEntry>> _fetchProjectHookLogs(String projectId) async {
+    final response = await http.get(
+      _bridgeBaseUri.resolve('/projects/$projectId/hook-logs'),
+    );
+    if (response.statusCode != 200) {
+      throw StateError('Hook logs failed with ${response.statusCode}');
+    }
+    final payload = jsonDecode(response.body) as Map<String, dynamic>;
+    final logs = payload['logs'];
+    if (logs is! List) {
+      return const <_HookLogEntry>[];
+    }
+    return logs
+        .whereType<Map<String, dynamic>>()
+        .map(_HookLogEntry.fromJson)
+        .toList(growable: false);
+  }
+
+  Future<void> _clearProjectHookLogs(String projectId) async {
+    final response = await http.delete(
+      _bridgeBaseUri.resolve('/projects/$projectId/hook-logs'),
+    );
+    if (response.statusCode != 200) {
+      throw StateError('Clear hook logs failed with ${response.statusCode}');
+    }
   }
 
   void _returnToLogin() {
@@ -709,6 +775,15 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
                         decoration: const InputDecoration(labelText: 'Default CWD'),
                       ),
                       const SizedBox(height: 12),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: OutlinedButton.icon(
+                          onPressed: () => _showProjectHookLogsSheet(project),
+                          icon: const Icon(Icons.receipt_long_outlined),
+                          label: const Text('Hook Logs'),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
                       SwitchListTile(
                         value: autoRouteReplies,
                         onChanged: (value) => setDialogState(() => autoRouteReplies = value),
@@ -844,6 +919,167 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
           operatorDeveloperInstructionsController.text.trim(),
       hiddenDeveloperInstructions:
           hiddenDeveloperInstructionsController.text.trim(),
+    );
+  }
+
+  Future<void> _showProjectHookLogsSheet(ProjectItem project) async {
+    if (!mounted) {
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return FractionallySizedBox(
+          heightFactor: 0.72,
+          child: StatefulBuilder(
+            builder: (context, setModalState) {
+              Future<List<_HookLogEntry>> load() => _fetchProjectHookLogs(project.id);
+
+              Future<void> clearLogs() async {
+                await _clearProjectHookLogs(project.id);
+                setModalState(() {});
+              }
+
+              return Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Hook Logs',
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                project.name,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          child: const Text('Close'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Expanded(
+                      child: FutureBuilder<List<_HookLogEntry>>(
+                        future: load(),
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState != ConnectionState.done) {
+                            return const Center(child: CircularProgressIndicator());
+                          }
+                          if (snapshot.hasError) {
+                            return Center(
+                              child: Text(
+                                'Failed to load hook logs: ${snapshot.error}',
+                              ),
+                            );
+                          }
+                          final logs = snapshot.data ?? const <_HookLogEntry>[];
+                          return Column(
+                            children: [
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: TextButton.icon(
+                                  onPressed: logs.isEmpty
+                                      ? null
+                                      : () async {
+                                          await clearLogs();
+                                        },
+                                  icon: const Icon(Icons.delete_sweep_outlined),
+                                  label: const Text('Clear Logs'),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Expanded(
+                                child: logs.isEmpty
+                                    ? const Center(child: Text('No hook logs recorded.'))
+                                    : ListView.separated(
+                                        itemCount: logs.length,
+                                        separatorBuilder: (_, _) =>
+                                            const SizedBox(height: 10),
+                                        itemBuilder: (context, index) {
+                                          final log = logs[index];
+                                          return Container(
+                                            padding: const EdgeInsets.all(12),
+                                            decoration: BoxDecoration(
+                                              borderRadius: BorderRadius.circular(12),
+                                              border: Border.all(
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .outlineVariant,
+                                              ),
+                                            ),
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Row(
+                                                  children: [
+                                                    Expanded(
+                                                      child: Text(
+                                                        log.event,
+                                                        style: Theme.of(context)
+                                                            .textTheme
+                                                            .titleSmall,
+                                                      ),
+                                                    ),
+                                                    Text(
+                                                      log.status,
+                                                      style: Theme.of(context)
+                                                          .textTheme
+                                                          .labelMedium,
+                                                    ),
+                                                  ],
+                                                ),
+                                                const SizedBox(height: 6),
+                                                Text(
+                                                  '${log.agentName} · ${log.role} · ${log.createdAtLabel}',
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .bodySmall,
+                                                ),
+                                                if (log.detail != null &&
+                                                    log.detail!.trim().isNotEmpty) ...[
+                                                  const SizedBox(height: 8),
+                                                  SelectableText(
+                                                    log.detail!,
+                                                    style: Theme.of(context)
+                                                        .textTheme
+                                                        .bodySmall
+                                                        ?.copyWith(
+                                                          fontFamily: 'monospace',
+                                                        ),
+                                                  ),
+                                                ],
+                                              ],
+                                            ),
+                                          );
+                                        },
+                                      ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 
@@ -1174,4 +1410,52 @@ class _AgentDraft {
   final String name;
   final String role;
   final String prompt;
+}
+
+class _HookLogEntry {
+  const _HookLogEntry({
+    required this.createdAt,
+    required this.agentName,
+    required this.role,
+    required this.event,
+    required this.status,
+    required this.detail,
+  });
+
+  final int createdAt;
+  final String agentName;
+  final String role;
+  final String event;
+  final String status;
+  final String? detail;
+
+  String get createdAtLabel {
+    if (createdAt <= 0) {
+      return 'now';
+    }
+    final dateTime = DateTime.fromMillisecondsSinceEpoch(createdAt * 1000);
+    final month = dateTime.month.toString().padLeft(2, '0');
+    final day = dateTime.day.toString().padLeft(2, '0');
+    final hour = dateTime.hour.toString().padLeft(2, '0');
+    final minute = dateTime.minute.toString().padLeft(2, '0');
+    return '$month/$day $hour:$minute';
+  }
+
+  factory _HookLogEntry.fromJson(Map<String, dynamic> json) {
+    final createdAtValue = json['createdAt'];
+    final createdAt = switch (createdAtValue) {
+      int value => value,
+      double value => value.floor(),
+      String value => int.tryParse(value) ?? 0,
+      _ => 0,
+    };
+    return _HookLogEntry(
+      createdAt: createdAt,
+      agentName: (json['agentName'] as String?) ?? 'Unknown Agent',
+      role: (json['role'] as String?) ?? 'unknown',
+      event: (json['event'] as String?) ?? 'hook',
+      status: (json['status'] as String?) ?? 'unknown',
+      detail: json['detail'] as String?,
+    );
+  }
 }

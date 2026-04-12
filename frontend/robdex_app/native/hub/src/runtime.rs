@@ -19,7 +19,7 @@ use crate::signals::{
     SendThreadMessageSignal, SetProjectOrchestratorSignal, SetThreadRunningStateSignal,
     SpawnAgentSignal, TerminateCommandExecutionSignal, ThreadCompactSignal, UpdateProjectSignal,
     UpdateThreadSettingsSignal, UpdateWorkerMetadataSignal, InterruptThreadSignal, ThreadHistoryStateSignal,
-    WarmHandoffSignal, WorkbenchStateSignal,
+    HookToastSignal, WarmHandoffSignal, WorkbenchStateSignal,
 };
 
 enum Action {
@@ -165,6 +165,27 @@ pub async fn run() {
                     Some(LiveSessionEvent::View(next_view)) => {
                         current_view = Some(next_view);
                         emit_state(current_view.as_ref(), false, "");
+                    }
+                    Some(LiveSessionEvent::HookFailure(notice)) => {
+                        HookToastSignal {
+                            message: format!(
+                                "{} hook {} {}",
+                                notice.role.to_uppercase(),
+                                notice.event,
+                                notice.status.replace('_', " ")
+                            ),
+                            detail: notice.detail.clone(),
+                            copy_text: format!(
+                                "[{}] {} / {} / {}: {}",
+                                notice.project_name,
+                                notice.agent_name,
+                                notice.role,
+                                notice.event,
+                                notice.detail
+                            ),
+                            duration_ms: 5000,
+                        }
+                        .send_signal_to_dart();
                     }
                     Some(LiveSessionEvent::Error(error)) => {
                         emit_state(current_view.as_ref(), false, &error);

@@ -183,3 +183,11 @@ pub struct ThreadHistoryStateSignal {
     pub is_loading: bool,
     pub error_message: String,
 }
+
+#[derive(Serialize, RustSignal)]
+pub struct HookToastSignal {
+    pub message: String,
+    pub detail: String,
+    pub copy_text: String,
+    pub duration_ms: u32,
+}

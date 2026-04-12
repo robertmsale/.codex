@@ -23,6 +23,7 @@ part 'decide_approval_signal.dart';
 part 'delete_project_signal.dart';
 part 'delete_thread_group_signal.dart';
 part 'fetch_thread_history_signal.dart';
+part 'hook_toast_signal.dart';
 part 'initialize_workbench_signal.dart';
 part 'interrupt_thread_signal.dart';
 part 'move_selected_thread_to_group_signal.dart';

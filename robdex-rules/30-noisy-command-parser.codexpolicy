@@ -1,0 +1,78 @@
+prefix_rule(
+    pattern = ["cargo", ["check", "test", "clippy", "build", "bench", "nextest"]],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = [
+    "flutter", ["build", "test", "drive"]
+    ],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = [
+    ["swift", "swift-build", "swiftc", "/usr/bin/swift", "/usr/bin/swiftc"], ["build", "test", "package"]],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = [["xcodebuild", "/usr/bin/xcodebuild"]],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = [
+    ["pytest", "go", "gradle", "./gradlew"], ["test", "build", "check", "verify", "lint", "run"]],
+    decision = "allow",
+)
+
+# Flutter commands are allowed because the PATH wrapper and broker apply the
+# sanctioned low-noise handling.
+prefix_rule(
+    pattern = ["flutter", ["analyze"]],
+    decision = "allow",
+)
+# Hard ban for formatters.
+prefix_rule(
+    pattern = [
+    ["pnpm", "npm"], 
+    "exec", "prettier"],
+    decision = "forbidden",
+    justification = "absolutely never run these",
+)
+prefix_rule(
+    pattern = [
+    ["python", "python3"], 
+    "-m", 
+    "black"
+    ],
+    decision = "forbidden",
+    justification = "absolutely never run these",
+)
+prefix_rule(
+    pattern = [
+    ["npx", "pnpm", "yarn"], 
+    ["prettier", "stylelint", "eslint", "@biomejs/biome"]
+    ],
+    decision = "forbidden",
+    justification = "absolutely never run these",
+)
+prefix_rule(
+    pattern = [
+    ["ruff", "mix", "dotnet", "dart", "buf", "flutter", "deno", "cargo", "taplo", "biome", "tofu", "terraform", "dprint"], 
+    ["format", "fmt"]
+    ],
+    decision = "forbidden",
+    justification = "absolutely never run code formatters",
+)
+prefix_rule(
+    pattern = [
+    ["gofmt", "eslint", "stylelint", "markdownlint", "sqlfluff", "standardrb", "rubocop", "ktlint", "goimports", "gci", "clang-format", "swiftformat", "swift-format", "black", "yapf", "autopep8", "isort", "docformatter", "shfmt", "beautysh", "perltidy", "stylua", "luafmt", "ktfmt", "scalafmt", "google-java-format", "php-cs-fixer", "phpcbf", "pint", "rufo", "elm-format", "ocamlformat", "ormolu", "fourmolu", "stylish-haskell", "hindent", "cabal-fmt", "nixfmt", "alejandra", "pg_format", "yamlfmt", "mdformat", "cmake-format", "buildifier", "rustfmt", "prettier",]
+    ],
+    decision = "forbidden",
+    justification = "absolutely never run code formatters",
+)
+
+prefix_rule(
+    pattern = ["find", ["/Users/robertsale", "~/", "/Users/robertsale/Library", "~/Library"]],
+    decision = "forbidden",
+    justification = "Do not run broad find commands in my home directory or ~/Library folder. Use `ls` and do targetted find commands instead."
+    
+)

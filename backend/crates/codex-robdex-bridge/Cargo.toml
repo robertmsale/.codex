@@ -20,3 +20,5 @@ tokio-tungstenite.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 codex-backend-core = { path = "../codex-backend-core" }
+reqwest.workspace = true
+robdex-protocol = { path = "../robdex-protocol" }

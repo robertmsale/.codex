@@ -431,11 +431,14 @@ impl BridgeRuntime {
         })
     }
 
-    async fn handle_upstream_event(&self, event: UpstreamRuntimeEvent) -> Result<()> {
+    async fn handle_upstream_event(self: &Arc<Self>, event: UpstreamRuntimeEvent) -> Result<()> {
         match event {
             UpstreamRuntimeEvent::ConnectionStatus(status) => {
-                self.handle_connection_status_update(&status).await;
-                self.set_connection_status(status).await;
+                self.set_connection_status(status.clone()).await;
+                let runtime = self.clone();
+                tokio::spawn(async move {
+                    runtime.handle_connection_status_update(&status).await;
+                });
             }
             UpstreamRuntimeEvent::ClearRunningStateAfterDisconnect => {
                 self.handle_disconnect_running_state_clear().await?;
@@ -1936,6 +1939,7 @@ mod tests {
                 port: 42080,
             },
             app_server_url: "ws://127.0.0.1:4200".to_string(),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
             project_path: temp.path().to_path_buf(),
             cwd: temp.path().to_path_buf(),
             paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
@@ -1965,6 +1969,7 @@ mod tests {
                 port: 42080,
             },
             app_server_url: "ws://127.0.0.1:4200".to_string(),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
             project_path: temp.path().to_path_buf(),
             cwd: temp.path().to_path_buf(),
             paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
@@ -2005,6 +2010,7 @@ mod tests {
                 port: 42080,
             },
             app_server_url: "ws://127.0.0.1:4200".to_string(),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
             project_path: temp.path().to_path_buf(),
             cwd: temp.path().to_path_buf(),
             paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
@@ -2199,6 +2205,7 @@ mod tests {
                 port: 42080,
             },
             app_server_url: format!("ws://{addr}"),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
             project_path: temp.path().to_path_buf(),
             cwd: temp.path().to_path_buf(),
             paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
@@ -2225,6 +2232,7 @@ mod tests {
                 port: 42080,
             },
             app_server_url: "ws://127.0.0.1:4200".to_string(),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
             project_path: temp.path().to_path_buf(),
             cwd: temp.path().to_path_buf(),
             paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
@@ -2296,6 +2304,7 @@ mod tests {
                 port: 42080,
             },
             app_server_url: "ws://127.0.0.1:4200".to_string(),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
             project_path: temp.path().to_path_buf(),
             cwd: temp.path().to_path_buf(),
             paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
@@ -2335,6 +2344,7 @@ mod tests {
                 port: 42080,
             },
             app_server_url: "ws://127.0.0.1:4200".to_string(),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
             project_path: temp.path().to_path_buf(),
             cwd: temp.path().to_path_buf(),
             paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),

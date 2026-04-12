@@ -1,0 +1,5 @@
+#!/bin/zsh
+set -euo pipefail
+
+source "$HOME/.codex/scripts/common.sh"
+printf '%s\n' "$(unshim_current_path)"

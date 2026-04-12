@@ -1,0 +1,28 @@
+# Starter policy for codex-privileged-exec-http.
+# Keep this conservative; widen it intentionally as real privileged needs appear.
+
+prefix_rule(
+    pattern = ["pwd"],
+    decision = "allow",
+    match = [["pwd"]],
+)
+
+prefix_rule(
+    pattern = ["printenv"],
+    decision = "allow",
+    match = [
+        ["printenv"],
+        ["printenv", "PATH"],
+    ],
+)
+
+prefix_rule(
+    pattern = ["which"],
+    decision = "allow",
+    match = [
+        ["which", "python3"],
+        ["which", "xcodebuild"],
+    ],
+)
+
+

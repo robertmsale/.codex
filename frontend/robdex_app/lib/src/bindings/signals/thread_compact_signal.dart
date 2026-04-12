@@ -1,13 +1,16 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
+
 @immutable
 class ThreadCompactSignal {
-  const ThreadCompactSignal();
+  const ThreadCompactSignal(
+  );
 
   static ThreadCompactSignal deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
-    final instance = ThreadCompactSignal();
+    final instance = ThreadCompactSignal(
+    );
     deserializer.decreaseContainerDepth();
     return instance;
   }
@@ -27,9 +30,9 @@ class ThreadCompactSignal {
   }
 
   Uint8List bincodeSerialize() {
-    final serializer = BincodeSerializer();
-    serialize(serializer);
-    return serializer.bytes;
+      final serializer = BincodeSerializer();
+      serialize(serializer);
+      return serializer.bytes;
   }
 
   @override
@@ -48,7 +51,8 @@ class ThreadCompactSignal {
     String? fullString;
 
     assert(() {
-      fullString = '$runtimeType()';
+      fullString = '$runtimeType('
+        ')';
       return true;
     }());
 
@@ -57,6 +61,9 @@ class ThreadCompactSignal {
 }
 
 extension ThreadCompactSignalDartSignalExt on ThreadCompactSignal {
+  /// Sends the signal to Rust.
+  /// Passing data from Rust to Dart involves a memory copy
+  /// because Rust cannot own data managed by Dart's garbage collector.
   void sendSignalToRust() {
     final messageBytes = bincodeSerialize();
     final binary = Uint8List(0);

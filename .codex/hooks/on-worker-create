@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+
+cat >/dev/null
+
+printf '%s\n' '{"ok":true,"promptAppend":["Say hi to the Codex Config Operator using robdex-orchestrator."]}'

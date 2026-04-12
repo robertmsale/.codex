@@ -42,10 +42,12 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/state/app", get(app_state))
         .route("/state/snapshot", get(snapshot))
         .route("/workbench/bootstrap", get(workbench_bootstrap))
+        .route("/services/qa-harness/summary", get(qa_harness_summary))
         .route("/state/project-catalog", post(save_project_catalog_http))
         .route("/projects", post(project_create_http))
         .route("/projects/select", post(project_select_http))
         .route("/projects/{project_id}", post(project_update_http).delete(project_delete_http))
+        .route("/projects/{project_id}/hook-logs", get(project_hook_logs_http).delete(project_hook_logs_clear_http))
         .route("/projects/{project_id}/orchestrator", post(project_orchestrator_http))
         .route("/threads", post(thread_create_http))
         .route("/threads/{thread_id}", delete(thread_archive_http))
@@ -124,6 +126,129 @@ async fn workbench_bootstrap(State(runtime): State<Arc<BridgeRuntime>>) -> impl 
     (StatusCode::OK, Json(runtime.workbench_snapshot_value().await)).into_response()
 }
 
+#[derive(Debug, Serialize)]
+struct QaHarnessSummary {
+    ok: bool,
+    reachable: bool,
+    base_url: String,
+    configured_projects: usize,
+    configured_devices: usize,
+    status: String,
+    detail: String,
+}
+
+async fn qa_harness_summary(State(runtime): State<Arc<BridgeRuntime>>) -> impl IntoResponse {
+    let base_url = runtime.settings().qa_harness_url.clone();
+    let client = reqwest::Client::new();
+    let health_url = format!("{}/healthz", base_url.trim_end_matches('/'));
+    let projects_url = format!("{}/projects", base_url.trim_end_matches('/'));
+
+    let health = match client.get(&health_url).send().await {
+        Ok(response) if response.status().is_success() => match response.json::<Value>().await {
+            Ok(value) => value,
+            Err(error) => return qa_harness_unavailable(base_url, format!("qa-harness health decode failed: {error}")),
+        },
+        Ok(response) => {
+            return qa_harness_unavailable(
+                base_url,
+                format!("qa-harness health returned {}", response.status()),
+            )
+        }
+        Err(error) => {
+            return qa_harness_unavailable(base_url, format!("qa-harness unreachable: {error}"))
+        }
+    };
+
+    let projects = match client.get(&projects_url).send().await {
+        Ok(response) if response.status().is_success() => match response.json::<Vec<Value>>().await {
+            Ok(value) => value,
+            Err(error) => {
+                return (
+                    StatusCode::OK,
+                    Json(QaHarnessSummary {
+                        ok: false,
+                        reachable: true,
+                        base_url,
+                        configured_projects: 0,
+                        configured_devices: 0,
+                        status: "degraded".to_string(),
+                        detail: format!("qa-harness projects decode failed: {error}"),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Ok(response) => {
+            return (
+                StatusCode::OK,
+                Json(QaHarnessSummary {
+                    ok: false,
+                    reachable: true,
+                    base_url,
+                    configured_projects: 0,
+                    configured_devices: 0,
+                    status: "degraded".to_string(),
+                    detail: format!("qa-harness projects returned {}", response.status()),
+                }),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            return (
+                StatusCode::OK,
+                Json(QaHarnessSummary {
+                    ok: false,
+                    reachable: true,
+                    base_url,
+                    configured_projects: 0,
+                    configured_devices: 0,
+                    status: "degraded".to_string(),
+                    detail: format!("qa-harness projects unavailable: {error}"),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let configured_projects = projects.len();
+    let configured_devices = projects
+        .iter()
+        .filter_map(|project| project.get("device_count").and_then(Value::as_u64))
+        .sum::<u64>() as usize;
+    let phase = health.get("phase").and_then(Value::as_str).unwrap_or("unknown");
+    (
+        StatusCode::OK,
+        Json(QaHarnessSummary {
+            ok: true,
+            reachable: true,
+            base_url,
+            configured_projects,
+            configured_devices,
+            status: phase.to_string(),
+            detail: format!(
+                "qa-harness {phase}; {configured_projects} configured project(s), {configured_devices} configured device slot(s)"
+            ),
+        }),
+    )
+        .into_response()
+}
+
+fn qa_harness_unavailable(base_url: String, detail: String) -> axum::response::Response {
+    (
+        StatusCode::OK,
+        Json(QaHarnessSummary {
+            ok: false,
+            reachable: false,
+            base_url,
+            configured_projects: 0,
+            configured_devices: 0,
+            status: "unavailable".to_string(),
+            detail,
+        }),
+    )
+        .into_response()
+}
+
 async fn save_project_catalog_http(
     State(runtime): State<Arc<BridgeRuntime>>,
     Json(catalog): Json<Value>,
@@ -193,6 +318,79 @@ async fn project_delete_http(
     {
         Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn project_hook_logs_http(
+    Path(project_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+) -> impl IntoResponse {
+    let state = runtime.state_document_value().await;
+    let Some(project) = state
+        .get("projects")
+        .and_then(Value::as_object)
+        .and_then(|projects| projects.get(&project_id))
+        .and_then(Value::as_object)
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "ok": false, "error": format!("unknown project `{project_id}`") })),
+        )
+            .into_response();
+    };
+    let logs = project
+        .get("robdexRecentHookTelemetry")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "projectId": project_id,
+            "logs": logs,
+        })),
+    )
+        .into_response()
+}
+
+async fn project_hook_logs_clear_http(
+    Path(project_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+) -> impl IntoResponse {
+    let mut state = runtime.state_document_value().await;
+    let Some(project) = state
+        .get_mut("projects")
+        .and_then(Value::as_object_mut)
+        .and_then(|projects| projects.get_mut(&project_id))
+        .and_then(Value::as_object_mut)
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "ok": false, "error": format!("unknown project `{project_id}`") })),
+        )
+            .into_response();
+    };
+    project.insert("robdexRecentHookTelemetry".to_string(), Value::Array(Vec::new()));
+    match runtime.persist_state_document(state.clone()).await {
+        Ok(()) => {
+            runtime
+                .push_event(crate::models::BridgeEvent::AppStateSnapshot { state })
+                .await;
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "projectId": project_id,
+                    "cleared": true,
+                })),
+            )
+                .into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "ok": false, "error": error.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -890,6 +1088,8 @@ enum OutboundEvent {
     ConnectionStatus { message: String },
     #[serde(rename = "threadMessagesChanged")]
     ThreadMessagesChanged { data: ThreadMessagesResponse },
+    #[serde(rename = "hookFailure")]
+    HookFailure { data: robdex_protocol::HookFailureNotice },
     #[serde(rename = "commandResult")]
     CommandResult { data: CommandResultPayload },
 }
@@ -917,6 +1117,8 @@ enum WorkbenchOutboundEvent {
     ConnectionStatus { message: String },
     #[serde(rename = "threadMessagesChanged")]
     ThreadMessagesChanged { data: ThreadMessagesResponse },
+    #[serde(rename = "hookFailure")]
+    HookFailure { data: robdex_protocol::HookFailureNotice },
     #[serde(rename = "commandResult")]
     CommandResult { data: CommandResultPayload },
 }
@@ -1307,6 +1509,7 @@ async fn outbound_envelope_from_event(
         BridgeEvent::ThreadMessagesChanged { payload } => {
             OutboundEvent::ThreadMessagesChanged { data: payload }
         }
+        BridgeEvent::HookFailure { payload } => OutboundEvent::HookFailure { data: payload },
     };
     Ok(OutboundEnvelope::Event(OutboundSequencedEvent {
         sequence: Some(event.sequence),
@@ -1325,6 +1528,9 @@ async fn workbench_outbound_envelope_from_event(
         },
         BridgeEvent::ThreadMessagesChanged { payload } => {
             WorkbenchOutboundEvent::ThreadMessagesChanged { data: payload }
+        }
+        BridgeEvent::HookFailure { payload } => {
+            WorkbenchOutboundEvent::HookFailure { data: payload }
         }
     };
     Ok(WorkbenchOutboundEnvelope::Event(WorkbenchOutboundSequencedEvent {
@@ -1395,6 +1601,7 @@ mod tests {
                 port: 42080,
             },
             app_server_url: "ws://127.0.0.1:4200".to_string(),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
             project_path: root.path().to_path_buf(),
             cwd: root.path().to_path_buf(),
             paths: BridgePaths::new(PathBuf::from(root.path()).join("state")),

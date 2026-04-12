@@ -39,6 +39,7 @@ LOGGER = logging.getLogger(__name__)
 BROKER_LAUNCH_LOG_DIR = os.environ.get("CODEX_FLUTTER_SIM_LOG_DIR")
 SCREENSHOT_ROOT = Path("/tmp/flutter-driver-screenshots")
 IDB_EXECUTABLE = os.environ.get("IDB_BIN", str(Path.home() / ".local" / "bin" / "idb"))
+SWIPE_DURATION_MILLISECONDS_THRESHOLD = 10.0
 
 
 def flutter_executable() -> str:
@@ -50,6 +51,18 @@ def idb_executable() -> str:
     if configured:
         return configured
     return shutil.which("idb") or str(Path.home() / ".local" / "bin" / "idb")
+
+
+def _normalized_swipe_duration(raw_duration: Any) -> float:
+    try:
+        duration = float(raw_duration)
+    except Exception as error:
+        raise BridgeError("swipe duration must be numeric.") from error
+    if duration <= 0:
+        raise BridgeError("swipe duration must be greater than zero.")
+    if duration >= SWIPE_DURATION_MILLISECONDS_THRESHOLD:
+        return duration / 1000.0
+    return duration
 
 
 def launch_env() -> dict[str, str]:
@@ -2020,7 +2033,7 @@ class FlutterSimManager:
             argv = ["ui", "swipe"]
             duration = payload.get("duration")
             if duration is not None:
-                argv.extend(["--duration", str(duration)])
+                argv.extend(["--duration", str(_normalized_swipe_duration(duration))])
             elements = self._idb_describe_all(reservation=reservation)
             tap_x_start, tap_y_start = self._idb_tap_coordinates_for_accessibility_point(
                 reservation=reservation,

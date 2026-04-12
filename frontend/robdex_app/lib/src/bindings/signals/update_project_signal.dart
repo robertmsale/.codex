@@ -108,15 +108,11 @@ class UpdateProjectSignal {
       workerReasoningEffort: workerReasoningEffort ?? this.workerReasoningEffort,
       qaModelId: qaModelId ?? this.qaModelId,
       qaReasoningEffort: qaReasoningEffort ?? this.qaReasoningEffort,
-      orchestratorDeveloperInstructions:
-          orchestratorDeveloperInstructions ?? this.orchestratorDeveloperInstructions,
-      workerDeveloperInstructions:
-          workerDeveloperInstructions ?? this.workerDeveloperInstructions,
+      orchestratorDeveloperInstructions: orchestratorDeveloperInstructions ?? this.orchestratorDeveloperInstructions,
+      workerDeveloperInstructions: workerDeveloperInstructions ?? this.workerDeveloperInstructions,
       qaDeveloperInstructions: qaDeveloperInstructions ?? this.qaDeveloperInstructions,
-      operatorDeveloperInstructions:
-          operatorDeveloperInstructions ?? this.operatorDeveloperInstructions,
-      hiddenDeveloperInstructions:
-          hiddenDeveloperInstructions ?? this.hiddenDeveloperInstructions,
+      operatorDeveloperInstructions: operatorDeveloperInstructions ?? this.operatorDeveloperInstructions,
+      hiddenDeveloperInstructions: hiddenDeveloperInstructions ?? this.hiddenDeveloperInstructions,
     );
   }
 

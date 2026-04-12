@@ -1,15 +1,14 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
+
 @immutable
 class TerminateCommandExecutionSignal {
   const TerminateCommandExecutionSignal({
     required this.processId,
   });
 
-  static TerminateCommandExecutionSignal deserialize(
-    BinaryDeserializer deserializer,
-  ) {
+  static TerminateCommandExecutionSignal deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = TerminateCommandExecutionSignal(
       processId: deserializer.deserializeString(),
@@ -29,6 +28,14 @@ class TerminateCommandExecutionSignal {
 
   final String processId;
 
+  TerminateCommandExecutionSignal copyWith({
+    String? processId,
+  }) {
+    return TerminateCommandExecutionSignal(
+      processId: processId ?? this.processId,
+    );
+  }
+
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeString(processId);
@@ -36,17 +43,18 @@ class TerminateCommandExecutionSignal {
   }
 
   Uint8List bincodeSerialize() {
-    final serializer = BincodeSerializer();
-    serialize(serializer);
-    return serializer.bytes;
+      final serializer = BincodeSerializer();
+      serialize(serializer);
+      return serializer.bytes;
   }
 
   @override
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
-    return other is TerminateCommandExecutionSignal &&
-        processId == other.processId;
+
+    return other is TerminateCommandExecutionSignal
+      && processId == other.processId;
   }
 
   @override
@@ -57,7 +65,9 @@ class TerminateCommandExecutionSignal {
     String? fullString;
 
     assert(() {
-      fullString = '$runtimeType(processId: $processId)';
+      fullString = '$runtimeType('
+        'processId: $processId'
+        ')';
       return true;
     }());
 
@@ -65,8 +75,10 @@ class TerminateCommandExecutionSignal {
   }
 }
 
-extension TerminateCommandExecutionSignalDartSignalExt
-    on TerminateCommandExecutionSignal {
+extension TerminateCommandExecutionSignalDartSignalExt on TerminateCommandExecutionSignal {
+  /// Sends the signal to Rust.
+  /// Passing data from Rust to Dart involves a memory copy
+  /// because Rust cannot own data managed by Dart's garbage collector.
   void sendSignalToRust() {
     final messageBytes = bincodeSerialize();
     final binary = Uint8List(0);

@@ -14,11 +14,9 @@ You are a worker. Your job is to complete the assigned slice inside your designa
 - Do working-code changes only inside your assigned worktree unless the operator explicitly says otherwise.
 - Do not edit working code on `main`, `master`, or any checkout in the base repo folder. You operate strictly inside a worktree folder.
 - Keep your branch, worktree, and PR tied to the slice you were assigned.
-- In VM environments, your assigned worktree may be a shadow worktree synchronized from the host rather than a real local `.git` checkout.
-- In that case, sanctioned git/worktree scripts and bridge-backed workflow tools are the source of truth for repo state. Raw local `git` failures in the shadow path are not by themselves proof that workflow state is broken.
 - If your worktree state is wrong, stop and report exact sanctioned git/workflow evidence before trying to repair it. Use raw local git proof only when the assigned path is actually a real git checkout.
 - Your CWD should be a specific assigned path under a `.worktrees/` folder. Do not operate from the base repo folder.
-- Treat `/home/...` and `/Users/...` paths as mirrored aliases when the environment is configured that way. Do not report a blocker solely because a sanctioned tool surfaced the host alias instead of the VM alias.
+- Your first natural language response will be a pre-implementation plan. You must include your CWD and sandbox settings (excluding writable_roots).
 
 ## Default Execution Chain
 

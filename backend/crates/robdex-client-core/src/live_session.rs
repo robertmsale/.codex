@@ -12,12 +12,19 @@ use crate::{
         context_window_remaining_percent_from_thread_payload,
     },
 };
-use robdex_protocol::WorkbenchViewData;
+use robdex_protocol::{HookFailureNotice, WorkbenchViewData};
 
 #[derive(Debug)]
 pub enum LiveSessionEvent {
     View(WorkbenchViewData),
+    HookFailure(HookFailureNotice),
     Error(String),
+}
+
+enum ReduceOutcome {
+    View(WorkbenchViewData),
+    HookFailure(HookFailureNotice),
+    None,
 }
 
 #[derive(Debug, Clone)]
@@ -124,11 +131,14 @@ async fn run_live_session(
                                         selected_thread_id.as_deref(),
                                         &endpoint,
                                     ).await {
-                                        Ok(Some(next_view)) => {
+                                        Ok(ReduceOutcome::View(next_view)) => {
                                             current_view = next_view.clone();
                                             let _ = event_tx.send(LiveSessionEvent::View(next_view));
                                         }
-                                        Ok(None) => {}
+                                        Ok(ReduceOutcome::HookFailure(notice)) => {
+                                            let _ = event_tx.send(LiveSessionEvent::HookFailure(notice));
+                                        }
+                                        Ok(ReduceOutcome::None) => {}
                                         Err(error) => {
                                             let _ = event_tx.send(LiveSessionEvent::Error(error.to_string()));
                                         }
@@ -160,10 +170,10 @@ async fn reduce_message(
     current_view: &WorkbenchViewData,
     selected_thread_id: Option<&str>,
     endpoint: &BridgeEndpoint,
-) -> Result<Option<WorkbenchViewData>> {
+) -> Result<ReduceOutcome> {
     let envelope: Value = serde_json::from_str(text)?;
     if envelope.get("type").and_then(Value::as_str) != Some("event") {
-        return Ok(None);
+        return Ok(ReduceOutcome::None);
     }
     let Some(event) = envelope
         .get("payload")
@@ -171,7 +181,7 @@ async fn reduce_message(
         .and_then(|payload| payload.get("event"))
         .and_then(Value::as_object)
     else {
-        return Ok(None);
+        return Ok(ReduceOutcome::None);
     };
 
     match event.get("name").and_then(Value::as_str) {
@@ -182,29 +192,36 @@ async fn reduce_message(
                 Some(current_view.available_models.clone()),
             )
             .await?;
-            Ok(Some(next_view))
+            Ok(ReduceOutcome::View(next_view))
         }
         Some("threadMessagesChanged") => {
             let Some(payload) = event.get("data").cloned() else {
-                return Ok(None);
+                return Ok(ReduceOutcome::None);
             };
             let thread_id = payload
                 .get("threadID")
                 .and_then(Value::as_str)
                 .or_else(|| payload.get("threadId").and_then(Value::as_str));
             if thread_id != selected_thread_id {
-                return Ok(None);
+                return Ok(ReduceOutcome::None);
             }
             if thread_id.is_none() {
-                return Ok(None);
+                return Ok(ReduceOutcome::None);
             }
             let mut next_view = current_view.clone();
             next_view.chat_entries = chat_entries_from_thread_payload(&payload);
             next_view.context_window_remaining_percent =
                 context_window_remaining_percent_from_thread_payload(&payload);
-            Ok(Some(next_view))
+            Ok(ReduceOutcome::View(next_view))
         }
-        _ => Ok(None),
+        Some("hookFailure") => {
+            let Some(payload) = event.get("data").cloned() else {
+                return Ok(ReduceOutcome::None);
+            };
+            let notice: HookFailureNotice = serde_json::from_value(payload)?;
+            Ok(ReduceOutcome::HookFailure(notice))
+        }
+        _ => Ok(ReduceOutcome::None),
     }
 }
 

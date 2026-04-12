@@ -27,7 +27,8 @@ Use this workflow for branch/worktree/PR delivery.
   - `git-sync-worktree <worktree_path> [integration_branch]`
 - QA fast-forward:
   - `qa-fastforward <worktree_path> [integration_branch]`
-  - stashes scratch/untracked QA artifacts, updates the worktree onto the latest integration branch, then restores the stash
+  - for a dedicated `.worktrees/...` checkout, stashes scratch/untracked QA artifacts, updates that checkout onto the latest integration branch, then restores the stash
+  - for a QA device-specific checked-out integration repo, fast-forwards the checked-out integration branch to `origin/<integration_branch>` and surfaces dirty/conflict failures directly
 - Commit:
   - `git-commit <worktree_path> "<message>"`
 - Publish (push + PR, force-with-lease on non-FF for non-integration branches):
@@ -36,9 +37,9 @@ Use this workflow for branch/worktree/PR delivery.
 - Merge (squash merge the PR, delete the remote branch, remove the local worktree, prune worktree metadata, and delete the local branch):
   - `git-merge-worktree <worktree_path> [integration_branch]`
   - if the squash merge fails, the worktree and branch are left in place for conflict resolution or retry
-- Cleanup (stash dirty parent repo state, fast-forward the parent integration branch, restore the stash, then remove the worktree):
+- Cleanup (remove the local worktree, prune worktree metadata, and delete the local branch when it is no longer checked out elsewhere):
   - `git-worktree-cleanup <worktree_path> [integration_branch]`
-  - dirty worktree content is also stashed before removal so scratch work is recoverable instead of being rejected
+  - cleanup refuses the checked-out base repo and only operates on dedicated managed worktrees under `.worktrees/`
 
 When these scripts need bridge-backed gitops, they transparently forward to the host bridge at `http://127.0.0.1:8765`.
 
@@ -82,5 +83,6 @@ When these scripts need bridge-backed gitops, they transparently forward to the 
 
 - One worker, one worktree, one branch, one PR.
 - Do not improvise alternate merge or cleanup paths.
+- Sanctioned mutating workflow scripts refuse the checked-out base repo; use a dedicated path under `.worktrees/`.
 - If publish, review, or cleanup state is unclear, inspect the real state and continue with the canonical script instead of inventing a new flow.
 - On protected integration branches, only additive mutations and abort-style recovery are allowed.

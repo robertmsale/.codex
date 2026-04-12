@@ -261,6 +261,7 @@ class BridgeWorkbenchGateway implements WorkbenchGateway {
     required String? selectedThreadId,
     List<ChatEntry>? preservedMessages,
   }) async {
+    final qaHarnessSummary = await _fetchQaHarnessSummary();
     final connectionStatus = (snapshot['connectionStatus'] as String?) ?? 'unknown';
     final selectedProjectId = _selectedProjectId(snapshot);
     final runningIds = _runningThreadIds(snapshot);
@@ -281,6 +282,11 @@ class BridgeWorkbenchGateway implements WorkbenchGateway {
               workerDefaultReasoningEffort: null,
               qaDefaultModel: null,
               qaDefaultReasoningEffort: null,
+              orchestratorDeveloperInstructions: null,
+              workerDeveloperInstructions: null,
+              qaDeveloperInstructions: null,
+              operatorDeveloperInstructions: null,
+              hiddenDeveloperInstructions: null,
               isSelected: record.id == selectedProjectId,
             ))
         .toList();
@@ -348,6 +354,22 @@ class BridgeWorkbenchGateway implements WorkbenchGateway {
                   : (selected.networkAccess! ? 'enabled' : 'disabled'),
             ),
             InspectorFact(label: 'Project', value: selected.projectName),
+            if (selected.hookBranchName != null)
+              InspectorFact(label: 'Branch', value: selected.hookBranchName!),
+            if (selected.hookWorktreePath != null)
+              InspectorFact(
+                label: 'Worktree',
+                value: selected.hookWorktreePath!,
+              ),
+            if (selected.hookBaseUrl != null)
+              InspectorFact(label: 'Base URL', value: selected.hookBaseUrl!),
+            if (selected.hookTelemetryStatus != null)
+              InspectorFact(
+                label: 'Hook',
+                value: selected.hookTelemetryDetail == null
+                    ? selected.hookTelemetryStatus!
+                    : '${selected.hookTelemetryStatus!}: ${selected.hookTelemetryDetail!}',
+              ),
           ];
 
     return WorkbenchViewData(
@@ -362,11 +384,48 @@ class BridgeWorkbenchGateway implements WorkbenchGateway {
       inspectorFacts: inspectorFacts,
       pendingApprovals: _extractPendingApprovals(snapshot),
       workerMetadata: null,
-      statusHeadline: 'Bridge ${connectionStatus[0].toUpperCase()}${connectionStatus.substring(1)}',
+      statusHeadline:
+          'Bridge ${connectionStatus[0].toUpperCase()}${connectionStatus.substring(1)} · ${_qaHarnessHeadline(qaHarnessSummary)}',
       statusDetail:
-          '${threads.length} visible threads across ${_projectCount(snapshot)} projects. Selected history loads on demand from the live bridge.',
+          '${threads.length} visible threads across ${_projectCount(snapshot)} projects. ${_qaHarnessDetail(qaHarnessSummary)}',
       composerHint: '',
     );
+  }
+
+  Future<Map<String, dynamic>?> _fetchQaHarnessSummary() async {
+    final response = await _client.get(_baseUri.resolve('/services/qa-harness/summary'));
+    if (response.statusCode != 200) {
+      return null;
+    }
+    final decoded = jsonDecode(response.body);
+    return decoded is Map<String, dynamic> ? decoded : null;
+  }
+
+  String _qaHarnessHeadline(Map<String, dynamic>? summary) {
+    if (summary == null) {
+      return 'QA Harness Unknown';
+    }
+    final reachable = summary['reachable'] == true;
+    final configuredProjects = summary['configured_projects'] as int? ?? 0;
+    final configuredDevices = summary['configured_devices'] as int? ?? 0;
+    if (!reachable) {
+      return 'QA Harness Offline';
+    }
+    if (configuredProjects == 0 && configuredDevices == 0) {
+      return 'QA Harness Empty';
+    }
+    return 'QA Harness ${configuredProjects}P/${configuredDevices}D';
+  }
+
+  String _qaHarnessDetail(Map<String, dynamic>? summary) {
+    if (summary == null) {
+      return 'QA harness summary unavailable.';
+    }
+    final detail = summary['detail'] as String?;
+    if (detail != null && detail.isNotEmpty) {
+      return detail;
+    }
+    return 'QA harness summary unavailable.';
   }
 
   String? _selectedProjectId(Map<String, dynamic> snapshot) {
@@ -420,6 +479,18 @@ class BridgeWorkbenchGateway implements WorkbenchGateway {
         if (archived || role == 'hidden') {
           continue;
         }
+        final hookLifecycle = agent['robdexHookLifecycle'];
+        final hookLifecycleMap = hookLifecycle is Map<String, dynamic>
+            ? hookLifecycle
+            : const <String, dynamic>{};
+        final hookTelemetry = agent['robdexHookTelemetry'];
+        final hookTelemetryMap = hookTelemetry is Map<String, dynamic>
+            ? hookTelemetry
+            : const <String, dynamic>{};
+        final hookArtifacts = hookLifecycleMap['artifacts'];
+        final hookArtifactMap = hookArtifacts is Map<String, dynamic>
+            ? hookArtifacts
+            : const <String, dynamic>{};
         records.add(
           _ThreadRecord(
             id: agentEntry.key,
@@ -432,6 +503,15 @@ class BridgeWorkbenchGateway implements WorkbenchGateway {
             sandboxMode: agent['sandboxMode'] as String?,
             networkAccess: agent['networkAccess'] as bool?,
             model: agent['model'] as String?,
+            hookBranchName: (hookLifecycleMap['branchName'] as String?) ??
+                (hookArtifactMap['branchName'] as String?),
+            hookWorktreePath:
+                (hookLifecycleMap['worktreePath'] as String?) ??
+                    (hookArtifactMap['worktreePath'] as String?),
+            hookBaseUrl: (hookLifecycleMap['baseUrl'] as String?) ??
+                (hookArtifactMap['baseUrl'] as String?),
+            hookTelemetryStatus: hookTelemetryMap['status'] as String?,
+            hookTelemetryDetail: hookTelemetryMap['detail'] as String?,
             preview: '${role.toUpperCase()} · ${(agent['cwd'] as String?) ?? projectRoot}',
           ),
         );
@@ -561,11 +641,18 @@ class BridgeWorkbenchGateway implements WorkbenchGateway {
     final body = (message['text'] as String?) ?? '';
     final subtitle = message['subtitle'] as String?;
     final author = _authorForRole(role);
+    final planItems = _parsePlanItems(message, kind, body);
 
     return ChatEntry(
       id: (message['id'] as String?) ?? 'message',
       author: author,
-      displayLabel: _displayLabelForMessage(author, kind, subtitle, body),
+      displayLabel: _displayLabelForMessage(
+        author,
+        kind,
+        subtitle,
+        body,
+        planItems: planItems,
+      ),
       timestampLabel: _formatTimestamp(message['createdAt']),
       body: body,
       subtitle: subtitle,
@@ -574,7 +661,7 @@ class BridgeWorkbenchGateway implements WorkbenchGateway {
       processId: toolMetadata?['processId'] as String?,
       command: toolMetadata?['command'] as String?,
       output: toolMetadata?['output'] as String?,
-      planItems: _parsePlanItems(message, kind, body),
+      planItems: planItems,
       isTool: role == 'tool',
       isStreaming: _isStreaming(message),
     );
@@ -644,12 +731,19 @@ class BridgeWorkbenchGateway implements WorkbenchGateway {
     String? kind,
     String? subtitle,
     String body,
+    {List<PlanChecklistItem> planItems = const <PlanChecklistItem>[]}
   ) {
+    if (planItems.isNotEmpty ||
+        kind == 'todoList' ||
+        kind == 'todo_list' ||
+        subtitle?.trim().toLowerCase() == 'turn plan') {
+      return 'Plan Update';
+    }
     if (kind == null || kind.isEmpty) {
       return author;
     }
     if (kind == 'todoList' || kind == 'todo_list') {
-      return 'Plan';
+      return 'Plan Update';
     }
     switch (kind) {
       case 'commandExecution':
@@ -727,6 +821,11 @@ class _ThreadRecord {
     required this.sandboxMode,
     required this.networkAccess,
     required this.model,
+    required this.hookBranchName,
+    required this.hookWorktreePath,
+    required this.hookBaseUrl,
+    required this.hookTelemetryStatus,
+    required this.hookTelemetryDetail,
     required this.preview,
   });
 
@@ -740,6 +839,11 @@ class _ThreadRecord {
   final String? sandboxMode;
   final bool? networkAccess;
   final String? model;
+  final String? hookBranchName;
+  final String? hookWorktreePath;
+  final String? hookBaseUrl;
+  final String? hookTelemetryStatus;
+  final String? hookTelemetryDetail;
   final String preview;
 }
 

@@ -1,0 +1,23 @@
+[package]
+name = "codex-privileged-exec-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+codex-backend-core = { path = "../codex-backend-core" }
+codex-execpolicy = { path = "../../vendor/codex/codex-rs/execpolicy" }
+codex-shell-command = { path = "../../vendor/codex/codex-rs/shell-command" }
+notify = "8"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tower-http.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

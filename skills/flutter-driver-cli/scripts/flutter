@@ -8,9 +8,37 @@ BROKER_ROOTS=(
   "/Users/robertsale/Code/ezra/qa"
 )
 
+resolve_broker_passthru_flutter() {
+  local self_path
+  local candidate=""
+  self_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    [[ "$candidate" == "$self_path" ]] && continue
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(which -a flutter 2>/dev/null || true)
+
+  if [[ -x /opt/homebrew/bin/flutter ]]; then
+    printf '%s\n' "/opt/homebrew/bin/flutter"
+    return 0
+  fi
+
+  echo "flutter wrapper: unable to resolve passthrough flutter binary" >&2
+  return 1
+}
+
 if [[ $# -eq 0 ]]; then
   echo "Usage: flutter <args...>" >&2
   exit 64
+fi
+
+if [[ "${CODEX_FLUTTER_HTTP_ACTIVE:-0}" == "1" ]]; then
+  passthru_flutter="$(resolve_broker_passthru_flutter)"
+  exec /bin/bash -lc 'exec "$@"' bash "$passthru_flutter" "$@"
 fi
 
 should_use_broker=false
@@ -38,11 +66,16 @@ PY
 
 RESPONSE="$(curl -fsS -X POST -H 'Content-Type: application/json' "$BASE_URL/run" -d "$BODY")"
 
-python3 - "$RESPONSE" <<'PY'
+RESPONSE_FILE="$(mktemp)"
+trap 'rm -f "$RESPONSE_FILE"' EXIT
+printf '%s' "$RESPONSE" > "$RESPONSE_FILE"
+
+python3 - "$RESPONSE_FILE" <<'PY'
 import json
 import sys
 
-payload = json.loads(sys.argv[1])
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    payload = json.load(fh)
 stdout = payload.get("stdout") or ""
 stderr = payload.get("stderr") or ""
 if stdout:

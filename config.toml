@@ -8,13 +8,15 @@
 #                                                                             #
 ###############################################################################
 
-model = "gpt-5.4"
-model_reasoning_effort = "medium"
+model = "gpt-5.4-mini"
+model_reasoning_effort = "high"
 background_terminal_max_timeout = 9223372036854775807
 project_root_markers = [".git", ".codex"]
 
 web_search = "live"
 personality = "pragmatic"
+
+zsh_path = "/Users/robertsale/.codex/scripts/zsh"
 
 ###############################################################################
 #                                                                             #
@@ -87,7 +89,7 @@ model_reasoning_effort = "low"
 model_instructions_file = "/Users/robertsale/.codex/roles/command-parser.md"
 
 [profiles.command-parser]
-model = "gpt-5.4-mini"
+model = "gpt-5.1-codex-mini"
 model_reasoning_effort = "low"
 model_instructions_file = "/Users/robertsale/.codex/roles/command-parser.md"
 
@@ -105,10 +107,11 @@ model_reasoning_effort = "high"
 #                                                                             #
 ###############################################################################
 
+
 [features]
 # Ones I care about
+shell_zsh_fork = true           # Synchronous, custom codex uncapped execution :)
 view_image = true               # Handy, obvious
-unified_exec = true             # Enables uncapped command running
 steer = true                    # Enables mid-turn and inter-agent communication, vital feature
 apps = false                    # Need to find use for this (what apps are available/worthy of enablement)
 tui_app_server = true
@@ -119,14 +122,14 @@ plugins = false                 # Need to understand what makes this different f
 codex_hooks = true              # Much better running-state tracker
 
 # Ones I don't
+unified_exec = false            # Enables parallel command execution, stdin polling, and the ability to use alternative shells
 multi_agent = false             # Wrecks weekly rate limits
-shell_zsh_fork = false          # Drops back down to synchronous 10 min cap command execution
 collaboration_modes = false     # UX variants managed by hand
 # collab = false                  # Deprecated (multi_agent)
 codex_git_commit = false        # Managed manually
 fast_mode = false               # Achieved through concurrency
-responses_websockets = false    # Absolutely gobbles rate limits
-responses_websockets_v2 = false # "I want 0% weekly as fast as possible"
+responses_websockets = true    # Absolutely gobbles rate limits
+responses_websockets_v2 = true # "I want 0% weekly as fast as possible"
 voice_transcription = false     # Wispr Flow
 undo = false                    # Conflicts with version control
 js_repl = false                 # Just open a terminal
@@ -146,11 +149,6 @@ max_threads = 1
 
 [mcp_servers.openaiDeveloperDocs]
 url = "https://developers.openai.com/mcp"
-
-[mcp_servers.commandExecution]
-url = "http://127.0.0.1:8772"
-startup_timeout_sec = 20.0
-tool_timeout_sec = 9223372036854776000.0
 
 ###############################################################################
 #                                                                             #
@@ -188,3 +186,6 @@ enabled = false
 [projects]
 "/Users/robertsale/Code/ezra/ezra" = { trust_level = "trusted" }
 "/Users/robertsale/Code/ezra/ezra/.worktrees" = { trust_level = "trusted" }
+
+[projects."/Users/robertsale/Code/codex"]
+trust_level = "trusted"

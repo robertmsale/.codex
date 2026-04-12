@@ -1,0 +1,7 @@
+#!/bin/bash
+set -euo pipefail
+
+cat >/dev/null
+
+printf '%s\n' 'worker archived' > worker-archived
+printf '%s\n' '{"ok":true}'

@@ -1,17 +1,28 @@
-use std::{collections::BTreeMap, env, fs, path::{Path, PathBuf}, process::Command, time::{Duration, Instant}};
+use std::{collections::BTreeMap, env, path::{Path, PathBuf}, process::Command, time::{Duration, Instant}};
 
 use anyhow::{Context, Result, bail};
 use codex_app_server_adapter::app_server_protocol::RequestId;
+use reqwest::StatusCode;
+use robdex_protocol::HookFailureNotice;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::timeout;
 
 use crate::{
     app_server_overrides::{AppServerThreadOverrides, AppServerTurnOverrides, simple_sandbox_policy},
+    hooks::{
+        HookEvent, HookLifecycleState, HookResult, HookTelemetry, append_prompt_segments,
+        maybe_run_project_hook, qa_archive_payload, qa_create_payload, worker_archive_payload,
+        worker_create_payload,
+    },
     models::{BridgeAgentSummary, BridgeAppStateSnapshot, BridgeInstanceSummary, PendingApproval, ThreadCachePayload},
     runtime::BridgeRuntime,
     transforms::{prune_thread_cache_payload, resolve_role_instructions, summarize_scoped_agent_record},
 };
+
+const HOOK_LIFECYCLE_STATE_KEY: &str = "robdexHookLifecycle";
+const HOOK_TELEMETRY_KEY: &str = "robdexHookTelemetry";
+const PROJECT_HOOK_TELEMETRY_KEY: &str = "robdexRecentHookTelemetry";
 
 #[derive(Debug)]
 pub struct CommandOutcome {
@@ -216,6 +227,15 @@ pub async fn make_event_replay_response(runtime: &BridgeRuntime, since: Option<u
                     }
                 })
             }
+            crate::models::BridgeEvent::HookFailure { payload } => {
+                json!({
+                    "sequence": sequenced.sequence,
+                    "event": {
+                        "name": "hookFailure",
+                        "data": payload,
+                    }
+                })
+            }
         };
         events.push(event);
     }
@@ -310,6 +330,7 @@ fn bridge_state_payload(state: &PersistedState) -> Value {
                     "serviceName": agent.service_name,
                     "ephemeral": agent.ephemeral,
                     "dynamicTools": agent.dynamic_tools,
+                    "robdexHookLifecycle": agent.extras.get(HOOK_LIFECYCLE_STATE_KEY).cloned(),
                 }),
             );
         }
@@ -1017,8 +1038,8 @@ pub async fn execute_bridge_command(
         "commandExecutionTerminate" => {
             let thread_id = required_string(&payload, "threadId")?;
             let process_id = required_string(&payload, "processId")?;
-            let cmd_pid = resolve_launch_job_cmd_pid(runtime, &thread_id, &process_id).await?;
-            terminate_pid(&cmd_pid)?;
+            let job_id = resolve_command_execution_job_id(runtime, &thread_id, &process_id).await?;
+            terminate_command_execution_job(&job_id).await?;
             Ok(success(json!({"type":"empty"})))
         }
         "modelList" => {
@@ -2245,7 +2266,7 @@ fn required_request_id(payload: &Value, field: &str) -> Result<RequestId> {
     Ok(serde_json::from_value(value)?)
 }
 
-async fn resolve_launch_job_cmd_pid(
+async fn resolve_command_execution_job_id(
     runtime: &BridgeRuntime,
     thread_id: &str,
     process_id: &str,
@@ -2270,22 +2291,13 @@ async fn resolve_launch_job_cmd_pid(
                 .unwrap_or(false)
         })
         .ok_or_else(|| anyhow::anyhow!("No command execution found for thread {thread_id} / processId {process_id}"))?;
-    let job_id = command_message
+    command_message
         .tool_metadata
         .as_ref()
         .and_then(|metadata| metadata.output.as_deref())
         .and_then(extract_job_id)
         .or_else(|| extract_job_id(&command_message.text))
-        .ok_or_else(|| anyhow::anyhow!("No launch-job job_id found for command execution {process_id}"))?;
-    let job_file = launch_job_file_path(&job_id);
-    let contents = fs::read_to_string(&job_file)
-        .with_context(|| format!("Failed to read launch-job file {}", job_file.display()))?;
-    parse_job_file_value(&contents, "cmd_pid")
-        .ok_or_else(|| anyhow::anyhow!("Launch-job file {} did not contain cmd_pid", job_file.display()))
-}
-
-fn launch_job_file_path(job_id: &str) -> PathBuf {
-    PathBuf::from("/tmp/codex-command-jobs").join(format!("{job_id}.job"))
+        .ok_or_else(|| anyhow::anyhow!("No launch-job job_id found for command execution {process_id}"))
 }
 
 fn extract_job_id(text: &str) -> Option<String> {
@@ -2298,36 +2310,29 @@ fn extract_job_id(text: &str) -> Option<String> {
     looks_like_job_id(normalized).then(|| normalized.to_string())
 }
 
-fn parse_job_file_value(contents: &str, key: &str) -> Option<String> {
-    let prefix = format!("{key}=");
-    contents
-        .lines()
-        .find_map(|line| line.strip_prefix(&prefix))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
 fn looks_like_job_id(value: &str) -> bool {
-    value.len() >= 8
+    let is_numeric_slot = !value.is_empty()
+        && value.len() <= 3
+        && value.chars().all(|char| char.is_ascii_digit())
+        && value.parse::<u16>().map(|job_id| job_id < 1000).unwrap_or(false);
+    let is_legacy_job_id = value.len() >= 8
         && value
             .chars()
-            .all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-')
+            .all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-');
+    is_numeric_slot || is_legacy_job_id
 }
 
-fn terminate_pid(pid: &str) -> Result<()> {
-    if !pid.chars().all(|char| char.is_ascii_digit()) {
-        bail!("Invalid pid {pid:?}");
+async fn terminate_command_execution_job(job_id: &str) -> Result<()> {
+    let url = format!("http://127.0.0.1:8772/jobs/{job_id}/terminate");
+    let response = reqwest::Client::new().post(&url).send().await?;
+    if response.status().is_success() {
+        return Ok(());
     }
-    let status = Command::new("kill")
-        .args(["-TERM", pid])
-        .status()
-        .with_context(|| format!("Failed to invoke kill for pid {pid}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("kill -TERM {pid} exited with status {status}");
+    if response.status() == StatusCode::NOT_FOUND {
+        return Ok(());
     }
+    let body = response.text().await.unwrap_or_default();
+    bail!("command_execution terminate failed for job_id {job_id}: {body}")
 }
 
 fn sender_display_name_for_thread(state: &PersistedState, thread_id: Option<&str>) -> Option<String> {
@@ -2677,6 +2682,7 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
     let _state_guard = runtime.lock_state_mutation().await;
     let mut state = parse_state(&runtime.state_document_value().await);
     let role = payload.get("role").and_then(Value::as_str);
+    let role_value = role.unwrap_or("worker").to_string();
     let project_path = payload
         .get("projectPath")
         .and_then(Value::as_str)
@@ -2688,6 +2694,9 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
         .map(str::to_string)
         .unwrap_or_else(|| runtime.settings().cwd.display().to_string());
     let display_name = payload.get("displayName").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty());
+    let display_name_value = display_name
+        .map(str::to_string)
+        .unwrap_or_else(|| role_value.clone());
     let approval_policy = payload
         .get("approvalPolicy")
         .and_then(Value::as_str)
@@ -2737,6 +2746,57 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| role_default_reasoning_effort(&state, Some(project_path.as_str()), role));
+    let (project_id, project_name) = project_identity_for_root(&state, &project_path);
+    let hook_spawn_context = json!({
+        "approvalPolicy": approval_policy,
+        "sandboxMode": sandbox_mode,
+        "networkAccess": network_access,
+        "modelID": model,
+        "modelProvider": model_provider,
+        "reasoningEffort": reasoning_effort,
+        "serviceTier": payload.get("serviceTier").cloned().unwrap_or(Value::Null),
+        "serviceName": payload.get("serviceName").cloned().unwrap_or(Value::Null),
+        "ephemeral": payload.get("ephemeral").cloned().unwrap_or(Value::Null),
+    });
+    let hook_result = match role {
+        Some("worker") => {
+            maybe_run_project_hook(
+                &project_path,
+                HookEvent::WorkerCreate,
+                worker_create_payload(
+                    None,
+                    &project_id,
+                    &project_name,
+                    &project_path,
+                    &display_name_value,
+                    &role_value,
+                    &cwd,
+                    payload.get("parentAgentId").and_then(Value::as_str),
+                    hook_spawn_context.clone(),
+                ),
+            )
+            .await
+        }
+        Some("qa") => {
+            maybe_run_project_hook(
+                &project_path,
+                HookEvent::QaCreate,
+                qa_create_payload(
+                    None,
+                    &project_id,
+                    &project_name,
+                    &project_path,
+                    &display_name_value,
+                    &role_value,
+                    &cwd,
+                    payload.get("parentAgentId").and_then(Value::as_str),
+                    hook_spawn_context.clone(),
+                ),
+            )
+            .await
+        }
+        _ => Default::default(),
+    };
     let params = AppServerThreadOverrides {
         cwd: Some(cwd.clone()),
         approval_policy: approval_policy.clone().map(Value::String),
@@ -2796,7 +2856,7 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
             "thread": thread,
             "projectPath": project_path,
             "preferredCWD": cwd,
-            "role": role.unwrap_or("worker"),
+            "role": role_value,
             "approvalPolicy": approval_policy,
             "sandboxMode": sandbox_mode,
             "networkAccess": network_access,
@@ -2807,10 +2867,56 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
     if let Some(display_name) = display_name {
         set_tracked_thread_display_name(&mut state, &thread_id, display_name);
     }
+    if let Some(hook_result) = hook_result.result.as_ref() {
+        persist_agent_hook_state(&mut state, &thread_id, hook_result);
+    }
+    if let Some(telemetry) = hook_result.telemetry.as_ref() {
+        persist_agent_hook_telemetry(&mut state, &thread_id, telemetry);
+        record_project_hook_telemetry(
+            &mut state,
+            &project_path,
+            Some(&thread_id),
+            &display_name_value,
+            &role_value,
+            telemetry,
+        );
+    }
     persist_state(runtime, &state).await?;
+    if let Some(telemetry) = hook_result.telemetry.as_ref() {
+        runtime
+            .push_event(crate::models::BridgeEvent::HookFailure {
+                payload: hook_failure_notice(
+                    &project_id,
+                    &project_name,
+                    Some(&thread_id),
+                    &display_name_value,
+                    &role_value,
+                    telemetry,
+                ),
+            })
+            .await;
+    }
 
-    if let Some(initial_prompt) = payload.get("initialPrompt").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()) {
-        let _ = send_thread_input(runtime, &state, &thread_id, initial_prompt, None, None).await?;
+    let initial_prompt = payload
+        .get("initialPrompt")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let prompt_to_send = match (initial_prompt, hook_result.result.as_ref()) {
+        (Some(prompt), Some(hook)) => {
+            let appended = append_prompt_segments(&prompt, &hook.prompt_append);
+            (!appended.trim().is_empty()).then_some(appended)
+        }
+        (Some(prompt), None) => Some(prompt),
+        (None, Some(hook)) => {
+            let appended = append_prompt_segments("", &hook.prompt_append);
+            (!appended.trim().is_empty()).then_some(appended)
+        }
+        (None, None) => None,
+    };
+    if let Some(prompt) = prompt_to_send {
+        let _ = send_thread_input(runtime, &state, &thread_id, &prompt, None, None).await?;
     }
 
     let mut agent = synthesized_agent_for_thread(
@@ -3026,6 +3132,119 @@ fn agent_state_for_thread<'a>(state: &'a PersistedState, thread_id: &str) -> Opt
         .projects
         .values()
         .find_map(|project| project.agents.get(thread_id))
+}
+
+fn project_identity_for_root(state: &PersistedState, project_root: &str) -> (String, String) {
+    state
+        .projects
+        .iter()
+        .find_map(|(key, project)| {
+            (project.project_root.as_deref() == Some(project_root)).then(|| {
+                (
+                    project.id.clone().unwrap_or_else(|| key.clone()),
+                    project
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| project_root.to_string()),
+                )
+            })
+        })
+        .unwrap_or_else(|| (project_root.to_string(), project_root.to_string()))
+}
+
+fn agent_state_for_thread_mut<'a>(
+    state: &'a mut PersistedState,
+    thread_id: &str,
+) -> Option<&'a mut PersistedAgentState> {
+    state
+        .projects
+        .values_mut()
+        .find_map(|project| project.agents.get_mut(thread_id))
+}
+
+fn persisted_agent_hook_state(state: &PersistedState, thread_id: &str) -> Option<Value> {
+    agent_state_for_thread(state, thread_id)
+        .and_then(|agent| agent.extras.get(HOOK_LIFECYCLE_STATE_KEY).cloned())
+}
+
+fn persist_agent_hook_state(state: &mut PersistedState, thread_id: &str, hook_result: &HookResult) {
+    if let Some(agent) = agent_state_for_thread_mut(state, thread_id) {
+        agent.extras.insert(
+            HOOK_LIFECYCLE_STATE_KEY.to_string(),
+            serde_json::to_value(HookLifecycleState::from_hook_result(hook_result))
+                .unwrap_or_else(|_| Value::Null),
+        );
+    }
+}
+
+fn persist_agent_hook_telemetry(state: &mut PersistedState, thread_id: &str, telemetry: &HookTelemetry) {
+    if let Some(agent) = agent_state_for_thread_mut(state, thread_id) {
+        agent.extras.insert(
+            HOOK_TELEMETRY_KEY.to_string(),
+            serde_json::to_value(telemetry).unwrap_or_else(|_| Value::Null),
+        );
+    }
+}
+
+fn record_project_hook_telemetry(
+    state: &mut PersistedState,
+    project_root: &str,
+    thread_id: Option<&str>,
+    agent_name: &str,
+    role: &str,
+    telemetry: &HookTelemetry,
+) {
+    let Some(project) = state
+        .projects
+        .values_mut()
+        .find(|project| project.project_root.as_deref() == Some(project_root))
+    else {
+        return;
+    };
+    let entry = json!({
+        "createdAt": unix_now(),
+        "threadId": thread_id,
+        "agentName": agent_name,
+        "role": role,
+        "event": telemetry.event,
+        "status": telemetry.status,
+        "detail": telemetry.detail,
+    });
+    let recent = project
+        .extras
+        .entry(PROJECT_HOOK_TELEMETRY_KEY.to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    match recent {
+        Value::Array(items) => {
+            items.insert(0, entry);
+            if items.len() > 20 {
+                items.truncate(20);
+            }
+        }
+        other => {
+            *other = Value::Array(vec![entry]);
+        }
+    }
+}
+
+fn hook_failure_notice(
+    project_id: &str,
+    project_name: &str,
+    thread_id: Option<&str>,
+    agent_name: &str,
+    role: &str,
+    telemetry: &HookTelemetry,
+) -> HookFailureNotice {
+    HookFailureNotice {
+        project_id: project_id.to_string(),
+        project_name: project_name.to_string(),
+        thread_id: thread_id.map(str::to_string),
+        agent_name: agent_name.to_string(),
+        role: role.to_string(),
+        event: telemetry.event.clone(),
+        status: telemetry.status.clone(),
+        detail: telemetry.detail.clone().unwrap_or_default(),
+    }
 }
 
 fn worker_issue_number(state: &PersistedState, thread_id: &str) -> Option<u64> {
@@ -3840,6 +4059,75 @@ pub async fn orchestrator_rename_agent(
 
 async fn archive_thread(runtime: &BridgeRuntime, thread_id: &str) -> Result<()> {
     let mut state = parse_state(&runtime.state_document_value().await);
+    let hook_context = agent_state_for_thread(&state, thread_id).and_then(|agent| {
+        matches!(agent.role.as_deref(), Some("worker") | Some("qa")).then(|| {
+            Some((
+                agent.project_root.clone()?,
+                agent
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| thread_id.to_string()),
+                agent.role.clone().unwrap_or_else(|| "worker".to_string()),
+                agent.cwd.clone(),
+                persisted_agent_hook_state(&state, thread_id),
+            ))
+        })?
+    });
+    if let Some((project_root, agent_name, role, agent_cwd, lifecycle)) = hook_context {
+        let (project_id, project_name) = project_identity_for_root(&state, &project_root);
+        let (event, payload) = if role == "qa" {
+            (
+                HookEvent::QaArchive,
+                qa_archive_payload(
+                    thread_id,
+                    &project_id,
+                    &project_name,
+                    &project_root,
+                    &agent_name,
+                    &role,
+                    agent_cwd.as_deref(),
+                    lifecycle,
+                ),
+            )
+        } else {
+            (
+                HookEvent::WorkerArchive,
+                worker_archive_payload(
+                    thread_id,
+                    &project_id,
+                    &project_name,
+                    &project_root,
+                    &agent_name,
+                    &role,
+                    agent_cwd.as_deref(),
+                    lifecycle,
+                ),
+            )
+        };
+        let hook_outcome = maybe_run_project_hook(&project_root, event, payload).await;
+        if let Some(telemetry) = hook_outcome.telemetry.as_ref() {
+            record_project_hook_telemetry(
+                &mut state,
+                &project_root,
+                Some(thread_id),
+                &agent_name,
+                &role,
+                telemetry,
+            );
+            runtime
+                .push_event(crate::models::BridgeEvent::HookFailure {
+                    payload: hook_failure_notice(
+                        &project_id,
+                        &project_name,
+                        Some(thread_id),
+                        &agent_name,
+                        &role,
+                        telemetry,
+                    ),
+                })
+                .await;
+        }
+    }
     let pruned = prune_archived_thread_locally(&mut state, thread_id);
     if pruned {
         persist_state(runtime, &state).await?;
@@ -4041,6 +4329,7 @@ mod tests {
     use futures_util::{SinkExt, StreamExt};
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
+        os::unix::fs::PermissionsExt,
         path::PathBuf,
         sync::Arc,
         time::Duration,
@@ -4179,15 +4468,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_job_file_value_reads_cmd_pid() {
-        let contents = "job_id=abc\ncmd_pid=12345\n";
-        assert_eq!(parse_job_file_value(contents, "cmd_pid").as_deref(), Some("12345"));
-    }
-
-    #[test]
     fn looks_like_job_id_accepts_launch_job_ids() {
         assert!(looks_like_job_id("12345678-abcd-1234-abcd-1234567890ab"));
-        assert!(!looks_like_job_id("123"));
+        assert!(looks_like_job_id("123"));
         assert!(!looks_like_job_id("PID1234"));
     }
 
@@ -4198,10 +4481,36 @@ mod tests {
                 port: 42080,
             },
             app_server_url,
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
             project_path: root.path().to_path_buf(),
             cwd: root.path().to_path_buf(),
             paths: BridgePaths::new(PathBuf::from(root.path()).join("state")),
         }
+    }
+
+    fn write_executable(path: &std::path::Path, content: &str) {
+        std::fs::write(path, content).expect("write file");
+        let mut perms = std::fs::metadata(path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("set permissions");
+    }
+
+    fn write_project_hook(temp: &TempDir, event: &str, script_name: &str, script_body: &str) {
+        let config_dir = temp.path().join(".codex");
+        let hooks_dir = config_dir.join("hooks");
+        std::fs::create_dir_all(&hooks_dir).expect("mkdirs");
+        write_executable(&hooks_dir.join(script_name), script_body);
+        std::fs::write(
+            config_dir.join("robdex-hooks.json"),
+            serde_json::to_string(&json!({
+                "version": 1,
+                "hooks": {
+                    event: format!("./.codex/hooks/{script_name}")
+                }
+            }))
+            .expect("serialize hook config"),
+        )
+        .expect("write hook config");
     }
 
     async fn seed_agent_state(runtime: &Arc<BridgeRuntime>) {
@@ -4370,6 +4679,7 @@ mod tests {
             .await
             .expect("runtime");
         seed_agent_state(&runtime).await;
+        let transport = runtime.spawn_transport();
 
         let outcome = execute_bridge_command(
             &runtime,
@@ -4393,6 +4703,7 @@ mod tests {
         assert_eq!(params["model"], "gpt-test");
         assert_eq!(params["effort"], "medium");
         assert_eq!(outcome.payload["type"], "turn");
+        transport.abort();
     }
 
     #[tokio::test]
@@ -4400,6 +4711,7 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         let (request_tx, request_rx) = oneshot::channel();
         let addr = spawn_ws_server(move |mut ws| {
+            let mut request_tx = Some(request_tx);
             Box::pin(async move {
                 let init = ws.next().await.expect("init").expect("init frame");
                 let init_text = match init {
@@ -4421,26 +4733,52 @@ mod tests {
                 .await
                 .expect("send init response");
 
-                let next = ws.next().await.expect("request").expect("request frame");
-                let text = match next {
-                    Message::Text(text) => text,
-                    other => panic!("unexpected request frame: {other:?}"),
-                };
-                let request = match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
-                    JSONRPCMessage::Request(request) => request,
-                    other => panic!("unexpected request message: {other:?}"),
-                };
-                request_tx.send(request.clone()).expect("record request");
-                ws.send(Message::Text(
-                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
-                        id: request.id,
-                        result: json!({"turnId":"turn-active-1"}),
-                    }))
-                    .expect("steer response")
-                    .into(),
-                ))
-                .await
-                .expect("send steer response");
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request = match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected request message: {other:?}"),
+                    };
+                    let result = if request.method == "turn/steer" {
+                        request_tx
+                            .take()
+                            .expect("request sender available")
+                            .send(request.clone())
+                            .expect("record request");
+                        json!({"turnId":"turn-active-1"})
+                    } else if request.method == "thread/read" {
+                        json!({
+                            "thread": {
+                                "status": "inProgress",
+                                "turns": [
+                                    {
+                                        "id": "turn-active-1",
+                                        "status": "inProgress"
+                                    }
+                                ]
+                            }
+                        })
+                    } else {
+                        json!({})
+                    };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result,
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "turn/steer" {
+                        break;
+                    }
+                }
             })
         })
         .await;
@@ -4449,6 +4787,7 @@ mod tests {
             .await
             .expect("runtime");
         seed_agent_state(&runtime).await;
+        let transport = runtime.spawn_transport();
         runtime
             .upstream_sender()
             .send(UpstreamRuntimeEvent::Notification(ServerNotification::TurnStarted(
@@ -4464,7 +4803,16 @@ mod tests {
             )))
             .await
             .expect("turn started");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if runtime.active_turn_id_for_thread("recipient").await.as_deref() == Some("turn-active-1") {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("active turn became visible");
 
         let outcome = execute_bridge_command(
             &runtime,
@@ -4485,6 +4833,763 @@ mod tests {
         assert_eq!(params["expectedTurnId"], "turn-active-1");
         assert_eq!(params["input"][0]["text"], "[Config Orchestrator] Please continue");
         assert_eq!(outcome.payload["type"], "turn");
+        transport.abort();
+    }
+
+    #[test]
+    fn persist_agent_hook_state_extracts_common_fields() {
+        let mut state = sample_state();
+        let hook_result = HookResult {
+            ok: true,
+            artifacts: BTreeMap::from([
+                ("branchName".to_string(), Value::String("codex/worker-a".to_string())),
+                (
+                    "worktreePath".to_string(),
+                    Value::String("/tmp/project/.worktrees/worker-a".to_string()),
+                ),
+                ("baseUrl".to_string(), Value::String("http://127.0.0.1:54136".to_string())),
+                ("stackName".to_string(), Value::String("worker-a-stack".to_string())),
+                ("custom".to_string(), json!({"proof": true})),
+            ]),
+            prompt_append: vec!["Use the prepared worktree.".to_string()],
+            cleanup: Some(json!({"onArchive": true})),
+            metadata: Some(json!({"simulator": "ios-1"})),
+            error: None,
+        };
+
+        persist_agent_hook_state(&mut state, "worker-a", &hook_result);
+
+        let stored = persisted_agent_hook_state(&state, "worker-a").expect("stored state");
+        assert_eq!(stored["branchName"], "codex/worker-a");
+        assert_eq!(stored["worktreePath"], "/tmp/project/.worktrees/worker-a");
+        assert_eq!(stored["baseUrl"], "http://127.0.0.1:54136");
+        assert_eq!(stored["stackName"], "worker-a-stack");
+        assert_eq!(stored["artifacts"]["custom"], json!({"proof": true}));
+        assert_eq!(stored["cleanup"], json!({"onArchive": true}));
+        assert_eq!(stored["metadata"], json!({"simulator": "ios-1"}));
+        assert_eq!(stored["promptAppend"][0], "Use the prepared worktree.");
+    }
+
+    #[test]
+    fn record_project_hook_telemetry_prepends_and_truncates() {
+        let mut state = sample_state();
+        for index in 0..25 {
+            record_project_hook_telemetry(
+                &mut state,
+                "/alpha",
+                Some("worker-a"),
+                "Worker A",
+                "worker",
+                &HookTelemetry {
+                    event: format!("event-{index}"),
+                    status: "failed".to_string(),
+                    detail: Some(format!("detail-{index}")),
+                },
+            );
+        }
+
+        let project = state.projects.get("alpha").expect("project");
+        let entries = project
+            .extras
+            .get(PROJECT_HOOK_TELEMETRY_KEY)
+            .and_then(Value::as_array)
+            .expect("telemetry array");
+        assert_eq!(entries.len(), 20);
+        assert_eq!(entries[0]["event"], "event-24");
+        assert_eq!(entries[19]["event"], "event-5");
+    }
+
+    #[test]
+    fn hook_failure_notice_defaults_empty_detail() {
+        let notice = hook_failure_notice(
+            "project-alpha",
+            "Alpha",
+            Some("thread-1"),
+            "Worker A",
+            "worker",
+            &HookTelemetry {
+                event: "onWorkerCreate".to_string(),
+                status: "failed".to_string(),
+                detail: None,
+            },
+        );
+
+        assert_eq!(notice.project_id, "project-alpha");
+        assert_eq!(notice.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(notice.detail, "");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_applies_hook_prompt_and_persists_lifecycle() {
+        let temp = TempDir::new().expect("tempdir");
+        write_project_hook(
+            &temp,
+            "onWorkerCreate",
+            "on-worker-create",
+            "#!/bin/bash\ncat >/dev/null\necho '{\"ok\":true,\"promptAppend\":[\"Your worktree is ready.\"],\"artifacts\":{\"branchName\":\"codex/worker-one\",\"worktreePath\":\"/tmp/project/.worktrees/worker-one\",\"baseUrl\":\"http://127.0.0.1:54136\"}}'\n",
+        );
+
+        let (prompt_tx, prompt_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            let mut prompt_tx = Some(prompt_tx);
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    let result = match request.method.as_str() {
+                        "thread/start" => json!({"thread": {"id": "thread-worker-1", "title": "Worker One"}}),
+                        "thread/name/set" => json!({}),
+                        "turn/start" => {
+                            prompt_tx
+                                .take()
+                                .expect("prompt sender")
+                                .send(request.clone())
+                                .expect("record prompt request");
+                            json!({"turn": {"id": "turn-1", "status": "inProgress", "items": [], "error": null}})
+                        }
+                        _ => json!({}),
+                    };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result,
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "turn/start" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+
+        let outcome = execute_bridge_command(
+            &runtime,
+            "spawnAgent",
+            json!({
+                "role": "worker",
+                "projectPath": temp.path().display().to_string(),
+                "displayName": "Worker One",
+                "initialPrompt": "Fix the regression",
+            }),
+        )
+        .await
+        .expect("spawnAgent");
+
+        assert_eq!(outcome.payload["type"], "agent");
+        assert_eq!(outcome.payload["payload"]["threadId"], "thread-worker-1");
+
+        let prompt_request = prompt_rx.await.expect("captured prompt request");
+        assert_eq!(prompt_request.method, "turn/start");
+        let prompt_params = prompt_request.params.expect("prompt params");
+        assert_eq!(prompt_params["threadId"], "thread-worker-1");
+        assert_eq!(
+            prompt_params["input"][0]["text"],
+            "Fix the regression\n\nYour worktree is ready."
+        );
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let lifecycle = persisted_agent_hook_state(&state, "thread-worker-1").expect("lifecycle state");
+        assert_eq!(lifecycle["branchName"], "codex/worker-one");
+        assert_eq!(lifecycle["worktreePath"], "/tmp/project/.worktrees/worker-one");
+        assert_eq!(lifecycle["baseUrl"], "http://127.0.0.1:54136");
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_hook_failure_falls_back_and_emits_telemetry() {
+        let temp = TempDir::new().expect("tempdir");
+        write_project_hook(
+            &temp,
+            "onWorkerCreate",
+            "on-worker-create",
+            "#!/bin/bash\ncat >/dev/null\necho hook-broke >&2\nexit 9\n",
+        );
+
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    let result = match request.method.as_str() {
+                        "thread/start" => json!({"thread": {"id": "thread-worker-2", "title": "Worker Broken Hook"}}),
+                        "thread/name/set" => json!({}),
+                        _ => json!({}),
+                    };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result,
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "thread/name/set" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+
+        let outcome = execute_bridge_command(
+            &runtime,
+            "spawnAgent",
+            json!({
+                "role": "worker",
+                "projectPath": temp.path().display().to_string(),
+                "displayName": "Worker Broken Hook",
+            }),
+        )
+        .await
+        .expect("spawnAgent");
+
+        assert_eq!(outcome.payload["payload"]["threadId"], "thread-worker-2");
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent = agent_state_for_thread(&state, "thread-worker-2").expect("agent");
+        let telemetry = agent.extras.get(HOOK_TELEMETRY_KEY).expect("hook telemetry");
+        assert_eq!(telemetry["event"], "onWorkerCreate");
+        assert_eq!(telemetry["status"], "failed");
+
+        let project = state
+            .projects
+            .values()
+            .find(|project| project.project_root.as_deref() == Some(temp.path().to_str().expect("project root")))
+            .expect("project");
+        let recent = project
+            .extras
+            .get(PROJECT_HOOK_TELEMETRY_KEY)
+            .and_then(Value::as_array)
+            .expect("recent hook telemetry");
+        assert_eq!(recent[0]["event"], "onWorkerCreate");
+
+        let replay = runtime.replay_events(None).await;
+        assert!(replay.events.iter().any(|entry| matches!(
+            &entry.event,
+            crate::models::BridgeEvent::HookFailure { payload }
+                if payload.thread_id.as_deref() == Some("thread-worker-2")
+                    && payload.event == "onWorkerCreate"
+        )));
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn spawn_qa_agent_applies_qa_hook_prompt_and_persists_lifecycle() {
+        let temp = TempDir::new().expect("tempdir");
+        write_project_hook(
+            &temp,
+            "onQaCreate",
+            "on-qa-create",
+            "#!/bin/bash\ncat >/dev/null\necho '{\"ok\":true,\"promptAppend\":[\"QA lane is prepared.\"],\"artifacts\":{\"baseUrl\":\"http://127.0.0.1:55123\",\"stackName\":\"qa-sim-1\"}}'\n",
+        );
+
+        let (prompt_tx, prompt_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            let mut prompt_tx = Some(prompt_tx);
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    let result = match request.method.as_str() {
+                        "thread/start" => json!({"thread": {"id": "thread-qa-1", "title": "QA Focus Mode"}}),
+                        "thread/name/set" => json!({}),
+                        "turn/start" => {
+                            prompt_tx
+                                .take()
+                                .expect("prompt sender")
+                                .send(request.clone())
+                                .expect("record prompt request");
+                            json!({"turn": {"id": "turn-qa-1", "status": "inProgress", "items": [], "error": null}})
+                        }
+                        _ => json!({}),
+                    };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result,
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "turn/start" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+
+        let outcome = execute_bridge_command(
+            &runtime,
+            "spawnAgent",
+            json!({
+                "role": "qa",
+                "projectPath": temp.path().display().to_string(),
+                "displayName": "QA Focus Mode",
+                "initialPrompt": "Retest the flow",
+            }),
+        )
+        .await
+        .expect("spawnAgent");
+
+        assert_eq!(outcome.payload["payload"]["threadId"], "thread-qa-1");
+        let prompt_request = prompt_rx.await.expect("captured prompt request");
+        assert_eq!(prompt_request.method, "turn/start");
+        let prompt_params = prompt_request.params.expect("prompt params");
+        assert_eq!(
+            prompt_params["input"][0]["text"],
+            "Retest the flow\n\nQA lane is prepared."
+        );
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let lifecycle = persisted_agent_hook_state(&state, "thread-qa-1").expect("lifecycle state");
+        assert_eq!(lifecycle["baseUrl"], "http://127.0.0.1:55123");
+        assert_eq!(lifecycle["stackName"], "qa-sim-1");
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn spawn_qa_agent_with_malformed_hook_config_falls_back_and_emits_telemetry() {
+        let temp = TempDir::new().expect("tempdir");
+        let config_dir = temp.path().join(".codex");
+        std::fs::create_dir_all(&config_dir).expect("mkdirs");
+        std::fs::write(config_dir.join("robdex-hooks.json"), "{not-json").expect("write config");
+
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    let result = match request.method.as_str() {
+                        "thread/start" => json!({"thread": {"id": "thread-qa-2", "title": "QA Broken Config"}}),
+                        "thread/name/set" => json!({}),
+                        _ => json!({}),
+                    };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result,
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "thread/name/set" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+
+        let outcome = execute_bridge_command(
+            &runtime,
+            "spawnAgent",
+            json!({
+                "role": "qa",
+                "projectPath": temp.path().display().to_string(),
+                "displayName": "QA Broken Config",
+            }),
+        )
+        .await
+        .expect("spawnAgent");
+
+        assert_eq!(outcome.payload["payload"]["threadId"], "thread-qa-2");
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent = agent_state_for_thread(&state, "thread-qa-2").expect("agent");
+        let telemetry = agent.extras.get(HOOK_TELEMETRY_KEY).expect("hook telemetry");
+        assert_eq!(telemetry["event"], "onQaCreate");
+        assert_eq!(telemetry["status"], "failed");
+        assert!(telemetry["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("parse hook config"));
+
+        let replay = runtime.replay_events(None).await;
+        assert!(replay.events.iter().any(|entry| matches!(
+            &entry.event,
+            crate::models::BridgeEvent::HookFailure { payload }
+                if payload.thread_id.as_deref() == Some("thread-qa-2")
+                    && payload.event == "onQaCreate"
+        )));
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn archive_thread_records_hook_failure_and_prunes_agent() {
+        let temp = TempDir::new().expect("tempdir");
+        write_project_hook(
+            &temp,
+            "onWorkerArchive",
+            "on-worker-archive",
+            "#!/bin/bash\ncat >/dev/null\necho archive-broke >&2\nexit 3\n",
+        );
+
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result: json!({}),
+                        }))
+                        .expect("archive response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "thread/archive" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "id": "project-alpha",
+                        "name": "Alpha",
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "recipient": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "extras": {
+                                    "robdexHookLifecycle": {
+                                        "branchName": "codex/worker-one"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        archive_thread(&runtime, "recipient").await.expect("archive thread");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        assert!(agent_state_for_thread(&state, "recipient").is_none());
+        let project = state.projects.get("alpha").expect("project");
+        let recent = project
+            .extras
+            .get(PROJECT_HOOK_TELEMETRY_KEY)
+            .and_then(Value::as_array)
+            .expect("recent telemetry");
+        assert_eq!(recent[0]["event"], "onWorkerArchive");
+        assert_eq!(recent[0]["status"], "failed");
+
+        let replay = runtime.replay_events(None).await;
+        assert!(replay.events.iter().any(|entry| matches!(
+            &entry.event,
+            crate::models::BridgeEvent::HookFailure { payload }
+                if payload.thread_id.as_deref() == Some("recipient")
+                    && payload.event == "onWorkerArchive"
+        )));
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn archive_qa_thread_records_hook_failure_and_prunes_agent() {
+        let temp = TempDir::new().expect("tempdir");
+        write_project_hook(
+            &temp,
+            "onQaArchive",
+            "on-qa-archive",
+            "#!/bin/bash\ncat >/dev/null\necho qa-archive-broke >&2\nexit 4\n",
+        );
+
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result: json!({}),
+                        }))
+                        .expect("archive response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "thread/archive" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "id": "project-alpha",
+                        "name": "Alpha",
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "qa-thread": {
+                                "displayName": "QA Focus Mode",
+                                "role": "qa",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "extras": {
+                                    "robdexHookLifecycle": {
+                                        "baseUrl": "http://127.0.0.1:55123"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        archive_thread(&runtime, "qa-thread").await.expect("archive thread");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        assert!(agent_state_for_thread(&state, "qa-thread").is_none());
+        let project = state.projects.get("alpha").expect("project");
+        let recent = project
+            .extras
+            .get(PROJECT_HOOK_TELEMETRY_KEY)
+            .and_then(Value::as_array)
+            .expect("recent telemetry");
+        assert_eq!(recent[0]["event"], "onQaArchive");
+        assert_eq!(recent[0]["status"], "failed");
+
+        let replay = runtime.replay_events(None).await;
+        assert!(replay.events.iter().any(|entry| matches!(
+            &entry.event,
+            crate::models::BridgeEvent::HookFailure { payload }
+                if payload.thread_id.as_deref() == Some("qa-thread")
+                    && payload.event == "onQaArchive"
+        )));
+        transport.abort();
     }
 
     #[tokio::test]

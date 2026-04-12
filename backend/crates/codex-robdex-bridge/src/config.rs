@@ -16,6 +16,9 @@ pub struct BridgeArgs {
     #[arg(long, env = "ROBDEX_BRIDGE_APP_SERVER_URL", default_value = "ws://127.0.0.1:4200")]
     pub app_server_url: String,
 
+    #[arg(long, env = "ROBDEX_BRIDGE_QA_HARNESS_URL", default_value = "http://127.0.0.1:8775")]
+    pub qa_harness_url: String,
+
     #[arg(long, env = "ROBDEX_BRIDGE_PROJECT_PATH", default_value_os_t = default_project_path())]
     pub project_path: PathBuf,
 
@@ -30,6 +33,7 @@ pub struct BridgeArgs {
 pub struct BridgeSettings {
     pub http: HttpArgs,
     pub app_server_url: String,
+    pub qa_harness_url: String,
     pub project_path: PathBuf,
     pub cwd: PathBuf,
     pub paths: BridgePaths,
@@ -62,6 +66,7 @@ impl BridgeArgs {
         Ok(BridgeSettings {
             http: self.http.clone(),
             app_server_url: self.app_server_url.clone(),
+            qa_harness_url: self.qa_harness_url.clone(),
             project_path,
             cwd,
             paths,
@@ -132,6 +137,7 @@ mod tests {
                 port: 42080,
             },
             app_server_url: "ws://127.0.0.1:4200".to_string(),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
             project_path: temp.path().to_path_buf(),
             cwd: temp.path().to_path_buf(),
             state_root: temp.path().join("state"),

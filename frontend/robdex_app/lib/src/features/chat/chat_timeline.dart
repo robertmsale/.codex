@@ -342,9 +342,16 @@ class _PlanUpdateCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final note = _planSummary(entry.body);
+    final completedCount = entry.planItems.where((item) => item.completed).length;
+    final activeCount = entry.planItems.where((item) => item.isInProgress).length;
+    final pendingCount = entry.planItems.length - completedCount - activeCount;
     final accent = entry.isStreaming
         ? Colors.amber.shade700
         : theme.colorScheme.primary;
+    final surfaceTone = Color.alphaBlend(
+      accent.withValues(alpha: 0.08),
+      theme.colorScheme.surfaceContainerLow,
+    );
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -352,8 +359,8 @@ class _PlanUpdateCard extends StatelessWidget {
         constraints: const BoxConstraints(maxWidth: 720),
         child: DecoratedBox(
           decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(14),
+            color: surfaceTone,
+            borderRadius: BorderRadius.circular(18),
             border: Border.all(
               color: accent.withValues(alpha: 0.35),
             ),
@@ -366,23 +373,24 @@ class _PlanUpdateCard extends StatelessWidget {
             ],
           ),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Container(
-                      width: 24,
-                      height: 24,
+                      width: 30,
+                      height: 30,
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
                         color: accent.withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(7),
+                        borderRadius: BorderRadius.circular(10),
                       ),
                       child: Text(
                         '◻',
-                        style: theme.textTheme.labelLarge?.copyWith(
+                        style: theme.textTheme.titleSmall?.copyWith(
                           color: accent,
                           fontWeight: FontWeight.w700,
                         ),
@@ -390,43 +398,134 @@ class _PlanUpdateCard extends StatelessWidget {
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: Text(
-                        entry.displayLabel,
-                        style: theme.textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            entry.displayLabel,
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            children: [
+                              _PlanMetaPill(
+                                label: '$completedCount done',
+                                tone: Colors.green.shade700,
+                              ),
+                              if (activeCount > 0)
+                                _PlanMetaPill(
+                                  label: '$activeCount active',
+                                  tone: Colors.amber.shade800,
+                                ),
+                              if (pendingCount > 0)
+                                _PlanMetaPill(
+                                  label: '$pendingCount queued',
+                                  tone: theme.colorScheme.onSurface.withValues(alpha: 0.72),
+                                ),
+                            ],
+                          ),
+                        ],
                       ),
                     ),
-                    Text(entry.timestampLabel, style: theme.textTheme.labelSmall),
-                    if (entry.isStreaming) ...[
-                      const SizedBox(width: 8),
-                      const SizedBox(
-                        width: 10,
-                        height: 10,
-                        child: CircularProgressIndicator(strokeWidth: 1.6),
-                      ),
-                    ],
+                    const SizedBox(width: 8),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          entry.timestampLabel,
+                          style: theme.textTheme.labelSmall,
+                        ),
+                        if (entry.isStreaming) ...[
+                          const SizedBox(height: 8),
+                          const SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(strokeWidth: 1.8),
+                          ),
+                        ],
+                      ],
+                    ),
                   ],
                 ),
-                if (note != null) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    note,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.8),
-                      height: 1.35,
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surface.withValues(alpha: 0.72),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: accent.withValues(alpha: 0.18),
                     ),
                   ),
-                ],
-                const SizedBox(height: 10),
-                ...entry.planItems.map(
-                  (item) => Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: _PlanChecklistRow(item: item),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Checklist',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          color: accent,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                      if (note != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          note,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withValues(alpha: 0.8),
+                            height: 1.4,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      ...entry.planItems.map(
+                        (item) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: _PlanChecklistRow(item: item),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PlanMetaPill extends StatelessWidget {
+  const _PlanMetaPill({
+    required this.label,
+    required this.tone,
+  });
+
+  final String label;
+  final Color tone;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: tone.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Text(
+          label,
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: tone,
+            fontWeight: FontWeight.w700,
           ),
         ),
       ),
@@ -451,51 +550,63 @@ class _PlanChecklistRow extends StatelessWidget {
             : theme.colorScheme.onSurface.withValues(alpha: 0.72);
     final glyph = item.completed ? '☑' : '◻';
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(top: 1),
-          child: Text(
-            glyph,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: accent,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: accent.withValues(alpha: item.isInProgress ? 0.45 : 0.22),
         ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text(
-            item.text,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              height: 1.35,
-              color: item.completed
-                  ? theme.colorScheme.onSurface.withValues(alpha: 0.68)
-                  : theme.colorScheme.onSurface,
-              decoration: item.completed ? TextDecoration.lineThrough : null,
-              decorationColor: accent.withValues(alpha: 0.7),
-            ),
-          ),
-        ),
-        if (item.isInProgress) ...[
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: accent.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Text(
-              'Active',
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: accent,
-                fontWeight: FontWeight.w700,
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 1),
+              child: Text(
+                glyph,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: accent,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
-          ),
-        ],
-      ],
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                item.text,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  height: 1.35,
+                  color: item.completed
+                      ? theme.colorScheme.onSurface.withValues(alpha: 0.68)
+                      : theme.colorScheme.onSurface,
+                  decoration: item.completed ? TextDecoration.lineThrough : null,
+                  decorationColor: accent.withValues(alpha: 0.7),
+                ),
+              ),
+            ),
+            if (item.isInProgress) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  'Active',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: accent,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
@@ -909,5 +1020,18 @@ String? _planSummary(String body) {
   if (lines.isEmpty) {
     return null;
   }
-  return lines.join(' ');
+  return lines
+      .asMap()
+      .entries
+      .map((entry) {
+        if (entry.key > 0) {
+          return entry.value;
+        }
+        return entry.value.replaceFirst(
+          RegExp(r'^summary\s*:?\s*', caseSensitive: false),
+          '',
+        );
+      })
+      .where((line) => line.isNotEmpty)
+      .join(' ');
 }

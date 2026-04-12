@@ -139,6 +139,12 @@ struct WaitRequest {
 }
 
 #[derive(Debug, Serialize)]
+struct TerminateResponse {
+    ok: bool,
+    status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
 struct WaitResponse {
     ok: bool,
     status: &'static str,
@@ -379,6 +385,17 @@ async fn wait_http(
     }))
 }
 
+async fn terminate_http(
+    State(app): State<AppState>,
+    AxumPath(job_id): AxumPath<u16>,
+) -> Result<Json<TerminateResponse>, (StatusCode, Json<ErrorResponse>)> {
+    terminate_job(&app, job_id).await.map_err(not_found)?;
+    Ok(Json(TerminateResponse {
+        ok: true,
+        status: "terminated",
+    }))
+}
+
 async fn wait_for_job(app: &AppState, job_id: u16) -> Result<(), String> {
     let index = usize::from(job_id);
     if index >= SLOT_COUNT {
@@ -395,6 +412,34 @@ async fn wait_for_job(app: &AppState, job_id: u16) -> Result<(), String> {
         };
         notify.notified().await;
     }
+}
+
+async fn terminate_job(app: &AppState, job_id: u16) -> Result<(), String> {
+    let index = usize::from(job_id);
+    if index >= SLOT_COUNT {
+        return Err(format!("unknown job_id: {job_id}"));
+    }
+
+    let (reservation, notify) = {
+        let mut inner = app.state.lock().await;
+        let slot = inner
+            .slots
+            .get_mut(index)
+            .ok_or_else(|| format!("unknown job_id: {job_id}"))?;
+        let reservation = slot
+            .reservation
+            .take()
+            .ok_or_else(|| format!("job_id {job_id} is not reserved"))?;
+        let notify = slot.notify.clone();
+        slot.notify = Arc::new(Notify::new());
+        (reservation, notify)
+    };
+
+    terminate_reservation_processes(&reservation)
+        .map_err(|error| format!("failed to terminate job_id {job_id}: {error}"))?;
+    notify.notify_waiters();
+    info!("terminated command-execution slot job_id={job_id}");
+    Ok(())
 }
 
 async fn watcher(app: AppState, interval: Duration) {
@@ -481,6 +526,36 @@ fn pid_is_alive(pid: u32) -> bool {
     }
 }
 
+fn terminate_reservation_processes(reservation: &ReservationInfo) -> Result<()> {
+    if let Some(cmd_pid) = reservation.cmd_pid
+        && pid_is_alive(cmd_pid)
+    {
+        terminate_pid(cmd_pid)?;
+    }
+
+    if let Some(launcher_pid) = reservation.launcher_pid
+        && pid_is_alive(launcher_pid)
+    {
+        terminate_pid(launcher_pid)?;
+    }
+
+    Ok(())
+}
+
+fn terminate_pid(pid: u32) -> Result<()> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        anyhow::bail!("invalid pid {pid}");
+    }
+
+    let status = std::process::Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("kill -TERM {pid} exited with {status}");
+    }
+    Ok(())
+}
+
 fn bad_request(error: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::BAD_REQUEST,
@@ -544,6 +619,7 @@ async fn main() -> Result<()> {
         .route("/healthz", get(healthz))
         .route("/reserve", post(reserve))
         .route("/jobs/{job_id}", post(update))
+        .route("/jobs/{job_id}/terminate", post(terminate_http))
         .route("/command_execution_wait", post(wait_http))
         .route_service("/", mcp_service)
         .with_state(app_state)

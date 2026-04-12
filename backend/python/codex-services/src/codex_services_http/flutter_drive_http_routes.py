@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,8 @@ from idb.grpc.client import Client
 LEFT_COMMAND_KEYCODE = 227
 A_KEYCODE = 4
 BACKSPACE_KEYCODE = 42
+POST_TAP_HIERARCHY_DELAY_SECONDS = 1.0
+SWIPE_DURATION_MILLISECONDS_THRESHOLD = 10.0
 
 
 def healthz(*, service: FlutterDriveService) -> dict[str, Any]:
@@ -37,6 +40,26 @@ def _ready_reservation(service: FlutterDriveService, device_id: str):
 
 def _run_dir(service: FlutterDriveService, reservation, *, kind: str) -> Path:
     return service.manager._next_driver_run_dir(reservation, kind=kind)  # noqa: SLF001
+
+
+def _post_action_hierarchy(service: FlutterDriveService, *, reservation) -> str:
+    time.sleep(POST_TAP_HIERARCHY_DELAY_SECONDS)
+    elements = service.manager._idb_describe_all(reservation=reservation)  # noqa: SLF001
+    return service.manager._serialize_idb_hierarchy(elements)  # noqa: SLF001
+
+
+def _normalized_swipe_duration(raw_duration: Any) -> float:
+    try:
+        duration = float(raw_duration)
+    except Exception as error:
+        raise BridgeError("swipe duration must be numeric.") from error
+    if duration <= 0:
+        raise BridgeError("swipe duration must be greater than zero.")
+    # Agents routinely pass 300/350 expecting milliseconds. Accept that shape
+    # and convert to the seconds-based duration expected by idb.
+    if duration >= SWIPE_DURATION_MILLISECONDS_THRESHOLD:
+        return duration / 1000.0
+    return duration
 
 
 def _idb_point_candidates(
@@ -154,8 +177,10 @@ def _matching_elements_for_selector(*, elements: list[dict[str, Any]], selector:
 def _best_matching_element(matches: list[dict[str, Any]]) -> dict[str, Any]:
     if not matches:
         raise BridgeError("No matching accessibility elements were found.")
+    positive_area_matches = [element for element in matches if _element_area(element) > 0]
+    ranked_matches = positive_area_matches or matches
     return min(
-        matches,
+        ranked_matches,
         key=lambda element: (
             _element_role_priority(element),
             _element_area(element),
@@ -260,7 +285,9 @@ def _ensure_nonzero_element_frame(*, element: dict[str, Any], selector: Any) -> 
         raise BridgeError(f"Element {selector!r} has invalid frame data.") from error
     if width <= 0 or height <= 0:
         raise BridgeError(
-            f"Element {selector!r} is exported with a zero-sized accessibility frame and cannot be tapped reliably."
+            f"Element {selector!r} is exported with a zero-sized accessibility frame. "
+            "This usually means the matched accessibility node is offscreen or virtualized; "
+            "scroll or filter until the row is visible, then retry."
         )
 
 
@@ -538,8 +565,7 @@ def _execute_driver_command_entry(
 
     if command_name == "tapOn":
         tap = _idb_tap_selector(service=service, reservation=reservation, selector=payload, run_dir=step_run_dir)
-        post_elements = manager._idb_describe_all(reservation=reservation)  # noqa: SLF001
-        post_hierarchy = manager._serialize_idb_hierarchy(post_elements)  # noqa: SLF001
+        post_hierarchy = _post_action_hierarchy(service, reservation=reservation)
         return {
             "ok": True,
             "message": f"tapOn {payload!r} -> {tap['center']}",
@@ -560,8 +586,7 @@ def _execute_driver_command_entry(
             point=(x, y),
             run_dir=step_run_dir,
         )
-        post_elements = manager._idb_describe_all(reservation=reservation)  # noqa: SLF001
-        post_hierarchy = manager._serialize_idb_hierarchy(post_elements)  # noqa: SLF001
+        post_hierarchy = _post_action_hierarchy(service, reservation=reservation)
         return {
             "ok": True,
             "message": f"tapPoint [{x},{y}] -> {tap['tap_point']}",
@@ -576,8 +601,7 @@ def _execute_driver_command_entry(
             run_dir=step_run_dir,
             duration=0.8,
         )
-        post_elements = manager._idb_describe_all(reservation=reservation)  # noqa: SLF001
-        post_hierarchy = manager._serialize_idb_hierarchy(post_elements)  # noqa: SLF001
+        post_hierarchy = _post_action_hierarchy(service, reservation=reservation)
         return {
             "ok": True,
             "message": f"longPressOn {payload!r} -> {tap['center']}",
@@ -633,7 +657,7 @@ def _execute_driver_command_entry(
         argv = ["ui", "swipe"]
         duration = payload.get("duration")
         if duration is not None:
-            argv.extend(["--duration", str(duration)])
+            argv.extend(["--duration", str(_normalized_swipe_duration(duration))])
         elements = manager._idb_describe_all(reservation=reservation)  # noqa: SLF001
         reference = _idb_reference_element(elements, manager)
         portrait_width, portrait_height = manager._idb_screen_dimensions_points(reservation=reservation)  # noqa: SLF001

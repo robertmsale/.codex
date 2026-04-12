@@ -7,11 +7,19 @@ port = 0
 status = "planned"
 
 [[service]]
-name = "codex-command-execution-http"
-crate = "codex-command-execution-http"
-current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-command-execution-http"
-current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-command-execution-http.ini"
-port = 8772
+name = "codex-privileged-exec-http"
+crate = "codex-privileged-exec-http"
+current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-privileged-exec-http"
+current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-privileged-exec-http.ini"
+port = 8776
+status = "planned"
+
+[[service]]
+name = "codex-qa-harness"
+crate = "codex-qa-harness"
+current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-qa-harness"
+current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-qa-harness.ini"
+port = 8775
 status = "planned"
 
 [[service]]

@@ -1,6 +1,7 @@
 pub mod app_server_overrides;
 pub mod commands;
 pub mod config;
+pub mod hooks;
 pub mod http;
 pub mod models;
 pub mod runtime;

@@ -243,3 +243,16 @@ pub struct WorkbenchViewData {
     pub status_detail: String,
     pub composer_hint: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HookFailureNotice {
+    pub project_id: String,
+    pub project_name: String,
+    pub thread_id: Option<String>,
+    pub agent_name: String,
+    pub role: String,
+    pub event: String,
+    pub status: String,
+    pub detail: String,
+}

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use codex_app_server_adapter::app_server_protocol::RequestId;
+use robdex_protocol::HookFailureNotice;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
@@ -127,6 +128,8 @@ pub enum BridgeEvent {
     AppStateSnapshot { state: Value },
     #[serde(rename = "threadMessagesChanged")]
     ThreadMessagesChanged { payload: ThreadMessagesResponse },
+    #[serde(rename = "hookFailure")]
+    HookFailure { payload: HookFailureNotice },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

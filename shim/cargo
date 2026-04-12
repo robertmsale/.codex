@@ -1,0 +1,6 @@
+#!/bin/zsh
+set -euo pipefail
+
+source "$HOME/.codex/scripts/common.sh"
+
+PATH="$(unshim_current_path)" exec rtk cargo "$@"

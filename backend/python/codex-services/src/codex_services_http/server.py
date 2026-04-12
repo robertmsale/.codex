@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -68,13 +69,7 @@ def _run_process(
     error_label: str,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    process = subprocess.run(
-        cmd,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        env=_subprocess_env(),
-    )
+    process = _run_git_process_with_stale_index_retry(cmd, cwd=cwd)
     if check and process.returncode != 0:
         detail = (process.stderr or process.stdout or f"{error_label} failed").strip()
         raise HTTPException(status_code=400, detail=sanitize_for_response(detail, paths))
@@ -92,6 +87,20 @@ def _run_process_with_env(
 ) -> subprocess.CompletedProcess[str]:
     env = _subprocess_env()
     env.update(extra_env)
+    process = _run_git_process_with_stale_index_retry(cmd, cwd=cwd, env=env)
+    if check and process.returncode != 0:
+        detail = (process.stderr or process.stdout or f"{error_label} failed").strip()
+        raise HTTPException(status_code=400, detail=sanitize_for_response(detail, paths))
+    return process
+
+
+def _run_git_process_with_stale_index_retry(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = env or _subprocess_env()
     process = subprocess.run(
         cmd,
         cwd=cwd,
@@ -99,10 +108,63 @@ def _run_process_with_env(
         text=True,
         env=env,
     )
-    if check and process.returncode != 0:
-        detail = (process.stderr or process.stdout or f"{error_label} failed").strip()
-        raise HTTPException(status_code=400, detail=sanitize_for_response(detail, paths))
-    return process
+    if process.returncode == 0:
+        return process
+    if not _maybe_clear_stale_index_lock(cmd, cwd=cwd, stderr=process.stderr or "", stdout=process.stdout or "", env=env):
+        return process
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def _maybe_clear_stale_index_lock(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    stderr: str,
+    stdout: str,
+    env: dict[str, str],
+) -> bool:
+    if not cmd or cmd[0] != "git":
+        return False
+    combined = "\n".join(part for part in (stderr.strip(), stdout.strip()) if part.strip())
+    if "index.lock" not in combined:
+        return False
+    match = re.search(r"['\"](?P<path>[^'\"]*index\.lock)['\"]", combined)
+    lock_path = Path(match.group("path")).resolve() if match else None
+    if lock_path is None:
+        git_dir_process = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", "--git-dir"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        if git_dir_process.returncode != 0:
+            return False
+        lock_path = (Path(git_dir_process.stdout.strip()) / "index.lock").resolve()
+    if not lock_path.exists():
+        return False
+    holders = subprocess.run(
+        ["/usr/sbin/lsof", str(lock_path)],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if holders.returncode == 0 and (holders.stdout or "").strip():
+        return False
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def _worktree_repo_root(worktree_path: Path, paths: BridgePaths) -> Path:
@@ -114,6 +176,39 @@ def _worktree_repo_root(worktree_path: Path, paths: BridgePaths) -> Path:
     )
     common_dir = Path(process.stdout.strip())
     return common_dir.parent.resolve()
+
+
+def _worktree_checkout_root(repo_path: Path, paths: BridgePaths) -> Path:
+    process = _run_process(
+        ["git", "-C", str(repo_path), "rev-parse", "--path-format=absolute", "--show-toplevel"],
+        cwd=repo_path,
+        paths=paths,
+        error_label="resolve git worktree top-level",
+    )
+    return Path(process.stdout.strip()).resolve()
+
+
+def _require_managed_worktree_path(worktree_path: Path, paths: BridgePaths) -> tuple[Path, Path]:
+    checkout_root = _worktree_checkout_root(worktree_path, paths)
+    repo_root = _worktree_repo_root(checkout_root, paths)
+    if checkout_root == repo_root:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Refusing to mutate checked-out base repo {repo_root}. "
+                "Use a dedicated worktree under .worktrees/ instead."
+            ),
+        )
+    managed_root = (repo_root / ".worktrees").resolve()
+    if managed_root not in checkout_root.parents:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Refusing unmanaged worktree path {checkout_root}. "
+                f"Use a dedicated worktree under {managed_root}."
+            ),
+        )
+    return checkout_root, repo_root
 
 
 def _resolve_integration_branch(repo_root: Path, explicit_branch: str | None, paths: BridgePaths) -> str:
@@ -557,10 +652,10 @@ def _git_worktree_cleanup(args: dict[str, Any], paths: BridgePaths) -> str:
     if not worktree_path.exists():
         return sanitize_for_response("all clear: worktree path is already missing", paths)
 
-    repo_root = _worktree_repo_root(worktree_path, paths)
-    branch = current_branch(worktree_path)
+    worktree_root, repo_root = _require_managed_worktree_path(worktree_path, paths)
+    branch = current_branch(worktree_root)
     _run_process(
-        ["git", "-C", str(repo_root), "worktree", "remove", "--force", str(worktree_path)],
+        ["git", "-C", str(repo_root), "worktree", "remove", "--force", str(worktree_root)],
         cwd=repo_root,
         paths=paths,
         error_label="git worktree remove",
@@ -588,7 +683,7 @@ def _git_worktree_cleanup(args: dict[str, Any], paths: BridgePaths) -> str:
         paths=paths,
         error_label="git worktree prune",
     )
-    return sanitize_for_response(f"removed worktree {worktree_path} and pruned metadata", paths)
+    return sanitize_for_response(f"removed worktree {worktree_root} and pruned metadata", paths)
 
 
 def _maybe_stash(repo_path: Path, paths: BridgePaths, label: str) -> tuple[str, bool]:
@@ -649,22 +744,22 @@ def _restore_stash(repo_path: Path, paths: BridgePaths, stash_name: str) -> str:
 def _git_merge_worktree(args: dict[str, Any], paths: BridgePaths) -> str:
     worktree_path = require_allowed_path(str(args.get("worktree_path") or ""), paths)
     integration_branch = str(args.get("integration_branch") or "").strip()
-    repo_root = _worktree_repo_root(worktree_path, paths)
+    worktree_root, repo_root = _require_managed_worktree_path(worktree_path, paths)
     resolved_integration_branch = _resolve_integration_branch(repo_root, integration_branch, paths)
-    branch = ensure_branch_allows_destructive_mutation(worktree_path)
+    branch = ensure_branch_allows_destructive_mutation(worktree_root)
     completed_steps: list[str] = []
     status = _run_process(
-        ["git", "-C", str(worktree_path), "status", "--short"],
-        cwd=worktree_path,
+        ["git", "-C", str(worktree_root), "status", "--short"],
+        cwd=worktree_root,
         paths=paths,
         error_label="git status",
     ).stdout.strip()
     if status:
-        raise HTTPException(status_code=400, detail=f"Refusing to merge a dirty worktree: {worktree_path}")
+        raise HTTPException(status_code=400, detail=f"Refusing to merge a dirty worktree: {worktree_root}")
 
     pr_number = _run_process(
         ["gh", "pr", "view", "--json", "number", "--jq", ".number"],
-        cwd=worktree_path,
+        cwd=worktree_root,
         paths=paths,
         error_label="gh pr view",
     ).stdout.strip()
@@ -673,7 +768,7 @@ def _git_merge_worktree(args: dict[str, Any], paths: BridgePaths) -> str:
 
     _run_process(
         ["gh", "pr", "merge", pr_number, "--squash"],
-        cwd=worktree_path,
+        cwd=worktree_root,
         paths=paths,
         error_label="gh pr merge",
     )
@@ -694,9 +789,6 @@ def _git_merge_worktree(args: dict[str, Any], paths: BridgePaths) -> str:
                 error_label="delete remote branch",
             )
             completed_steps.append(f"deleted origin/{branch}")
-
-        sync_text = _sync_local_integration_branch(repo_root, resolved_integration_branch, paths)
-        completed_steps.append(sync_text)
 
         show_ref = subprocess.run(
             ["git", "-C", str(repo_root), "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
@@ -730,7 +822,7 @@ def _git_merge_worktree(args: dict[str, Any], paths: BridgePaths) -> str:
 
     cleanup_warning = ""
     try:
-        cleanup_text = _git_worktree_cleanup({"worktree_path": str(worktree_path)}, paths)
+        cleanup_text = _git_worktree_cleanup({"worktree_path": str(worktree_root)}, paths)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
         cleanup_warning = f" WARNING: worktree cleanup failed: {detail}"
@@ -750,34 +842,34 @@ def _git_publish_worktree(args: dict[str, Any], paths: BridgePaths) -> str:
         or args.get("base_branch")
         or ""
     ).strip()
-    repo_root = _worktree_repo_root(worktree_path, paths)
+    worktree_root, repo_root = _require_managed_worktree_path(worktree_path, paths)
     resolved_integration_branch = _resolve_integration_branch(repo_root, integration_branch, paths)
-    branch = ensure_branch_allows_destructive_mutation(worktree_path)
+    branch = ensure_branch_allows_destructive_mutation(worktree_root)
 
-    review_log = worktree_path / "review.log"
+    review_log = worktree_root / "review.log"
     if not review_log.exists():
         raise HTTPException(status_code=400, detail="Publish blocked: review.log not found in worktree root. Request review first.")
 
     status = _run_process(
-        ["git", "-C", str(worktree_path), "status", "--short"],
-        cwd=worktree_path,
+        ["git", "-C", str(worktree_root), "status", "--short"],
+        cwd=worktree_root,
         paths=paths,
         error_label="git status",
     ).stdout.strip()
     if status:
-        raise HTTPException(status_code=400, detail=f"Refusing to publish a dirty worktree: {worktree_path}")
+        raise HTTPException(status_code=400, detail=f"Refusing to publish a dirty worktree: {worktree_root}")
 
     push_process = subprocess.run(
-        ["git", "-C", str(worktree_path), "push", "-q", "--set-upstream", "origin", branch],
-        cwd=worktree_path,
+        ["git", "-C", str(worktree_root), "push", "-q", "--set-upstream", "origin", branch],
+        cwd=worktree_root,
         capture_output=True,
         text=True,
         env=_subprocess_env(),
     )
     if push_process.returncode != 0:
         push_process = subprocess.run(
-            ["git", "-C", str(worktree_path), "push", "-q", "--force-with-lease", "--set-upstream", "origin", branch],
-            cwd=worktree_path,
+            ["git", "-C", str(worktree_root), "push", "-q", "--force-with-lease", "--set-upstream", "origin", branch],
+            cwd=worktree_root,
             capture_output=True,
             text=True,
             env=_subprocess_env(),
@@ -788,7 +880,7 @@ def _git_publish_worktree(args: dict[str, Any], paths: BridgePaths) -> str:
 
     pr_view = subprocess.run(
         ["gh", "pr", "view", "--json", "number,url,state,isDraft,headRefName,baseRefName,title"],
-        cwd=worktree_path,
+        cwd=worktree_root,
         capture_output=True,
         text=True,
         env=_subprocess_env(),
@@ -796,7 +888,7 @@ def _git_publish_worktree(args: dict[str, Any], paths: BridgePaths) -> str:
     if pr_view.returncode != 0:
         create_process = subprocess.run(
             ["gh", "pr", "create", "--base", resolved_integration_branch, "--fill"],
-            cwd=worktree_path,
+            cwd=worktree_root,
             capture_output=True,
             text=True,
             env=_subprocess_env(),
@@ -806,7 +898,7 @@ def _git_publish_worktree(args: dict[str, Any], paths: BridgePaths) -> str:
             raise HTTPException(status_code=400, detail=sanitize_for_response(detail, paths))
         pr_view = subprocess.run(
             ["gh", "pr", "view", "--json", "number,url,state,isDraft,headRefName,baseRefName,title"],
-            cwd=worktree_path,
+            cwd=worktree_root,
             capture_output=True,
             text=True,
             env=_subprocess_env(),
@@ -830,8 +922,8 @@ def _git_publish_worktree(args: dict[str, Any], paths: BridgePaths) -> str:
         f"title={pr_data.get('title') or ''}"
     )
     _run_process(
-        ["git", "-C", str(worktree_path), "fetch", "-q", "origin", "--prune"],
-        cwd=worktree_path,
+        ["git", "-C", str(worktree_root), "fetch", "-q", "origin", "--prune"],
+        cwd=worktree_root,
         paths=paths,
         error_label="git fetch --prune after publish",
     )
@@ -840,25 +932,26 @@ def _git_publish_worktree(args: dict[str, Any], paths: BridgePaths) -> str:
 
 def _git_sync_worktree(args: dict[str, Any], paths: BridgePaths) -> str:
     worktree_path = require_allowed_path(str(args.get("worktree_path") or ""), paths)
+    worktree_root, _repo_root = _require_managed_worktree_path(worktree_path, paths)
     upstream = str(args.get("upstream") or "").strip()
     if not upstream:
         raise HTTPException(status_code=400, detail="upstream is required")
-    branch = current_branch(worktree_path)
-    stash_name, had_stash = _maybe_stash(worktree_path, paths, f"git-sync-{branch}")
+    branch = current_branch(worktree_root)
+    stash_name, had_stash = _maybe_stash(worktree_root, paths, f"git-sync-{branch}")
     _run_process(
-        ["git", "-C", str(worktree_path), "fetch", "-q", "origin", "--prune"],
-        cwd=worktree_path,
+        ["git", "-C", str(worktree_root), "fetch", "-q", "origin", "--prune"],
+        cwd=worktree_root,
         paths=paths,
         error_label="git fetch --prune",
     )
     _run_process_with_env(
-        ["git", "-C", str(worktree_path), "rebase", upstream],
-        cwd=worktree_path,
+        ["git", "-C", str(worktree_root), "rebase", upstream],
+        cwd=worktree_root,
         paths=paths,
         error_label=f"git rebase {upstream}",
         extra_env={"GIT_EDITOR": "true", "EDITOR": "true", "VISUAL": "true"},
     )
-    restore_message = _restore_stash(worktree_path, paths, stash_name) if had_stash else ""
+    restore_message = _restore_stash(worktree_root, paths, stash_name) if had_stash else ""
     suffix = f"; {restore_message}" if restore_message else ""
     return sanitize_for_response(f"rebased {branch} onto {upstream}{suffix}", paths)
 
@@ -878,21 +971,50 @@ def _git_fetch(args: dict[str, Any], paths: BridgePaths) -> str:
 def _qa_fastforward(args: dict[str, Any], paths: BridgePaths) -> str:
     worktree_path = require_allowed_path(str(args.get("worktree_path") or ""), paths)
     integration_branch = str(args.get("integration_branch") or "").strip()
-    repo_root = _worktree_repo_root(worktree_path, paths)
-    branch = current_branch(worktree_path)
+    checkout_root = _worktree_checkout_root(worktree_path, paths)
+    repo_root = _worktree_repo_root(checkout_root, paths)
+    branch = current_branch(checkout_root)
     target_branch = _resolve_integration_branch(repo_root, integration_branch, paths)
+
+    if checkout_root == repo_root:
+        if branch != target_branch:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"QA fast-forward against base repo requires the checked-out integration branch. "
+                    f"Current branch is {branch}, target is {target_branch}."
+                ),
+            )
+        _run_process(
+            ["git", "-C", str(checkout_root), "fetch", "-q", "origin", "--prune"],
+            cwd=checkout_root,
+            paths=paths,
+            error_label="git fetch --prune",
+        )
+        _run_process(
+            ["git", "-C", str(checkout_root), "merge", "--ff-only", f"origin/{target_branch}"],
+            cwd=checkout_root,
+            paths=paths,
+            error_label="git merge --ff-only",
+        )
+        return sanitize_for_response(
+            f"Fast-forwarded checked-out {branch} to origin/{target_branch}",
+            paths,
+        )
+
+    worktree_root, repo_root = _require_managed_worktree_path(checkout_root, paths)
     stash_name = f"qa-fastforward-{branch}-{int(time.time())}"
 
     status = _run_process(
-        ["git", "-C", str(worktree_path), "status", "--short"],
-        cwd=worktree_path,
+        ["git", "-C", str(worktree_root), "status", "--short"],
+        cwd=worktree_root,
         paths=paths,
         error_label="git status",
     ).stdout.strip()
     if status:
         _run_process(
-            ["git", "-C", str(worktree_path), "stash", "push", "-u", "-m", stash_name],
-            cwd=worktree_path,
+            ["git", "-C", str(worktree_root), "stash", "push", "-u", "-m", stash_name],
+            cwd=worktree_root,
             paths=paths,
             error_label="git stash push",
         )
@@ -900,20 +1022,20 @@ def _qa_fastforward(args: dict[str, Any], paths: BridgePaths) -> str:
         stash_name = ""
 
     _run_process(
-        ["git", "-C", str(worktree_path), "fetch", "-q", "origin", "--prune"],
-        cwd=worktree_path,
+        ["git", "-C", str(worktree_root), "fetch", "-q", "origin", "--prune"],
+        cwd=worktree_root,
         paths=paths,
         error_label="git fetch --prune",
     )
     local_head = _run_process(
-        ["git", "-C", str(worktree_path), "rev-parse", "HEAD"],
-        cwd=worktree_path,
+        ["git", "-C", str(worktree_root), "rev-parse", "HEAD"],
+        cwd=worktree_root,
         paths=paths,
         error_label="git rev-parse HEAD",
     ).stdout.strip()
     remote_head = _run_process(
-        ["git", "-C", str(worktree_path), "rev-parse", f"origin/{target_branch}"],
-        cwd=worktree_path,
+        ["git", "-C", str(worktree_root), "rev-parse", f"origin/{target_branch}"],
+        cwd=worktree_root,
         paths=paths,
         error_label="git rev-parse origin head",
     ).stdout.strip()
@@ -921,15 +1043,15 @@ def _qa_fastforward(args: dict[str, Any], paths: BridgePaths) -> str:
     if local_head != remote_head:
         if branch in {"main", "master", "staging", "prod", "production"}:
             _run_process(
-                ["git", "-C", str(worktree_path), "merge", "--ff-only", f"origin/{target_branch}"],
-                cwd=worktree_path,
+                ["git", "-C", str(worktree_root), "merge", "--ff-only", f"origin/{target_branch}"],
+                cwd=worktree_root,
                 paths=paths,
                 error_label="git merge --ff-only",
             )
         else:
             _run_process(
-                ["git", "-C", str(worktree_path), "rebase", f"origin/{target_branch}"],
-                cwd=worktree_path,
+                ["git", "-C", str(worktree_root), "rebase", f"origin/{target_branch}"],
+                cwd=worktree_root,
                 paths=paths,
                 error_label="git rebase",
             )
@@ -949,16 +1071,16 @@ def _qa_fastforward(args: dict[str, Any], paths: BridgePaths) -> str:
                 break
         if stash_ref:
             apply_process = subprocess.run(
-                ["git", "-C", str(repo_root), "stash", "apply", stash_ref],
-                cwd=repo_root,
+                ["git", "-C", str(worktree_root), "stash", "apply", stash_ref],
+                cwd=worktree_root,
                 capture_output=True,
                 text=True,
                 env=_subprocess_env(),
             )
             if apply_process.returncode == 0:
                 _run_process(
-                    ["git", "-C", str(repo_root), "stash", "drop", stash_ref],
-                    cwd=repo_root,
+                    ["git", "-C", str(worktree_root), "stash", "drop", stash_ref],
+                    cwd=worktree_root,
                     paths=paths,
                     error_label="git stash drop",
                 )
@@ -982,6 +1104,7 @@ def _qa_fastforward(args: dict[str, Any], paths: BridgePaths) -> str:
 
 def _git_commit(args: dict[str, Any], paths: BridgePaths) -> str:
     worktree_path = require_allowed_path(str(args.get("worktree_path") or args.get("repo_path") or ""), paths)
+    worktree_root, _repo_root = _require_managed_worktree_path(worktree_path, paths)
     message = str(args.get("message") or "").strip()
     allow_empty = bool(args.get("allow_empty", False))
     add_all = bool(args.get("add_all", True))
@@ -989,22 +1112,22 @@ def _git_commit(args: dict[str, Any], paths: BridgePaths) -> str:
         raise HTTPException(status_code=400, detail="message is required")
     if add_all:
         _run_process(
-            ["git", "-C", str(worktree_path), "add", "-A"],
-            cwd=worktree_path,
+            ["git", "-C", str(worktree_root), "add", "-A"],
+            cwd=worktree_root,
             paths=paths,
             error_label="git add -A",
         )
-    commit_args = ["git", "-C", str(worktree_path), "commit", "-m", message]
+    commit_args = ["git", "-C", str(worktree_root), "commit", "-m", message]
     if allow_empty:
         commit_args.append("--allow-empty")
     _run_process_with_env(
         commit_args,
-        cwd=worktree_path,
+        cwd=worktree_root,
         paths=paths,
         error_label="git commit",
         extra_env={"GIT_EDITOR": "true", "EDITOR": "true", "VISUAL": "true"},
     )
-    return sanitize_for_response(f"committed in {worktree_path}: {message}", paths)
+    return sanitize_for_response(f"committed in {worktree_root}: {message}", paths)
 
 
 OPERATIONS: dict[str, Callable[[dict[str, Any], BridgePaths], Any]] = {

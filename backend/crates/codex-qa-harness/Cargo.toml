@@ -1,0 +1,21 @@
+[package]
+name = "codex-qa-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+codex-backend-core = { path = "../codex-backend-core" }
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["process", "io-util"] }
+tower-http.workspace = true
+tracing.workspace = true
+libc = "0.2"
+toml = "0.8"

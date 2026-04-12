@@ -5,6 +5,7 @@ if [[ $# -ge 1 && -d "${1}/skills" ]]; then
   _codex_activate_root="$1"
 fi
 _codex_skills_dir="${_codex_activate_root}/skills"
+_codex_shim_dir="${_codex_activate_root}/shim"
 
 if [[ ! -d "${_codex_skills_dir}" ]]; then
   echo "codex activate: skills directory not found: ${_codex_skills_dir}" >&2
@@ -21,23 +22,28 @@ if [[ ${#_codex_path_prefixes[@]} -eq 0 ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
-_codex_joined_path=""
 for _codex_scripts_dir in "${_codex_path_prefixes[@]}"; do
-  if [[ -z "${_codex_joined_path}" ]]; then
-    _codex_joined_path="${_codex_scripts_dir}"
-  else
-    _codex_joined_path="${_codex_joined_path}:${_codex_scripts_dir}"
-  fi
+  case ":${PATH:-}:" in
+    *:"${_codex_scripts_dir}":*)
+      ;;
+    *)
+      export PATH="${_codex_scripts_dir}${PATH:+:${PATH}}"
+      ;;
+  esac
 done
 
-if [[ -n "${PATH:-}" ]]; then
-  export PATH="${_codex_joined_path}:${PATH}"
-else
-  export PATH="${_codex_joined_path}"
+if [[ -d "${_codex_shim_dir}" ]]; then
+  case ":${PATH:-}:" in
+    *:"${_codex_shim_dir}":*)
+      ;;
+    *)
+      export PATH="${_codex_shim_dir}${PATH:+:${PATH}}"
+      ;;
+  esac
 fi
 
 unset _codex_activate_root
 unset _codex_skills_dir
+unset _codex_shim_dir
 unset _codex_path_prefixes
 unset _codex_scripts_dir
-unset _codex_joined_path
