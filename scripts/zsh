@@ -1,0 +1,100 @@
+#!/bin/zsh
+set -euo pipefail
+
+# App-server sometimes starts threads with a broken or empty PATH.
+# Seed the minimum system tools before any bootstrap logic runs.
+export PATH="${PATH:-}"
+case ":$PATH:" in
+  *:/usr/bin:*) ;;
+  *) PATH="/usr/bin${PATH:+:$PATH}" ;;
+esac
+case ":$PATH:" in
+  *:/bin:*) ;;
+  *) PATH="/bin${PATH:+:$PATH}" ;;
+esac
+export PATH
+
+script_source="${(%):-%x}"
+while [[ -L "$script_source" ]]; do
+  script_dir="$(cd -P "$(/usr/bin/dirname "$script_source")" && pwd)"
+  script_source="$("/usr/bin/readlink" "$script_source")"
+  [[ "$script_source" != /* ]] && script_source="$script_dir/$script_source"
+done
+
+script_dir="$(cd -P "$(/usr/bin/dirname "$script_source")" && pwd)"
+codex_root="$(cd -P "$script_dir/.." && pwd)"
+resource_root="$codex_root/scripts"
+
+source "$resource_root/common.sh"
+source "$resource_root/activation.sh"
+source "$resource_root/privileged_exec.sh"
+source "$resource_root/output_postprocess.sh"
+
+setup_codex_activation
+normalize_cwd_alias
+
+real_zsh="${ZSH_SHIM_REAL_ZSH:-/bin/zsh}"
+
+cleanup_shim_files() {
+  rm -f "${shim_stdout_file:-}" "${shim_stderr_file:-}"
+  rm -f "${PRIVILEGED_EXEC_STDOUT_FILE:-}" "${PRIVILEGED_EXEC_STDERR_FILE:-}"
+}
+
+trap 'cleanup_shim_files' EXIT
+
+if [[ $# -eq 0 ]]; then
+  exec "$real_zsh"
+fi
+
+if [[ "${1:-}" != "-lc" && "${1:-}" != "-c" ]]; then
+  if [[ $# -ge 1 && "${1:-}" != -* && ! -f "${1:-}" ]]; then
+    exec "$real_zsh" -c "$*"
+  fi
+  exec "$real_zsh" "$@"
+fi
+
+mode="$1"
+shift
+
+if [[ $# -lt 1 ]]; then
+  exec "$real_zsh" "$mode"
+fi
+
+command_text="$1"
+shift
+
+if [[ "$command_text" == *"/shell_snapshots/"* && "$command_text" == *"exec "* && "$command_text" == *" -c "* ]]; then
+  exec "$real_zsh" "$mode" "$command_text" "$@"
+fi
+
+requested_command=("$real_zsh" "$mode" "$command_text" "$@")
+prefixed_command="$(passthru_activation_prefix)
+
+${command_text}"
+local_command=("$real_zsh" "$mode" "$prefixed_command" "$@")
+
+run_via_privileged_exec_if_allowed "${requested_command[@]}"
+case "$PRIVILEGED_EXEC_OUTCOME" in
+  handled)
+    command_postprocess_output \
+      "$PRIVILEGED_EXEC_STDOUT_FILE" \
+      "$PRIVILEGED_EXEC_STDERR_FILE" \
+      "$PRIVILEGED_EXEC_STATUS" \
+      "${requested_command[@]}"
+    exit $?
+    ;;
+  reject)
+    exit "$PRIVILEGED_EXEC_STATUS"
+    ;;
+esac
+
+shim_stdout_file="$(mktemp "${TMPDIR:-/tmp}/codex-shim-zsh-stdout.XXXXXX")"
+shim_stderr_file="$(mktemp "${TMPDIR:-/tmp}/codex-shim-zsh-stderr.XXXXXX")"
+
+local_exit_code=0
+if ! PATH="$PATH" "$real_zsh" "${local_command[@]:1}" >"$shim_stdout_file" 2>"$shim_stderr_file"; then
+  local_exit_code=$?
+fi
+
+command_postprocess_output "$shim_stdout_file" "$shim_stderr_file" "$local_exit_code" "${requested_command[@]}"
+exit $?
