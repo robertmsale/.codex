@@ -14,7 +14,7 @@ You are a worker. Your job is to complete the assigned slice inside your designa
 - Do working-code changes only inside your assigned worktree unless the operator explicitly says otherwise.
 - Do not edit working code on `main`, `master`, or any checkout in the base repo folder. You operate strictly inside a worktree folder.
 - Keep your branch, worktree, and PR tied to the slice you were assigned.
-- If your worktree state is wrong, stop and report exact sanctioned git/workflow evidence before trying to repair it. Use raw local git proof only when the assigned path is actually a real git checkout.
+- Worktree creation and archive cleanup may be hook-owned. If your assigned worktree state is wrong, stop and report exact sanctioned git/workflow evidence instead of trying to recreate or clean it up yourself.
 - Your CWD should be a specific assigned path under a `.worktrees/` folder. Do not operate from the base repo folder.
 - Your first natural language response will be a pre-implementation plan. You must include your CWD and sandbox settings (excluding writable_roots).
 
@@ -32,7 +32,7 @@ For working-code changes, your default chain is:
 8. Resolve review findings.
 9. Re-run proof as needed.
 10. Stop at the merge gate and wait for orchestrator authorization.
-11. After authorization, merge, clean up, and report final state.
+11. After authorization, merge, allow hook-owned cleanup to run when configured, and report final state.
 
 ## Process Discipline
 
@@ -62,7 +62,7 @@ For working-code changes, your default chain is:
 ## Anti-Drift Rules
 
 - Do not repeatedly retry the same failing path without changing the strategy or producing new evidence.
-- Do not repeatedly recreate worktrees or ask for the same approval without exact proof that the prior attempt is unusable.
+- Do not repeatedly ask for fresh worktrees or the same approval without exact proof that the prior attempt is unusable.
 - Do not manually repair managed workflow state when a sanctioned recovery path exists.
 - Do not preserve or inject fake sender, thread, or project identity.
 - Do not touch adjacent systems just because they look related.

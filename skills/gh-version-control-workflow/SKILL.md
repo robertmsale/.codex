@@ -9,7 +9,7 @@ Use this skill when you need the sanctioned wrappers for mutating git or GitHub 
 
 ## What This Skill Covers
 
-- create or clean up managed worktrees
+- commit, publish, merge, and recover managed worktree branches
 - stage, unstage, commit, sync, publish, and merge through sanctioned wrappers
 - use raw `git` directly for read-only inspection commands
 - use `request-review` before publish when the current project/operator workflow requires review
@@ -18,7 +18,7 @@ Use the shared `~/.codex` skill script paths shown here unless a project-local s
 
 ## Mutating Commands
 
-- Create worktree:
+- Create worktree manually only when hook-owned worker lifecycle is unavailable or an operator explicitly tells you to:
   - `git-worktree-create <repo_path> <base_branch> <branch_name> <worktree_name>`
 - Sync worktree:
   - `git-sync-worktree <worktree_path> [integration_branch]`
@@ -34,7 +34,7 @@ Use the shared `~/.codex` skill script paths shown here unless a project-local s
 - Merge (squash merge the PR, delete the remote branch, remove the local worktree, prune worktree metadata, and delete the local branch):
   - `git-merge-worktree <worktree_path> [integration_branch]`
   - if the squash merge fails, the worktree and branch are left in place for conflict resolution or retry
-- Cleanup (remove the local worktree, prune worktree metadata, and delete the local branch when it is no longer checked out elsewhere):
+- Cleanup manually only when hook-owned archive cleanup did not handle it or an operator explicitly tells you to:
   - `git-worktree-cleanup <worktree_path> [integration_branch]`
   - cleanup refuses the checked-out base repo and only operates on dedicated managed worktrees under `.worktrees/`
 
@@ -57,15 +57,16 @@ Read-only `git` commands such as `git status`, `git branch`, `git diff`, `git sh
 
 ## Typical Sequence
 
-1. Create a worktree with `git-worktree-create`.
+1. Start in the assigned worktree, usually created by project hooks.
 2. Implement in that worktree.
 3. Commit with `git-commit`.
 4. Run `request-review` when review is part of the current workflow.
 5. Publish with `git-publish-worktree`.
-6. Merge and clean up with `git-merge-worktree`.
+6. Merge with `git-merge-worktree`. Let hook-owned archive cleanup run unless manual cleanup is explicitly needed.
 
 ## Guardrails
 
 - Sanctioned mutating workflow scripts refuse the checked-out base repo.
 - `git-merge-worktree` owns merge plus worktree cleanup for managed worktree branches.
+- Do not manually create or clean up a worker worktree when project hooks already own that lifecycle.
 - If publish, review, or cleanup state is unclear, inspect the real state and continue with the sanctioned script instead of inventing a new path.
