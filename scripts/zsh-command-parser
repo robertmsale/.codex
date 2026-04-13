@@ -1,0 +1,8 @@
+#!/bin/zsh
+set -euo pipefail
+
+export CODEX_DISABLE_AUTO_COMMAND_PARSER=1
+export CODEX_COMMAND_PARSER_ACTIVE=1
+export IS_USING_COMMAND_PARSER=true
+
+exec "$HOME/.codex/scripts/zsh" "$@"

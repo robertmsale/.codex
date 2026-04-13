@@ -37,11 +37,13 @@ if [[ -z "${message// }" ]]; then
   exit 2
 fi
 
-args=("worktree_path=$worktree_path" "message=$message")
+allow_empty_flag=false
+add_all_flag=true
 if [[ "$allow_empty" -eq 1 ]]; then
-  args+=("allow_empty=true")
+  allow_empty_flag=true
 fi
 if [[ "$do_add" -eq 0 ]]; then
-  args+=("add_all=false")
+  add_all_flag=false
 fi
-http_gitops_op git_commit "${args[@]}"
+
+git_commit_cmd "$worktree_path" "$message" "$allow_empty_flag" "$add_all_flag"

@@ -31,7 +31,6 @@ Supervisor units:
 - [robdex-app-server.ini](/Users/robertsale/.codex/backend/python/codex-services/supervisor/robdex-app-server.ini)
 - [robdex-bridge-deno.ini](/Users/robertsale/.codex/backend/python/codex-services/supervisor/robdex-bridge-deno.ini)
 - [codex-aux-http.ini](/Users/robertsale/.codex/backend/python/codex-services/supervisor/codex-aux-http.ini)
-- [codex-gitops-http.ini](/Users/robertsale/.codex/backend/python/codex-services/supervisor/codex-gitops-http.ini)
 - [codex-flutter-sim-http.ini](/Users/robertsale/.codex/backend/python/codex-services/supervisor/codex-flutter-sim-http.ini)
 
 Launchers:
@@ -39,7 +38,6 @@ Launchers:
 - [run-robdex-app-server](/Users/robertsale/.codex/backend/python/codex-services/scripts/run-robdex-app-server)
 - [run-robdex-bridge-deno](/Users/robertsale/.codex/backend/python/codex-services/scripts/run-robdex-bridge-deno)
 - [run-codex-aux-http](/Users/robertsale/.codex/backend/python/codex-services/scripts/run-codex-aux-http)
-- [run-codex-gitops-http](/Users/robertsale/.codex/backend/python/codex-services/scripts/run-codex-gitops-http)
 - [run-codex-flutter-sim-http](/Users/robertsale/.codex/backend/python/codex-services/scripts/run-codex-flutter-sim-http)
 
 Robdex host-local transport:
@@ -98,23 +96,6 @@ Used by:
 - `~/.codex/skills/command-parser/scripts/command-parser`
 - `~/.codex/skills/request-review/scripts/request-review`
 
-## GitOps HTTP Bridge
-
-Host-side HTTP bridge for guarded git/worktree operations.
-
-Run manually:
-
-```sh
-uv run codex-gitops-http --host 0.0.0.0 --port 8765
-```
-
-API:
-
-- `GET /healthz`
-- `POST /v1/ops/<operation>` with JSON body `{"args": {...}}`
-
-Path authorization is derived from local Mutagen roots. Local `beta` paths are now accepted as allowed roots in addition to `alpha`.
-
 ## Flutter Simulator HTTP Bridge
 
 Host-side Flutter broker for iOS simulators.
@@ -139,6 +120,14 @@ The broker already supports:
 - per-device reservations
 - same-path launch serialization
 - host-side `flutter run --machine --print-dtd`
+
+## Flutter Drive CLI
+
+`flutter-drive` is now a local wrapper under:
+
+- [flutter-drive](/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive)
+
+It no longer depends on a dedicated host HTTP service. The local helper reuses the existing broker-aware Python driver logic directly and keeps the `flow` path local.
 
 ## Ezra Host QA Planning
 

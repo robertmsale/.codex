@@ -3,9 +3,9 @@ use reqwest::Client;
 use serde_json::{Value, json};
 
 use robdex_protocol::{
-    UiChatEntry, UiInspectorFact, UiModelItem, UiPendingApprovalItem, UiProjectItem,
-    UiThreadGroupItem, UiThreadItem, UiWorkerMetadata, UiWorkspaceFile, UiWorkspaceSelection,
-    WorkbenchViewData,
+    UiChatEntry, UiInspectorFact, UiLiveProcessItem, UiModelItem, UiPendingApprovalItem,
+    UiProjectItem, UiThreadGroupItem, UiThreadItem, UiWorkerMetadata, UiWorkspaceFile,
+    UiWorkspaceSelection, WorkbenchViewData,
 };
 
 use crate::bridge::BridgeEndpoint;
@@ -892,6 +892,9 @@ pub async fn build_workbench_with_models(
         threads,
         available_models,
         thread_groups: selected_project_thread_groups(&snapshot, selected_project_id.as_deref(), selected.as_ref()),
+        live_processes: selected
+            .map(|value| value.live_processes.clone())
+            .unwrap_or_default(),
         chat_entries: messages,
         context_window_remaining_percent,
         workspace_files,
@@ -1080,6 +1083,7 @@ struct ThreadRecord {
     pull_request_number: Option<u64>,
     blocked_reason: Option<String>,
     unblock_when: Option<String>,
+    live_processes: Vec<UiLiveProcessItem>,
     preview: String,
 }
 
@@ -1204,6 +1208,35 @@ fn extract_thread_records(snapshot: &Value) -> Vec<ThreadRecord> {
                     .get("unblockWhen")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                live_processes: agent
+                    .get("robdexLiveProcesses")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_object)
+                            .map(|item| UiLiveProcessItem {
+                                process_id: item
+                                    .get("processId")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                pid: item.get("pid").and_then(Value::as_i64),
+                                process_group_id: item
+                                    .get("processGroupId")
+                                    .and_then(Value::as_i64),
+                                command: item
+                                    .get("command")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                cwd: item.get("cwd").and_then(Value::as_str).map(str::to_string),
+                                started_at: item.get("startedAt").and_then(Value::as_u64),
+                            })
+                            .filter(|item| !item.process_id.trim().is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 preview: format!("{} · {}", role.to_uppercase(), cwd),
             });
         }

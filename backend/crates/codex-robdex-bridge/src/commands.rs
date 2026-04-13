@@ -1,8 +1,7 @@
-use std::{collections::BTreeMap, env, path::{Path, PathBuf}, process::Command, time::{Duration, Instant}};
+use std::{collections::BTreeMap, env, path::{Path, PathBuf}, time::{Duration, Instant}};
 
 use anyhow::{Context, Result, bail};
 use codex_app_server_adapter::app_server_protocol::RequestId;
-use reqwest::StatusCode;
 use robdex_protocol::HookFailureNotice;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -17,12 +16,24 @@ use crate::{
     },
     models::{BridgeAgentSummary, BridgeAppStateSnapshot, BridgeInstanceSummary, PendingApproval, ThreadCachePayload},
     runtime::BridgeRuntime,
-    transforms::{prune_thread_cache_payload, resolve_role_instructions, summarize_scoped_agent_record},
+    transforms::{resolve_role_instructions, summarize_scoped_agent_record},
 };
 
 const HOOK_LIFECYCLE_STATE_KEY: &str = "robdexHookLifecycle";
 const HOOK_TELEMETRY_KEY: &str = "robdexHookTelemetry";
 const PROJECT_HOOK_TELEMETRY_KEY: &str = "robdexRecentHookTelemetry";
+const LIVE_PROCESSES_KEY: &str = "robdexLiveProcesses";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveProcessRecord {
+    pub process_id: String,
+    pub pid: i64,
+    pub process_group_id: Option<i64>,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub started_at: u64,
+}
 
 #[derive(Debug)]
 pub struct CommandOutcome {
@@ -130,7 +141,6 @@ struct ScopedContext {
 struct SenderThreadContext {
     project_path: String,
     project_cwd: String,
-    cwd: String,
     approval_policy: Option<String>,
     sandbox_mode: Option<String>,
     network_access: Option<bool>,
@@ -331,6 +341,7 @@ fn bridge_state_payload(state: &PersistedState) -> Value {
                     "ephemeral": agent.ephemeral,
                     "dynamicTools": agent.dynamic_tools,
                     "robdexHookLifecycle": agent.extras.get(HOOK_LIFECYCLE_STATE_KEY).cloned(),
+                    "robdexLiveProcesses": agent.extras.get(LIVE_PROCESSES_KEY).cloned(),
                 }),
             );
         }
@@ -1038,8 +1049,9 @@ pub async fn execute_bridge_command(
         "commandExecutionTerminate" => {
             let thread_id = required_string(&payload, "threadId")?;
             let process_id = required_string(&payload, "processId")?;
-            let job_id = resolve_command_execution_job_id(runtime, &thread_id, &process_id).await?;
-            terminate_command_execution_job(&job_id).await?;
+            if !terminate_live_process(runtime, &thread_id, &process_id).await? {
+                bail!("No registered live process found for thread {thread_id} / processId {process_id}");
+            }
             Ok(success(json!({"type":"empty"})))
         }
         "modelList" => {
@@ -2091,11 +2103,6 @@ fn sender_thread_context(state: &PersistedState, thread_id: &str) -> Option<Send
         }
         let project_path = normalize_path(project.project_root.clone().unwrap_or_default());
         let project_cwd = normalize_path(project.cwd.clone().unwrap_or_else(|| project_path.clone()));
-        let cwd = normalize_path(
-            agent
-                .and_then(|agent| agent.cwd.clone())
-                .unwrap_or_else(|| project_cwd.clone()),
-        );
         let sandbox_mode = agent
             .and_then(|agent| agent.sandbox_mode.clone())
             .or(default_sandbox_mode.clone());
@@ -2107,7 +2114,6 @@ fn sender_thread_context(state: &PersistedState, thread_id: &str) -> Option<Send
         return Some(SenderThreadContext {
             project_path,
             project_cwd,
-            cwd,
             approval_policy: agent
                 .and_then(|agent| agent.approval_policy.clone())
                 .or(default_approval_policy.clone()),
@@ -2264,75 +2270,6 @@ fn required_request_id(payload: &Value, field: &str) -> Result<RequestId> {
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("Missing {field}"))?;
     Ok(serde_json::from_value(value)?)
-}
-
-async fn resolve_command_execution_job_id(
-    runtime: &BridgeRuntime,
-    thread_id: &str,
-    process_id: &str,
-) -> Result<String> {
-    let snapshot = runtime.snapshot().await?;
-    let messages = snapshot
-        .thread_cache
-        .message_cache_by_thread_id
-        .get(thread_id)
-        .ok_or_else(|| anyhow::anyhow!("No cached messages for thread {thread_id}"))?;
-    let command_message = messages
-        .iter()
-        .rev()
-        .find(|message| {
-            message
-                .tool_metadata
-                .as_ref()
-                .map(|metadata| {
-                    metadata.kind == "commandExecution"
-                        && metadata.process_id.as_deref() == Some(process_id)
-                })
-                .unwrap_or(false)
-        })
-        .ok_or_else(|| anyhow::anyhow!("No command execution found for thread {thread_id} / processId {process_id}"))?;
-    command_message
-        .tool_metadata
-        .as_ref()
-        .and_then(|metadata| metadata.output.as_deref())
-        .and_then(extract_job_id)
-        .or_else(|| extract_job_id(&command_message.text))
-        .ok_or_else(|| anyhow::anyhow!("No launch-job job_id found for command execution {process_id}"))
-}
-
-fn extract_job_id(text: &str) -> Option<String> {
-    let marker = "job_id:";
-    let index = text.find(marker)?;
-    let suffix = &text[index + marker.len()..];
-    let token = suffix.trim_start().split_whitespace().next().unwrap_or("");
-    let normalized =
-        token.trim_matches(|char: char| !(char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-'));
-    looks_like_job_id(normalized).then(|| normalized.to_string())
-}
-
-fn looks_like_job_id(value: &str) -> bool {
-    let is_numeric_slot = !value.is_empty()
-        && value.len() <= 3
-        && value.chars().all(|char| char.is_ascii_digit())
-        && value.parse::<u16>().map(|job_id| job_id < 1000).unwrap_or(false);
-    let is_legacy_job_id = value.len() >= 8
-        && value
-            .chars()
-            .all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-');
-    is_numeric_slot || is_legacy_job_id
-}
-
-async fn terminate_command_execution_job(job_id: &str) -> Result<()> {
-    let url = format!("http://127.0.0.1:8772/jobs/{job_id}/terminate");
-    let response = reqwest::Client::new().post(&url).send().await?;
-    if response.status().is_success() {
-        return Ok(());
-    }
-    if response.status() == StatusCode::NOT_FOUND {
-        return Ok(());
-    }
-    let body = response.text().await.unwrap_or_default();
-    bail!("command_execution terminate failed for job_id {job_id}: {body}")
 }
 
 fn sender_display_name_for_thread(state: &PersistedState, thread_id: Option<&str>) -> Option<String> {
@@ -2495,30 +2432,6 @@ fn tracked_sandbox_mode_for_thread(state: &PersistedState, thread_id: &str) -> O
         }
     }
     default_sandbox_mode
-}
-
-fn tracked_network_access_for_thread(state: &PersistedState, thread_id: &str) -> Option<bool> {
-    let default_network_access = state.global_configs.get("networkAccess").and_then(Value::as_bool);
-    for project in state.projects.values() {
-        if let Some(agent) = project.agents.get(thread_id) {
-            let sandbox_mode = agent
-                .sandbox_mode
-                .clone()
-                .or_else(|| {
-                    state
-                        .global_configs
-                        .get("sandboxMode")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                });
-            return effective_network_access_for_sandbox(
-                sandbox_mode.as_deref(),
-                agent.network_access,
-                default_network_access,
-            );
-        }
-    }
-    default_network_access
 }
 
 fn tracked_model_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
@@ -3024,7 +2937,7 @@ async fn wait_for_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<Brid
 
 async fn close_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeAgentSummary> {
     let thread_id = required_string(payload, "agentId")?;
-    let mut state = parse_state(&runtime.state_document_value().await);
+    let state = parse_state(&runtime.state_document_value().await);
     let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
     let mut agent = synthesized_agent_for_thread(
         &state,
@@ -3049,18 +2962,6 @@ fn synthesized_agent_for_thread(
         .iter()
         .find(|record| record.thread_id == thread_id)
         .map(|record| summarize_scoped_agent_record(record, instance_id))
-}
-
-fn remove_tracked_thread(state: &mut PersistedState, thread_id: &str) {
-    for project in state.projects.values_mut() {
-        if project.agents.remove(thread_id).is_some() {
-            if project.orchestrator_thread_id.as_deref() == Some(thread_id) {
-                project.orchestrator_thread_id = None;
-            }
-            project.updated_at = Some(unix_now());
-        }
-    }
-    state.updated_at = Some(unix_now());
 }
 
 fn resolve_scoped_recipient(
@@ -3167,6 +3068,22 @@ fn persisted_agent_hook_state(state: &PersistedState, thread_id: &str) -> Option
         .and_then(|agent| agent.extras.get(HOOK_LIFECYCLE_STATE_KEY).cloned())
 }
 
+fn persisted_live_processes(state: &PersistedState, thread_id: &str) -> Vec<LiveProcessRecord> {
+    agent_state_for_thread(state, thread_id)
+        .and_then(|agent| agent.extras.get(LIVE_PROCESSES_KEY).cloned())
+        .and_then(|value| serde_json::from_value::<Vec<LiveProcessRecord>>(value).ok())
+        .unwrap_or_default()
+}
+
+fn persist_live_processes(state: &mut PersistedState, thread_id: &str, processes: &[LiveProcessRecord]) {
+    if let Some(agent) = agent_state_for_thread_mut(state, thread_id) {
+        agent.extras.insert(
+            LIVE_PROCESSES_KEY.to_string(),
+            serde_json::to_value(processes).unwrap_or_else(|_| Value::Array(Vec::new())),
+        );
+    }
+}
+
 fn persist_agent_hook_state(state: &mut PersistedState, thread_id: &str, hook_result: &HookResult) {
     if let Some(agent) = agent_state_for_thread_mut(state, thread_id) {
         agent.extras.insert(
@@ -3245,6 +3162,83 @@ fn hook_failure_notice(
         status: telemetry.status.clone(),
         detail: telemetry.detail.clone().unwrap_or_default(),
     }
+}
+
+pub(crate) async fn register_live_process(
+    runtime: &BridgeRuntime,
+    thread_id: &str,
+    process: LiveProcessRecord,
+) -> Result<()> {
+    let _guard = runtime.lock_state_mutation().await;
+    let mut state = parse_state(&runtime.state_document_value().await);
+    if agent_state_for_thread(&state, thread_id).is_none() {
+        bail!("Unknown thread `{thread_id}`");
+    }
+    let mut processes = persisted_live_processes(&state, thread_id);
+    processes.retain(|entry| entry.process_id != process.process_id);
+    processes.push(process);
+    processes.sort_by_key(|entry| entry.started_at);
+    persist_live_processes(&mut state, thread_id, &processes);
+    state.updated_at = Some(unix_now());
+    persist_state(runtime, &state).await?;
+    Ok(())
+}
+
+pub(crate) async fn complete_live_process(
+    runtime: &BridgeRuntime,
+    thread_id: &str,
+    process_id: &str,
+) -> Result<()> {
+    let _guard = runtime.lock_state_mutation().await;
+    let mut state = parse_state(&runtime.state_document_value().await);
+    if agent_state_for_thread(&state, thread_id).is_none() {
+        return Ok(());
+    }
+    let mut processes = persisted_live_processes(&state, thread_id);
+    let before = processes.len();
+    processes.retain(|entry| entry.process_id != process_id);
+    if processes.len() == before {
+        return Ok(());
+    }
+    persist_live_processes(&mut state, thread_id, &processes);
+    state.updated_at = Some(unix_now());
+    persist_state(runtime, &state).await?;
+    Ok(())
+}
+
+async fn terminate_live_process(
+    runtime: &BridgeRuntime,
+    thread_id: &str,
+    process_id: &str,
+) -> Result<bool> {
+    let state = parse_state(&runtime.state_document_value().await);
+    let processes = persisted_live_processes(&state, thread_id);
+    let Some(process) = processes.iter().find(|entry| entry.process_id == process_id) else {
+        return Ok(false);
+    };
+
+    let target = process
+        .process_group_id
+        .filter(|pgid| *pgid > 0)
+        .map(|pgid| -(pgid as libc::pid_t))
+        .unwrap_or(process.pid as libc::pid_t);
+    let rc = unsafe { libc::kill(target, libc::SIGTERM) };
+    if rc == 0 {
+        return Ok(true);
+    }
+
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        complete_live_process(runtime, thread_id, process_id).await?;
+        return Ok(true);
+    }
+
+    Err(error).with_context(|| {
+        format!(
+            "failed to terminate process {} (pid {}, pgid {:?}) for thread {thread_id}",
+            process.process_id, process.pid, process.process_group_id
+        )
+    })
 }
 
 fn worker_issue_number(state: &PersistedState, thread_id: &str) -> Option<u64> {
@@ -4306,7 +4300,7 @@ fn uuid() -> String {
     )
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_secs())
@@ -4465,13 +4459,6 @@ mod tests {
         assert_eq!(file.get("content").and_then(Value::as_str), Some("abcd"));
         assert_eq!(file.get("isTruncated").and_then(Value::as_bool), Some(true));
         assert_eq!(file.get("totalBytes").and_then(Value::as_u64), Some(6));
-    }
-
-    #[test]
-    fn looks_like_job_id_accepts_launch_job_ids() {
-        assert!(looks_like_job_id("12345678-abcd-1234-abcd-1234567890ab"));
-        assert!(looks_like_job_id("123"));
-        assert!(!looks_like_job_id("PID1234"));
     }
 
     fn sample_settings(root: &TempDir, app_server_url: String) -> BridgeSettings {
@@ -4917,6 +4904,90 @@ mod tests {
         assert_eq!(notice.project_id, "project-alpha");
         assert_eq!(notice.thread_id.as_deref(), Some("thread-1"));
         assert_eq!(notice.detail, "");
+    }
+
+    #[test]
+    fn persist_live_processes_round_trips_records() {
+        let mut state = sample_state();
+        let processes = vec![
+            LiveProcessRecord {
+                process_id: "2001".to_string(),
+                pid: 2001,
+                process_group_id: None,
+                command: "sleep 30".to_string(),
+                cwd: Some("/alpha".to_string()),
+                started_at: 10,
+            },
+            LiveProcessRecord {
+                process_id: "2002".to_string(),
+                pid: 2002,
+                process_group_id: None,
+                command: "cargo check".to_string(),
+                cwd: Some("/alpha".to_string()),
+                started_at: 20,
+            },
+        ];
+
+        persist_live_processes(&mut state, "worker-a", &processes);
+
+        assert_eq!(persisted_live_processes(&state, "worker-a"), processes);
+    }
+
+    #[tokio::test]
+    async fn register_and_complete_live_process_updates_persisted_state() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:9".to_string()))
+            .await
+            .expect("runtime");
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "id": "project-alpha",
+                        "name": "Alpha",
+                        "projectRoot": "/alpha",
+                        "cwd": "/alpha",
+                        "agents": {
+                            "worker-a": {
+                                "displayName": "Worker A",
+                                "role": "worker",
+                                "projectRoot": "/alpha",
+                                "cwd": "/alpha"
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        register_live_process(
+            &runtime,
+            "worker-a",
+            LiveProcessRecord {
+                process_id: "3001".to_string(),
+                pid: 3001,
+                process_group_id: None,
+                command: "sleep 30".to_string(),
+                cwd: Some("/alpha".to_string()),
+                started_at: 30,
+            },
+        )
+        .await
+        .expect("register live process");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let processes = persisted_live_processes(&state, "worker-a");
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].process_id, "3001");
+        assert_eq!(processes[0].command, "sleep 30");
+
+        complete_live_process(&runtime, "worker-a", "3001")
+            .await
+            .expect("complete live process");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        assert!(persisted_live_processes(&state, "worker-a").is_empty());
     }
 
     #[tokio::test]

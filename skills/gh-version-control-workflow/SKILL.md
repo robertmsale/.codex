@@ -1,25 +1,22 @@
 ---
 name: gh-version-control-workflow
-description: Script-first worktree/branch/PR workflow using local scripts under `scripts/` plus direct `git`/`gh`. Use dedicated worktrees and PRs as the delivery units. Working-code changes require review. [skill-hash:8ac43d1]
+description: Script-first worktree/branch/PR workflow using local scripts under `scripts/` plus direct `git`/`gh`. Use this when you need the sanctioned mutating git and GitHub workflow tools. [skill-hash:8ac43d1]
 ---
 
 # GH Version Control Workflow
 
-Use this workflow for branch/worktree/PR delivery.
+Use this skill when you need the sanctioned wrappers for mutating git or GitHub operations.
 
-## Required Rules
+## What This Skill Covers
 
-- Use dedicated worktrees for implementation.
-- Never commit on integration branches (`main`, `master`, etc.).
-- Use script wrappers in this skill for git mutations.
-- Merge PRs with squash.
-- `git-merge-worktree` is the authoritative merge-and-cleanup path for worktree branches.
-- Do not use raw `gh pr merge --delete-branch` for linked-worktree branches; it does not own local worktree cleanup, prune, and branch deletion safely.
-- Request review before publish for working-code changes.
-- Non-working-code docs, policy text, and comment-only edits may skip request-review when there is no runtime or security impact.
-- Use the shared `~/.codex` skill script paths shown here. Do not swap them for worktree-local `.codex/...` wrapper paths unless a project-local skill explicitly requires a repo-local wrapper.
+- create or clean up managed worktrees
+- stage, unstage, commit, sync, publish, and merge through sanctioned wrappers
+- use raw `git` directly for read-only inspection commands
+- use `request-review` before publish when the current project/operator workflow requires review
 
-## Core Scripts
+Use the shared `~/.codex` skill script paths shown here unless a project-local skill explicitly says otherwise.
+
+## Mutating Commands
 
 - Create worktree:
   - `git-worktree-create <repo_path> <base_branch> <branch_name> <worktree_name>`
@@ -41,22 +38,8 @@ Use this workflow for branch/worktree/PR delivery.
   - `git-worktree-cleanup <worktree_path> [integration_branch]`
   - cleanup refuses the checked-out base repo and only operates on dedicated managed worktrees under `.worktrees/`
 
-When these scripts need bridge-backed gitops, they transparently forward to the host bridge at `http://127.0.0.1:8765`.
+## Recovery Scripts
 
-## Visibility And Recovery Scripts
-
-- Status:
-  - `git-status <repo_or_worktree_path>`
-- Branch list:
-  - `git-branch-list <repo_or_worktree_path> [--local-only]`
-- Diff:
-  - `git-diff <repo_or_worktree_path> [ref] [pathspec]`
-- Show object:
-  - `git-show <repo_or_worktree_path> <object>`
-- Resolve ref:
-  - `git-rev-parse <repo_or_worktree_path> [ref]`
-- Merge base:
-  - `git-merge-base <repo_or_worktree_path> <left> <right>`
 - Stage specific paths:
   - `git-stage-paths <repo_or_worktree_path> <path> [path...]`
 - Unstage specific paths:
@@ -64,25 +47,25 @@ When these scripts need bridge-backed gitops, they transparently forward to the 
 - Abort in-progress rebase:
   - `git-rebase-abort <repo_or_worktree_path>`
 
-## Review Requirement
+Read-only `git` commands such as `git status`, `git branch`, `git diff`, `git show`, `git rev-parse`, and `git merge-base` are intentionally not wrapped. Use raw `git` directly for inspection.
 
-- Run request review via:
+## Review
+
+- Run request review with:
   - `request-review "<commit message>"`
-- `git-publish-worktree` refuses when `review.log` is missing.
+- `git-publish-worktree` checks for `review.log`.
 
-## Delivery Steps
+## Typical Sequence
 
 1. Create a worktree with `git-worktree-create`.
 2. Implement in that worktree.
 3. Commit with `git-commit`.
-4. Run `request-review` when review is required.
+4. Run `request-review` when review is part of the current workflow.
 5. Publish with `git-publish-worktree`.
 6. Merge and clean up with `git-merge-worktree`.
 
 ## Guardrails
 
-- One worker, one worktree, one branch, one PR.
-- Do not improvise alternate merge or cleanup paths.
-- Sanctioned mutating workflow scripts refuse the checked-out base repo; use a dedicated path under `.worktrees/`.
-- If publish, review, or cleanup state is unclear, inspect the real state and continue with the canonical script instead of inventing a new flow.
-- On protected integration branches, only additive mutations and abort-style recovery are allowed.
+- Sanctioned mutating workflow scripts refuse the checked-out base repo.
+- `git-merge-worktree` owns merge plus worktree cleanup for managed worktree branches.
+- If publish, review, or cleanup state is unclear, inspect the real state and continue with the sanctioned script instead of inventing a new path.

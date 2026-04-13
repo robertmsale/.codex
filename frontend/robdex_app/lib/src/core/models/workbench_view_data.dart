@@ -7,6 +7,7 @@ class WorkbenchViewData {
     required this.threads,
     required this.availableModels,
     required this.threadGroups,
+    required this.liveProcesses,
     required this.chatEntries,
     required this.contextWindowRemainingPercent,
     required this.workspaceFiles,
@@ -23,6 +24,7 @@ class WorkbenchViewData {
   final List<ThreadItem> threads;
   final List<ModelItem> availableModels;
   final List<ThreadGroupItem> threadGroups;
+  final List<LiveProcessItem> liveProcesses;
   final List<ChatEntry> chatEntries;
   final int? contextWindowRemainingPercent;
   final List<WorkspaceFile> workspaceFiles;
@@ -52,6 +54,7 @@ class WorkbenchViewData {
       threads: decodeList('threads', ThreadItem.fromJson),
       availableModels: decodeList('availableModels', ModelItem.fromJson),
       threadGroups: decodeList('threadGroups', ThreadGroupItem.fromJson),
+      liveProcesses: decodeList('liveProcesses', LiveProcessItem.fromJson),
       chatEntries: decodeList('chatEntries', ChatEntry.fromJson),
       contextWindowRemainingPercent: json['contextWindowRemainingPercent'] as int?,
       workspaceFiles: decodeList('workspaceFiles', WorkspaceFile.fromJson),
@@ -75,6 +78,7 @@ class WorkbenchViewData {
     List<ThreadItem>? threads,
     List<ModelItem>? availableModels,
     List<ThreadGroupItem>? threadGroups,
+    List<LiveProcessItem>? liveProcesses,
     List<ChatEntry>? chatEntries,
     int? contextWindowRemainingPercent,
     List<WorkspaceFile>? workspaceFiles,
@@ -91,6 +95,7 @@ class WorkbenchViewData {
       threads: threads ?? this.threads,
       availableModels: availableModels ?? this.availableModels,
       threadGroups: threadGroups ?? this.threadGroups,
+      liveProcesses: liveProcesses ?? this.liveProcesses,
       chatEntries: chatEntries ?? this.chatEntries,
       contextWindowRemainingPercent:
           contextWindowRemainingPercent ?? this.contextWindowRemainingPercent,

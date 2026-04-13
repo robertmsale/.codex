@@ -4,10 +4,7 @@ Use this when you need code review on the current worktree branch.
 
 Required path:
 - Run `~/.codex/skills/request-review/scripts/request-review "<commit message>"`
-- Launch it with the command-execution skill/MCP.
-- Keep the returned `job_id`.
-- Wait with `command_execution_wait(job_id)`.
-- Do not poll stdin.
+- Let the wrapper run to completion.
 - Do not kill the review because it is taking a long time.
 - Do not call MCP review tools or alternate legacy review commands.
 - Use the shared `~/.codex` script path unless a project skill explicitly requires a repo-local wrapper.

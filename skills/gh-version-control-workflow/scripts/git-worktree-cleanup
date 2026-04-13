@@ -21,10 +21,6 @@ if [[ ! -e "$worktree_path" ]]; then
   exit 0
 fi
 
-args=("worktree_path=$worktree_path")
-if [[ -n "$integration_branch_arg" ]]; then
-  args+=("integration_branch=$integration_branch_arg")
-fi
-cleanup_output="$(http_gitops_op git_worktree_cleanup "${args[@]}")"
+cleanup_output="$(git_worktree_cleanup_cmd "$worktree_path" "${integration_branch_arg:-}")"
 remove_shadow_worktree_path "$worktree_path"
 printf '%s\n' "$cleanup_output"

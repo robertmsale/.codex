@@ -478,23 +478,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-command-execution-http"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "codex-backend-core",
- "libc",
- "rmcp",
- "serde",
- "serde_json",
- "tokio",
- "tower-http",
- "tracing",
-]
-
-[[package]]
 name = "codex-command-parser-client"
 version = "0.1.0"
 dependencies = [
@@ -527,19 +510,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "codex-flutter-drive-http"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "codex-backend-core",
- "tokio",
- "tower-http",
- "tracing",
 ]
 
 [[package]]
@@ -580,19 +550,6 @@ dependencies = [
  "thiserror 2.0.18",
  "ts-rs",
  "walkdir",
-]
-
-[[package]]
-name = "codex-gitops-http"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "codex-backend-core",
- "tokio",
- "tower-http",
- "tracing",
 ]
 
 [[package]]
@@ -667,6 +624,7 @@ dependencies = [
  "codex-app-server-adapter",
  "codex-backend-core",
  "futures-util",
+ "libc",
  "reqwest",
  "robdex-protocol",
  "serde",
@@ -2772,29 +2730,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1bef41ebc9ebed2c1b1d90203e9d1756091e8a00bbc3107676151f39868ca0ee"
 dependencies = [
  "async-trait",
- "axum",
  "base64",
- "bytes",
  "chrono",
  "futures",
- "http",
- "http-body",
- "http-body-util",
  "pastey",
  "pin-project-lite",
- "rand 0.9.2",
  "rmcp-macros",
  "schemars 1.2.1",
  "serde",
  "serde_json",
- "sse-stream",
  "thiserror 2.0.18",
  "tokio",
- "tokio-stream",
  "tokio-util",
- "tower-service",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -3380,19 +3328,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "sse-stream"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb4dc4d33c68ec1f27d386b5610a351922656e1fdf5c05bbaad930cd1519479a"
-dependencies = [
- "bytes",
- "futures-util",
- "http-body",
- "http-body-util",
- "pin-project-lite",
 ]
 
 [[package]]

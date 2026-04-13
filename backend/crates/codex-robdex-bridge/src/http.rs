@@ -24,7 +24,7 @@ use crate::{
         orchestrator_send_message, orchestrator_spawn_agent, orchestrator_thread_group_archive,
         orchestrator_thread_group_create, orchestrator_thread_group_delete, orchestrator_thread_group_move_thread,
         orchestrator_thread_group_update, orchestrator_thread_groups, orchestrator_threads,
-        orchestrator_warm_handoff,
+        orchestrator_warm_handoff, register_live_process, complete_live_process, LiveProcessRecord,
         orchestrator_update_worker_metadata, orchestrator_whoami,
     },
     models::{
@@ -55,6 +55,8 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/threads/{thread_id}/metadata", post(thread_metadata_update_http))
         .route("/threads/{thread_id}/compact", post(thread_compact_http))
         .route("/threads/{thread_id}/commands/terminate", post(thread_command_terminate_http))
+        .route("/threads/{thread_id}/processes/register", post(thread_process_register_http))
+        .route("/threads/{thread_id}/processes/{process_id}/complete", post(thread_process_complete_http))
         .route("/threads/{thread_id}/running-state", post(thread_running_state_http))
         .route("/threads/{thread_id}/interrupt", post(thread_interrupt_http))
         .route("/mcp/refresh", post(mcp_refresh_http))
@@ -532,6 +534,57 @@ async fn thread_command_terminate_http(
     .await
     {
         Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisterLiveProcessRequest {
+    pid: i64,
+    process_group_id: Option<i64>,
+    command: String,
+    cwd: Option<String>,
+    started_at: Option<u64>,
+}
+
+async fn thread_process_register_http(
+    Path(thread_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<RegisterLiveProcessRequest>,
+) -> impl IntoResponse {
+    let process = LiveProcessRecord {
+        process_id: payload.pid.to_string(),
+        pid: payload.pid,
+        process_group_id: payload.process_group_id,
+        command: payload.command,
+        cwd: payload.cwd,
+        started_at: payload.started_at.unwrap_or_else(crate::commands::unix_now),
+    };
+    match register_live_process(&runtime, &thread_id, process).await {
+        Ok(_) => {
+            let state = runtime.state_document_value().await;
+            runtime
+                .push_event(crate::models::BridgeEvent::AppStateSnapshot { state })
+                .await;
+            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+        }
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn thread_process_complete_http(
+    Path((thread_id, process_id)): Path<(String, String)>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+) -> impl IntoResponse {
+    match complete_live_process(&runtime, &thread_id, &process_id).await {
+        Ok(_) => {
+            let state = runtime.state_document_value().await;
+            runtime
+                .push_event(crate::models::BridgeEvent::AppStateSnapshot { state })
+                .await;
+            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+        }
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
     }
 }
@@ -1140,7 +1193,7 @@ enum WorkbenchOutboundEnvelope {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "camelCase")]
 enum InboundEnvelope {
-    Hello(Value),
+    Hello(()),
     Command(InboundCommand),
 }
 

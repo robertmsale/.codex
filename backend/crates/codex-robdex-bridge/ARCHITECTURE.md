@@ -10,6 +10,7 @@ This document is the canonical bridge architecture reference for:
 - HTTP and event surfaces
 - integration boundaries with external services
 - planned project hook system for agent lifecycle automation
+- live process tracking for shell-buffered command termination
 
 ## Purpose
 
@@ -101,6 +102,8 @@ Current important persisted concerns include:
 - thread message cache
 - running thread ids
 - context window metadata
+- hook lifecycle metadata and hook telemetry
+- shell-reported live process registry per thread
 
 ## Event Surfaces
 
@@ -115,6 +118,7 @@ Current bridge event model includes:
 - connection status changes
 - app state snapshots
 - thread message changes
+- hook failure notices
 
 The frontend workbench is built from:
 
@@ -138,6 +142,7 @@ Major route groups:
   - `/projects`
   - `/threads`
   - thread interrupt / terminate / running-state routes
+  - thread live-process register / complete routes
 - orchestrator control
   - worker spawn
   - warm handoff
@@ -155,8 +160,6 @@ The bridge currently talks to:
 
 - Codex app-server
   - primary upstream transport target
-- command-execution HTTP service
-  - used for command termination against numeric job ids
 - codex-qa-harness
   - currently summarized through a lightweight health/projects proxy route
 
@@ -172,8 +175,61 @@ Rules:
 - warm handoff backend state is bridge-owned
 - tracked thread pruning is bridge-owned when app-server resumes dead rollouts
 - command execution termination is bridge-owned from the Robdex side
+- shell-buffered local command termination is bridge-owned through a thread PID registry
 - state mutations should remain serialized and persisted deliberately
 - direct app-server fetches should stay conservative
+
+## Live Process Tracking
+
+The current shell model buffers command output until completion, which means the
+GUI cannot infer a killable OS process from streamed command rows alone.
+
+To support terminate in the buffered shell model, the bridge now owns a
+lightweight live-process registry.
+
+### Source Of Truth
+
+The shell wrapper reports command lifecycle to the bridge with:
+
+- thread id
+- pid
+- process group id
+- command text
+- cwd
+- started-at timestamp
+
+Current routes:
+
+- `POST /threads/{thread_id}/processes/register`
+- `POST /threads/{thread_id}/processes/{process_id}/complete`
+
+The bridge persists those records under thread metadata as
+`robdexLiveProcesses`.
+
+### UI Reduction
+
+The frontend reduces `robdexLiveProcesses` into synthetic in-progress
+`commandExecution` rows for the selected thread. This keeps the existing
+terminate control usable without depending on streamed stdout/stderr.
+
+### Termination Model
+
+`commandExecutionTerminate` now resolves only through the thread live-process
+registry. Termination prefers the reported command-local process group and
+falls back to PID-only signaling if no process group was reported.
+
+Each shim-launched command runs in its own isolated process group. Process
+groups are not shared across an entire `CODEX_THREAD_ID`, because that would
+make one terminate action capable of killing unrelated later commands from the
+same thread.
+
+### Constraints
+
+- registration is best-effort and thread-scoped
+- completion is best-effort and idempotent
+- unknown-thread registration is rejected
+- missing-process completion is ignored
+- stale live-process entries are removed when terminate sees `ESRCH`
 
 ## Planned Project Hook System
 

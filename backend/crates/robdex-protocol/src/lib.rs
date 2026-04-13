@@ -227,12 +227,24 @@ pub struct UiModelItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct UiLiveProcessItem {
+    pub process_id: String,
+    pub pid: Option<i64>,
+    pub process_group_id: Option<i64>,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub started_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkbenchViewData {
     pub projects: Vec<UiProjectItem>,
     pub selection: UiWorkspaceSelection,
     pub threads: Vec<UiThreadItem>,
     pub available_models: Vec<UiModelItem>,
     pub thread_groups: Vec<UiThreadGroupItem>,
+    pub live_processes: Vec<UiLiveProcessItem>,
     pub chat_entries: Vec<UiChatEntry>,
     pub context_window_remaining_percent: Option<u32>,
     pub workspace_files: Vec<UiWorkspaceFile>,

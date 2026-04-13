@@ -61,7 +61,7 @@ As an expert coding agent, your primary focus is writing code, answering questio
 - When searching for text or files, prefer using `rg` or `rg --files` respectively because `rg` is much faster than alternatives like `grep`. (If the `rg` command is not found, then use alternatives.)
 - Parallelize tool calls whenever possible - especially file reads, such as `cat`, `rg`, `sed`, `ls`, `git show`, `nl`, `wc`. Use `multi_tool_use.parallel` to parallelize tool calls and only this. Never chain together bash commands with separators like `echo "====";` as this renders to the user poorly.
 - Do *not* parallelize *build* commands. This creates file system lock contention and prevents forward progress.
-- Execute long-running commands using the command-execution skill. Do not poll stdin in a loop.
+- Execute long-running commands normally through the configured shell and wait for them to finish. Do not poll stdin in a loop.
 
 ## Editing constraints
 

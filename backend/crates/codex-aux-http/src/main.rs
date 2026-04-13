@@ -124,6 +124,11 @@ impl CommandParserRuntime {
 
         let profile = self.load_profile_from_env()?;
         self.assert_profile_exists(&profile)?;
+        let live_command_parser_zsh = self
+            .config_file
+            .parent()
+            .ok_or_else(|| anyhow!("invalid config path"))?
+            .join("scripts/zsh-command-parser");
 
         let temp_dir = tempfile::Builder::new()
             .prefix("codex-aux-command-parser.")
@@ -157,6 +162,11 @@ impl CommandParserRuntime {
             .arg(temp_path)
             .arg("-p")
             .arg(profile)
+            .arg("-c")
+            .arg(format!(
+                "zsh_path=\"{}\"",
+                live_command_parser_zsh.display()
+            ))
             .arg("-c")
             .arg("web_search=\"disabled\"")
             .arg("-c")

@@ -23,27 +23,11 @@ port = 8775
 status = "planned"
 
 [[service]]
-name = "codex-gitops-http"
-crate = "codex-gitops-http"
-current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-gitops-http"
-current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-gitops-http.ini"
-port = 8765
-status = "planned"
-
-[[service]]
 name = "codex-flutter-sim-http"
 crate = "codex-flutter-sim-http"
 current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-flutter-sim-http"
 current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-flutter-sim-http.ini"
 port = 8767
-status = "planned"
-
-[[service]]
-name = "codex-flutter-drive-http"
-crate = "codex-flutter-drive-http"
-current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-flutter-drive-http"
-current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-flutter-drive-http.ini"
-port = 8768
 status = "planned"
 
 [[service]]

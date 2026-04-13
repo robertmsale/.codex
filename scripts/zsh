@@ -34,13 +34,113 @@ setup_codex_activation
 normalize_cwd_alias
 
 real_zsh="${ZSH_SHIM_REAL_ZSH:-/bin/zsh}"
+local_child_pid=""
+shim_process_completed=0
+
+shim_disable_postprocess() {
+  [[ "${IS_USING_COMMAND_PARSER:-}" == "true" ]] && return 0
+  [[ "${CODEX_COMMAND_PARSER_ACTIVE:-}" == "1" ]] && return 0
+  [[ "${CODEX_DISABLE_AUTO_COMMAND_PARSER:-}" == "1" ]] && return 0
+  return 1
+}
 
 cleanup_shim_files() {
   rm -f "${shim_stdout_file:-}" "${shim_stderr_file:-}"
   rm -f "${PRIVILEGED_EXEC_STDOUT_FILE:-}" "${PRIVILEGED_EXEC_STDERR_FILE:-}"
 }
 
-trap 'cleanup_shim_files' EXIT
+shim_mark_process_complete_once() {
+  [[ "$shim_process_completed" == "1" ]] && return 0
+  [[ -n "${local_child_pid:-}" ]] || return 0
+  shim_live_process_complete "$local_child_pid"
+  shim_process_completed=1
+}
+
+shim_handle_signal_exit() {
+  local signal_name="${1:-TERM}"
+  if [[ -n "${local_child_pid:-}" ]]; then
+    kill "-$signal_name" -- "-${local_child_pid}" >/dev/null 2>&1 || true
+  fi
+  shim_mark_process_complete_once
+  cleanup_shim_files
+  trap - EXIT TERM INT HUP QUIT
+  case "$signal_name" in
+    INT) exit 130 ;;
+    HUP) exit 129 ;;
+    QUIT) exit 131 ;;
+    *) exit 143 ;;
+  esac
+}
+
+shim_live_process_can_report() {
+  [[ -n "${CODEX_THREAD_ID:-}" ]] || return 1
+  command -v curl >/dev/null 2>&1 || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  return 0
+}
+
+shim_live_process_register() {
+  local pid="${1:-}"
+  local command_text="${2:-}"
+  [[ -n "$pid" ]] || return 0
+  shim_live_process_can_report || return 0
+  local bridge_base_url="${ROBDEX_BRIDGE_BASE_URL:-http://127.0.0.1:42080}"
+  local payload=""
+  payload="$(python3 - "$pid" "$command_text" "$PWD" <<'PY'
+import json
+import os
+import sys
+import time
+
+pid = int(sys.argv[1])
+command = sys.argv[2]
+cwd = sys.argv[3]
+try:
+    process_group_id = os.getpgid(pid)
+except OSError:
+    process_group_id = None
+print(json.dumps({
+    "pid": pid,
+    "processGroupId": process_group_id,
+    "command": command,
+    "cwd": cwd,
+    "startedAt": int(time.time()),
+}, separators=(",", ":")))
+PY
+)"
+  curl -fsS \
+    -H 'Content-Type: application/json' \
+    -X POST \
+    "${bridge_base_url%/}/threads/${CODEX_THREAD_ID}/processes/register" \
+    -d "$payload" >/dev/null 2>&1 || true
+}
+
+shim_live_process_complete() {
+  local pid="${1:-}"
+  [[ -n "$pid" ]] || return 0
+  shim_live_process_can_report || return 0
+  local bridge_base_url="${ROBDEX_BRIDGE_BASE_URL:-http://127.0.0.1:42080}"
+  curl -fsS \
+    -X POST \
+    "${bridge_base_url%/}/threads/${CODEX_THREAD_ID}/processes/${pid}/complete" \
+    >/dev/null 2>&1 || true
+}
+
+shim_spawn_isolated_command() {
+  PATH="$PATH" python3 -c '
+import os
+import sys
+
+os.setsid()
+os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
+' "$real_zsh" "${local_command[@]:1}"
+}
+
+trap 'shim_mark_process_complete_once; cleanup_shim_files' EXIT
+trap 'shim_handle_signal_exit TERM' TERM
+trap 'shim_handle_signal_exit INT' INT
+trap 'shim_handle_signal_exit HUP' HUP
+trap 'shim_handle_signal_exit QUIT' QUIT
 
 if [[ $# -eq 0 ]]; then
   exec "$real_zsh"
@@ -73,6 +173,10 @@ prefixed_command="$(passthru_activation_prefix)
 ${command_text}"
 local_command=("$real_zsh" "$mode" "$prefixed_command" "$@")
 
+if shim_disable_postprocess; then
+  exec "$real_zsh" "${local_command[@]:1}"
+fi
+
 run_via_privileged_exec_if_allowed "${requested_command[@]}"
 case "$PRIVILEGED_EXEC_OUTCOME" in
   handled)
@@ -92,9 +196,11 @@ shim_stdout_file="$(mktemp "${TMPDIR:-/tmp}/codex-shim-zsh-stdout.XXXXXX")"
 shim_stderr_file="$(mktemp "${TMPDIR:-/tmp}/codex-shim-zsh-stderr.XXXXXX")"
 
 local_exit_code=0
-if ! PATH="$PATH" "$real_zsh" "${local_command[@]:1}" >"$shim_stdout_file" 2>"$shim_stderr_file"; then
-  local_exit_code=$?
-fi
+shim_spawn_isolated_command >"$shim_stdout_file" 2>"$shim_stderr_file" &
+local_child_pid=$!
+shim_live_process_register "$local_child_pid" "$command_text"
+wait "$local_child_pid" || local_exit_code=$?
+shim_mark_process_complete_once
 
 command_postprocess_output "$shim_stdout_file" "$shim_stderr_file" "$local_exit_code" "${requested_command[@]}"
 exit $?

@@ -247,6 +247,45 @@ class ModelItem {
   }
 }
 
+class LiveProcessItem {
+  const LiveProcessItem({
+    required this.processId,
+    required this.pid,
+    required this.processGroupId,
+    required this.command,
+    required this.cwd,
+    required this.startedAt,
+  });
+
+  final String processId;
+  final int? pid;
+  final int? processGroupId;
+  final String command;
+  final String? cwd;
+  final int? startedAt;
+
+  factory LiveProcessItem.fromJson(Map<String, dynamic> json) {
+    int? parseInt(dynamic value) {
+      if (value is int) {
+        return value;
+      }
+      if (value is String) {
+        return int.tryParse(value);
+      }
+      return null;
+    }
+
+    return LiveProcessItem(
+      processId: json['processId'] as String? ?? '',
+      pid: parseInt(json['pid']),
+      processGroupId: parseInt(json['processGroupId']),
+      command: json['command'] as String? ?? '',
+      cwd: json['cwd'] as String?,
+      startedAt: parseInt(json['startedAt']),
+    );
+  }
+}
+
 class ChatEntry {
   const ChatEntry({
     required this.id,

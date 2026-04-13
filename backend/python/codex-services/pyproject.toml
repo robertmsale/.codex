@@ -1,7 +1,7 @@
 [project]
-name = "codex-gitops-http"
+name = "codex-host-services"
 version = "0.1.0"
-description = "HTTP bridge that exposes guarded host-side gitops operations to synced VM worktrees"
+description = "Host-side support services for Codex Flutter and auxiliary workflows"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,9 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-codex-gitops-http = "codex_services_http.server:main"
 codex-flutter-sim-http = "codex_services_http.flutter_sim_server:main"
-codex-flutter-drive-http = "codex_services_http.flutter_drive_server:main"
 codex-flutter-http = "codex_services_http.flutter_exec_server:main"
 
 [build-system]

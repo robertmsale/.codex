@@ -170,6 +170,7 @@ const mockWorkbenchData = WorkbenchViewData(
     InspectorFact(label: 'Network', value: 'enabled'),
     InspectorFact(label: 'Selected Thread', value: 'Config Operator'),
   ],
+  liveProcesses: [],
   pendingApprovals: [],
   workerMetadata: null,
   statusHeadline: 'Rust-first Robdex shell',

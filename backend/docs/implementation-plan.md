@@ -23,12 +23,6 @@ planning and implementation review.
 - implement minimal Rust clone
 - compare responses against the Deno server
 
-### codex-gitops-http
-
-- separate bridge/path-translation logic from git operation dispatch
-- encode operation schemas instead of untyped dict payloads where possible
-- keep compatibility surface for existing workflow scripts during transition
-
 ### flutter services
 
 - isolate simulator/device/process management into library modules
@@ -40,4 +34,3 @@ planning and implementation review.
 - move canonical supervisor templates under this workspace
 - eventually add generation/validation tooling rather than hand-editing `.ini`
   files in another repo
-

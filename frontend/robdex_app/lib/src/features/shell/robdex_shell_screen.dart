@@ -299,9 +299,11 @@ class _WideShellState extends State<_WideShell> {
                 headerControls: _DesktopThreadControls(
                   selection: workbench.selection,
                   availableModels: workbench.availableModels,
+                  liveProcesses: workbench.liveProcesses,
                   pendingApprovalCount: workbench.pendingApprovals.length,
                   onOpenHistory: widget.onOpenHistory,
                   onCompactThread: widget.onCompactThread,
+                  onTerminateCommandExecution: widget.onTerminateCommandExecution,
                   onSettingsChanged: widget.onSettingsChanged,
                   onRunningStateChanged: widget.onRunningStateChanged,
                   onMore: () => _showInspectorDialog(
@@ -618,18 +620,24 @@ class _CompactShellState extends State<_CompactShell> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextButton(
+            _ProcessManagerButton(
+              liveProcesses: widget.workbench.liveProcesses,
+              onTerminateCommandExecution: widget.onTerminateCommandExecution,
+            ),
+            IconButton(
               onPressed: widget.onOpenHistory,
-              child: const Text('History'),
+              tooltip: 'History',
+              icon: const Icon(Icons.history),
             ),
             IconButton(
               icon: const Icon(Icons.compress_rounded),
               tooltip: 'Compact thread',
               onPressed: widget.onCompactThread,
             ),
-            IconButton(
-              icon: const Icon(Icons.more_horiz),
+            _HeaderIconButton(
               tooltip: 'Thread settings',
+              icon: const Icon(Icons.tune),
+              badgeCount: widget.workbench.pendingApprovals.length,
               onPressed: () => _showInspectorSheet(
                 context,
                 workbench: widget.workbench,
@@ -655,13 +663,67 @@ class _CompactShellState extends State<_CompactShell> {
   }
 }
 
+class _HeaderIconButton extends StatelessWidget {
+  const _HeaderIconButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+    this.badgeCount = 0,
+  });
+
+  final String tooltip;
+  final Widget icon;
+  final VoidCallback? onPressed;
+  final int badgeCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        IconButton(
+          onPressed: onPressed,
+          tooltip: tooltip,
+          icon: icon,
+        ),
+        if (badgeCount > 0)
+          Positioned(
+            right: 2,
+            top: 2,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.error,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+              child: Center(
+                child: Text(
+                  '$badgeCount',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onError,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 class _DesktopThreadControls extends StatelessWidget {
   const _DesktopThreadControls({
     required this.selection,
     required this.availableModels,
+    required this.liveProcesses,
     required this.pendingApprovalCount,
     required this.onOpenHistory,
     required this.onCompactThread,
+    required this.onTerminateCommandExecution,
     required this.onSettingsChanged,
     required this.onRunningStateChanged,
     required this.onMore,
@@ -669,9 +731,11 @@ class _DesktopThreadControls extends StatelessWidget {
 
   final WorkspaceSelection selection;
   final List<ModelItem> availableModels;
+  final List<LiveProcessItem> liveProcesses;
   final int pendingApprovalCount;
   final VoidCallback onOpenHistory;
   final VoidCallback onCompactThread;
+  final ValueChanged<String> onTerminateCommandExecution;
   final ValueChanged<ThreadSettingsDraft> onSettingsChanged;
   final ValueChanged<bool> onRunningStateChanged;
   final VoidCallback onMore;
@@ -842,23 +906,144 @@ class _DesktopThreadControls extends StatelessWidget {
           ],
           onChanged: (value) => onSettingsChanged(draft(approvalPolicy: value)),
         ),
-        TextButton(
+        IconButton(
           onPressed: enabled ? onOpenHistory : null,
-          child: const Text('History'),
+          tooltip: 'History',
+          icon: const Icon(Icons.history),
+        ),
+        _ProcessManagerButton(
+          liveProcesses: liveProcesses,
+          onTerminateCommandExecution: onTerminateCommandExecution,
+          enabled: enabled,
         ),
         IconButton.outlined(
           onPressed: enabled ? onCompactThread : null,
           tooltip: 'Compact thread',
           icon: const Icon(Icons.compress_rounded),
         ),
-        TextButton.icon(
+        _HeaderIconButton(
+          tooltip: 'Thread settings',
+          icon: const Icon(Icons.tune),
+          badgeCount: pendingApprovalCount,
           onPressed: enabled ? onMore : null,
-          icon: const Icon(Icons.tune, size: 16),
-          label: Text(pendingApprovalCount > 0 ? 'More · $pendingApprovalCount' : 'More'),
         ),
       ],
     );
   }
+}
+
+class _ProcessManagerButton extends StatelessWidget {
+  const _ProcessManagerButton({
+    required this.liveProcesses,
+    required this.onTerminateCommandExecution,
+    this.enabled = true,
+  });
+
+  final List<LiveProcessItem> liveProcesses;
+  final ValueChanged<String> onTerminateCommandExecution;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final count = liveProcesses.length;
+    return _HeaderIconButton(
+      tooltip: 'Processes',
+      icon: const Icon(Icons.developer_board_outlined),
+      badgeCount: count,
+      onPressed: enabled
+          ? () => _showProcessManagerSheet(
+                context,
+                liveProcesses: liveProcesses,
+                onTerminateCommandExecution: onTerminateCommandExecution,
+              )
+          : null,
+    );
+  }
+}
+
+Future<void> _showProcessManagerSheet(
+  BuildContext context, {
+  required List<LiveProcessItem> liveProcesses,
+  required ValueChanged<String> onTerminateCommandExecution,
+}) {
+  final theme = Theme.of(context);
+  return showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (context) => SafeArea(
+      child: SizedBox(
+        height: 360,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                liveProcesses.isEmpty
+                    ? 'No Active Processes'
+                    : '${liveProcesses.length} Active Process${liveProcesses.length == 1 ? '' : 'es'}',
+                style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 12),
+              if (liveProcesses.isEmpty)
+                Text(
+                  'This thread has no registered live shell processes.',
+                  style: theme.textTheme.bodyMedium,
+                )
+              else
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: liveProcesses.length,
+                    separatorBuilder: (_, _) => const Divider(height: 16),
+                    itemBuilder: (context, index) {
+                      final process = liveProcesses[index];
+                      final subtitleParts = <String>[
+                        'pid=${process.pid ?? process.processId}',
+                        if (process.processGroupId != null) 'pgid=${process.processGroupId}',
+                      ];
+                      final commandLabel = process.command.trim().isEmpty
+                          ? '(unknown command)'
+                          : process.command.trim();
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                SelectableText(
+                                  commandLabel,
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    fontFamily: 'monospace',
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  subtitleParts.join('  ·  '),
+                                  style: theme.textTheme.labelSmall,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          IconButton.outlined(
+                            onPressed: () => onTerminateCommandExecution(process.processId),
+                            tooltip: 'Terminate process',
+                            icon: const Icon(Icons.stop_circle_outlined),
+                            color: theme.colorScheme.error,
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class _CompactDropdown extends StatelessWidget {

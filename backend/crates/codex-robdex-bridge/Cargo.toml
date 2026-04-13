@@ -22,3 +22,4 @@ tracing.workspace = true
 codex-backend-core = { path = "../codex-backend-core" }
 reqwest.workspace = true
 robdex-protocol = { path = "../robdex-protocol" }
+libc = "0.2"

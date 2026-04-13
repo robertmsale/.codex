@@ -15,9 +15,7 @@ Current goal:
 Live service inventory at scaffold time:
 
 - `codex-aux-http`
-- `codex-gitops-http`
 - `codex-flutter-sim-http`
-- `codex-flutter-drive-http`
 - `codex-flutter-http`
 - `robdex-app-server`
 - `robdex-bridge-deno`
@@ -29,9 +27,7 @@ remain external until you decide to migrate them.
 
 - `crates/codex-backend-core`: shared runtime/config helpers
 - `crates/codex-aux-http`: replacement for the current Deno aux server
-- `crates/codex-gitops-http`: replacement for the current Python gitops bridge
 - `crates/codex-flutter-sim-http`: simulator broker/reservation service
-- `crates/codex-flutter-drive-http`: driver/control service
 - `crates/codex-flutter-http`: generic Flutter execution service
 - `crates/codex-supervisor`: supervisor config inventory and future management tooling
 - `python/codex-services`: backend-local Python service code for the current
@@ -47,5 +43,5 @@ for aux + Flutter broker lanes. Historical references to the old
 
 ## Next Step
 
-Finish the gitops cutover by restoring the missing `gitops_mcp` dependency or
-replacing that dependency with a backend-owned implementation.
+Keep the remaining auxiliary services moving toward the same local-script or
+Rust-owned cutover model where it reduces operational complexity.

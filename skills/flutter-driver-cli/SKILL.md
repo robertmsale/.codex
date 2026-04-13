@@ -1,65 +1,75 @@
 ---
 name: flutter-driver-cli
-description: Use this skill when you need to drive broker-managed iOS QA simulators through the local wrapper scripts. The broker owns runtime lifecycle and uses idb for UI interaction. [skill-hash:3e0d6ea]
+description: Use this skill when you need to drive a managed iOS device slot through the shared local wrappers. Use it for device lifecycle, hierarchy inspection, taps, text entry, screenshots, and scripted UI flows. [skill-hash:3e0d6ea]
 ---
 
 # Flutter Driver CLI
 
+Use this skill when a project provides a managed iOS QA/runtime device and the sanctioned way to interact with it is through the shared wrappers below.
+
 Use only these scripts:
 
 ```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim ...
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive ...
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter ...
+flutter-sim ...
+flutter-drive ...
+flutter ...
 ```
 
-`flutter-sim` talks to the broker lifecycle server.
-`flutter-drive` talks to the separate command server.
-`flutter` talks to the separate host-side Flutter execution server.
+What they do:
 
-## Rules
+- `flutter-sim`
+  - lifecycle and device-slot management
+- `flutter-drive`
+  - UI inspection and interaction against the managed runtime
+- `flutter`
+  - host-side Flutter commands routed through the sanctioned wrapper
 
-- Do not use `flutter devices`.
-- Do not use `xcrun`, `simctl`, or `osascript` for simulator management.
+## Guardrails
+
+- Use the shared wrappers instead of `xcrun`, `simctl`, `osascript`, or ad hoc `idb` invocations.
 - Do not launch the app manually.
-- Do not issue parallel commands against the same device.
-- Keep simulators in portrait or landscape. The command server resolves tap coordinates by probing the matching rotation automatically.
+- Do not issue parallel piloting commands against the same device slot.
+- Always wait for one piloting command to finish before sending the next.
+- Use `--json` only when you need raw diagnostics instead of the compact human-readable output.
 
 ## `flutter-sim`
 
-Broker lifecycle commands:
+Use `flutter-sim` when you need the managed device/runtime lifecycle surface.
+
+Commands:
 
 ```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim devices
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reserve --device-id <udid>
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reboot --device-id <udid>
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim dump-logs --device-id <udid>
+flutter-sim devices
+flutter-sim reserve --device-id <udid>
+flutter-sim reboot --device-id <udid>
+flutter-sim dump-logs --device-id <udid>
 ```
 
-Use them like this:
+What they are for:
 
-1. `devices`
-   - lists broker-known booted simulators
-2. `reserve`
-   - blocks until the runtime is ready
-   - returns API host plus login credentials
-3. `reboot`
-   - rebuilds the runtime on that simulator
-4. `dump-logs`
-   - snapshots broker, API, runtime, and driver artifacts into `/tmp/flutter-driver-screenshots/<udid>/logs`
+- `devices`
+  - lists the currently known managed device slots
+- `reserve`
+  - waits for the selected device slot to be ready and returns the reservation/runtime details
+- `reboot`
+  - rebuilds or restarts the managed runtime for that device slot
+- `dump-logs`
+  - writes broker/runtime/driver artifacts to `/tmp/flutter-driver-screenshots/<udid>/logs`
 
 ## `flutter-drive`
 
-UI interaction commands:
+Use `flutter-drive` when you need to inspect the screen or interact with it.
+
+Commands:
 
 ```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive hierarchy --device-id <udid>
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive screenshot --device-id <udid> --out current.png
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive command <name> --device-id <udid> [--input <json>] [--label <text>] [--out <file>]
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive flow --device-id <udid> --input <json-array> [--label <text>]
+flutter-drive hierarchy --device-id <udid>
+flutter-drive screenshot --device-id <udid> --out current.png
+flutter-drive command <name> --device-id <udid> [--input <json>] [--label <text>] [--out <file>]
+flutter-drive flow --device-id <udid> --input <json-array> [--label <text>]
 ```
 
-Supported practical commands:
+Common commands:
 
 - `tapOn`
 - `tapPoint`
@@ -69,20 +79,19 @@ Supported practical commands:
 - `takeScreenshot`
 - `clearField`
 
-## Typical flow
+Typical sequence:
 
 ```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim reserve --device-id <udid>
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive hierarchy --device-id <udid>
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive command tapOn --device-id <udid> --input '{"text":"Search"}'
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive command tapPoint --device-id <udid> --input '{"x":688,"y":66}'
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive command inputText --device-id <udid> --input '"query"'
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive screenshot --device-id <udid> --out result.png
+flutter-sim reserve --device-id <udid>
+flutter-drive hierarchy --device-id <udid>
+flutter-drive command tapOn --device-id <udid> --input '{"text":"Search"}'
+flutter-drive command inputText --device-id <udid> --input '"query"'
+flutter-drive screenshot --device-id <udid> --out result.png
 ```
 
 ## Hierarchy
 
-`hierarchy` prints a compact accessibility listing derived from `idb`.
+`flutter-drive hierarchy` prints a compact accessibility listing derived from the current UI tree.
 
 Each line may include:
 
@@ -96,22 +105,15 @@ Use it to:
 
 - see what is on screen
 - choose a selector for `tapOn`
-- use bounds to choose an accessibility-space point for `tapPoint`
-- verify text field contents
-- inspect the current interactable screen state
-
-Use `--json` only for raw diagnostics.
+- choose an accessibility-space point for `tapPoint`
+- verify field contents or visible state
 
 `tapOn`, `tapPoint`, and `longPressOn` already return:
 
-- a short description of what was tapped
-- the post-tap hierarchy
+- a short description of what was hit
+- the post-action hierarchy
 
-So agents usually do not need a separate `hierarchy` call immediately after tapping.
-
-`tapPoint` takes accessibility-space coordinates from the hierarchy, not raw
-`idb` coordinates. The command server applies the orientation transform
-internally.
+So you usually do not need an immediate extra `hierarchy` call after those commands.
 
 ## Text fields
 
@@ -124,21 +126,15 @@ Preferred pattern:
 To clear a field:
 
 ```sh
-/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive command clearField \
+flutter-drive command clearField \
   --device-id <udid> \
-  --input '{"text":"Search customers, locations, jobs, estimates…"}'
+  --input '{"text":"Search"}'
 ```
 
-`clearField` tries:
-
-1. focus
-2. hardware-keyboard `Cmd+A`
-3. backspace
-
-It does not use long-press or `Select All`.
+`clearField` focuses the control, attempts hardware-keyboard select-all, then deletes.
 
 ## Notes
 
-- The broker uses per-device serialization only.
-- Different devices can be driven concurrently.
-- Coordinate transforms for brokered taps and swipes are handled internally for the supported orientations.
+- The lifecycle layer serializes work per device slot.
+- Different device slots can be used independently.
+- Coordinate transforms for taps and swipes are handled inside the sanctioned wrapper.

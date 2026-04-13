@@ -16,8 +16,4 @@ fi
 worktree_path="$(normalize_mirrored_path "$1")"
 integration_branch_arg="${2:-}"
 
-args=("worktree_path=$worktree_path")
-if [[ -n "$integration_branch_arg" ]]; then
-  args+=("integration_branch=$integration_branch_arg")
-fi
-http_gitops_op qa_fastforward "${args[@]}"
+qa_fastforward_cmd "$worktree_path" "$integration_branch_arg"

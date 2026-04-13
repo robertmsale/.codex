@@ -39,7 +39,7 @@ Do not create extra docs like:
 - If the tooling is the source of truth, say that plainly and stop there.
 - If the tooling is broken, instruct the agent to report the tooling failure rather than improvise around it.
 - Do not teach the agent how to bypass the public tool surface.
-- Do not under *any circumstances* introduce timeouts in scripts. Let agents hang in perpetuity if they run a script and are stuck in `command_execution_wait`. Lost time for hanging commands can be recovered easily. An agent experiencing a timeout, and spending countless hours destroying a codebase with reckless abandon to fix a problem that doesn't exist is the undesired and forbidden path.
+- Be careful introducing timeouts in shared scripts. Prefer explicit long-running behavior unless the script has a well-understood bounded failure mode.
 - Introducing delays in scripts is OK, especially if the operator has control of it in a `.env` file.
 
 ## Writing Style

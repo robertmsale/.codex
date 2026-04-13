@@ -27,7 +27,7 @@ use crate::{
     commands::{parse_state, persist_state, prune_archived_thread_locally},
     config::BridgeSettings,
     models::{
-        BridgeApprovalResult, BridgeEvent, BridgeInfo, BridgeSnapshot, BridgeToolQuestion, EventReplayResponse,
+        BridgeEvent, BridgeInfo, BridgeSnapshot, BridgeToolQuestion, EventReplayResponse,
         MAX_EVENT_HISTORY, MAX_TRANSPORT_MESSAGES_PER_THREAD, PROTOCOL_VERSION, PendingApproval,
         PendingApprovalFileChange, PendingApprovalFileChangeKind, PendingApprovalKind, SERVER_NAME, SERVER_VERSION, SequencedEvent,
         RobdexChatMessage, ThreadCachePayload, ThreadMessagesResponse,
@@ -1597,7 +1597,7 @@ fn tracked_model_provider_for_thread_value(state: &Value, thread_id: &str) -> Op
         .map(str::to_string)
         .or_else(|| {
             tracked_project_for_thread(state, thread_id)
-                .and_then(|project| project_value_for_thread(state, thread_id, "preferredModelProvider"))
+                .and_then(|_project| project_value_for_thread(state, thread_id, "preferredModelProvider"))
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })

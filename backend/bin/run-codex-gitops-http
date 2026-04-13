@@ -1,4 +1,0 @@
-#!/bin/zsh
-set -euo pipefail
-
-exec /Users/robertsale/.codex/backend/python/codex-services/scripts/run-codex-gitops-http "$@"

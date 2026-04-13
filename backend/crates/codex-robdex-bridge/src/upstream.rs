@@ -14,7 +14,7 @@ use codex_app_server_adapter::app_server_protocol::{
 
 use crate::{
     models::{
-        BRIDGE_TRUNCATION_MARKER, MAX_MESSAGE_TEXT_CHARS, MAX_TOOL_OUTPUT_CHARS, MAX_TRANSPORT_MESSAGES_PER_THREAD,
+        BRIDGE_TRUNCATION_MARKER, MAX_MESSAGE_TEXT_CHARS, MAX_TOOL_OUTPUT_CHARS,
         MAX_TRANSPORT_THREAD_MESSAGES_BYTES, RobdexChatMessage, RobdexToolMetadata, ThreadCachePayload,
         ThreadContextWindowStatus,
     },
@@ -101,9 +101,7 @@ impl RunningStateReducer {
     ) -> UpstreamApplyResult {
         let mut changed_thread_ids = BTreeSet::new();
         let mut changed = false;
-        let mut running_changed = false;
-
-        running_changed = self.apply_running_notification(notification, thread_cache);
+        let running_changed = self.apply_running_notification(notification, thread_cache);
         changed |= running_changed;
         changed |= self.apply_message_notification(notification, thread_cache, &mut changed_thread_ids);
         changed |= self.apply_context_window_notification(notification, thread_cache, &mut changed_thread_ids);
@@ -1091,27 +1089,6 @@ fn summarize_file_change_diffs(changes: &[FileUpdateChange]) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
-    }
-}
-
-fn extract_job_id(text: &str) -> Option<String> {
-    let marker = "job_id:";
-    let index = text.find(marker)?;
-    let suffix = &text[index + marker.len()..];
-    let token = suffix
-        .trim_start()
-        .split_whitespace()
-        .next()
-        .unwrap_or("");
-    let normalized = token.trim_matches(|char: char| !(char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-'));
-    if normalized.len() >= 8
-        && normalized
-            .chars()
-            .all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-')
-    {
-        Some(normalized.to_string())
-    } else {
-        None
     }
 }
 

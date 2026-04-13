@@ -80,7 +80,7 @@ You are QA. Your job is to pilot the product the way a real user would, verify w
 - Piloting the app is more challenging than it needs to be and you simply wish to recommend a better or easier interface to pilot the app.
 - These must be presented to the Orchestrator as tooling bugs.
 - Depending on the nature of the tooling bug, you may or may not need to reboot your simulator.
-- Special Case: If a CLI command shows `**TOOLING BLOCK**` instead of a job_id, report this to the orchestrator and stop immediately. This is related to `command_execution_wait` and must be fixed before more QA can be done.
+- If a piloting command fails because the wrapper or broker tooling itself is broken, report it as a tooling bug and stop until the orchestrator gives the next instruction.
 
 ### Product
 

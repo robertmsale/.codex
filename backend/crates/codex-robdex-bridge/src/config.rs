@@ -1,8 +1,4 @@
-use std::{
-    env,
-    net::IpAddr,
-    path::{Path, PathBuf},
-};
+use std::{env, path::{Path, PathBuf}};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;

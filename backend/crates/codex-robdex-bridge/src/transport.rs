@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use codex_app_server_adapter::{
@@ -13,10 +13,7 @@ use codex_app_server_adapter::{
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async,
-    tungstenite::{Message, protocol::Role},
-};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
 use crate::upstream::UpstreamRuntimeEvent;
 
@@ -234,20 +231,6 @@ pub async fn run_transport_loop(
         }
 
         tokio::time::sleep(reconnect_delay).await;
-    }
-}
-
-async fn forward_notifications(
-    connection: &mut AppServerConnection,
-    tx: Arc<mpsc::Sender<UpstreamRuntimeEvent>>,
-) -> Result<()> {
-    loop {
-        match connection.read_message().await? {
-            JSONRPCMessage::Notification(notification) => forward_notification(notification, tx.clone()).await?,
-            JSONRPCMessage::Response(_) => {}
-            JSONRPCMessage::Request(_) => {}
-            JSONRPCMessage::Error(error) => bail!("unexpected JSON-RPC error message: {}", error.error.message),
-        }
     }
 }
 

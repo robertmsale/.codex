@@ -12,4 +12,4 @@ fi
 path="$(normalize_mirrored_path "$1")"
 remote="${2:-origin}"
 
-http_gitops_op git_fetch "repo_path=$path" "remote=$remote"
+git_fetch_cmd "$path" "$remote"

@@ -347,8 +347,8 @@ should_push_review_sha=0
 clear_review_result
 cd "$repo_root"
 
-echo "request-review: use the command-execution mcp to await review results"
-echo "request-review: do not poll stdin, do not kill the review, and do not treat a long-running cloud review as hung"
+echo "request-review: run this wrapper directly and let it wait for review results"
+echo "request-review: do not kill the review and do not treat a long-running cloud review as hung"
 
 branch_name=""
 if [[ "$bridge_review_mode" == "0" ]]; then

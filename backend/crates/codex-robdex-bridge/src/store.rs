@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::Path};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde_json::Value;

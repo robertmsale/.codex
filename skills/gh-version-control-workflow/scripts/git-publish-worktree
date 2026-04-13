@@ -34,4 +34,4 @@ if [[ ! -f "$worktree_path/review.log" ]]; then
   exit 2
 fi
 
-http_gitops_op git_publish_worktree "worktree_path=$worktree_path" "integration_branch=$base_branch"
+git_publish_worktree_cmd "$worktree_path" "$base_branch"

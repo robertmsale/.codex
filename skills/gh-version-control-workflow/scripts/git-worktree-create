@@ -18,9 +18,5 @@ base_branch="$2"
 branch_name="$3"
 worktree_name="$4"
 
-repo_abs="$(cd "$repo_path" && pwd)"
-http_gitops_op git_worktree_create \
-  "repo_path=$repo_abs" \
-  "base_branch=$base_branch" \
-  "branch_name=$branch_name" \
-  "worktree_name=$worktree_name"
+repo_abs="$(absolute_path "$repo_path")"
+git_worktree_create_cmd "$repo_abs" "$base_branch" "$branch_name" "$worktree_name"
