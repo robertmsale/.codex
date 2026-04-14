@@ -702,6 +702,7 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
                     decoration: const InputDecoration(labelText: 'Role'),
                     items: const [
                       DropdownMenuItem(value: 'worker', child: Text('worker')),
+                      DropdownMenuItem(value: 'designer', child: Text('designer')),
                       DropdownMenuItem(value: 'qa', child: Text('qa')),
                       DropdownMenuItem(value: 'operator', child: Text('operator')),
                       DropdownMenuItem(value: 'orchestrator', child: Text('orchestrator')),

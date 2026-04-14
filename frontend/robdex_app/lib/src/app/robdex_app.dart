@@ -510,6 +510,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
                       decoration: const InputDecoration(labelText: 'Role'),
                       items: const [
                         DropdownMenuItem(value: 'worker', child: Text('Worker')),
+                        DropdownMenuItem(value: 'designer', child: Text('Designer')),
                         DropdownMenuItem(value: 'qa', child: Text('QA')),
                         DropdownMenuItem(value: 'operator', child: Text('Operator')),
                         DropdownMenuItem(value: 'orchestrator', child: Text('Orchestrator')),
@@ -672,6 +673,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
     String workerReasoningEffort = project.workerDefaultReasoningEffort ?? '';
     String qaModelId = project.qaDefaultModel ?? '';
     String qaReasoningEffort = project.qaDefaultReasoningEffort ?? '';
+    String designerModelId = project.designerDefaultModel ?? '';
+    String designerReasoningEffort = project.designerDefaultReasoningEffort ?? '';
     final orchestratorDeveloperInstructionsController = TextEditingController(
       text: project.orchestratorDeveloperInstructions ?? '',
     );
@@ -680,6 +683,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
     );
     final qaDeveloperInstructionsController = TextEditingController(
       text: project.qaDeveloperInstructions ?? '',
+    );
+    final designerDeveloperInstructionsController = TextEditingController(
+      text: project.designerDeveloperInstructions ?? '',
     );
     final operatorDeveloperInstructionsController = TextEditingController(
       text: project.operatorDeveloperInstructions ?? '',
@@ -850,6 +856,20 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
                         qaDeveloperInstructionsController,
                       ),
                       const SizedBox(height: 16),
+                      Text('Designer Defaults',
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 8),
+                      modelDropdown('Model', designerModelId,
+                          (value) => setDialogState(() => designerModelId = value)),
+                      const SizedBox(height: 8),
+                      reasoningDropdown('Reasoning', designerReasoningEffort,
+                          (value) => setDialogState(() => designerReasoningEffort = value)),
+                      const SizedBox(height: 8),
+                      developerInstructionsField(
+                        'Designer',
+                        designerDeveloperInstructionsController,
+                      ),
+                      const SizedBox(height: 16),
                       Text('Operator Defaults',
                           style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
                       const SizedBox(height: 8),
@@ -890,6 +910,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
     orchestratorDeveloperInstructionsController.dispose();
     workerDeveloperInstructionsController.dispose();
     qaDeveloperInstructionsController.dispose();
+    designerDeveloperInstructionsController.dispose();
     operatorDeveloperInstructionsController.dispose();
     hiddenDeveloperInstructionsController.dispose();
 
@@ -910,11 +931,15 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
       workerReasoningEffort: workerReasoningEffort,
       qaModelId: qaModelId,
       qaReasoningEffort: qaReasoningEffort,
+      designerModelId: designerModelId,
+      designerReasoningEffort: designerReasoningEffort,
       orchestratorDeveloperInstructions:
           orchestratorDeveloperInstructionsController.text.trim(),
       workerDeveloperInstructions:
           workerDeveloperInstructionsController.text.trim(),
       qaDeveloperInstructions: qaDeveloperInstructionsController.text.trim(),
+      designerDeveloperInstructions:
+          designerDeveloperInstructionsController.text.trim(),
       operatorDeveloperInstructions:
           operatorDeveloperInstructionsController.text.trim(),
       hiddenDeveloperInstructions:

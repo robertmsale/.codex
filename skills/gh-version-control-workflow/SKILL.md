@@ -20,6 +20,8 @@ Use the shared `~/.codex` skill script paths shown here unless a project-local s
 
 - Create worktree manually only when hook-owned worker lifecycle is unavailable or an operator explicitly tells you to:
   - `git-worktree-create <repo_path> <base_branch> <branch_name> <worktree_name>`
+- Refresh an existing persistent worktree onto a fresh non-integration branch from the latest origin integration branch:
+  - `git-worktree-refresh-branch <worktree_path> <new_branch> [integration_branch]`
 - Sync worktree:
   - `git-sync-worktree <worktree_path> [integration_branch]`
 - QA fast-forward:
@@ -68,5 +70,6 @@ Read-only `git` commands such as `git status`, `git branch`, `git diff`, `git sh
 
 - Sanctioned mutating workflow scripts refuse the checked-out base repo.
 - `git-merge-worktree` owns merge plus worktree cleanup for managed worktree branches.
+- `git-worktree-refresh-branch` refuses protected integration branch names as the target branch.
 - Do not manually create or clean up a worker worktree when project hooks already own that lifecycle.
 - If publish, review, or cleanup state is unclear, inspect the real state and continue with the sanctioned script instead of inventing a new path.

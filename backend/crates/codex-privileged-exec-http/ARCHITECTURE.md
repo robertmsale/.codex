@@ -46,7 +46,7 @@ remote shell:
 - `cwd` is explicit and must exist.
 - `envOverrides` are supported with identifier validation.
 - Output is capped.
-- A timeout is required, bounded by server config.
+- Command runtime is not time-limited by this service.
 
 ## Endpoints
 
@@ -71,7 +71,7 @@ remote shell:
 - [x] Strict shell-token gate
 - [x] Hot-reload by mtime + explicit reload endpoint
 - [x] Filesystem watcher reload + directory discovery
-- [x] Synchronous run endpoint with timeout/output caps
+- [x] Synchronous run endpoint with output caps
 - [x] Unit tests for normalization and policy behavior
 - [ ] Async job execution
 - [ ] Supervisor runner/template

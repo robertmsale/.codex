@@ -27,6 +27,14 @@ belong in the app-server:
 The bridge is not the place for device runtime management or generic QA runtime
 ownership. That belongs in `codex-qa-harness`.
 
+Current role boundary notes:
+
+- orchestrators may spawn only subordinate `worker` and `qa` agents
+- administrators may directly create additional thread roles through the
+  generic thread-create surface
+- `designer` is an administrator-only design role and intentionally does not
+  inherit QA harness or spawn-hook coupling
+
 ## Current Components
 
 - `config.rs`
@@ -257,6 +265,11 @@ QA harness-owned examples:
 - device slot lifecycle
 - simulator boot and readiness
 - runtime command execution against a managed QA environment
+
+Designer-specific constraint:
+
+- designers run directly from their own dedicated worktree and debug runtime
+  rather than through the QA harness path
 
 ### Hook Discovery
 

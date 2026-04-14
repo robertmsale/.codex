@@ -1,0 +1,20 @@
+#!/bin/bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_worktree_lib.sh
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  cat >&2 <<'EOF'
+Usage:
+  git-worktree-refresh-branch <worktree_path> <new_branch> [integration_branch]
+EOF
+  exit 2
+fi
+
+worktree_path="$(normalize_mirrored_path "$1")"
+new_branch="$2"
+integration_branch="${3:-}"
+
+git_worktree_refresh_branch_cmd "$worktree_path" "$new_branch" "$integration_branch"

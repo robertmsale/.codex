@@ -2269,6 +2269,7 @@ fn sandbox_policy_for_spawn(
 
 fn role_default_model(state: &PersistedState, project_path: Option<&str>, role: Option<&str>) -> Option<String> {
     let key = match role {
+        Some("designer") => "designer",
         Some("qa") => "qa",
         Some("orchestrator") => "orchestrator",
         Some("worker") | Some("hidden") | Some("operator") | _ => "worker",
@@ -2296,6 +2297,7 @@ fn role_default_reasoning_effort(
     role: Option<&str>,
 ) -> Option<String> {
     let key = match role {
+        Some("designer") => "designer",
         Some("qa") => "qa",
         Some("orchestrator") => "orchestrator",
         Some("worker") | Some("hidden") | Some("operator") | _ => "worker",
@@ -2344,12 +2346,14 @@ fn developer_instructions_for_role(
         segments.push(configured);
     }
     if role != "orchestrator" && project.orchestrator_thread_id.is_some() {
-        if project.auto_route_replies.unwrap_or(false) {
+        if role == "designer" {
+            segments.push("Use the same communication rules as workers, but final assistant replies are not auto-forwarded for designers. If the administrator needs your final status, send it explicitly through the sanctioned Robdex path.".to_string());
+        } else if project.auto_route_replies.unwrap_or(false) {
             segments.push("Final assistant replies are auto-forwarded to this project's orchestrator. Mid-turn messages and coordination are fine, but do not manually send a redundant final handoff when your turn ends unless you need to add distinct information.".to_string());
         } else {
             segments.push("Final assistant replies are not auto-forwarded. If the orchestrator needs your final status, use $robdex-orchestrator to send it manually.".to_string());
         }
-        if project.route_approval_requests.unwrap_or(false) {
+        if role != "designer" && project.route_approval_requests.unwrap_or(false) {
             segments.push("Command and file-change approval requests are forwarded to this project's orchestrator so they can guide approval decisions in real time.".to_string());
         }
     }
@@ -2756,8 +2760,7 @@ async fn send_follow_up_message(
 }
 
 async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeAgentSummary> {
-    let _state_guard = runtime.lock_state_mutation().await;
-    let mut state = parse_state(&runtime.state_document_value().await);
+    let state = parse_state(&runtime.state_document_value().await);
     let role = payload.get("role").and_then(Value::as_str);
     let role_value = role.unwrap_or("worker").to_string();
     let project_path = payload
@@ -2868,9 +2871,7 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
         Ok(result) => result,
         Err(error) => {
             if let Some(hook) = hook_result.result.as_ref() {
-                maybe_compensate_spawn_hook_resources(
-                    runtime,
-                    &mut state,
+                if let Some(telemetry) = maybe_compensate_spawn_hook_resources(
                     &project_path,
                     &project_id,
                     &project_name,
@@ -2879,8 +2880,32 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
                     &cwd,
                     hook,
                 )
-                .await;
-                persist_state(runtime, &state).await?;
+                .await
+                {
+                    let _state_guard = runtime.lock_state_mutation().await;
+                    let mut state = parse_state(&runtime.state_document_value().await);
+                    record_project_hook_telemetry(
+                        &mut state,
+                        &project_path,
+                        None,
+                        &display_name_value,
+                        &role_value,
+                        &telemetry,
+                    );
+                    persist_state(runtime, &state).await?;
+                    runtime
+                        .push_event(crate::models::BridgeEvent::HookFailure {
+                            payload: hook_failure_notice(
+                                &project_id,
+                                &project_name,
+                                None,
+                                &display_name_value,
+                                &role_value,
+                                &telemetry,
+                            ),
+                        })
+                        .await;
+                }
             }
             return Err(error);
         }
@@ -2897,9 +2922,7 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
         Ok(thread_id) => thread_id.to_string(),
         Err(error) => {
             if let Some(hook) = hook_result.result.as_ref() {
-                maybe_compensate_spawn_hook_resources(
-                    runtime,
-                    &mut state,
+                if let Some(telemetry) = maybe_compensate_spawn_hook_resources(
                     &project_path,
                     &project_id,
                     &project_name,
@@ -2908,8 +2931,32 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
                     &cwd,
                     hook,
                 )
-                .await;
-                persist_state(runtime, &state).await?;
+                .await
+                {
+                    let _state_guard = runtime.lock_state_mutation().await;
+                    let mut state = parse_state(&runtime.state_document_value().await);
+                    record_project_hook_telemetry(
+                        &mut state,
+                        &project_path,
+                        None,
+                        &display_name_value,
+                        &role_value,
+                        &telemetry,
+                    );
+                    persist_state(runtime, &state).await?;
+                    runtime
+                        .push_event(crate::models::BridgeEvent::HookFailure {
+                            payload: hook_failure_notice(
+                                &project_id,
+                                &project_name,
+                                None,
+                                &display_name_value,
+                                &role_value,
+                                &telemetry,
+                            ),
+                        })
+                        .await;
+                }
             }
             return Err(error);
         }
@@ -2925,6 +2972,8 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
         )
         .await?;
     }
+    let _state_guard = runtime.lock_state_mutation().await;
+    let mut state = parse_state(&runtime.state_document_value().await);
     register_tracked_thread(
         &mut state,
         &settings.to_registration_payload(thread, &project_path, &role_value),
@@ -3404,8 +3453,6 @@ fn hook_failure_notice(
 }
 
 async fn maybe_compensate_spawn_hook_resources(
-    runtime: &BridgeRuntime,
-    state: &mut PersistedState,
     project_root: &str,
     project_id: &str,
     project_name: &str,
@@ -3413,7 +3460,7 @@ async fn maybe_compensate_spawn_hook_resources(
     role: &str,
     requested_cwd: &str,
     hook_result: &HookResult,
-) {
+) -> Option<HookTelemetry> {
     let lifecycle = serde_json::to_value(HookLifecycleState::from_hook_result(hook_result)).ok();
     let event = match role {
         "qa" => HookEvent::QaArchive,
@@ -3443,21 +3490,8 @@ async fn maybe_compensate_spawn_hook_resources(
         )
     };
     let outcome = maybe_run_project_hook(project_root, event, payload).await;
-    if let Some(telemetry) = outcome.telemetry.as_ref() {
-        record_project_hook_telemetry(state, project_root, None, agent_name, role, telemetry);
-        runtime
-            .push_event(crate::models::BridgeEvent::HookFailure {
-                payload: hook_failure_notice(
-                    project_id,
-                    project_name,
-                    None,
-                    agent_name,
-                    role,
-                    telemetry,
-                ),
-            })
-            .await;
-    }
+    let _ = (project_id, project_name, agent_name, role);
+    outcome.telemetry
 }
 
 async fn release_qa_harness_leases_for_thread(
@@ -4218,6 +4252,7 @@ pub async fn orchestrator_spawn_agent(
     });
     let mut agent = spawn_agent(runtime, &payload).await?;
     if let Some(issue_number) = issue_number {
+        let _state_guard = runtime.lock_state_mutation().await;
         let mut state = parse_state(&runtime.state_document_value().await);
         if let Some(agent_state) = state
             .projects
@@ -6041,11 +6076,11 @@ mod tests {
             "Bad Spawn",
             "Do not run",
             None,
-            Some("orchestrator"),
+            Some("designer"),
             None,
         )
         .await
-        .expect_err("orchestrator spawn should reject orchestrator role");
+        .expect_err("orchestrator spawn should reject designer role");
 
         assert!(
             error
@@ -6152,6 +6187,62 @@ mod tests {
         assert_eq!(thread_params["baseInstructions"], "hidden base instructions");
 
         transport.abort();
+    }
+
+    #[test]
+    fn designer_role_defaults_use_designer_key() {
+        let temp = TempDir::new().expect("tempdir");
+        let state = parse_state(&json!({
+            "projects": {
+                "design": {
+                    "projectRoot": temp.path().display().to_string(),
+                    "configs": {
+                        "roleModelReasoningDefaults": {
+                            "designer": { "modelID": "gpt-5.4-mini", "reasoningEffort": "high" },
+                            "worker": { "modelID": "gpt-5.4-nano", "reasoningEffort": "low" }
+                        }
+                    }
+                }
+            }
+        }));
+
+        assert_eq!(
+            role_default_model(&state, Some(&temp.path().display().to_string()), Some("designer")).as_deref(),
+            Some("gpt-5.4-mini")
+        );
+        assert_eq!(
+            role_default_reasoning_effort(&state, Some(&temp.path().display().to_string()), Some("designer"))
+                .as_deref(),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn designer_developer_instructions_disable_auto_route_even_when_project_enables_it() {
+        let temp = TempDir::new().expect("tempdir");
+        let state = parse_state(&json!({
+            "projects": {
+                "design": {
+                    "projectRoot": temp.path().display().to_string(),
+                    "cwd": temp.path().join(".worktrees/designer").display().to_string(),
+                    "autoRouteReplies": true,
+                    "routeApprovalRequests": true,
+                    "orchestratorThreadId": "thread-orchestrator",
+                    "configs": {}
+                }
+            }
+        }));
+
+        let guidance = developer_instructions_for_role(
+            &state,
+            Some("designer"),
+            Some(&temp.path().display().to_string()),
+            Some(&temp.path().join(".worktrees/designer").display().to_string()),
+        )
+        .expect("guidance");
+
+        assert!(guidance.contains("not auto-forwarded for designers"));
+        assert!(!guidance.contains("approval requests are forwarded"));
     }
 
     #[tokio::test]

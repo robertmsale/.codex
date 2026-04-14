@@ -49,9 +49,12 @@ enum Action {
         worker_reasoning_effort: Option<String>,
         qa_model_id: Option<String>,
         qa_reasoning_effort: Option<String>,
+        designer_model_id: Option<String>,
+        designer_reasoning_effort: Option<String>,
         orchestrator_developer_instructions: Option<String>,
         worker_developer_instructions: Option<String>,
         qa_developer_instructions: Option<String>,
+        designer_developer_instructions: Option<String>,
         operator_developer_instructions: Option<String>,
         hidden_developer_instructions: Option<String>,
     },
@@ -316,6 +319,16 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
         } else {
             Some(signal.message.qa_reasoning_effort)
         },
+        designer_model_id: if signal.message.designer_model_id.is_empty() {
+            None
+        } else {
+            Some(signal.message.designer_model_id)
+        },
+        designer_reasoning_effort: if signal.message.designer_reasoning_effort.is_empty() {
+            None
+        } else {
+            Some(signal.message.designer_reasoning_effort)
+        },
         orchestrator_developer_instructions: if signal.message.orchestrator_developer_instructions.is_empty() {
             None
         } else {
@@ -330,6 +343,11 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
             None
         } else {
             Some(signal.message.qa_developer_instructions)
+        },
+        designer_developer_instructions: if signal.message.designer_developer_instructions.is_empty() {
+            None
+        } else {
+            Some(signal.message.designer_developer_instructions)
         },
         operator_developer_instructions: if signal.message.operator_developer_instructions.is_empty() {
             None
@@ -605,9 +623,12 @@ async fn handle_action(
             worker_reasoning_effort,
             qa_model_id,
             qa_reasoning_effort,
+            designer_model_id,
+            designer_reasoning_effort,
             orchestrator_developer_instructions,
             worker_developer_instructions,
             qa_developer_instructions,
+            designer_developer_instructions,
             operator_developer_instructions,
             hidden_developer_instructions,
         } => client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
@@ -624,9 +645,12 @@ async fn handle_action(
                 worker_reasoning_effort,
                 qa_model_id,
                 qa_reasoning_effort,
+                designer_model_id,
+                designer_reasoning_effort,
                 orchestrator_developer_instructions,
                 worker_developer_instructions,
                 qa_developer_instructions,
+                designer_developer_instructions,
                 operator_developer_instructions,
                 hidden_developer_instructions,
             )

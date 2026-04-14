@@ -48,7 +48,7 @@ resolve_agent_codex_root_from_bridge() {
   command -v python3 >/dev/null 2>&1 || return 0
 
   whoami_url="${bridge_base_url%/}/orchestrator/whoami?threadId=${thread_id}"
-  if ! payload="$(activation_bridge_curl -fsS --max-time 2 "$whoami_url" 2>/dev/null)"; then
+  if ! payload="$(activation_bridge_curl -fsS "$whoami_url" 2>/dev/null)"; then
     return 0
   fi
 

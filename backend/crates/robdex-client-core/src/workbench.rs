@@ -127,9 +127,12 @@ impl WorkbenchClient {
         worker_reasoning_effort: Option<String>,
         qa_model_id: Option<String>,
         qa_reasoning_effort: Option<String>,
+        designer_model_id: Option<String>,
+        designer_reasoning_effort: Option<String>,
         orchestrator_developer_instructions: Option<String>,
         worker_developer_instructions: Option<String>,
         qa_developer_instructions: Option<String>,
+        designer_developer_instructions: Option<String>,
         operator_developer_instructions: Option<String>,
         hidden_developer_instructions: Option<String>,
     ) -> Result<WorkbenchViewData> {
@@ -153,12 +156,17 @@ impl WorkbenchClient {
                     "qa": {
                         "modelID": qa_model_id,
                         "reasoningEffort": qa_reasoning_effort,
+                    },
+                    "designer": {
+                        "modelID": designer_model_id,
+                        "reasoningEffort": designer_reasoning_effort,
                     }
                 },
                 "roleDeveloperInstructionsDefaults": {
                     "orchestrator": orchestrator_developer_instructions,
                     "worker": worker_developer_instructions,
                     "qa": qa_developer_instructions,
+                    "designer": designer_developer_instructions,
                     "operator": operator_developer_instructions,
                     "hidden": hidden_developer_instructions,
                 }
@@ -694,9 +702,12 @@ pub async fn build_workbench_with_models(
             worker_default_reasoning_effort: record.worker_default_reasoning_effort.clone(),
             qa_default_model: record.qa_default_model.clone(),
             qa_default_reasoning_effort: record.qa_default_reasoning_effort.clone(),
+            designer_default_model: record.designer_default_model.clone(),
+            designer_default_reasoning_effort: record.designer_default_reasoning_effort.clone(),
             orchestrator_developer_instructions: record.orchestrator_developer_instructions.clone(),
             worker_developer_instructions: record.worker_developer_instructions.clone(),
             qa_developer_instructions: record.qa_developer_instructions.clone(),
+            designer_developer_instructions: record.designer_developer_instructions.clone(),
             operator_developer_instructions: record.operator_developer_instructions.clone(),
             hidden_developer_instructions: record.hidden_developer_instructions.clone(),
             is_selected: Some(record.id.as_str()) == selected_project_id.as_deref(),
@@ -1103,9 +1114,12 @@ struct ProjectRecord {
     worker_default_reasoning_effort: Option<String>,
     qa_default_model: Option<String>,
     qa_default_reasoning_effort: Option<String>,
+    designer_default_model: Option<String>,
+    designer_default_reasoning_effort: Option<String>,
     orchestrator_developer_instructions: Option<String>,
     worker_developer_instructions: Option<String>,
     qa_developer_instructions: Option<String>,
+    designer_developer_instructions: Option<String>,
     operator_developer_instructions: Option<String>,
     hidden_developer_instructions: Option<String>,
 }
@@ -1266,7 +1280,8 @@ fn role_sort_key(role: &str) -> (u8, &str) {
         "operator" => (0, role),
         "orchestrator" => (1, role),
         "worker" => (2, role),
-        "qa" => (3, role),
+        "designer" => (3, role),
+        "qa" => (4, role),
         "hidden" => (9, role),
         _ => (5, role),
     }
@@ -1362,6 +1377,16 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
                 .and_then(|value| value.get("reasoningEffort"))
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            designer_default_model: role_defaults
+                .get("designer")
+                .and_then(|value| value.get("modelID"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            designer_default_reasoning_effort: role_defaults
+                .get("designer")
+                .and_then(|value| value.get("reasoningEffort"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
             orchestrator_developer_instructions: developer_defaults
                 .get("orchestrator")
                 .and_then(Value::as_str)
@@ -1372,6 +1397,10 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
                 .map(str::to_string),
             qa_developer_instructions: developer_defaults
                 .get("qa")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            designer_developer_instructions: developer_defaults
+                .get("designer")
                 .and_then(Value::as_str)
                 .map(str::to_string),
             operator_developer_instructions: developer_defaults
@@ -1418,6 +1447,7 @@ fn role_default_model(project: Option<&ProjectRecord>, role: Option<&str>) -> Op
         Some("worker") | Some("hidden") | Some("operator") => {
             project.and_then(|value| value.worker_default_model.clone())
         }
+        Some("designer") => project.and_then(|value| value.designer_default_model.clone()),
         Some("qa") => project.and_then(|value| value.qa_default_model.clone()),
         _ => None,
     }
@@ -1434,6 +1464,7 @@ fn role_default_reasoning_effort(
         Some("worker") | Some("hidden") | Some("operator") => {
             project.and_then(|value| value.worker_default_reasoning_effort.clone())
         }
+        Some("designer") => project.and_then(|value| value.designer_default_reasoning_effort.clone()),
         Some("qa") => project.and_then(|value| value.qa_default_reasoning_effort.clone()),
         _ => None,
     }

@@ -891,7 +891,10 @@ impl BridgeRuntime {
         if !project.auto_route_replies {
             return;
         }
-        if tracked_role_for_thread(&state, thread_id).as_deref() == Some("hidden") {
+        if matches!(
+            tracked_role_for_thread(&state, thread_id).as_deref(),
+            Some("hidden") | Some("designer")
+        ) {
             return;
         }
         let Some(orchestrator_thread_id) = project.orchestrator_thread_id.filter(|id| id != thread_id) else {
@@ -953,7 +956,10 @@ impl BridgeRuntime {
         if !project.route_approval_requests {
             return;
         }
-        if tracked_role_for_thread(&state, &approval.thread_id).as_deref() == Some("hidden") {
+        if matches!(
+            tracked_role_for_thread(&state, &approval.thread_id).as_deref(),
+            Some("hidden") | Some("designer")
+        ) {
             return;
         }
         let Some(orchestrator_thread_id) = project
@@ -1631,6 +1637,7 @@ fn tracked_model_provider_for_thread_value(state: &Value, thread_id: &str) -> Op
 
 fn role_defaults_key_for_thread(state: &Value, thread_id: &str) -> &'static str {
     match tracked_role_for_thread(state, thread_id).as_deref() {
+        Some("designer") => "designer",
         Some("qa") => "qa",
         Some("orchestrator") => "orchestrator",
         Some("worker") | Some("hidden") | Some("operator") | _ => "worker",
@@ -1733,12 +1740,14 @@ fn tracked_developer_instructions_for_thread_value(state: &Value, thread_id: &st
         return None;
     }
     let mut guidance = Vec::new();
-    if project.auto_route_replies {
+    if role == "designer" {
+        guidance.push("Use the same communication rules as workers, but final assistant replies are not auto-forwarded for designers. If the administrator needs your final status, send it explicitly through the sanctioned Robdex path.");
+    } else if project.auto_route_replies {
         guidance.push("Final assistant replies are auto-forwarded to this project's orchestrator. Mid-turn messages and coordination are fine, but do not manually send a redundant final handoff when your turn ends unless you need to add distinct information.");
     } else {
         guidance.push("Final assistant replies are not auto-forwarded. If the orchestrator needs your final status, use $robdex-orchestrator to send it manually.");
     }
-    if project.route_approval_requests {
+    if role != "designer" && project.route_approval_requests {
         guidance.push("Command and file-change approval requests are forwarded to this project's orchestrator so they can guide approval decisions in real time.");
     }
     Some(guidance.join(" "))
@@ -2434,5 +2443,93 @@ mod tests {
         assert!(project.auto_route_replies);
         assert!(project.route_approval_requests);
         assert_eq!(project.orchestrator_thread_id.as_deref(), Some("orch-a"));
+    }
+
+    #[test]
+    fn designer_developer_guidance_disables_auto_route_even_when_project_enables_it() {
+        let state = json!({
+            "projects": {
+                "alpha": {
+                    "projectRoot": "/alpha",
+                    "cwd": "/alpha/.worktrees/designer",
+                    "autoRouteReplies": true,
+                    "routeApprovalRequests": true,
+                    "orchestratorThreadID": "orch-a",
+                    "agents": {
+                        "designer-1": {
+                            "role": "designer",
+                            "displayName": "Designer One"
+                        }
+                    }
+                }
+            }
+        });
+
+        let guidance =
+            tracked_developer_instructions_for_thread_value(&state, "designer-1").expect("guidance");
+        assert!(guidance.contains("not auto-forwarded for designers"));
+        assert!(!guidance.contains("approval requests are forwarded"));
+    }
+
+    #[tokio::test]
+    async fn designer_approvals_are_not_auto_routed_to_orchestrator() {
+        let temp = TempDir::new().expect("tempdir");
+        let settings = BridgeSettings {
+            http: HttpArgs {
+                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 42080,
+            },
+            app_server_url: "ws://127.0.0.1:9".to_string(),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
+            project_path: temp.path().to_path_buf(),
+            cwd: temp.path().to_path_buf(),
+            paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
+        };
+        let runtime = BridgeRuntime::new(settings).await.expect("runtime");
+        *runtime.state_document.write().await = json!({
+            "projects": {
+                "alpha": {
+                    "projectRoot": temp.path().display().to_string(),
+                    "cwd": temp.path().join(".worktrees/designer").display().to_string(),
+                    "routeApprovalRequests": true,
+                    "orchestratorThreadID": "orch-a",
+                    "agents": {
+                        "designer-1": {
+                            "role": "designer",
+                            "displayName": "Designer One"
+                        },
+                        "orch-a": {
+                            "role": "orchestrator",
+                            "displayName": "Orchestrator"
+                        }
+                    }
+                }
+            }
+        });
+
+        runtime
+            .maybe_route_approval_to_orchestrator(&PendingApproval {
+                id: "approval-1".to_string(),
+                instance_id: "instance-1".to_string(),
+                request_id: RequestId::Integer(1),
+                thread_id: "designer-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-1".to_string(),
+                kind: PendingApprovalKind::CommandExecution,
+                title: "Command approval".to_string(),
+                detail: None,
+                approval_reason: Some("needs approval".to_string()),
+                tool_name: None,
+                tool_arguments: None,
+                tool_questions: Vec::new(),
+                auth_refresh_reason: None,
+                command: Some("git status".to_string()),
+                command_cwd: None,
+                file_grant_root: None,
+                file_changes: Vec::new(),
+            })
+            .await;
+
+        assert!(runtime.auto_routed_approval_keys.read().await.is_empty());
     }
 }

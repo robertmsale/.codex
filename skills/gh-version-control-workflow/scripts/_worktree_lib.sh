@@ -371,6 +371,10 @@ git_worktree_create_cmd() {
     echo "repo_path, base_branch, branch_name, and worktree_name are required" >&2
     return 1
   }
+  if is_protected_branch "$branch_name"; then
+    echo "Refusing to create a managed worktree on protected integration branch '$branch_name'." >&2
+    return 1
+  fi
   worktree_root="$(git_worktree_root "$repo_path")"
   mkdir -p "$worktree_root"
   worktree_path="$(absolute_path "$worktree_root/$worktree_name")"
@@ -383,6 +387,37 @@ git_worktree_create_cmd() {
   fi
   run_checked "$repo_path" git -C "$repo_path" worktree add -b "$branch_name" "$worktree_path" "origin/$base_branch" >/dev/null
   printf 'created worktree %s on branch %s from origin/%s\n' "$worktree_path" "$branch_name" "$base_branch"
+}
+
+git_worktree_refresh_branch_cmd() {
+  local worktree_path new_branch integration_branch current_branch
+  worktree_path="$(absolute_path "$1")"
+  new_branch="$2"
+  integration_branch="$3"
+  [[ -n "${new_branch// /}" ]] || { echo "new_branch is required" >&2; return 1; }
+  if is_protected_branch "$new_branch"; then
+    echo "Refusing to check out protected integration branch '$new_branch' in a managed worktree." >&2
+    return 1
+  fi
+  require_managed_worktree_path "$worktree_path"
+  integration_branch="$(resolve_integration_branch "$REQUIRED_REPO_ROOT" "$integration_branch")"
+  [[ -z "$(run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" status --short | tr -d '\r')" ]] || {
+    echo "Refusing to refresh a dirty worktree: $REQUIRED_WORKTREE_ROOT" >&2
+    return 1
+  }
+  run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" fetch -q origin --prune >/dev/null
+  run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" show-ref --verify --quiet "refs/remotes/origin/$integration_branch" >/dev/null
+  if env PATH="$(git_subprocess_path)" git -C "$REQUIRED_REPO_ROOT" show-ref --verify --quiet "refs/heads/$new_branch" >/dev/null 2>&1; then
+    echo "Local branch already exists: $new_branch" >&2
+    return 1
+  fi
+  if env PATH="$(git_subprocess_path)" git -C "$REQUIRED_REPO_ROOT" show-ref --verify --quiet "refs/remotes/origin/$new_branch" >/dev/null 2>&1; then
+    echo "Remote branch already exists: origin/$new_branch" >&2
+    return 1
+  fi
+  current_branch="$(current_branch "$REQUIRED_WORKTREE_ROOT")"
+  run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" switch --create "$new_branch" "origin/$integration_branch" >/dev/null
+  printf 'switched %s from %s to fresh branch %s at origin/%s\n' "$REQUIRED_WORKTREE_ROOT" "$current_branch" "$new_branch" "$integration_branch"
 }
 
 git_worktree_cleanup_cmd() {

@@ -4,16 +4,13 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::time::timeout;
 
 const HOOKS_CONFIG_RELATIVE_PATH: &str = ".codex/robdex-hooks.json";
-const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
@@ -145,15 +142,6 @@ pub async fn maybe_run_project_hook(
     event: HookEvent,
     payload: Value,
 ) -> HookInvocation {
-    maybe_run_project_hook_with_timeout(project_root, event, payload, DEFAULT_HOOK_TIMEOUT).await
-}
-
-async fn maybe_run_project_hook_with_timeout(
-    project_root: &str,
-    event: HookEvent,
-    payload: Value,
-    timeout_duration: Duration,
-) -> HookInvocation {
     let hooks = match load_project_hooks(project_root).await {
         Ok(value) => value,
         Err(error) => {
@@ -234,39 +222,25 @@ async fn maybe_run_project_hook_with_timeout(
         Ok(result)
     });
 
-    match timeout(timeout_duration, join).await {
-        Ok(joined) => match joined {
-            Ok(Ok(result)) => HookInvocation {
-                result: Some(result),
-                telemetry: None,
-            },
-            Ok(Err(error)) => HookInvocation {
-                result: None,
-                telemetry: Some(HookTelemetry {
-                    event: event.wire_name().to_string(),
-                    status: "failed".to_string(),
-                    detail: Some(error.to_string()),
-                }),
-            },
-            Err(error) => HookInvocation {
-                result: None,
-                telemetry: Some(HookTelemetry {
-                    event: event.wire_name().to_string(),
-                    status: "failed".to_string(),
-                    detail: Some(anyhow!(error.to_string()).to_string()),
-                }),
-            },
+    match join.await {
+        Ok(Ok(result)) => HookInvocation {
+            result: Some(result),
+            telemetry: None,
         },
-        Err(_) => HookInvocation {
+        Ok(Err(error)) => HookInvocation {
             result: None,
             telemetry: Some(HookTelemetry {
                 event: event.wire_name().to_string(),
-                status: "timed_out".to_string(),
-                detail: Some(format!(
-                    "hook {} timed out after {}s",
-                    event.wire_name(),
-                    timeout_duration.as_secs()
-                )),
+                status: "failed".to_string(),
+                detail: Some(error.to_string()),
+            }),
+        },
+        Err(error) => HookInvocation {
+            result: None,
+            telemetry: Some(HookTelemetry {
+                event: event.wire_name().to_string(),
+                status: "failed".to_string(),
+                detail: Some(anyhow!(error.to_string()).to_string()),
             }),
         },
     }
@@ -716,33 +690,6 @@ mod tests {
                 .unwrap_or_default()
                 .contains("artifacts.branchName")
         );
-    }
-
-    #[tokio::test]
-    async fn hook_timeout_returns_timed_out_telemetry() {
-        let temp = tempdir().expect("tempdir");
-        let config_dir = temp.path().join(".codex");
-        fs::create_dir_all(config_dir.join("hooks")).expect("mkdirs");
-        let hook_path = config_dir.join("hooks/on-worker-create");
-        write_executable(&hook_path, "#!/bin/bash\ncat >/dev/null\nsleep 1\necho '{\"ok\":true}'\n");
-        fs::write(
-            config_dir.join("robdex-hooks.json"),
-            r#"{"version":1,"hooks":{"onWorkerCreate":"./.codex/hooks/on-worker-create"}}"#,
-        )
-        .expect("write config");
-
-        let invocation = maybe_run_project_hook_with_timeout(
-            &temp.path().display().to_string(),
-            HookEvent::WorkerCreate,
-            json!({"event":"onWorkerCreate"}),
-            Duration::from_millis(10),
-        )
-        .await;
-
-        assert!(invocation.result.is_none());
-        let telemetry = invocation.telemetry.expect("telemetry");
-        assert_eq!(telemetry.status, "timed_out");
-        assert!(telemetry.detail.unwrap_or_default().contains("timed out"));
     }
 
     #[tokio::test]

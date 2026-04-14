@@ -141,9 +141,12 @@ class ProjectItem {
     required this.workerDefaultReasoningEffort,
     required this.qaDefaultModel,
     required this.qaDefaultReasoningEffort,
+    required this.designerDefaultModel,
+    required this.designerDefaultReasoningEffort,
     required this.orchestratorDeveloperInstructions,
     required this.workerDeveloperInstructions,
     required this.qaDeveloperInstructions,
+    required this.designerDeveloperInstructions,
     required this.operatorDeveloperInstructions,
     required this.hiddenDeveloperInstructions,
     required this.isSelected,
@@ -162,9 +165,12 @@ class ProjectItem {
   final String? workerDefaultReasoningEffort;
   final String? qaDefaultModel;
   final String? qaDefaultReasoningEffort;
+  final String? designerDefaultModel;
+  final String? designerDefaultReasoningEffort;
   final String? orchestratorDeveloperInstructions;
   final String? workerDeveloperInstructions;
   final String? qaDeveloperInstructions;
+  final String? designerDeveloperInstructions;
   final String? operatorDeveloperInstructions;
   final String? hiddenDeveloperInstructions;
   final bool isSelected;
@@ -185,9 +191,13 @@ class ProjectItem {
       workerDefaultReasoningEffort: json['workerDefaultReasoningEffort'] as String?,
       qaDefaultModel: json['qaDefaultModel'] as String?,
       qaDefaultReasoningEffort: json['qaDefaultReasoningEffort'] as String?,
+      designerDefaultModel: json['designerDefaultModel'] as String?,
+      designerDefaultReasoningEffort:
+          json['designerDefaultReasoningEffort'] as String?,
       orchestratorDeveloperInstructions: json['orchestratorDeveloperInstructions'] as String?,
       workerDeveloperInstructions: json['workerDeveloperInstructions'] as String?,
       qaDeveloperInstructions: json['qaDeveloperInstructions'] as String?,
+      designerDeveloperInstructions: json['designerDeveloperInstructions'] as String?,
       operatorDeveloperInstructions: json['operatorDeveloperInstructions'] as String?,
       hiddenDeveloperInstructions: json['hiddenDeveloperInstructions'] as String?,
       isSelected: json['isSelected'] as bool? ?? false,

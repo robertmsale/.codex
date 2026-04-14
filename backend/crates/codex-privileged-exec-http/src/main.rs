@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -29,15 +29,11 @@ use tokio::{
     net::TcpListener,
     process::Command,
     sync::RwLock,
-    time::timeout,
 };
 use tower_http::trace::TraceLayer;
-use tracing::{info, warn};
+use tracing::info;
 
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
-const DEFAULT_TIMEOUT_SEC: u64 = 300;
-const DEFAULT_MAX_TIMEOUT_SEC: u64 = 7200;
-
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(long, env = "CODEX_PRIVILEGED_EXEC_BIND", default_value = "127.0.0.1")]
@@ -51,12 +47,6 @@ struct Args {
 
     #[arg(long, env = "CODEX_PRIVILEGED_EXEC_RESOLVE_HOST_EXECUTABLES", default_value_t = true)]
     resolve_host_executables: bool,
-
-    #[arg(long, env = "CODEX_PRIVILEGED_EXEC_DEFAULT_TIMEOUT_SEC", default_value_t = DEFAULT_TIMEOUT_SEC)]
-    default_timeout_sec: u64,
-
-    #[arg(long, env = "CODEX_PRIVILEGED_EXEC_MAX_TIMEOUT_SEC", default_value_t = DEFAULT_MAX_TIMEOUT_SEC)]
-    max_timeout_sec: u64,
 
     #[arg(long, env = "CODEX_PRIVILEGED_EXEC_MAX_OUTPUT_BYTES", default_value_t = DEFAULT_MAX_OUTPUT_BYTES)]
     max_output_bytes: usize,
@@ -82,8 +72,6 @@ struct AppState {
 struct ServerConfig {
     rule_inputs: Vec<PathBuf>,
     resolve_host_executables: bool,
-    default_timeout_sec: u64,
-    max_timeout_sec: u64,
     max_output_bytes: usize,
 }
 
@@ -106,6 +94,7 @@ struct ExecRequest {
     #[serde(default)]
     env_overrides: BTreeMap<String, String>,
     #[serde(default)]
+    // Accepted for backward compatibility but intentionally ignored.
     timeout_sec: Option<u64>,
 }
 
@@ -191,8 +180,6 @@ async fn main() -> Result<()> {
         config: Arc::new(ServerConfig {
             rule_inputs: args.rules.clone(),
             resolve_host_executables: args.resolve_host_executables,
-            default_timeout_sec: args.default_timeout_sec,
-            max_timeout_sec: args.max_timeout_sec,
             max_output_bytes: args.max_output_bytes,
         }),
         reload_dirty: Arc::new(AtomicBool::new(false)),
@@ -268,6 +255,7 @@ async fn exec_run(
     State(app): State<AppState>,
     Json(request): Json<ExecRequest>,
 ) -> Result<Json<RunResponse>, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let _ = request.timeout_sec;
     maybe_reload_policy(&app).await.map_err(into_http_error)?;
     validate_request(&request).map_err(into_http_error)?;
 
@@ -316,18 +304,11 @@ async fn exec_run(
         }
     }
 
-    let timeout_sec = request
-        .timeout_sec
-        .unwrap_or(app.config.default_timeout_sec)
-        .min(app.config.max_timeout_sec)
-        .max(1);
-
     let output = execute_argv(
         &argv,
         Path::new(&request.cwd),
         &request.caller_env,
         &request.env_overrides,
-        Duration::from_secs(timeout_sec),
         app.config.max_output_bytes,
     )
     .await
@@ -669,7 +650,6 @@ async fn execute_argv(
     cwd: &Path,
     caller_env: &BTreeMap<String, String>,
     env_overrides: &BTreeMap<String, String>,
-    max_duration: Duration,
     max_output_bytes: usize,
 ) -> Result<CapturedOutput> {
     let mut command = Command::new(&argv[0]);
@@ -695,24 +675,10 @@ async fn execute_argv(
     let stdout_task = tokio::spawn(read_stream_capped(stdout, max_output_bytes));
     let stderr_task = tokio::spawn(read_stream_capped(stderr, max_output_bytes));
 
-    let status = match timeout(max_duration, child.wait()).await {
-        Ok(result) => result.with_context(|| format!("wait for {}", argv.join(" ")))?,
-        Err(_) => {
-            warn!("privileged command timed out: {}", argv.join(" "));
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            let (stdout, truncated_stdout) = stdout_task.await.unwrap_or_default();
-            let (stderr, truncated_stderr) = stderr_task.await.unwrap_or_default();
-            return Ok(CapturedOutput {
-                exit_code: None,
-                timed_out: true,
-                stdout,
-                stderr,
-                truncated_stdout,
-                truncated_stderr,
-            });
-        }
-    };
+    let status = child
+        .wait()
+        .await
+        .with_context(|| format!("wait for {}", argv.join(" ")))?;
 
     let (stdout, truncated_stdout) = stdout_task.await.unwrap_or_default();
     let (stderr, truncated_stderr) = stderr_task.await.unwrap_or_default();

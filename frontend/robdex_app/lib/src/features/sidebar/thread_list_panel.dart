@@ -366,6 +366,12 @@ class _RoleBadge extends StatelessWidget {
           Icons.fact_check_outlined,
           'QA',
         ),
+      'designer' => (
+          Colors.amber.shade100,
+          Colors.amber.shade800,
+          Icons.palette_outlined,
+          'Designer',
+        ),
       'hidden' => (
           theme.colorScheme.outline.withValues(alpha: 0.14),
           theme.colorScheme.outline,
