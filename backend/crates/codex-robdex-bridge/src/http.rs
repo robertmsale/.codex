@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::Path as FsPath, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -25,7 +25,7 @@ use crate::{
         orchestrator_thread_group_create, orchestrator_thread_group_delete, orchestrator_thread_group_move_thread,
         orchestrator_thread_group_update, orchestrator_thread_groups, orchestrator_threads,
         orchestrator_warm_handoff, register_live_process, complete_live_process, LiveProcessRecord,
-        orchestrator_update_worker_metadata, orchestrator_whoami,
+        orchestrator_update_worker_metadata, orchestrator_whoami, tracked_project_identity_for_thread,
     },
     models::{
         BridgeEvent, MAX_TRANSPORT_MESSAGES_PER_THREAD, PROTOCOL_VERSION, SequencedEvent, SERVER_NAME, SERVER_VERSION, ThreadMessagesResponse,
@@ -55,6 +55,9 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/threads/{thread_id}/metadata", post(thread_metadata_update_http))
         .route("/threads/{thread_id}/compact", post(thread_compact_http))
         .route("/threads/{thread_id}/commands/terminate", post(thread_command_terminate_http))
+        .route("/threads/{thread_id}/qa/devices", get(thread_qa_devices_http))
+        .route("/threads/{thread_id}/qa/devices/{device_key}/reserve", post(thread_qa_device_reserve_http))
+        .route("/threads/{thread_id}/qa/devices/{device_key}/reboot", post(thread_qa_device_reboot_http))
         .route("/threads/{thread_id}/processes/register", post(thread_process_register_http))
         .route("/threads/{thread_id}/processes/{process_id}/complete", post(thread_process_complete_http))
         .route("/threads/{thread_id}/running-state", post(thread_running_state_http))
@@ -231,6 +234,275 @@ async fn qa_harness_summary(State(runtime): State<Arc<BridgeRuntime>>) -> impl I
                 "qa-harness {phase}; {configured_projects} configured project(s), {configured_devices} configured device slot(s)"
             ),
         }),
+    )
+        .into_response()
+}
+
+async fn thread_qa_devices_http(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Path(thread_id): Path<String>,
+) -> impl IntoResponse {
+    match resolve_harness_project_for_thread(&runtime, &thread_id).await {
+        Ok((project_id, _project_name, _project_root)) => {
+            let base_url = runtime.settings().qa_harness_url.clone();
+            let client = reqwest::Client::new();
+            match qa_devices_request(&client, &base_url, &project_id).await {
+                Ok(value) => (StatusCode::OK, Json(json!({"ok": true, "devices": value}))).into_response(),
+                Err(error) => bad_request(error),
+            }
+        }
+        Err(error) => bad_request(error),
+    }
+}
+
+async fn thread_qa_device_reserve_http(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Path((thread_id, device_key)): Path<(String, String)>,
+) -> impl IntoResponse {
+    qa_slot_transition(&runtime, &thread_id, &device_key, "start").await
+}
+
+async fn thread_qa_device_reboot_http(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Path((thread_id, device_key)): Path<(String, String)>,
+) -> impl IntoResponse {
+    qa_slot_transition(&runtime, &thread_id, &device_key, "restart").await
+}
+
+async fn qa_slot_transition(
+    runtime: &Arc<BridgeRuntime>,
+    thread_id: &str,
+    device_key: &str,
+    action: &str,
+) -> axum::response::Response {
+    let (project_id, _project_name, _project_root) = match resolve_harness_project_for_thread(runtime, thread_id).await {
+        Ok(value) => value,
+        Err(error) => return bad_request(error),
+    };
+    let lease_owner = thread_id.to_string();
+    let base_url = runtime.settings().qa_harness_url.clone();
+    let client = reqwest::Client::new();
+    match qa_slot_transition_for_project(
+        runtime,
+        &client,
+        &base_url,
+        &project_id,
+        thread_id,
+        device_key,
+        action,
+        &lease_owner,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => bad_request(error),
+    }
+}
+
+async fn qa_slot_transition_for_project(
+    runtime: &Arc<BridgeRuntime>,
+    client: &reqwest::Client,
+    base_url: &str,
+    project_id: &str,
+    thread_id: &str,
+    device_key: &str,
+    action: &str,
+    lease_owner: &str,
+) -> Result<axum::response::Response, String> {
+    let lease_url = format!(
+        "{}/projects/{}/devices/{}/lease",
+        base_url.trim_end_matches('/'),
+        project_id,
+        device_key
+    );
+    let lease_body = json!({
+        "owner": lease_owner,
+        "reason": "qa thread reserve",
+        "expiresAt": Value::Null,
+    });
+    match client.post(&lease_url).json(&lease_body).send().await {
+        Ok(response) if response.status().is_success() => {}
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            if let Some(existing_owner) = stale_lease_owner_from_body(&body) {
+                if !thread_exists_in_bridge_state(runtime, &existing_owner).await {
+                    let release_url = format!(
+                        "{}/projects/{}/devices/{}/lease",
+                        base_url.trim_end_matches('/'),
+                        project_id,
+                        device_key
+                    );
+                    match client.delete(&release_url).send().await {
+                        Ok(release_response) if release_response.status().is_success() => {
+                            match client.post(&lease_url).json(&lease_body).send().await {
+                                Ok(retry_response) if retry_response.status().is_success() => {}
+                                Ok(retry_response) => {
+                                    let retry_status = retry_response.status();
+                                    let retry_body = retry_response.text().await.unwrap_or_default();
+                                    return Err(format!("qa lease returned {retry_status}; body={retry_body}"));
+                                }
+                                Err(error) => return Err(format!("qa lease request failed: {error}")),
+                            }
+                        }
+                        Ok(release_response) => {
+                            let release_status = release_response.status();
+                            let release_body = release_response.text().await.unwrap_or_default();
+                            return Err(format!(
+                                "qa lease stale-owner recovery failed: release returned {release_status}; body={release_body}"
+                            ));
+                        }
+                        Err(error) => return Err(format!("qa lease stale-owner recovery failed: {error}")),
+                    }
+                } else {
+                    return Err(format!("qa lease returned {status}; body={body}"));
+                }
+            } else {
+            return Err(format!("qa lease returned {status}; body={body}"));
+            }
+        }
+        Err(error) => return Err(format!("qa lease request failed: {error}")),
+    }
+
+    let action_url = format!(
+        "{}/projects/{}/devices/{}/{action}",
+        base_url.trim_end_matches('/'),
+        project_id,
+        device_key
+    );
+    let start_body = json!({
+        "lease_owner": thread_id,
+        "startup": {},
+    });
+    match client.post(&action_url).json(&start_body).send().await {
+        Ok(response) if response.status().is_success() => match response.text().await {
+            Ok(body) => match serde_json::from_str::<Value>(&body) {
+                Ok(value) => Ok((StatusCode::OK, Json(json!({"ok": true, "slot": value}))).into_response()),
+                Err(error) => Err(format!("decode qa slot transition failed: {error}; body={body}")),
+            },
+            Err(error) => Err(format!("read qa slot transition failed: {error}")),
+        },
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("qa {action} returned {status}; body={body}"))
+        }
+        Err(error) => Err(format!("qa {action} request failed: {error}")),
+    }
+}
+
+fn stale_lease_owner_from_body(body: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    let message = value.get("error")?.as_str()?;
+    let needle = "already leased by ";
+    let index = message.find(needle)?;
+    let owner = &message[index + needle.len()..];
+    let trimmed = owner.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+async fn thread_exists_in_bridge_state(runtime: &Arc<BridgeRuntime>, thread_id: &str) -> bool {
+    let state = runtime.state_document_value().await;
+    tracked_project_identity_for_thread(&state, thread_id).is_some()
+}
+
+async fn qa_devices_request(
+    client: &reqwest::Client,
+    base_url: &str,
+    project_id: &str,
+) -> Result<Vec<Value>, String> {
+    let url = format!(
+        "{}/projects/{}/devices",
+        base_url.trim_end_matches('/'),
+        project_id
+    );
+    match client.get(&url).send().await {
+        Ok(response) if response.status().is_success() => {
+            let body = response
+                .text()
+                .await
+                .map_err(|error| format!("read qa devices failed: {error}"))?;
+            serde_json::from_str::<Vec<Value>>(&body)
+                .map_err(|error| format!("decode qa devices failed: {error}; body={body}"))
+        }
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("qa devices returned {status}; body={body}"))
+        }
+        Err(error) => Err(format!("qa devices request failed: {error}")),
+    }
+}
+
+async fn resolve_harness_project_for_thread(
+    runtime: &Arc<BridgeRuntime>,
+    thread_id: &str,
+) -> Result<(String, String, String), String> {
+    let state = runtime.state_document_value().await;
+    let (bridge_project_id, _bridge_project_name, bridge_project_root) =
+        tracked_project_identity_for_thread(&state, thread_id)
+            .ok_or_else(|| format!("thread {thread_id} is not associated with a tracked project"))?;
+    let base_url = runtime.settings().qa_harness_url.clone();
+    let client = reqwest::Client::new();
+    let url = format!("{}/projects", base_url.trim_end_matches('/'));
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|error| format!("qa harness projects request failed: {error}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("qa harness projects response read failed: {error}"))?;
+    if !status.is_success() {
+        return Err(format!("qa harness projects returned {status}; body={body}"));
+    }
+    let projects: Vec<Value> = serde_json::from_str(&body)
+        .map_err(|error| format!("qa harness projects decode failed: {error}; body={body}"))?;
+    let bridge_root_normalized = normalize_project_root(&bridge_project_root);
+    let matched = projects.into_iter().find_map(|project| {
+        let project_id = project.get("id")?.as_str()?.to_string();
+        let project_name = project
+            .get("display_name")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| project_id.clone());
+        let repo_root = project.get("repo_root")?.as_str()?.to_string();
+        let repo_root_normalized = normalize_project_root(&repo_root);
+        let id_matches = project_id == bridge_project_id;
+        let root_matches = repo_root_normalized == bridge_root_normalized;
+        if id_matches || root_matches {
+            Some((project_id, project_name, repo_root))
+        } else {
+            None
+        }
+    });
+    matched.ok_or_else(|| {
+        format!(
+            "no qa-harness project matches bridge project id={} root={}",
+            bridge_project_id, bridge_project_root
+        )
+    })
+}
+
+fn normalize_project_root(root: &str) -> String {
+    let path = FsPath::new(root);
+    if path.file_name().and_then(|name| name.to_str()) == Some(".worktrees") {
+        if let Some(parent) = path.parent() {
+            return parent.to_string_lossy().into_owned();
+        }
+    }
+    root.to_string()
+}
+
+fn bad_request(message: impl Into<String>) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "ok": false,
+            "error": message.into(),
+        })),
     )
         .into_response()
 }
@@ -1707,5 +1979,28 @@ mod tests {
         };
         assert!(event_text.contains("\"connectionStatus\""));
         assert!(event_text.contains("\"connected\""));
+    }
+
+    #[tokio::test]
+    async fn qa_thread_routes_are_mounted() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp)).await.expect("runtime");
+        let addr = spawn_server(runtime).await;
+        let client = reqwest::Client::new();
+
+        let devices = client
+            .get(format!("http://{addr}/threads/test/qa/devices"))
+            .send()
+            .await
+            .expect("devices response");
+        assert_ne!(devices.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let reserve = client
+            .post(format!("http://{addr}/threads/test/qa/devices/example/reserve"))
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .expect("reserve response");
+        assert_ne!(reserve.status(), reqwest::StatusCode::NOT_FOUND);
     }
 }

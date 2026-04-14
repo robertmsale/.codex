@@ -1,5 +1,6 @@
 #!/bin/zsh
 set -euo pipefail
+unsetopt bgnice
 
 # App-server sometimes starts threads with a broken or empty PATH.
 # Seed the minimum system tools before any bootstrap logic runs.
@@ -34,13 +35,12 @@ setup_codex_activation
 normalize_cwd_alias
 
 real_zsh="${ZSH_SHIM_REAL_ZSH:-/bin/zsh}"
+shim_curl_bin="${ZSH_SHIM_CURL_BIN:-curl}"
 local_child_pid=""
 shim_process_completed=0
 
 shim_disable_postprocess() {
-  [[ "${IS_USING_COMMAND_PARSER:-}" == "true" ]] && return 0
-  [[ "${CODEX_COMMAND_PARSER_ACTIVE:-}" == "1" ]] && return 0
-  [[ "${CODEX_DISABLE_AUTO_COMMAND_PARSER:-}" == "1" ]] && return 0
+  codex_is_internal_shim_context && return 0
   return 1
 }
 
@@ -74,7 +74,7 @@ shim_handle_signal_exit() {
 
 shim_live_process_can_report() {
   [[ -n "${CODEX_THREAD_ID:-}" ]] || return 1
-  command -v curl >/dev/null 2>&1 || return 1
+  command -v "$shim_curl_bin" >/dev/null 2>&1 || return 1
   command -v python3 >/dev/null 2>&1 || return 1
   return 0
 }
@@ -108,7 +108,7 @@ print(json.dumps({
 }, separators=(",", ":")))
 PY
 )"
-  curl -fsS \
+  codex_exec_internal_shimmed "$shim_curl_bin" -fsS \
     -H 'Content-Type: application/json' \
     -X POST \
     "${bridge_base_url%/}/threads/${CODEX_THREAD_ID}/processes/register" \
@@ -120,7 +120,7 @@ shim_live_process_complete() {
   [[ -n "$pid" ]] || return 0
   shim_live_process_can_report || return 0
   local bridge_base_url="${ROBDEX_BRIDGE_BASE_URL:-http://127.0.0.1:42080}"
-  curl -fsS \
+  codex_exec_internal_shimmed "$shim_curl_bin" -fsS \
     -X POST \
     "${bridge_base_url%/}/threads/${CODEX_THREAD_ID}/processes/${pid}/complete" \
     >/dev/null 2>&1 || true
@@ -133,7 +133,7 @@ import sys
 
 os.setsid()
 os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
-' "$real_zsh" "${local_command[@]:1}"
+' "$real_zsh" "${requested_command[@]:1}"
 }
 
 trap 'shim_mark_process_complete_once; cleanup_shim_files' EXIT
@@ -163,18 +163,10 @@ fi
 command_text="$1"
 shift
 
-if [[ "$command_text" == *"/shell_snapshots/"* && "$command_text" == *"exec "* && "$command_text" == *" -c "* ]]; then
-  exec "$real_zsh" "$mode" "$command_text" "$@"
-fi
-
 requested_command=("$real_zsh" "$mode" "$command_text" "$@")
-prefixed_command="$(passthru_activation_prefix)
-
-${command_text}"
-local_command=("$real_zsh" "$mode" "$prefixed_command" "$@")
 
 if shim_disable_postprocess; then
-  exec "$real_zsh" "${local_command[@]:1}"
+  exec "$real_zsh" "${requested_command[@]:1}"
 fi
 
 run_via_privileged_exec_if_allowed "${requested_command[@]}"

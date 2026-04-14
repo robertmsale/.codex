@@ -1,5 +1,42 @@
 #!/bin/zsh
 
+if [[ -n "${functions[strip_shim_path]:-}" ]]; then
+  return 0
+fi
+
+codex_internal_shim_flag_args() {
+  printf '%s\0' \
+    "CODEX_SHIM_INTERNAL=1"
+}
+
+codex_exec_internal_shimmed() {
+  local command_name="${1:-}"
+  shift || true
+  [[ -n "$command_name" ]] || return 1
+  env \
+    CODEX_SHIM_INTERNAL=1 \
+    "$command_name" "$@"
+}
+
+codex_run_internal_shimmed_capture() {
+  local __target_var="${1:-}"
+  shift || true
+  local command_name="${1:-}"
+  shift || true
+  [[ -n "$__target_var" && -n "$command_name" ]] || return 1
+  local __captured=""
+  __captured="$(
+    env \
+      CODEX_SHIM_INTERNAL=1 \
+      "$command_name" "$@"
+  )" || return $?
+  printf -v "$__target_var" '%s' "$__captured"
+}
+
+codex_is_internal_shim_context() {
+  [[ "${CODEX_SHIM_INTERNAL:-}" == "1" ]]
+}
+
 strip_shim_path() {
   local path_value="${1:-}"
   local shim_dir_legacy="/opt/homebrew/shim"

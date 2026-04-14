@@ -21,6 +21,7 @@ pub enum HookEvent {
     WorkerArchive,
     QaCreate,
     QaArchive,
+    Compaction,
 }
 
 impl HookEvent {
@@ -30,6 +31,7 @@ impl HookEvent {
             Self::WorkerArchive => "onWorkerArchive",
             Self::QaCreate => "onQaCreate",
             Self::QaArchive => "onQaArchive",
+            Self::Compaction => "onCompaction",
         }
     }
 }
@@ -426,6 +428,39 @@ pub fn qa_archive_payload(
             "role": role,
         },
         "lifecycle": lifecycle,
+    });
+    if let Some(requested_cwd) = requested_cwd.filter(|value| !value.trim().is_empty()) {
+        payload["requestedCwd"] = Value::String(requested_cwd.to_string());
+    }
+    payload
+}
+
+pub fn compaction_payload(
+    thread_id: &str,
+    project_id: &str,
+    project_name: &str,
+    project_root: &str,
+    agent_name: &str,
+    role: &str,
+    requested_cwd: Option<&str>,
+    compaction_count: u64,
+) -> Value {
+    let mut payload = json!({
+        "event": HookEvent::Compaction.wire_name(),
+        "project": {
+            "id": project_id,
+            "name": project_name,
+            "root": project_root,
+        },
+        "projectRoot": project_root,
+        "threadId": thread_id,
+        "agent": {
+            "name": agent_name,
+            "role": role,
+        },
+        "compaction": {
+            "count": compaction_count,
+        },
     });
     if let Some(requested_cwd) = requested_cwd.filter(|value| !value.trim().is_empty()) {
         payload["requestedCwd"] = Value::String(requested_cwd.to_string());

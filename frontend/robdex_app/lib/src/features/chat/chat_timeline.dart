@@ -62,6 +62,9 @@ class _ChatTimelineState extends State<ChatTimeline> {
   void didUpdateWidget(covariant ChatTimeline oldWidget) {
     super.didUpdateWidget(oldWidget);
 
+    final hadClients = _scrollController.hasClients;
+    final previousPixels = hadClients ? _scrollController.position.pixels : 0.0;
+
     final currentKeys = widget.entries
         .map(_entryStorageKey)
         .toSet();
@@ -78,6 +81,17 @@ class _ChatTimelineState extends State<ChatTimeline> {
     final shouldStickToBottom = threadChanged || _isNearBottom();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients || !shouldStickToBottom) {
+        if (!mounted || !_scrollController.hasClients) {
+          return;
+        }
+        final position = _scrollController.position;
+        final target = previousPixels.clamp(
+          position.minScrollExtent,
+          position.maxScrollExtent,
+        );
+        if ((position.pixels - target).abs() > 1) {
+          _scrollController.jumpTo(target);
+        }
         return;
       }
       final position = _scrollController.position;

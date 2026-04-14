@@ -11,7 +11,7 @@ use crate::{
     app_server_overrides::{AppServerThreadOverrides, AppServerTurnOverrides, simple_sandbox_policy},
     hooks::{
         HookEvent, HookLifecycleState, HookResult, HookTelemetry, append_prompt_segments,
-        maybe_run_project_hook, qa_archive_payload, qa_create_payload, worker_archive_payload,
+        compaction_payload, maybe_run_project_hook, qa_archive_payload, qa_create_payload, worker_archive_payload,
         worker_create_payload,
     },
     models::{BridgeAgentSummary, BridgeAppStateSnapshot, BridgeInstanceSummary, PendingApproval, ThreadCachePayload},
@@ -23,6 +23,15 @@ const HOOK_LIFECYCLE_STATE_KEY: &str = "robdexHookLifecycle";
 const HOOK_TELEMETRY_KEY: &str = "robdexHookTelemetry";
 const PROJECT_HOOK_TELEMETRY_KEY: &str = "robdexRecentHookTelemetry";
 const LIVE_PROCESSES_KEY: &str = "robdexLiveProcesses";
+const COMPACTION_STATE_KEY: &str = "robdexCompaction";
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CompactionState {
+    pub count: u64,
+    #[serde(default)]
+    pub last_compacted_at: Option<u64>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -138,9 +147,8 @@ struct ScopedContext {
 }
 
 #[derive(Debug, Clone)]
-struct SenderThreadContext {
-    project_path: String,
-    project_cwd: String,
+struct ExplicitThreadSettings {
+    cwd: String,
     approval_policy: Option<String>,
     sandbox_mode: Option<String>,
     network_access: Option<bool>,
@@ -154,6 +162,57 @@ struct SenderThreadContext {
     base_instructions: Option<String>,
     developer_instructions: Option<String>,
     persist_extended_history: Option<bool>,
+    service_name: Option<String>,
+    ephemeral: Option<bool>,
+    dynamic_tools: Option<Value>,
+}
+
+impl ExplicitThreadSettings {
+    fn to_app_server_thread_overrides(&self) -> AppServerThreadOverrides {
+        AppServerThreadOverrides {
+            cwd: Some(self.cwd.clone()),
+            approval_policy: self.approval_policy.clone().map(Value::String),
+            sandbox: self.sandbox_mode.clone(),
+            model: self.model.clone(),
+            model_provider: self.model_provider.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
+            service_tier: self.service_tier.clone(),
+            approvals_reviewer: self.approvals_reviewer.clone(),
+            personality: self.personality.clone(),
+            config: self.config.clone(),
+            base_instructions: self.base_instructions.clone(),
+            developer_instructions: self.developer_instructions.clone(),
+            service_name: self.service_name.clone(),
+            ephemeral: self.ephemeral,
+            persist_extended_history: self.persist_extended_history,
+            dynamic_tools: self.dynamic_tools.clone(),
+        }
+    }
+
+    fn to_registration_payload(&self, thread: Value, project_path: &str, role: &str) -> Value {
+        build_tracked_thread_registration_payload(
+            thread,
+            project_path,
+            &self.cwd,
+            role,
+            self.approval_policy.as_deref(),
+            self.sandbox_mode.as_deref(),
+            self.network_access,
+            self.model.as_deref(),
+            self.model_provider.as_deref(),
+            self.reasoning_effort.as_deref(),
+            self.service_tier.clone(),
+            self.approvals_reviewer.clone(),
+            self.personality.clone(),
+            self.config.clone(),
+            self.base_instructions.as_deref(),
+            self.developer_instructions.as_deref(),
+            self.persist_extended_history,
+            self.service_name.as_deref(),
+            self.ephemeral,
+            self.dynamic_tools.clone(),
+        )
+    }
 }
 
 pub async fn make_app_state_snapshot(
@@ -179,7 +238,10 @@ pub async fn make_app_state_snapshot(
         thread_cache.context_window_status_by_thread_id.clear();
     }
     let persisted_state_value = runtime.state_document_value().await;
-    let state = parse_state(&persisted_state_value);
+    let mut state = parse_state(&persisted_state_value);
+    if prune_dead_live_processes_from_state(&mut state) {
+        persist_state(runtime, &state).await?;
+    }
     let state_value = bridge_state_payload(&state);
     let mut pending_approvals = runtime.pending_approvals().await;
     pending_approvals.sort_by(|lhs, rhs| {
@@ -341,6 +403,7 @@ fn bridge_state_payload(state: &PersistedState) -> Value {
                     "ephemeral": agent.ephemeral,
                     "dynamicTools": agent.dynamic_tools,
                     "robdexHookLifecycle": agent.extras.get(HOOK_LIFECYCLE_STATE_KEY).cloned(),
+                    "robdexCompaction": agent.extras.get(COMPACTION_STATE_KEY).cloned(),
                     "robdexLiveProcesses": agent.extras.get(LIVE_PROCESSES_KEY).cloned(),
                 }),
             );
@@ -503,79 +566,45 @@ pub async fn execute_bridge_command(
                         .and_then(Value::as_str)
                         .map(str::to_string)
                 });
-            let reasoning_effort = payload
-                .get("reasoningEffort")
+            let approval_policy = payload
+                .get("approvalPolicy")
                 .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| role_default_reasoning_effort(&state, project_path, role));
-            let params = AppServerThreadOverrides {
-                cwd: Some(cwd.clone()),
-                approval_policy: payload.get("approvalPolicy").cloned(),
-                sandbox: sandbox_mode,
-                model: payload
-                    .get("model")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .or_else(|| role_default_model(&state, project_path, role)),
-                reasoning_effort,
-                developer_instructions: payload
-                    .get("developerInstructions")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .or_else(|| developer_instructions_for_role(&state, role, project_path, Some(cwd.as_str()))),
-                base_instructions: payload
-                    .get("baseInstructions")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .or_else(|| resolve_role_instructions_for(role).ok().flatten()),
-                config: payload.get("config").cloned(),
-                service_tier: payload.get("serviceTier").cloned(),
-                model_provider: payload
-                    .get("modelProvider")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .or_else(|| {
-                        state
-                            .projects
-                            .values()
-                            .find(|project| project.project_root.as_deref() == project_path)
-                            .and_then(|project| project.preferred_model_provider.clone())
-                    }),
-                approvals_reviewer: payload.get("approvalsReviewer").cloned(),
-                personality: payload.get("personality").cloned(),
-                service_name: payload.get("serviceName").and_then(Value::as_str).map(str::to_string),
-                ephemeral: payload.get("ephemeral").and_then(Value::as_bool),
-                dynamic_tools: payload.get("dynamicTools").cloned(),
-                ..Default::default()
-            }
-            .thread_start_params();
+                .map(str::to_string);
+            let settings = explicit_thread_settings_for_new_thread(
+                &state,
+                &json!({
+                    "modelID": payload.get("model").cloned().unwrap_or(Value::Null),
+                    "modelProvider": payload.get("modelProvider").cloned().unwrap_or(Value::Null),
+                    "reasoningEffort": payload.get("reasoningEffort").cloned().unwrap_or(Value::Null),
+                    "serviceTier": payload.get("serviceTier").cloned().unwrap_or(Value::Null),
+                    "approvalsReviewer": payload.get("approvalsReviewer").cloned().unwrap_or(Value::Null),
+                    "personality": payload.get("personality").cloned().unwrap_or(Value::Null),
+                    "config": payload.get("config").cloned().unwrap_or(Value::Null),
+                    "baseInstructions": payload.get("baseInstructions").cloned().unwrap_or(Value::Null),
+                    "developerInstructions": payload.get("developerInstructions").cloned().unwrap_or(Value::Null),
+                    "persistExtendedHistory": payload.get("persistExtendedHistory").cloned().unwrap_or(Value::Null),
+                    "serviceName": payload.get("serviceName").cloned().unwrap_or(Value::Null),
+                    "ephemeral": payload.get("ephemeral").cloned().unwrap_or(Value::Null),
+                    "dynamicTools": payload.get("dynamicTools").cloned().unwrap_or(Value::Null),
+                }),
+                project_path.unwrap_or(""),
+                &cwd,
+                role,
+                approval_policy,
+                sandbox_mode,
+                payload.get("networkAccess").and_then(Value::as_bool),
+            );
+            let params = settings.to_app_server_thread_overrides().thread_start_params();
             let result = app_server_request_json(runtime, "thread/start", params).await?;
             if let Some(project_path) = project_path {
                 let mut next_state = parse_state(&runtime.state_document_value().await);
                 register_tracked_thread(
                     &mut next_state,
-                    &json!({
-                        "thread": result.get("thread").cloned().unwrap_or(result.clone()),
-                        "projectPath": project_path,
-                        "preferredCWD": cwd,
-                        "role": role.unwrap_or("worker"),
-                        "approvalPolicy": payload.get("approvalPolicy").cloned().unwrap_or(Value::Null),
-                        "sandboxMode": payload.get("sandbox").cloned().unwrap_or(Value::Null),
-                        "networkAccess": payload.get("networkAccess").cloned().unwrap_or(Value::Null),
-                        "modelID": payload.get("model").cloned().unwrap_or(Value::Null),
-                        "modelProvider": payload.get("modelProvider").cloned().unwrap_or(Value::Null),
-                        "reasoningEffort": payload.get("reasoningEffort").cloned().unwrap_or(Value::Null),
-                        "serviceTier": payload.get("serviceTier").cloned().unwrap_or(Value::Null),
-                        "approvalsReviewer": payload.get("approvalsReviewer").cloned().unwrap_or(Value::Null),
-                        "personality": payload.get("personality").cloned().unwrap_or(Value::Null),
-                        "config": payload.get("config").cloned().unwrap_or(Value::Null),
-                        "baseInstructions": payload.get("baseInstructions").cloned().unwrap_or(Value::Null),
-                        "developerInstructions": payload.get("developerInstructions").cloned().unwrap_or(Value::Null),
-                        "persistExtendedHistory": payload.get("persistExtendedHistory").cloned().unwrap_or(Value::Null),
-                        "serviceName": payload.get("serviceName").cloned().unwrap_or(Value::Null),
-                        "ephemeral": payload.get("ephemeral").cloned().unwrap_or(Value::Null),
-                        "dynamicTools": payload.get("dynamicTools").cloned().unwrap_or(Value::Null),
-                    }),
+                    &settings.to_registration_payload(
+                        result.get("thread").cloned().unwrap_or(result.clone()),
+                        project_path,
+                        role.unwrap_or("worker"),
+                    ),
                 )?;
                 persist_state(runtime, &next_state).await?;
             }
@@ -597,65 +626,23 @@ pub async fn execute_bridge_command(
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| tracked_sandbox_mode_for_thread(&state, &thread_id));
-            let model = payload
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| tracked_model_for_thread(&state, &thread_id));
-            let reasoning_effort = payload
-                .get("reasoningEffort")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| tracked_reasoning_effort_for_thread(&state, &thread_id));
-            let params = AppServerThreadOverrides {
-                cwd: cwd.clone(),
-                approval_policy,
-                sandbox: sandbox_mode,
-                model,
-                reasoning_effort,
-                base_instructions: payload
-                    .get("baseInstructions")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .or_else(|| tracked_base_instructions_for_thread(&state, &thread_id)),
-                developer_instructions: payload
-                    .get("developerInstructions")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .or_else(|| tracked_developer_instructions_for_thread(&state, &thread_id))
-                    .or_else(|| developer_instructions_for_role(
-                    &state,
-                    role.as_deref(),
-                    tracked_project_path_for_thread(&state, &thread_id).as_deref(),
-                    cwd.as_deref(),
-                )),
-                config: payload.get("config").cloned().or_else(|| tracked_config_for_thread(&state, &thread_id)),
-                service_tier: payload.get("serviceTier").cloned().or_else(|| tracked_service_tier_for_thread(&state, &thread_id)),
-                model_provider: payload
-                    .get("modelProvider")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .or_else(|| tracked_model_provider_for_thread(&state, &thread_id)),
-                approvals_reviewer: payload
-                    .get("approvalsReviewer")
-                    .cloned()
-                    .or_else(|| tracked_approvals_reviewer_for_thread(&state, &thread_id)),
-                personality: payload.get("personality").cloned().or_else(|| tracked_personality_for_thread(&state, &thread_id)),
-                persist_extended_history: payload
-                    .get("persistExtendedHistory")
-                    .and_then(Value::as_bool)
-                    .or_else(|| tracked_persist_extended_history_for_thread(&state, &thread_id))
-                    .or(Some(true)),
-                ..Default::default()
-            }
-            .thread_resume_params(
+            let settings = explicit_thread_settings_for_existing_thread(
+                &state,
+                &payload,
+                &thread_id,
+                role.as_deref(),
+                cwd.clone().unwrap_or_default(),
+                approval_policy.and_then(|value| value.as_str().map(str::to_string)),
+                sandbox_mode,
+            );
+            let params = settings.to_app_server_thread_overrides().thread_resume_params(
                 thread_id.clone(),
                 payload.get("history").cloned(),
                 payload.get("path").cloned(),
             );
             let result = app_server_request_json(runtime, "thread/resume", params).await?;
             let mut state = parse_state(&runtime.state_document_value().await);
-            if update_tracked_thread_session_config(&mut state, &thread_id, &payload) {
+            if apply_explicit_thread_settings_to_tracked_thread(&mut state, &thread_id, &settings) {
                 persist_state(runtime, &state).await?;
             }
             Ok(success(json!({"type":"thread","payload": summarize_thread_payload(&result)})))
@@ -676,86 +663,29 @@ pub async fn execute_bridge_command(
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| tracked_sandbox_mode_for_thread(&state, &thread_id));
-            let model = payload
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| tracked_model_for_thread(&state, &thread_id));
-            let reasoning_effort = payload
-                .get("reasoningEffort")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| tracked_reasoning_effort_for_thread(&state, &thread_id));
-            let params = AppServerThreadOverrides {
-                cwd: cwd.clone(),
-                approval_policy,
-                sandbox: sandbox_mode,
-                model,
-                reasoning_effort,
-                model_provider: payload
-                    .get("modelProvider")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .or_else(|| tracked_model_provider_for_thread(&state, &thread_id)),
-                config: payload.get("config").cloned().or_else(|| tracked_config_for_thread(&state, &thread_id)),
-                base_instructions: payload
-                    .get("baseInstructions")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .or_else(|| tracked_base_instructions_for_thread(&state, &thread_id)),
-                developer_instructions: payload
-                    .get("developerInstructions")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .or_else(|| tracked_developer_instructions_for_thread(&state, &thread_id))
-                    .or_else(|| developer_instructions_for_role(
-                    &state,
-                    role.as_deref(),
-                    tracked_project_path_for_thread(&state, &thread_id).as_deref(),
-                    cwd.as_deref(),
-                )),
-                service_tier: payload.get("serviceTier").cloned().or_else(|| tracked_service_tier_for_thread(&state, &thread_id)),
-                approvals_reviewer: payload
-                    .get("approvalsReviewer")
-                    .cloned()
-                    .or_else(|| tracked_approvals_reviewer_for_thread(&state, &thread_id)),
-                personality: payload.get("personality").cloned().or_else(|| tracked_personality_for_thread(&state, &thread_id)),
-                ephemeral: payload.get("ephemeral").and_then(Value::as_bool),
-                persist_extended_history: payload
-                    .get("persistExtendedHistory")
-                    .and_then(Value::as_bool)
-                    .or_else(|| tracked_persist_extended_history_for_thread(&state, &thread_id))
-                    .or(Some(true)),
-                ..Default::default()
-            }
-            .thread_fork_params(thread_id.clone(), payload.get("path").cloned());
+            let settings = explicit_thread_settings_for_existing_thread(
+                &state,
+                &payload,
+                &thread_id,
+                role.as_deref(),
+                cwd.clone().unwrap_or_default(),
+                approval_policy.and_then(|value| value.as_str().map(str::to_string)),
+                sandbox_mode,
+            );
+            let params = settings
+                .to_app_server_thread_overrides()
+                .thread_fork_params(thread_id.clone(), payload.get("path").cloned());
             let result = app_server_request_json(runtime, "thread/fork", params).await?;
             if let Some(new_thread) = result.get("thread").cloned() {
                 let mut next_state = parse_state(&runtime.state_document_value().await);
                 register_tracked_thread(
                     &mut next_state,
-                    &json!({
-                        "thread": new_thread,
-                        "projectPath": tracked_project_path_for_thread(&state, &thread_id).unwrap_or_else(|| cwd.clone().unwrap_or_default()),
-                        "preferredCWD": cwd,
-                        "role": role,
-                        "approvalPolicy": payload.get("approvalPolicy").cloned().unwrap_or(Value::Null),
-                        "sandboxMode": payload.get("sandbox").cloned().unwrap_or(Value::Null),
-                        "networkAccess": payload.get("networkAccess").cloned().unwrap_or(Value::Null),
-                        "modelID": payload.get("model").cloned().unwrap_or(Value::Null),
-                        "modelProvider": payload.get("modelProvider").cloned().unwrap_or(Value::Null),
-                        "reasoningEffort": payload.get("reasoningEffort").cloned().unwrap_or(Value::Null),
-                        "serviceTier": payload.get("serviceTier").cloned().unwrap_or(Value::Null),
-                        "approvalsReviewer": payload.get("approvalsReviewer").cloned().unwrap_or(Value::Null),
-                        "personality": payload.get("personality").cloned().unwrap_or(Value::Null),
-                        "config": payload.get("config").cloned().unwrap_or(Value::Null),
-                        "baseInstructions": payload.get("baseInstructions").cloned().unwrap_or(Value::Null),
-                        "developerInstructions": payload.get("developerInstructions").cloned().unwrap_or(Value::Null),
-                        "persistExtendedHistory": payload.get("persistExtendedHistory").cloned().unwrap_or(Value::Null),
-                        "serviceName": payload.get("serviceName").cloned().unwrap_or(Value::Null),
-                        "ephemeral": payload.get("ephemeral").cloned().unwrap_or(Value::Null),
-                        "dynamicTools": payload.get("dynamicTools").cloned().unwrap_or(Value::Null),
-                    }),
+                    &settings.to_registration_payload(
+                        new_thread,
+                        &tracked_project_path_for_thread(&state, &thread_id)
+                            .unwrap_or_else(|| cwd.clone().unwrap_or_default()),
+                        role.as_deref().unwrap_or("worker"),
+                    ),
                 )?;
                 persist_state(runtime, &next_state).await?;
             }
@@ -1222,6 +1152,65 @@ async fn app_server_request_json(
 
 pub(crate) fn parse_state(value: &Value) -> PersistedState {
     serde_json::from_value(value.clone()).unwrap_or_default()
+}
+
+pub(crate) fn tracked_project_identity_for_thread(
+    value: &Value,
+    thread_id: &str,
+) -> Option<(String, String, String)> {
+    let state = parse_state(value);
+    state.projects.values().find_map(|project| {
+        let matches_agent = project.agents.contains_key(thread_id);
+        let matches_orchestrator = project.orchestrator_thread_id.as_deref() == Some(thread_id);
+        if !matches_agent && !matches_orchestrator {
+            return None;
+        }
+        let project_root = project.project_root.clone()?;
+        let project_id = project.id.clone().unwrap_or_else(|| project_root.clone());
+        let project_name = project.name.clone().unwrap_or_else(|| project_id.clone());
+        Some((project_id, project_name, project_root))
+    })
+}
+
+fn prune_dead_live_processes_from_state(state: &mut PersistedState) -> bool {
+    let mut changed = false;
+    for project in state.projects.values_mut() {
+        for agent in project.agents.values_mut() {
+            let Some(value) = agent.extras.get(LIVE_PROCESSES_KEY).cloned() else {
+                continue;
+            };
+            let Some(mut processes) = serde_json::from_value::<Vec<LiveProcessRecord>>(value).ok() else {
+                continue;
+            };
+            let before = processes.len();
+            processes.retain(live_process_is_alive);
+            if processes.len() != before {
+                agent.extras.insert(
+                    LIVE_PROCESSES_KEY.to_string(),
+                    serde_json::to_value(&processes).unwrap_or_else(|_| Value::Array(Vec::new())),
+                );
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        state.updated_at = Some(unix_now());
+    }
+    changed
+}
+
+fn live_process_is_alive(process: &LiveProcessRecord) -> bool {
+    let target = process
+        .process_group_id
+        .filter(|pgid| *pgid > 0)
+        .map(|pgid| -(pgid as libc::pid_t))
+        .unwrap_or(process.pid as libc::pid_t);
+    let rc = unsafe { libc::kill(target, 0) };
+    if rc == 0 {
+        return true;
+    }
+    let error = std::io::Error::last_os_error();
+    error.raw_os_error() == Some(libc::EPERM)
 }
 
 fn deserialize_optional_timestamp<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
@@ -1770,134 +1759,247 @@ fn set_tracked_thread_display_name(state: &mut PersistedState, thread_id: &str, 
     }
 }
 
-fn update_tracked_thread_session_config(
+fn apply_explicit_thread_settings_to_tracked_thread(
     state: &mut PersistedState,
     thread_id: &str,
-    payload: &Value,
+    settings: &ExplicitThreadSettings,
 ) -> bool {
     for project in state.projects.values_mut() {
         if let Some(agent) = project.agents.get_mut(thread_id) {
-            let mut changed = false;
-            if let Some(approval_policy) = payload.get("approvalPolicy").and_then(Value::as_str) {
-                let next = Some(approval_policy.to_string());
-                if agent.approval_policy != next {
-                    agent.approval_policy = next;
-                    changed = true;
-                }
-            }
-            if let Some(sandbox_mode) = payload.get("sandbox").and_then(Value::as_str) {
-                let next = Some(sandbox_mode.to_string());
-                if agent.sandbox_mode != next {
-                    agent.sandbox_mode = next;
-                    changed = true;
-                }
-            }
-            let network_access = payload.get("networkAccess").and_then(Value::as_bool);
-            if agent.network_access != network_access {
-                agent.network_access = network_access;
-                changed = true;
-            }
-            if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
-                let next = Some(cwd.to_string());
-                if agent.cwd != next {
-                    agent.cwd = next;
-                    changed = true;
-                }
-            }
-            if payload.get("model").is_some() || payload.get("modelID").is_some() {
-                let next = payload
-                    .get("model")
-                    .or_else(|| payload.get("modelID"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                if agent.model != next {
-                    agent.model = next;
-                    changed = true;
-                }
-            }
-            if payload.get("modelProvider").is_some() {
-                let next = payload.get("modelProvider").and_then(Value::as_str).map(str::to_string);
-                if agent.model_provider != next {
-                    agent.model_provider = next;
-                    changed = true;
-                }
-            }
-            if payload.get("reasoningEffort").is_some() {
-                let next = payload
-                    .get("reasoningEffort")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                if agent.reasoning_effort != next {
-                    agent.reasoning_effort = next;
-                    changed = true;
-                }
-            }
-            if payload.get("serviceTier").is_some() {
-                let next = payload.get("serviceTier").cloned().filter(|value| !value.is_null());
-                if agent.service_tier != next {
-                    agent.service_tier = next;
-                    changed = true;
-                }
-            }
-            if payload.get("approvalsReviewer").is_some() {
-                let next = payload
-                    .get("approvalsReviewer")
-                    .cloned()
-                    .filter(|value| !value.is_null());
-                if agent.approvals_reviewer != next {
-                    agent.approvals_reviewer = next;
-                    changed = true;
-                }
-            }
-            if payload.get("personality").is_some() {
-                let next = payload.get("personality").cloned().filter(|value| !value.is_null());
-                if agent.personality != next {
-                    agent.personality = next;
-                    changed = true;
-                }
-            }
-            if payload.get("config").is_some() {
-                let next = payload.get("config").cloned().filter(|value| !value.is_null());
-                if agent.config != next {
-                    agent.config = next;
-                    changed = true;
-                }
-            }
-            if payload.get("baseInstructions").is_some() {
-                let next = payload
-                    .get("baseInstructions")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                if agent.base_instructions != next {
-                    agent.base_instructions = next;
-                    changed = true;
-                }
-            }
-            if payload.get("developerInstructions").is_some() {
-                let next = payload
-                    .get("developerInstructions")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                if agent.developer_instructions != next {
-                    agent.developer_instructions = next;
-                    changed = true;
-                }
-            }
-            if payload.get("persistExtendedHistory").is_some() {
-                let next = payload.get("persistExtendedHistory").and_then(Value::as_bool);
-                if agent.persist_extended_history != next {
-                    agent.persist_extended_history = next;
-                    changed = true;
-                }
-            }
-            if changed {
-                project.updated_at = Some(unix_now());
-                state.updated_at = Some(unix_now());
-            }
-            return changed;
+            agent.cwd = Some(settings.cwd.clone());
+            agent.approval_policy = settings.approval_policy.clone();
+            agent.sandbox_mode = settings.sandbox_mode.clone();
+            agent.network_access = settings.network_access;
+            agent.model = settings.model.clone();
+            agent.model_provider = settings.model_provider.clone();
+            agent.reasoning_effort = settings.reasoning_effort.clone();
+            agent.service_tier = settings.service_tier.clone();
+            agent.approvals_reviewer = settings.approvals_reviewer.clone();
+            agent.personality = settings.personality.clone();
+            agent.config = settings.config.clone();
+            agent.base_instructions = settings.base_instructions.clone();
+            agent.developer_instructions = settings.developer_instructions.clone();
+            agent.persist_extended_history = settings.persist_extended_history;
+            agent.service_name = settings.service_name.clone();
+            agent.ephemeral = settings.ephemeral;
+            agent.dynamic_tools = settings.dynamic_tools.clone();
+            project.updated_at = Some(unix_now());
+            state.updated_at = Some(unix_now());
+            return true;
         }
     }
     false
+}
+
+fn build_tracked_thread_registration_payload(
+    thread: Value,
+    project_path: &str,
+    preferred_cwd: &str,
+    role: &str,
+    approval_policy: Option<&str>,
+    sandbox_mode: Option<&str>,
+    network_access: Option<bool>,
+    model: Option<&str>,
+    model_provider: Option<&str>,
+    reasoning_effort: Option<&str>,
+    service_tier: Option<Value>,
+    approvals_reviewer: Option<Value>,
+    personality: Option<Value>,
+    config: Option<Value>,
+    base_instructions: Option<&str>,
+    developer_instructions: Option<&str>,
+    persist_extended_history: Option<bool>,
+    service_name: Option<&str>,
+    ephemeral: Option<bool>,
+    dynamic_tools: Option<Value>,
+) -> Value {
+    json!({
+        "thread": thread,
+        "projectPath": project_path,
+        "preferredCWD": preferred_cwd,
+        "role": role,
+        "approvalPolicy": approval_policy,
+        "sandboxMode": sandbox_mode,
+        "networkAccess": network_access,
+        "modelID": model,
+        "modelProvider": model_provider,
+        "reasoningEffort": reasoning_effort,
+        "serviceTier": service_tier,
+        "approvalsReviewer": approvals_reviewer,
+        "personality": personality,
+        "config": config,
+        "baseInstructions": base_instructions,
+        "developerInstructions": developer_instructions,
+        "persistExtendedHistory": persist_extended_history,
+        "serviceName": service_name,
+        "ephemeral": ephemeral,
+        "dynamicTools": dynamic_tools,
+    })
+}
+
+fn preferred_model_provider_for_project(
+    state: &PersistedState,
+    project_path: Option<&str>,
+) -> Option<String> {
+    let target_path = normalize_path(project_path?.to_string());
+    state.projects.values().find_map(|project| {
+        project.project_root.as_ref().and_then(|root| {
+            (normalize_path(root.clone()) == target_path)
+                .then(|| project.preferred_model_provider.clone())
+                .flatten()
+        })
+    })
+}
+
+fn explicit_thread_settings_for_new_thread(
+    state: &PersistedState,
+    payload: &Value,
+    project_path: &str,
+    cwd: &str,
+    role: Option<&str>,
+    approval_policy: Option<String>,
+    sandbox_mode: Option<String>,
+    network_access: Option<bool>,
+) -> ExplicitThreadSettings {
+    ExplicitThreadSettings {
+        cwd: cwd.to_string(),
+        approval_policy,
+        sandbox_mode,
+        network_access,
+        model: payload
+            .get("modelID")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| role_default_model(state, Some(project_path), role)),
+        model_provider: payload
+            .get("modelProvider")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| preferred_model_provider_for_project(state, Some(project_path))),
+        reasoning_effort: payload
+            .get("reasoningEffort")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| role_default_reasoning_effort(state, Some(project_path), role)),
+        service_tier: payload.get("serviceTier").cloned().filter(|value| !value.is_null()),
+        approvals_reviewer: payload
+            .get("approvalsReviewer")
+            .cloned()
+            .filter(|value| !value.is_null()),
+        personality: payload.get("personality").cloned().filter(|value| !value.is_null()),
+        config: payload.get("config").cloned().filter(|value| !value.is_null()),
+        base_instructions: payload
+            .get("baseInstructions")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| resolve_role_instructions_for(role).ok().flatten()),
+        developer_instructions: payload
+            .get("developerInstructions")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| developer_instructions_for_role(state, role, Some(project_path), Some(cwd))),
+        persist_extended_history: payload.get("persistExtendedHistory").and_then(Value::as_bool),
+        service_name: payload
+            .get("serviceName")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        ephemeral: payload.get("ephemeral").and_then(Value::as_bool),
+        dynamic_tools: payload.get("dynamicTools").cloned().filter(|value| !value.is_null()),
+    }
+}
+
+fn explicit_thread_settings_for_existing_thread(
+    state: &PersistedState,
+    payload: &Value,
+    thread_id: &str,
+    role: Option<&str>,
+    cwd: String,
+    approval_policy: Option<String>,
+    sandbox_mode: Option<String>,
+) -> ExplicitThreadSettings {
+    let project_path = tracked_project_path_for_thread(state, thread_id);
+    ExplicitThreadSettings {
+        cwd: cwd.clone(),
+        approval_policy,
+        sandbox_mode: sandbox_mode.clone(),
+        network_access: effective_network_access_for_sandbox(
+            sandbox_mode.as_deref(),
+            payload.get("networkAccess").and_then(Value::as_bool),
+            tracked_network_access_for_thread(state, thread_id),
+        ),
+        model: payload
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| tracked_model_for_thread(state, thread_id)),
+        model_provider: payload
+            .get("modelProvider")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| tracked_model_provider_for_thread(state, thread_id))
+            .or_else(|| preferred_model_provider_for_project(state, project_path.as_deref())),
+        reasoning_effort: payload
+            .get("reasoningEffort")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| tracked_reasoning_effort_for_thread(state, thread_id)),
+        service_tier: payload
+            .get("serviceTier")
+            .cloned()
+            .filter(|value| !value.is_null())
+            .or_else(|| tracked_service_tier_for_thread(state, thread_id)),
+        approvals_reviewer: payload
+            .get("approvalsReviewer")
+            .cloned()
+            .filter(|value| !value.is_null())
+            .or_else(|| tracked_approvals_reviewer_for_thread(state, thread_id)),
+        personality: payload
+            .get("personality")
+            .cloned()
+            .filter(|value| !value.is_null())
+            .or_else(|| tracked_personality_for_thread(state, thread_id)),
+        config: payload
+            .get("config")
+            .cloned()
+            .filter(|value| !value.is_null())
+            .or_else(|| tracked_config_for_thread(state, thread_id)),
+        base_instructions: payload
+            .get("baseInstructions")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| tracked_base_instructions_for_thread(state, thread_id))
+            .or_else(|| resolve_role_instructions_for(role).ok().flatten()),
+        developer_instructions: payload
+            .get("developerInstructions")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| tracked_developer_instructions_for_thread(state, thread_id))
+            .or_else(|| developer_instructions_for_role(
+                state,
+                role,
+                project_path.as_deref(),
+                Some(cwd.as_str()),
+            )),
+        persist_extended_history: payload
+            .get("persistExtendedHistory")
+            .and_then(Value::as_bool)
+            .or_else(|| tracked_persist_extended_history_for_thread(state, thread_id))
+            .or(Some(true)),
+        service_name: payload
+            .get("serviceName")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| tracked_service_name_for_thread(state, thread_id)),
+        ephemeral: payload
+            .get("ephemeral")
+            .and_then(Value::as_bool)
+            .or_else(|| tracked_ephemeral_for_thread(state, thread_id)),
+        dynamic_tools: payload
+            .get("dynamicTools")
+            .cloned()
+            .filter(|value| !value.is_null())
+            .or_else(|| tracked_dynamic_tools_for_thread(state, thread_id)),
+    }
 }
 
 fn summarize_thread_payload(result: &Value) -> Value {
@@ -2080,60 +2182,62 @@ fn tracked_project_path_for_thread(state: &PersistedState, thread_id: &str) -> O
     })
 }
 
-fn sender_thread_context(state: &PersistedState, thread_id: &str) -> Option<SenderThreadContext> {
-    let default_approval_policy = state
+fn authoritative_spawn_defaults_for_project(
+    state: &PersistedState,
+    project_path: &str,
+) -> Option<ExplicitThreadSettings> {
+    let target_path = normalize_path(project_path.to_string());
+    let project = state.projects.values().find(|project| {
+        project
+            .project_root
+            .as_ref()
+            .map(|value| normalize_path(value.clone()) == target_path)
+            .unwrap_or(false)
+    })?;
+
+    let cwd = normalize_path(
+        project
+            .cwd
+            .clone()
+            .or_else(|| project.project_root.clone())
+            .unwrap_or_default(),
+    );
+    let approval_policy = state
         .global_configs
         .get("approvalPolicy")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let default_sandbox_mode = state
+    let sandbox_mode = state
         .global_configs
         .get("sandboxMode")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let default_network_access = state
-        .global_configs
-        .get("networkAccess")
-        .and_then(Value::as_bool);
+    let default_network_access = state.global_configs.get("networkAccess").and_then(Value::as_bool);
+    let network_access = effective_network_access_for_sandbox(
+        sandbox_mode.as_deref(),
+        None,
+        default_network_access,
+    );
 
-    for project in state.projects.values() {
-        let agent = project.agents.get(thread_id);
-        if agent.is_none() && project.orchestrator_thread_id.as_deref() != Some(thread_id) {
-            continue;
-        }
-        let project_path = normalize_path(project.project_root.clone().unwrap_or_default());
-        let project_cwd = normalize_path(project.cwd.clone().unwrap_or_else(|| project_path.clone()));
-        let sandbox_mode = agent
-            .and_then(|agent| agent.sandbox_mode.clone())
-            .or(default_sandbox_mode.clone());
-        let network_access = effective_network_access_for_sandbox(
-            sandbox_mode.as_deref(),
-            agent.and_then(|agent| agent.network_access),
-            default_network_access,
-        );
-        return Some(SenderThreadContext {
-            project_path,
-            project_cwd,
-            approval_policy: agent
-                .and_then(|agent| agent.approval_policy.clone())
-                .or(default_approval_policy.clone()),
-            sandbox_mode,
-            network_access,
-            model: agent.and_then(|agent| agent.model.clone()),
-            model_provider: agent
-                .and_then(|agent| agent.model_provider.clone())
-                .or(project.preferred_model_provider.clone()),
-            reasoning_effort: agent.and_then(|agent| agent.reasoning_effort.clone()),
-            service_tier: agent.and_then(|agent| agent.service_tier.clone()),
-            approvals_reviewer: agent.and_then(|agent| agent.approvals_reviewer.clone()),
-            personality: agent.and_then(|agent| agent.personality.clone()),
-            config: agent.and_then(|agent| agent.config.clone()),
-            base_instructions: agent.and_then(|agent| agent.base_instructions.clone()),
-            developer_instructions: agent.and_then(|agent| agent.developer_instructions.clone()),
-            persist_extended_history: agent.and_then(|agent| agent.persist_extended_history),
-        });
-    }
-    None
+    Some(ExplicitThreadSettings {
+        cwd,
+        approval_policy,
+        sandbox_mode,
+        network_access,
+        model: None,
+        model_provider: project.preferred_model_provider.clone(),
+        reasoning_effort: None,
+        service_tier: None,
+        approvals_reviewer: None,
+        personality: None,
+        config: None,
+        base_instructions: None,
+        developer_instructions: None,
+        persist_extended_history: Some(true),
+        service_name: None,
+        ephemeral: None,
+        dynamic_tools: None,
+    })
 }
 
 fn effective_network_access_for_sandbox(
@@ -2169,7 +2273,14 @@ fn role_default_model(state: &PersistedState, project_path: Option<&str>, role: 
         Some("orchestrator") => "orchestrator",
         Some("worker") | Some("hidden") | Some("operator") | _ => "worker",
     };
-    let project = state.projects.values().find(|project| project.project_root.as_deref() == project_path)?;
+    let target_path = normalize_path(project_path?.to_string());
+    let project = state.projects.values().find(|project| {
+        project
+            .project_root
+            .as_ref()
+            .map(|value| normalize_path(value.clone()) == target_path)
+            .unwrap_or(false)
+    })?;
     project
         .configs
         .get("roleModelReasoningDefaults")
@@ -2189,10 +2300,14 @@ fn role_default_reasoning_effort(
         Some("orchestrator") => "orchestrator",
         Some("worker") | Some("hidden") | Some("operator") | _ => "worker",
     };
-    let project = state
-        .projects
-        .values()
-        .find(|project| project.project_root.as_deref() == project_path)?;
+    let target_path = normalize_path(project_path?.to_string());
+    let project = state.projects.values().find(|project| {
+        project
+            .project_root
+            .as_ref()
+            .map(|value| normalize_path(value.clone()) == target_path)
+            .unwrap_or(false)
+    })?;
     project
         .configs
         .get("roleModelReasoningDefaults")
@@ -2209,8 +2324,12 @@ fn developer_instructions_for_role(
     cwd: Option<&str>,
 ) -> Option<String> {
     let role = role?;
+    let normalized_project_path = project_path.map(|value| normalize_path(value.to_string()));
+    let normalized_cwd = cwd.map(|value| normalize_path(value.to_string()));
     let project = state.projects.values().find(|project| {
-        project.project_root.as_deref() == project_path || project.project_root.as_deref() == cwd
+        let project_root = project.project_root.as_ref().map(|value| normalize_path(value.clone()));
+        project_root.as_ref() == normalized_project_path.as_ref()
+            || project_root.as_ref() == normalized_cwd.as_ref()
     })?;
     let configured = project
         .configs
@@ -2434,6 +2553,30 @@ fn tracked_sandbox_mode_for_thread(state: &PersistedState, thread_id: &str) -> O
     default_sandbox_mode
 }
 
+fn tracked_network_access_for_thread(state: &PersistedState, thread_id: &str) -> Option<bool> {
+    let default_sandbox_mode = state
+        .global_configs
+        .get("sandboxMode")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let default_network_access = state.global_configs.get("networkAccess").and_then(Value::as_bool);
+
+    for project in state.projects.values() {
+        if let Some(agent) = project.agents.get(thread_id) {
+            let sandbox_mode = agent
+                .sandbox_mode
+                .clone()
+                .or_else(|| default_sandbox_mode.clone());
+            return effective_network_access_for_sandbox(
+                sandbox_mode.as_deref(),
+                agent.network_access,
+                default_network_access,
+            );
+        }
+    }
+    effective_network_access_for_sandbox(default_sandbox_mode.as_deref(), None, default_network_access)
+}
+
 fn tracked_model_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
     let role = effective_role_for_thread(state, thread_id, None);
     let project_path = tracked_project_path_for_thread(state, thread_id);
@@ -2539,6 +2682,27 @@ fn tracked_persist_extended_history_for_thread(state: &PersistedState, thread_id
     })
 }
 
+fn tracked_service_name_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
+    state
+        .projects
+        .values()
+        .find_map(|project| project.agents.get(thread_id).and_then(|agent| agent.service_name.clone()))
+}
+
+fn tracked_ephemeral_for_thread(state: &PersistedState, thread_id: &str) -> Option<bool> {
+    state
+        .projects
+        .values()
+        .find_map(|project| project.agents.get(thread_id).and_then(|agent| agent.ephemeral))
+}
+
+fn tracked_dynamic_tools_for_thread(state: &PersistedState, thread_id: &str) -> Option<Value> {
+    state
+        .projects
+        .values()
+        .find_map(|project| project.agents.get(thread_id).and_then(|agent| agent.dynamic_tools.clone()))
+}
+
 fn tracked_sandbox_policy_for_thread(state: &PersistedState, thread_id: &str) -> Option<Value> {
     let default_sandbox_mode = state
         .global_configs
@@ -2638,35 +2802,24 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
         payload.get("networkAccess").and_then(Value::as_bool),
         default_network_access,
     );
-    let model = payload
-        .get("modelID")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| role_default_model(&state, Some(project_path.as_str()), role));
-    let model_provider = payload
-        .get("modelProvider")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| {
-            state
-                .projects
-                .values()
-                .find(|project| project.project_root.as_deref() == Some(project_path.as_str()))
-                .and_then(|project| project.preferred_model_provider.clone())
-        });
-    let reasoning_effort = payload
-        .get("reasoningEffort")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| role_default_reasoning_effort(&state, Some(project_path.as_str()), role));
+    let settings = explicit_thread_settings_for_new_thread(
+        &state,
+        payload,
+        &project_path,
+        &cwd,
+        role,
+        approval_policy.clone(),
+        sandbox_mode.clone(),
+        network_access,
+    );
     let (project_id, project_name) = project_identity_for_root(&state, &project_path);
     let hook_spawn_context = json!({
         "approvalPolicy": approval_policy,
         "sandboxMode": sandbox_mode,
         "networkAccess": network_access,
-        "modelID": model,
-        "modelProvider": model_provider,
-        "reasoningEffort": reasoning_effort,
+        "modelID": settings.model,
+        "modelProvider": settings.model_provider,
+        "reasoningEffort": settings.reasoning_effort,
         "serviceTier": payload.get("serviceTier").cloned().unwrap_or(Value::Null),
         "serviceName": payload.get("serviceName").cloned().unwrap_or(Value::Null),
         "ephemeral": payload.get("ephemeral").cloned().unwrap_or(Value::Null),
@@ -2710,39 +2863,28 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
         }
         _ => Default::default(),
     };
-    let params = AppServerThreadOverrides {
-        cwd: Some(cwd.clone()),
-        approval_policy: approval_policy.clone().map(Value::String),
-        sandbox: sandbox_mode.clone(),
-        model: model.clone(),
-        reasoning_effort: reasoning_effort.clone(),
-        developer_instructions: payload
-            .get("developerInstructions")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| developer_instructions_for_role(
-                &state,
-                role,
-                Some(project_path.as_str()),
-                Some(cwd.as_str()),
-            )),
-        base_instructions: payload
-            .get("baseInstructions")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| resolve_role_instructions_for(role).ok().flatten()),
-        config: payload.get("config").cloned(),
-        service_tier: payload.get("serviceTier").cloned(),
-        model_provider,
-        approvals_reviewer: payload.get("approvalsReviewer").cloned(),
-        personality: payload.get("personality").cloned(),
-        service_name: payload.get("serviceName").and_then(Value::as_str).map(str::to_string),
-        ephemeral: payload.get("ephemeral").and_then(Value::as_bool),
-        dynamic_tools: payload.get("dynamicTools").cloned(),
-        ..Default::default()
-    }
-    .thread_start_params();
-    let result = app_server_request_json(runtime, "thread/start", params).await?;
+    let params = settings.to_app_server_thread_overrides().thread_start_params();
+    let result = match app_server_request_json(runtime, "thread/start", params).await {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(hook) = hook_result.result.as_ref() {
+                maybe_compensate_spawn_hook_resources(
+                    runtime,
+                    &mut state,
+                    &project_path,
+                    &project_id,
+                    &project_name,
+                    &display_name_value,
+                    &role_value,
+                    &cwd,
+                    hook,
+                )
+                .await;
+                persist_state(runtime, &state).await?;
+            }
+            return Err(error);
+        }
+    };
     let thread = result
         .get("thread")
         .cloned()
@@ -2750,8 +2892,28 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
     let thread_id = thread
         .get("id")
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("thread/start response missing thread.id"))?
-        .to_string();
+        .ok_or_else(|| anyhow::anyhow!("thread/start response missing thread.id"));
+    let thread_id = match thread_id {
+        Ok(thread_id) => thread_id.to_string(),
+        Err(error) => {
+            if let Some(hook) = hook_result.result.as_ref() {
+                maybe_compensate_spawn_hook_resources(
+                    runtime,
+                    &mut state,
+                    &project_path,
+                    &project_id,
+                    &project_name,
+                    &display_name_value,
+                    &role_value,
+                    &cwd,
+                    hook,
+                )
+                .await;
+                persist_state(runtime, &state).await?;
+            }
+            return Err(error);
+        }
+    };
     if let Some(display_name) = display_name {
         app_server_request_json(
             runtime,
@@ -2765,17 +2927,7 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
     }
     register_tracked_thread(
         &mut state,
-        &json!({
-            "thread": thread,
-            "projectPath": project_path,
-            "preferredCWD": cwd,
-            "role": role_value,
-            "approvalPolicy": approval_policy,
-            "sandboxMode": sandbox_mode,
-            "networkAccess": network_access,
-            "modelID": model,
-            "reasoningEffort": reasoning_effort,
-        }),
+        &settings.to_registration_payload(thread, &project_path, &role_value),
     )?;
     if let Some(display_name) = display_name {
         set_tracked_thread_display_name(&mut state, &thread_id, display_name);
@@ -3084,6 +3236,93 @@ fn persist_live_processes(state: &mut PersistedState, thread_id: &str, processes
     }
 }
 
+fn prune_dead_live_processes_for_thread(state: &mut PersistedState, thread_id: &str) -> bool {
+    let mut processes = persisted_live_processes(state, thread_id);
+    let before = processes.len();
+    processes.retain(live_process_is_alive);
+    if processes.len() == before {
+        return false;
+    }
+    persist_live_processes(state, thread_id, &processes);
+    state.updated_at = Some(unix_now());
+    true
+}
+
+pub(crate) fn increment_compaction_count(
+    state: &mut PersistedState,
+    thread_id: &str,
+) -> Option<CompactionState> {
+    let agent = agent_state_for_thread_mut(state, thread_id)?;
+    let mut current = agent
+        .extras
+        .get(COMPACTION_STATE_KEY)
+        .cloned()
+        .and_then(|value| serde_json::from_value::<CompactionState>(value).ok())
+        .unwrap_or_default();
+    current.count = current.count.saturating_add(1);
+    current.last_compacted_at = Some(unix_now());
+    agent.extras.insert(
+        COMPACTION_STATE_KEY.to_string(),
+        serde_json::to_value(&current).unwrap_or_else(|_| Value::Null),
+    );
+    Some(current)
+}
+
+pub(crate) async fn run_compaction_hook_best_effort(
+    runtime: &BridgeRuntime,
+    thread_id: &str,
+    compaction: &CompactionState,
+) -> Result<()> {
+    let state_value = runtime.state_document_value().await;
+    let mut state = parse_state(&state_value);
+    let Some(agent) = agent_state_for_thread(&state, thread_id).cloned() else {
+        return Ok(());
+    };
+    let project_root = agent.project_root.clone().unwrap_or_default();
+    if project_root.trim().is_empty() {
+        return Ok(());
+    }
+    let (project_id, project_name) = project_identity_for_root(&state, &project_root);
+    let agent_name = agent.display_name.clone().unwrap_or_else(|| thread_id.to_string());
+    let role = agent.role.clone().unwrap_or_else(|| "worker".to_string());
+    let payload = compaction_payload(
+        thread_id,
+        &project_id,
+        &project_name,
+        &project_root,
+        &agent_name,
+        &role,
+        agent.cwd.as_deref(),
+        compaction.count,
+    );
+    let invocation = maybe_run_project_hook(&project_root, HookEvent::Compaction, payload).await;
+    if let Some(telemetry) = invocation.telemetry {
+        persist_agent_hook_telemetry(&mut state, thread_id, &telemetry);
+        record_project_hook_telemetry(
+            &mut state,
+            &project_root,
+            Some(thread_id),
+            &agent_name,
+            &role,
+            &telemetry,
+        );
+        persist_state(runtime, &state).await?;
+        runtime
+            .push_event(crate::models::BridgeEvent::HookFailure {
+                payload: hook_failure_notice(
+                    &project_id,
+                    &project_name,
+                    Some(thread_id),
+                    &agent_name,
+                    &role,
+                    &telemetry,
+                ),
+            })
+            .await;
+    }
+    Ok(())
+}
+
 fn persist_agent_hook_state(state: &mut PersistedState, thread_id: &str, hook_result: &HookResult) {
     if let Some(agent) = agent_state_for_thread_mut(state, thread_id) {
         agent.extras.insert(
@@ -3164,6 +3403,134 @@ fn hook_failure_notice(
     }
 }
 
+async fn maybe_compensate_spawn_hook_resources(
+    runtime: &BridgeRuntime,
+    state: &mut PersistedState,
+    project_root: &str,
+    project_id: &str,
+    project_name: &str,
+    agent_name: &str,
+    role: &str,
+    requested_cwd: &str,
+    hook_result: &HookResult,
+) {
+    let lifecycle = serde_json::to_value(HookLifecycleState::from_hook_result(hook_result)).ok();
+    let event = match role {
+        "qa" => HookEvent::QaArchive,
+        _ => HookEvent::WorkerArchive,
+    };
+    let payload = if role == "qa" {
+        qa_archive_payload(
+            "spawn-failed",
+            project_id,
+            project_name,
+            project_root,
+            agent_name,
+            role,
+            Some(requested_cwd),
+            lifecycle,
+        )
+    } else {
+        worker_archive_payload(
+            "spawn-failed",
+            project_id,
+            project_name,
+            project_root,
+            agent_name,
+            role,
+            Some(requested_cwd),
+            lifecycle,
+        )
+    };
+    let outcome = maybe_run_project_hook(project_root, event, payload).await;
+    if let Some(telemetry) = outcome.telemetry.as_ref() {
+        record_project_hook_telemetry(state, project_root, None, agent_name, role, telemetry);
+        runtime
+            .push_event(crate::models::BridgeEvent::HookFailure {
+                payload: hook_failure_notice(
+                    project_id,
+                    project_name,
+                    None,
+                    agent_name,
+                    role,
+                    telemetry,
+                ),
+            })
+            .await;
+    }
+}
+
+async fn release_qa_harness_leases_for_thread(
+    runtime: &BridgeRuntime,
+    project_root: &str,
+    thread_id: &str,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let base_url = runtime.settings().qa_harness_url.trim_end_matches('/').to_string();
+    let projects: Vec<Value> = client
+        .get(format!("{base_url}/projects"))
+        .send()
+        .await
+        .context("qa harness projects request failed")?
+        .json()
+        .await
+        .context("qa harness projects decode failed")?;
+    let normalized_project_root = normalize_harness_project_root(project_root);
+    let Some(project_id) = projects.into_iter().find_map(|project| {
+        let repo_root = project.get("repo_root")?.as_str()?;
+        (normalize_harness_project_root(repo_root) == normalized_project_root)
+            .then(|| project.get("id")?.as_str().map(str::to_string))
+            .flatten()
+    }) else {
+        return Ok(());
+    };
+
+    let devices: Vec<Value> = client
+        .get(format!("{base_url}/projects/{project_id}/devices"))
+        .send()
+        .await
+        .with_context(|| format!("qa harness devices request failed for project {project_id}"))?
+        .json()
+        .await
+        .with_context(|| format!("qa harness devices decode failed for project {project_id}"))?;
+
+    for device in devices {
+        let lease_owner = device
+            .get("state")
+            .and_then(|value| value.get("lease"))
+            .and_then(|value| value.get("owner"))
+            .and_then(Value::as_str);
+        if lease_owner != Some(thread_id) {
+            continue;
+        }
+        let Some(device_key) = device.get("device_key").and_then(Value::as_str) else {
+            continue;
+        };
+        let response = client
+            .delete(format!("{base_url}/projects/{project_id}/devices/{device_key}/lease"))
+            .send()
+            .await
+            .with_context(|| format!("qa harness release lease request failed for {project_id}/{device_key}"))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            bail!("qa harness release lease returned {status} for {project_id}/{device_key}; body={body}");
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_harness_project_root(root: &str) -> String {
+    let path = Path::new(root);
+    if path.file_name().and_then(|name| name.to_str()) == Some(".worktrees") {
+        if let Some(parent) = path.parent() {
+            return parent.to_string_lossy().into_owned();
+        }
+    }
+    root.to_string()
+}
+
 pub(crate) async fn register_live_process(
     runtime: &BridgeRuntime,
     thread_id: &str,
@@ -3174,6 +3541,7 @@ pub(crate) async fn register_live_process(
     if agent_state_for_thread(&state, thread_id).is_none() {
         bail!("Unknown thread `{thread_id}`");
     }
+    prune_dead_live_processes_for_thread(&mut state, thread_id);
     let mut processes = persisted_live_processes(&state, thread_id);
     processes.retain(|entry| entry.process_id != process.process_id);
     processes.push(process);
@@ -3194,6 +3562,7 @@ pub(crate) async fn complete_live_process(
     if agent_state_for_thread(&state, thread_id).is_none() {
         return Ok(());
     }
+    prune_dead_live_processes_for_thread(&mut state, thread_id);
     let mut processes = persisted_live_processes(&state, thread_id);
     let before = processes.len();
     processes.retain(|entry| entry.process_id != process_id);
@@ -3786,6 +4155,11 @@ pub async fn orchestrator_spawn_agent(
     role: Option<&str>,
     issue_number: Option<u64>,
 ) -> Result<Value> {
+    // Important policy boundary:
+    // - this path is for orchestrator-as-agent subordinate spawns only
+    // - it is not the administrator thread-start surface
+    // - project/global bridge state is authoritative for cwd/approval/sandbox/network here
+    // - the orchestrator may only choose the subordinate role and display name/prompt
     let state = parse_state(&runtime.state_document_value().await);
     let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
     let records = all_agent_records(&state, &running);
@@ -3797,28 +4171,50 @@ pub async fn orchestrator_spawn_agent(
     if !sender.is_orchestrator {
         bail!("Only orchestrator threads can spawn agents.");
     }
-    let sender_context = sender_thread_context(&state, sender_thread_id)
-        .ok_or_else(|| anyhow::anyhow!("Thread `{sender_thread_id}` has no persisted project context."))?;
+    let target_role = match role.unwrap_or("worker") {
+        "worker" => "worker",
+        "qa" => "qa",
+        other => bail!("Orchestrators may only spawn worker or qa agents, not `{other}`."),
+    };
+    let authoritative =
+        authoritative_spawn_defaults_for_project(&state, sender.project_path.as_str()).ok_or_else(
+            || anyhow::anyhow!("Project `{}` has no authoritative spawn defaults.", sender.project_path),
+        )?;
+    let model =
+        role_default_model(&state, Some(sender.project_path.as_str()), Some(target_role));
+    let reasoning_effort =
+        role_default_reasoning_effort(&state, Some(sender.project_path.as_str()), Some(target_role));
+    let base_instructions = resolve_role_instructions_for(Some(target_role)).ok().flatten();
+    let developer_instructions = developer_instructions_for_role(
+        &state,
+        Some(target_role),
+        Some(sender.project_path.as_str()),
+        Some(authoritative.cwd.as_str()),
+    )
+    .filter(|value| !value.trim().is_empty());
     let payload = json!({
         "displayName": name,
         "initialPrompt": prompt,
-        "cwd": sender_context.project_cwd,
-        "projectPath": sender_context.project_path,
-        "role": role.unwrap_or("worker"),
+        "cwd": authoritative.cwd,
+        "projectPath": sender.project_path,
+        "role": target_role,
         "parentAgentId": sender_thread_id,
-        "approvalPolicy": sender_context.approval_policy,
-        "sandboxMode": sender_context.sandbox_mode,
-        "networkAccess": sender_context.network_access,
-        "modelID": sender_context.model,
-        "modelProvider": sender_context.model_provider,
-        "reasoningEffort": sender_context.reasoning_effort,
-        "serviceTier": sender_context.service_tier,
-        "approvalsReviewer": sender_context.approvals_reviewer,
-        "personality": sender_context.personality,
-        "config": sender_context.config,
-        "baseInstructions": sender_context.base_instructions,
-        "developerInstructions": sender_context.developer_instructions,
-        "persistExtendedHistory": sender_context.persist_extended_history,
+        "approvalPolicy": authoritative.approval_policy,
+        "sandboxMode": authoritative.sandbox_mode,
+        "networkAccess": authoritative.network_access,
+        "modelID": model,
+        "modelProvider": authoritative.model_provider,
+        "reasoningEffort": reasoning_effort,
+        "serviceTier": authoritative.service_tier,
+        "approvalsReviewer": authoritative.approvals_reviewer,
+        "personality": authoritative.personality,
+        "config": authoritative.config,
+        "baseInstructions": base_instructions,
+        "developerInstructions": developer_instructions,
+        "persistExtendedHistory": authoritative.persist_extended_history,
+        "serviceName": authoritative.service_name,
+        "ephemeral": authoritative.ephemeral,
+        "dynamicTools": authoritative.dynamic_tools,
     });
     let mut agent = spawn_agent(runtime, &payload).await?;
     if let Some(issue_number) = issue_number {
@@ -4121,11 +4517,43 @@ async fn archive_thread(runtime: &BridgeRuntime, thread_id: &str) -> Result<()> 
                 })
                 .await;
         }
+        if role == "qa" {
+            if let Err(error) = release_qa_harness_leases_for_thread(runtime, &project_root, thread_id).await {
+                let telemetry = HookTelemetry {
+                    event: HookEvent::QaArchive.wire_name().to_string(),
+                    status: "failed".to_string(),
+                    detail: Some(format!("qa harness lease release failed: {error}")),
+                };
+                record_project_hook_telemetry(
+                    &mut state,
+                    &project_root,
+                    Some(thread_id),
+                    &agent_name,
+                    &role,
+                    &telemetry,
+                );
+                runtime
+                    .push_event(crate::models::BridgeEvent::HookFailure {
+                        payload: hook_failure_notice(
+                            &project_id,
+                            &project_name,
+                            Some(thread_id),
+                            &agent_name,
+                            &role,
+                            &telemetry,
+                        ),
+                    })
+                    .await;
+            }
+        }
     }
     let pruned = prune_archived_thread_locally(&mut state, thread_id);
     if pruned {
         persist_state(runtime, &state).await?;
         runtime.prune_thread_local(thread_id).await?;
+    }
+    if runtime.info().await.connection_status != "connected" {
+        return Ok(());
     }
     if let Err(error) = app_server_request_json(runtime, "thread/archive", json!({"threadId": thread_id})).await {
         let message = error.to_string();
@@ -4412,10 +4840,57 @@ mod tests {
                 ..Default::default()
             },
         );
+        project_beta.agents.insert(
+            "qa-b".to_string(),
+            PersistedAgentState {
+                display_name: Some("QA B".to_string()),
+                role: Some("qa".to_string()),
+                project_root: Some("/beta".to_string()),
+                ..Default::default()
+            },
+        );
+        project_alpha.agents.insert(
+            "hidden-a".to_string(),
+            PersistedAgentState {
+                display_name: Some("Hidden A".to_string()),
+                role: Some("hidden".to_string()),
+                project_root: Some("/alpha".to_string()),
+                ..Default::default()
+            },
+        );
 
         state.projects.insert("alpha".to_string(), project_alpha);
         state.projects.insert("beta".to_string(), project_beta);
         state
+    }
+
+    fn scoped_ids(scoped: &ScopedContext) -> Vec<&str> {
+        scoped
+            .visible
+            .iter()
+            .map(|record| record.thread_id.as_str())
+            .collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn increment_compaction_count_persists_thread_state() {
+        let mut state = sample_state();
+        let first = increment_compaction_count(&mut state, "worker-a").expect("first compaction");
+        assert_eq!(first.count, 1);
+        assert!(first.last_compacted_at.is_some());
+
+        let second = increment_compaction_count(&mut state, "worker-a").expect("second compaction");
+        assert_eq!(second.count, 2);
+        assert!(second.last_compacted_at.is_some());
+
+        let persisted = state
+            .projects
+            .values()
+            .find_map(|project| project.agents.get("worker-a"))
+            .and_then(|agent| agent.extras.get(COMPACTION_STATE_KEY))
+            .cloned()
+            .expect("persisted compaction state");
+        assert_eq!(persisted["count"], 2);
     }
 
     #[test]
@@ -4431,6 +4906,8 @@ mod tests {
         assert!(ids.contains(&"orch-b"));
         assert!(ids.contains(&"operator-b"));
         assert!(!ids.contains(&"worker-b"));
+        assert!(!ids.contains(&"qa-b"));
+        assert!(!ids.contains(&"hidden-a"));
     }
 
     #[test]
@@ -4446,6 +4923,111 @@ mod tests {
         assert!(!ids.contains(&"orch-b"));
         assert!(!ids.contains(&"operator-b"));
         assert!(!ids.contains(&"worker-b"));
+        assert!(!ids.contains(&"qa-b"));
+        assert!(!ids.contains(&"hidden-a"));
+    }
+
+    #[test]
+    fn qa_sees_same_project_orchestrator_operator_worker_and_qa_only() {
+        let state = sample_state();
+        let records = all_agent_records(&state, &["qa-a".to_string()]);
+        let scoped = scoped_agent_context(&records, "qa-a", false).expect("scoped");
+        let ids = scoped_ids(&scoped);
+        assert!(ids.contains(&"orch-a"));
+        assert!(ids.contains(&"worker-a"));
+        assert!(ids.contains(&"qa-a"));
+        assert!(ids.contains(&"operator-a"));
+        assert!(!ids.contains(&"orch-b"));
+        assert!(!ids.contains(&"operator-b"));
+        assert!(!ids.contains(&"worker-b"));
+        assert!(!ids.contains(&"qa-b"));
+        assert!(!ids.contains(&"hidden-a"));
+    }
+
+    #[test]
+    fn operator_sees_same_project_workers_and_qa_plus_cross_project_orchestrators_and_operators() {
+        let state = sample_state();
+        let records = all_agent_records(&state, &["operator-a".to_string()]);
+        let scoped = scoped_agent_context(&records, "operator-a", false).expect("scoped");
+        let ids = scoped_ids(&scoped);
+        assert!(ids.contains(&"orch-a"));
+        assert!(ids.contains(&"worker-a"));
+        assert!(ids.contains(&"qa-a"));
+        assert!(ids.contains(&"operator-a"));
+        assert!(ids.contains(&"orch-b"));
+        assert!(ids.contains(&"operator-b"));
+        assert!(!ids.contains(&"worker-b"));
+        assert!(!ids.contains(&"qa-b"));
+        assert!(!ids.contains(&"hidden-a"));
+    }
+
+    #[test]
+    fn hidden_sender_cannot_use_scoped_communication_surface() {
+        let state = sample_state();
+        let records = all_agent_records(&state, &[]);
+        let error = scoped_agent_context(&records, "hidden-a", false).expect_err("hidden sender should fail");
+        assert!(error.to_string().contains("hidden from orchestrator communication"));
+    }
+
+    #[test]
+    fn worker_cannot_resolve_cross_project_recipients() {
+        let state = sample_state();
+        let records = all_agent_records(&state, &[]);
+        let scoped = scoped_agent_context(&records, "worker-a", false).expect("scoped");
+        let error = resolve_scoped_recipient(&scoped.visible, Some("worker-b"), None, None)
+            .expect_err("worker should not resolve cross-project worker");
+        assert!(error.to_string().contains("not visible"));
+        let error = resolve_scoped_recipient(&scoped.visible, Some("orch-b"), None, None)
+            .expect_err("worker should not resolve cross-project orchestrator");
+        assert!(error.to_string().contains("not visible"));
+    }
+
+    #[test]
+    fn operator_can_resolve_cross_project_orchestrator_and_operator_but_not_cross_project_workers() {
+        let state = sample_state();
+        let records = all_agent_records(&state, &[]);
+        let scoped = scoped_agent_context(&records, "operator-a", false).expect("scoped");
+        let orch = resolve_scoped_recipient(&scoped.visible, Some("orch-b"), None, None)
+            .expect("operator should resolve cross-project orchestrator");
+        assert_eq!(orch.thread_id, "orch-b");
+        let operator = resolve_scoped_recipient(&scoped.visible, Some("operator-b"), None, None)
+            .expect("operator should resolve cross-project operator");
+        assert_eq!(operator.thread_id, "operator-b");
+        let error = resolve_scoped_recipient(&scoped.visible, Some("worker-b"), None, None)
+            .expect_err("operator should not resolve cross-project worker");
+        assert!(error.to_string().contains("not visible"));
+    }
+
+    #[tokio::test]
+    async fn list_agents_without_sender_returns_all_tracked_agents_including_hidden() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:9".to_string()))
+            .await
+            .expect("runtime");
+        runtime
+            .persist_state_document(serde_json::to_value(sample_state()).expect("state json"))
+            .await
+            .expect("persist state");
+
+        let outcome = execute_bridge_command(&runtime, "listAgents", json!({}))
+            .await
+            .expect("listAgents");
+        let payload = outcome.payload["payload"]
+            .as_array()
+            .expect("agents payload");
+        let ids = payload
+            .iter()
+            .filter_map(|agent| agent.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"orch-a"));
+        assert!(ids.contains(&"worker-a"));
+        assert!(ids.contains(&"qa-a"));
+        assert!(ids.contains(&"operator-a"));
+        assert!(ids.contains(&"hidden-a"));
+        assert!(ids.contains(&"orch-b"));
+        assert!(ids.contains(&"operator-b"));
+        assert!(ids.contains(&"worker-b"));
+        assert!(ids.contains(&"qa-b"));
     }
 
     #[test]
@@ -5102,6 +5684,473 @@ mod tests {
         assert_eq!(lifecycle["branchName"], "codex/worker-one");
         assert_eq!(lifecycle["worktreePath"], "/tmp/project/.worktrees/worker-one");
         assert_eq!(lifecycle["baseUrl"], "http://127.0.0.1:54136");
+        let tracked = agent_state_for_thread(&state, "thread-worker-1").expect("tracked agent state");
+        assert_eq!(tracked.cwd.as_deref(), Some(temp.path().to_str().expect("temp path")));
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn orchestrator_spawn_agent_uses_target_role_defaults_not_orchestrator_role_settings() {
+        let temp = TempDir::new().expect("tempdir");
+        let (thread_tx, thread_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            let mut thread_tx = Some(thread_tx);
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    if request.method == "thread/start" {
+                        thread_tx
+                            .take()
+                            .expect("thread sender")
+                            .send(request.clone())
+                            .expect("record thread start request");
+                    }
+                    let result = match request.method.as_str() {
+                        "thread/start" => json!({"thread": {"id": "thread-worker-2", "title": "Worker Role Defaults"}}),
+                        "thread/name/set" => json!({}),
+                        "turn/start" => json!({"turn": {"id": "turn-worker-2", "status": "inProgress", "items": [], "error": null}}),
+                        _ => json!({}),
+                    };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result,
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "turn/start" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "ezra": {
+                        "id": "project-ezra",
+                        "name": "Ezra",
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().join(".worktrees").display().to_string(),
+                        "orchestratorThreadId": "thread-orchestrator",
+                        "configs": {
+                            "roleModelReasoningDefaults": {
+                                "orchestrator": { "modelID": "gpt-5.4", "reasoningEffort": "high" },
+                                "worker": { "modelID": "gpt-5.4-mini", "reasoningEffort": "medium" }
+                            },
+                            "roleDeveloperInstructionsDefaults": {
+                                "orchestrator": "orchestrator developer instructions",
+                                "worker": "worker developer instructions"
+                            }
+                        },
+                        "agents": {
+                            "thread-orchestrator": {
+                                "displayName": "Ezra Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().join(".worktrees").display().to_string(),
+                                "approvalPolicy": "on-failure",
+                                "sandboxMode": "workspace-write",
+                                "networkAccess": true,
+                                "modelID": "gpt-5.4",
+                                "reasoningEffort": "high",
+                                "baseInstructions": "orchestrator base instructions",
+                                "developerInstructions": "orchestrator developer instructions",
+                                "persistExtendedHistory": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let result = orchestrator_spawn_agent(
+            &runtime,
+            "thread-orchestrator",
+            "Worker Role Defaults",
+            "Fix the bug",
+            None,
+            Some("worker"),
+            None,
+        )
+        .await
+        .expect("orchestrator spawn");
+
+        assert_eq!(result["agent"]["id"], "thread-worker-2");
+
+        let thread_request = thread_rx.await.expect("captured thread start request");
+        let thread_params = thread_request.params.expect("thread params");
+        assert_eq!(thread_params["model"], "gpt-5.4-mini");
+        assert_eq!(thread_params["config"]["model_reasoning_effort"], "medium");
+        assert!(
+            thread_params["developerInstructions"]
+                .as_str()
+                .map(|value| value.starts_with("worker developer instructions"))
+                .unwrap_or(false)
+        );
+        assert_ne!(
+            thread_params["baseInstructions"].as_str(),
+            Some("orchestrator base instructions")
+        );
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent_state = state
+            .projects
+            .values()
+            .find_map(|project| project.agents.get("thread-worker-2"))
+            .expect("persisted worker state");
+        assert_eq!(agent_state.model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(agent_state.reasoning_effort.as_deref(), Some("medium"));
+        assert!(
+            agent_state
+                .developer_instructions
+                .as_deref()
+                .map(|value| value.starts_with("worker developer instructions"))
+                .unwrap_or(false)
+        );
+
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn orchestrator_spawn_agent_uses_authoritative_project_defaults_for_cwd_and_sandbox() {
+        let temp = TempDir::new().expect("tempdir");
+        let (thread_tx, thread_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            let mut thread_tx = Some(thread_tx);
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    if request.method == "thread/start" {
+                        thread_tx
+                            .take()
+                            .expect("thread sender")
+                            .send(request.clone())
+                            .expect("record thread start request");
+                    }
+                    let result = match request.method.as_str() {
+                        "thread/start" => json!({"thread": {"id": "thread-worker-3", "title": "Worker Policy Defaults"}}),
+                        "thread/name/set" => json!({}),
+                        "turn/start" => json!({"turn": {"id": "turn-worker-3", "status": "inProgress", "items": [], "error": null}}),
+                        _ => json!({}),
+                    };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result,
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "turn/start" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        runtime
+            .persist_state_document(json!({
+                "globalConfigs": {
+                    "approvalPolicy": "on-request",
+                    "sandboxMode": "workspace-write",
+                    "networkAccess": true
+                },
+                "projects": {
+                    "ezra": {
+                        "id": "project-ezra",
+                        "name": "Ezra",
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().join(".worktrees").display().to_string(),
+                        "orchestratorThreadId": "thread-orchestrator",
+                        "configs": {
+                            "roleModelReasoningDefaults": {
+                                "worker": { "modelID": "gpt-5.4-mini", "reasoningEffort": "medium" }
+                            }
+                        },
+                        "agents": {
+                            "thread-orchestrator": {
+                                "displayName": "Ezra Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": "/tmp/not-the-project-cwd",
+                                "approvalPolicy": "never",
+                                "sandboxMode": "danger-full-access",
+                                "networkAccess": false,
+                                "modelID": "gpt-5.4"
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        orchestrator_spawn_agent(
+            &runtime,
+            "thread-orchestrator",
+            "Worker Policy Defaults",
+            "Use the safe path",
+            Some("/tmp/ignored"),
+            Some("worker"),
+            None,
+        )
+        .await
+        .expect("orchestrator spawn");
+
+        let thread_request = thread_rx.await.expect("captured thread start request");
+        let thread_params = thread_request.params.expect("thread params");
+        assert_eq!(
+            thread_params["cwd"],
+            temp.path().join(".worktrees").display().to_string()
+        );
+        assert_eq!(thread_params["approvalPolicy"], "on-request");
+        assert_eq!(thread_params["sandbox"], "workspace-write");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent_state = state
+            .projects
+            .values()
+            .find_map(|project| project.agents.get("thread-worker-3"))
+            .expect("persisted worker state");
+        assert_eq!(
+            agent_state.cwd.as_deref(),
+            Some(temp.path().join(".worktrees").to_string_lossy().as_ref())
+        );
+        assert_eq!(agent_state.approval_policy.as_deref(), Some("on-request"));
+        assert_eq!(agent_state.sandbox_mode.as_deref(), Some("workspace-write"));
+        assert_eq!(agent_state.network_access, Some(true));
+
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn orchestrator_spawn_agent_rejects_non_subordinate_roles() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:9".to_string()))
+            .await
+            .expect("runtime");
+        runtime
+            .persist_state_document(json!({
+                "globalConfigs": {
+                    "approvalPolicy": "on-failure",
+                    "sandboxMode": "workspace-write",
+                    "networkAccess": true
+                },
+                "projects": {
+                    "ezra": {
+                        "id": "project-ezra",
+                        "name": "Ezra",
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().join(".worktrees").display().to_string(),
+                        "orchestratorThreadId": "thread-orchestrator",
+                        "agents": {
+                            "thread-orchestrator": {
+                                "displayName": "Ezra Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().join(".worktrees").display().to_string()
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let error = orchestrator_spawn_agent(
+            &runtime,
+            "thread-orchestrator",
+            "Bad Spawn",
+            "Do not run",
+            None,
+            Some("orchestrator"),
+            None,
+        )
+        .await
+        .expect_err("orchestrator spawn should reject orchestrator role");
+
+        assert!(
+            error
+                .to_string()
+                .contains("only spawn worker or qa agents")
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_start_admin_surface_allows_explicit_role_and_session_overrides() {
+        let temp = TempDir::new().expect("tempdir");
+        let (thread_tx, thread_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            let mut thread_tx = Some(thread_tx);
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                let next = ws.next().await.expect("request").expect("request frame");
+                let text = match next {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected request frame: {other:?}"),
+                };
+                let request =
+                    match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected request message: {other:?}"),
+                    };
+                thread_tx
+                    .take()
+                    .expect("thread sender")
+                    .send(request.clone())
+                    .expect("record thread start request");
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: request.id,
+                        result: json!({"thread": {"id": "thread-admin-1", "title": "Admin Hidden"}}),
+                    }))
+                    .expect("response")
+                    .into(),
+                ))
+                .await
+                .expect("send response");
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+
+        let outcome = execute_bridge_command(
+            &runtime,
+            "threadStart",
+            json!({
+                "role": "hidden",
+                "projectPath": temp.path().display().to_string(),
+                "cwd": temp.path().join("custom-cwd").display().to_string(),
+                "approvalPolicy": "never",
+                "sandbox": "danger-full-access",
+                "networkAccess": true,
+                "model": "gpt-5.4",
+                "reasoningEffort": "high",
+                "developerInstructions": "hidden developer instructions",
+                "baseInstructions": "hidden base instructions",
+                "persistExtendedHistory": true,
+            }),
+        )
+        .await
+        .expect("threadStart");
+
+        assert_eq!(outcome.payload["payload"]["id"], "thread-admin-1");
+
+        let thread_request = thread_rx.await.expect("captured thread start request");
+        let thread_params = thread_request.params.expect("thread params");
+        assert_eq!(
+            thread_params["cwd"],
+            temp.path().join("custom-cwd").display().to_string()
+        );
+        assert_eq!(thread_params["approvalPolicy"], "never");
+        assert_eq!(thread_params["sandbox"], "danger-full-access");
+        assert_eq!(thread_params["model"], "gpt-5.4");
+        assert_eq!(thread_params["config"]["model_reasoning_effort"], "high");
+        assert_eq!(thread_params["developerInstructions"], "hidden developer instructions");
+        assert_eq!(thread_params["baseInstructions"], "hidden base instructions");
+
         transport.abort();
     }
 
@@ -5215,6 +6264,98 @@ mod tests {
                 if payload.thread_id.as_deref() == Some("thread-worker-2")
                     && payload.event == "onWorkerCreate"
         )));
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_failure_after_hook_runs_compensating_cleanup() {
+        let temp = TempDir::new().expect("tempdir");
+        let marker_path = temp.path().join("worker-created.marker");
+        let marker = marker_path.display().to_string();
+        write_project_hook(
+            &temp,
+            "onWorkerCreate",
+            "on-worker-create",
+            &format!(
+                "#!/bin/bash\ncat >/dev/null\nprintf created > '{marker}'\necho '{{\"ok\":true,\"artifacts\":{{\"branchName\":\"codex/worker-compensate\",\"worktreePath\":\"/tmp/project/.worktrees/worker-compensate\"}},\"promptAppend\":[\"Worker prepared.\"]}}'\n",
+            ),
+        );
+        write_project_hook(
+            &temp,
+            "onWorkerArchive",
+            "on-worker-archive",
+            &format!(
+                "#!/bin/bash\ncat >/dev/null\nrm -f '{marker}'\necho '{{\"ok\":true}}'\n",
+            ),
+        );
+
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                let next = ws.next().await.expect("request").expect("request frame");
+                let text = match next {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected request frame: {other:?}"),
+                };
+                let request =
+                    match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected request message: {other:?}"),
+                    };
+                assert_eq!(request.method, "thread/start");
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: request.id,
+                        result: json!({}),
+                    }))
+                    .expect("response")
+                    .into(),
+                ))
+                .await
+                .expect("send response");
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+
+        let error = execute_bridge_command(
+            &runtime,
+            "spawnAgent",
+            json!({
+                "role": "worker",
+                "projectPath": temp.path().display().to_string(),
+                "displayName": "Worker Compensate",
+            }),
+        )
+        .await
+        .expect_err("spawnAgent should fail");
+
+        assert!(error.to_string().contains("thread/start response missing thread.id"));
+        assert!(!marker_path.exists(), "compensating cleanup should remove marker");
         transport.abort();
     }
 

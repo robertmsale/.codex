@@ -14,6 +14,7 @@ from .flutter_drive_service import FlutterDriveService
 from idb.common.hid import _key_down_event
 from idb.common.hid import _key_up_event
 from idb.common.hid import key_press_to_events
+from idb.common.hid import text_to_events
 from idb.common.types import DomainSocketAddress
 from idb.common.types import HIDDelay
 from idb.grpc.client import Client
@@ -22,6 +23,7 @@ from idb.grpc.client import Client
 LEFT_COMMAND_KEYCODE = 227
 A_KEYCODE = 4
 BACKSPACE_KEYCODE = 42
+ESCAPE_KEYCODE = 41
 POST_TAP_HIERARCHY_DELAY_SECONDS = 1.0
 SWIPE_DURATION_MILLISECONDS_THRESHOLD = 10.0
 
@@ -46,6 +48,26 @@ def _post_action_hierarchy(service: FlutterDriveService, *, reservation) -> str:
     time.sleep(POST_TAP_HIERARCHY_DELAY_SECONDS)
     elements = service.manager._idb_describe_all(reservation=reservation)  # noqa: SLF001
     return service.manager._serialize_idb_hierarchy(elements)  # noqa: SLF001
+
+
+def _idb_focus_app(*, service: FlutterDriveService, reservation, run_dir: Path | None = None) -> None:
+    result = service.manager._run_idb_cli(  # noqa: SLF001
+        argv=["focus", "--udid", reservation.device_id],
+        cwd=Path(reservation.launch_path),
+    )
+    if run_dir is not None:
+        focus_run_dir = run_dir / "focus"
+        focus_run_dir.mkdir(parents=True, exist_ok=True)
+        service.manager._write_driver_result(  # noqa: SLF001
+            run_dir=focus_run_dir,
+            kind="focus",
+            returncode=result.returncode,
+            stdout=result.stdout or "",
+            stderr=result.stderr or "",
+            metadata={"device_id": reservation.device_id},
+        )
+    if result.returncode != 0:
+        raise BridgeError((result.stderr or result.stdout or "idb focus failed").strip())
 
 
 def _normalized_swipe_duration(raw_duration: Any) -> float:
@@ -496,6 +518,58 @@ def _idb_cmd_a_delete(*, device_id: str) -> None:
     asyncio.run(_idb_cmd_a_delete_async(device_id=device_id))
 
 
+async def _idb_key_async(*, device_id: str, keycode: int) -> None:
+    companion_path = Path("/tmp/idb") / f"{device_id}_companion.sock"
+    if not companion_path.exists():
+        raise BridgeError(f"idb companion socket not found for device {device_id}: {companion_path}")
+
+    logger = logging.getLogger("flutter-drive-http.idb-hid")
+    async with Client.build(
+        address=DomainSocketAddress(path=str(companion_path)),
+        logger=logger,
+    ) as client:
+        await client.set_hardware_keyboard(True)
+        await client.key(keycode)
+
+
+def _idb_key(*, device_id: str, keycode: int) -> None:
+    asyncio.run(_idb_key_async(device_id=device_id, keycode=keycode))
+
+
+async def _idb_text_async(*, device_id: str, text: str) -> None:
+    companion_path = Path("/tmp/idb") / f"{device_id}_companion.sock"
+    if not companion_path.exists():
+        raise BridgeError(f"idb companion socket not found for device {device_id}: {companion_path}")
+
+    logger = logging.getLogger("flutter-drive-http.idb-hid")
+    async with Client.build(
+        address=DomainSocketAddress(path=str(companion_path)),
+        logger=logger,
+    ) as client:
+        await client.text(text)
+
+
+def _idb_text(*, device_id: str, text: str) -> None:
+    asyncio.run(_idb_text_async(device_id=device_id, text=text))
+
+
+async def _idb_set_hardware_keyboard_async(*, device_id: str, enabled: bool) -> None:
+    companion_path = Path("/tmp/idb") / f"{device_id}_companion.sock"
+    if not companion_path.exists():
+        raise BridgeError(f"idb companion socket not found for device {device_id}: {companion_path}")
+
+    logger = logging.getLogger("flutter-drive-http.idb-hid")
+    async with Client.build(
+        address=DomainSocketAddress(path=str(companion_path)),
+        logger=logger,
+    ) as client:
+        await client.set_hardware_keyboard(enabled)
+
+
+def _idb_set_hardware_keyboard(*, device_id: str, enabled: bool) -> None:
+    asyncio.run(_idb_set_hardware_keyboard_async(device_id=device_id, enabled=enabled))
+
+
 def maestro_apps(*, service: FlutterDriveService, device_id: str) -> dict[str, Any]:
     return service.driver_apps(device_id=device_id)
 
@@ -611,20 +685,25 @@ def _execute_driver_command_entry(
     if command_name == "inputText":
         if not isinstance(payload, str):
             raise BridgeError("inputText requires a string payload.")
-        result = manager._run_idb_cli(  # noqa: SLF001
-            argv=["ui", "text", "--udid", reservation.device_id, payload],
-            cwd=Path(reservation.launch_path),
-        )
+        try:
+            _idb_text(device_id=reservation.device_id, text=payload)
+            result_returncode = 0
+            result_stdout = ""
+            result_stderr = ""
+        except Exception as error:
+            result_returncode = 1
+            result_stdout = ""
+            result_stderr = str(error)
         manager._write_driver_result(  # noqa: SLF001
             run_dir=step_run_dir,
             kind="text",
-            returncode=result.returncode,
-            stdout=result.stdout or "",
-            stderr=result.stderr or "",
+            returncode=result_returncode,
+            stdout=result_stdout,
+            stderr=result_stderr,
             metadata={"device_id": reservation.device_id, "length": len(payload)},
         )
-        if result.returncode != 0:
-            raise BridgeError((result.stderr or result.stdout or "idb ui text failed").strip())
+        if result_returncode != 0:
+            raise BridgeError((result_stderr or result_stdout or "idb text failed").strip())
         return {"ok": True, "message": f"inputText {payload!r}"}
     if command_name == "takeScreenshot":
         requested_name = payload if isinstance(payload, str) and payload.strip() else f"step-{step_index:02d}.png"
@@ -659,19 +738,20 @@ def _execute_driver_command_entry(
         if duration is not None:
             argv.extend(["--duration", str(_normalized_swipe_duration(duration))])
         elements = manager._idb_describe_all(reservation=reservation)  # noqa: SLF001
-        reference = _idb_reference_element(elements, manager)
         portrait_width, portrait_height = manager._idb_screen_dimensions_points(reservation=reservation)  # noqa: SLF001
-        transform_name: str | None = None
+        root_width, root_height = _idb_root_frame_size(elements=elements)
+        reference_element = _idb_reference_element(elements, manager)
         reference_probes: list[dict[str, Any]] = []
-        if reference is not None:
-            reference_center = manager._idb_element_center(reference)  # noqa: SLF001
+        transform_name: str | None = None
+        if reference_element is not None:
+            reference_center = manager._idb_element_center(reference_element)  # noqa: SLF001
             if reference_center is not None:
                 _, reference_probes, _, transform_name = _idb_resolve_tap_point(
                     service=service,
                     reservation=reservation,
                     elements=elements,
                     point=reference_center,
-                    expected_element=reference,
+                    expected_element=reference_element,
                 )
         if transform_name is not None:
             swipe_start = _apply_transform(
@@ -718,10 +798,12 @@ def _execute_driver_command_entry(
                 "device_id": reservation.device_id,
                 "start": [x_start, y_start],
                 "end": [x_end, y_end],
-                "transform": transform_name,
-                "reference_probes": reference_probes,
                 "swipe_start": list(swipe_start),
                 "swipe_end": list(swipe_end),
+                "root_size": [root_width, root_height],
+                "portrait_size": [portrait_width, portrait_height],
+                "transform": transform_name,
+                "probes": reference_probes,
             },
         )
         if result.returncode != 0:
@@ -760,20 +842,28 @@ def _execute_driver_command_entry(
         )
         return {"ok": True, "message": f"{command_name} {count}"}
     if command_name == "hideKeyboard":
-        result = manager._run_idb_cli(  # noqa: SLF001
-            argv=["ui", "key", "--udid", reservation.device_id, "ESCAPE"],
-            cwd=Path(reservation.launch_path),
-        )
+        try:
+            _idb_key(device_id=reservation.device_id, keycode=ESCAPE_KEYCODE)
+        except Exception as error:
+            manager._write_driver_result(  # noqa: SLF001
+                run_dir=step_run_dir,
+                kind="hideKeyboard",
+                returncode=1,
+                stdout="",
+                stderr=str(error),
+                metadata={"device_id": reservation.device_id, "keycode": ESCAPE_KEYCODE},
+            )
+            if isinstance(error, BridgeError):
+                raise
+            raise BridgeError(str(error)) from error
         manager._write_driver_result(  # noqa: SLF001
             run_dir=step_run_dir,
             kind="hideKeyboard",
-            returncode=result.returncode,
-            stdout=result.stdout or "",
-            stderr=result.stderr or "",
-            metadata={"device_id": reservation.device_id},
+            returncode=0,
+            stdout="",
+            stderr="",
+            metadata={"device_id": reservation.device_id, "keycode": ESCAPE_KEYCODE},
         )
-        if result.returncode != 0:
-            raise BridgeError((result.stderr or result.stdout or "idb hide keyboard failed").strip())
         return {"ok": True, "message": "hideKeyboard"}
     if command_name == "clearField":
         if not isinstance(payload, dict) or not payload:

@@ -1,0 +1,19 @@
+# Allow the sanctioned Flutter/Dart wrappers to escape sandbox restrictions
+# for cache writes, test runs, and other normal toolchain behavior.
+
+prefix_rule(
+    pattern = [
+        ["flutter", "dart"],
+        ["format", "fmt"],
+    ],
+    decision = "forbidden",
+    justification = "Never use code formatters on this machine."
+)
+
+prefix_rule(
+    pattern = [[
+        "flutter", "/Users/robertsale/.codex/shim/flutter", "/Users/robertsale/.codex/scripts/flutterq",
+        "dart", "/Users/robertsale/.codex/shim/dart", "/Users/robertsale/.codex/scripts/dartq",
+    ]],
+    decision = "allow",
+)

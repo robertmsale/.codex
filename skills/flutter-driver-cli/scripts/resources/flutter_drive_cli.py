@@ -193,16 +193,20 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     service = FlutterDriveService(
-        broker_base_url=os.environ.get("FLUTTER_SIM_BROKER_BASE_URL", "http://127.0.0.1:8767")
+        broker_base_url=os.environ.get("FLUTTER_SIM_BROKER_BASE_URL", "http://127.0.0.1:8767"),
+        bridge_base_url=os.environ.get("ROBDEX_BRIDGE_BASE_URL", "http://127.0.0.1:42080"),
     )
     mode = "op"
     out_path = None
+    device_id: str | None = None
 
     if args.subcommand == "apps":
-        payload = routes.maestro_apps(service=service, device_id=normalize_device_id(args.device_id))
+        device_id = normalize_device_id(args.device_id)
+        payload = routes.maestro_apps(service=service, device_id=device_id)
         mode = "apps"
     elif args.subcommand in {"hierarchy", "widget-tree"}:
-        payload = routes.maestro_hierarchy(service=service, device_id=normalize_device_id(args.device_id))
+        device_id = normalize_device_id(args.device_id)
+        payload = routes.maestro_hierarchy(service=service, device_id=device_id)
         mode = "hierarchy"
     elif args.subcommand == "screenshot":
         device_id = normalize_device_id(args.device_id)
@@ -238,9 +242,10 @@ def main() -> int:
         if mode != "screenshot":
             mode = "op"
     elif args.subcommand == "flow":
+        device_id = normalize_device_id(args.device_id)
         payload = routes.maestro_flow(
             service=service,
-            device_id=normalize_device_id(args.device_id),
+            device_id=device_id,
             commands=parse_json_value(args.input),
             label=args.label,
         )

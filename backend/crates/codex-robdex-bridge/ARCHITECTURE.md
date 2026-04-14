@@ -388,6 +388,25 @@ The bridge should reject:
 - missing required fields for the specific hook
 - hook paths outside allowed resolution policy
 
+### Administrator vs Orchestrator Authority
+
+These surfaces are intentionally different and must not drift together:
+
+- Administrator lifecycle surface
+  - `thread/start`, `thread/resume`, `thread/fork`
+  - may set explicit role, cwd, sandbox, model, reasoning, and other session overrides
+  - this is the GUI/admin authority surface
+
+- Orchestrator subordinate-spawn surface
+  - `orchestrator/spawn-agent`
+  - is not administrator authority
+  - may choose subordinate role plus display name and prompt only
+  - must derive `cwd`, approval policy, sandbox, and network settings from authoritative bridge project/global state
+  - must derive role-specific model/instructions from the target role, not the orchestrator thread
+  - must reject `orchestrator`, `operator`, and `hidden` target roles
+
+Bridge tests should treat this split as invariant. If a change causes orchestrator spawn to inherit role/session settings from the wrong authority, that is a regression.
+
 ### Current Hook Input Shape
 
 Create hooks now receive bridge-owned context beyond just the raw project root:

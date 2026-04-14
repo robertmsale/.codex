@@ -357,10 +357,10 @@ async fn request_json_over_connection(
 mod tests {
     use super::*;
     use codex_app_server_adapter::app_server_protocol::{
-        JSONRPCError, JSONRPCErrorError, JSONRPCMessage, JSONRPCNotification, JSONRPCResponse,
+        JSONRPCMessage, JSONRPCNotification, JSONRPCResponse,
     };
     use futures_util::{SinkExt, StreamExt};
-    use std::net::SocketAddr;
+    use std::{future::Future, net::SocketAddr, pin::Pin};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
 

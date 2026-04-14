@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/zsh
 set -euo pipefail
 
 show_usage() {
@@ -86,13 +86,13 @@ run_build_command() {
 run_devices_command() {
   local -a devices_cmd=("$@")
   local output
-  local status=0
+  local cmd_status=0
 
-  output="$("${devices_cmd[@]}" 2>&1)" || status=$?
+  output="$("${devices_cmd[@]}" 2>&1)" || cmd_status=$?
 
-  if [[ "$status" -ne 0 ]]; then
+  if [[ "$cmd_status" -ne 0 ]]; then
     printf '%s\n' "$output"
-    return "$status"
+    return "$cmd_status"
   fi
 
   python3 - <<'PY' "$output"
@@ -126,11 +126,11 @@ PY
 run_test_command() {
   local -a test_cmd=("$@")
   local output
-  local status=0
+  local cmd_status=0
 
-  output="$("${test_cmd[@]}" 2>&1)" || status=$?
+  output="$("${test_cmd[@]}" 2>&1)" || cmd_status=$?
 
-  python3 - <<'PY' "$status" "$output"
+  python3 - <<'PY' "$cmd_status" "$output"
 import json
 import sys
 

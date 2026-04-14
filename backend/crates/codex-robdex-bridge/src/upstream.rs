@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use codex_app_server_adapter::app_server_protocol::{
     AgentMessageDeltaNotification, CommandExecutionOutputDeltaNotification, CommandExecutionStatus,
-    ContextCompactedNotification, FileChangeOutputDeltaNotification, FileUpdateChange, ItemCompletedNotification,
+    FileChangeOutputDeltaNotification, FileUpdateChange, ItemCompletedNotification,
     ItemStartedNotification, McpToolCallStatus, ModelReroutedNotification, PatchApplyStatus,
     PlanDeltaNotification, ReasoningSummaryPartAddedNotification, ReasoningSummaryTextDeltaNotification,
     ReasoningTextDeltaNotification, ServerNotification, ServerRequest, TerminalInteractionNotification, Thread,
@@ -173,9 +173,7 @@ impl RunningStateReducer {
             ServerNotification::TurnDiffUpdated(payload) => {
                 self.apply_turn_diff_updated(payload, thread_cache, changed_thread_ids)
             }
-            ServerNotification::ContextCompacted(payload) => {
-                self.apply_context_compacted(payload, thread_cache, changed_thread_ids)
-            }
+            ServerNotification::ContextCompacted(_payload) => false,
             ServerNotification::ModelRerouted(payload) => {
                 self.apply_model_rerouted(payload, thread_cache, changed_thread_ids)
             }
@@ -288,7 +286,7 @@ impl RunningStateReducer {
         thread_cache: &mut ThreadCachePayload,
         changed_thread_ids: &mut BTreeSet<String>,
     ) -> bool {
-        let Some(message) = message_from_item(payload.item(), payload.thread_id()) else {
+        let Some(message) = message_from_item(payload.item(), payload.thread_id(), mode) else {
             return false;
         };
         upsert_message(
@@ -627,31 +625,6 @@ impl RunningStateReducer {
             changed_thread_ids,
         )
     }
-
-    fn apply_context_compacted(
-        &self,
-        payload: &ContextCompactedNotification,
-        thread_cache: &mut ThreadCachePayload,
-        changed_thread_ids: &mut BTreeSet<String>,
-    ) -> bool {
-        let message = make_message(
-            format!("context-compacted-{}", payload.turn_id),
-            payload.thread_id.clone(),
-            "system",
-            "Context compacted for this thread.".to_string(),
-            Some("context".to_string()),
-            None,
-            None,
-        );
-        upsert_message(
-            thread_cache,
-            &payload.thread_id,
-            message,
-            UpsertMode::Replace,
-            changed_thread_ids,
-        )
-    }
-
     fn apply_model_rerouted(
         &self,
         payload: &ModelReroutedNotification,
@@ -863,7 +836,7 @@ fn prefer_merged_text(existing: &str, incoming: &str) -> String {
     }
 }
 
-fn message_from_item(item: &ThreadItem, thread_id: &str) -> Option<RobdexChatMessage> {
+fn message_from_item(item: &ThreadItem, thread_id: &str, mode: UpsertMode) -> Option<RobdexChatMessage> {
     match item {
         ThreadItem::UserMessage { id, content } => {
             let text = content
@@ -993,15 +966,27 @@ fn message_from_item(item: &ThreadItem, thread_id: &str) -> Option<RobdexChatMes
             }),
             None,
         )),
-        ThreadItem::ContextCompaction { id } => Some(make_message(
-            id.clone(),
-            thread_id.to_string(),
-            "system",
-            "Context compacted for this thread.".to_string(),
-            Some("context".to_string()),
-            None,
-            None,
-        )),
+        ThreadItem::ContextCompaction { id } => {
+            let (text, subtitle) = match mode {
+                UpsertMode::Merge => (
+                    "Context compaction started for this thread.".to_string(),
+                    "context (in progress)".to_string(),
+                ),
+                UpsertMode::Replace => (
+                    "Context compaction completed for this thread.".to_string(),
+                    "context (completed)".to_string(),
+                ),
+            };
+            Some(make_message(
+                id.clone(),
+                thread_id.to_string(),
+                "system",
+                text,
+                Some(subtitle),
+                None,
+                None,
+            ))
+        }
         _ => None,
     }
 }
@@ -1215,6 +1200,7 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::MAX_TRANSPORT_MESSAGES_PER_THREAD;
     use codex_app_server_adapter::app_server_protocol::{
         GitInfo, ItemCompletedNotification, ItemStartedNotification, ServerNotification, SessionSource, Thread,
         ThreadClosedNotification, ThreadStartedNotification, ThreadStatus, ThreadStatusChangedNotification,
@@ -1423,6 +1409,42 @@ mod tests {
                 .and_then(|metadata| metadata.output.as_deref()),
             Some("stdout line\ncompleted")
         );
+    }
+
+    #[test]
+    fn context_compaction_items_show_started_and_completed_states() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        let started = reducer.apply_notification(
+            &ServerNotification::ItemStarted(ItemStartedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::ContextCompaction {
+                    id: "compact-1".to_string(),
+                },
+            }),
+            &mut cache,
+        );
+        assert!(started.thread_cache_changed);
+        let message = &cache.message_cache_by_thread_id["thread-1"][0];
+        assert_eq!(message.text, "Context compaction started for this thread.");
+        assert_eq!(message.subtitle.as_deref(), Some("context (in progress)"));
+
+        let completed = reducer.apply_notification(
+            &ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::ContextCompaction {
+                    id: "compact-1".to_string(),
+                },
+            }),
+            &mut cache,
+        );
+        assert!(completed.thread_cache_changed);
+        let message = &cache.message_cache_by_thread_id["thread-1"][0];
+        assert_eq!(message.text, "Context compaction completed for this thread.");
+        assert_eq!(message.subtitle.as_deref(), Some("context (completed)"));
     }
 
     #[test]

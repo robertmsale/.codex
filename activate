@@ -15,7 +15,7 @@ fi
 _codex_path_prefixes=()
 while IFS= read -r _codex_scripts_dir; do
   _codex_path_prefixes+=("${_codex_scripts_dir}")
-done < <(find "${_codex_skills_dir}" -mindepth 1 -maxdepth 2 -type d -name scripts | sort)
+done < <(/usr/bin/find "${_codex_skills_dir}" -mindepth 1 -maxdepth 2 -type d -name scripts | sort)
 
 if [[ ${#_codex_path_prefixes[@]} -eq 0 ]]; then
   echo "codex activate: no skill script directories found under ${_codex_skills_dir}" >&2

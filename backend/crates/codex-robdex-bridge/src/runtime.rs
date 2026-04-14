@@ -24,7 +24,10 @@ use tokio::{
 
 use crate::{
     app_server_overrides::{AppServerThreadOverrides, AppServerTurnOverrides, simple_sandbox_policy},
-    commands::{parse_state, persist_state, prune_archived_thread_locally},
+    commands::{
+        increment_compaction_count, parse_state, persist_state, prune_archived_thread_locally,
+        run_compaction_hook_best_effort,
+    },
     config::BridgeSettings,
     models::{
         BridgeEvent, BridgeInfo, BridgeSnapshot, BridgeToolQuestion, EventReplayResponse,
@@ -450,6 +453,15 @@ impl BridgeRuntime {
                 self.handle_server_request(request).await?;
             }
             UpstreamRuntimeEvent::Notification(notification) => {
+                let compaction_completed_thread_id = match &notification {
+                    ServerNotification::ItemCompleted(payload) => match payload.item {
+                        codex_app_server_adapter::app_server_protocol::ThreadItem::ContextCompaction { .. } => {
+                            Some(payload.thread_id.clone())
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
                 let turn_completed = match &notification {
                     ServerNotification::TurnCompleted(payload) => {
                         Some((payload.thread_id.clone(), payload.turn.id.clone()))
@@ -494,6 +506,20 @@ impl BridgeRuntime {
                 if let Some((thread_id, turn_id)) = turn_completed {
                     self.maybe_auto_route_reply_to_orchestrator(&thread_id, &turn_id)
                         .await;
+                }
+                if let Some(thread_id) = compaction_completed_thread_id {
+                    let maybe_compaction = {
+                        let _guard = self.lock_state_mutation().await;
+                        let mut state = parse_state(&self.state_document_value().await);
+                        let next = increment_compaction_count(&mut state, &thread_id);
+                        if next.is_some() {
+                            persist_state(self, &state).await?;
+                        }
+                        next
+                    };
+                    if let Some(compaction) = maybe_compaction {
+                        run_compaction_hook_best_effort(self, &thread_id, &compaction).await?;
+                    }
                 }
             }
         }
@@ -1901,11 +1927,10 @@ fn is_streaming_notification(notification: &ServerNotification) -> bool {
 mod tests {
     use super::*;
     use crate::config::BridgePaths;
-    use crate::transport::run_transport_loop;
     use crate::upstream::UpstreamRuntimeEvent;
     use codex_app_server_adapter::app_server_protocol::{
-        AgentMessageDeltaNotification, RequestId, ServerNotification, ServerRequest, ThreadClosedNotification,
-        ThreadStartedNotification, ThreadStatus, ThreadStatusChangedNotification, ThreadTokenUsage,
+        AgentMessageDeltaNotification, RequestId, ServerNotification, ThreadClosedNotification,
+        ThreadStatus, ThreadStatusChangedNotification, ThreadTokenUsage,
         ThreadTokenUsageUpdatedNotification, TokenUsageBreakdown, ToolRequestUserInputParams,
         ToolRequestUserInputQuestion, Turn, TurnCompletedNotification, TurnStartedNotification, TurnStatus,
     };

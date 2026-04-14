@@ -1,5 +1,7 @@
 #!/bin/zsh
 
+source "$HOME/.codex/scripts/common.sh"
+
 COMMAND_PARSER_AUTO_INITIALIZED="${COMMAND_PARSER_AUTO_INITIALIZED:-0}"
 COMMAND_PARSER_AUTO_THRESHOLD_BYTES="${COMMAND_PARSER_AUTO_THRESHOLD_BYTES:-}"
 COMMAND_PARSER_AUTO_LOG_DIR="${COMMAND_PARSER_AUTO_LOG_DIR:-}"
@@ -109,13 +111,21 @@ print(json.dumps(payload, separators=(",", ":")))
 PY
 }
 
+command_parser_auto_curl() {
+  if typeset -f codex_exec_internal_shimmed >/dev/null 2>&1; then
+    codex_exec_internal_shimmed curl "$@"
+  else
+    curl "$@"
+  fi
+}
+
 command_parser_auto_parse() {
   local combined_log_file="${1:?combined log file required}"
   shift
   local payload=""
 
   payload="$(command_parser_auto_request_payload "$combined_log_file" "$@")"
-  curl -fsS \
+  command_parser_auto_curl -fsS \
     -H 'Content-Type: application/json' \
     -X POST \
     "${COMMAND_PARSER_AUTO_AUX_BASE_URL%/}/v1/command-parser/parse" \
@@ -140,9 +150,6 @@ command_parser_auto_should_skip() {
   local command=("$@")
   local token=""
   local base=""
-
-  [[ "${IS_USING_COMMAND_PARSER:-}" == "true" ]] && return 0
-  [[ "${CODEX_COMMAND_PARSER_ACTIVE:-}" == "1" ]] && return 0
 
   case "${PWD:-}" in
     */codex-aux/command-parser-*|*/codex-command-parser/*)

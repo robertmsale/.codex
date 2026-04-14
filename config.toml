@@ -123,7 +123,8 @@ codex_hooks = true              # Much better running-state tracker
 
 # Ones I don't
 unified_exec = false            # Enables parallel command execution, stdin polling, and the ability to use alternative shells
-multi_agent = false             # Wrecks weekly rate limits
+multi_agent = false             # Incompatible orchestration pattern
+shell_snapshot = false          # Interferes with shell wrapper
 collaboration_modes = false     # UX variants managed by hand
 # collab = false                  # Deprecated (multi_agent)
 codex_git_commit = false        # Managed manually

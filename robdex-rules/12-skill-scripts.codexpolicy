@@ -1,0 +1,38 @@
+# Allow executable skill entrypoints to run through the privileged executor.
+# This keeps the shared agent tool surface off the sandbox path.
+
+prefix_rule(
+    pattern = [[
+        "build-command-parser-image", "/Users/robertsale/.codex/skills/command-parser/scripts/build-command-parser-image",
+        "command-parser", "/Users/robertsale/.codex/skills/command-parser/scripts/command-parser",
+        "command-parser-new", "/Users/robertsale/.codex/skills/command-parser/scripts/command-parser-new",
+        "db_test.sh", "/Users/robertsale/.codex/skills/command-parser/scripts/db_test.sh",
+        "api-integration-harness",
+        "api_integration_reaper",
+        "api_integration_reaper_start",
+        "flutter-drive", "/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive",
+        "flutter-sim", "/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim",
+        "git-commit", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-commit",
+        "git-fetch", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-fetch",
+        "git-merge-worktree", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-merge-worktree",
+        "git-publish-worktree", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-publish-worktree",
+        "git-rebase-abort", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-rebase-abort",
+        "git-rebase-continue", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-rebase-continue",
+        "git-stage-paths", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-stage-paths",
+        "git-sync-worktree", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-sync-worktree",
+        "git-unstage-paths", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-unstage-paths",
+        "git-worktree-cleanup", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup",
+        "git-worktree-create", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-worktree-create",
+        "qa-fastforward", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/qa-fastforward",
+        "impeccable-ui-dispatch", "/Users/robertsale/.codex/skills/impeccable-ui/scripts/impeccable-ui-dispatch",
+        "manual-deploy",
+        "request-review", "/Users/robertsale/.codex/skills/request-review/scripts/request-review",
+        "request-review-role-instructions", "/Users/robertsale/.codex/skills/request-review/scripts/request-review-role-instructions",
+        "release-blocker-report",
+        "robdex", "/Users/robertsale/.codex/skills/robdex-orchestrator/scripts/robdex",
+        "safe-delete", "/Users/robertsale/.codex/skills/safe-delete/scripts/safe-delete",
+        "static-code-validation",
+        "worktree-stack-role-instructions",
+    ]],
+    decision = "allow",
+)

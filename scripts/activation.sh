@@ -27,11 +27,20 @@ try_activate_codex_root() {
   source "$activate_script" "$codex_root" >/dev/null 2>&1 || true
 }
 
+activation_bridge_curl() {
+  if typeset -f codex_exec_internal_shimmed >/dev/null 2>&1; then
+    codex_exec_internal_shimmed curl "$@"
+  else
+    curl "$@"
+  fi
+}
+
 resolve_agent_codex_root_from_bridge() {
   local thread_id="${CODEX_THREAD_ID:-}"
   local bridge_base_url="${ROBDEX_BRIDGE_BASE_URL:-http://127.0.0.1:42080}"
   local whoami_url=""
   local payload=""
+  local project_path=""
   local cwd=""
 
   [[ -n "$thread_id" ]] || return 0
@@ -39,9 +48,15 @@ resolve_agent_codex_root_from_bridge() {
   command -v python3 >/dev/null 2>&1 || return 0
 
   whoami_url="${bridge_base_url%/}/orchestrator/whoami?threadId=${thread_id}"
-  if ! payload="$(curl -fsS --max-time 2 "$whoami_url" 2>/dev/null)"; then
+  if ! payload="$(activation_bridge_curl -fsS --max-time 2 "$whoami_url" 2>/dev/null)"; then
     return 0
   fi
+
+  if ! project_path="$(python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); print(data.get("projectPath",""))' <<<"$payload" 2>/dev/null)"; then
+    return 0
+  fi
+
+  [[ -n "$project_path" ]] && printf '%s/.codex\n' "$project_path" && return 0
 
   if ! cwd="$(python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); print(data.get("cwd",""))' <<<"$payload" 2>/dev/null)"; then
     return 0
@@ -63,54 +78,4 @@ setup_codex_activation() {
     try_activate_codex_root "${AGENT_CWD}/.codex"
   fi
   ensure_minimum_runtime_path
-}
-
-passthru_activation_prefix() {
-  cat <<'EOF'
-export PATH="${PATH:-}"
-case ":$PATH:" in
-  *:/usr/bin:*) ;;
-  *) PATH="/usr/bin${PATH:+:$PATH}" ;;
-esac
-case ":$PATH:" in
-  *:/bin:*) ;;
-  *) PATH="/bin${PATH:+:$PATH}" ;;
-esac
-export PATH
-
-if [[ -f "$HOME/.profile" ]]; then
-  source "$HOME/.profile" >/dev/null 2>&1 || true
-fi
-
-if [[ -f "$HOME/.codex/activate" ]]; then
-  source "$HOME/.codex/activate" "$HOME/.codex" >/dev/null 2>&1 || true
-
-  if [[ -n "${CODEX_THREAD_ID:-}" ]] && command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-    __robdex_bridge_base_url="${ROBDEX_BRIDGE_BASE_URL:-http://127.0.0.1:42080}"
-    __robdex_payload="$(curl -fsS --max-time 2 "${__robdex_bridge_base_url%/}/orchestrator/whoami?threadId=${CODEX_THREAD_ID}" 2>/dev/null || true)"
-    if [[ -n "${__robdex_payload:-}" ]]; then
-      __robdex_cwd="$(python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); print(data.get("cwd",""))' <<<"${__robdex_payload}" 2>/dev/null || true)"
-      if [[ -n "${__robdex_cwd:-}" && -d "${__robdex_cwd}/.codex/skills" ]]; then
-        source "$HOME/.codex/activate" "${__robdex_cwd}/.codex" >/dev/null 2>&1 || true
-      fi
-    fi
-    unset __robdex_bridge_base_url __robdex_payload __robdex_cwd
-  fi
-
-  if [[ -n "${AGENT_CWD:-}" && -d "${AGENT_CWD}/.codex/skills" ]]; then
-    source "$HOME/.codex/activate" "${AGENT_CWD}/.codex" >/dev/null 2>&1 || true
-  fi
-fi
-
-for __codex_path_entry in /usr/bin /bin /usr/local/bin /opt/homebrew/bin; do
-  case ":${PATH:-}:" in
-    *:"${__codex_path_entry}":*)
-      ;;
-    *)
-      export PATH="${PATH:+${PATH}:}${__codex_path_entry}"
-      ;;
-  esac
-done
-unset __codex_path_entry
-EOF
 }

@@ -347,6 +347,7 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use tempfile::TempDir;
 
     fn sample_message(thread_id: &str) -> RobdexChatMessage {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -22,6 +23,10 @@ from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
 
+from idb.common.hid import text_to_events
+from idb.common.types import DomainSocketAddress
+from idb.grpc.client import Client
+
 from .bridge import BridgeError
 from .bridge import BridgePaths
 from .bridge import load_paths
@@ -40,6 +45,7 @@ BROKER_LAUNCH_LOG_DIR = os.environ.get("CODEX_FLUTTER_SIM_LOG_DIR")
 SCREENSHOT_ROOT = Path("/tmp/flutter-driver-screenshots")
 IDB_EXECUTABLE = os.environ.get("IDB_BIN", str(Path.home() / ".local" / "bin" / "idb"))
 SWIPE_DURATION_MILLISECONDS_THRESHOLD = 10.0
+ESCAPE_KEYCODE = 41
 
 
 def flutter_executable() -> str:
@@ -206,6 +212,41 @@ def rewrite_loopback_uri(raw_uri: str | None) -> str | None:
     else:
         netloc = f"{BROKER_HOSTNAME}:{parsed.port}"
     return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
+async def _idb_key_async(*, device_id: str, keycode: int) -> None:
+    companion_path = Path("/tmp/idb") / f"{device_id}_companion.sock"
+    if not companion_path.exists():
+        raise BridgeError(f"idb companion socket not found for device {device_id}: {companion_path}")
+
+    logger = logging.getLogger("flutter-sim-http.idb-hid")
+    async with Client.build(
+        address=DomainSocketAddress(path=str(companion_path)),
+        logger=logger,
+    ) as client:
+        await client.set_hardware_keyboard(True)
+        await client.key(keycode)
+
+
+def _idb_key(*, device_id: str, keycode: int) -> None:
+    asyncio.run(_idb_key_async(device_id=device_id, keycode=keycode))
+
+
+async def _idb_set_hardware_keyboard_async(*, device_id: str, enabled: bool) -> None:
+    companion_path = Path("/tmp/idb") / f"{device_id}_companion.sock"
+    if not companion_path.exists():
+        raise BridgeError(f"idb companion socket not found for device {device_id}: {companion_path}")
+
+    logger = logging.getLogger("flutter-sim-http.idb-hid")
+    async with Client.build(
+        address=DomainSocketAddress(path=str(companion_path)),
+        logger=logger,
+    ) as client:
+        await client.set_hardware_keyboard(enabled)
+
+
+def _idb_set_hardware_keyboard(*, device_id: str, enabled: bool) -> None:
+    asyncio.run(_idb_set_hardware_keyboard_async(device_id=device_id, enabled=enabled))
 
 
 class TcpForwarder:
@@ -2136,20 +2177,28 @@ class FlutterSimManager:
             )
             return {"ok": True, "message": f"forwardEraseText {count}"}
         if command_name == "hideKeyboard":
-            result = self._run_idb_cli(
-                argv=["ui", "key", "--udid", reservation.device_id, "ESCAPE"],
-                cwd=Path(reservation.launch_path),
-            )
+            try:
+                _idb_key(device_id=reservation.device_id, keycode=ESCAPE_KEYCODE)
+            except Exception as error:
+                self._write_driver_result(
+                    run_dir=step_run_dir,
+                    kind="hideKeyboard",
+                    returncode=1,
+                    stdout="",
+                    stderr=str(error),
+                    metadata={"device_id": reservation.device_id, "keycode": ESCAPE_KEYCODE},
+                )
+                if isinstance(error, BridgeError):
+                    raise
+                raise BridgeError(str(error)) from error
             self._write_driver_result(
                 run_dir=step_run_dir,
                 kind="hideKeyboard",
-                returncode=result.returncode,
-                stdout=result.stdout or "",
-                stderr=result.stderr or "",
-                metadata={"device_id": reservation.device_id},
+                returncode=0,
+                stdout="",
+                stderr="",
+                metadata={"device_id": reservation.device_id, "keycode": ESCAPE_KEYCODE},
             )
-            if result.returncode != 0:
-                raise BridgeError((result.stderr or result.stdout or "idb hide keyboard failed").strip())
             return {"ok": True, "message": "hideKeyboard"}
         raise BridgeError(f"Unsupported idb flow command: {command_name}")
 

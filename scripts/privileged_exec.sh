@@ -5,6 +5,14 @@ PRIVILEGED_EXEC_STATUS=0
 PRIVILEGED_EXEC_STDOUT_FILE=""
 PRIVILEGED_EXEC_STDERR_FILE=""
 
+privileged_exec_curl() {
+  if typeset -f codex_exec_internal_shimmed >/dev/null 2>&1; then
+    codex_exec_internal_shimmed curl "$@"
+  else
+    curl "$@"
+  fi
+}
+
 privileged_exec_is_hard_decision() {
   local decision="${1:-}"
   [[ "$decision" == "forbidden" || "$decision" == "prompt" ]]
@@ -56,7 +64,7 @@ run_via_privileged_exec_if_allowed() {
   command -v python3 >/dev/null 2>&1 || return 0
 
   request_payload="$(privileged_exec_build_request "$PWD" "$@")"
-  check_response="$(curl -fsS \
+  check_response="$(privileged_exec_curl -fsS \
     -H 'Content-Type: application/json' \
     -X POST \
     "${base_url%/}/policy/check" \
@@ -91,7 +99,7 @@ run_via_privileged_exec_if_allowed() {
   stdout_file="$(mktemp /tmp/codex-privileged-stdout.XXXXXX)"
   stderr_file="$(mktemp /tmp/codex-privileged-stderr.XXXXXX)"
 
-  run_response="$(curl -fsS \
+  run_response="$(privileged_exec_curl -fsS \
     -H 'Content-Type: application/json' \
     -X POST \
     "${base_url%/}/exec/run" \

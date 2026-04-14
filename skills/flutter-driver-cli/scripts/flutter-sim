@@ -2,16 +2,23 @@
 set -euo pipefail
 
 BASE_URL="${FLUTTER_SIM_SERVER_BASE_URL:-http://127.0.0.1:8767}"
+BRIDGE_BASE_URL="${ROBDEX_BRIDGE_BASE_URL:-http://127.0.0.1:42080}"
+CURL_BIN="${FLUTTER_SIM_CURL_BIN:-/usr/bin/curl}"
 COMMAND="${1:-}"
 shift || true
 
 DEVICE_ID_ARG=""
+DEVICE_KEY_ARG=""
 JSON=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device-id)
       DEVICE_ID_ARG="$2"
+      shift 2
+      ;;
+    --device-key)
+      DEVICE_KEY_ARG="$2"
       shift 2
       ;;
     --json)
@@ -36,10 +43,51 @@ request() {
   local endpoint="$2"
   local body="${3:-}"
   if [[ -n "$body" ]]; then
-    curl -fsS -X "$method" -H 'Content-Type: application/json' "$BASE_URL$endpoint" -d "$body"
+    "$CURL_BIN" -fsS -X "$method" -H 'Content-Type: application/json' "$BASE_URL$endpoint" -d "$body"
   else
-    curl -fsS -X "$method" "$BASE_URL$endpoint"
+    "$CURL_BIN" -fsS -X "$method" "$BASE_URL$endpoint"
   fi
+}
+
+bridge_request() {
+  local method="$1"
+  local endpoint="$2"
+  local body="${3:-}"
+  if [[ -n "$body" ]]; then
+    "$CURL_BIN" -fsS -X "$method" -H 'Content-Type: application/json' "$BRIDGE_BASE_URL$endpoint" -d "$body"
+  else
+    "$CURL_BIN" -fsS -X "$method" "$BRIDGE_BASE_URL$endpoint"
+  fi
+}
+
+thread_bridge_devices() {
+  local thread_id="${CODEX_THREAD_ID:-}"
+  [[ -n "$thread_id" ]] || return 1
+  bridge_request GET "/threads/${thread_id}/qa/devices"
+}
+
+resolve_device_key_from_devices() {
+  local payload="$1"
+  local requested_key="$2"
+  local requested_id="$3"
+  PAYLOAD="$payload" python3 - "$requested_key" "$requested_id" <<'PY'
+import json, os, sys
+payload = json.loads(os.environ["PAYLOAD"])
+devices = payload.get("devices") or []
+requested_key = sys.argv[1].strip()
+requested_id = sys.argv[2].strip().upper()
+if requested_key:
+    print(requested_key)
+    raise SystemExit(0)
+for device in devices:
+    if not isinstance(device, dict):
+        continue
+    device_id = str(device.get("device_id") or "").upper()
+    if requested_id and device_id == requested_id:
+        print(str(device.get("device_key") or ""))
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
 }
 
 render() {
@@ -59,7 +107,9 @@ if mode == "json":
 
 if mode == "devices":
     for device in payload.get("devices", []):
-        print(f"{device.get('device_id')}\t{device.get('name')}\t{device.get('state')}")
+        state = device.get("state") or {}
+        status = state.get("status") if isinstance(state, dict) else device.get("state")
+        print(f"{device.get('device_key')}\t{device.get('device_id')}\t{device.get('name')}\t{status}")
     raise SystemExit(0)
 
 if mode == "dump-logs":
@@ -72,28 +122,77 @@ if mode == "dump-logs":
 print(payload.get("message", ""))
 if not payload.get("ok", True):
     raise SystemExit(1)
+
+slot = payload.get("slot")
+if isinstance(slot, dict):
+    artifacts = slot.get("artifacts") or {}
+    message = artifacts.get("reserveMessage") or payload.get("message", "")
+    if message:
+        print(message)
+    login = artifacts.get("loginEmail")
+    password = artifacts.get("loginPassword")
+    base_url = artifacts.get("apiBaseUrl")
+    if login and password:
+        print(f"login: {login}:{password}")
+    if base_url:
+        print(f"api: {base_url}")
+    if slot.get("status") == "failed":
+        last_error = slot.get("last_error") or {}
+        if isinstance(last_error, dict):
+            detail = last_error.get("message") or last_error.get("code")
+            if detail:
+                print(f"error: {detail}", file=sys.stderr)
+        raise SystemExit(1)
+    raise SystemExit(0)
 PY
 }
 
+BRIDGE_DEVICES_RESPONSE=""
+if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
+  BRIDGE_DEVICES_RESPONSE="$(thread_bridge_devices)"
+fi
+
 case "$COMMAND" in
   devices)
-    RESPONSE="$(request GET /devices)"
+    if [[ -n "$BRIDGE_DEVICES_RESPONSE" ]]; then
+      RESPONSE="$BRIDGE_DEVICES_RESPONSE"
+    else
+      RESPONSE="$(request GET /devices)"
+    fi
     ;;
   reserve)
-    if [[ -z "$DEVICE_ID_ARG" ]]; then
-      echo "--device-id is required for reserve" >&2
-      exit 64
+    if [[ -n "$BRIDGE_DEVICES_RESPONSE" ]]; then
+      DEVICE_KEY_ARG="$(resolve_device_key_from_devices "$BRIDGE_DEVICES_RESPONSE" "$DEVICE_KEY_ARG" "$DEVICE_ID_ARG" || true)"
+      if [[ -z "$DEVICE_KEY_ARG" ]]; then
+        echo "--device-key or a project-scoped --device-id is required for reserve" >&2
+        exit 64
+      fi
+      RESPONSE="$(bridge_request POST "/threads/${CODEX_THREAD_ID}/qa/devices/${DEVICE_KEY_ARG}/reserve" '{}')"
+    else
+      if [[ -z "$DEVICE_ID_ARG" ]]; then
+        echo "--device-id is required for reserve" >&2
+        exit 64
+      fi
+      BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
+      RESPONSE="$(request POST /reserve "$BODY")"
     fi
-    BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
-    RESPONSE="$(request POST /reserve "$BODY")"
     ;;
   reboot)
-    if [[ -z "$DEVICE_ID_ARG" ]]; then
-      echo "--device-id is required for reboot" >&2
-      exit 64
+    if [[ -n "$BRIDGE_DEVICES_RESPONSE" ]]; then
+      DEVICE_KEY_ARG="$(resolve_device_key_from_devices "$BRIDGE_DEVICES_RESPONSE" "$DEVICE_KEY_ARG" "$DEVICE_ID_ARG" || true)"
+      if [[ -z "$DEVICE_KEY_ARG" ]]; then
+        echo "--device-key or a project-scoped --device-id is required for reboot" >&2
+        exit 64
+      fi
+      RESPONSE="$(bridge_request POST "/threads/${CODEX_THREAD_ID}/qa/devices/${DEVICE_KEY_ARG}/reboot" '{}')"
+    else
+      if [[ -z "$DEVICE_ID_ARG" ]]; then
+        echo "--device-id is required for reboot" >&2
+        exit 64
+      fi
+      BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
+      RESPONSE="$(request POST /reboot "$BODY")"
     fi
-    BODY="$(python3 -c 'import json, sys; print(json.dumps({"device_id": sys.argv[1]}))' "$DEVICE_ID_ARG")"
-    RESPONSE="$(request POST /reboot "$BODY")"
     ;;
   dump-logs)
     if [[ -z "$DEVICE_ID_ARG" ]]; then
@@ -107,7 +206,9 @@ case "$COMMAND" in
     cat <<'EOF'
 Usage:
   flutter-sim devices [--json]
+  flutter-sim reserve --device-key <key> [--json]
   flutter-sim reserve --device-id <id> [--json]
+  flutter-sim reboot --device-key <key> [--json]
   flutter-sim reboot --device-id <id> [--json]
   flutter-sim dump-logs --device-id <id> [--json]
 EOF

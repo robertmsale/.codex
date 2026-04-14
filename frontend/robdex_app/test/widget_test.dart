@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:robdex_app/src/core/models/mock_workbench_data.dart';
+import 'package:robdex_app/src/core/models/workbench_models.dart';
 import 'package:robdex_app/src/features/chat/chat_timeline.dart';
 import 'package:robdex_app/src/features/shell/robdex_shell_screen.dart';
 
@@ -80,4 +81,137 @@ void main() {
     expect(find.text('Active'), findsOneWidget);
     expect(find.text('Resuming interrupted QA-driven reliability sweep from existing agents without re-auditing from scratch.'), findsOneWidget);
   });
+
+  testWidgets('chat timeline preserves scroll position when new entries arrive away from bottom', (
+    WidgetTester tester,
+  ) async {
+    final entries = List<ChatEntry>.generate(
+      40,
+      (index) => _chatEntry(index),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 420,
+            child: ChatTimeline(
+              threadId: 'thread-a',
+              entries: entries,
+              title: 'Thread A',
+              contextWindowRemainingPercent: 80,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: false,
+              isRunning: false,
+              showComposer: false,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final scrollable = find.byType(Scrollable);
+    await tester.drag(scrollable, const Offset(0, -900));
+    await tester.pumpAndSettle();
+
+    final before = tester.state<ScrollableState>(scrollable).position.pixels;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 420,
+            child: ChatTimeline(
+              threadId: 'thread-a',
+              entries: [...entries, _chatEntry(40)],
+              title: 'Thread A',
+              contextWindowRemainingPercent: 79,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: false,
+              isRunning: true,
+              showComposer: false,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final after = tester.state<ScrollableState>(scrollable).position.pixels;
+    expect(after, moreOrLessEquals(before, epsilon: 1.0));
+  });
+
+  testWidgets('chat timeline sticks to bottom when new entries arrive near bottom', (
+    WidgetTester tester,
+  ) async {
+    final entries = List<ChatEntry>.generate(
+      30,
+      (index) => _chatEntry(index),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 420,
+            child: ChatTimeline(
+              threadId: 'thread-a',
+              entries: entries,
+              title: 'Thread A',
+              contextWindowRemainingPercent: 80,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: false,
+              isRunning: false,
+              showComposer: false,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final scrollable = find.byType(Scrollable);
+    final position = tester.state<ScrollableState>(scrollable).position;
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pump();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 420,
+            child: ChatTimeline(
+              threadId: 'thread-a',
+              entries: [...entries, _chatEntry(30)],
+              title: 'Thread A',
+              contextWindowRemainingPercent: 79,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: false,
+              isRunning: true,
+              showComposer: false,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final after = tester.state<ScrollableState>(scrollable).position;
+    expect(after.pixels, moreOrLessEquals(after.maxScrollExtent, epsilon: 1.0));
+  });
+}
+
+ChatEntry _chatEntry(int index) {
+  return ChatEntry(
+    id: 'entry-$index',
+    author: 'assistant',
+    displayLabel: 'Assistant',
+    timestampLabel: 'now',
+    body: 'Entry $index\n${'detail ' * 20}',
+  );
 }

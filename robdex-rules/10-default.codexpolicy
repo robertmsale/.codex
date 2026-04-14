@@ -25,4 +25,7 @@ prefix_rule(
     ],
 )
 
-
+prefix_rule(
+    pattern = [["static-code-validation", "db_test.sh", "api-integration-harness"]],
+    decision = "allow",
+)

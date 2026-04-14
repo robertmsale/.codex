@@ -2,4 +2,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec uv run --project "$SCRIPT_DIR/../../../backend/python/codex-services" python3 "$SCRIPT_DIR/resources/flutter_drive_cli.py" "$@"
+PROJECT_DIR="$SCRIPT_DIR/../../../backend/python/codex-services"
+PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
+MUTAGEN_FILE="$PROJECT_DIR/mutagen.yml"
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "error: flutter-drive Python environment is missing: $PYTHON_BIN" >&2
+  exit 1
+fi
+
+export CODEX_MUTAGEN_FILE="${CODEX_MUTAGEN_FILE:-$MUTAGEN_FILE}"
+exec "$PYTHON_BIN" "$SCRIPT_DIR/resources/flutter_drive_cli.py" "$@"

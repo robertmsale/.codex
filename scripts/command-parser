@@ -145,10 +145,6 @@ if [[ -f "$env_file" ]]; then
   set +a
 fi
 
-export CODEX_DISABLE_AUTO_COMMAND_PARSER=1
-export CODEX_COMMAND_PARSER_ACTIVE=1
-export IS_USING_COMMAND_PARSER=true
-
 check_command_policy "$rule_file" "$@"
 
 require_cmd() {
@@ -170,7 +166,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if CODEX_DISABLE_AUTO_COMMAND_PARSER=1 IS_USING_COMMAND_PARSER=true CODEX_COMMAND_PARSER_ACTIVE=1 "$@" >"$tmp_dir/output.log" 2>&1; then
+if "$@" >"$tmp_dir/output.log" 2>&1; then
   :
 fi
 

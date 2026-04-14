@@ -3,7 +3,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, post},
+    routing::{get, post},
 };
 use codex_backend_core::HealthResponse;
 use futures_util::stream::unfold;

@@ -113,6 +113,7 @@ fn default_state_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::IpAddr;
     use tempfile::TempDir;
 
     #[test]
