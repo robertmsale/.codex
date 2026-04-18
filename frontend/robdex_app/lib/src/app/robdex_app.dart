@@ -2080,9 +2080,9 @@ class _StarfieldPainter extends CustomPainter {
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
         colors: const [
-          Color(0xB804070B),
-          Color(0xCC08111B),
-          Color(0xB003060A),
+          Color(0x1804070B),
+          Color(0x2208111B),
+          Color(0x1403060A),
         ],
       ).createShader(rect);
     canvas.drawRect(rect, background);

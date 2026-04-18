@@ -33,17 +33,29 @@ float fbm(vec2 p) {
 }
 
 vec3 nebulaField(vec2 uv, float time) {
-  vec2 p = uv;
+  vec2 p = uv * 0.58;
   vec2 driftA = vec2(time * 0.018, -time * 0.01);
   vec2 driftB = vec2(-time * 0.012, time * 0.016);
 
-  float n1 = fbm((p * 2.2) + driftA);
-  float n2 = fbm((p * 3.9) - driftB + (n1 * 1.3));
-  float n3 = fbm((p * 6.4) + vec2(n2, n1) * 0.9);
+  float n1 = fbm((p * 1.35) + driftA);
+  float n2 = fbm((p * 2.25) - driftB + (n1 * 0.95));
+  float n3 = fbm((p * 3.8) + vec2(n2, n1) * 0.6);
+  float n4 = fbm((p * 0.92) + vec2(-time * 0.006, time * 0.004));
+  float n5 = fbm((p * 4.8) + vec2(n2, n3) * 0.34);
+  float colorFieldA = fbm((p * 0.72) + vec2(4.2, -2.4));
+  float colorFieldB = fbm((p * 0.88) + vec2(-3.1, 5.3));
 
-  float density = smoothstep(0.38, 0.86, n1 * 0.7 + n2 * 0.45);
-  float filament = smoothstep(0.46, 0.82, n2 + (n3 * 0.35));
-  float contour = smoothstep(0.62, 0.9, abs(n3 - 0.56));
+  float ridge = 1.0 - abs((n3 * 2.0) - 1.0);
+  ridge = pow(clamp(ridge, 0.0, 1.0), 1.35);
+  float basin = smoothstep(0.16, 0.78, n1 - (n2 * 0.18));
+  float density = smoothstep(0.36, 0.88, n1 * 0.68 + n2 * 0.38 + n4 * 0.16);
+  float filament = smoothstep(0.46, 0.8, n2 + (n3 * 0.16) + (n5 * 0.05));
+  float contour = smoothstep(0.5, 0.86, ridge + (filament * 0.12));
+  float crest = smoothstep(0.6, 0.9, n2 + ridge * 0.28 + n4 * 0.1);
+  float spark = smoothstep(0.9, 1.08, n1 + n2 * 0.16 + ridge * 0.12);
+  float warmMask = smoothstep(0.38, 0.72, colorFieldA + (colorFieldB * 0.18));
+  float coolMask = smoothstep(0.34, 0.76, (1.0 - colorFieldA) + colorFieldB * 0.12);
+  float violetMask = smoothstep(0.4, 0.74, colorFieldB + n4 * 0.12);
 
   vec3 blue = vec3(0.20, 0.34, 0.92);
   vec3 azure = vec3(0.24, 0.48, 0.96);
@@ -52,19 +64,26 @@ vec3 nebulaField(vec2 uv, float time) {
   vec3 purple = vec3(0.82, 0.24, 0.94);
   vec3 magenta = vec3(1.0, 0.28, 0.78);
   vec3 rose = vec3(1.0, 0.42, 0.56);
+  vec3 scarlet = vec3(1.0, 0.24, 0.22);
   vec3 ember = vec3(1.0, 0.56, 0.24);
   vec3 gold = vec3(1.0, 0.72, 0.36);
+  vec3 amber = vec3(1.0, 0.82, 0.44);
 
   vec3 color = vec3(0.0);
-  color += blue * density * 0.18;
-  color += azure * smoothstep(0.34, 0.82, n1 + n2 * 0.18) * 0.18;
-  color += cyan * filament * 0.16;
-  color += violet * smoothstep(0.38, 0.84, n2) * 0.28;
-  color += purple * smoothstep(0.45, 0.88, n2 + n3 * 0.22) * 0.38;
-  color += magenta * contour * 0.34;
-  color += rose * smoothstep(0.64, 0.93, n1 + n3 * 0.2) * 0.28;
-  color += ember * smoothstep(0.76, 0.97, n2 + n3 * 0.14) * 0.14;
-  color += gold * smoothstep(0.9, 1.02, n1 + n2 * 0.18 + n3 * 0.08) * 0.05;
+  color += blue * basin * coolMask * 0.08;
+  color += azure * smoothstep(0.34, 0.82, n1 + n2 * 0.1) * coolMask * 0.1;
+  color += cyan * filament * coolMask * 0.09;
+  color += violet * smoothstep(0.38, 0.84, n2) * violetMask * 0.14;
+  color += purple * smoothstep(0.44, 0.88, n2 + n3 * 0.12) * violetMask * 0.16;
+  color += magenta * contour * violetMask * 0.14;
+  color += rose * crest * warmMask * 0.16;
+  color += scarlet * smoothstep(0.74, 0.95, crest + spark * 0.12) * warmMask * 0.1;
+  color += ember * smoothstep(0.7, 0.94, n2 + ridge * 0.1) * warmMask * 0.1;
+  color += gold * spark * warmMask * 0.07;
+  color += amber * smoothstep(0.9, 1.06, spark + ridge * 0.04) * warmMask * 0.04;
+
+  color *= mix(0.9, 1.04, contour);
+  color += vec3(ridge * 0.02, ridge * 0.012, ridge * 0.006);
 
   return color;
 }
