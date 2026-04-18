@@ -51,48 +51,31 @@ class ThreadListPanel extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                theme.colorScheme.secondary.withValues(alpha: 0.14),
-                theme.colorScheme.primary.withValues(alpha: 0.08),
-                theme.colorScheme.surface.withValues(alpha: 0.0),
-              ],
-            ),
-            border: Border.all(
-              color: theme.colorScheme.outline.withValues(alpha: 0.6),
-            ),
+            borderRadius: BorderRadius.circular(14),
           ),
           child: Row(
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Threads',
-                      style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w800),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      '${threads.length} agents across ${projects.length} projects',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.72),
-                      ),
-                    ),
-                  ],
+              Text(
+                'Threads',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
                 ),
               ),
-              TextButton.icon(
-                onPressed: onCreateProject,
-                icon: const Icon(Icons.create_new_folder_outlined, size: 14),
-                label: const Text('Project'),
+              const SizedBox(width: 8),
+              Text(
+                '${threads.length}',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.52),
+                ),
               ),
-              const SizedBox(width: 4),
+              const Spacer(),
+              IconButton(
+                onPressed: onCreateProject,
+                tooltip: 'New project',
+                icon: const Icon(Icons.create_new_folder_outlined, size: 16),
+              ),
               IconButton(
                 onPressed: onDisconnect,
                 tooltip: 'Disconnect',
@@ -109,7 +92,7 @@ class ThreadListPanel extends StatelessWidget {
               final project = orderedProjects[index];
               final projectThreads = grouped[project.id] ?? const <ThreadItem>[];
               return Padding(
-                padding: EdgeInsets.only(bottom: index == orderedProjects.length - 1 ? 0 : 12),
+                padding: EdgeInsets.only(bottom: index == orderedProjects.length - 1 ? 0 : 10),
                 child: _ProjectSection(
                   project: project,
                   threads: projectThreads,
@@ -150,69 +133,47 @@ class _ProjectSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(18),
-        color: theme.colorScheme.surface.withValues(alpha: 0.34),
-        border: Border.all(
-          color: theme.colorScheme.outline.withValues(alpha: 0.45),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: RichText(
-                  text: TextSpan(
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
-                    ),
-                    children: [
-                      TextSpan(
-                        text: project.name,
-                        style: const TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                      TextSpan(
-                        text: '  ${project.defaultCwd}',
-                        style: TextStyle(
-                          fontFamily: 'monospace',
-                          color: theme.colorScheme.onSurface.withValues(alpha: 0.62),
-                        ),
-                      ),
-                    ],
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                project.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
                 ),
               ),
-              IconButton(
-                onPressed: onProjectSettings,
-                tooltip: 'Project settings for ${project.name}',
-                icon: const Icon(Icons.settings_outlined, size: 16),
-                visualDensity: VisualDensity.compact,
-              ),
-              IconButton(
-                onPressed: onCreateThread,
-                tooltip: 'Create thread in ${project.name}',
-                icon: const Icon(Icons.add, size: 16),
-                visualDensity: VisualDensity.compact,
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          ...threads.map(
-            (thread) => _ThreadTile(
-              thread: thread,
-              hasPendingApproval: pendingApprovals.any((approval) => approval.threadId == thread.id),
-              isSelected: thread.id == selectedThreadId,
-              onTap: () => onThreadSelected(thread.id),
             ),
+            IconButton(
+              onPressed: onProjectSettings,
+              tooltip: 'Project settings for ${project.name}',
+              icon: const Icon(Icons.settings_outlined, size: 15),
+              visualDensity: VisualDensity.compact,
+            ),
+            IconButton(
+              onPressed: onCreateThread,
+              tooltip: 'Create thread in ${project.name}',
+              icon: const Icon(Icons.add, size: 15),
+              visualDensity: VisualDensity.compact,
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        ...threads.map(
+          (thread) => _ThreadTile(
+            thread: thread,
+            hasPendingApproval:
+                pendingApprovals.any((approval) => approval.threadId == thread.id),
+            isSelected: thread.id == selectedThreadId,
+            onTap: () => onThreadSelected(thread.id),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -241,16 +202,17 @@ class _ThreadTile extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(8),
         child: Container(
-          margin: const EdgeInsets.only(bottom: 4),
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          margin: const EdgeInsets.only(bottom: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(8),
-            color: isSelected ? theme.colorScheme.primary.withValues(alpha: 0.1) : Colors.transparent,
-            border: Border(
-              left: BorderSide(
-                color: isSelected ? theme.colorScheme.primary : Colors.transparent,
-                width: 2,
-              ),
+            color: isSelected
+                ? theme.colorScheme.primary.withValues(alpha: 0.08)
+                : Colors.transparent,
+            border: Border.all(
+              color: isSelected
+                  ? theme.colorScheme.primary.withValues(alpha: 0.24)
+                  : Colors.transparent,
             ),
           ),
           child: Row(
@@ -261,7 +223,7 @@ class _ThreadTile extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.bodySmall?.copyWith(
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                     color: foreground,
                   ),
                 ),
@@ -280,7 +242,10 @@ class _ThreadTile extends StatelessWidget {
                 const SizedBox(width: 6),
                 Text(
                   '${thread.unreadCount}',
-                  style: theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w700),
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                  ),
                 ),
               ],
             ],

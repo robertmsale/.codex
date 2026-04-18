@@ -122,32 +122,56 @@ class _ChatTimelineState extends State<ChatTimeline> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (widget.leading != null) ...[
-              widget.leading!,
-              const SizedBox(width: 8),
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: widget.leading!,
+              ),
+              const SizedBox(width: 10),
             ],
             Expanded(
-              child: Text(
-                widget.title,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.title,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    widget.contextWindowRemainingPercent == null
+                        ? '--% remaining'
+                        : '${widget.contextWindowRemainingPercent!}% remaining',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.52),
+                    ),
+                  ),
+                ],
               ),
-            ),
-            Text(
-              widget.contextWindowRemainingPercent == null
-                  ? '--% Remaining'
-                  : '${widget.contextWindowRemainingPercent!}% Remaining',
-              style: theme.textTheme.labelSmall,
             ),
           ],
         ),
         if (widget.headerControls != null) ...[
-          const SizedBox(height: 6),
-          widget.headerControls!,
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 2),
+              child: DefaultTextStyle.merge(
+                style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.74),
+                    ) ??
+                    const TextStyle(),
+                child: widget.headerControls!,
+              ),
+            ),
+          ),
         ],
-        const SizedBox(height: 8),
+        const SizedBox(height: 12),
         Expanded(
           child: Stack(
             children: [
@@ -188,7 +212,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
           ),
         ),
         if (widget.showComposer) ...[
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           ComposerPanel(
             enabled: widget.composerEnabled,
             isRunning: widget.isRunning,
@@ -261,8 +285,8 @@ class _ChatBubble extends StatelessWidget {
     final isUser = entry.author == 'User' || entry.author == 'Operator';
     final isPending = entry.deliveryState == 'pending';
     final bubbleColor = isUser
-        ? theme.colorScheme.primary.withValues(alpha: isPending ? 0.1 : 0.18)
-        : theme.colorScheme.surface.withValues(alpha: 0.9);
+        ? theme.colorScheme.primary.withValues(alpha: isPending ? 0.08 : 0.13)
+        : theme.colorScheme.surface.withValues(alpha: 0.76);
 
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
@@ -274,8 +298,8 @@ class _ChatBubble extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: isUser
-                  ? theme.colorScheme.primary.withValues(alpha: isPending ? 0.28 : 0.45)
-                  : theme.colorScheme.outline,
+                  ? theme.colorScheme.primary.withValues(alpha: isPending ? 0.18 : 0.28)
+                  : theme.colorScheme.outline.withValues(alpha: 0.72),
             ),
           ),
           child: Padding(
@@ -294,13 +318,18 @@ class _ChatBubble extends StatelessWidget {
                           Text(
                             entry.displayLabel,
                             style: theme.textTheme.labelSmall?.copyWith(
-                              fontWeight: FontWeight.w700,
+                              fontWeight: FontWeight.w600,
                               color: isPending
                                   ? theme.colorScheme.onSurface.withValues(alpha: 0.68)
-                                  : null,
+                                  : theme.colorScheme.onSurface.withValues(alpha: 0.8),
                             ),
                           ),
-                          Text(timestampLabel, style: theme.textTheme.labelSmall),
+                          Text(
+                            timestampLabel,
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.colorScheme.onSurface.withValues(alpha: 0.58),
+                            ),
+                          ),
                           if (isPending)
                             Text(
                               'Sending...',
@@ -379,13 +408,13 @@ class _PlanUpdateCard extends StatelessWidget {
             color: surfaceTone,
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-              color: accent.withValues(alpha: 0.35),
+              color: accent.withValues(alpha: 0.24),
             ),
             boxShadow: [
               BoxShadow(
-                color: theme.colorScheme.shadow.withValues(alpha: 0.08),
-                blurRadius: 12,
-                offset: const Offset(0, 4),
+                color: theme.colorScheme.shadow.withValues(alpha: 0.05),
+                blurRadius: 8,
+                offset: const Offset(0, 3),
               ),
             ],
           ),

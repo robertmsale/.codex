@@ -80,7 +80,7 @@ class RobdexShellScreen extends StatelessWidget {
                 builder: (context, constraints) {
                   final isCompact = constraints.maxWidth < 860;
                   return Padding(
-                    padding: const EdgeInsets.all(10),
+                    padding: const EdgeInsets.all(12),
                     child: isCompact
                         ? RepaintBoundary(
                             child: _CompactShell(
@@ -248,7 +248,7 @@ class _WideShellState extends State<_WideShell> {
           ),
         ),
         _SidebarResizeHandle(onDrag: _resizeSidebar),
-        const SizedBox(width: 10),
+        const SizedBox(width: 12),
         Expanded(
           child: _PaneSurface(
             accent: const Color(0xFFF3A43B),
@@ -381,25 +381,25 @@ class _PaneSurface extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(22),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
         child: DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
               colors: [
-                theme.colorScheme.surface.withValues(alpha: 0.58),
-                theme.colorScheme.surfaceContainer.withValues(alpha: 0.42),
+                theme.colorScheme.surface.withValues(alpha: 0.5),
+                theme.colorScheme.surfaceContainer.withValues(alpha: 0.34),
               ],
             ),
             border: Border.all(
-              color: accent.withValues(alpha: 0.22),
+              color: accent.withValues(alpha: 0.14),
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.12),
-                blurRadius: 28,
-                offset: const Offset(0, 18),
+                color: Colors.black.withValues(alpha: 0.08),
+                blurRadius: 20,
+                offset: const Offset(0, 14),
               ),
             ],
           ),
@@ -416,7 +416,7 @@ class _PaneSurface extends StatelessWidget {
                       shape: BoxShape.circle,
                       gradient: RadialGradient(
                         colors: [
-                          accent.withValues(alpha: 0.14),
+                          accent.withValues(alpha: 0.08),
                           accent.withValues(alpha: 0.0),
                         ],
                       ),
@@ -437,7 +437,7 @@ class _PaneSurface extends StatelessWidget {
                         borderRadius: BorderRadius.circular(40),
                         gradient: LinearGradient(
                           colors: [
-                            const Color(0xFF1A2B3C).withValues(alpha: 0.18),
+                            const Color(0xFF1A2B3C).withValues(alpha: 0.1),
                             Colors.transparent,
                           ],
                         ),
@@ -513,9 +513,9 @@ class _ShellNebulaBackdropState extends State<_ShellNebulaBackdrop>
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: [
-                  const Color(0xFF071018).withValues(alpha: 0.56),
-                  const Color(0xFF0C1622).withValues(alpha: 0.42),
-                  const Color(0xFF101D2B).withValues(alpha: 0.48),
+                  const Color(0xFF071018).withValues(alpha: 0.48),
+                  const Color(0xFF0C1622).withValues(alpha: 0.34),
+                  const Color(0xFF101D2B).withValues(alpha: 0.4),
                 ],
                 stops: const [0.0, 0.44, 1.0],
               ),
@@ -536,7 +536,7 @@ class _ShellNebulaBackdropState extends State<_ShellNebulaBackdrop>
                 center: const Alignment(0, -0.08),
                 radius: 0.88,
                 colors: [
-                  const Color(0xFF2A5E9B).withValues(alpha: 0.06),
+                  const Color(0xFF2A5E9B).withValues(alpha: 0.035),
                   Colors.transparent,
                 ],
               ),

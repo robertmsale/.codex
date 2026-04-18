@@ -32,6 +32,17 @@ class RobdexApp extends StatelessWidget {
   }
 }
 
+
+enum _ProjectSettingsTab {
+  project,
+  orchestrator,
+  worker,
+  qa,
+  designer,
+  hidden,
+  operator,
+}
+
 class RobdexWorkbench extends StatefulWidget {
   const RobdexWorkbench({super.key});
 
@@ -618,6 +629,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     final availableModels = _controller.view?.availableModels ?? const <ModelItem>[];
     final nameController = TextEditingController(text: project.name);
     final cwdController = TextEditingController(text: project.defaultCwd);
+    _ProjectSettingsTab activeTab = _ProjectSettingsTab.project;
     bool autoRouteReplies = project.autoRouteReplies;
     bool routeApprovalRequests = project.routeApprovalRequests;
     String preferredModelProvider = project.preferredModelProvider ?? '';
@@ -651,14 +663,15 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     final result = await showDialog<bool>(
       context: context,
       builder: (context) {
+        final theme = Theme.of(context);
+
         Widget modelDropdown(
-          String label,
           String current,
           ValueChanged<String> onChanged,
         ) {
           return DropdownButtonFormField<String>(
             initialValue: current,
-            decoration: InputDecoration(labelText: label),
+            decoration: const InputDecoration(labelText: 'Model'),
             items: [
               const DropdownMenuItem(value: '', child: Text('Default')),
               ...availableModels
@@ -675,13 +688,12 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
         }
 
         Widget reasoningDropdown(
-          String label,
           String current,
           ValueChanged<String> onChanged,
         ) {
           return DropdownButtonFormField<String>(
             initialValue: current,
-            decoration: InputDecoration(labelText: label),
+            decoration: const InputDecoration(labelText: 'Reasoning'),
             items: const [
               DropdownMenuItem(value: '', child: Text('Default')),
               DropdownMenuItem(value: 'low', child: Text('Low')),
@@ -692,155 +704,405 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           );
         }
 
-        Widget developerInstructionsField(
-          String label,
-          TextEditingController controller,
-        ) {
+        Widget developerInstructionsField(TextEditingController controller) {
           return TextField(
             controller: controller,
-            minLines: 2,
-            maxLines: 5,
-            decoration: InputDecoration(
-              labelText: '$label Developer Instructions',
+            minLines: 8,
+            maxLines: 14,
+            decoration: const InputDecoration(
+              labelText: 'Instructions',
               alignLabelWithHint: true,
             ),
           );
         }
 
+        ({IconData icon, String tooltip, Color color}) tabVisuals(_ProjectSettingsTab tab) {
+          return switch (tab) {
+            _ProjectSettingsTab.project => (
+                icon: Icons.workspaces_outlined,
+                tooltip: 'Project',
+                color: theme.colorScheme.primary,
+              ),
+            _ProjectSettingsTab.orchestrator => (
+                icon: Icons.account_tree_outlined,
+                tooltip: 'Orchestrator',
+                color: theme.colorScheme.secondary,
+              ),
+            _ProjectSettingsTab.worker => (
+                icon: Icons.build_circle_outlined,
+                tooltip: 'Worker',
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.72),
+              ),
+            _ProjectSettingsTab.qa => (
+                icon: Icons.fact_check_outlined,
+                tooltip: 'QA',
+                color: theme.colorScheme.tertiary,
+              ),
+            _ProjectSettingsTab.designer => (
+                icon: Icons.palette_outlined,
+                tooltip: 'Designer',
+                color: Colors.amber.shade700,
+              ),
+            _ProjectSettingsTab.hidden => (
+                icon: Icons.visibility_off_outlined,
+                tooltip: 'Hidden',
+                color: theme.colorScheme.outline,
+              ),
+            _ProjectSettingsTab.operator => (
+                icon: Icons.verified_user_outlined,
+                tooltip: 'Operator',
+                color: theme.colorScheme.primary,
+              ),
+          };
+        }
+
+        Widget tabButton(
+          _ProjectSettingsTab tab,
+          void Function(VoidCallback fn) setDialogState,
+        ) {
+          final visuals = tabVisuals(tab);
+          final selected = activeTab == tab;
+          return Tooltip(
+            message: visuals.tooltip,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () => setDialogState(() => activeTab = tab),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOutCubic,
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(14),
+                  color: selected
+                      ? visuals.color.withValues(alpha: 0.18)
+                      : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.42),
+                  border: Border.all(
+                    color: selected
+                        ? visuals.color.withValues(alpha: 0.55)
+                        : theme.colorScheme.outline.withValues(alpha: 0.18),
+                  ),
+                ),
+                child: Icon(
+                  visuals.icon,
+                  size: 19,
+                  color: selected
+                      ? visuals.color
+                      : theme.colorScheme.onSurface.withValues(alpha: 0.78),
+                ),
+              ),
+            ),
+          );
+        }
+
+        Widget paneShell({
+          required Color accent,
+          required List<Widget> children,
+        }) {
+          return AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 20),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(24),
+              color: theme.colorScheme.surface.withValues(alpha: 0.78),
+              border: Border.all(color: accent.withValues(alpha: 0.28)),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  accent.withValues(alpha: 0.08),
+                  theme.colorScheme.surface.withValues(alpha: 0.0),
+                ],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.16),
+                  blurRadius: 28,
+                  offset: const Offset(0, 16),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: children,
+            ),
+          );
+        }
+
+        Widget rootPathRow() {
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.36),
+              border: Border.all(
+                color: theme.colorScheme.outline.withValues(alpha: 0.18),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.folder_open_outlined,
+                  size: 18,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.74),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: SelectableText(
+                    project.rootPath,
+                    maxLines: 2,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontFamily: 'monospace',
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Tooltip(
+                  message: 'Copy root path',
+                  child: IconButton(
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: project.rootPath));
+                    },
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.content_copy_outlined, size: 16),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        Widget projectPane(void Function(VoidCallback fn) setDialogState) {
+          final accent = tabVisuals(_ProjectSettingsTab.project).color;
+          return paneShell(
+            accent: accent,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: nameController,
+                      decoration: const InputDecoration(labelText: 'Project'),
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: TextField(
+                      controller: cwdController,
+                      decoration: const InputDecoration(labelText: 'Default CWD'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              rootPathRow(),
+              const SizedBox(height: 14),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      initialValue: preferredModelProvider,
+                      decoration: const InputDecoration(labelText: 'Provider'),
+                      items: const [
+                        DropdownMenuItem(value: '', child: Text('Default')),
+                        DropdownMenuItem(value: 'openai', child: Text('OpenAI')),
+                      ],
+                      onChanged: (value) =>
+                          setDialogState(() => preferredModelProvider = value ?? ''),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Tooltip(
+                    message: 'Hook logs',
+                    child: IconButton.filledTonal(
+                      onPressed: () => _showProjectHookLogsSheet(project),
+                      icon: const Icon(Icons.receipt_long_outlined),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              SwitchListTile(
+                value: autoRouteReplies,
+                onChanged: (value) => setDialogState(() => autoRouteReplies = value),
+                title: const Text('Auto-route replies'),
+                contentPadding: EdgeInsets.zero,
+              ),
+              SwitchListTile(
+                value: routeApprovalRequests,
+                onChanged: (value) => setDialogState(() => routeApprovalRequests = value),
+                title: const Text('Route approvals'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ],
+          );
+        }
+
+        Widget rolePane({
+          required _ProjectSettingsTab tab,
+          required String? modelId,
+          required ValueChanged<String> onModelChanged,
+          required String? reasoningEffort,
+          required ValueChanged<String> onReasoningChanged,
+          required TextEditingController instructionsController,
+          required bool supportsModelSettings,
+          required void Function(VoidCallback fn) setDialogState,
+        }) {
+          final accent = tabVisuals(tab).color;
+          return paneShell(
+            accent: accent,
+            children: [
+              if (supportsModelSettings) ...[
+                Row(
+                  children: [
+                    Expanded(
+                      child: modelDropdown(
+                        modelId ?? '',
+                        (value) => setDialogState(() => onModelChanged(value)),
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: reasoningDropdown(
+                        reasoningEffort ?? '',
+                        (value) => setDialogState(() => onReasoningChanged(value)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+              ],
+              developerInstructionsField(instructionsController),
+            ],
+          );
+        }
+
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            final tabs = _ProjectSettingsTab.values;
+            final activeAccent = tabVisuals(activeTab).color;
+            final activePane = switch (activeTab) {
+              _ProjectSettingsTab.project => projectPane(setDialogState),
+              _ProjectSettingsTab.orchestrator => rolePane(
+                  tab: activeTab,
+                  modelId: orchestratorModelId,
+                  onModelChanged: (value) => orchestratorModelId = value,
+                  reasoningEffort: orchestratorReasoningEffort,
+                  onReasoningChanged: (value) => orchestratorReasoningEffort = value,
+                  instructionsController: orchestratorDeveloperInstructionsController,
+                  supportsModelSettings: true,
+                  setDialogState: setDialogState,
+                ),
+              _ProjectSettingsTab.worker => rolePane(
+                  tab: activeTab,
+                  modelId: workerModelId,
+                  onModelChanged: (value) => workerModelId = value,
+                  reasoningEffort: workerReasoningEffort,
+                  onReasoningChanged: (value) => workerReasoningEffort = value,
+                  instructionsController: workerDeveloperInstructionsController,
+                  supportsModelSettings: true,
+                  setDialogState: setDialogState,
+                ),
+              _ProjectSettingsTab.qa => rolePane(
+                  tab: activeTab,
+                  modelId: qaModelId,
+                  onModelChanged: (value) => qaModelId = value,
+                  reasoningEffort: qaReasoningEffort,
+                  onReasoningChanged: (value) => qaReasoningEffort = value,
+                  instructionsController: qaDeveloperInstructionsController,
+                  supportsModelSettings: true,
+                  setDialogState: setDialogState,
+                ),
+              _ProjectSettingsTab.designer => rolePane(
+                  tab: activeTab,
+                  modelId: designerModelId,
+                  onModelChanged: (value) => designerModelId = value,
+                  reasoningEffort: designerReasoningEffort,
+                  onReasoningChanged: (value) => designerReasoningEffort = value,
+                  instructionsController: designerDeveloperInstructionsController,
+                  supportsModelSettings: true,
+                  setDialogState: setDialogState,
+                ),
+              _ProjectSettingsTab.hidden => rolePane(
+                  tab: activeTab,
+                  modelId: null,
+                  onModelChanged: (_) {},
+                  reasoningEffort: null,
+                  onReasoningChanged: (_) {},
+                  instructionsController: hiddenDeveloperInstructionsController,
+                  supportsModelSettings: false,
+                  setDialogState: setDialogState,
+                ),
+              _ProjectSettingsTab.operator => rolePane(
+                  tab: activeTab,
+                  modelId: null,
+                  onModelChanged: (_) {},
+                  reasoningEffort: null,
+                  onReasoningChanged: (_) {},
+                  instructionsController: operatorDeveloperInstructionsController,
+                  supportsModelSettings: false,
+                  setDialogState: setDialogState,
+                ),
+            };
+
             return AlertDialog(
-              title: const Text('Project Settings'),
+              insetPadding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+              titlePadding: const EdgeInsets.fromLTRB(24, 22, 24, 0),
+              contentPadding: const EdgeInsets.fromLTRB(24, 18, 24, 8),
+              actionsPadding: const EdgeInsets.fromLTRB(24, 0, 24, 18),
+              title: Row(
+                children: [
+                  Icon(
+                    Icons.workspaces_outlined,
+                    size: 20,
+                    color: activeAccent.withValues(alpha: 0.88),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      project.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
               content: SizedBox(
-                width: 540,
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      TextField(
-                        controller: nameController,
-                        decoration: const InputDecoration(labelText: 'Project name'),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        project.rootPath,
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              fontFamily: 'monospace',
-                            ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: cwdController,
-                        decoration: const InputDecoration(labelText: 'Default CWD'),
-                      ),
-                      const SizedBox(height: 12),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: OutlinedButton.icon(
-                          onPressed: () => _showProjectHookLogsSheet(project),
-                          icon: const Icon(Icons.receipt_long_outlined),
-                          label: const Text('Hook Logs'),
+                width: 700,
+                height: 560,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(18),
+                        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.22),
+                        border: Border.all(
+                          color: theme.colorScheme.outline.withValues(alpha: 0.16),
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      SwitchListTile(
-                        value: autoRouteReplies,
-                        onChanged: (value) => setDialogState(() => autoRouteReplies = value),
-                        title: const Text('Auto-route replies'),
-                        contentPadding: EdgeInsets.zero,
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Row(
+                          children: [
+                            for (var i = 0; i < tabs.length; i++) ...[
+                              if (i > 0) const SizedBox(width: 8),
+                              tabButton(tabs[i], setDialogState),
+                            ],
+                          ],
+                        ),
                       ),
-                      SwitchListTile(
-                        value: routeApprovalRequests,
-                        onChanged: (value) => setDialogState(() => routeApprovalRequests = value),
-                        title: const Text('Route approvals'),
-                        contentPadding: EdgeInsets.zero,
+                    ),
+                    const SizedBox(height: 18),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        child: activePane,
                       ),
-                      const SizedBox(height: 12),
-                      DropdownButtonFormField<String>(
-                        initialValue: preferredModelProvider,
-                        decoration: const InputDecoration(labelText: 'Preferred model provider'),
-                        items: const [
-                          DropdownMenuItem(value: '', child: Text('Default')),
-                          DropdownMenuItem(value: 'openai', child: Text('OpenAI')),
-                        ],
-                        onChanged: (value) =>
-                            setDialogState(() => preferredModelProvider = value ?? ''),
-                      ),
-                      const SizedBox(height: 16),
-                      Text('Orchestrator Defaults',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 8),
-                      modelDropdown('Model', orchestratorModelId,
-                          (value) => setDialogState(() => orchestratorModelId = value)),
-                      const SizedBox(height: 8),
-                      reasoningDropdown('Reasoning', orchestratorReasoningEffort,
-                          (value) => setDialogState(() => orchestratorReasoningEffort = value)),
-                      const SizedBox(height: 8),
-                      developerInstructionsField(
-                        'Orchestrator',
-                        orchestratorDeveloperInstructionsController,
-                      ),
-                      const SizedBox(height: 16),
-                      Text('Worker Defaults',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 8),
-                      modelDropdown('Model', workerModelId,
-                          (value) => setDialogState(() => workerModelId = value)),
-                      const SizedBox(height: 8),
-                      reasoningDropdown('Reasoning', workerReasoningEffort,
-                          (value) => setDialogState(() => workerReasoningEffort = value)),
-                      const SizedBox(height: 8),
-                      developerInstructionsField(
-                        'Worker',
-                        workerDeveloperInstructionsController,
-                      ),
-                      const SizedBox(height: 16),
-                      Text('QA Defaults',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 8),
-                      modelDropdown('Model', qaModelId,
-                          (value) => setDialogState(() => qaModelId = value)),
-                      const SizedBox(height: 8),
-                      reasoningDropdown('Reasoning', qaReasoningEffort,
-                          (value) => setDialogState(() => qaReasoningEffort = value)),
-                      const SizedBox(height: 8),
-                      developerInstructionsField(
-                        'QA',
-                        qaDeveloperInstructionsController,
-                      ),
-                      const SizedBox(height: 16),
-                      Text('Designer Defaults',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 8),
-                      modelDropdown('Model', designerModelId,
-                          (value) => setDialogState(() => designerModelId = value)),
-                      const SizedBox(height: 8),
-                      reasoningDropdown('Reasoning', designerReasoningEffort,
-                          (value) => setDialogState(() => designerReasoningEffort = value)),
-                      const SizedBox(height: 8),
-                      developerInstructionsField(
-                        'Designer',
-                        designerDeveloperInstructionsController,
-                      ),
-                      const SizedBox(height: 16),
-                      Text('Operator Defaults',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 8),
-                      developerInstructionsField(
-                        'Operator',
-                        operatorDeveloperInstructionsController,
-                      ),
-                      const SizedBox(height: 16),
-                      Text('Hidden Defaults',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 8),
-                      developerInstructionsField(
-                        'Hidden',
-                        hiddenDeveloperInstructionsController,
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
               actions: [
