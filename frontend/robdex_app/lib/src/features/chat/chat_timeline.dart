@@ -388,16 +388,7 @@ class _PlanUpdateCard extends StatelessWidget {
     final theme = Theme.of(context);
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
     final note = _planSummary(entry.body);
-    final completedCount = entry.planItems.where((item) => item.completed).length;
-    final activeCount = entry.planItems.where((item) => item.isInProgress).length;
-    final pendingCount = entry.planItems.length - completedCount - activeCount;
-    final accent = entry.isStreaming
-        ? Colors.amber.shade700
-        : theme.colorScheme.primary;
-    final surfaceTone = Color.alphaBlend(
-      accent.withValues(alpha: 0.08),
-      theme.colorScheme.surfaceContainerLow,
-    );
+    final accent = entry.isStreaming ? Colors.amber.shade700 : theme.colorScheme.primary;
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -405,173 +396,71 @@ class _PlanUpdateCard extends StatelessWidget {
         constraints: const BoxConstraints(maxWidth: 720),
         child: DecoratedBox(
           decoration: BoxDecoration(
-            color: surfaceTone,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color: accent.withValues(alpha: 0.24),
+            borderRadius: BorderRadius.circular(20),
+            color: Color.alphaBlend(
+              accent.withValues(alpha: 0.07),
+              theme.colorScheme.surface,
             ),
-            boxShadow: [
-              BoxShadow(
-                color: theme.colorScheme.shadow.withValues(alpha: 0.05),
-                blurRadius: 8,
-                offset: const Offset(0, 3),
-              ),
-            ],
+            border: Border.all(
+              color: accent.withValues(alpha: 0.22),
+            ),
           ),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Container(
-                      width: 30,
-                      height: 30,
-                      alignment: Alignment.center,
+                      width: 28,
+                      height: 28,
                       decoration: BoxDecoration(
                         color: accent.withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(9),
                       ),
-                      child: Text(
-                        '◻',
-                        style: theme.textTheme.titleSmall?.copyWith(
-                          color: accent,
-                          fontWeight: FontWeight.w700,
-                        ),
+                      child: Icon(
+                        Icons.checklist_rounded,
+                        size: 16,
+                        color: accent,
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            entry.displayLabel,
-                            style: theme.textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Wrap(
-                            spacing: 6,
-                            runSpacing: 6,
-                            children: [
-                              _PlanMetaPill(
-                                label: '$completedCount done',
-                                tone: Colors.green.shade700,
-                              ),
-                              if (activeCount > 0)
-                                _PlanMetaPill(
-                                  label: '$activeCount active',
-                                  tone: Colors.amber.shade800,
-                                ),
-                              if (pendingCount > 0)
-                                _PlanMetaPill(
-                                  label: '$pendingCount queued',
-                                  tone: theme.colorScheme.onSurface.withValues(alpha: 0.72),
-                                ),
-                            ],
-                          ),
-                        ],
+                      child: Text(
+                        'Plan',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          timestampLabel,
-                          style: theme.textTheme.labelSmall,
-                        ),
-                        if (entry.isStreaming) ...[
-                          const SizedBox(height: 8),
-                          const SizedBox(
-                            width: 12,
-                            height: 12,
-                            child: CircularProgressIndicator(strokeWidth: 1.8),
-                          ),
-                        ],
-                      ],
+                    Text(
+                      timestampLabel,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.62),
+                      ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 12),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surface.withValues(alpha: 0.72),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: accent.withValues(alpha: 0.18),
+                if (note != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    note,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      height: 1.4,
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
                     ),
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Checklist',
-                        style: theme.textTheme.labelMedium?.copyWith(
-                          color: accent,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0.2,
-                        ),
-                      ),
-                      if (note != null) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          note,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurface.withValues(alpha: 0.8),
-                            height: 1.4,
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 12),
-                      ...entry.planItems.map(
-                        (item) => Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: _PlanChecklistRow(item: item),
-                        ),
-                      ),
-                    ],
+                ],
+                const SizedBox(height: 14),
+                ...entry.planItems.asMap().entries.map(
+                  (entry) => Padding(
+                    padding: EdgeInsets.only(bottom: entry.key == this.entry.planItems.length - 1 ? 0 : 10),
+                    child: _PlanChecklistRow(item: entry.value),
                   ),
                 ),
               ],
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PlanMetaPill extends StatelessWidget {
-  const _PlanMetaPill({
-    required this.label,
-    required this.tone,
-  });
-
-  final String label;
-  final Color tone;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: tone.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: Text(
-          label,
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: tone,
-            fontWeight: FontWeight.w700,
           ),
         ),
       ),
@@ -593,66 +482,35 @@ class _PlanChecklistRow extends StatelessWidget {
         ? Colors.green.shade700
         : item.isInProgress
             ? Colors.amber.shade800
-            : theme.colorScheme.onSurface.withValues(alpha: 0.72);
-    final glyph = item.completed ? '☑' : '◻';
+            : theme.colorScheme.onSurface.withValues(alpha: 0.52);
+    final icon = item.completed
+        ? Icons.check_circle_rounded
+        : item.isInProgress
+            ? Icons.radio_button_checked_rounded
+            : Icons.radio_button_unchecked_rounded;
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: accent.withValues(alpha: item.isInProgress ? 0.45 : 0.22),
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1),
+          child: Icon(icon, size: 18, color: accent),
         ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 1),
-              child: Text(
-                glyph,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: accent,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            item.text,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              height: 1.34,
+              color: item.completed
+                  ? theme.colorScheme.onSurface.withValues(alpha: 0.7)
+                  : theme.colorScheme.onSurface.withValues(alpha: 0.92),
+              decoration: item.completed ? TextDecoration.lineThrough : null,
+              decorationColor: accent.withValues(alpha: 0.6),
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                item.text,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  height: 1.35,
-                  color: item.completed
-                      ? theme.colorScheme.onSurface.withValues(alpha: 0.68)
-                      : theme.colorScheme.onSurface,
-                  decoration: item.completed ? TextDecoration.lineThrough : null,
-                  decorationColor: accent.withValues(alpha: 0.7),
-                ),
-              ),
-            ),
-            if (item.isInProgress) ...[
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: accent.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  'Active',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: accent,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-            ],
-          ],
+          ),
         ),
-      ),
+      ],
     );
   }
 }
@@ -826,94 +684,103 @@ class _InlineEventRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    switch (entry.kind) {
+      case 'commandExecution':
+        return _CommandEventRow(
+          entry: entry,
+          expanded: expanded,
+          onExpandedChanged: onExpandedChanged,
+          onTerminateCommandExecution: onTerminateCommandExecution,
+        );
+      case 'mcpToolCall':
+        return _ToolEventRow(
+          entry: entry,
+          expanded: expanded,
+          onExpandedChanged: onExpandedChanged,
+        );
+      case 'fileChange':
+        return _FileChangeEventRow(
+          entry: entry,
+          expanded: expanded,
+          onExpandedChanged: onExpandedChanged,
+        );
+      default:
+        return _GenericEventRow(
+          entry: entry,
+          expanded: expanded,
+          onExpandedChanged: onExpandedChanged,
+        );
+    }
+  }
+}
+
+class _CommandEventRow extends StatelessWidget {
+  const _CommandEventRow({
+    required this.entry,
+    required this.expanded,
+    required this.onExpandedChanged,
+    this.onTerminateCommandExecution,
+  });
+
+  final ChatEntry entry;
+  final bool expanded;
+  final ValueChanged<bool> onExpandedChanged;
+  final ValueChanged<String>? onTerminateCommandExecution;
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final entry = this.entry;
+    final statusColor = _eventStatusColor(theme, entry);
+    final statusIcon = _eventStatusIcon(entry);
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
-    final detailRows = <Widget>[
-      if (_shouldShowSummary(entry))
-        _DetailLine(
-          label: 'Summary',
-          value: entry.body,
-          expanded: expanded,
-        ),
-      if (_hasValue(entry.processId))
-        _DetailLine(
-          label: 'PID',
-          value: entry.processId!,
-          expanded: true,
-        ),
-      if (_hasValue(entry.command))
-        _DetailLine(
-          label: entry.kind == 'mcpToolCall' ? 'Input' : entry.kind == 'fileChange' ? 'Files' : 'Command',
-          value: entry.command!,
-          expanded: expanded,
-        ),
-      if (_hasValue(entry.output))
-        _DetailLine(
-          label: entry.kind == 'fileChange' ? 'Diff' : 'Output',
-          value: entry.output!,
-          expanded: expanded,
-        ),
-    ];
-    final canExpand = detailRows.isNotEmpty &&
-        (detailRows.length > 1 ||
-            _needsExpansion(entry.body) ||
-            _needsExpansion(entry.command) ||
-            _needsExpansion(entry.output));
-    final canTerminate = entry.kind == 'commandExecution' &&
-        (entry.isStreaming || _isInProgressStatus(entry.status)) &&
+    final canExpand = _hasValue(entry.output) || _hasValue(entry.body) || _hasValue(entry.processId);
+    final canTerminate = (entry.isStreaming || _isInProgressStatus(entry.status)) &&
         (entry.processId?.trim().isNotEmpty ?? false) &&
         entry.id.trim().isNotEmpty &&
         onTerminateCommandExecution != null;
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border(
-          left: BorderSide(
-            color: _eventAccentColor(theme, entry),
-            width: 2,
-          ),
-        ),
-      ),
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 760),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(8, 2, 0, 2),
+        padding: const EdgeInsets.symmetric(vertical: 4),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
                 Text(
-                  entry.displayLabel,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
+                  'Command',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.9),
                   ),
                 ),
-                if (_hasValue(entry.subtitle)) ...[
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      entry.subtitle!,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: _eventAccentColor(theme, entry),
+                const SizedBox(width: 8),
+                Icon(statusIcon, size: 16, color: statusColor),
+                if (canExpand) ...[
+                  const SizedBox(width: 2),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: () => onExpandedChanged(!expanded),
+                    child: Padding(
+                      padding: const EdgeInsets.all(2),
+                      child: Icon(
+                        expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                        size: 18,
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
                       ),
                     ),
                   ),
-                ] else
-                  const Spacer(),
-                const SizedBox(width: 6),
-                Text(timestampLabel, style: theme.textTheme.labelSmall),
-                if (entry.isStreaming && entry.displayLabel != 'Diff') ...[
-                  const SizedBox(width: 6),
-                  const SizedBox(
-                    width: 8,
-                    height: 8,
-                    child: CircularProgressIndicator(strokeWidth: 1.5),
-                  ),
                 ],
+                const Spacer(),
+                Text(
+                  timestampLabel,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.58),
+                  ),
+                ),
                 if (canTerminate) ...[
-                  const SizedBox(width: 4),
+                  const SizedBox(width: 6),
                   IconButton(
                     onPressed: () => onTerminateCommandExecution?.call(entry.processId!),
                     icon: const Icon(Icons.stop_circle_outlined, size: 16),
@@ -925,23 +792,47 @@ class _InlineEventRow extends StatelessWidget {
                     color: theme.colorScheme.error,
                   ),
                 ],
-                if (canExpand) ...[
-                  const SizedBox(width: 4),
-                  TextButton(
-                    onPressed: () => onExpandedChanged(!expanded),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 0),
-                      minimumSize: const Size(0, 20),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    child: Text(expanded ? 'Less' : 'More'),
-                  ),
-                ],
               ],
             ),
-            const SizedBox(height: 3),
-            ...detailRows,
+            const SizedBox(height: 6),
+            if (expanded)
+              SelectableText(
+                entry.command?.trim().isNotEmpty == true ? entry.command!.trim() : entry.body.trim(),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontFamily: 'monospace',
+                  height: 1.38,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.88),
+                ),
+              )
+            else
+              Text(
+                _compactPreview(entry.command?.trim().isNotEmpty == true ? entry.command!.trim() : entry.body.trim()),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontFamily: 'monospace',
+                  height: 1.38,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.88),
+                ),
+              ),
+            if (expanded) ...[
+              if (_hasValue(entry.processId)) ...[
+                const SizedBox(height: 8),
+                _EventSection(
+                  label: 'PID',
+                  value: entry.processId!,
+                  mono: true,
+                ),
+              ],
+              if (_hasValue(entry.output)) ...[
+                const SizedBox(height: 8),
+                _EventSection(
+                  label: 'Output',
+                  value: entry.output!,
+                  mono: true,
+                ),
+              ],
+            ],
           ],
         ),
       ),
@@ -949,43 +840,460 @@ class _InlineEventRow extends StatelessWidget {
   }
 }
 
-class _DetailLine extends StatelessWidget {
-  const _DetailLine({
-    required this.label,
-    required this.value,
+class _ToolEventRow extends StatelessWidget {
+  const _ToolEventRow({
+    required this.entry,
     required this.expanded,
+    required this.onExpandedChanged,
   });
 
-  final String label;
-  final String value;
+  final ChatEntry entry;
   final bool expanded;
+  final ValueChanged<bool> onExpandedChanged;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final text = expanded ? value : _compactPreview(value);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 2),
-      child: Text.rich(
-        TextSpan(
-          style: theme.textTheme.bodySmall?.copyWith(
-            fontFamily: 'monospace',
-            height: 1.3,
-            color: theme.colorScheme.onSurface,
-          ),
+    final statusColor = _eventStatusColor(theme, entry);
+    final timestampLabel = formatLocalTimeLabel(entry.timestamp);
+    final canExpand = _hasValue(entry.output) || _needsExpansion(entry.command) || _needsExpansion(entry.body);
+    final title = entry.subtitle?.trim().isNotEmpty == true ? entry.subtitle!.trim() : 'Tool';
+    final preview = entry.command?.trim().isNotEmpty == true ? entry.command!.trim() : entry.body.trim();
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 760),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TextSpan(
-              text: '$label ',
-              style: theme.textTheme.labelSmall?.copyWith(
-                fontFamily: 'monospace',
-                fontWeight: FontWeight.w700,
-                color: _eventAccentColor(theme, null),
-              ),
+            Row(
+              children: [
+                Icon(Icons.extension_outlined, size: 15, color: statusColor),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.88),
+                    ),
+                  ),
+                ),
+                if (canExpand) ...[
+                  const SizedBox(width: 2),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: () => onExpandedChanged(!expanded),
+                    child: Padding(
+                      padding: const EdgeInsets.all(2),
+                      child: Icon(
+                        expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                        size: 18,
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                      ),
+                    ),
+                  ),
+                ],
+                const Spacer(),
+                Text(
+                  timestampLabel,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.58),
+                  ),
+                ),
+              ],
             ),
-            TextSpan(text: text),
+            if (preview.isNotEmpty) ...[
+              const SizedBox(height: 5),
+              Text(
+                expanded ? preview : _compactPreview(preview),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontFamily: 'monospace',
+                  height: 1.34,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.72),
+                ),
+              ),
+            ],
+            if (expanded && _hasValue(entry.output)) ...[
+              const SizedBox(height: 8),
+              _EventSection(label: 'Output', value: entry.output!, mono: true),
+            ],
           ],
         ),
-        textScaler: MediaQuery.textScalerOf(context),
+      ),
+    );
+  }
+}
+
+class _FileChangeEventRow extends StatelessWidget {
+  const _FileChangeEventRow({
+    required this.entry,
+    required this.expanded,
+    required this.onExpandedChanged,
+  });
+
+  final ChatEntry entry;
+  final bool expanded;
+  final ValueChanged<bool> onExpandedChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final timestampLabel = formatLocalTimeLabel(entry.timestamp);
+    final canExpand = _hasValue(entry.output) || _hasValue(entry.command);
+    final summary = entry.command?.trim().isNotEmpty == true ? entry.command!.trim() : entry.body.trim();
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 760),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 5),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              Icons.edit_note_rounded,
+              size: 16,
+              color: Theme.of(context).colorScheme.outline,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'Files',
+                        style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                      if (canExpand) ...[
+                        const SizedBox(width: 2),
+                        InkWell(
+                          borderRadius: BorderRadius.circular(999),
+                          onTap: () => onExpandedChanged(!expanded),
+                          child: Padding(
+                            padding: const EdgeInsets.all(2),
+                            child: Icon(
+                              expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                              size: 18,
+                              color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                            ),
+                          ),
+                        ),
+                      ],
+                      const Spacer(),
+                      Text(timestampLabel, style: theme.textTheme.labelSmall),
+                    ],
+                  ),
+                  if (summary.isNotEmpty) ...[
+                    const SizedBox(height: 5),
+                    Text(
+                      expanded ? summary : _compactPreview(summary),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        height: 1.34,
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.76),
+                      ),
+                    ),
+                  ],
+                  if (expanded && _hasValue(entry.output)) ...[
+                    const SizedBox(height: 8),
+                    if (_looksLikeUnifiedDiff(entry.output!))
+                      _DiffEventSection(value: entry.output!)
+                    else
+                      _EventSection(label: 'Diff', value: entry.output!, mono: true),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GenericEventRow extends StatelessWidget {
+  const _GenericEventRow({
+    required this.entry,
+    required this.expanded,
+    required this.onExpandedChanged,
+  });
+
+  final ChatEntry entry;
+  final bool expanded;
+  final ValueChanged<bool> onExpandedChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final timestampLabel = formatLocalTimeLabel(entry.timestamp);
+    final canExpand = _needsExpansion(entry.body) || _hasValue(entry.output) || _hasValue(entry.command);
+    final label = _genericEventTitle(entry);
+    final summary = _hasValue(entry.body)
+        ? entry.body.trim()
+        : _hasValue(entry.command)
+            ? entry.command!.trim()
+            : entry.displayLabel;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            margin: const EdgeInsets.only(top: 6),
+            decoration: BoxDecoration(
+              color: _eventStatusColor(theme, entry),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      label,
+                      style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                    if (canExpand) ...[
+                      const SizedBox(width: 2),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(999),
+                        onTap: () => onExpandedChanged(!expanded),
+                        child: Padding(
+                          padding: const EdgeInsets.all(2),
+                          child: Icon(
+                            expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                            size: 18,
+                            color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                          ),
+                        ),
+                      ),
+                    ],
+                    const Spacer(),
+                    Text(timestampLabel, style: theme.textTheme.labelSmall),
+                  ],
+                ),
+                if (summary.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    expanded ? summary : _compactPreview(summary),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      height: 1.34,
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.72),
+                    ),
+                  ),
+                ],
+                if (expanded && _hasValue(entry.output)) ...[
+                  const SizedBox(height: 8),
+                  _EventSection(label: 'Output', value: entry.output!, mono: true),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DiffEventSection extends StatelessWidget {
+  const _DiffEventSection({
+    required this.value,
+  });
+
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final lines = value.replaceAll('\r\n', '\n').split('\n');
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.18),
+        border: Border.all(
+          color: theme.colorScheme.outline.withValues(alpha: 0.18),
+        ),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final line in lines) _DiffLineRow(line: line),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DiffLineRow extends StatelessWidget {
+  const _DiffLineRow({
+    required this.line,
+  });
+
+  final String line;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final kind = _classifyDiffLine(line);
+    final (bg, border, fg) = switch (kind) {
+      _DiffLineKind.added => (
+          Colors.green.shade900.withValues(alpha: 0.18),
+          Colors.green.shade400.withValues(alpha: 0.25),
+          Colors.green.shade100,
+        ),
+      _DiffLineKind.removed => (
+          Colors.red.shade900.withValues(alpha: 0.16),
+          Colors.red.shade400.withValues(alpha: 0.22),
+          Colors.red.shade100,
+        ),
+      _DiffLineKind.hunk => (
+          theme.colorScheme.primary.withValues(alpha: 0.12),
+          theme.colorScheme.primary.withValues(alpha: 0.18),
+          theme.colorScheme.primary.withValues(alpha: 0.94),
+        ),
+      _DiffLineKind.header => (
+          theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.42),
+          theme.colorScheme.outline.withValues(alpha: 0.10),
+          theme.colorScheme.onSurface.withValues(alpha: 0.62),
+        ),
+      _DiffLineKind.context => (
+          Colors.transparent,
+          Colors.transparent,
+          theme.colorScheme.onSurface.withValues(alpha: 0.82),
+        ),
+    };
+    final sign = line.isEmpty ? ' ' : line[0];
+    final content = line.isEmpty ? '' : line.substring(1);
+
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: bg,
+        border: Border(
+          left: BorderSide(color: border, width: kind == _DiffLineKind.context ? 0 : 1.5),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 12,
+            child: Text(
+              line.isEmpty ? '' : sign,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.w700,
+                color: fg,
+                height: 1.4,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: SelectableText(
+              kind == _DiffLineKind.header ? line : content,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                color: fg,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+enum _DiffLineKind { header, hunk, added, removed, context }
+
+_DiffLineKind _classifyDiffLine(String line) {
+  if (line.startsWith('diff --git') ||
+      line.startsWith('index ') ||
+      line.startsWith('--- ') ||
+      line.startsWith('+++ ')) {
+    return _DiffLineKind.header;
+  }
+  if (line.startsWith('@@')) {
+    return _DiffLineKind.hunk;
+  }
+  if (line.startsWith('+')) {
+    return _DiffLineKind.added;
+  }
+  if (line.startsWith('-')) {
+    return _DiffLineKind.removed;
+  }
+  return _DiffLineKind.context;
+}
+
+bool _looksLikeUnifiedDiff(String value) {
+  final normalized = value.replaceAll('\r\n', '\n');
+  return normalized.contains('\n@@') ||
+      normalized.startsWith('@@') ||
+      normalized.contains('\ndiff --git ') ||
+      normalized.startsWith('diff --git ') ||
+      (normalized.contains('\n--- ') && normalized.contains('\n+++ '));
+}
+
+class _EventSection extends StatelessWidget {
+  const _EventSection({
+    required this.label,
+    required this.value,
+    this.mono = false,
+  });
+
+  final String label;
+  final String value;
+  final bool mono;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(10, 9, 10, 10),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.28),
+        border: Border.all(
+          color: theme.colorScheme.outline.withValues(alpha: 0.18),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: theme.textTheme.labelSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.64),
+            ),
+          ),
+          const SizedBox(height: 6),
+          SelectableText(
+            value,
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontFamily: mono ? 'monospace' : null,
+              height: 1.36,
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.84),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -993,7 +1301,7 @@ class _DetailLine extends StatelessWidget {
 
 bool _hasValue(String? value) => value != null && value.trim().isNotEmpty;
 
-Color _eventAccentColor(ThemeData theme, ChatEntry? entry) {
+Color _eventStatusColor(ThemeData theme, ChatEntry? entry) {
   if (entry?.displayLabel == 'Diff') {
     return theme.colorScheme.outline;
   }
@@ -1013,6 +1321,49 @@ Color _eventAccentColor(ThemeData theme, ChatEntry? entry) {
   return theme.colorScheme.secondary;
 }
 
+
+IconData _eventStatusIcon(ChatEntry entry) {
+  final status = entry.status?.toLowerCase();
+  if (status == null || status.isEmpty) {
+    return entry.isStreaming ? Icons.schedule_rounded : Icons.check_circle_rounded;
+  }
+  if (status.contains('fail') || status.contains('error') || status.contains('reject')) {
+    return Icons.cancel_rounded;
+  }
+  if (status.contains('progress') || status.contains('pending') || status.contains('running')) {
+    return Icons.schedule_rounded;
+  }
+  if (status.contains('complete') || status.contains('success') || status.contains('approved')) {
+    return Icons.check_circle_rounded;
+  }
+  return Icons.radio_button_checked_rounded;
+}
+
+String _genericEventTitle(ChatEntry entry) {
+  switch (entry.kind) {
+    case 'requestCompaction':
+      return 'Compaction';
+    case 'approvalRequest':
+      return 'Approval';
+    default:
+      final label = entry.displayLabel.trim();
+      if (label.isNotEmpty) {
+        return label;
+      }
+      final kind = entry.kind?.trim();
+      if (kind == null || kind.isEmpty) {
+        return 'Event';
+      }
+      return kind
+          .replaceAllMapped(RegExp(r'([a-z])([A-Z])'), (m) => '${m[1]} ${m[2]}')
+          .replaceAll('_', ' ')
+          .split(' ')
+          .where((part) => part.isNotEmpty)
+          .map((part) => part[0].toUpperCase() + part.substring(1))
+          .join(' ');
+    }
+}
+
 bool _needsExpansion(String? value) {
   if (!_hasValue(value)) {
     return false;
@@ -1029,20 +1380,6 @@ bool _isInProgressStatus(String? status) {
   return normalized.contains('progress') ||
       normalized.contains('pending') ||
       normalized.contains('running');
-}
-
-bool _shouldShowSummary(ChatEntry entry) {
-  if (entry.hasPlanItems) {
-    return false;
-  }
-  final body = entry.body.trim();
-  if (body.isEmpty) {
-    return false;
-  }
-  if (entry.kind == 'commandExecution' && entry.command?.trim() == body) {
-    return false;
-  }
-  return true;
 }
 
 String _compactPreview(String value) {
