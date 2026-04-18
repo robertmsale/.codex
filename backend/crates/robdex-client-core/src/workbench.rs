@@ -956,7 +956,7 @@ pub async fn fetch_thread_messages(
             id: "messages-unavailable".to_string(),
             author: "Bridge".to_string(),
             display_label: "Bridge".to_string(),
-            timestamp_label: "now".to_string(),
+            timestamp: None,
             body: format!("Thread history unavailable ({}).", response.status()),
             subtitle: None,
             kind: None,
@@ -1014,7 +1014,7 @@ fn chat_entry_from_message(message: &serde_json::Map<String, Value>) -> UiChatEn
             .to_string(),
         author,
         display_label,
-        timestamp_label: format_timestamp(message.get("createdAt")),
+        timestamp: parse_timestamp(message.get("createdAt")),
         body,
         subtitle,
         kind,
@@ -1660,19 +1660,12 @@ fn display_label_for_message(
     }
 }
 
-fn format_timestamp(value: Option<&Value>) -> String {
-    let seconds = match value {
-        Some(Value::Number(number)) => number.as_u64().unwrap_or_default(),
-        Some(Value::String(text)) => text.parse::<u64>().unwrap_or_default(),
-        _ => 0,
-    };
-    if seconds == 0 {
-        return "now".to_string();
+fn parse_timestamp(value: Option<&Value>) -> Option<u64> {
+    match value {
+        Some(Value::Number(number)) => number.as_u64(),
+        Some(Value::String(text)) => text.parse::<u64>().ok(),
+        _ => None,
     }
-    let seconds_in_day = seconds % 86_400;
-    let hours = seconds_in_day / 3_600;
-    let minutes = (seconds_in_day % 3_600) / 60;
-    format!("{hours:02}:{minutes:02}")
 }
 
 fn is_streaming(message: &serde_json::Map<String, Value>) -> bool {

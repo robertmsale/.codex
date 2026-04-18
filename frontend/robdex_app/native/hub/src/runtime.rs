@@ -218,7 +218,7 @@ fn apply_optimistic_action(current_view: &mut Option<WorkbenchViewData>, action:
         id: format!("pending-user-{}", unix_now_millis()),
         author: "User".to_string(),
         display_label: "User".to_string(),
-        timestamp_label: "now".to_string(),
+        timestamp: Some(unix_now_seconds()),
         body: body.to_string(),
         subtitle: Some("Sending...".to_string()),
         kind: None,
@@ -236,6 +236,13 @@ fn unix_now_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis())
+        .unwrap_or_default()
+}
+
+fn unix_now_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
         .unwrap_or_default()
 }
 

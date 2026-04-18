@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 
 import '../../core/models/workbench_view_data.dart';
@@ -69,45 +71,11 @@ class RobdexShellScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       body: DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Color(0xFF071018),
-              Color(0xFF0C1622),
-              Color(0xFF101D2B),
-            ],
-            stops: [0.0, 0.44, 1.0],
-          ),
-        ),
+        decoration: const BoxDecoration(color: Color(0xFF05090F)),
         child: SafeArea(
           child: Stack(
             children: [
-              const Positioned(
-                top: -120,
-                left: -80,
-                child: _BackdropOrb(
-                  size: 360,
-                  colors: [Color(0x6637C8FF), Color(0x00102535)],
-                ),
-              ),
-              const Positioned(
-                bottom: -160,
-                right: -110,
-                child: _BackdropOrb(
-                  size: 420,
-                  colors: [Color(0x66F3A43B), Color(0x00102535)],
-                ),
-              ),
-              const Positioned(
-                top: 150,
-                right: 240,
-                child: _BackdropOrb(
-                  size: 220,
-                  colors: [Color(0x331FE0A5), Color(0x00102535)],
-                ),
-              ),
+              const Positioned.fill(child: _ShellNebulaBackdrop()),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final isCompact = constraints.maxWidth < 860;
@@ -412,102 +380,201 @@ class _PaneSurface extends StatelessWidget {
     final theme = Theme.of(context);
     return ClipRRect(
       borderRadius: BorderRadius.circular(22),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              theme.colorScheme.surface.withValues(alpha: 0.96),
-              theme.colorScheme.surfaceContainer.withValues(alpha: 0.9),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                theme.colorScheme.surface.withValues(alpha: 0.58),
+                theme.colorScheme.surfaceContainer.withValues(alpha: 0.42),
+              ],
+            ),
+            border: Border.all(
+              color: accent.withValues(alpha: 0.22),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.12),
+                blurRadius: 28,
+                offset: const Offset(0, 18),
+              ),
             ],
           ),
-          border: Border.all(
-            color: accent.withValues(alpha: 0.2),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.18),
-              blurRadius: 28,
-              offset: const Offset(0, 18),
-            ),
-          ],
-        ),
-        child: Stack(
-          children: [
-            Positioned(
-              top: -70,
-              right: -30,
-              child: IgnorePointer(
-                child: Container(
-                  width: 180,
-                  height: 180,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: RadialGradient(
-                      colors: [
-                        accent.withValues(alpha: 0.2),
-                        accent.withValues(alpha: 0.0),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              left: -60,
-              bottom: -80,
-              child: IgnorePointer(
-                child: Transform.rotate(
-                  angle: -0.3,
+          child: Stack(
+            children: [
+              Positioned(
+                top: -70,
+                right: -30,
+                child: IgnorePointer(
                   child: Container(
                     width: 180,
                     height: 180,
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(40),
-                      gradient: LinearGradient(
+                      shape: BoxShape.circle,
+                      gradient: RadialGradient(
                         colors: [
-                          const Color(0xFF1A2B3C).withValues(alpha: 0.36),
-                          Colors.transparent,
+                          accent.withValues(alpha: 0.14),
+                          accent.withValues(alpha: 0.0),
                         ],
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: child,
-            ),
-          ],
+              Positioned(
+                left: -60,
+                bottom: -80,
+                child: IgnorePointer(
+                  child: Transform.rotate(
+                    angle: -0.3,
+                    child: Container(
+                      width: 180,
+                      height: 180,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(40),
+                        gradient: LinearGradient(
+                          colors: [
+                            const Color(0xFF1A2B3C).withValues(alpha: 0.18),
+                            Colors.transparent,
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: child,
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _BackdropOrb extends StatelessWidget {
-  const _BackdropOrb({
-    required this.size,
-    required this.colors,
-  });
+class _ShellNebulaBackdrop extends StatefulWidget {
+  const _ShellNebulaBackdrop();
 
-  final double size;
-  final List<Color> colors;
+  @override
+  State<_ShellNebulaBackdrop> createState() => _ShellNebulaBackdropState();
+}
+
+class _ShellNebulaBackdropState extends State<_ShellNebulaBackdrop>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  FragmentShader? _shader;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(days: 1),
+    )..repeat();
+    _loadShader();
+  }
+
+  Future<void> _loadShader() async {
+    try {
+      final program = await FragmentProgram.fromAsset(
+        'shaders/connection_nebula.frag',
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _shader = program.fragmentShader();
+      });
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _shader?.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return IgnorePointer(
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: RadialGradient(colors: colors),
-        ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  const Color(0xFF071018).withValues(alpha: 0.56),
+                  const Color(0xFF0C1622).withValues(alpha: 0.42),
+                  const Color(0xFF101D2B).withValues(alpha: 0.48),
+                ],
+                stops: const [0.0, 0.44, 1.0],
+              ),
+            ),
+          ),
+          if (_shader != null)
+            RepaintBoundary(
+              child: CustomPaint(
+                painter: _ShellNebulaPainter(
+                  animation: _controller,
+                  shader: _shader!,
+                ),
+              ),
+            ),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: RadialGradient(
+                center: const Alignment(0, -0.08),
+                radius: 0.88,
+                colors: [
+                  const Color(0xFF2A5E9B).withValues(alpha: 0.06),
+                  Colors.transparent,
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
+  }
+}
+
+class _ShellNebulaPainter extends CustomPainter {
+  const _ShellNebulaPainter({
+    required this.animation,
+    required this.shader,
+  }) : super(repaint: animation);
+
+  final AnimationController animation;
+  final FragmentShader shader;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final elapsedSeconds =
+        (animation.lastElapsedDuration?.inMilliseconds ?? 0) / 1000.0;
+    shader.setFloat(0, size.width);
+    shader.setFloat(1, size.height);
+    shader.setFloat(2, elapsedSeconds);
+    shader.setFloat(3, 0.0);
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()..shader = shader,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ShellNebulaPainter oldDelegate) {
+    return oldDelegate.shader != shader ||
+        oldDelegate.animation != animation;
   }
 }
 

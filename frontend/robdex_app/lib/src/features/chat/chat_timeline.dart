@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:highlight/highlight.dart' as hl;
 
+import '../../core/formatters/timestamps.dart';
 import '../../core/models/workbench_models.dart';
 import '../composer/composer_panel.dart';
 
@@ -219,7 +220,7 @@ bool _sameEntryIdentity(List<ChatEntry> a, List<ChatEntry> b) {
 String _entryStorageKey(ChatEntry entry) {
   final stableId = entry.id.trim().isNotEmpty
       ? entry.id.trim()
-      : '${entry.kind}|${entry.timestampLabel}|${entry.processId ?? ''}|${entry.command ?? entry.body}';
+      : '${entry.kind}|${entry.timestamp ?? 0}|${entry.processId ?? ''}|${entry.command ?? entry.body}';
   return stableId;
 }
 
@@ -240,6 +241,7 @@ class _ChatBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final timestampLabel = formatLocalTimeLabel(entry.timestamp);
     final isConversation = !entry.isTool &&
         (entry.author == 'User' || entry.author == 'Assistant' || entry.author == 'Operator');
 
@@ -298,7 +300,7 @@ class _ChatBubble extends StatelessWidget {
                                   : null,
                             ),
                           ),
-                          Text(entry.timestampLabel, style: theme.textTheme.labelSmall),
+                          Text(timestampLabel, style: theme.textTheme.labelSmall),
                           if (isPending)
                             Text(
                               'Sending...',
@@ -355,6 +357,7 @@ class _PlanUpdateCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final timestampLabel = formatLocalTimeLabel(entry.timestamp);
     final note = _planSummary(entry.body);
     final completedCount = entry.planItems.where((item) => item.completed).length;
     final activeCount = entry.planItems.where((item) => item.isInProgress).length;
@@ -450,7 +453,7 @@ class _PlanUpdateCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Text(
-                          entry.timestampLabel,
+                          timestampLabel,
                           style: theme.textTheme.labelSmall,
                         ),
                         if (entry.isStreaming) ...[
@@ -796,6 +799,7 @@ class _InlineEventRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final entry = this.entry;
+    final timestampLabel = formatLocalTimeLabel(entry.timestamp);
     final detailRows = <Widget>[
       if (_shouldShowSummary(entry))
         _DetailLine(
@@ -870,7 +874,7 @@ class _InlineEventRow extends StatelessWidget {
                 ] else
                   const Spacer(),
                 const SizedBox(width: 6),
-                Text(entry.timestampLabel, style: theme.textTheme.labelSmall),
+                Text(timestampLabel, style: theme.textTheme.labelSmall),
                 if (entry.isStreaming && entry.displayLabel != 'Diff') ...[
                   const SizedBox(width: 6),
                   const SizedBox(

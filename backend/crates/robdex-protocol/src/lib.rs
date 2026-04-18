@@ -160,7 +160,7 @@ pub struct UiChatEntry {
     pub id: String,
     pub author: String,
     pub display_label: String,
-    pub timestamp_label: String,
+    pub timestamp: Option<u64>,
     pub body: String,
     pub subtitle: Option<String>,
     pub kind: Option<String>,

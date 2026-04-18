@@ -115,14 +115,14 @@ const mockWorkbenchData = WorkbenchViewData(
       id: '1',
       author: 'Operator',
       displayLabel: 'Operator',
-      timestampLabel: 'Now',
+      timestamp: null,
       body: 'Build the new Robdex frontend here with shared Rust crates.',
     ),
     ChatEntry(
       id: '2',
       author: 'Config Operator',
       displayLabel: 'Config Operator',
-      timestampLabel: 'Now',
+      timestamp: null,
       body: 'Resuming interrupted QA-driven reliability sweep from existing agents without re-auditing from scratch.\n[in_progress] Resume the three blocked workers with exact scope and proof constraints.\n[pending] Keep the three QA agents held on warm simulator state pending their paired fixes.\n[pending] Monitor for worker replies and approval requests and steer immediately per constraints.',
       planItems: [
         PlanChecklistItem(
@@ -147,7 +147,7 @@ const mockWorkbenchData = WorkbenchViewData(
       id: '3',
       author: 'Tooling',
       displayLabel: 'Tooling',
-      timestampLabel: 'Now',
+      timestamp: null,
       body: 'Bridge health: connected | runtime: codex-robdex-bridge | mode: mock shell',
       isTool: true,
     ),

@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:rinf/rinf.dart';
 
 import '../bindings/bindings.dart';
+import '../core/formatters/timestamps.dart';
 import '../core/state/workbench_controller.dart';
 import '../core/models/workbench_models.dart';
 import '../features/chat/chat_timeline.dart';
@@ -2463,15 +2464,7 @@ class _HookLogEntry {
   final String? detail;
 
   String get createdAtLabel {
-    if (createdAt <= 0) {
-      return 'now';
-    }
-    final dateTime = DateTime.fromMillisecondsSinceEpoch(createdAt * 1000);
-    final month = dateTime.month.toString().padLeft(2, '0');
-    final day = dateTime.day.toString().padLeft(2, '0');
-    final hour = dateTime.hour.toString().padLeft(2, '0');
-    final minute = dateTime.minute.toString().padLeft(2, '0');
-    return '$month/$day $hour:$minute';
+    return formatLocalDateTimeLabel(createdAt);
   }
 
   factory _HookLogEntry.fromJson(Map<String, dynamic> json) {

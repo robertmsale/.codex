@@ -301,7 +301,7 @@ class ChatEntry {
     required this.id,
     required this.author,
     required this.displayLabel,
-    required this.timestampLabel,
+    required this.timestamp,
     required this.body,
     this.subtitle,
     this.kind,
@@ -318,7 +318,7 @@ class ChatEntry {
   final String id;
   final String author;
   final String displayLabel;
-  final String timestampLabel;
+  final int? timestamp;
   final String body;
   final String? subtitle;
   final String? kind;
@@ -334,11 +334,18 @@ class ChatEntry {
   bool get hasPlanItems => planItems.isNotEmpty;
 
   factory ChatEntry.fromJson(Map<String, dynamic> json) {
+    final timestampValue = json['timestamp'];
+    final timestamp = switch (timestampValue) {
+      int value => value,
+      double value => value.floor(),
+      String value => int.tryParse(value),
+      _ => null,
+    };
     return ChatEntry(
       id: json['id'] as String? ?? '',
       author: json['author'] as String? ?? 'Unknown',
       displayLabel: json['displayLabel'] as String? ?? json['author'] as String? ?? 'Unknown',
-      timestampLabel: json['timestampLabel'] as String? ?? 'now',
+      timestamp: timestamp,
       body: json['body'] as String? ?? '',
       subtitle: json['subtitle'] as String?,
       kind: json['kind'] as String?,
