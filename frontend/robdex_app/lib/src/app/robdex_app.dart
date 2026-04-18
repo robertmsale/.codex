@@ -46,6 +46,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   late final WorkbenchController _controller;
   late final AppLifecycleListener _listener;
   late final AnimationController _spaceController;
+  late final Future<FragmentProgram?> _nebulaProgramFuture;
   StreamSubscription<RustSignalPack<HookToastSignal>>? _hookToastSubscription;
   bool _didRequestConnect = false;
   late final TextEditingController _hostController;
@@ -61,6 +62,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       vsync: this,
       duration: const Duration(days: 1),
     )..repeat();
+    _nebulaProgramFuture = _loadNebulaProgram();
     _hostController = TextEditingController(text: '127.0.0.1');
     _portController = TextEditingController(text: '42080');
     _hostFocusNode = FocusNode();
@@ -128,6 +130,14 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           _portController.text = port.toString();
         }
       });
+    }
+  }
+
+  Future<FragmentProgram?> _loadNebulaProgram() async {
+    try {
+      return await FragmentProgram.fromAsset('shaders/connection_nebula.frag');
+    } catch (_) {
+      return null;
     }
   }
 
@@ -220,6 +230,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                   : _ConnectionStage.idle;
           return _ConnectionScreen(
             animation: _spaceController,
+            nebulaProgramFuture: _nebulaProgramFuture,
             stage: stage,
             errorText: _controller.error?.toString(),
             hostController: _hostController,
@@ -1151,6 +1162,7 @@ enum _ConnectionStage { idle, connecting, error }
 class _ConnectionScreen extends StatelessWidget {
   const _ConnectionScreen({
     required this.animation,
+    required this.nebulaProgramFuture,
     required this.stage,
     required this.errorText,
     required this.hostController,
@@ -1162,6 +1174,7 @@ class _ConnectionScreen extends StatelessWidget {
   });
 
   final AnimationController animation;
+  final Future<FragmentProgram?> nebulaProgramFuture;
   final _ConnectionStage stage;
   final String? errorText;
   final TextEditingController hostController;
@@ -1195,14 +1208,24 @@ class _ConnectionScreen extends StatelessWidget {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          RepaintBoundary(
-            child: CustomPaint(
-              painter: _StarfieldPainter(
+          Stack(
+            fit: StackFit.expand,
+            children: [
+              _NebulaShaderLayer(
+                programFuture: nebulaProgramFuture,
                 animation: animation,
                 warp: _isBusy ? 1 : 0,
-                reduceMotion: reduceMotion,
               ),
-            ),
+              RepaintBoundary(
+                child: CustomPaint(
+                  painter: _StarfieldPainter(
+                    animation: animation,
+                    warp: _isBusy ? 1 : 0,
+                    reduceMotion: reduceMotion,
+                  ),
+                ),
+              ),
+            ],
           ),
           IgnorePointer(
             child: DecoratedBox(
@@ -1560,6 +1583,107 @@ class _CoreBadge extends StatelessWidget {
   }
 }
 
+class _NebulaShaderLayer extends StatefulWidget {
+  const _NebulaShaderLayer({
+    required this.programFuture,
+    required this.animation,
+    required this.warp,
+  });
+
+  final Future<FragmentProgram?> programFuture;
+  final AnimationController animation;
+  final double warp;
+
+  @override
+  State<_NebulaShaderLayer> createState() => _NebulaShaderLayerState();
+}
+
+class _NebulaShaderLayerState extends State<_NebulaShaderLayer> {
+  FragmentShader? _shader;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveProgram(widget.programFuture);
+  }
+
+  @override
+  void didUpdateWidget(covariant _NebulaShaderLayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.programFuture != widget.programFuture) {
+      _shader?.dispose();
+      _shader = null;
+      _resolveProgram(widget.programFuture);
+    }
+  }
+
+  Future<void> _resolveProgram(Future<FragmentProgram?> future) async {
+    final program = await future;
+    if (!mounted || program == null) {
+      return;
+    }
+    setState(() {
+      _shader = program.fragmentShader();
+    });
+  }
+
+  @override
+  void dispose() {
+    _shader?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final shader = _shader;
+    if (shader == null) {
+      return const SizedBox.expand();
+    }
+    return RepaintBoundary(
+      child: CustomPaint(
+        painter: _NebulaShaderPainter(
+          animation: widget.animation,
+          shader: shader,
+          warp: widget.warp,
+        ),
+      ),
+    );
+  }
+}
+
+class _NebulaShaderPainter extends CustomPainter {
+  const _NebulaShaderPainter({
+    required this.animation,
+    required this.shader,
+    required this.warp,
+  }) : super(repaint: animation);
+
+  final AnimationController animation;
+  final FragmentShader shader;
+  final double warp;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final elapsedSeconds =
+        (animation.lastElapsedDuration?.inMilliseconds ?? 0) / 1000.0;
+    shader.setFloat(0, size.width);
+    shader.setFloat(1, size.height);
+    shader.setFloat(2, elapsedSeconds.toDouble());
+    shader.setFloat(3, warp);
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()..shader = shader,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _NebulaShaderPainter oldDelegate) {
+    return oldDelegate.shader != shader ||
+        oldDelegate.warp != warp ||
+        oldDelegate.animation != animation;
+  }
+}
+
 class _StarfieldPainter extends CustomPainter {
   const _StarfieldPainter({
     required this.animation,
@@ -1578,13 +1702,13 @@ class _StarfieldPainter extends CustomPainter {
         : (animation.lastElapsedDuration?.inMilliseconds ?? 0) / 1000.0;
     final rect = Offset.zero & size;
     final background = Paint()
-      ..shader = const LinearGradient(
+      ..shader = LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
-        colors: [
-          Color(0xFF04070B),
-          Color(0xFF08111B),
-          Color(0xFF03060A),
+        colors: const [
+          Color(0xB804070B),
+          Color(0xCC08111B),
+          Color(0xB003060A),
         ],
       ).createShader(rect);
     canvas.drawRect(rect, background);
@@ -1608,8 +1732,6 @@ class _StarfieldPainter extends CustomPainter {
       math.max(size.width, size.height) * 0.52,
       glowPaint,
     );
-
-    _paintNebula(canvas, size, elapsedSeconds);
 
     _paintLayer(
       canvas,
@@ -1641,198 +1763,6 @@ class _StarfieldPainter extends CustomPainter {
       color: const Color(0xCCFFFFFF),
       trailScale: 32 + (66 * warp),
     );
-  }
-
-  void _paintNebula(Canvas canvas, Size size, double elapsedSeconds) {
-    final t = reduceMotion ? 0.0 : elapsedSeconds;
-    final focus = Offset(size.width * 0.5, size.height * 0.46);
-    final maxDimension = math.max(size.width, size.height);
-    final layerMask = Paint()
-      ..shader = RadialGradient(
-        center: const Alignment(0, -0.04),
-        radius: 1.05,
-        colors: [
-          const Color(0xFF000000).withValues(alpha: 0.0),
-          const Color(0xFF000000).withValues(alpha: 0.0),
-          const Color(0x4A000000),
-          const Color(0xD2000000),
-        ],
-        stops: const [0.0, 0.18, 0.84, 1.0],
-      ).createShader(Offset.zero & size);
-
-    canvas.saveLayer(Offset.zero & size, Paint());
-
-    for (var i = 0; i < 3; i++) {
-      final phase = ((t / 18.0) + (i / 3)) % 1.0;
-      final zoom = math.pow(2.45, phase).toDouble();
-      final fade = math.sin(phase * math.pi);
-      _paintNebulaZoomLayer(
-        canvas,
-        size,
-        center: focus,
-        scale: zoom,
-        alpha: 0.16 + (fade * 0.18),
-        primary: [
-          const Color(0xFF5E7BFF),
-          const Color(0xFF36C7FF),
-          const Color(0xFFC061FF),
-        ][i],
-        secondary: [
-          const Color(0xFF8E4DFF),
-          const Color(0xFF7B3BFF),
-          const Color(0xFFFF5E8E),
-        ][i],
-        tertiary: [
-          const Color(0xFF24379B),
-          const Color(0xFF1D4FA4),
-          const Color(0xFF5B1F78),
-        ][i],
-        seed: 1400 + (i * 311),
-        offset: Offset(
-          (i - 1) * maxDimension * 0.085,
-          (i == 2 ? 1 : -1) * maxDimension * 0.05,
-        ),
-      );
-    }
-
-    canvas.drawRect(
-      Offset.zero & size,
-      layerMask..blendMode = BlendMode.dstIn,
-    );
-    canvas.restore();
-  }
-
-  void _paintNebulaZoomLayer(
-    Canvas canvas,
-    Size size, {
-    required Offset center,
-    required double scale,
-    required double alpha,
-    required Color primary,
-    required Color secondary,
-    required Color tertiary,
-    required int seed,
-    required Offset offset,
-  }) {
-    final rootCenter = center + offset;
-    final baseRadius = math.max(size.width, size.height) * 0.14 * scale;
-
-    for (var depth = 0; depth < 4; depth++) {
-      final localScale = math.pow(1.6, depth).toDouble();
-      final radius = baseRadius * localScale;
-      final orbit = radius * (0.22 + (0.05 * _hash(seed + (depth * 41))));
-      final angle = (_hash(seed * 17 + depth * 13) * math.pi * 2) +
-          (depth.isEven ? 0.5 : -0.35);
-      final localCenter = rootCenter.translate(
-        math.cos(angle) * orbit,
-        math.sin(angle) * orbit * 0.8,
-      );
-      final path = _buildNebulaContour(
-        localCenter,
-        radius,
-        seed + (depth * 97),
-        yScale: 0.82 + (_hash(seed + depth * 9) * 0.18),
-      );
-      final shaderBounds = Rect.fromCircle(
-        center: localCenter,
-        radius: radius * 1.05,
-      );
-      final paint = Paint()
-        ..blendMode = BlendMode.plus
-        ..shader = RadialGradient(
-          colors: [
-            primary.withValues(alpha: alpha * (1.0 - (depth * 0.12))),
-            secondary.withValues(alpha: alpha * (0.84 - (depth * 0.08))),
-            tertiary.withValues(alpha: alpha * (0.54 - (depth * 0.06))),
-            const Color(0x00000000),
-          ],
-          stops: const [0.0, 0.32, 0.72, 1.0],
-        ).createShader(shaderBounds);
-      canvas.drawPath(path, paint);
-
-      final innerPath = _buildNebulaContour(
-        localCenter.translate(radius * 0.08, -radius * 0.04),
-        radius * 0.52,
-        seed + (depth * 131),
-        yScale: 0.76,
-      );
-      final innerPaint = Paint()
-        ..blendMode = BlendMode.plus
-        ..color = primary.withValues(
-          alpha: alpha * 0.42 * (1 - (depth * 0.12)),
-        );
-      canvas.drawPath(innerPath, innerPaint);
-
-      final innerAccentPath = _buildNebulaContour(
-        localCenter.translate(-radius * 0.06, radius * 0.03),
-        radius * 0.32,
-        seed + (depth * 173),
-        yScale: 0.7,
-      );
-      final innerAccentPaint = Paint()
-        ..blendMode = BlendMode.plus
-        ..color = secondary.withValues(
-          alpha: alpha * 0.34 * (1 - (depth * 0.12)),
-        );
-      canvas.drawPath(innerAccentPath, innerAccentPaint);
-
-      final contourPaint = Paint()
-        ..blendMode = BlendMode.screen
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1.0, radius * 0.006)
-        ..color = primary.withValues(
-          alpha: alpha * 0.48 * (1 - (depth * 0.14)),
-        );
-      canvas.drawPath(path, contourPaint);
-
-      final contourPaintSecondary = Paint()
-        ..blendMode = BlendMode.screen
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(0.7, radius * 0.0035)
-        ..color = tertiary.withValues(
-          alpha: alpha * 0.36 * (1 - (depth * 0.14)),
-        );
-      canvas.drawPath(innerPath, contourPaintSecondary);
-
-      final contourPaintAccent = Paint()
-        ..blendMode = BlendMode.screen
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(0.55, radius * 0.0028)
-        ..color = secondary.withValues(
-          alpha: alpha * 0.26 * (1 - (depth * 0.16)),
-        );
-      canvas.drawPath(innerAccentPath, contourPaintAccent);
-    }
-  }
-
-  Path _buildNebulaContour(
-    Offset center,
-    double radius,
-    int seed, {
-    double yScale = 1,
-  }) {
-    final path = Path();
-    const segments = 120;
-    for (var i = 0; i <= segments; i++) {
-      final angle = (i / segments) * math.pi * 2;
-      final wobbleA = math.sin((angle * 3) + (_hash(seed * 3) * math.pi * 2));
-      final wobbleB =
-          math.sin((angle * 5) - (_hash(seed * 5) * math.pi * 2)) * 0.42;
-      final wobbleC =
-          math.cos((angle * 8) + (_hash(seed * 7) * math.pi * 2)) * 0.18;
-      final contour = 1 + (wobbleA * 0.18) + (wobbleB * 0.14) + (wobbleC * 0.1);
-      final point = Offset(
-        center.dx + (math.cos(angle) * radius * contour),
-        center.dy + (math.sin(angle) * radius * contour * yScale),
-      );
-      if (i == 0) {
-        path.moveTo(point.dx, point.dy);
-      } else {
-        path.lineTo(point.dx, point.dy);
-      }
-    }
-    path.close();
-    return path;
   }
 
   void _paintLayer(

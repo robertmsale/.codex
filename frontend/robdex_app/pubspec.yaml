@@ -60,6 +60,8 @@ flutter:
   uses-material-design: true
   assets:
     - assets/mock/
+  shaders:
+    - shaders/connection_nebula.frag
 
 rinf:
   gen_output_dir: lib/src/bindings
