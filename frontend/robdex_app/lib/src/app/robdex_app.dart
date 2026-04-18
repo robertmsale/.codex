@@ -47,6 +47,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   late final AppLifecycleListener _listener;
   late final AnimationController _spaceController;
   late final Future<FragmentProgram?> _nebulaProgramFuture;
+  late final Future<FragmentProgram?> _peripheralProgramFuture;
   StreamSubscription<RustSignalPack<HookToastSignal>>? _hookToastSubscription;
   bool _didRequestConnect = false;
   late final TextEditingController _hostController;
@@ -63,6 +64,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       duration: const Duration(days: 1),
     )..repeat();
     _nebulaProgramFuture = _loadNebulaProgram();
+    _peripheralProgramFuture = _loadPeripheralProgram();
     _hostController = TextEditingController(text: '127.0.0.1');
     _portController = TextEditingController(text: '42080');
     _hostFocusNode = FocusNode();
@@ -136,6 +138,16 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   Future<FragmentProgram?> _loadNebulaProgram() async {
     try {
       return await FragmentProgram.fromAsset('shaders/connection_nebula.frag');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<FragmentProgram?> _loadPeripheralProgram() async {
+    try {
+      return await FragmentProgram.fromAsset(
+        'shaders/peripheral_vision_filter.frag',
+      );
     } catch (_) {
       return null;
     }
@@ -231,6 +243,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           return _ConnectionScreen(
             animation: _spaceController,
             nebulaProgramFuture: _nebulaProgramFuture,
+            peripheralProgramFuture: _peripheralProgramFuture,
             stage: stage,
             errorText: _controller.error?.toString(),
             hostController: _hostController,
@@ -1163,6 +1176,7 @@ class _ConnectionScreen extends StatelessWidget {
   const _ConnectionScreen({
     required this.animation,
     required this.nebulaProgramFuture,
+    required this.peripheralProgramFuture,
     required this.stage,
     required this.errorText,
     required this.hostController,
@@ -1175,6 +1189,7 @@ class _ConnectionScreen extends StatelessWidget {
 
   final AnimationController animation;
   final Future<FragmentProgram?> nebulaProgramFuture;
+  final Future<FragmentProgram?> peripheralProgramFuture;
   final _ConnectionStage stage;
   final String? errorText;
   final TextEditingController hostController;
@@ -1211,18 +1226,29 @@ class _ConnectionScreen extends StatelessWidget {
           Stack(
             fit: StackFit.expand,
             children: [
-              _NebulaShaderLayer(
-                programFuture: nebulaProgramFuture,
+              _PeripheralVisionLayer(
+                programFuture: peripheralProgramFuture,
                 animation: animation,
                 warp: _isBusy ? 1 : 0,
-              ),
-              RepaintBoundary(
-                child: CustomPaint(
-                  painter: _StarfieldPainter(
-                    animation: animation,
-                    warp: _isBusy ? 1 : 0,
-                    reduceMotion: reduceMotion,
-                  ),
+                reduceMotion: reduceMotion,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _NebulaShaderLayer(
+                      programFuture: nebulaProgramFuture,
+                      animation: animation,
+                      warp: _isBusy ? 1 : 0,
+                    ),
+                    RepaintBoundary(
+                      child: CustomPaint(
+                        painter: _StarfieldPainter(
+                          animation: animation,
+                          warp: _isBusy ? 1 : 0,
+                          reduceMotion: reduceMotion,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -1647,6 +1673,97 @@ class _NebulaShaderLayerState extends State<_NebulaShaderLayer> {
           warp: widget.warp,
         ),
       ),
+    );
+  }
+}
+
+class _PeripheralVisionLayer extends StatefulWidget {
+  const _PeripheralVisionLayer({
+    required this.programFuture,
+    required this.animation,
+    required this.warp,
+    required this.reduceMotion,
+    required this.child,
+  });
+
+  final Future<FragmentProgram?> programFuture;
+  final AnimationController animation;
+  final double warp;
+  final bool reduceMotion;
+  final Widget child;
+
+  @override
+  State<_PeripheralVisionLayer> createState() => _PeripheralVisionLayerState();
+}
+
+class _PeripheralVisionLayerState extends State<_PeripheralVisionLayer> {
+  FragmentShader? _shader;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveProgram(widget.programFuture);
+  }
+
+  @override
+  void didUpdateWidget(covariant _PeripheralVisionLayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.programFuture != widget.programFuture) {
+      _shader?.dispose();
+      _shader = null;
+      _resolveProgram(widget.programFuture);
+    }
+  }
+
+  Future<void> _resolveProgram(Future<FragmentProgram?> future) async {
+    final program = await future;
+    if (!mounted || program == null) {
+      return;
+    }
+    setState(() {
+      _shader = program.fragmentShader();
+    });
+  }
+
+  @override
+  void dispose() {
+    _shader?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final shader = _shader;
+    if (shader == null || !ImageFilter.isShaderFilterSupported) {
+      return widget.child;
+    }
+
+    return AnimatedBuilder(
+      animation: widget.animation,
+      builder: (context, _) {
+        final blurStrength = widget.reduceMotion
+            ? 14.0
+            : (widget.warp > 0 ? 34.0 : 24.0);
+        final aberrationStrength = widget.reduceMotion
+            ? 4.0
+            : (widget.warp > 0 ? 20.0 : 13.0);
+        final warpStrength = widget.reduceMotion
+            ? 0.008
+            : (widget.warp > 0 ? 0.032 : 0.02);
+
+        shader.setFloat(2, 0.5);
+        shader.setFloat(3, 0.46);
+        shader.setFloat(4, blurStrength);
+        shader.setFloat(5, aberrationStrength);
+        shader.setFloat(6, warpStrength);
+
+        return ClipRect(
+          child: ImageFiltered(
+            imageFilter: ImageFilter.shader(shader),
+            child: widget.child,
+          ),
+        );
+      },
     );
   }
 }

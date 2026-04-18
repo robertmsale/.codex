@@ -62,6 +62,7 @@ flutter:
     - assets/mock/
   shaders:
     - shaders/connection_nebula.frag
+    - shaders/peripheral_vision_filter.frag
 
 rinf:
   gen_output_dir: lib/src/bindings
