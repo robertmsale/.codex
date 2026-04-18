@@ -832,13 +832,8 @@ class _DesktopThreadControls extends StatelessWidget {
       final display = match?.name?.trim().isNotEmpty == true ? match!.name! : modelId;
       return inheritedLabel(display);
     }
-    String networkLabel(bool? enabled) => inheritedLabel(
-          switch (enabled) {
-            true => 'Enabled',
-            false => 'Disabled',
-            null => 'System',
-          },
-        );
+    bool isOverridden(String? value) => value != null && value.trim().isNotEmpty;
+    bool isNetworkOverridden() => selection.networkAccess != null;
     ThreadSettingsDraft draft({
       String? role,
       String? approvalPolicy,
@@ -888,67 +883,28 @@ class _DesktopThreadControls extends StatelessWidget {
           ],
           onChanged: (value) => onSettingsChanged(draft(modelId: value)),
         ),
-        _CompactDropdown(
-          width: 126,
-          label: 'Reasoning',
-          value: selection.reasoningEffort ?? '',
+        _ReasoningControl(
           enabled: enabled,
-          items: [
-            DropdownMenuItem(
-              value: '',
-              child: Text(inheritedOrSystem(selection.effectiveReasoningEffort)),
-            ),
-            const DropdownMenuItem(value: 'low', child: Text('Low')),
-            const DropdownMenuItem(value: 'medium', child: Text('Medium')),
-            const DropdownMenuItem(value: 'high', child: Text('High')),
-          ],
-          onChanged: (value) => onSettingsChanged(draft(reasoningEffort: value)),
+          overridden: isOverridden(selection.reasoningEffort),
+          effectiveValue: selection.effectiveReasoningEffort,
+          onSelected: (value) => onSettingsChanged(draft(reasoningEffort: value)),
         ),
-        _CompactDropdown(
-          width: 112,
-          label: 'Tier',
-          value: selection.serviceTier ?? '',
+        _TierControl(
           enabled: enabled,
-          items: [
-            DropdownMenuItem(
-              value: '',
-              child: Text(inheritedOrSystem(selection.effectiveServiceTier)),
-            ),
-            const DropdownMenuItem(value: 'fast', child: Text('Fast')),
-            const DropdownMenuItem(value: 'flex', child: Text('Flex')),
-          ],
-          onChanged: (value) => onSettingsChanged(draft(serviceTier: value)),
+          overridden: isOverridden(selection.serviceTier),
+          effectiveValue: selection.effectiveServiceTier,
+          onSelected: (value) => onSettingsChanged(draft(serviceTier: value)),
         ),
-        _CompactDropdown(
-          width: 142,
-          label: 'Sandbox',
-          value: selection.sandboxMode ?? '',
+        _SandboxControl(
           enabled: enabled,
-          items: [
-            DropdownMenuItem(
-              value: '',
-              child: Text(inheritedOrSystem(selection.effectiveSandboxMode)),
-            ),
-            const DropdownMenuItem(value: 'workspace-write', child: Text('Workspace')),
-            const DropdownMenuItem(value: 'danger-full-access', child: Text('Danger')),
-          ],
-          onChanged: (value) => onSettingsChanged(draft(sandboxMode: value)),
+          overridden: isOverridden(selection.sandboxMode),
+          effectiveValue: selection.effectiveSandboxMode,
+          onSelected: (value) => onSettingsChanged(draft(sandboxMode: value)),
         ),
-        _CompactDropdown(
-          width: 122,
-          label: 'Network',
-          value: selection.networkAccess == null
-              ? 'default'
-              : (selection.networkAccess! ? 'enabled' : 'disabled'),
+        _NetworkControl(
           enabled: enabled,
-          items: [
-            DropdownMenuItem(
-              value: 'default',
-              child: Text(networkLabel(selection.effectiveNetworkAccess)),
-            ),
-            const DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
-            const DropdownMenuItem(value: 'disabled', child: Text('Disabled')),
-          ],
+          overridden: isNetworkOverridden(),
+          effectiveValue: selection.effectiveNetworkAccess,
           onChanged: (value) => onSettingsChanged(draft(networkAccessMode: value)),
         ),
         IconButton.outlined(
@@ -1111,6 +1067,310 @@ Future<void> _showProcessManagerSheet(
       ),
     ),
   );
+}
+
+
+class _VisualSettingFrame extends StatelessWidget {
+  const _VisualSettingFrame({
+    required this.tooltip,
+    required this.enabled,
+    required this.overridden,
+    required this.child,
+    this.onTap,
+    this.onLongPress,
+  });
+
+  final String tooltip;
+  final bool enabled;
+  final bool overridden;
+  final Widget child;
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final tone = overridden ? Colors.green.shade600 : Colors.amber.shade700;
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: enabled ? onTap : null,
+        onLongPress: enabled ? onLongPress : null,
+        borderRadius: BorderRadius.circular(14),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOutCubic,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            color: enabled
+                ? tone.withValues(alpha: overridden ? 0.14 : 0.16)
+                : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.22),
+            border: Border.all(
+              color: enabled
+                  ? tone.withValues(alpha: overridden ? 0.32 : 0.28)
+                  : theme.colorScheme.outline.withValues(alpha: 0.12),
+            ),
+          ),
+          child: DefaultTextStyle.merge(
+            style: theme.textTheme.labelSmall?.copyWith(
+                  color: enabled
+                      ? theme.colorScheme.onSurface.withValues(alpha: 0.88)
+                      : theme.colorScheme.onSurface.withValues(alpha: 0.42),
+                  fontWeight: FontWeight.w700,
+                ) ??
+                const TextStyle(),
+            child: child,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReasoningGlyph extends StatelessWidget {
+  const _ReasoningGlyph({
+    required this.level,
+    required this.color,
+  });
+
+  final int level;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 22,
+      height: 14,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: List.generate(3, (index) {
+          final active = index < level;
+          final heights = [5.0, 9.0, 13.0];
+          return Padding(
+            padding: EdgeInsets.only(right: index == 2 ? 0 : 2),
+            child: Container(
+              width: 3.5,
+              height: heights[index],
+              decoration: BoxDecoration(
+                color: active ? color : color.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+}
+
+class _ReasoningControl extends StatelessWidget {
+  const _ReasoningControl({
+    required this.enabled,
+    required this.overridden,
+    required this.effectiveValue,
+    required this.onSelected,
+  });
+
+  final bool enabled;
+  final bool overridden;
+  final String? effectiveValue;
+  final ValueChanged<String> onSelected;
+
+  int _levelFor(String? value) {
+    switch (value?.trim().toLowerCase()) {
+      case 'low':
+        return 1;
+      case 'medium':
+        return 2;
+      case 'high':
+        return 3;
+      default:
+        return 0;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tone = overridden ? Colors.green.shade600 : Colors.amber.shade700;
+    final level = _levelFor(effectiveValue);
+    return PopupMenuButton<String>(
+      enabled: enabled,
+      tooltip: '',
+      onSelected: onSelected,
+      itemBuilder: (context) => [
+        PopupMenuItem(
+          value: '',
+          child: Row(
+            children: [
+              _ReasoningGlyph(level: _levelFor(effectiveValue), color: Colors.amber.shade700),
+              const SizedBox(width: 8),
+              const Text('System'),
+            ],
+          ),
+        ),
+        for (final option in [('low', 'Low'), ('medium', 'Medium'), ('high', 'High')])
+          PopupMenuItem(
+            value: option.$1,
+            child: Row(
+              children: [
+                _ReasoningGlyph(level: _levelFor(option.$1), color: Colors.green.shade600),
+                const SizedBox(width: 8),
+                Text(option.$2),
+              ],
+            ),
+          ),
+      ],
+      child: _VisualSettingFrame(
+        tooltip: overridden ? 'Reasoning override' : 'Reasoning inherited',
+        enabled: enabled,
+        overridden: overridden,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _ReasoningGlyph(level: level, color: tone),
+            const SizedBox(width: 4),
+            Icon(Icons.arrow_drop_down_rounded, size: 16, color: tone),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TierControl extends StatelessWidget {
+  const _TierControl({
+    required this.enabled,
+    required this.overridden,
+    required this.effectiveValue,
+    required this.onSelected,
+  });
+
+  final bool enabled;
+  final bool overridden;
+  final String? effectiveValue;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final tone = overridden ? Colors.green.shade600 : Colors.amber.shade700;
+    final isFast = effectiveValue?.trim().toLowerCase() == 'fast';
+    return PopupMenuButton<String>(
+      enabled: enabled,
+      tooltip: '',
+      onSelected: onSelected,
+      itemBuilder: (context) => [
+        const PopupMenuItem(value: '', child: Text('System')),
+        const PopupMenuItem(value: 'fast', child: Text('⚡ Fast')),
+        const PopupMenuItem(value: 'flex', child: Text('🐢 Flex')),
+      ],
+      child: _VisualSettingFrame(
+        tooltip: overridden ? 'Tier override' : 'Tier inherited',
+        enabled: enabled,
+        overridden: overridden,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(isFast ? '⚡' : '🐢', style: const TextStyle(fontSize: 16)),
+            const SizedBox(width: 2),
+            Icon(Icons.arrow_drop_down_rounded, size: 16, color: tone),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SandboxControl extends StatelessWidget {
+  const _SandboxControl({
+    required this.enabled,
+    required this.overridden,
+    required this.effectiveValue,
+    required this.onSelected,
+  });
+
+  final bool enabled;
+  final bool overridden;
+  final String? effectiveValue;
+  final ValueChanged<String> onSelected;
+
+  String _emojiFor(String? value) {
+    switch (value?.trim().toLowerCase()) {
+      case 'read-only':
+        return '👼';
+      case 'danger-full-access':
+        return '😈';
+      case 'workspace-write':
+      default:
+        return '👷';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tone = overridden ? Colors.green.shade600 : Colors.amber.shade700;
+    return PopupMenuButton<String>(
+      enabled: enabled,
+      tooltip: '',
+      onSelected: onSelected,
+      itemBuilder: (context) => [
+        PopupMenuItem(value: '', child: Text('System ${_emojiFor(effectiveValue)}')),
+        const PopupMenuItem(value: 'read-only', child: Text('👼 Read-only')),
+        const PopupMenuItem(value: 'workspace-write', child: Text('👷 Workspace')),
+        const PopupMenuItem(value: 'danger-full-access', child: Text('😈 Danger')),
+      ],
+      child: _VisualSettingFrame(
+        tooltip: overridden ? 'Sandbox override' : 'Sandbox inherited',
+        enabled: enabled,
+        overridden: overridden,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_emojiFor(effectiveValue), style: const TextStyle(fontSize: 16)),
+            const SizedBox(width: 2),
+            Icon(Icons.arrow_drop_down_rounded, size: 16, color: tone),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NetworkControl extends StatelessWidget {
+  const _NetworkControl({
+    required this.enabled,
+    required this.overridden,
+    required this.effectiveValue,
+    required this.onChanged,
+  });
+
+  final bool enabled;
+  final bool overridden;
+  final bool? effectiveValue;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final isOn = effectiveValue ?? false;
+    return _VisualSettingFrame(
+      tooltip: overridden
+          ? 'Network override'
+          : 'Network inherited (long-press to restore default after toggle)',
+      enabled: enabled,
+      overridden: overridden,
+      onTap: () => onChanged(isOn ? 'disabled' : 'enabled'),
+      onLongPress: () => onChanged('default'),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isOn ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+            size: 16,
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _CompactDropdown extends StatelessWidget {

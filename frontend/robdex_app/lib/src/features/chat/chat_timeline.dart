@@ -79,39 +79,24 @@ class _ChatTimelineState extends State<ChatTimeline> {
       return;
     }
 
-    final shouldStickToBottom = threadChanged || _isNearBottom();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.hasClients || !shouldStickToBottom) {
-        if (!mounted || !_scrollController.hasClients) {
-          return;
-        }
-        final position = _scrollController.position;
-        final target = previousPixels.clamp(
-          position.minScrollExtent,
-          position.maxScrollExtent,
-        );
-        if ((position.pixels - target).abs() > 1) {
-          _scrollController.jumpTo(target);
-        }
+      if (!mounted || !_scrollController.hasClients) {
         return;
       }
       final position = _scrollController.position;
-      final target = position.maxScrollExtent.clamp(
-        position.minScrollExtent,
-        position.maxScrollExtent,
-      );
+      final target = threadChanged
+          ? position.maxScrollExtent.clamp(
+              position.minScrollExtent,
+              position.maxScrollExtent,
+            )
+          : previousPixels.clamp(
+              position.minScrollExtent,
+              position.maxScrollExtent,
+            );
       if ((position.pixels - target).abs() > 1) {
         _scrollController.jumpTo(target);
       }
     });
-  }
-
-  bool _isNearBottom() {
-    if (!_scrollController.hasClients) {
-      return true;
-    }
-    final position = _scrollController.position;
-    return position.maxScrollExtent - position.pixels < 96;
   }
 
   @override
@@ -943,7 +928,8 @@ class _FileChangeEventRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
-    final canExpand = _hasValue(entry.output) || _hasValue(entry.command);
+    final hasUnifiedDiff = _hasValue(entry.output) && _looksLikeUnifiedDiff(entry.output!);
+    final canExpand = !hasUnifiedDiff && (_hasValue(entry.output) || _hasValue(entry.command));
     final summary = entry.command?.trim().isNotEmpty == true ? entry.command!.trim() : entry.body.trim();
 
     return ConstrainedBox(
@@ -998,12 +984,12 @@ class _FileChangeEventRow extends StatelessWidget {
                       ),
                     ),
                   ],
-                  if (expanded && _hasValue(entry.output)) ...[
+                  if (hasUnifiedDiff) ...[
                     const SizedBox(height: 8),
-                    if (_looksLikeUnifiedDiff(entry.output!))
-                      _DiffEventSection(value: entry.output!)
-                    else
-                      _EventSection(label: 'Diff', value: entry.output!, mono: true),
+                    _DiffEventSection(value: entry.output!),
+                  ] else if (expanded && _hasValue(entry.output)) ...[
+                    const SizedBox(height: 8),
+                    _EventSection(label: 'Diff', value: entry.output!, mono: true),
                   ],
                 ],
               ),
