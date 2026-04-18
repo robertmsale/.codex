@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  cat >&2 <<'EOF'
+Usage:
+  live-hierarchy <device-id>
+EOF
+  exit 2
+fi
+
+device_id="$1"
+idb_bin="/Users/robertsale/.local/bin/idb"
+python_bin="/usr/bin/python3"
+clear_bin="/usr/bin/clear"
+formatter_py="/Users/robertsale/.codex/scripts/lib/idb_accessibility.py"
+
+if [[ ! -x "$idb_bin" ]]; then
+  echo "idb not found at $idb_bin" >&2
+  exit 1
+fi
+
+if [[ ! -x "$python_bin" ]]; then
+  echo "python3 not found at $python_bin" >&2
+  exit 1
+fi
+
+if [[ ! -f "$formatter_py" ]]; then
+  echo "hierarchy formatter not found at $formatter_py" >&2
+  exit 1
+fi
+
+while true; do
+  "$clear_bin"
+  "$idb_bin" ui describe-all --json --udid "$device_id" | "$python_bin" "$formatter_py"
+  printf '\nPress Enter to refresh, or Ctrl-C to exit... '
+  read -r _
+done

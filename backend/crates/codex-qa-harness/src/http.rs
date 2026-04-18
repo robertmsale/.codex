@@ -7,7 +7,6 @@ use axum::{
 };
 use codex_backend_core::HealthResponse;
 use futures_util::stream::unfold;
-
 use crate::{
     events::HarnessEvent,
     models::{ApiError, CommandRequest, LeaseRequest, StartRequest},
@@ -15,6 +14,10 @@ use crate::{
 };
 
 pub fn build_router(runtime: SharedHarnessRuntime) -> Router {
+    build_router_with_service_name(runtime, "codex-qa-harness")
+}
+
+pub fn build_router_with_service_name(runtime: SharedHarnessRuntime, service_name: &'static str) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/events", get(events))
@@ -30,15 +33,24 @@ pub fn build_router(runtime: SharedHarnessRuntime) -> Router {
         .route("/projects/{project_id}/devices/{device_key}/teardown", post(teardown))
         .route("/projects/{project_id}/devices/{device_key}/commands", post(command))
         .route("/projects/{project_id}/devices/{device_key}/simulator", get(simulator_status))
-        .with_state(runtime)
+        .with_state(RouterState {
+            runtime,
+            service_name,
+        })
 }
 
-async fn health(State(runtime): State<SharedHarnessRuntime>) -> Json<HealthResponse> {
+#[derive(Clone)]
+struct RouterState {
+    runtime: SharedHarnessRuntime,
+    service_name: &'static str,
+}
+
+async fn health(State(state): State<RouterState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         ok: true,
-        service: "codex-qa-harness",
+        service: state.service_name,
         status: "ok",
-        phase: if runtime.project_count() > 0 {
+        phase: if state.runtime.project_count() > 0 {
             "configured"
         } else {
             "empty"
@@ -47,9 +59,9 @@ async fn health(State(runtime): State<SharedHarnessRuntime>) -> Json<HealthRespo
 }
 
 async fn events(
-    State(runtime): State<SharedHarnessRuntime>,
+    State(state): State<RouterState>,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>> {
-    let receiver = runtime.subscribe_events();
+    let receiver = state.runtime.subscribe_events();
     let stream = unfold(receiver, |mut receiver| async move {
         loop {
             match receiver.recv().await {
@@ -68,15 +80,16 @@ async fn events(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-async fn list_projects(State(runtime): State<SharedHarnessRuntime>) -> Json<Vec<crate::models::ProjectSummary>> {
-    Json(runtime.project_summaries())
+async fn list_projects(State(state): State<RouterState>) -> Json<Vec<crate::models::ProjectSummary>> {
+    Json(state.runtime.project_summaries())
 }
 
 async fn list_devices(
-    State(runtime): State<SharedHarnessRuntime>,
+    State(state): State<RouterState>,
     Path(project_id): Path<String>,
 ) -> Result<Json<Vec<crate::models::DeviceSummary>>, (StatusCode, Json<ApiError>)> {
-    runtime
+    state
+        .runtime
         .list_devices(&project_id)
         .await
         .map(Json)
@@ -84,10 +97,11 @@ async fn list_devices(
 }
 
 async fn get_device(
-    State(runtime): State<SharedHarnessRuntime>,
+    State(state): State<RouterState>,
     Path((project_id, device_key)): Path<(String, String)>,
 ) -> Result<Json<crate::models::DeviceSummary>, (StatusCode, Json<ApiError>)> {
-    runtime
+    state
+        .runtime
         .device_summary(&project_id, &device_key)
         .await
         .map(Json)
@@ -95,11 +109,12 @@ async fn get_device(
 }
 
 async fn acquire_lease(
-    State(runtime): State<SharedHarnessRuntime>,
+    State(state): State<RouterState>,
     Path((project_id, device_key)): Path<(String, String)>,
     Json(request): Json<LeaseRequest>,
 ) -> Result<Json<crate::models::SlotRuntimeState>, (StatusCode, Json<ApiError>)> {
-    runtime
+    state
+        .runtime
         .acquire_lease(&project_id, &device_key, request)
         .await
         .map(Json)
@@ -107,10 +122,11 @@ async fn acquire_lease(
 }
 
 async fn release_lease(
-    State(runtime): State<SharedHarnessRuntime>,
+    State(state): State<RouterState>,
     Path((project_id, device_key)): Path<(String, String)>,
 ) -> Result<Json<crate::models::SlotRuntimeState>, (StatusCode, Json<ApiError>)> {
-    runtime
+    state
+        .runtime
         .release_lease(&project_id, &device_key)
         .await
         .map(Json)
@@ -118,11 +134,12 @@ async fn release_lease(
 }
 
 async fn start(
-    State(runtime): State<SharedHarnessRuntime>,
+    State(state): State<RouterState>,
     Path((project_id, device_key)): Path<(String, String)>,
     Json(request): Json<StartRequest>,
 ) -> Result<Json<crate::models::SlotRuntimeState>, (StatusCode, Json<ApiError>)> {
-    runtime
+    state
+        .runtime
         .start(&project_id, &device_key, request)
         .await
         .map(Json)
@@ -130,11 +147,12 @@ async fn start(
 }
 
 async fn restart(
-    State(runtime): State<SharedHarnessRuntime>,
+    State(state): State<RouterState>,
     Path((project_id, device_key)): Path<(String, String)>,
     Json(request): Json<StartRequest>,
 ) -> Result<Json<crate::models::SlotRuntimeState>, (StatusCode, Json<ApiError>)> {
-    runtime
+    state
+        .runtime
         .restart(&project_id, &device_key, request)
         .await
         .map(Json)
@@ -142,11 +160,12 @@ async fn restart(
 }
 
 async fn teardown(
-    State(runtime): State<SharedHarnessRuntime>,
+    State(state): State<RouterState>,
     Path((project_id, device_key)): Path<(String, String)>,
     Json(request): Json<StartRequest>,
 ) -> Result<Json<crate::models::SlotRuntimeState>, (StatusCode, Json<ApiError>)> {
-    runtime
+    state
+        .runtime
         .teardown(&project_id, &device_key, request)
         .await
         .map(Json)
@@ -154,11 +173,12 @@ async fn teardown(
 }
 
 async fn command(
-    State(runtime): State<SharedHarnessRuntime>,
+    State(state): State<RouterState>,
     Path((project_id, device_key)): Path<(String, String)>,
     Json(request): Json<CommandRequest>,
 ) -> Result<Json<crate::models::SlotRuntimeState>, (StatusCode, Json<ApiError>)> {
-    runtime
+    state
+        .runtime
         .command(&project_id, &device_key, request)
         .await
         .map(Json)
@@ -166,10 +186,11 @@ async fn command(
 }
 
 async fn simulator_status(
-    State(runtime): State<SharedHarnessRuntime>,
+    State(state): State<RouterState>,
     Path((project_id, device_key)): Path<(String, String)>,
 ) -> Result<Json<crate::ios_sim::SimulatorStatus>, (StatusCode, Json<ApiError>)> {
-    runtime
+    state
+        .runtime
         .simulator_status(&project_id, &device_key)
         .await
         .map(Json)
@@ -185,4 +206,61 @@ fn internal_error(error: anyhow::Error) -> (StatusCode, Json<ApiError>) {
 
 fn event_name(event: &HarnessEvent) -> &str {
     &event.kind
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{config::{DeviceConfig, HarnessConfig, HooksConfig, ProjectConfig}, models::DeviceType, runtime::HarnessRuntime};
+    use axum::{body::Body, http::Request};
+    use tempfile::tempdir;
+    use tower::util::ServiceExt;
+
+    #[tokio::test]
+    async fn healthz_uses_supplied_service_name() {
+        let temp = tempdir().expect("tempdir");
+        let config = HarnessConfig {
+            projects: std::iter::once((
+                "demo".to_string(),
+                ProjectConfig {
+                    id: "demo".to_string(),
+                    display_name: "Demo".to_string(),
+                    repo_root: temp.path().join("repo"),
+                    runtime_root: temp.path().join("runtime"),
+                    env: Default::default(),
+                    devices: std::iter::once((
+                        "primary".to_string(),
+                        DeviceConfig {
+                            device_type: DeviceType::IosSim,
+                            device_id: "SIM-123".to_string(),
+                            name: "Primary".to_string(),
+                            runtime_subdir: "primary".to_string(),
+                            boot_policy: "lazy".to_string(),
+                        },
+                    ))
+                    .collect(),
+                    hooks: HooksConfig {
+                        prepare_source: temp.path().join("prepare.sh"),
+                        start_dependencies: None,
+                        start_runtime: temp.path().join("start.sh"),
+                        check_readiness: temp.path().join("ready.sh"),
+                        teardown: temp.path().join("teardown.sh"),
+                        command: temp.path().join("command.sh"),
+                    },
+                    timeouts: Default::default(),
+                },
+            ))
+            .collect(),
+        };
+        let runtime = HarnessRuntime::from_config(config, temp.path().join("state")).expect("runtime");
+        let app = build_router_with_service_name(runtime, "codex-flutter-sim-http");
+        let response = app
+            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).expect("request"))
+            .await
+            .expect("response");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["service"], "codex-flutter-sim-http");
+        assert_eq!(payload["phase"], "configured");
+    }
 }

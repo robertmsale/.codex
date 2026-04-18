@@ -444,16 +444,6 @@ fn normalize_command(command: &[String]) -> NormalizedCommand {
             ),
         };
     };
-    for argv in &parsed_commands {
-        if let Some(reason) = shell_derived_command_rejection_reason(argv) {
-            return NormalizedCommand {
-                classification: "shell_plain_rejected",
-                argv: None,
-                policy_argvs: Vec::new(),
-                reason: Some(reason),
-            };
-        }
-    }
     if parsed_commands.len() != 1 {
         return NormalizedCommand {
             classification: "shell_sequence",
@@ -472,36 +462,6 @@ fn normalize_command(command: &[String]) -> NormalizedCommand {
         policy_argvs: vec![argv],
         reason: None,
     }
-}
-
-fn shell_derived_command_rejection_reason(argv: &[String]) -> Option<String> {
-    for token in argv {
-        if token.is_empty() {
-            return Some("empty shell-derived argv token is not allowed".to_string());
-        }
-        if looks_like_env_assignment(token) {
-            return Some(format!(
-                "shell-derived env assignment `{token}` is not eligible for privileged execution"
-            ));
-        }
-        if token.chars().any(is_rejected_shell_char) {
-            return Some(format!(
-                "shell-derived token `{token}` contains shell metacharacters; use direct argv style instead"
-            ));
-        }
-    }
-    None
-}
-
-fn looks_like_env_assignment(token: &str) -> bool {
-    let Some((name, _)) = token.split_once('=') else {
-        return false;
-    };
-    is_valid_env_key(name)
-}
-
-fn is_rejected_shell_char(ch: char) -> bool {
-    matches!(ch, '*' | '?' | '[' | ']' | '{' | '}' | '$' | '(' | ')' | '<' | '>' | '~' | '`')
 }
 
 async fn evaluate_normalized(app: &AppState, normalized: &NormalizedCommand) -> EvaluationResult {
@@ -798,14 +758,66 @@ mod tests {
     }
 
     #[test]
-    fn shell_wildcard_token_is_rejected() {
+    fn shell_wildcard_token_is_reduced_to_plain_argv() {
         let normalized = normalize_command(&[
             "bash".to_string(),
             "-lc".to_string(),
             "rg *.rs".to_string(),
         ]);
-        assert_eq!(normalized.classification, "shell_plain_rejected");
-        assert!(normalized.reason.unwrap_or_default().contains("metacharacters"));
+        assert_eq!(normalized.classification, "shell_plain_single");
+        assert_eq!(
+            normalized.argv,
+            Some(vec!["rg".to_string(), "*.rs".to_string()])
+        );
+    }
+
+    #[test]
+    fn shell_quoted_commit_message_with_brackets_is_reduced_to_plain_argv() {
+        let normalized = normalize_command(&[
+            "bash".to_string(),
+            "-lc".to_string(),
+            "git-commit /tmp/worktree \"[QBO-SLICE 4A] Add inbound customer sync MVP\"".to_string(),
+        ]);
+        assert_eq!(normalized.classification, "shell_plain_single");
+        assert_eq!(
+            normalized.argv,
+            Some(vec![
+                "git-commit".to_string(),
+                "/tmp/worktree".to_string(),
+                "[QBO-SLICE 4A] Add inbound customer sync MVP".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn shell_env_flag_value_is_reduced_to_plain_argv() {
+        let normalized = normalize_command(&[
+            "bash".to_string(),
+            "-lc".to_string(),
+            "api-integration-harness up /tmp/worktree --env QBO_BASE_URL_OVERRIDE=http://host.docker.internal:58081/v3/company/".to_string(),
+        ]);
+        assert_eq!(normalized.classification, "shell_plain_single");
+        assert_eq!(
+            normalized.argv,
+            Some(vec![
+                "api-integration-harness".to_string(),
+                "up".to_string(),
+                "/tmp/worktree".to_string(),
+                "--env".to_string(),
+                "QBO_BASE_URL_OVERRIDE=http://host.docker.internal:58081/v3/company/".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn shell_inline_env_assignment_remains_ineligible_without_extra_token_filter() {
+        let normalized = normalize_command(&[
+            "bash".to_string(),
+            "-lc".to_string(),
+            "QBO_BASE_URL_OVERRIDE=http://host.docker.internal:58081/v3/company/ api-integration-harness up /tmp/worktree".to_string(),
+        ]);
+        assert!(normalized.argv.is_none());
+        assert_eq!(normalized.classification, "shell_script");
     }
 
     #[test]

@@ -19,3 +19,6 @@ tower-http.workspace = true
 tracing.workspace = true
 libc = "0.2"
 toml = "0.8"
+
+[dev-dependencies]
+tower = "0.5"

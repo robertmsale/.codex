@@ -7,6 +7,7 @@ prefix_rule(
         "command-parser", "/Users/robertsale/.codex/skills/command-parser/scripts/command-parser",
         "command-parser-new", "/Users/robertsale/.codex/skills/command-parser/scripts/command-parser-new",
         "db_test.sh", "/Users/robertsale/.codex/skills/command-parser/scripts/db_test.sh",
+        "designer-crop-screenshot", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-crop-screenshot",
         "designer-drive", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-drive",
         "designer-flutter-run", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-flutter-run",
         "designer-hot-reload", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-hot-reload",
@@ -36,7 +37,8 @@ prefix_rule(
         "robdex", "/Users/robertsale/.codex/skills/robdex-orchestrator/scripts/robdex",
         "safe-delete", "/Users/robertsale/.codex/skills/safe-delete/scripts/safe-delete",
         "static-code-validation",
-        "worktree-stack-role-instructions", "designer-drive", "designer-flutter-run", "designer-hot-reload",
+        "worktree-stack-role-instructions", "designer-crop-screenshot", "designer-drive", "designer-flutter-run", "designer-hot-reload",
+        "api-integration-harness",
     ]],
     decision = "allow",
 )

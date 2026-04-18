@@ -8,5 +8,5 @@ pub mod runtime;
 pub mod state;
 
 pub use config::{HarnessArgs, HarnessConfig, ProjectConfig, load_harness_config};
-pub use http::build_router;
+pub use http::{build_router, build_router_with_service_name};
 pub use runtime::{HarnessRuntime, SharedHarnessRuntime};

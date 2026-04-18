@@ -19,6 +19,10 @@ pub enum HookEvent {
     QaCreate,
     QaArchive,
     Compaction,
+    ApprovalRequested,
+    Approved,
+    Denied,
+    Stopped,
 }
 
 impl HookEvent {
@@ -29,6 +33,10 @@ impl HookEvent {
             Self::QaCreate => "onQaCreate",
             Self::QaArchive => "onQaArchive",
             Self::Compaction => "onCompaction",
+            Self::ApprovalRequested => "onApprovalRequested",
+            Self::Approved => "onApproved",
+            Self::Denied => "onDenied",
+            Self::Stopped => "onStopped",
         }
     }
 }
@@ -61,7 +69,26 @@ pub struct HookResult {
     #[serde(default)]
     pub metadata: Option<Value>,
     #[serde(default)]
+    pub actions: Vec<HookAction>,
+    #[serde(default)]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum HookAction {
+    #[serde(rename_all = "camelCase")]
+    SendMessage {
+        recipient_thread_id: String,
+        text: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    DeclineApproval {
+        #[serde(default)]
+        approval_id: Option<String>,
+        #[serde(default)]
+        message: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -111,6 +138,7 @@ pub struct HookTelemetry {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HookInvocation {
+    pub configured: bool,
     pub result: Option<HookResult>,
     pub telemetry: Option<HookTelemetry>,
 }
@@ -146,6 +174,7 @@ pub async fn maybe_run_project_hook(
         Ok(value) => value,
         Err(error) => {
             return HookInvocation {
+                configured: true,
                 result: None,
                 telemetry: Some(HookTelemetry {
                     event: event.wire_name().to_string(),
@@ -165,6 +194,7 @@ pub async fn maybe_run_project_hook(
         Ok(bytes) => bytes,
         Err(error) => {
             return HookInvocation {
+                configured: true,
                 result: None,
                 telemetry: Some(HookTelemetry {
                     event: event.wire_name().to_string(),
@@ -224,10 +254,12 @@ pub async fn maybe_run_project_hook(
 
     match join.await {
         Ok(Ok(result)) => HookInvocation {
+            configured: true,
             result: Some(result),
             telemetry: None,
         },
         Ok(Err(error)) => HookInvocation {
+            configured: true,
             result: None,
             telemetry: Some(HookTelemetry {
                 event: event.wire_name().to_string(),
@@ -236,6 +268,7 @@ pub async fn maybe_run_project_hook(
             }),
         },
         Err(error) => HookInvocation {
+            configured: true,
             result: None,
             telemetry: Some(HookTelemetry {
                 event: event.wire_name().to_string(),
@@ -442,6 +475,116 @@ pub fn compaction_payload(
     payload
 }
 
+pub fn approval_requested_payload(
+    thread_id: &str,
+    project_id: &str,
+    project_name: &str,
+    project_root: &str,
+    agent_name: &str,
+    role: &str,
+    requested_cwd: Option<&str>,
+    orchestrator_thread_id: Option<&str>,
+    approval: Value,
+) -> Value {
+    let mut payload = json!({
+        "event": HookEvent::ApprovalRequested.wire_name(),
+        "project": {
+            "id": project_id,
+            "name": project_name,
+            "root": project_root,
+        },
+        "projectRoot": project_root,
+        "threadId": thread_id,
+        "agent": {
+            "name": agent_name,
+            "role": role,
+        },
+        "approval": approval,
+    });
+    if let Some(requested_cwd) = requested_cwd.filter(|value| !value.trim().is_empty()) {
+        payload["requestedCwd"] = Value::String(requested_cwd.to_string());
+    }
+    if let Some(orchestrator_thread_id) = orchestrator_thread_id.filter(|value| !value.trim().is_empty()) {
+        payload["orchestratorThreadId"] = Value::String(orchestrator_thread_id.to_string());
+    }
+    payload
+}
+
+pub fn approval_resolved_payload(
+    event: HookEvent,
+    thread_id: &str,
+    project_id: &str,
+    project_name: &str,
+    project_root: &str,
+    agent_name: &str,
+    role: &str,
+    requested_cwd: Option<&str>,
+    orchestrator_thread_id: Option<&str>,
+    approval: Value,
+    resolution: Value,
+) -> Value {
+    let mut payload = json!({
+        "event": event.wire_name(),
+        "project": {
+            "id": project_id,
+            "name": project_name,
+            "root": project_root,
+        },
+        "projectRoot": project_root,
+        "threadId": thread_id,
+        "agent": {
+            "name": agent_name,
+            "role": role,
+        },
+        "approval": approval,
+        "resolution": resolution,
+    });
+    if let Some(requested_cwd) = requested_cwd.filter(|value| !value.trim().is_empty()) {
+        payload["requestedCwd"] = Value::String(requested_cwd.to_string());
+    }
+    if let Some(orchestrator_thread_id) = orchestrator_thread_id.filter(|value| !value.trim().is_empty()) {
+        payload["orchestratorThreadId"] = Value::String(orchestrator_thread_id.to_string());
+    }
+    payload
+}
+
+pub fn stopped_payload(
+    thread_id: &str,
+    turn_id: &str,
+    project_id: &str,
+    project_name: &str,
+    project_root: &str,
+    agent_name: &str,
+    role: &str,
+    requested_cwd: Option<&str>,
+    orchestrator_thread_id: Option<&str>,
+    last_assistant_message: &str,
+) -> Value {
+    let mut payload = json!({
+        "event": HookEvent::Stopped.wire_name(),
+        "project": {
+            "id": project_id,
+            "name": project_name,
+            "root": project_root,
+        },
+        "projectRoot": project_root,
+        "threadId": thread_id,
+        "turnId": turn_id,
+        "agent": {
+            "name": agent_name,
+            "role": role,
+        },
+        "lastAssistantMessage": last_assistant_message,
+    });
+    if let Some(requested_cwd) = requested_cwd.filter(|value| !value.trim().is_empty()) {
+        payload["requestedCwd"] = Value::String(requested_cwd.to_string());
+    }
+    if let Some(orchestrator_thread_id) = orchestrator_thread_id.filter(|value| !value.trim().is_empty()) {
+        payload["orchestratorThreadId"] = Value::String(orchestrator_thread_id.to_string());
+    }
+    payload
+}
+
 fn resolve_hook_path(project_root: &Path, configured_path: &str) -> Result<PathBuf> {
     let path = PathBuf::from(configured_path);
     let resolved = if path.is_absolute() {
@@ -500,6 +643,28 @@ fn validate_hook_result(result: &HookResult) -> Result<()> {
     if let Some(value) = result.cleanup.as_ref() {
         if !value.is_object() {
             bail!("hook cleanup must be an object when present");
+        }
+    }
+    for action in &result.actions {
+        match action {
+            HookAction::SendMessage {
+                recipient_thread_id,
+                text,
+            } => {
+                if recipient_thread_id.trim().is_empty() {
+                    bail!("hook actions.sendMessage.recipientThreadId must be a non-empty string");
+                }
+                if text.trim().is_empty() {
+                    bail!("hook actions.sendMessage.text must be a non-empty string");
+                }
+            }
+            HookAction::DeclineApproval { approval_id, .. } => {
+                if let Some(approval_id) = approval_id
+                    && approval_id.trim().is_empty()
+                {
+                    bail!("hook actions.declineApproval.approvalId must be non-empty when present");
+                }
+            }
         }
     }
     Ok(())
@@ -755,6 +920,7 @@ mod tests {
             prompt_append: vec!["Use this worktree.".to_string()],
             cleanup: Some(json!({"onArchive": true})),
             metadata: None,
+            actions: Vec::new(),
             error: None,
         };
         validate_hook_result(&result).expect("valid hook result");
@@ -774,6 +940,7 @@ mod tests {
             prompt_append: vec!["Use this worktree.".to_string()],
             cleanup: Some(json!({"onArchive": true})),
             metadata: Some(json!({"device": "sim-1"})),
+            actions: Vec::new(),
             error: None,
         };
 

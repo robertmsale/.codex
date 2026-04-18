@@ -533,6 +533,8 @@ dependencies = [
  "axum",
  "clap",
  "codex-backend-core",
+ "codex-qa-harness",
+ "tempfile",
  "tokio",
  "tower-http",
  "tracing",
@@ -610,6 +612,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "tower",
  "tower-http",
  "tracing",
 ]

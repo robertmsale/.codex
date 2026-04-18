@@ -196,6 +196,7 @@ def _current_role(thread_id: str) -> str:
 def _handoff_guidance_text(role: str) -> str:
     chunks = [_read_resource_text("handoff", "shared.md")]
     role_map = {
+        "designer": "designer.md",
         "orchestrator": "orchestrator.md",
         "operator": "operator.md",
         "hidden": "hidden.md",
@@ -497,6 +498,14 @@ def _cmd_set_worker_metadata(thread_id: str, args: argparse.Namespace) -> None:
 
 
 def _cmd_approval_decision(thread_id: str, approval_id: str, decision: str, message: str | None) -> None:
+    if decision == "accept":
+        raise SystemExit(
+            "robdex: Approvals are disabled.\n"
+            "A command that requires approval is a sign of drift or instructions not being followed.\n"
+            "Privileged commands do not require escalation, but they must be executed plainly.\n"
+            "Do not use logical operators like `&&` or `||`, command separators like `;`, shell expansions, command substitution, or subshells.\n"
+            "Run the privileged command as a single plain command segment that the privileged executor can accept."
+        )
     payload = _request_json(
         "POST",
         "/orchestrator/approval-decision",
@@ -618,7 +627,7 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
 
     p_handoff = _add_handoff_parser(sub)
 
-    p_approve = sub.add_parser("approve-approval")
+    p_approve = sub.add_parser("approve-approval", help="disabled: approval-based command execution is not allowed")
     p_approve.add_argument("--approval-id", required=True)
 
     p_decline = sub.add_parser("decline-approval")

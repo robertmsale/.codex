@@ -26,9 +26,14 @@ use crate::{
     app_server_overrides::{AppServerThreadOverrides, AppServerTurnOverrides, simple_sandbox_policy},
     commands::{
         increment_compaction_count, parse_state, persist_state, prune_archived_thread_locally,
-        run_compaction_hook_best_effort,
+        run_compaction_hook_best_effort, send_follow_up_message, send_thread_input,
+        tracked_project_identity_for_thread, PersistedState,
     },
     config::BridgeSettings,
+    hooks::{
+        HookAction, HookEvent, approval_requested_payload, approval_resolved_payload,
+        maybe_run_project_hook, stopped_payload,
+    },
     models::{
         BridgeEvent, BridgeInfo, BridgeSnapshot, BridgeToolQuestion, EventReplayResponse,
         MAX_EVENT_HISTORY, MAX_TRANSPORT_MESSAGES_PER_THREAD, PROTOCOL_VERSION, PendingApproval,
@@ -322,6 +327,23 @@ impl BridgeRuntime {
             .collect()
     }
 
+    pub async fn clear_pending_approval(&self, approval_id: &str) -> bool {
+        let removed = self.pending_approvals.write().await.remove(approval_id).is_some();
+        if removed {
+            let state = self.state_document.read().await.clone();
+            self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
+        }
+        removed
+    }
+
+    #[cfg(test)]
+    pub async fn insert_pending_approval_for_test(&self, approval: PendingApproval) {
+        self.pending_approvals
+            .write()
+            .await
+            .insert(approval.id.clone(), approval);
+    }
+
     pub async fn send_server_response(
         &self,
         request_id: RequestId,
@@ -504,8 +526,11 @@ impl BridgeRuntime {
                     }
                 }
                 if let Some((thread_id, turn_id)) = turn_completed {
-                    self.maybe_auto_route_reply_to_orchestrator(&thread_id, &turn_id)
-                        .await;
+                    let hook_configured = self.maybe_run_stopped_hook(&thread_id, &turn_id).await?;
+                    if !hook_configured {
+                        self.maybe_auto_route_reply_to_orchestrator(&thread_id, &turn_id)
+                            .await;
+                    }
                 }
                 if let Some(thread_id) = compaction_completed_thread_id {
                     let maybe_compaction = {
@@ -533,9 +558,19 @@ impl BridgeRuntime {
                 .write()
                 .await
                 .insert(approval.id.clone(), approval.clone());
-            self.maybe_route_approval_to_orchestrator(&approval).await;
-            let state = self.state_document.read().await.clone();
-            self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
+            let hook_configured = self.maybe_run_approval_requested_hook(&approval).await?;
+            let still_pending = self
+                .pending_approvals
+                .read()
+                .await
+                .contains_key(&approval.id);
+            if still_pending {
+                if !hook_configured {
+                    self.maybe_route_approval_to_orchestrator(&approval).await;
+                }
+                let state = self.state_document.read().await.clone();
+                self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
+            }
         }
         Ok(())
     }
@@ -1019,6 +1054,220 @@ impl BridgeRuntime {
                     .map(|message| message.text.trim().to_string())
             })
     }
+
+    async fn maybe_run_approval_requested_hook(&self, approval: &PendingApproval) -> Result<bool> {
+        let state_value = self.state_document.read().await.clone();
+        let state = parse_state(&state_value);
+        let Some(project) = tracked_project_for_thread(&state_value, &approval.thread_id) else {
+            return Ok(false);
+        };
+        let project_root = project.project_root.clone().unwrap_or_default();
+        if project_root.trim().is_empty() {
+            return Ok(false);
+        }
+        let (project_id, project_name, _) = tracked_project_identity_for_thread(&state_value, &approval.thread_id)
+            .unwrap_or_else(|| (project_root.clone(), project_root.clone(), project_root.clone()));
+        let agent_name = sender_label_for_thread(&state_value, &approval.thread_id);
+        let role = tracked_role_for_thread(&state_value, &approval.thread_id).unwrap_or_else(|| "worker".to_string());
+        let payload = approval_requested_payload(
+            &approval.thread_id,
+            &project_id,
+            &project_name,
+            &project_root,
+            &agent_name,
+            &role,
+            tracked_cwd_for_thread_value(&state_value, &approval.thread_id).as_deref(),
+            project.orchestrator_thread_id.as_deref(),
+            approval_payload_value(approval),
+        );
+        let invocation = maybe_run_project_hook(&project_root, HookEvent::ApprovalRequested, payload).await;
+        if let Some(result) = invocation.result.as_ref() {
+            self.execute_hook_actions(&state, &approval.thread_id, &result.actions, Some(approval))
+                .await?;
+        }
+        if let Some(telemetry) = invocation.telemetry.as_ref() {
+            tracing::warn!(
+                "project hook {} failed for thread {}: {}",
+                telemetry.event,
+                approval.thread_id,
+                telemetry.detail.clone().unwrap_or_default()
+            );
+        }
+        Ok(invocation.configured)
+    }
+
+    pub(crate) async fn maybe_run_approval_resolved_hook(
+        &self,
+        approval: &PendingApproval,
+        decision: &str,
+        message: Option<&str>,
+        sender_thread_id: Option<&str>,
+    ) -> Result<()> {
+        let state_value = self.state_document.read().await.clone();
+        let state = parse_state(&state_value);
+        let Some(project) = tracked_project_for_thread(&state_value, &approval.thread_id) else {
+            return Ok(());
+        };
+        let project_root = project.project_root.clone().unwrap_or_default();
+        if project_root.trim().is_empty() {
+            return Ok(());
+        }
+        let (project_id, project_name, _) = tracked_project_identity_for_thread(&state_value, &approval.thread_id)
+            .unwrap_or_else(|| (project_root.clone(), project_root.clone(), project_root.clone()));
+        let agent_name = sender_label_for_thread(&state_value, &approval.thread_id);
+        let role = tracked_role_for_thread(&state_value, &approval.thread_id).unwrap_or_else(|| "worker".to_string());
+        let event = if decision == "accept" {
+            HookEvent::Approved
+        } else {
+            HookEvent::Denied
+        };
+        let payload = approval_resolved_payload(
+            event,
+            &approval.thread_id,
+            &project_id,
+            &project_name,
+            &project_root,
+            &agent_name,
+            &role,
+            tracked_cwd_for_thread_value(&state_value, &approval.thread_id).as_deref(),
+            project.orchestrator_thread_id.as_deref(),
+            approval_payload_value(approval),
+            json!({
+                "decision": decision,
+                "message": message,
+                "senderThreadId": sender_thread_id,
+            }),
+        );
+        let invocation = maybe_run_project_hook(&project_root, event, payload).await;
+        if let Some(result) = invocation.result.as_ref() {
+            self.execute_nonapproval_hook_actions(&state, &result.actions).await?;
+        }
+        if let Some(telemetry) = invocation.telemetry.as_ref() {
+            tracing::warn!(
+                "project hook {} failed for thread {}: {}",
+                telemetry.event,
+                approval.thread_id,
+                telemetry.detail.clone().unwrap_or_default()
+            );
+        }
+        Ok(())
+    }
+
+    async fn execute_nonapproval_hook_actions(
+        &self,
+        state: &PersistedState,
+        actions: &[HookAction],
+    ) -> Result<()> {
+        for action in actions {
+            match action {
+                HookAction::SendMessage {
+                    recipient_thread_id,
+                    text,
+                } => {
+                    send_thread_input(self, state, recipient_thread_id, text, None, None).await?;
+                }
+                HookAction::DeclineApproval { .. } => {
+                    anyhow::bail!("declineApproval is only valid during onApprovalRequested hooks");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn maybe_run_stopped_hook(&self, thread_id: &str, turn_id: &str) -> Result<bool> {
+        let state_value = self.state_document.read().await.clone();
+        let state = parse_state(&state_value);
+        let Some(project) = tracked_project_for_thread(&state_value, thread_id) else {
+            return Ok(false);
+        };
+        let project_root = project.project_root.clone().unwrap_or_default();
+        if project_root.trim().is_empty() {
+            return Ok(false);
+        }
+        let (project_id, project_name, _) = tracked_project_identity_for_thread(&state_value, thread_id)
+            .unwrap_or_else(|| (project_root.clone(), project_root.clone(), project_root.clone()));
+        let agent_name = sender_label_for_thread(&state_value, thread_id);
+        let role = tracked_role_for_thread(&state_value, thread_id).unwrap_or_else(|| "worker".to_string());
+        let payload = stopped_payload(
+            thread_id,
+            turn_id,
+            &project_id,
+            &project_name,
+            &project_root,
+            &agent_name,
+            &role,
+            tracked_cwd_for_thread_value(&state_value, thread_id).as_deref(),
+            project.orchestrator_thread_id.as_deref(),
+            &self.latest_assistant_text_for_thread(thread_id).await.unwrap_or_default(),
+        );
+        let invocation = maybe_run_project_hook(&project_root, HookEvent::Stopped, payload).await;
+        if let Some(result) = invocation.result.as_ref() {
+            self.execute_hook_actions(&state, thread_id, &result.actions, None)
+                .await?;
+        }
+        if let Some(telemetry) = invocation.telemetry.as_ref() {
+            tracing::warn!(
+                "project hook {} failed for thread {}: {}",
+                telemetry.event,
+                thread_id,
+                telemetry.detail.clone().unwrap_or_default()
+            );
+        }
+        Ok(invocation.configured)
+    }
+
+    async fn execute_hook_actions(
+        &self,
+        state: &PersistedState,
+        sender_thread_id: &str,
+        actions: &[HookAction],
+        current_approval: Option<&PendingApproval>,
+    ) -> Result<()> {
+        for action in actions {
+            match action {
+                HookAction::SendMessage {
+                    recipient_thread_id,
+                    text,
+                } => {
+                    self.execute_nonapproval_hook_actions(
+                        state,
+                        &[HookAction::SendMessage {
+                            recipient_thread_id: recipient_thread_id.clone(),
+                            text: text.clone(),
+                        }],
+                    )
+                    .await?;
+                }
+                HookAction::DeclineApproval { approval_id, message } => {
+                    let approval = if let Some(approval_id) = approval_id.as_deref() {
+                        self.pending_approvals
+                            .read()
+                            .await
+                            .get(approval_id)
+                            .cloned()
+                    } else {
+                        current_approval.cloned()
+                    }
+                    .ok_or_else(|| anyhow::anyhow!("hook declineApproval target not found"))?;
+                    let follow_up = message.as_deref().map(str::trim).filter(|value| !value.is_empty());
+                    if let Some(message) = follow_up {
+                        send_follow_up_message(self, &approval, message).await?;
+                    }
+                    self.send_server_response(approval.request_id.clone(), json!({ "decision": "decline" }))
+                        .await?;
+                    self.clear_pending_approval(&approval.id).await;
+                    self.maybe_run_approval_resolved_hook(
+                        &approval,
+                        "decline",
+                        follow_up,
+                        Some(sender_thread_id),
+                    )
+                    .await?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn resume_error_means_missing_rollout(error: &anyhow::Error) -> bool {
@@ -1032,6 +1281,24 @@ fn file_change_cache_key(thread_id: &str, item_id: &str) -> String {
 
 fn approval_id_for_request(instance_id: &str, request_id: &RequestId) -> String {
     format!("{instance_id}:{}", request_id_display(request_id))
+}
+
+fn approval_payload_value(approval: &PendingApproval) -> Value {
+    json!({
+        "id": approval.id,
+        "requestId": approval.request_id,
+        "threadId": approval.thread_id,
+        "turnId": approval.turn_id,
+        "itemId": approval.item_id,
+        "kind": approval.kind,
+        "title": approval.title,
+        "detail": approval.detail,
+        "approvalReason": approval.approval_reason,
+        "command": approval.command,
+        "commandCwd": approval.command_cwd,
+        "fileGrantRoot": approval.file_grant_root,
+        "fileChanges": approval.file_changes,
+    })
 }
 
 fn request_id_display(request_id: &RequestId) -> String {

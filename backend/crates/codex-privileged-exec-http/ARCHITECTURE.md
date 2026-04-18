@@ -37,8 +37,6 @@ remote shell:
 - Only a single plain command is eligible for privileged execution.
 - Multi-command shell sequences, redirections, substitutions, control flow, and
   other complex shell constructs are rejected from the privileged path.
-- Even when tree-sitter reduces a shell form to argv, an extra strict token
-  filter rejects shell-ish tokens like glob metacharacters and env assignments.
 
 ### Execution
 

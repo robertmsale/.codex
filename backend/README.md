@@ -27,7 +27,7 @@ remain external until you decide to migrate them.
 
 - `crates/codex-backend-core`: shared runtime/config helpers
 - `crates/codex-aux-http`: replacement for the current Deno aux server
-- `crates/codex-flutter-sim-http`: simulator broker/reservation service
+- `crates/codex-flutter-sim-http`: project-scoped Flutter simulator broker/reservation service
 - `crates/codex-flutter-http`: generic Flutter execution service
 - `crates/codex-supervisor`: supervisor config inventory and future management tooling
 - `python/codex-services`: backend-local Python service code for the current

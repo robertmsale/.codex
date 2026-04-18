@@ -890,6 +890,12 @@ pub async fn execute_bridge_command(
                     }),
                 )
                 .await?;
+            if let Some(approval) = approval {
+                runtime.clear_pending_approval(&approval.id).await;
+                runtime
+                    .maybe_run_approval_resolved_hook(&approval, &decision, message.as_deref(), None)
+                    .await?;
+            }
             Ok(success(json!({
                 "type":"approvalResult",
                 "payload": {
@@ -923,6 +929,12 @@ pub async fn execute_bridge_command(
                     }),
                 )
                 .await?;
+            if let Some(approval) = approval {
+                runtime.clear_pending_approval(&approval.id).await;
+                runtime
+                    .maybe_run_approval_resolved_hook(&approval, &decision, message.as_deref(), None)
+                    .await?;
+            }
             Ok(success(json!({
                 "type":"approvalResult",
                 "payload": {
@@ -2423,7 +2435,7 @@ fn normalized_agent_input_text(text: &str, sender_identity: Option<String>) -> S
     }
 }
 
-async fn send_thread_input(
+pub(crate) async fn send_thread_input(
     runtime: &BridgeRuntime,
     state: &PersistedState,
     thread_id: &str,
@@ -2737,7 +2749,7 @@ fn tracked_sandbox_policy_for_thread(state: &PersistedState, thread_id: &str) ->
     None
 }
 
-async fn send_follow_up_message(
+pub(crate) async fn send_follow_up_message(
     runtime: &BridgeRuntime,
     approval: &PendingApproval,
     message: &str,
@@ -4284,12 +4296,12 @@ pub async fn orchestrator_warm_handoff(
         resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?;
     let self_handoff_allowed = sender.thread_id == recipient.thread_id
         && sender.project_path == recipient.project_path
-        && matches!(sender.role.as_str(), "orchestrator" | "operator" | "hidden");
+        && matches!(sender.role.as_str(), "orchestrator" | "operator" | "hidden" | "designer");
     let project_orchestrator_handoff_allowed =
         sender.is_orchestrator && sender.project_path == recipient.project_path;
     if !self_handoff_allowed && !project_orchestrator_handoff_allowed {
         bail!(
-            "Only the configured orchestrator thread for project `{}` can warm handoff agents in that project, except self-handoff for orchestrator, operator, and hidden threads.",
+            "Only the configured orchestrator thread for project `{}` can warm handoff agents in that project, except self-handoff for orchestrator, operator, hidden, and designer threads.",
             recipient.project_path
         );
     }
@@ -4739,6 +4751,10 @@ pub async fn orchestrator_approval_decision(
     runtime
         .send_server_response(approval.request_id.clone(), json!({ "decision": decision }))
         .await?;
+    runtime.clear_pending_approval(&approval.id).await;
+    runtime
+        .maybe_run_approval_resolved_hook(&approval, decision, follow_up, Some(sender_thread_id))
+        .await?;
     Ok(json!({
         "approvalId": approval_id,
         "decision": decision,
@@ -4779,8 +4795,9 @@ mod tests {
         upstream::UpstreamRuntimeEvent,
     };
     use codex_app_server_adapter::app_server_protocol::{
-        JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, RequestId, ServerNotification, Turn,
-        TurnStartedNotification, TurnStatus,
+        CommandExecutionRequestApprovalParams, JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse,
+        RequestId, ServerNotification, ServerRequest, Turn, TurnCompletedNotification, TurnStartedNotification,
+        TurnStatus,
     };
     use codex_backend_core::HttpArgs;
     use futures_util::{SinkExt, StreamExt};
@@ -5458,6 +5475,7 @@ mod tests {
             prompt_append: vec!["Use the prepared worktree.".to_string()],
             cleanup: Some(json!({"onArchive": true})),
             metadata: Some(json!({"simulator": "ios-1"})),
+            actions: Vec::new(),
             error: None,
         };
 
@@ -6246,6 +6264,146 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn designer_self_handoff_is_allowed() {
+        let temp = TempDir::new().expect("tempdir");
+        let (thread_tx, thread_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            let mut thread_tx = Some(thread_tx);
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    let result = match request.method.as_str() {
+                        "thread/start" => {
+                            thread_tx
+                                .take()
+                                .expect("thread sender")
+                                .send(request.clone())
+                                .expect("record thread start request");
+                            json!({"thread": {"id": "thread-designer-2", "title": "Ezra Designer Refresh"}})
+                        }
+                        "thread/name/set" => json!({}),
+                        "thread/archive" => json!({}),
+                        _ => json!({}),
+                    };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result,
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "thread/archive" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "design": {
+                        "id": "project-design",
+                        "name": "Design",
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().join(".worktrees/designer").display().to_string(),
+                        "orchestratorThreadId": "thread-orchestrator",
+                        "agents": {
+                            "thread-orchestrator": {
+                                "displayName": "Design Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().join(".worktrees").display().to_string()
+                            },
+                            "thread-designer-1": {
+                                "displayName": "Ezra Designer",
+                                "role": "designer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().join(".worktrees/designer").display().to_string(),
+                                "approvalPolicy": "never",
+                                "sandboxMode": "danger-full-access",
+                                "networkAccess": true,
+                                "modelID": "gpt-5.4",
+                                "developerInstructions": "designer guidance"
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let response = orchestrator_warm_handoff(
+            &runtime,
+            "thread-designer-1",
+            Some("thread-designer-1"),
+            None,
+            Some(&temp.path().display().to_string()),
+            "Resume the Ezra redesign from the product shelf screen.",
+        )
+        .await
+        .expect("designer self handoff");
+
+        assert_eq!(response["previousThreadId"], "thread-designer-1");
+        assert_eq!(response["replacementThreadId"], "thread-designer-2");
+
+        let thread_request = thread_rx.await.expect("captured thread start request");
+        assert_eq!(thread_request.method, "thread/start");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let project = state.projects.values().next().expect("project state");
+        assert!(!project.agents.contains_key("thread-designer-1"));
+        assert!(project.agents.contains_key("thread-designer-2"));
+        assert_eq!(
+            project
+                .agents
+                .get("thread-designer-2")
+                .and_then(|agent| agent.role.as_deref()),
+            Some("designer")
+        );
+
+        transport.abort();
+    }
+
+    #[tokio::test]
     async fn spawn_agent_hook_failure_falls_back_and_emits_telemetry() {
         let temp = TempDir::new().expect("tempdir");
         write_project_hook(
@@ -6941,13 +7099,32 @@ mod tests {
                 .await
                 .expect("send approval request");
 
-                let response = ws.next().await.expect("response").expect("response frame");
-                let response_text = match response {
-                    Message::Text(text) => text,
-                    other => panic!("unexpected response frame: {other:?}"),
-                };
-                let response_message = serde_json::from_str::<JSONRPCMessage>(&response_text).expect("jsonrpc response");
-                response_tx.send(response_message).expect("record response");
+                loop {
+                    let response = ws.next().await.expect("response").expect("response frame");
+                    let response_text = match response {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected response frame: {other:?}"),
+                    };
+                    let response_message = serde_json::from_str::<JSONRPCMessage>(&response_text).expect("jsonrpc message");
+                    match response_message {
+                        JSONRPCMessage::Request(request) => {
+                            ws.send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                                    id: request.id,
+                                    result: json!({}),
+                                }))
+                                .expect("request response")
+                                .into(),
+                            ))
+                            .await
+                            .expect("send request response");
+                        }
+                        other => {
+                            response_tx.send(other).expect("record response");
+                            break;
+                        }
+                    }
+                }
 
                 ws.send(Message::Text(
                     serde_json::to_string(&JSONRPCMessage::Notification(JSONRPCNotification {
@@ -6971,7 +7148,7 @@ mod tests {
             .expect("runtime");
         let transport = runtime.spawn_transport();
 
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
         let snapshot = make_app_state_snapshot(&runtime, true).await.expect("snapshot");
         assert_eq!(snapshot.pending_approvals.len(), 1);
         assert_eq!(snapshot.pending_approvals[0].request_id, RequestId::Integer(99));
@@ -6998,7 +7175,7 @@ mod tests {
             other => panic!("unexpected message: {other:?}"),
         }
 
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
         let snapshot = make_app_state_snapshot(&runtime, true).await.expect("snapshot");
         assert!(snapshot.pending_approvals.is_empty());
 
@@ -7024,6 +7201,338 @@ mod tests {
         assert!(event["data"]["state"].is_object());
         assert!(event["data"]["pendingApprovals"].is_array());
         assert!(event["data"]["agents"].is_array());
+    }
+
+    #[tokio::test]
+    async fn orchestrator_approval_decision_clears_pending_approval_without_resolved_notification() {
+        let temp = TempDir::new().expect("tempdir");
+        let (response_tx, response_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request = match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                    JSONRPCMessage::Request(request) => request,
+                    other => panic!("unexpected init message: {other:?}"),
+                };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let response = ws.next().await.expect("response").expect("response frame");
+                    let response_text = match response {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected response frame: {other:?}"),
+                    };
+                    let response_message = serde_json::from_str::<JSONRPCMessage>(&response_text).expect("jsonrpc message");
+                    match response_message {
+                        JSONRPCMessage::Request(request) => {
+                            ws.send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                                    id: request.id,
+                                    result: json!({}),
+                                }))
+                                .expect("request response")
+                                .into(),
+                            ))
+                            .await
+                            .expect("send request response");
+                        }
+                        other => {
+                            response_tx.send(other).expect("record response");
+                            break;
+                        }
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        runtime
+            .persist_state_document(serde_json::to_value(sample_state()).expect("state json"))
+            .await
+            .expect("persist state");
+        runtime
+            .insert_pending_approval_for_test(crate::models::PendingApproval {
+                id: "approval-1".to_string(),
+                instance_id: runtime.settings().project_path.display().to_string(),
+                request_id: RequestId::Integer(99),
+                thread_id: "worker-a".to_string(),
+                turn_id: "turn-approval-1".to_string(),
+                item_id: "item-1".to_string(),
+                kind: crate::models::PendingApprovalKind::CommandExecution,
+                title: "Command approval".to_string(),
+                detail: Some("needs approval".to_string()),
+                approval_reason: Some("needs approval".to_string()),
+                tool_name: None,
+                tool_arguments: None,
+                tool_questions: Vec::new(),
+                auth_refresh_reason: None,
+                command: Some("make build".to_string()),
+                command_cwd: Some("/alpha".to_string()),
+                file_grant_root: None,
+                file_changes: Vec::new(),
+            })
+            .await;
+        let transport = runtime.spawn_transport();
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let snapshot = make_app_state_snapshot(&runtime, true).await.expect("snapshot");
+        assert_eq!(snapshot.pending_approvals.len(), 1);
+        let approval_id = snapshot.pending_approvals[0].id.clone();
+
+        let outcome = orchestrator_approval_decision(
+            &runtime,
+            "orch-a",
+            &approval_id,
+            "decline",
+            Some("Denied"),
+        )
+        .await
+        .expect("approval decision");
+        assert_eq!(outcome["decision"], "decline");
+        assert_eq!(outcome["resolved"], true);
+
+        let response = response_rx.await.expect("response");
+        match response {
+            JSONRPCMessage::Response(response) => {
+                assert_eq!(response.id, RequestId::Integer(99));
+                assert_eq!(response.result["decision"], "decline");
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let snapshot = make_app_state_snapshot(&runtime, true).await.expect("snapshot");
+        assert!(snapshot.pending_approvals.is_empty());
+
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn approval_requested_hook_can_auto_decline_request() {
+        let temp = TempDir::new().expect("tempdir");
+        write_project_hook(
+            &temp,
+            "onApprovalRequested",
+            "on-approval-requested",
+            "#!/bin/bash\ncat >/dev/null\necho '{\"ok\":true,\"actions\":[{\"type\":\"declineApproval\",\"message\":\"Use privileged exec plainly.\"}]}'\n",
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request = match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                    JSONRPCMessage::Request(request) => request,
+                    other => panic!("unexpected init message: {other:?}"),
+                };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let frame = ws.next().await.expect("message").expect("message frame");
+                    let text = match frame {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected frame: {other:?}"),
+                    };
+                    let message = serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc message");
+                    match message {
+                        JSONRPCMessage::Request(request) => {
+                            ws.send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                                    id: request.id,
+                                    result: json!({}),
+                                }))
+                                .expect("request response")
+                                .into(),
+                            ))
+                            .await
+                            .expect("send request response");
+                        }
+                        JSONRPCMessage::Response(response) => {
+                            response_tx.send(response).expect("record response");
+                            break;
+                        }
+                        other => panic!("unexpected message: {other:?}"),
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        seed_agent_state(&runtime).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        runtime
+            .upstream_sender()
+            .send(UpstreamRuntimeEvent::ServerRequest(
+                ServerRequest::CommandExecutionRequestApproval {
+                    request_id: RequestId::Integer(99),
+                    params: CommandExecutionRequestApprovalParams {
+                        thread_id: "recipient".to_string(),
+                        turn_id: "turn-approval-1".to_string(),
+                        item_id: "item-1".to_string(),
+                        approval_id: None,
+                        reason: Some("needs approval".to_string()),
+                        network_approval_context: None,
+                        command: Some("make build".to_string()),
+                        cwd: Some(PathBuf::from("/tmp/project")),
+                        command_actions: None,
+                        additional_permissions: None,
+                        skill_metadata: None,
+                        proposed_execpolicy_amendment: None,
+                        proposed_network_policy_amendments: None,
+                        available_decisions: None,
+                    },
+                },
+            ))
+            .await
+            .expect("send request");
+
+        let response = response_rx.await.expect("response");
+        assert_eq!(response.id, RequestId::Integer(99));
+        assert_eq!(response.result["decision"], "decline");
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let snapshot = make_app_state_snapshot(&runtime, true).await.expect("snapshot");
+        assert!(snapshot.pending_approvals.is_empty());
+
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn stopped_hook_can_send_follow_up_message() {
+        let temp = TempDir::new().expect("tempdir");
+        write_project_hook(
+            &temp,
+            "onStopped",
+            "on-stopped",
+            "#!/bin/bash\ncat >/dev/null\necho '{\"ok\":true,\"actions\":[{\"type\":\"sendMessage\",\"recipientThreadId\":\"sender\",\"text\":\"hook-routed stop\"}]}'\n",
+        );
+        let (request_tx, request_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request = match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                    JSONRPCMessage::Request(request) => request,
+                    other => panic!("unexpected init message: {other:?}"),
+                };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let frame = ws.next().await.expect("message").expect("message frame");
+                    let text = match frame {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected frame: {other:?}"),
+                    };
+                    let message = serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc message");
+                    match message {
+                        JSONRPCMessage::Request(request) => {
+                            if request.method == "turn/start" {
+                                request_tx.send(request.clone()).expect("record request");
+                                ws.send(Message::Text(
+                                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                                        id: request.id,
+                                        result: json!({"turn":{"id":"turn-hook","items":[],"status":"inProgress","error":null}}),
+                                    }))
+                                    .expect("turn start response")
+                                    .into(),
+                                ))
+                                .await
+                                .expect("send turn start response");
+                                break;
+                            }
+                            ws.send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                                    id: request.id,
+                                    result: json!({}),
+                                }))
+                                .expect("request response")
+                                .into(),
+                            ))
+                            .await
+                            .expect("send request response");
+                        }
+                        other => panic!("unexpected message: {other:?}"),
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        seed_agent_state(&runtime).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        runtime
+            .upstream_sender()
+            .send(UpstreamRuntimeEvent::Notification(ServerNotification::TurnCompleted(
+                TurnCompletedNotification {
+                    thread_id: "recipient".to_string(),
+                    turn: Turn {
+                        id: "turn-stopped-1".to_string(),
+                        items: Vec::new(),
+                        status: TurnStatus::Completed,
+                        error: None,
+                    },
+                },
+            )))
+            .await
+            .expect("send notification");
+
+        let request = request_rx.await.expect("request");
+        assert_eq!(request.method, "turn/start");
+        let params = request.params.expect("params");
+        assert_eq!(params["threadId"], "sender");
+        assert_eq!(params["input"][0]["text"], "hook-routed stop");
+
+        transport.abort();
     }
 
     #[tokio::test]

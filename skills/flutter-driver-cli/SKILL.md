@@ -21,6 +21,7 @@ What they do:
   - lifecycle and device-slot management
 - `flutter-drive`
   - UI inspection and interaction against the managed runtime
+  - runs locally through the sanctioned wrapper and direct `idb` tooling after the device is reserved
 - `flutter`
   - host-side Flutter commands routed through the sanctioned wrapper
 
@@ -30,6 +31,8 @@ What they do:
 - Do not launch the app manually.
 - Do not issue parallel piloting commands against the same device slot.
 - Always wait for one piloting command to finish before sending the next.
+- Run commands plainly and sequentially.
+- Do not combine `flutter-drive` commands with shell operators or wrappers.
 - Use `--json` only when you need raw diagnostics instead of the compact human-readable output.
 
 ## `flutter-sim`
@@ -75,9 +78,10 @@ Common commands:
 - `tapPoint`
 - `longPressOn`
 - `inputText`
+- `clearAndInputText`
+- `clearField`
 - `swipe`
 - `takeScreenshot`
-- `clearField`
 
 Typical sequence:
 
