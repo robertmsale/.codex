@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -37,23 +38,33 @@ class RobdexWorkbench extends StatefulWidget {
   State<RobdexWorkbench> createState() => _RobdexWorkbenchState();
 }
 
-class _RobdexWorkbenchState extends State<RobdexWorkbench> {
+class _RobdexWorkbenchState extends State<RobdexWorkbench>
+    with SingleTickerProviderStateMixin {
   static const _hostPreferenceKey = 'bridge_host';
   static const _portPreferenceKey = 'bridge_port';
 
   late final WorkbenchController _controller;
   late final AppLifecycleListener _listener;
+  late final AnimationController _spaceController;
   StreamSubscription<RustSignalPack<HookToastSignal>>? _hookToastSubscription;
   bool _didRequestConnect = false;
   late final TextEditingController _hostController;
   late final TextEditingController _portController;
+  late final FocusNode _hostFocusNode;
+  late final FocusNode _portFocusNode;
 
   @override
   void initState() {
     super.initState();
     _controller = WorkbenchController();
+    _spaceController = AnimationController(
+      vsync: this,
+      duration: const Duration(days: 1),
+    )..repeat();
     _hostController = TextEditingController(text: '127.0.0.1');
     _portController = TextEditingController(text: '42080');
+    _hostFocusNode = FocusNode();
+    _portFocusNode = FocusNode();
     _restoreBridgeSettings();
     _hookToastSubscription = HookToastSignal.rustSignalStream.listen((pack) {
       final signal = pack.message;
@@ -91,7 +102,10 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
   void dispose() {
     _persistBridgeSettings();
     _listener.dispose();
+    _spaceController.dispose();
     _hookToastSubscription?.cancel();
+    _hostFocusNode.dispose();
+    _portFocusNode.dispose();
     _hostController.dispose();
     _portController.dispose();
     _controller.dispose();
@@ -198,107 +212,22 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
     return AnimatedBuilder(
       animation: _controller,
       builder: (context, _) {
-        if (_controller.error != null && _controller.view == null) {
-          return Scaffold(
-            body: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 420),
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Connection Failed',
-                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        '${_controller.error}',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          TextButton(
-                            onPressed: _returnToLogin,
-                            child: const Text('Back'),
-                          ),
-                          const SizedBox(width: 8),
-                          FilledButton(
-                            onPressed: _attemptConnect,
-                            child: const Text('Retry'),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          );
-        }
-        if (!_didRequestConnect) {
-          return Scaffold(
-            body: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 420),
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Robdex',
-                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        'Connect to the bridge when you are ready. No thread state is loaded before login.',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: _hostController,
-                        decoration: const InputDecoration(labelText: 'Host'),
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: _portController,
-                        decoration: const InputDecoration(labelText: 'Port'),
-                        keyboardType: TextInputType.number,
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              'Bridge endpoint',
-                              style: Theme.of(context).textTheme.labelSmall,
-                            ),
-                          ),
-                          FilledButton(
-                            onPressed: _attemptConnect,
-                            child: const Text('Connect'),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          );
-        }
         if (_controller.view == null) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
+          final stage = _controller.error != null
+              ? _ConnectionStage.error
+              : _didRequestConnect
+                  ? _ConnectionStage.connecting
+                  : _ConnectionStage.idle;
+          return _ConnectionScreen(
+            animation: _spaceController,
+            stage: stage,
+            errorText: _controller.error?.toString(),
+            hostController: _hostController,
+            portController: _portController,
+            hostFocusNode: _hostFocusNode,
+            portFocusNode: _portFocusNode,
+            onConnect: _attemptConnect,
+            onReset: _returnToLogin,
           );
         }
         return RobdexShellScreen(
@@ -1214,6 +1143,650 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench> {
     );
     controller.dispose();
     return result;
+  }
+}
+
+enum _ConnectionStage { idle, connecting, error }
+
+class _ConnectionScreen extends StatelessWidget {
+  const _ConnectionScreen({
+    required this.animation,
+    required this.stage,
+    required this.errorText,
+    required this.hostController,
+    required this.portController,
+    required this.hostFocusNode,
+    required this.portFocusNode,
+    required this.onConnect,
+    required this.onReset,
+  });
+
+  final AnimationController animation;
+  final _ConnectionStage stage;
+  final String? errorText;
+  final TextEditingController hostController;
+  final TextEditingController portController;
+  final FocusNode hostFocusNode;
+  final FocusNode portFocusNode;
+  final VoidCallback onConnect;
+  final VoidCallback onReset;
+
+  bool get _isBusy => stage == _ConnectionStage.connecting;
+  bool get _isError => stage == _ConnectionStage.error;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final reduceMotion = MediaQuery.maybeOf(context)?.disableAnimations ??
+        PlatformDispatcher.instance.accessibilityFeatures.disableAnimations;
+    final panelBorder = _isError
+        ? const Color(0xFFB86262)
+        : _isBusy
+            ? scheme.primary
+            : const Color(0xFF5CA8FF);
+    final panelGlow = _isError
+        ? const Color(0xFFB86262)
+        : _isBusy
+            ? scheme.secondary
+            : const Color(0xFF5B76FF);
+
+    return Scaffold(
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          RepaintBoundary(
+            child: CustomPaint(
+              painter: _StarfieldPainter(
+                animation: animation,
+                warp: _isBusy ? 1 : 0,
+                reduceMotion: reduceMotion,
+              ),
+            ),
+          ),
+          IgnorePointer(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: RadialGradient(
+                  center: const Alignment(0, -0.08),
+                  radius: 0.72,
+                  colors: [
+                    panelGlow.withValues(alpha: _isBusy ? 0.26 : 0.18),
+                    const Color(0xFF081018).withValues(alpha: 0.0),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 480),
+                  child: TweenAnimationBuilder<double>(
+                    duration: Duration(milliseconds: reduceMotion ? 0 : 650),
+                    curve: Curves.easeOutCubic,
+                    tween: Tween(begin: 0.92, end: 1),
+                    builder: (context, scale, child) {
+                      return Transform.scale(
+                        scale: scale,
+                        child: AnimatedOpacity(
+                          duration:
+                              Duration(milliseconds: reduceMotion ? 0 : 500),
+                          curve: Curves.easeOut,
+                          opacity: 1,
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: AnimatedContainer(
+                      duration:
+                          Duration(milliseconds: reduceMotion ? 0 : 320),
+                      curve: Curves.easeOutCubic,
+                      padding: const EdgeInsets.fromLTRB(22, 22, 22, 20),
+                      decoration: BoxDecoration(
+                        color: const Color(0xCC081019),
+                        borderRadius: BorderRadius.circular(28),
+                        border: Border.all(
+                          color: panelBorder.withValues(
+                            alpha: _isBusy ? 0.9 : 0.64,
+                          ),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: panelGlow.withValues(
+                              alpha: _isBusy ? 0.28 : 0.16,
+                            ),
+                            blurRadius: _isBusy ? 36 : 26,
+                            spreadRadius: _isBusy ? 2 : 0,
+                          ),
+                          const BoxShadow(
+                            color: Color(0x99000000),
+                            blurRadius: 36,
+                            offset: Offset(0, 20),
+                          ),
+                        ],
+                        gradient: const LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Color(0xF0142030),
+                            Color(0xEE09111A),
+                          ],
+                        ),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Row(
+                            children: [
+                              _CoreBadge(
+                                animation: animation,
+                                isBusy: _isBusy,
+                                isError: _isError,
+                                reduceMotion: reduceMotion,
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Robdex',
+                                      style: theme.textTheme.headlineMedium
+                                          ?.copyWith(
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: 0.6,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '${hostController.text.trim().isEmpty ? '127.0.0.1' : hostController.text.trim()}:${portController.text.trim().isEmpty ? '42080' : portController.text.trim()}',
+                                      style: theme.textTheme.labelMedium
+                                          ?.copyWith(
+                                        color: scheme.secondary
+                                            .withValues(alpha: 0.92),
+                                        letterSpacing: 0.9,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (_isError)
+                                IconButton(
+                                  onPressed: onReset,
+                                  tooltip: 'Reset',
+                                  icon: const Icon(Icons.arrow_back_rounded),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 22),
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              final horizontal = constraints.maxWidth >= 420;
+                              if (!horizontal) {
+                                return Column(
+                                  children: [
+                                    TextField(
+                                      controller: hostController,
+                                      focusNode: hostFocusNode,
+                                      enabled: !_isBusy,
+                                      textInputAction: TextInputAction.next,
+                                      decoration:
+                                          const InputDecoration(labelText: 'Host'),
+                                      onSubmitted: (_) =>
+                                          portFocusNode.requestFocus(),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    TextField(
+                                      controller: portController,
+                                      focusNode: portFocusNode,
+                                      enabled: !_isBusy,
+                                      keyboardType: TextInputType.number,
+                                      textInputAction: TextInputAction.done,
+                                      decoration:
+                                          const InputDecoration(labelText: 'Port'),
+                                      onSubmitted: (_) => onConnect(),
+                                    ),
+                                  ],
+                                );
+                              }
+                              return Row(
+                                children: [
+                                  Expanded(
+                                    flex: 3,
+                                    child: TextField(
+                                      controller: hostController,
+                                      focusNode: hostFocusNode,
+                                      enabled: !_isBusy,
+                                      textInputAction: TextInputAction.next,
+                                      decoration:
+                                          const InputDecoration(labelText: 'Host'),
+                                      onSubmitted: (_) =>
+                                          portFocusNode.requestFocus(),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: TextField(
+                                      controller: portController,
+                                      focusNode: portFocusNode,
+                                      enabled: !_isBusy,
+                                      keyboardType: TextInputType.number,
+                                      textInputAction: TextInputAction.done,
+                                      decoration:
+                                          const InputDecoration(labelText: 'Port'),
+                                      onSubmitted: (_) => onConnect(),
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                          const SizedBox(height: 14),
+                          AnimatedSwitcher(
+                            duration:
+                                Duration(milliseconds: reduceMotion ? 0 : 220),
+                            child: _isError && errorText != null
+                                ? Padding(
+                                    key: const ValueKey('error'),
+                                    padding: const EdgeInsets.only(bottom: 12),
+                                    child: Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Padding(
+                                          padding: EdgeInsets.only(top: 1),
+                                          child: Icon(
+                                            Icons.priority_high_rounded,
+                                            size: 16,
+                                            color: Color(0xFFFF8B7A),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            errorText!,
+                                            style: theme.textTheme.bodySmall
+                                                ?.copyWith(
+                                              color: const Color(0xFFFFB0A6),
+                                              height: 1.35,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  )
+                                : const SizedBox.shrink(key: ValueKey('empty')),
+                          ),
+                          SizedBox(
+                            height: 44,
+                            child: FilledButton(
+                              onPressed: _isBusy ? null : onConnect,
+                              style: FilledButton.styleFrom(
+                                backgroundColor: _isError
+                                    ? const Color(0xFFB86262)
+                                    : scheme.primary,
+                                foregroundColor: Colors.black,
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  AnimatedSwitcher(
+                                    duration: Duration(
+                                      milliseconds: reduceMotion ? 0 : 180,
+                                    ),
+                                    child: _isBusy
+                                        ? SizedBox(
+                                            key: const ValueKey('progress'),
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2.1,
+                                              valueColor:
+                                                  const AlwaysStoppedAnimation(
+                                                Colors.black,
+                                              ),
+                                            ),
+                                          )
+                                        : Icon(
+                                            key: ValueKey(
+                                              _isError ? 'retry' : 'connect',
+                                            ),
+                                            _isError
+                                                ? Icons.refresh_rounded
+                                                : Icons.north_east_rounded,
+                                            size: 18,
+                                          ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Text(_isError ? 'Retry' : 'Connect'),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CoreBadge extends StatelessWidget {
+  const _CoreBadge({
+    required this.animation,
+    required this.isBusy,
+    required this.isError,
+    required this.reduceMotion,
+  });
+
+  final AnimationController animation;
+  final bool isBusy;
+  final bool isError;
+  final bool reduceMotion;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isError
+        ? const Color(0xFFFF8B7A)
+        : isBusy
+            ? Theme.of(context).colorScheme.primary
+            : Theme.of(context).colorScheme.secondary;
+
+    return SizedBox(
+      width: 52,
+      height: 52,
+      child: AnimatedBuilder(
+        animation: animation,
+        builder: (context, child) {
+          final turns = reduceMotion
+              ? 0.0
+              : (isBusy ? animation.value * 0.16 : animation.value * 0.05);
+          return DecoratedBox(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: color.withValues(alpha: isBusy ? 0.36 : 0.2),
+                  blurRadius: isBusy ? 22 : 14,
+                ),
+              ],
+              gradient: RadialGradient(
+                colors: [
+                  color.withValues(alpha: 0.34),
+                  const Color(0xFF0B1725),
+                ],
+              ),
+              border: Border.all(
+                color: color.withValues(alpha: 0.76),
+              ),
+            ),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Transform.rotate(
+                  angle: turns * math.pi * 2,
+                  child: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: color.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  ),
+                ),
+                Icon(
+                  isError ? Icons.priority_high_rounded : Icons.auto_awesome,
+                  size: 20,
+                  color: color,
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _StarfieldPainter extends CustomPainter {
+  const _StarfieldPainter({
+    required this.animation,
+    required this.warp,
+    required this.reduceMotion,
+  }) : super(repaint: animation);
+
+  final AnimationController animation;
+  final double warp;
+  final bool reduceMotion;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final elapsedSeconds = reduceMotion
+        ? 0.0
+        : (animation.lastElapsedDuration?.inMilliseconds ?? 0) / 1000.0;
+    final rect = Offset.zero & size;
+    final background = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          Color(0xFF04070B),
+          Color(0xFF08111B),
+          Color(0xFF03060A),
+        ],
+      ).createShader(rect);
+    canvas.drawRect(rect, background);
+
+    final center = Offset(size.width / 2, size.height * 0.45);
+    _paintNebula(canvas, size, elapsedSeconds);
+
+    final glowPaint = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          const Color(0xFF305C9B).withValues(alpha: 0.24 + (0.08 * warp)),
+          const Color(0xFF0A1320).withValues(alpha: 0.08),
+          const Color(0xFF000000).withValues(alpha: 0),
+        ],
+      ).createShader(
+        Rect.fromCircle(
+          center: center,
+          radius: math.max(size.width, size.height) * 0.52,
+        ),
+      );
+    canvas.drawCircle(
+      center,
+      math.max(size.width, size.height) * 0.52,
+      glowPaint,
+    );
+
+    _paintLayer(
+      canvas,
+      size,
+      elapsedSeconds: elapsedSeconds,
+      count: 70,
+      cycleSeconds: 8.5 - (2.0 * warp),
+      radiusScale: 0.55,
+      color: const Color(0x55FFFFFF),
+      trailScale: 10 + (22 * warp),
+    );
+    _paintLayer(
+      canvas,
+      size,
+      elapsedSeconds: elapsedSeconds,
+      count: 44,
+      cycleSeconds: 6.5 - (1.6 * warp),
+      radiusScale: 0.82,
+      color: const Color(0x88A7D8FF),
+      trailScale: 18 + (42 * warp),
+    );
+    _paintLayer(
+      canvas,
+      size,
+      elapsedSeconds: elapsedSeconds,
+      count: 22,
+      cycleSeconds: 5.2 - (1.2 * warp),
+      radiusScale: 1.1,
+      color: const Color(0xCCFFFFFF),
+      trailScale: 32 + (66 * warp),
+    );
+  }
+
+  void _paintNebula(Canvas canvas, Size size, double elapsedSeconds) {
+    final drift = reduceMotion ? 0.0 : elapsedSeconds;
+    _paintNebulaCloud(
+      canvas,
+      size,
+      center: Offset(
+        size.width * (0.16 + (0.0025 * math.sin(drift * 0.01))),
+        size.height * (0.2 + (0.002 * math.cos(drift * 0.008))),
+      ),
+      radius: math.max(size.width, size.height) * 0.48,
+      innerColor: const Color(0xFF5B49E6).withValues(alpha: 0.08),
+      outerColor: const Color(0xFF0A1020).withValues(alpha: 0.0),
+    );
+    _paintNebulaCloud(
+      canvas,
+      size,
+      center: Offset(
+        size.width * (0.84 + (0.002 * math.cos(drift * 0.009))),
+        size.height * (0.26 + (0.002 * math.sin(drift * 0.007))),
+      ),
+      radius: math.max(size.width, size.height) * 0.42,
+      innerColor: const Color(0xFF2BB7FF).withValues(alpha: 0.065),
+      outerColor: const Color(0xFF09111A).withValues(alpha: 0.0),
+    );
+    _paintNebulaCloud(
+      canvas,
+      size,
+      center: Offset(
+        size.width * (0.56 + (0.0015 * math.sin(drift * 0.006))),
+        size.height * (0.78 + (0.002 * math.cos(drift * 0.005))),
+      ),
+      radius: math.max(size.width, size.height) * 0.5,
+      innerColor: const Color(0xFFAA58FF).withValues(alpha: 0.045),
+      outerColor: const Color(0xFF070B12).withValues(alpha: 0.0),
+    );
+  }
+
+  void _paintNebulaCloud(
+    Canvas canvas,
+    Size size, {
+    required Offset center,
+    required double radius,
+    required Color innerColor,
+    required Color outerColor,
+  }) {
+    final bounds = Rect.fromCircle(center: center, radius: radius);
+    final paint = Paint()
+      ..shader = RadialGradient(
+        colors: [innerColor, outerColor],
+        stops: const [0.04, 1],
+      ).createShader(bounds);
+    canvas.drawCircle(center, radius, paint);
+
+    final lobeRect = Rect.fromCenter(
+      center: center.translate(radius * 0.16, -radius * 0.1),
+      width: radius * 1.35,
+      height: radius * 0.92,
+    );
+    final noisePaint = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          innerColor.withValues(alpha: innerColor.a * 0.78),
+          outerColor,
+        ],
+        stops: const [0.08, 1],
+      ).createShader(lobeRect);
+    canvas.drawOval(lobeRect, noisePaint);
+
+    final streakRect = Rect.fromCenter(
+      center: center.translate(-radius * 0.1, radius * 0.06),
+      width: radius * 1.7,
+      height: radius * 0.28,
+    );
+    final streakPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.centerLeft,
+        end: Alignment.centerRight,
+        colors: [
+          innerColor.withValues(alpha: 0),
+          innerColor.withValues(alpha: innerColor.a * 0.36),
+          innerColor.withValues(alpha: 0),
+        ],
+      ).createShader(streakRect);
+    canvas.drawOval(streakRect, streakPaint);
+  }
+
+  void _paintLayer(
+    Canvas canvas,
+    Size size, {
+    required double elapsedSeconds,
+    required int count,
+    required double cycleSeconds,
+    required double radiusScale,
+    required Color color,
+    required double trailScale,
+  }) {
+    final center = Offset(size.width / 2, size.height * 0.45);
+    final maxRadius =
+        math.sqrt(size.width * size.width + size.height * size.height) *
+            radiusScale;
+    final paint = Paint()
+      ..strokeCap = StrokeCap.round
+      ..color = color;
+
+    for (var i = 0; i < count; i++) {
+      final seed = i + (radiusScale * 1000).round();
+      final angle = _hash(seed * 37) * math.pi * 2;
+      final spread = 0.58 + (_hash(seed * 17) * 0.72);
+      final phase = _hash(seed * 53);
+      final lifeProgress = (phase + (elapsedSeconds / cycleSeconds)) % 1.0;
+      final eased = math.pow(lifeProgress, 2.35).toDouble();
+      final radius = eased * maxRadius;
+      final vector = Offset(
+        math.cos(angle) * spread,
+        math.sin(angle),
+      );
+      final normalized = vector / vector.distance;
+      final point = center + (normalized * radius);
+
+      if (!(-80 <= point.dx &&
+          point.dx <= size.width + 80 &&
+          -80 <= point.dy &&
+          point.dy <= size.height + 80)) {
+        continue;
+      }
+
+      final tail = normalized * (trailScale * lifeProgress);
+      paint
+        ..strokeWidth = 0.6 + (lifeProgress * 2.1)
+        ..color = color.withValues(alpha: 0.14 + (lifeProgress * 0.86));
+      canvas.drawLine(point - tail, point, paint);
+    }
+  }
+
+  double _hash(int value) {
+    final raw = math.sin(value * 12.9898) * 43758.5453;
+    return raw - raw.floorToDouble();
+  }
+
+  @override
+  bool shouldRepaint(covariant _StarfieldPainter oldDelegate) {
+    return oldDelegate.warp != warp ||
+        oldDelegate.reduceMotion != reduceMotion ||
+        oldDelegate.animation != animation;
   }
 }
 
