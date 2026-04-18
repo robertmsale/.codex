@@ -1172,7 +1172,56 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
 
 enum _ConnectionStage { idle, connecting, error }
 
-class _ConnectionScreen extends StatelessWidget {
+class _PeripheralDebugValues {
+  const _PeripheralDebugValues({
+    required this.start,
+    required this.end,
+    required this.blur,
+    required this.chroma,
+    required this.warp,
+  });
+
+  static const defaults = _PeripheralDebugValues(
+    start: 0.28,
+    end: 1.43,
+    blur: 2.09,
+    chroma: 1.73,
+    warp: 0.011,
+  );
+
+  final double start;
+  final double end;
+  final double blur;
+  final double chroma;
+  final double warp;
+
+  _PeripheralDebugValues copyWith({
+    double? start,
+    double? end,
+    double? blur,
+    double? chroma,
+    double? warp,
+  }) {
+    return _PeripheralDebugValues(
+      start: start ?? this.start,
+      end: end ?? this.end,
+      blur: blur ?? this.blur,
+      chroma: chroma ?? this.chroma,
+      warp: warp ?? this.warp,
+    );
+  }
+
+  String toClipboardString() {
+    return '''
+start: ${start.toStringAsFixed(2)}
+end: ${end.toStringAsFixed(2)}
+blur: ${blur.toStringAsFixed(2)}
+chroma: ${chroma.toStringAsFixed(2)}
+warp: ${warp.toStringAsFixed(3)}''';
+  }
+}
+
+class _ConnectionScreen extends StatefulWidget {
   const _ConnectionScreen({
     required this.animation,
     required this.nebulaProgramFuture,
@@ -1199,8 +1248,26 @@ class _ConnectionScreen extends StatelessWidget {
   final VoidCallback onConnect;
   final VoidCallback onReset;
 
-  bool get _isBusy => stage == _ConnectionStage.connecting;
-  bool get _isError => stage == _ConnectionStage.error;
+  @override
+  State<_ConnectionScreen> createState() => _ConnectionScreenState();
+}
+
+class _ConnectionScreenState extends State<_ConnectionScreen> {
+  bool _showDebugControls = false;
+  _PeripheralDebugValues _debugValues = _PeripheralDebugValues.defaults;
+
+  bool get _isBusy => widget.stage == _ConnectionStage.connecting;
+  bool get _isError => widget.stage == _ConnectionStage.error;
+
+  void _copyDebugValues() {
+    Clipboard.setData(
+      ClipboardData(text: _debugValues.toClipboardString()),
+    );
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Copied')),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1227,22 +1294,23 @@ class _ConnectionScreen extends StatelessWidget {
             fit: StackFit.expand,
             children: [
               _PeripheralVisionLayer(
-                programFuture: peripheralProgramFuture,
-                animation: animation,
+                programFuture: widget.peripheralProgramFuture,
+                animation: widget.animation,
                 warp: _isBusy ? 1 : 0,
                 reduceMotion: reduceMotion,
+                values: _debugValues,
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
                     _NebulaShaderLayer(
-                      programFuture: nebulaProgramFuture,
-                      animation: animation,
+                      programFuture: widget.nebulaProgramFuture,
+                      animation: widget.animation,
                       warp: _isBusy ? 1 : 0,
                     ),
                     RepaintBoundary(
                       child: CustomPaint(
                         painter: _StarfieldPainter(
-                          animation: animation,
+                          animation: widget.animation,
                           warp: _isBusy ? 1 : 0,
                           reduceMotion: reduceMotion,
                         ),
@@ -1332,7 +1400,7 @@ class _ConnectionScreen extends StatelessWidget {
                           Row(
                             children: [
                               _CoreBadge(
-                                animation: animation,
+                                animation: widget.animation,
                                 isBusy: _isBusy,
                                 isError: _isError,
                                 reduceMotion: reduceMotion,
@@ -1352,7 +1420,7 @@ class _ConnectionScreen extends StatelessWidget {
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
-                                      '${hostController.text.trim().isEmpty ? '127.0.0.1' : hostController.text.trim()}:${portController.text.trim().isEmpty ? '42080' : portController.text.trim()}',
+                                      '${widget.hostController.text.trim().isEmpty ? '127.0.0.1' : widget.hostController.text.trim()}:${widget.portController.text.trim().isEmpty ? '42080' : widget.portController.text.trim()}',
                                       style: theme.textTheme.labelMedium
                                           ?.copyWith(
                                         color: scheme.secondary
@@ -1365,7 +1433,7 @@ class _ConnectionScreen extends StatelessWidget {
                               ),
                               if (_isError)
                                 IconButton(
-                                  onPressed: onReset,
+                                  onPressed: widget.onReset,
                                   tooltip: 'Reset',
                                   icon: const Icon(Icons.arrow_back_rounded),
                                 ),
@@ -1379,25 +1447,25 @@ class _ConnectionScreen extends StatelessWidget {
                                 return Column(
                                   children: [
                                     TextField(
-                                      controller: hostController,
-                                      focusNode: hostFocusNode,
+                                      controller: widget.hostController,
+                                      focusNode: widget.hostFocusNode,
                                       enabled: !_isBusy,
                                       textInputAction: TextInputAction.next,
                                       decoration:
                                           const InputDecoration(labelText: 'Host'),
                                       onSubmitted: (_) =>
-                                          portFocusNode.requestFocus(),
+                                          widget.portFocusNode.requestFocus(),
                                     ),
                                     const SizedBox(height: 10),
                                     TextField(
-                                      controller: portController,
-                                      focusNode: portFocusNode,
+                                      controller: widget.portController,
+                                      focusNode: widget.portFocusNode,
                                       enabled: !_isBusy,
                                       keyboardType: TextInputType.number,
                                       textInputAction: TextInputAction.done,
                                       decoration:
                                           const InputDecoration(labelText: 'Port'),
-                                      onSubmitted: (_) => onConnect(),
+                                      onSubmitted: (_) => widget.onConnect(),
                                     ),
                                   ],
                                 );
@@ -1407,27 +1475,27 @@ class _ConnectionScreen extends StatelessWidget {
                                   Expanded(
                                     flex: 3,
                                     child: TextField(
-                                      controller: hostController,
-                                      focusNode: hostFocusNode,
+                                      controller: widget.hostController,
+                                      focusNode: widget.hostFocusNode,
                                       enabled: !_isBusy,
                                       textInputAction: TextInputAction.next,
                                       decoration:
                                           const InputDecoration(labelText: 'Host'),
                                       onSubmitted: (_) =>
-                                          portFocusNode.requestFocus(),
+                                          widget.portFocusNode.requestFocus(),
                                     ),
                                   ),
                                   const SizedBox(width: 10),
                                   Expanded(
                                     child: TextField(
-                                      controller: portController,
-                                      focusNode: portFocusNode,
+                                      controller: widget.portController,
+                                      focusNode: widget.portFocusNode,
                                       enabled: !_isBusy,
                                       keyboardType: TextInputType.number,
                                       textInputAction: TextInputAction.done,
                                       decoration:
                                           const InputDecoration(labelText: 'Port'),
-                                      onSubmitted: (_) => onConnect(),
+                                      onSubmitted: (_) => widget.onConnect(),
                                     ),
                                   ),
                                 ],
@@ -1438,7 +1506,7 @@ class _ConnectionScreen extends StatelessWidget {
                           AnimatedSwitcher(
                             duration:
                                 Duration(milliseconds: reduceMotion ? 0 : 220),
-                            child: _isError && errorText != null
+                            child: _isError && widget.errorText != null
                                 ? Padding(
                                     key: const ValueKey('error'),
                                     padding: const EdgeInsets.only(bottom: 12),
@@ -1457,7 +1525,7 @@ class _ConnectionScreen extends StatelessWidget {
                                         const SizedBox(width: 8),
                                         Expanded(
                                           child: Text(
-                                            errorText!,
+                                            widget.errorText!,
                                             style: theme.textTheme.bodySmall
                                                 ?.copyWith(
                                               color: const Color(0xFFFFB0A6),
@@ -1473,7 +1541,7 @@ class _ConnectionScreen extends StatelessWidget {
                           SizedBox(
                             height: 44,
                             child: FilledButton(
-                              onPressed: _isBusy ? null : onConnect,
+                              onPressed: _isBusy ? null : widget.onConnect,
                               style: FilledButton.styleFrom(
                                 backgroundColor: _isError
                                     ? const Color(0xFFB86262)
@@ -1523,6 +1591,189 @@ class _ConnectionScreen extends StatelessWidget {
                 ),
               ),
             ),
+          ),
+          SafeArea(
+            child: Align(
+              alignment: Alignment.bottomRight,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: _PeripheralDebugPanel(
+                  expanded: _showDebugControls,
+                  values: _debugValues,
+                  onToggle: () {
+                    setState(() {
+                      _showDebugControls = !_showDebugControls;
+                    });
+                  },
+                  onCopy: _copyDebugValues,
+                  onChanged: (values) {
+                    setState(() {
+                      _debugValues = values;
+                    });
+                  },
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PeripheralDebugPanel extends StatelessWidget {
+  const _PeripheralDebugPanel({
+    required this.expanded,
+    required this.values,
+    required this.onToggle,
+    required this.onCopy,
+    required this.onChanged,
+  });
+
+  final bool expanded;
+  final _PeripheralDebugValues values;
+  final VoidCallback onToggle;
+  final VoidCallback onCopy;
+  final ValueChanged<_PeripheralDebugValues> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOutCubic,
+      width: expanded ? 320 : 52,
+      padding: EdgeInsets.all(expanded ? 14 : 0),
+      decoration: BoxDecoration(
+        color: const Color(0xCC081019),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0x3336C7FF)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x77000000),
+            blurRadius: 24,
+            offset: Offset(0, 12),
+          ),
+        ],
+      ),
+      child: expanded
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    IconButton(
+                      onPressed: onToggle,
+                      tooltip: 'Hide',
+                      icon: const Icon(Icons.tune_rounded),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      onPressed: onCopy,
+                      tooltip: 'Copy',
+                      icon: const Icon(Icons.content_copy_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                _DebugSlider(
+                  label: 'Start',
+                  value: values.start,
+                  min: 0.2,
+                  max: 1.2,
+                  onChanged: (value) => onChanged(
+                    values.copyWith(
+                      start: value,
+                      end: math.max(values.end, value + 0.05),
+                    ),
+                  ),
+                ),
+                _DebugSlider(
+                  label: 'End',
+                  value: values.end,
+                  min: 0.8,
+                  max: 2.0,
+                  onChanged: (value) => onChanged(
+                    values.copyWith(
+                      end: value,
+                      start: math.min(values.start, value - 0.05),
+                    ),
+                  ),
+                ),
+                _DebugSlider(
+                  label: 'Blur',
+                  value: values.blur,
+                  min: 0,
+                  max: 24,
+                  onChanged: (value) => onChanged(values.copyWith(blur: value)),
+                ),
+                _DebugSlider(
+                  label: 'Chroma',
+                  value: values.chroma,
+                  min: 0,
+                  max: 4,
+                  onChanged: (value) =>
+                      onChanged(values.copyWith(chroma: value)),
+                ),
+                _DebugSlider(
+                  label: 'Warp',
+                  value: values.warp,
+                  min: 0,
+                  max: 0.12,
+                  precision: 3,
+                  onChanged: (value) => onChanged(values.copyWith(warp: value)),
+                ),
+              ],
+            )
+          : IconButton(
+              onPressed: onToggle,
+              tooltip: 'Tune',
+              icon: const Icon(Icons.tune_rounded),
+            ),
+    );
+  }
+}
+
+class _DebugSlider extends StatelessWidget {
+  const _DebugSlider({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+    this.precision = 2,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final int precision;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Text(label, style: theme.textTheme.labelSmall),
+              const Spacer(),
+              Text(
+                value.toStringAsFixed(precision),
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ],
+          ),
+          Slider(
+            value: value.clamp(min, max),
+            min: min,
+            max: max,
+            onChanged: onChanged,
           ),
         ],
       ),
@@ -1683,6 +1934,7 @@ class _PeripheralVisionLayer extends StatefulWidget {
     required this.animation,
     required this.warp,
     required this.reduceMotion,
+    required this.values,
     required this.child,
   });
 
@@ -1690,6 +1942,7 @@ class _PeripheralVisionLayer extends StatefulWidget {
   final AnimationController animation;
   final double warp;
   final bool reduceMotion;
+  final _PeripheralDebugValues values;
   final Widget child;
 
   @override
@@ -1742,20 +1995,24 @@ class _PeripheralVisionLayerState extends State<_PeripheralVisionLayer> {
       animation: widget.animation,
       builder: (context, _) {
         final blurStrength = widget.reduceMotion
-            ? 14.0
-            : (widget.warp > 0 ? 34.0 : 24.0);
+            ? widget.values.blur
+            : (widget.warp > 0 ? widget.values.blur * 1.333 : widget.values.blur);
         final aberrationStrength = widget.reduceMotion
-            ? 4.0
-            : (widget.warp > 0 ? 20.0 : 13.0);
+            ? widget.values.chroma
+            : (widget.warp > 0
+                ? widget.values.chroma * 1.591
+                : widget.values.chroma);
         final warpStrength = widget.reduceMotion
-            ? 0.008
-            : (widget.warp > 0 ? 0.032 : 0.02);
+            ? widget.values.warp
+            : (widget.warp > 0 ? widget.values.warp * 1.5625 : widget.values.warp);
 
         shader.setFloat(2, 0.5);
         shader.setFloat(3, 0.46);
-        shader.setFloat(4, blurStrength);
-        shader.setFloat(5, aberrationStrength);
-        shader.setFloat(6, warpStrength);
+        shader.setFloat(4, widget.values.start);
+        shader.setFloat(5, widget.values.end);
+        shader.setFloat(6, blurStrength);
+        shader.setFloat(7, aberrationStrength);
+        shader.setFloat(8, warpStrength);
 
         return ClipRect(
           child: ImageFiltered(
