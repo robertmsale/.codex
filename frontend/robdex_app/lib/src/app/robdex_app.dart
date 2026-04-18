@@ -1211,7 +1211,7 @@ class _ConnectionScreen extends StatelessWidget {
                   center: const Alignment(0, -0.08),
                   radius: 0.72,
                   colors: [
-                    panelGlow.withValues(alpha: _isBusy ? 0.26 : 0.18),
+                    panelGlow.withValues(alpha: _isBusy ? 0.14 : 0.08),
                     const Color(0xFF081018).withValues(alpha: 0.0),
                   ],
                 ),
@@ -1590,13 +1590,11 @@ class _StarfieldPainter extends CustomPainter {
     canvas.drawRect(rect, background);
 
     final center = Offset(size.width / 2, size.height * 0.45);
-    _paintNebula(canvas, size, elapsedSeconds);
-
     final glowPaint = Paint()
       ..shader = RadialGradient(
         colors: [
-          const Color(0xFF305C9B).withValues(alpha: 0.24 + (0.08 * warp)),
-          const Color(0xFF0A1320).withValues(alpha: 0.08),
+          const Color(0xFF305C9B).withValues(alpha: 0.14 + (0.05 * warp)),
+          const Color(0xFF0A1320).withValues(alpha: 0.04),
           const Color(0xFF000000).withValues(alpha: 0),
         ],
       ).createShader(
@@ -1610,6 +1608,8 @@ class _StarfieldPainter extends CustomPainter {
       math.max(size.width, size.height) * 0.52,
       glowPaint,
     );
+
+    _paintNebula(canvas, size, elapsedSeconds);
 
     _paintLayer(
       canvas,
@@ -1644,89 +1644,195 @@ class _StarfieldPainter extends CustomPainter {
   }
 
   void _paintNebula(Canvas canvas, Size size, double elapsedSeconds) {
-    final drift = reduceMotion ? 0.0 : elapsedSeconds;
-    _paintNebulaCloud(
-      canvas,
-      size,
-      center: Offset(
-        size.width * (0.16 + (0.0025 * math.sin(drift * 0.01))),
-        size.height * (0.2 + (0.002 * math.cos(drift * 0.008))),
-      ),
-      radius: math.max(size.width, size.height) * 0.48,
-      innerColor: const Color(0xFF5B49E6).withValues(alpha: 0.08),
-      outerColor: const Color(0xFF0A1020).withValues(alpha: 0.0),
+    final t = reduceMotion ? 0.0 : elapsedSeconds;
+    final focus = Offset(size.width * 0.5, size.height * 0.46);
+    final maxDimension = math.max(size.width, size.height);
+    final layerMask = Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(0, -0.04),
+        radius: 1.05,
+        colors: [
+          const Color(0xFF000000).withValues(alpha: 0.0),
+          const Color(0xFF000000).withValues(alpha: 0.0),
+          const Color(0x4A000000),
+          const Color(0xD2000000),
+        ],
+        stops: const [0.0, 0.18, 0.84, 1.0],
+      ).createShader(Offset.zero & size);
+
+    canvas.saveLayer(Offset.zero & size, Paint());
+
+    for (var i = 0; i < 3; i++) {
+      final phase = ((t / 18.0) + (i / 3)) % 1.0;
+      final zoom = math.pow(2.45, phase).toDouble();
+      final fade = math.sin(phase * math.pi);
+      _paintNebulaZoomLayer(
+        canvas,
+        size,
+        center: focus,
+        scale: zoom,
+        alpha: 0.16 + (fade * 0.18),
+        primary: [
+          const Color(0xFF5E7BFF),
+          const Color(0xFF36C7FF),
+          const Color(0xFFC061FF),
+        ][i],
+        secondary: [
+          const Color(0xFF8E4DFF),
+          const Color(0xFF7B3BFF),
+          const Color(0xFFFF5E8E),
+        ][i],
+        tertiary: [
+          const Color(0xFF24379B),
+          const Color(0xFF1D4FA4),
+          const Color(0xFF5B1F78),
+        ][i],
+        seed: 1400 + (i * 311),
+        offset: Offset(
+          (i - 1) * maxDimension * 0.085,
+          (i == 2 ? 1 : -1) * maxDimension * 0.05,
+        ),
+      );
+    }
+
+    canvas.drawRect(
+      Offset.zero & size,
+      layerMask..blendMode = BlendMode.dstIn,
     );
-    _paintNebulaCloud(
-      canvas,
-      size,
-      center: Offset(
-        size.width * (0.84 + (0.002 * math.cos(drift * 0.009))),
-        size.height * (0.26 + (0.002 * math.sin(drift * 0.007))),
-      ),
-      radius: math.max(size.width, size.height) * 0.42,
-      innerColor: const Color(0xFF2BB7FF).withValues(alpha: 0.065),
-      outerColor: const Color(0xFF09111A).withValues(alpha: 0.0),
-    );
-    _paintNebulaCloud(
-      canvas,
-      size,
-      center: Offset(
-        size.width * (0.56 + (0.0015 * math.sin(drift * 0.006))),
-        size.height * (0.78 + (0.002 * math.cos(drift * 0.005))),
-      ),
-      radius: math.max(size.width, size.height) * 0.5,
-      innerColor: const Color(0xFFAA58FF).withValues(alpha: 0.045),
-      outerColor: const Color(0xFF070B12).withValues(alpha: 0.0),
-    );
+    canvas.restore();
   }
 
-  void _paintNebulaCloud(
+  void _paintNebulaZoomLayer(
     Canvas canvas,
     Size size, {
     required Offset center,
-    required double radius,
-    required Color innerColor,
-    required Color outerColor,
+    required double scale,
+    required double alpha,
+    required Color primary,
+    required Color secondary,
+    required Color tertiary,
+    required int seed,
+    required Offset offset,
   }) {
-    final bounds = Rect.fromCircle(center: center, radius: radius);
-    final paint = Paint()
-      ..shader = RadialGradient(
-        colors: [innerColor, outerColor],
-        stops: const [0.04, 1],
-      ).createShader(bounds);
-    canvas.drawCircle(center, radius, paint);
+    final rootCenter = center + offset;
+    final baseRadius = math.max(size.width, size.height) * 0.14 * scale;
 
-    final lobeRect = Rect.fromCenter(
-      center: center.translate(radius * 0.16, -radius * 0.1),
-      width: radius * 1.35,
-      height: radius * 0.92,
-    );
-    final noisePaint = Paint()
-      ..shader = RadialGradient(
-        colors: [
-          innerColor.withValues(alpha: innerColor.a * 0.78),
-          outerColor,
-        ],
-        stops: const [0.08, 1],
-      ).createShader(lobeRect);
-    canvas.drawOval(lobeRect, noisePaint);
+    for (var depth = 0; depth < 4; depth++) {
+      final localScale = math.pow(1.6, depth).toDouble();
+      final radius = baseRadius * localScale;
+      final orbit = radius * (0.22 + (0.05 * _hash(seed + (depth * 41))));
+      final angle = (_hash(seed * 17 + depth * 13) * math.pi * 2) +
+          (depth.isEven ? 0.5 : -0.35);
+      final localCenter = rootCenter.translate(
+        math.cos(angle) * orbit,
+        math.sin(angle) * orbit * 0.8,
+      );
+      final path = _buildNebulaContour(
+        localCenter,
+        radius,
+        seed + (depth * 97),
+        yScale: 0.82 + (_hash(seed + depth * 9) * 0.18),
+      );
+      final shaderBounds = Rect.fromCircle(
+        center: localCenter,
+        radius: radius * 1.05,
+      );
+      final paint = Paint()
+        ..blendMode = BlendMode.plus
+        ..shader = RadialGradient(
+          colors: [
+            primary.withValues(alpha: alpha * (1.0 - (depth * 0.12))),
+            secondary.withValues(alpha: alpha * (0.84 - (depth * 0.08))),
+            tertiary.withValues(alpha: alpha * (0.54 - (depth * 0.06))),
+            const Color(0x00000000),
+          ],
+          stops: const [0.0, 0.32, 0.72, 1.0],
+        ).createShader(shaderBounds);
+      canvas.drawPath(path, paint);
 
-    final streakRect = Rect.fromCenter(
-      center: center.translate(-radius * 0.1, radius * 0.06),
-      width: radius * 1.7,
-      height: radius * 0.28,
-    );
-    final streakPaint = Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.centerLeft,
-        end: Alignment.centerRight,
-        colors: [
-          innerColor.withValues(alpha: 0),
-          innerColor.withValues(alpha: innerColor.a * 0.36),
-          innerColor.withValues(alpha: 0),
-        ],
-      ).createShader(streakRect);
-    canvas.drawOval(streakRect, streakPaint);
+      final innerPath = _buildNebulaContour(
+        localCenter.translate(radius * 0.08, -radius * 0.04),
+        radius * 0.52,
+        seed + (depth * 131),
+        yScale: 0.76,
+      );
+      final innerPaint = Paint()
+        ..blendMode = BlendMode.plus
+        ..color = primary.withValues(
+          alpha: alpha * 0.42 * (1 - (depth * 0.12)),
+        );
+      canvas.drawPath(innerPath, innerPaint);
+
+      final innerAccentPath = _buildNebulaContour(
+        localCenter.translate(-radius * 0.06, radius * 0.03),
+        radius * 0.32,
+        seed + (depth * 173),
+        yScale: 0.7,
+      );
+      final innerAccentPaint = Paint()
+        ..blendMode = BlendMode.plus
+        ..color = secondary.withValues(
+          alpha: alpha * 0.34 * (1 - (depth * 0.12)),
+        );
+      canvas.drawPath(innerAccentPath, innerAccentPaint);
+
+      final contourPaint = Paint()
+        ..blendMode = BlendMode.screen
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, radius * 0.006)
+        ..color = primary.withValues(
+          alpha: alpha * 0.48 * (1 - (depth * 0.14)),
+        );
+      canvas.drawPath(path, contourPaint);
+
+      final contourPaintSecondary = Paint()
+        ..blendMode = BlendMode.screen
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(0.7, radius * 0.0035)
+        ..color = tertiary.withValues(
+          alpha: alpha * 0.36 * (1 - (depth * 0.14)),
+        );
+      canvas.drawPath(innerPath, contourPaintSecondary);
+
+      final contourPaintAccent = Paint()
+        ..blendMode = BlendMode.screen
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(0.55, radius * 0.0028)
+        ..color = secondary.withValues(
+          alpha: alpha * 0.26 * (1 - (depth * 0.16)),
+        );
+      canvas.drawPath(innerAccentPath, contourPaintAccent);
+    }
+  }
+
+  Path _buildNebulaContour(
+    Offset center,
+    double radius,
+    int seed, {
+    double yScale = 1,
+  }) {
+    final path = Path();
+    const segments = 120;
+    for (var i = 0; i <= segments; i++) {
+      final angle = (i / segments) * math.pi * 2;
+      final wobbleA = math.sin((angle * 3) + (_hash(seed * 3) * math.pi * 2));
+      final wobbleB =
+          math.sin((angle * 5) - (_hash(seed * 5) * math.pi * 2)) * 0.42;
+      final wobbleC =
+          math.cos((angle * 8) + (_hash(seed * 7) * math.pi * 2)) * 0.18;
+      final contour = 1 + (wobbleA * 0.18) + (wobbleB * 0.14) + (wobbleC * 0.1);
+      final point = Offset(
+        center.dx + (math.cos(angle) * radius * contour),
+        center.dy + (math.sin(angle) * radius * contour * yScale),
+      );
+      if (i == 0) {
+        path.moveTo(point.dx, point.dy);
+      } else {
+        path.lineTo(point.dx, point.dy);
+      }
+    }
+    path.close();
+    return path;
   }
 
   void _paintLayer(
@@ -1746,6 +1852,8 @@ class _StarfieldPainter extends CustomPainter {
     final paint = Paint()
       ..strokeCap = StrokeCap.round
       ..color = color;
+    final glowPaint = Paint()..blendMode = BlendMode.plus;
+    final corePaint = Paint()..blendMode = BlendMode.plus;
 
     for (var i = 0; i < count; i++) {
       final seed = i + (radiusScale * 1000).round();
@@ -1770,10 +1878,33 @@ class _StarfieldPainter extends CustomPainter {
       }
 
       final tail = normalized * (trailScale * lifeProgress);
+      final brightness = 0.2 + (lifeProgress * 0.8);
       paint
         ..strokeWidth = 0.6 + (lifeProgress * 2.1)
-        ..color = color.withValues(alpha: 0.14 + (lifeProgress * 0.86));
+        ..color = color.withValues(alpha: 0.1 + (lifeProgress * 0.82));
       canvas.drawLine(point - tail, point, paint);
+
+      final glowRadius = (0.9 + (lifeProgress * 3.4)) * radiusScale;
+      glowPaint.shader = RadialGradient(
+        colors: [
+          color.withValues(alpha: 0.34 * brightness),
+          color.withValues(alpha: 0.12 * brightness),
+          color.withValues(alpha: 0),
+        ],
+        stops: const [0.0, 0.42, 1.0],
+      ).createShader(
+        Rect.fromCircle(center: point, radius: glowRadius * 2.6),
+      );
+      canvas.drawCircle(point, glowRadius * 2.6, glowPaint);
+
+      corePaint.color = Colors.white.withValues(
+        alpha: 0.42 + (lifeProgress * 0.56),
+      );
+      canvas.drawCircle(
+        point,
+        (0.3 + (lifeProgress * 1.15)) * radiusScale,
+        corePaint,
+      );
     }
   }
 
