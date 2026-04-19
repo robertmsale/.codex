@@ -868,6 +868,9 @@ async fn handle_action(
             decision,
             message,
         } => {
+            let preserved_messages = current_view
+                .as_ref()
+                .and_then(|view| view.selection.thread_id.as_ref().map(|_| view.chat_entries.clone()));
             let sender_thread_id = current_view
                 .as_ref()
                 .and_then(|view| view.selection.thread_id.clone())
@@ -881,7 +884,7 @@ async fn handle_action(
                 )
                 .await?;
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
-                .load_initial_view()
+                .refresh(preserved_messages)
                 .await
         }
         Action::UpdateThreadSettings {

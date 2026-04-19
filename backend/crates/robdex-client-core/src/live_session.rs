@@ -98,7 +98,12 @@ async fn run_live_session(
                             };
                             match command {
                                 LiveSessionCommand::SelectThread(thread_id) => {
+                                    if selected_thread_id == thread_id {
+                                        current_view.selection.thread_id = thread_id;
+                                        continue;
+                                    }
                                     selected_thread_id = thread_id.clone();
+                                    current_view.selection.thread_id = thread_id.clone();
                                     if let Some(thread_id) = thread_id {
                                         if send_thread_selection(&mut write, &thread_id).await.is_err() {
                                             break;
@@ -106,9 +111,11 @@ async fn run_live_session(
                                     }
                                 }
                                 LiveSessionCommand::SyncView(view) => {
+                                    let next_thread_id = view.selection.thread_id.clone();
+                                    let selection_changed = selected_thread_id != next_thread_id;
                                     selected_thread_id = view.selection.thread_id.clone();
                                     current_view = view;
-                                    if let Some(thread_id) = selected_thread_id.clone() {
+                                    if selection_changed && let Some(thread_id) = selected_thread_id.clone() {
                                         if send_thread_selection(&mut write, &thread_id).await.is_err() {
                                             break;
                                         }
@@ -186,8 +193,19 @@ async fn reduce_message(
 
     match event.get("name").and_then(Value::as_str) {
         Some("appStateSnapshot") => {
-            let next_view = refresh_selected_view(
+            let Some(snapshot) = event.get("data").cloned() else {
+                return Ok(ReduceOutcome::None);
+            };
+            let preserved_messages = current_view
+                .selection
+                .thread_id
+                .as_ref()
+                .filter(|thread_id| Some(thread_id.as_str()) == selected_thread_id)
+                .map(|_| current_view.chat_entries.clone());
+            let next_view = build_workbench_with_models(
+                snapshot,
                 selected_thread_id,
+                preserved_messages,
                 endpoint,
                 Some(current_view.available_models.clone()),
             )
@@ -223,28 +241,6 @@ async fn reduce_message(
         }
         _ => Ok(ReduceOutcome::None),
     }
-}
-
-async fn refresh_selected_view(
-    selected_thread_id: Option<&str>,
-    endpoint: &BridgeEndpoint,
-    available_models_override: Option<Vec<robdex_protocol::UiModelItem>>,
-) -> Result<WorkbenchViewData> {
-    let snapshot = reqwest::Client::new()
-        .get(endpoint.workbench_bootstrap_url()?)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Value>()
-        .await?;
-    build_workbench_with_models(
-        snapshot,
-        selected_thread_id,
-        None,
-        endpoint,
-        available_models_override,
-    )
-    .await
 }
 
 async fn send_json(

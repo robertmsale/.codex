@@ -740,6 +740,10 @@ pub async fn build_workbench_with_models(
     let messages = if let Some(selected) = selected {
         if preserved_messages.is_some() && Some(selected.id.as_str()) == selected_thread_id {
             preserved_messages.unwrap_or_default()
+        } else if let Some(messages) =
+            snapshot_thread_messages(&snapshot, selected.id.as_str(), Some(50))
+        {
+            messages
         } else {
             fetch_thread_messages(endpoint, selected.id.as_str(), Some(50)).await?
         }
@@ -934,6 +938,36 @@ pub fn context_window_remaining_percent_from_thread_payload(payload: &Value) -> 
         })
         .and_then(Value::as_u64)
         .map(|value| value as u32)
+}
+
+fn snapshot_thread_messages(
+    snapshot: &Value,
+    thread_id: &str,
+    limit: Option<usize>,
+) -> Option<Vec<UiChatEntry>> {
+    let messages = snapshot
+        .get("threadCache")
+        .and_then(Value::as_object)
+        .and_then(|cache| {
+            cache.get("messageCacheByThreadID")
+                .or_else(|| cache.get("messageCacheByThreadId"))
+                .or_else(|| cache.get("message_cache_by_thread_id"))
+        })
+        .and_then(Value::as_object)
+        .and_then(|items| items.get(thread_id))
+        .and_then(Value::as_array)?;
+
+    let start = limit
+        .map(|value| messages.len().saturating_sub(value))
+        .unwrap_or(0);
+
+    Some(
+        messages[start..]
+            .iter()
+            .filter_map(Value::as_object)
+            .map(chat_entry_from_message)
+            .collect(),
+    )
 }
 
 pub async fn fetch_thread_messages(
