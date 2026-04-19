@@ -1,6 +1,11 @@
 # ~/.codex specific
 archived_sessions/
 configs/
+!frontend/robdex_app/macos/Runner/Configs/
+!frontend/robdex_app/macos/Runner/Configs/AppInfo.xcconfig
+!frontend/robdex_app/macos/Runner/Configs/Debug.xcconfig
+!frontend/robdex_app/macos/Runner/Configs/Release.xcconfig
+!frontend/robdex_app/macos/Runner/Configs/Warnings.xcconfig
 log/
 sessions/
 shell_snapshots/
