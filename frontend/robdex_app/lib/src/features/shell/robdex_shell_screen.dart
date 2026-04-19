@@ -12,6 +12,7 @@ import '../sidebar/thread_list_panel.dart';
 class RobdexShellScreen extends StatelessWidget {
   const RobdexShellScreen({
     super.key,
+    required this.enableGraphics,
     required this.workbench,
     required this.onThreadSelected,
     required this.onProjectSelected,
@@ -40,6 +41,7 @@ class RobdexShellScreen extends StatelessWidget {
     required this.onUpdateWorkerMetadata,
   });
 
+  final bool enableGraphics;
   final WorkbenchViewData workbench;
   final ValueChanged<String> onThreadSelected;
   final ValueChanged<String> onProjectSelected;
@@ -77,7 +79,8 @@ class RobdexShellScreen extends StatelessWidget {
         child: SafeArea(
           child: Stack(
             children: [
-              if (!isIOS) const Positioned.fill(child: _ShellNebulaBackdrop()),
+              if (enableGraphics && !isIOS)
+                const Positioned.fill(child: _ShellNebulaBackdrop()),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final isCompact = constraints.maxWidth < 860;

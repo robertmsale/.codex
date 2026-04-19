@@ -55,6 +55,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     with SingleTickerProviderStateMixin {
   static const _hostPreferenceKey = 'bridge_host';
   static const _portPreferenceKey = 'bridge_port';
+  static const _graphicsEnabledPreferenceKey = 'graphics_enabled';
 
   late final WorkbenchController _controller;
   late final AppLifecycleListener _listener;
@@ -67,6 +68,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   late final TextEditingController _portController;
   late final FocusNode _hostFocusNode;
   late final FocusNode _portFocusNode;
+  bool _graphicsEnabled = true;
 
   @override
   void initState() {
@@ -133,16 +135,22 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     final prefs = await SharedPreferences.getInstance();
     final host = prefs.getString(_hostPreferenceKey);
     final port = prefs.getInt(_portPreferenceKey);
+    final graphicsEnabled = prefs.getBool(_graphicsEnabledPreferenceKey);
     if (!mounted) {
       return;
     }
-    if ((host?.trim().isNotEmpty ?? false) || port != null) {
+    if ((host?.trim().isNotEmpty ?? false) ||
+        port != null ||
+        graphicsEnabled != null) {
       setState(() {
         if (host?.trim().isNotEmpty ?? false) {
           _hostController.text = host!.trim();
         }
         if (port != null && port > 0) {
           _portController.text = port.toString();
+        }
+        if (graphicsEnabled != null) {
+          _graphicsEnabled = graphicsEnabled;
         }
       });
     }
@@ -179,6 +187,18 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     } else {
       await prefs.setInt(_portPreferenceKey, 42080);
     }
+    await prefs.setBool(_graphicsEnabledPreferenceKey, _graphicsEnabled);
+  }
+
+  Future<void> _setGraphicsEnabled(bool value) async {
+    if (_graphicsEnabled == value) {
+      return;
+    }
+    setState(() {
+      _graphicsEnabled = value;
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_graphicsEnabledPreferenceKey, value);
   }
 
   Future<void> _attemptConnect() async {
@@ -257,6 +277,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             animation: _spaceController,
             nebulaProgramFuture: _nebulaProgramFuture,
             peripheralProgramFuture: _peripheralProgramFuture,
+            graphicsEnabled: _graphicsEnabled,
             stage: stage,
             errorText: _controller.error?.toString(),
             hostController: _hostController,
@@ -265,9 +286,11 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             portFocusNode: _portFocusNode,
             onConnect: _attemptConnect,
             onReset: _returnToLogin,
+            onGraphicsEnabledChanged: _setGraphicsEnabled,
           );
         }
         return RobdexShellScreen(
+          enableGraphics: _graphicsEnabled,
           workbench: _controller.view!,
           onThreadSelected: _controller.selectThread,
           onProjectSelected: _controller.selectProject,
@@ -1490,6 +1513,7 @@ class _ConnectionScreen extends StatefulWidget {
     required this.animation,
     required this.nebulaProgramFuture,
     required this.peripheralProgramFuture,
+    required this.graphicsEnabled,
     required this.stage,
     required this.errorText,
     required this.hostController,
@@ -1498,11 +1522,13 @@ class _ConnectionScreen extends StatefulWidget {
     required this.portFocusNode,
     required this.onConnect,
     required this.onReset,
+    required this.onGraphicsEnabledChanged,
   });
 
   final AnimationController animation;
   final Future<FragmentProgram?> nebulaProgramFuture;
   final Future<FragmentProgram?> peripheralProgramFuture;
+  final bool graphicsEnabled;
   final _ConnectionStage stage;
   final String? errorText;
   final TextEditingController hostController;
@@ -1511,6 +1537,7 @@ class _ConnectionScreen extends StatefulWidget {
   final FocusNode portFocusNode;
   final VoidCallback onConnect;
   final VoidCallback onReset;
+  final ValueChanged<bool> onGraphicsEnabledChanged;
 
   @override
   State<_ConnectionScreen> createState() => _ConnectionScreenState();
@@ -1538,6 +1565,7 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final isIOS = defaultTargetPlatform == TargetPlatform.iOS;
+    final effectsEnabled = widget.graphicsEnabled;
     final reduceMotion = MediaQuery.maybeOf(context)?.disableAnimations ??
         PlatformDispatcher.instance.accessibilityFeatures.disableAnimations;
     final panelBorder = _isError
@@ -1555,7 +1583,21 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          if (isIOS)
+          if (!effectsEnabled)
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xFF05090F),
+                    Color(0xFF081018),
+                    Color(0xFF0A111A),
+                  ],
+                ),
+              ),
+            )
+          else if (isIOS)
             RepaintBoundary(
               child: CustomPaint(
                 painter: _StarfieldPainter(
@@ -1876,6 +1918,7 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                 child: _PeripheralDebugPanel(
                   expanded: _showDebugControls,
                   values: _debugValues,
+                  graphicsEnabled: widget.graphicsEnabled,
                   onToggle: () {
                     setState(() {
                       _showDebugControls = !_showDebugControls;
@@ -1887,6 +1930,7 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                       _debugValues = values;
                     });
                   },
+                  onGraphicsEnabledChanged: widget.onGraphicsEnabledChanged,
                 ),
               ),
             ),
@@ -1901,16 +1945,20 @@ class _PeripheralDebugPanel extends StatelessWidget {
   const _PeripheralDebugPanel({
     required this.expanded,
     required this.values,
+    required this.graphicsEnabled,
     required this.onToggle,
     required this.onCopy,
     required this.onChanged,
+    required this.onGraphicsEnabledChanged,
   });
 
   final bool expanded;
   final _PeripheralDebugValues values;
+  final bool graphicsEnabled;
   final VoidCallback onToggle;
   final VoidCallback onCopy;
   final ValueChanged<_PeripheralDebugValues> onChanged;
+  final ValueChanged<bool> onGraphicsEnabledChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -1947,6 +1995,23 @@ class _PeripheralDebugPanel extends StatelessWidget {
                       onPressed: onCopy,
                       tooltip: 'Copy',
                       icon: const Icon(Icons.content_copy_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    const Icon(Icons.bolt_outlined, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Graphics',
+                        style: Theme.of(context).textTheme.labelMedium,
+                      ),
+                    ),
+                    Switch.adaptive(
+                      value: graphicsEnabled,
+                      onChanged: onGraphicsEnabledChanged,
                     ),
                   ],
                 ),
