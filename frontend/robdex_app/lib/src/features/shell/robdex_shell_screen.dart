@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/models/workbench_view_data.dart';
@@ -69,13 +70,14 @@ class RobdexShellScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isIOS = defaultTargetPlatform == TargetPlatform.iOS;
     return Scaffold(
       body: DecoratedBox(
         decoration: const BoxDecoration(color: Color(0xFF05090F)),
         child: SafeArea(
           child: Stack(
             children: [
-              const Positioned.fill(child: _ShellNebulaBackdrop()),
+              if (!isIOS) const Positioned.fill(child: _ShellNebulaBackdrop()),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final isCompact = constraints.maxWidth < 860;

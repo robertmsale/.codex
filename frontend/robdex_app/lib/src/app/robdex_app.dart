@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -1536,6 +1537,7 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final isIOS = defaultTargetPlatform == TargetPlatform.iOS;
     final reduceMotion = MediaQuery.maybeOf(context)?.disableAnimations ??
         PlatformDispatcher.instance.accessibilityFeatures.disableAnimations;
     final panelBorder = _isError
@@ -1553,37 +1555,48 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          Stack(
-            fit: StackFit.expand,
-            children: [
-              _PeripheralVisionLayer(
-                programFuture: widget.peripheralProgramFuture,
-                animation: widget.animation,
-                warp: _isBusy ? 1 : 0,
-                reduceMotion: reduceMotion,
-                values: _debugValues,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    _NebulaShaderLayer(
-                      programFuture: widget.nebulaProgramFuture,
-                      animation: widget.animation,
-                      warp: _isBusy ? 1 : 0,
-                    ),
-                    RepaintBoundary(
-                      child: CustomPaint(
-                        painter: _StarfieldPainter(
-                          animation: widget.animation,
-                          warp: _isBusy ? 1 : 0,
-                          reduceMotion: reduceMotion,
-                        ),
-                      ),
-                    ),
-                  ],
+          if (isIOS)
+            RepaintBoundary(
+              child: CustomPaint(
+                painter: _StarfieldPainter(
+                  animation: widget.animation,
+                  warp: _isBusy ? 1 : 0,
+                  reduceMotion: reduceMotion,
                 ),
               ),
-            ],
-          ),
+            )
+          else
+            Stack(
+              fit: StackFit.expand,
+              children: [
+                _PeripheralVisionLayer(
+                  programFuture: widget.peripheralProgramFuture,
+                  animation: widget.animation,
+                  warp: _isBusy ? 1 : 0,
+                  reduceMotion: reduceMotion,
+                  values: _debugValues,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      _NebulaShaderLayer(
+                        programFuture: widget.nebulaProgramFuture,
+                        animation: widget.animation,
+                        warp: _isBusy ? 1 : 0,
+                      ),
+                      RepaintBoundary(
+                        child: CustomPaint(
+                          painter: _StarfieldPainter(
+                            animation: widget.animation,
+                            warp: _isBusy ? 1 : 0,
+                            reduceMotion: reduceMotion,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           IgnorePointer(
             child: DecoratedBox(
               decoration: BoxDecoration(
