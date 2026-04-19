@@ -1,5 +1,6 @@
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:highlight/highlight.dart' as hl;
 
@@ -45,7 +46,11 @@ class ChatTimeline extends StatefulWidget {
 
 class _ChatTimelineState extends State<ChatTimeline> {
   late final ScrollController _scrollController;
+  final GlobalKey _timelineViewportKey = GlobalKey();
+  final Map<String, GlobalKey> _entryRenderKeys = <String, GlobalKey>{};
   final Set<String> _expandedEntryKeys = <String>{};
+  bool _stickToBottom = true;
+  bool _userScrollActive = false;
 
   @override
   void initState() {
@@ -63,13 +68,11 @@ class _ChatTimelineState extends State<ChatTimeline> {
   void didUpdateWidget(covariant ChatTimeline oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    final hadClients = _scrollController.hasClients;
-    final previousPixels = hadClients ? _scrollController.position.pixels : 0.0;
-
     final currentKeys = widget.entries
         .map(_entryStorageKey)
         .toSet();
     _expandedEntryKeys.removeWhere((key) => !currentKeys.contains(key));
+    _entryRenderKeys.removeWhere((key, _) => !currentKeys.contains(key));
 
     final threadChanged = widget.threadId != oldWidget.threadId;
     final entriesChanged = widget.entries.length != oldWidget.entries.length ||
@@ -79,24 +82,161 @@ class _ChatTimelineState extends State<ChatTimeline> {
       return;
     }
 
+    final oldEntryKeys =
+        oldWidget.entries.map(_entryStorageKey).toList(growable: false);
+    final newEntryKeys = widget.entries.map(_entryStorageKey).toList(growable: false);
+    final structuralChange = !_sameKeyOrder(oldEntryKeys, newEntryKeys);
+    final anchor = !threadChanged && structuralChange && !_stickToBottom
+        ? _captureScrollAnchor(oldEntryKeys)
+        : null;
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) {
         return;
       }
       final position = _scrollController.position;
-      final target = threadChanged
-          ? position.maxScrollExtent.clamp(
-              position.minScrollExtent,
-              position.maxScrollExtent,
-            )
-          : previousPixels.clamp(
-              position.minScrollExtent,
-              position.maxScrollExtent,
-            );
-      if ((position.pixels - target).abs() > 1) {
-        _scrollController.jumpTo(target);
+      if (threadChanged) {
+        final target = position.maxScrollExtent.clamp(
+          position.minScrollExtent,
+          position.maxScrollExtent,
+        );
+        if ((position.pixels - target).abs() > 1) {
+          _scrollController.jumpTo(target);
+        }
+        _stickToBottom = true;
+        _userScrollActive = false;
+        return;
       }
+      if (_stickToBottom && !_userScrollActive) {
+        final target = position.maxScrollExtent.clamp(
+          position.minScrollExtent,
+          position.maxScrollExtent,
+        );
+        if ((position.pixels - target).abs() > 1) {
+          _scrollController.jumpTo(target);
+        }
+        return;
+      }
+      if (anchor == null) {
+        return;
+      }
+      final target = _targetPixelsForAnchor(anchor);
+      if (target == null || (position.pixels - target).abs() <= 1) {
+        return;
+      }
+      _scrollController.jumpTo(
+        target.clamp(position.minScrollExtent, position.maxScrollExtent),
+      );
     });
+  }
+
+  GlobalKey _entryKeyFor(String entryKey) =>
+      _entryRenderKeys.putIfAbsent(entryKey, GlobalKey.new);
+
+  _ScrollAnchor? _captureScrollAnchor(List<String> entryKeys) {
+    if (!_scrollController.hasClients) {
+      return null;
+    }
+    final viewportContext = _timelineViewportKey.currentContext;
+    if (viewportContext == null) {
+      return null;
+    }
+    final viewportBox = viewportContext.findRenderObject() as RenderBox?;
+    if (viewportBox == null || !viewportBox.hasSize) {
+      return null;
+    }
+    final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
+    final viewportBottom = viewportTop + viewportBox.size.height;
+    for (final entryKey in entryKeys) {
+      final entryContext = _entryRenderKeys[entryKey]?.currentContext;
+      if (entryContext == null) {
+        continue;
+      }
+      final entryBox = entryContext.findRenderObject() as RenderBox?;
+      if (entryBox == null || !entryBox.hasSize) {
+        continue;
+      }
+      final top = entryBox.localToGlobal(Offset.zero).dy;
+      final bottom = top + entryBox.size.height;
+      if (bottom > viewportTop + 4 && top < viewportBottom) {
+        return _ScrollAnchor(
+          entryKey: entryKey,
+          viewportOffset: top - viewportTop,
+        );
+      }
+    }
+    return null;
+  }
+
+  double? _targetPixelsForAnchor(_ScrollAnchor anchor) {
+    if (!_scrollController.hasClients) {
+      return null;
+    }
+    final viewportContext = _timelineViewportKey.currentContext;
+    final entryContext = _entryRenderKeys[anchor.entryKey]?.currentContext;
+    if (viewportContext == null || entryContext == null) {
+      return null;
+    }
+    final viewportBox = viewportContext.findRenderObject() as RenderBox?;
+    final entryBox = entryContext.findRenderObject() as RenderBox?;
+    if (viewportBox == null ||
+        entryBox == null ||
+        !viewportBox.hasSize ||
+        !entryBox.hasSize) {
+      return null;
+    }
+    final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
+    final entryTop = entryBox.localToGlobal(Offset.zero).dy;
+    final delta = entryTop - (viewportTop + anchor.viewportOffset);
+    return _scrollController.position.pixels + delta;
+  }
+
+  bool _isNearBottom() {
+    if (!_scrollController.hasClients) {
+      return true;
+    }
+    final position = _scrollController.position;
+    return position.maxScrollExtent - position.pixels < 36;
+  }
+
+  bool _handleScrollNotification(ScrollNotification notification) {
+    if (!_scrollController.hasClients) {
+      return false;
+    }
+    if (notification is ScrollStartNotification &&
+        notification.dragDetails != null) {
+      _userScrollActive = true;
+      _stickToBottom = false;
+      return false;
+    }
+    if (notification is ScrollUpdateNotification &&
+        notification.dragDetails != null) {
+      if (!_userScrollActive || _stickToBottom) {
+        setState(() {
+          _userScrollActive = true;
+          _stickToBottom = false;
+        });
+      }
+      return false;
+    }
+    if (notification is ScrollEndNotification && _userScrollActive) {
+      final shouldStick = _isNearBottom();
+      setState(() {
+        _userScrollActive = false;
+        _stickToBottom = shouldStick;
+      });
+      return false;
+    }
+    if (notification is UserScrollNotification &&
+        notification.direction == ScrollDirection.idle &&
+        _userScrollActive) {
+      final shouldStick = _isNearBottom();
+      setState(() {
+        _userScrollActive = false;
+        _stickToBottom = shouldStick;
+      });
+    }
+    return false;
   }
 
   @override
@@ -160,30 +300,40 @@ class _ChatTimelineState extends State<ChatTimeline> {
         Expanded(
           child: Stack(
             children: [
-              SelectionArea(
-                child: ListView.separated(
-                  controller: _scrollController,
-                  itemCount: widget.entries.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 6),
-                  itemBuilder: (context, index) {
-                    final entry = widget.entries[index];
-                    final entryKey = _entryStorageKey(entry);
-                    return _ChatBubble(
-                      key: ValueKey(entryKey),
-                      entry: entry,
-                      expanded: _expandedEntryKeys.contains(entryKey),
-                      onExpandedChanged: (expanded) {
-                        setState(() {
-                          if (expanded) {
-                            _expandedEntryKeys.add(entryKey);
-                          } else {
-                            _expandedEntryKeys.remove(entryKey);
-                          }
-                        });
+              NotificationListener<ScrollNotification>(
+                onNotification: _handleScrollNotification,
+                child: SelectionArea(
+                  child: KeyedSubtree(
+                    key: _timelineViewportKey,
+                    child: ListView.separated(
+                      controller: _scrollController,
+                      itemCount: widget.entries.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 6),
+                      itemBuilder: (context, index) {
+                        final entry = widget.entries[index];
+                        final entryKey = _entryStorageKey(entry);
+                        return KeyedSubtree(
+                          key: _entryKeyFor(entryKey),
+                          child: _ChatBubble(
+                            key: ValueKey(entryKey),
+                            entry: entry,
+                            expanded: _expandedEntryKeys.contains(entryKey),
+                            onExpandedChanged: (expanded) {
+                              setState(() {
+                                if (expanded) {
+                                  _expandedEntryKeys.add(entryKey);
+                                } else {
+                                  _expandedEntryKeys.remove(entryKey);
+                                }
+                              });
+                            },
+                            onTerminateCommandExecution:
+                                widget.onTerminateCommandExecution,
+                          ),
+                        );
                       },
-                      onTerminateCommandExecution: widget.onTerminateCommandExecution,
-                    );
-                  },
+                    ),
+                  ),
                 ),
               ),
               if (widget.overlay != null)
@@ -208,6 +358,28 @@ class _ChatTimelineState extends State<ChatTimeline> {
       ],
     );
   }
+}
+
+class _ScrollAnchor {
+  const _ScrollAnchor({
+    required this.entryKey,
+    required this.viewportOffset,
+  });
+
+  final String entryKey;
+  final double viewportOffset;
+}
+
+bool _sameKeyOrder(List<String> a, List<String> b) {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i += 1) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool _sameEntryIdentity(List<ChatEntry> a, List<ChatEntry> b) {
@@ -479,23 +651,105 @@ class _PlanChecklistRow extends StatelessWidget {
       children: [
         Padding(
           padding: const EdgeInsets.only(top: 1),
-          child: Icon(icon, size: 18, color: accent),
+          child: _AnimatedStatusIcon(
+            icon: icon,
+            color: accent,
+            identity: '${item.status}|${item.completed}',
+            size: 18,
+          ),
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: Text(
-            item.text,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              height: 1.34,
-              color: item.completed
+          child: TweenAnimationBuilder<Color?>(
+            tween: ColorTween(
+              end: item.completed
                   ? theme.colorScheme.onSurface.withValues(alpha: 0.7)
                   : theme.colorScheme.onSurface.withValues(alpha: 0.92),
-              decoration: item.completed ? TextDecoration.lineThrough : null,
-              decorationColor: accent.withValues(alpha: 0.6),
             ),
+            duration: const Duration(milliseconds: 150),
+            curve: Curves.easeOutCubic,
+            builder: (context, animatedColor, child) {
+              return Text(
+                item.text,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  height: 1.34,
+                  color: animatedColor,
+                  decoration: item.completed ? TextDecoration.lineThrough : null,
+                  decorationColor: accent.withValues(alpha: 0.6),
+                ),
+              );
+            },
           ),
         ),
       ],
+    );
+  }
+}
+
+class _AnimatedStatusIcon extends StatelessWidget {
+  const _AnimatedStatusIcon({
+    required this.icon,
+    required this.color,
+    required this.identity,
+    this.size = 16,
+  });
+
+  final IconData icon;
+  final Color color;
+  final Object identity;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<Color?>(
+      tween: ColorTween(end: color),
+      duration: const Duration(milliseconds: 150),
+      curve: Curves.easeOutCubic,
+      builder: (context, animatedColor, child) {
+        return AnimatedSwitcher(
+          duration: const Duration(milliseconds: 140),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeOutCubic,
+          transitionBuilder: (child, animation) => FadeTransition(
+            opacity: animation,
+            child: ScaleTransition(scale: animation, child: child),
+          ),
+          child: Icon(
+            icon,
+            key: ValueKey(identity),
+            size: size,
+            color: animatedColor,
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _AnimatedStatusDot extends StatelessWidget {
+  const _AnimatedStatusDot({
+    required this.color,
+  });
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<Color?>(
+      tween: ColorTween(end: color),
+      duration: const Duration(milliseconds: 150),
+      curve: Curves.easeOutCubic,
+      builder: (context, animatedColor, child) {
+        return Container(
+          width: 6,
+          height: 6,
+          margin: const EdgeInsets.only(top: 6),
+          decoration: BoxDecoration(
+            color: animatedColor,
+            shape: BoxShape.circle,
+          ),
+        );
+      },
     );
   }
 }
@@ -741,7 +995,11 @@ class _CommandEventRow extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 8),
-                Icon(statusIcon, size: 16, color: statusColor),
+                _AnimatedStatusIcon(
+                  icon: statusIcon,
+                  color: statusColor,
+                  identity: '${entry.status}|${entry.isStreaming}',
+                ),
                 if (canExpand) ...[
                   const SizedBox(width: 2),
                   InkWell(
@@ -854,7 +1112,12 @@ class _ToolEventRow extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(Icons.extension_outlined, size: 15, color: statusColor),
+                _AnimatedStatusIcon(
+                  icon: Icons.extension_outlined,
+                  color: statusColor,
+                  identity: '${entry.status}|${entry.isStreaming}',
+                  size: 15,
+                ),
                 const SizedBox(width: 6),
                 Flexible(
                   child: Text(
@@ -1029,14 +1292,8 @@ class _GenericEventRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 6,
-            height: 6,
-            margin: const EdgeInsets.only(top: 6),
-            decoration: BoxDecoration(
-              color: _eventStatusColor(theme, entry),
-              shape: BoxShape.circle,
-            ),
+          _AnimatedStatusDot(
+            color: _eventStatusColor(theme, entry),
           ),
           const SizedBox(width: 8),
           Expanded(
