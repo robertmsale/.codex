@@ -142,6 +142,9 @@ pub async fn run() {
                 match result {
                     Ok(next_view) => {
                         current_view = Some(next_view);
+                        if let (Some(client), Some(view)) = (client.as_mut(), current_view.as_ref()) {
+                            client.sync_view(view);
+                        }
                         if initialized && live_session.is_none() {
                             let (session, event_rx) = start_live_session(
                                 current_view.clone().expect("view should exist after initialize"),
@@ -167,6 +170,9 @@ pub async fn run() {
                 match maybe_live_event {
                     Some(LiveSessionEvent::View(next_view)) => {
                         current_view = Some(next_view);
+                        if let (Some(client), Some(view)) = (client.as_mut(), current_view.as_ref()) {
+                            client.sync_view(view);
+                        }
                         emit_state(current_view.as_ref(), false, "");
                     }
                     Some(LiveSessionEvent::HookFailure(notice)) => {
@@ -230,6 +236,12 @@ fn apply_optimistic_action(current_view: &mut Option<WorkbenchViewData>, action:
         is_streaming: false,
         is_tool: false,
     });
+}
+
+fn current_view_clone(current_view: &Option<WorkbenchViewData>) -> Result<WorkbenchViewData> {
+    current_view
+        .clone()
+        .ok_or_else(|| anyhow!("No current view"))
 }
 
 fn unix_now_millis() -> u128 {
@@ -590,9 +602,7 @@ async fn handle_action(
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
                 .thread_compact(&thread_id)
                 .await?;
-            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
-                .select_thread(thread_id)
-                .await
+            current_view_clone(current_view)
         }
         Action::TerminateCommandExecution(process_id) => {
             let thread_id = current_view
@@ -604,19 +614,30 @@ async fn handle_action(
                 .ok_or_else(|| anyhow!("Not connected"))?
                 .terminate_command_execution(&thread_id, &process_id)
                 .await?;
-            client
-                .as_mut()
-                .ok_or_else(|| anyhow!("Not connected"))?
-                .select_thread(thread_id)
-                .await
+            current_view_clone(current_view)
         }
         Action::CreateProject {
             name,
             root_path,
             default_cwd,
-        } => client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.create_project(name, root_path, default_cwd).await,
-        Action::SelectProject(project_id) => client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.select_project(project_id).await,
-        Action::DeleteProject(project_id) => client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.delete_project(project_id).await,
+        } => {
+            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
+                .create_project(name, root_path, default_cwd)
+                .await?;
+            current_view_clone(current_view)
+        }
+        Action::SelectProject(project_id) => {
+            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
+                .select_project(project_id)
+                .await?;
+            current_view_clone(current_view)
+        }
+        Action::DeleteProject(project_id) => {
+            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
+                .delete_project(project_id)
+                .await?;
+            current_view_clone(current_view)
+        }
         Action::UpdateProject {
             project_id,
             name,
@@ -638,30 +659,33 @@ async fn handle_action(
             designer_developer_instructions,
             operator_developer_instructions,
             hidden_developer_instructions,
-        } => client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
-            .update_project(
-                project_id,
-                name,
-                default_cwd,
-                auto_route_replies,
-                route_approval_requests,
-                preferred_model_provider,
-                orchestrator_model_id,
-                orchestrator_reasoning_effort,
-                worker_model_id,
-                worker_reasoning_effort,
-                qa_model_id,
-                qa_reasoning_effort,
-                designer_model_id,
-                designer_reasoning_effort,
-                orchestrator_developer_instructions,
-                worker_developer_instructions,
-                qa_developer_instructions,
-                designer_developer_instructions,
-                operator_developer_instructions,
-                hidden_developer_instructions,
-            )
-            .await,
+        } => {
+            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
+                .update_project(
+                    project_id,
+                    name,
+                    default_cwd,
+                    auto_route_replies,
+                    route_approval_requests,
+                    preferred_model_provider,
+                    orchestrator_model_id,
+                    orchestrator_reasoning_effort,
+                    worker_model_id,
+                    worker_reasoning_effort,
+                    qa_model_id,
+                    qa_reasoning_effort,
+                    designer_model_id,
+                    designer_reasoning_effort,
+                    orchestrator_developer_instructions,
+                    worker_developer_instructions,
+                    qa_developer_instructions,
+                    designer_developer_instructions,
+                    operator_developer_instructions,
+                    hidden_developer_instructions,
+                )
+                .await?;
+            current_view_clone(current_view)
+        }
         Action::CreateThread {
             project_id,
             title,
@@ -672,27 +696,38 @@ async fn handle_action(
             network_access,
             model_id,
             reasoning_effort,
-        } => client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
-            .create_thread(
-                project_id,
-                title,
-                initial_prompt,
-                role,
-                approval_policy,
-                sandbox_mode,
-                network_access,
-                model_id,
-                reasoning_effort,
-            )
-            .await,
-        Action::SpawnAgent { name, role, prompt } => client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.spawn_agent(name, role, prompt).await,
+        } => {
+            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
+                .create_thread(
+                    project_id,
+                    title,
+                    initial_prompt,
+                    role,
+                    approval_policy,
+                    sandbox_mode,
+                    network_access,
+                    model_id,
+                    reasoning_effort,
+                )
+                .await?;
+            current_view_clone(current_view)
+        }
+        Action::SpawnAgent { name, role, prompt } => {
+            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
+                .spawn_agent(name, role, prompt)
+                .await?;
+            current_view_clone(current_view)
+        }
         Action::SetProjectOrchestrator {
             project_id,
             project_path,
             thread_id,
-        } => client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
-            .set_project_orchestrator(&project_id, &project_path, &thread_id)
-            .await,
+        } => {
+            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
+                .set_project_orchestrator(&project_id, &project_path, &thread_id)
+                .await?;
+            current_view_clone(current_view)
+        }
         Action::CreateThreadGroup(title) => {
             let view = current_view.as_ref().ok_or_else(|| anyhow!("No current view"))?;
             let sender_thread_id = view
@@ -712,7 +747,8 @@ async fn handle_action(
                     &title,
                     view.selection.thread_id.as_deref(),
                 )
-                .await
+                .await?;
+            current_view_clone(current_view)
         }
         Action::RenameThreadGroup { group_id, title } => {
             let view = current_view.as_ref().ok_or_else(|| anyhow!("No current view"))?;
@@ -734,7 +770,8 @@ async fn handle_action(
                     Some(title.as_str()),
                     None,
                 )
-                .await
+                .await?;
+            current_view_clone(current_view)
         }
         Action::DeleteThreadGroup(group_id) => {
             let view = current_view.as_ref().ok_or_else(|| anyhow!("No current view"))?;
@@ -750,7 +787,8 @@ async fn handle_action(
                 .ok_or_else(|| anyhow!("No project selected"))?;
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
                 .delete_thread_group(&sender_thread_id, &project_path, &group_id)
-                .await
+                .await?;
+            current_view_clone(current_view)
         }
         Action::ArchiveThreadGroup(group_id) => {
             let view = current_view.as_ref().ok_or_else(|| anyhow!("No current view"))?;
@@ -766,7 +804,8 @@ async fn handle_action(
                 .ok_or_else(|| anyhow!("No project selected"))?;
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
                 .archive_thread_group(&sender_thread_id, &project_path, &group_id)
-                .await
+                .await?;
+            current_view_clone(current_view)
         }
         Action::MoveSelectedThreadToGroup(group_id) => {
             let view = current_view.as_ref().ok_or_else(|| anyhow!("No current view"))?;
@@ -792,7 +831,8 @@ async fn handle_action(
                     &thread_id,
                     group_id.as_deref(),
                 )
-                .await
+                .await?;
+            current_view_clone(current_view)
         }
         Action::UpdateWorkerMetadata {
             issue_number,
@@ -828,28 +868,16 @@ async fn handle_action(
                     unblock_when.as_deref(),
                     clear_blocked,
                 )
-                .await
+                .await?;
+            current_view_clone(current_view)
         }
         Action::SendMessage(text) => {
-            let preserved_messages = current_view.as_ref().and_then(|view| {
-                view.selection
-                    .thread_id
-                    .as_ref()
-                    .map(|_| view.chat_entries.clone())
-            });
             let thread_id = current_view
                 .as_ref()
                 .and_then(|view| view.selection.thread_id.clone())
                 .ok_or_else(|| anyhow!("No thread selected"))?;
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.send_message(&thread_id, &text).await?;
-            let client = client.as_mut().ok_or_else(|| anyhow!("Not connected"))?;
-            if let Some(messages) = preserved_messages {
-                client
-                    .refresh_thread_with_preserved_messages(thread_id, messages)
-                    .await
-            } else {
-                client.select_thread(thread_id).await
-            }
+            current_view_clone(current_view)
         }
         Action::InterruptThread => {
             let thread_id = current_view
@@ -859,18 +887,13 @@ async fn handle_action(
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
                 .interrupt_thread(&thread_id)
                 .await?;
-            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
-                .select_thread(thread_id)
-                .await
+            current_view_clone(current_view)
         }
         Action::DecideApproval {
             approval_id,
             decision,
             message,
         } => {
-            let preserved_messages = current_view
-                .as_ref()
-                .and_then(|view| view.selection.thread_id.as_ref().map(|_| view.chat_entries.clone()));
             let sender_thread_id = current_view
                 .as_ref()
                 .and_then(|view| view.selection.thread_id.clone())
@@ -883,9 +906,7 @@ async fn handle_action(
                     message.as_deref(),
                 )
                 .await?;
-            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
-                .refresh(preserved_messages)
-                .await
+            current_view_clone(current_view)
         }
         Action::UpdateThreadSettings {
             role,
@@ -912,9 +933,7 @@ async fn handle_action(
                     service_tier.as_deref(),
                 )
                 .await?;
-            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
-                .select_thread(thread_id)
-                .await
+            current_view_clone(current_view)
         }
         Action::SetThreadRunningState(running) => {
             let thread_id = current_view
@@ -922,9 +941,7 @@ async fn handle_action(
                 .and_then(|view| view.selection.thread_id.clone())
                 .ok_or_else(|| anyhow!("No thread selected"))?;
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.set_thread_running_state(&thread_id, running).await?;
-            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
-                .select_thread(thread_id)
-                .await
+            current_view_clone(current_view)
         }
         Action::RenameThread(name) => {
             let thread_id = current_view
@@ -932,9 +949,7 @@ async fn handle_action(
                 .and_then(|view| view.selection.thread_id.clone())
                 .ok_or_else(|| anyhow!("No thread selected"))?;
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.rename_thread(&thread_id, &name).await?;
-            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
-                .select_thread(thread_id)
-                .await
+            current_view_clone(current_view)
         }
         Action::ArchiveThread => {
             let thread_id = current_view
@@ -942,7 +957,7 @@ async fn handle_action(
                 .and_then(|view| view.selection.thread_id.clone())
                 .ok_or_else(|| anyhow!("No thread selected"))?;
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.archive_thread(&thread_id).await?;
-            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.load_initial_view().await
+            current_view_clone(current_view)
         }
         Action::WarmHandoff(prompt) => {
             let view = current_view

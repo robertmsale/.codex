@@ -24,11 +24,11 @@ use crate::{
         orchestrator_send_message, orchestrator_spawn_agent, orchestrator_thread_group_archive,
         orchestrator_thread_group_create, orchestrator_thread_group_delete, orchestrator_thread_group_move_thread,
         orchestrator_thread_group_update, orchestrator_thread_groups, orchestrator_threads,
-        orchestrator_warm_handoff, register_live_process, complete_live_process, LiveProcessRecord,
+        orchestrator_warm_handoff, register_live_process, complete_live_process,
         orchestrator_update_worker_metadata, orchestrator_whoami, tracked_project_identity_for_thread,
     },
     models::{
-        BridgeEvent, MAX_TRANSPORT_MESSAGES_PER_THREAD, PROTOCOL_VERSION, SequencedEvent, SERVER_NAME, SERVER_VERSION, ThreadMessagesResponse,
+        BridgeEvent, LiveProcessRecord, MAX_TRANSPORT_MESSAGES_PER_THREAD, PROTOCOL_VERSION, SequencedEvent, SERVER_NAME, SERVER_VERSION, ThreadMessagesResponse,
     },
     runtime::BridgeRuntime,
 };
@@ -117,12 +117,8 @@ async fn app_state(State(runtime): State<Arc<BridgeRuntime>>) -> impl IntoRespon
 }
 
 async fn models(State(runtime): State<Arc<BridgeRuntime>>) -> impl IntoResponse {
-    match execute_bridge_command(&runtime, "modelList", json!({})).await {
-        Ok(outcome) => (
-            StatusCode::OK,
-            Json(outcome.payload.get("payload").cloned().unwrap_or(Value::Array(vec![]))),
-        )
-            .into_response(),
+    match runtime.cached_model_list().await {
+        Ok(models) => (StatusCode::OK, Json(models)).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
     }
 }
@@ -834,13 +830,7 @@ async fn thread_process_register_http(
         started_at: payload.started_at.unwrap_or_else(crate::commands::unix_now),
     };
     match register_live_process(&runtime, &thread_id, process).await {
-        Ok(_) => {
-            let state = runtime.state_document_value().await;
-            runtime
-                .push_event(crate::models::BridgeEvent::AppStateSnapshot { state })
-                .await;
-            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
-        }
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
     }
 }
@@ -850,13 +840,7 @@ async fn thread_process_complete_http(
     State(runtime): State<Arc<BridgeRuntime>>,
 ) -> impl IntoResponse {
     match complete_live_process(&runtime, &thread_id, &process_id).await {
-        Ok(_) => {
-            let state = runtime.state_document_value().await;
-            runtime
-                .push_event(crate::models::BridgeEvent::AppStateSnapshot { state })
-                .await;
-            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
-        }
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
     }
 }
@@ -1413,6 +1397,8 @@ enum OutboundEvent {
     ConnectionStatus { message: String },
     #[serde(rename = "threadMessagesChanged")]
     ThreadMessagesChanged { data: ThreadMessagesResponse },
+    #[serde(rename = "liveProcessesChanged")]
+    LiveProcessesChanged { data: Value },
     #[serde(rename = "hookFailure")]
     HookFailure { data: robdex_protocol::HookFailureNotice },
     #[serde(rename = "commandResult")]
@@ -1442,6 +1428,8 @@ enum WorkbenchOutboundEvent {
     ConnectionStatus { message: String },
     #[serde(rename = "threadMessagesChanged")]
     ThreadMessagesChanged { data: ThreadMessagesResponse },
+    #[serde(rename = "liveProcessesChanged")]
+    LiveProcessesChanged { data: Value },
     #[serde(rename = "hookFailure")]
     HookFailure { data: robdex_protocol::HookFailureNotice },
     #[serde(rename = "commandResult")]
@@ -1818,6 +1806,10 @@ fn should_send_event(event: &SequencedEvent, selected_thread_id: Option<&str>) -
             Some(selected) => selected.trim() == payload.thread_id,
             None => false,
         },
+        BridgeEvent::LiveProcessesChanged { payload } => match selected_thread_id {
+            Some(selected) => payload.get("threadId").and_then(Value::as_str) == Some(selected.trim()),
+            None => false,
+        },
         _ => true,
     }
 }
@@ -1831,6 +1823,9 @@ async fn outbound_envelope_from_event(
         BridgeEvent::AppStateSnapshot { .. } => OutboundEvent::AppStateSnapshot {
             data: make_app_state_snapshot(runtime, false).await.map_err(|_| ())?,
         },
+        BridgeEvent::LiveProcessesChanged { payload } => {
+            OutboundEvent::LiveProcessesChanged { data: payload }
+        }
         BridgeEvent::ThreadMessagesChanged { payload } => {
             OutboundEvent::ThreadMessagesChanged { data: payload }
         }
@@ -1851,6 +1846,9 @@ async fn workbench_outbound_envelope_from_event(
         BridgeEvent::AppStateSnapshot { .. } => WorkbenchOutboundEvent::AppStateSnapshot {
             data: runtime.workbench_snapshot_value().await,
         },
+        BridgeEvent::LiveProcessesChanged { payload } => {
+            WorkbenchOutboundEvent::LiveProcessesChanged { data: payload }
+        }
         BridgeEvent::ThreadMessagesChanged { payload } => {
             WorkbenchOutboundEvent::ThreadMessagesChanged { data: payload }
         }

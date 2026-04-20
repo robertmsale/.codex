@@ -126,10 +126,23 @@ pub enum BridgeEvent {
     ConnectionStatus { message: String },
     #[serde(rename = "appStateSnapshot")]
     AppStateSnapshot { state: Value },
+    #[serde(rename = "liveProcessesChanged")]
+    LiveProcessesChanged { payload: Value },
     #[serde(rename = "threadMessagesChanged")]
     ThreadMessagesChanged { payload: ThreadMessagesResponse },
     #[serde(rename = "hookFailure")]
     HookFailure { payload: HookFailureNotice },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveProcessRecord {
+    pub process_id: String,
+    pub pid: i64,
+    pub process_group_id: Option<i64>,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub started_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

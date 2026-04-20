@@ -10,6 +10,7 @@ use crate::{
     workbench::{
         build_workbench_with_models, chat_entries_from_thread_payload,
         context_window_remaining_percent_from_thread_payload,
+        parse_live_process_items,
     },
 };
 use robdex_protocol::{HookFailureNotice, WorkbenchViewData};
@@ -230,6 +231,25 @@ async fn reduce_message(
             next_view.chat_entries = chat_entries_from_thread_payload(&payload);
             next_view.context_window_remaining_percent =
                 context_window_remaining_percent_from_thread_payload(&payload);
+            Ok(ReduceOutcome::View(next_view))
+        }
+        Some("liveProcessesChanged") => {
+            let Some(payload) = event.get("data").cloned() else {
+                return Ok(ReduceOutcome::None);
+            };
+            let thread_id = payload
+                .get("threadId")
+                .and_then(Value::as_str)
+                .or_else(|| payload.get("threadID").and_then(Value::as_str));
+            if thread_id != selected_thread_id || thread_id.is_none() {
+                return Ok(ReduceOutcome::None);
+            }
+            let mut next_view = current_view.clone();
+            next_view.live_processes = payload
+                .get("processes")
+                .and_then(Value::as_array)
+                .map(|items| parse_live_process_items(items))
+                .unwrap_or_default();
             Ok(ReduceOutcome::View(next_view))
         }
         Some("hookFailure") => {

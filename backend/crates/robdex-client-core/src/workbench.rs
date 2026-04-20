@@ -15,6 +15,7 @@ pub struct WorkbenchClient {
     endpoint: BridgeEndpoint,
     client: Client,
     selected_thread_id: Option<String>,
+    available_models: Option<Vec<UiModelItem>>,
 }
 
 impl WorkbenchClient {
@@ -27,6 +28,7 @@ impl WorkbenchClient {
             endpoint,
             client: Client::new(),
             selected_thread_id: None,
+            available_models: None,
         }
     }
 
@@ -34,16 +36,23 @@ impl WorkbenchClient {
         &self.endpoint
     }
 
+    pub fn sync_view(&mut self, view: &WorkbenchViewData) {
+        self.selected_thread_id = view.selection.thread_id.clone();
+        if !view.available_models.is_empty() {
+            self.available_models = Some(view.available_models.clone());
+        }
+    }
+
     pub async fn load_initial_view(&mut self) -> Result<WorkbenchViewData> {
         let snapshot = self.fetch_snapshot_json().await?;
         self.selected_thread_id = None;
-        build_workbench(snapshot, None, None, &self.endpoint).await
+        self.build_view_from_snapshot(snapshot, None, None).await
     }
 
     pub async fn select_thread(&mut self, thread_id: String) -> Result<WorkbenchViewData> {
         let snapshot = self.fetch_snapshot_json().await?;
         self.selected_thread_id = Some(thread_id.clone());
-        build_workbench(snapshot, Some(&thread_id), None, &self.endpoint).await
+        self.build_view_from_snapshot(snapshot, Some(&thread_id), None).await
     }
 
     pub async fn refresh_thread_with_preserved_messages(
@@ -53,13 +62,8 @@ impl WorkbenchClient {
     ) -> Result<WorkbenchViewData> {
         let snapshot = self.fetch_snapshot_json().await?;
         self.selected_thread_id = Some(thread_id.clone());
-        build_workbench(
-            snapshot,
-            Some(&thread_id),
-            Some(preserved_messages),
-            &self.endpoint,
-        )
-        .await
+        self.build_view_from_snapshot(snapshot, Some(&thread_id), Some(preserved_messages))
+            .await
     }
 
     pub async fn fetch_thread_history(&self, thread_id: &str) -> Result<Vec<UiChatEntry>> {
@@ -71,7 +75,7 @@ impl WorkbenchClient {
         name: String,
         root_path: String,
         default_cwd: String,
-    ) -> Result<WorkbenchViewData> {
+    ) -> Result<()> {
         self.client
             .post(self.endpoint.http_base.join("/projects")?)
             .json(&json!({
@@ -82,35 +86,26 @@ impl WorkbenchClient {
             .send()
             .await?
             .error_for_status()?;
-        let snapshot = self.fetch_snapshot_json().await?;
-        let thread_id = preferred_thread_id(&snapshot);
-        self.selected_thread_id = thread_id.clone();
-        build_workbench(snapshot, thread_id.as_deref(), None, &self.endpoint).await
+        Ok(())
     }
 
-    pub async fn select_project(&mut self, project_id: Option<String>) -> Result<WorkbenchViewData> {
+    pub async fn select_project(&mut self, project_id: Option<String>) -> Result<()> {
         self.client
             .post(self.endpoint.http_base.join("/projects/select")?)
             .json(&json!({ "projectId": project_id }))
             .send()
             .await?
             .error_for_status()?;
-        let snapshot = self.fetch_snapshot_json().await?;
-        let thread_id = preferred_thread_id(&snapshot);
-        self.selected_thread_id = thread_id.clone();
-        build_workbench(snapshot, thread_id.as_deref(), None, &self.endpoint).await
+        Ok(())
     }
 
-    pub async fn delete_project(&mut self, project_id: String) -> Result<WorkbenchViewData> {
+    pub async fn delete_project(&mut self, project_id: String) -> Result<()> {
         self.client
             .delete(self.endpoint.http_base.join(&format!("/projects/{project_id}"))?)
             .send()
             .await?
             .error_for_status()?;
-        let snapshot = self.fetch_snapshot_json().await?;
-        let thread_id = preferred_thread_id(&snapshot);
-        self.selected_thread_id = thread_id.clone();
-        build_workbench(snapshot, thread_id.as_deref(), None, &self.endpoint).await
+        Ok(())
     }
 
     pub async fn update_project(
@@ -135,7 +130,7 @@ impl WorkbenchClient {
         designer_developer_instructions: Option<String>,
         operator_developer_instructions: Option<String>,
         hidden_developer_instructions: Option<String>,
-    ) -> Result<WorkbenchViewData> {
+    ) -> Result<()> {
         self.client
             .post(self.endpoint.http_base.join(&format!("/projects/{project_id}"))?)
             .json(&json!({
@@ -174,8 +169,7 @@ impl WorkbenchClient {
             .send()
             .await?
             .error_for_status()?;
-        let snapshot = self.fetch_snapshot_json().await?;
-        build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
+        Ok(())
     }
 
     pub async fn create_thread(
@@ -189,7 +183,7 @@ impl WorkbenchClient {
         network_access: Option<bool>,
         model_id: Option<String>,
         reasoning_effort: Option<String>,
-    ) -> Result<WorkbenchViewData> {
+    ) -> Result<()> {
         let payload = self
             .client
             .post(self.endpoint.http_base.join("/threads")?)
@@ -209,10 +203,8 @@ impl WorkbenchClient {
             .error_for_status()?
             .json::<Value>()
             .await?;
-        let thread_id = payload.get("threadId").and_then(Value::as_str).map(str::to_string);
-        let snapshot = self.fetch_snapshot_json().await?;
-        self.selected_thread_id = thread_id.clone().or_else(|| preferred_thread_id(&snapshot));
-        build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
+        self.selected_thread_id = payload.get("threadId").and_then(Value::as_str).map(str::to_string);
+        Ok(())
     }
 
     pub async fn spawn_agent(
@@ -220,7 +212,7 @@ impl WorkbenchClient {
         name: String,
         role: String,
         prompt: String,
-    ) -> Result<WorkbenchViewData> {
+    ) -> Result<()> {
         let sender_thread_id = self
             .selected_thread_id
             .clone()
@@ -245,9 +237,8 @@ impl WorkbenchClient {
             .and_then(|agent| agent.get("threadID").or_else(|| agent.get("threadId")).or_else(|| agent.get("id")))
             .and_then(Value::as_str)
             .map(str::to_string);
-        let snapshot = self.fetch_snapshot_json().await?;
-        self.selected_thread_id = thread_id.clone().or_else(|| preferred_thread_id(&snapshot));
-        build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
+        self.selected_thread_id = thread_id;
+        Ok(())
     }
 
     pub async fn set_project_orchestrator(
@@ -255,7 +246,7 @@ impl WorkbenchClient {
         project_id: &str,
         project_path: &str,
         thread_id: &str,
-    ) -> Result<WorkbenchViewData> {
+    ) -> Result<()> {
         self.client
             .post(self.endpoint.http_base.join(&format!("/projects/{project_id}/orchestrator"))?)
             .json(&json!({
@@ -265,8 +256,7 @@ impl WorkbenchClient {
             .send()
             .await?
             .error_for_status()?;
-        let snapshot = self.fetch_snapshot_json().await?;
-        build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
+        Ok(())
     }
 
     pub async fn create_thread_group(
@@ -275,7 +265,7 @@ impl WorkbenchClient {
         project_path: &str,
         title: &str,
         seed_thread_id: Option<&str>,
-    ) -> Result<WorkbenchViewData> {
+    ) -> Result<()> {
         self.client
             .post(self.endpoint.http_base.join("/orchestrator/thread-groups/create")?)
             .json(&json!({
@@ -287,8 +277,7 @@ impl WorkbenchClient {
             .send()
             .await?
             .error_for_status()?;
-        let snapshot = self.fetch_snapshot_json().await?;
-        build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
+        Ok(())
     }
 
     pub async fn update_thread_group(
@@ -298,7 +287,7 @@ impl WorkbenchClient {
         group_id: &str,
         title: Option<&str>,
         collapsed: Option<bool>,
-    ) -> Result<WorkbenchViewData> {
+    ) -> Result<()> {
         self.client
             .post(self.endpoint.http_base.join("/orchestrator/thread-groups/update")?)
             .json(&json!({
@@ -311,8 +300,7 @@ impl WorkbenchClient {
             .send()
             .await?
             .error_for_status()?;
-        let snapshot = self.fetch_snapshot_json().await?;
-        build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
+        Ok(())
     }
 
     pub async fn move_thread_to_group(
@@ -321,7 +309,7 @@ impl WorkbenchClient {
         project_path: &str,
         thread_id: &str,
         target_group_id: Option<&str>,
-    ) -> Result<WorkbenchViewData> {
+    ) -> Result<()> {
         self.client
             .post(self.endpoint.http_base.join("/orchestrator/thread-groups/move-thread")?)
             .json(&json!({
@@ -333,8 +321,7 @@ impl WorkbenchClient {
             .send()
             .await?
             .error_for_status()?;
-        let snapshot = self.fetch_snapshot_json().await?;
-        build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
+        Ok(())
     }
 
     pub async fn delete_thread_group(
@@ -342,7 +329,7 @@ impl WorkbenchClient {
         sender_thread_id: &str,
         project_path: &str,
         group_id: &str,
-    ) -> Result<WorkbenchViewData> {
+    ) -> Result<()> {
         self.client
             .post(self.endpoint.http_base.join("/orchestrator/thread-groups/delete")?)
             .json(&json!({
@@ -353,8 +340,7 @@ impl WorkbenchClient {
             .send()
             .await?
             .error_for_status()?;
-        let snapshot = self.fetch_snapshot_json().await?;
-        build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
+        Ok(())
     }
 
     pub async fn archive_thread_group(
@@ -362,7 +348,7 @@ impl WorkbenchClient {
         sender_thread_id: &str,
         project_path: &str,
         group_id: &str,
-    ) -> Result<WorkbenchViewData> {
+    ) -> Result<()> {
         self.client
             .post(self.endpoint.http_base.join("/orchestrator/thread-groups/archive")?)
             .json(&json!({
@@ -373,8 +359,7 @@ impl WorkbenchClient {
             .send()
             .await?
             .error_for_status()?;
-        let snapshot = self.fetch_snapshot_json().await?;
-        build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
+        Ok(())
     }
 
     pub async fn update_worker_metadata(
@@ -387,7 +372,7 @@ impl WorkbenchClient {
         blocked_reason: Option<&str>,
         unblock_when: Option<&str>,
         clear_blocked: bool,
-    ) -> Result<WorkbenchViewData> {
+    ) -> Result<()> {
         self.client
             .post(self.endpoint.http_base.join("/orchestrator/worker-metadata")?)
             .json(&json!({
@@ -405,8 +390,7 @@ impl WorkbenchClient {
             .send()
             .await?
             .error_for_status()?;
-        let snapshot = self.fetch_snapshot_json().await?;
-        build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
+        Ok(())
     }
 
     pub async fn warm_handoff(
@@ -591,15 +575,11 @@ impl WorkbenchClient {
         Ok(())
     }
 
-    pub async fn refresh(&self, preserved_messages: Option<Vec<UiChatEntry>>) -> Result<WorkbenchViewData> {
+    pub async fn refresh(&mut self, preserved_messages: Option<Vec<UiChatEntry>>) -> Result<WorkbenchViewData> {
         let snapshot = self.fetch_snapshot_json().await?;
-        build_workbench(
-            snapshot,
-            self.selected_thread_id.as_deref(),
-            preserved_messages,
-            &self.endpoint,
-        )
-        .await
+        let selected_thread_id = self.selected_thread_id.clone();
+        self.build_view_from_snapshot(snapshot, selected_thread_id.as_deref(), preserved_messages)
+            .await
     }
 
     async fn fetch_snapshot_json(&self) -> Result<Value> {
@@ -611,6 +591,34 @@ impl WorkbenchClient {
             .error_for_status()?
             .json::<Value>()
             .await?)
+    }
+
+    async fn ensure_available_models(&mut self) -> Result<Vec<UiModelItem>> {
+        if let Some(models) = &self.available_models {
+            return Ok(models.clone());
+        }
+        let models = fetch_available_models(&self.endpoint).await?;
+        self.available_models = Some(models.clone());
+        Ok(models)
+    }
+
+    async fn build_view_from_snapshot(
+        &mut self,
+        snapshot: Value,
+        selected_thread_id: Option<&str>,
+        preserved_messages: Option<Vec<UiChatEntry>>,
+    ) -> Result<WorkbenchViewData> {
+        let models = self.ensure_available_models().await.unwrap_or_default();
+        let view = build_workbench_with_models(
+            snapshot,
+            selected_thread_id,
+            preserved_messages,
+            &self.endpoint,
+            Some(models),
+        )
+        .await?;
+        self.sync_view(&view);
+        Ok(view)
     }
 }
 
@@ -1256,35 +1264,7 @@ fn extract_thread_records(snapshot: &Value) -> Vec<ThreadRecord> {
                     .get("unblockWhen")
                     .and_then(Value::as_str)
                     .map(str::to_string),
-                live_processes: agent
-                    .get("robdexLiveProcesses")
-                    .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(Value::as_object)
-                            .map(|item| UiLiveProcessItem {
-                                process_id: item
-                                    .get("processId")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                pid: item.get("pid").and_then(Value::as_i64),
-                                process_group_id: item
-                                    .get("processGroupId")
-                                    .and_then(Value::as_i64),
-                                command: item
-                                    .get("command")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                cwd: item.get("cwd").and_then(Value::as_str).map(str::to_string),
-                                started_at: item.get("startedAt").and_then(Value::as_u64),
-                            })
-                            .filter(|item| !item.process_id.trim().is_empty())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                live_processes: snapshot_live_processes(snapshot, thread_id),
                 preview: format!("{} · {}", role.to_uppercase(), cwd),
             });
         }
@@ -1307,6 +1287,40 @@ fn extract_thread_records(snapshot: &Value) -> Vec<ThreadRecord> {
             .then(left.display_name.to_lowercase().cmp(&right.display_name.to_lowercase()))
     });
     records
+}
+
+fn snapshot_live_processes(snapshot: &Value, thread_id: &str) -> Vec<UiLiveProcessItem> {
+    snapshot
+        .get("liveProcessesByThreadID")
+        .and_then(Value::as_object)
+        .and_then(|items| items.get(thread_id))
+        .and_then(Value::as_array)
+        .map(|items| parse_live_process_items(items))
+        .unwrap_or_default()
+}
+
+pub fn parse_live_process_items(items: &[Value]) -> Vec<UiLiveProcessItem> {
+    items
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|item| UiLiveProcessItem {
+            process_id: item
+                .get("processId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            pid: item.get("pid").and_then(Value::as_i64),
+            process_group_id: item.get("processGroupId").and_then(Value::as_i64),
+            command: item
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            cwd: item.get("cwd").and_then(Value::as_str).map(str::to_string),
+            started_at: item.get("startedAt").and_then(Value::as_u64),
+        })
+        .filter(|item| !item.process_id.trim().is_empty())
+        .collect()
 }
 
 fn role_sort_key(role: &str) -> (u8, &str) {
@@ -1642,19 +1656,6 @@ fn extract_pending_approvals(snapshot: &Value) -> Vec<UiPendingApprovalItem> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn preferred_thread_id(snapshot: &Value) -> Option<String> {
-    let threads = extract_thread_records(snapshot);
-    if threads.is_empty() {
-        return None;
-    }
-    let running = running_thread_ids(snapshot);
-    threads
-        .iter()
-        .find(|thread| running.contains(&thread.id))
-        .map(|thread| thread.id.clone())
-        .or_else(|| threads.first().map(|thread| thread.id.clone()))
 }
 
 fn author_for_role(role: Option<&str>) -> String {

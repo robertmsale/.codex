@@ -38,7 +38,7 @@ use crate::{
         BridgeEvent, BridgeInfo, BridgeSnapshot, BridgeToolQuestion, EventReplayResponse,
         MAX_EVENT_HISTORY, MAX_TRANSPORT_MESSAGES_PER_THREAD, PROTOCOL_VERSION, PendingApproval,
         PendingApprovalFileChange, PendingApprovalFileChangeKind, PendingApprovalKind, SERVER_NAME, SERVER_VERSION, SequencedEvent,
-        RobdexChatMessage, ThreadCachePayload, ThreadMessagesResponse,
+        LiveProcessRecord, RobdexChatMessage, ThreadCachePayload, ThreadMessagesResponse,
     },
     store::RobdexBridgeStore,
     transport::{DEFAULT_RECONNECT_DELAY_MS, TransportControlMessage, run_transport_loop},
@@ -55,6 +55,7 @@ pub struct BridgeRuntime {
     store: RobdexBridgeStore,
     state_document: RwLock<Value>,
     thread_cache: RwLock<ThreadCachePayload>,
+    live_processes_by_thread_id: RwLock<BTreeMap<String, Vec<LiveProcessRecord>>>,
     connection_status: RwLock<String>,
     event_log: RwLock<EventLog>,
     event_tx: broadcast::Sender<SequencedEvent>,
@@ -73,6 +74,7 @@ pub struct BridgeRuntime {
     thread_cache_flush_task: Mutex<Option<JoinHandle<()>>>,
     state_mutation_lock: Mutex<()>,
     next_transport_request_id: AtomicU64,
+    cached_models: RwLock<Option<Value>>,
 }
 
 impl BridgeRuntime {
@@ -102,6 +104,7 @@ impl BridgeRuntime {
             store,
             state_document: RwLock::new(state_document),
             thread_cache: RwLock::new(thread_cache),
+            live_processes_by_thread_id: RwLock::new(BTreeMap::new()),
             connection_status: RwLock::new("disconnected".to_string()),
             event_log: RwLock::new(EventLog::default()),
             event_tx,
@@ -120,6 +123,7 @@ impl BridgeRuntime {
             thread_cache_flush_task: Mutex::new(None),
             state_mutation_lock: Mutex::new(()),
             next_transport_request_id: AtomicU64::new(10_000),
+            cached_models: RwLock::new(None),
         });
         runtime.clone().spawn_upstream_worker(upstream_rx);
         runtime
@@ -168,6 +172,7 @@ impl BridgeRuntime {
         let connection_status = self.connection_status.read().await.clone();
         let latest_sequence = self.event_log.read().await.latest_sequence;
         let thread_cache = self.thread_cache.read().await.clone();
+        let live_processes_by_thread_id = self.live_processes_by_thread_id.read().await.clone();
         let running_thread_ids = thread_cache.running_thread_ids.clone();
         let pending_approvals = self.pending_approvals().await;
         json!({
@@ -176,6 +181,7 @@ impl BridgeRuntime {
                 "runningThreadIDs": running_thread_ids,
                 "contextWindowStatusByThreadID": thread_cache.context_window_status_by_thread_id,
             },
+            "liveProcessesByThreadID": live_processes_by_thread_id,
             "pendingApprovals": pending_approvals,
             "connectionStatus": connection_status,
             "latestSequence": latest_sequence,
@@ -385,6 +391,60 @@ impl BridgeRuntime {
         ack_rx
             .await
             .context("transport dropped app-server request acknowledgement")?
+    }
+
+    pub async fn cached_model_list(&self) -> Result<Value> {
+        if let Some(models) = self.cached_models.read().await.clone() {
+            return Ok(models);
+        }
+        let result = self.request_app_server_json("model/list", json!({})).await?;
+        let models = result.get("data").cloned().unwrap_or(result);
+        *self.cached_models.write().await = Some(models.clone());
+        Ok(models)
+    }
+
+    pub async fn register_live_process(&self, thread_id: &str, process: LiveProcessRecord) -> Value {
+        let payload = {
+            let mut processes_by_thread = self.live_processes_by_thread_id.write().await;
+            let processes = processes_by_thread.entry(thread_id.to_string()).or_default();
+            processes.retain(|entry| live_process_is_alive(entry) && entry.process_id != process.process_id);
+            processes.push(process);
+            processes.sort_by_key(|entry| entry.started_at);
+            live_processes_changed_payload(thread_id, processes)
+        };
+        self.push_event(BridgeEvent::LiveProcessesChanged {
+            payload: payload.clone(),
+        })
+        .await;
+        payload
+    }
+
+    pub async fn complete_live_process(&self, thread_id: &str, process_id: &str) -> Option<Value> {
+        let payload = {
+            let mut processes_by_thread = self.live_processes_by_thread_id.write().await;
+            let processes = processes_by_thread.get_mut(thread_id)?;
+            processes.retain(|entry| live_process_is_alive(entry) && entry.process_id != process_id);
+            let payload = live_processes_changed_payload(thread_id, processes);
+            if processes.is_empty() {
+                processes_by_thread.remove(thread_id);
+            }
+            payload
+        };
+        self.push_event(BridgeEvent::LiveProcessesChanged {
+            payload: payload.clone(),
+        })
+        .await;
+        Some(payload)
+    }
+
+    pub async fn live_process(&self, thread_id: &str, process_id: &str) -> Option<LiveProcessRecord> {
+        let mut processes_by_thread = self.live_processes_by_thread_id.write().await;
+        let processes = processes_by_thread.get_mut(thread_id)?;
+        processes.retain(live_process_is_alive);
+        processes
+            .iter()
+            .find(|entry| entry.process_id == process_id)
+            .cloned()
     }
 
     pub async fn set_manual_thread_running_state(
@@ -1670,6 +1730,28 @@ fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_secs())
         .unwrap_or(0)
+}
+
+fn live_process_is_alive(process: &LiveProcessRecord) -> bool {
+    let target = process
+        .process_group_id
+        .filter(|pgid| *pgid > 0)
+        .map(|pgid| -(pgid as libc::pid_t))
+        .unwrap_or(process.pid as libc::pid_t);
+    let rc = unsafe { libc::kill(target, 0) };
+    if rc == 0 {
+        return true;
+    }
+    let error = std::io::Error::last_os_error();
+    error.raw_os_error() == Some(libc::EPERM)
+}
+
+fn live_processes_changed_payload(thread_id: &str, processes: &[LiveProcessRecord]) -> Value {
+    json!({
+        "threadId": thread_id,
+        "processes": processes,
+        "generatedAt": unix_now(),
+    })
 }
 
 fn tracked_thread_ids_from_state(state: &Value) -> Vec<String> {

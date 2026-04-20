@@ -14,7 +14,7 @@ use crate::{
         compaction_payload, maybe_run_project_hook, qa_archive_payload, qa_create_payload, worker_archive_payload,
         worker_create_payload,
     },
-    models::{BridgeAgentSummary, BridgeAppStateSnapshot, BridgeInstanceSummary, PendingApproval, ThreadCachePayload},
+    models::{BridgeAgentSummary, BridgeAppStateSnapshot, BridgeInstanceSummary, LiveProcessRecord, PendingApproval, ThreadCachePayload},
     runtime::BridgeRuntime,
     transforms::{resolve_role_instructions, summarize_scoped_agent_record},
 };
@@ -31,17 +31,6 @@ pub(crate) struct CompactionState {
     pub count: u64,
     #[serde(default)]
     pub last_compacted_at: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct LiveProcessRecord {
-    pub process_id: String,
-    pub pid: i64,
-    pub process_group_id: Option<i64>,
-    pub command: String,
-    pub cwd: Option<String>,
-    pub started_at: u64,
 }
 
 #[derive(Debug)]
@@ -238,10 +227,7 @@ pub async fn make_app_state_snapshot(
         thread_cache.context_window_status_by_thread_id.clear();
     }
     let persisted_state_value = runtime.state_document_value().await;
-    let mut state = parse_state(&persisted_state_value);
-    if prune_dead_live_processes_from_state(&mut state) {
-        persist_state(runtime, &state).await?;
-    }
+    let state = parse_state(&persisted_state_value);
     let state_value = bridge_state_payload(&state);
     let mut pending_approvals = runtime.pending_approvals().await;
     pending_approvals.sort_by(|lhs, rhs| {
@@ -286,6 +272,15 @@ pub async fn make_event_replay_response(runtime: &BridgeRuntime, since: Option<u
                     "sequence": sequenced.sequence,
                     "event": {
                         "name": "threadMessagesChanged",
+                        "data": payload,
+                    }
+                })
+            }
+            crate::models::BridgeEvent::LiveProcessesChanged { payload } => {
+                json!({
+                    "sequence": sequenced.sequence,
+                    "event": {
+                        "name": "liveProcessesChanged",
                         "data": payload,
                     }
                 })
@@ -404,7 +399,6 @@ fn bridge_state_payload(state: &PersistedState) -> Value {
                     "dynamicTools": agent.dynamic_tools,
                     "robdexHookLifecycle": agent.extras.get(HOOK_LIFECYCLE_STATE_KEY).cloned(),
                     "robdexCompaction": agent.extras.get(COMPACTION_STATE_KEY).cloned(),
-                    "robdexLiveProcesses": agent.extras.get(LIVE_PROCESSES_KEY).cloned(),
                 }),
             );
         }
@@ -3582,19 +3576,11 @@ pub(crate) async fn register_live_process(
     thread_id: &str,
     process: LiveProcessRecord,
 ) -> Result<()> {
-    let _guard = runtime.lock_state_mutation().await;
-    let mut state = parse_state(&runtime.state_document_value().await);
+    let state = parse_state(&runtime.state_document_value().await);
     if agent_state_for_thread(&state, thread_id).is_none() {
         bail!("Unknown thread `{thread_id}`");
     }
-    prune_dead_live_processes_for_thread(&mut state, thread_id);
-    let mut processes = persisted_live_processes(&state, thread_id);
-    processes.retain(|entry| entry.process_id != process.process_id);
-    processes.push(process);
-    processes.sort_by_key(|entry| entry.started_at);
-    persist_live_processes(&mut state, thread_id, &processes);
-    state.updated_at = Some(unix_now());
-    persist_state(runtime, &state).await?;
+    runtime.register_live_process(thread_id, process).await;
     Ok(())
 }
 
@@ -3603,21 +3589,11 @@ pub(crate) async fn complete_live_process(
     thread_id: &str,
     process_id: &str,
 ) -> Result<()> {
-    let _guard = runtime.lock_state_mutation().await;
-    let mut state = parse_state(&runtime.state_document_value().await);
+    let state = parse_state(&runtime.state_document_value().await);
     if agent_state_for_thread(&state, thread_id).is_none() {
         return Ok(());
     }
-    prune_dead_live_processes_for_thread(&mut state, thread_id);
-    let mut processes = persisted_live_processes(&state, thread_id);
-    let before = processes.len();
-    processes.retain(|entry| entry.process_id != process_id);
-    if processes.len() == before {
-        return Ok(());
-    }
-    persist_live_processes(&mut state, thread_id, &processes);
-    state.updated_at = Some(unix_now());
-    persist_state(runtime, &state).await?;
+    let _ = runtime.complete_live_process(thread_id, process_id).await;
     Ok(())
 }
 
@@ -3626,9 +3602,7 @@ async fn terminate_live_process(
     thread_id: &str,
     process_id: &str,
 ) -> Result<bool> {
-    let state = parse_state(&runtime.state_document_value().await);
-    let processes = persisted_live_processes(&state, thread_id);
-    let Some(process) = processes.iter().find(|entry| entry.process_id == process_id) else {
+    let Some(process) = runtime.live_process(thread_id, process_id).await else {
         return Ok(false);
     };
 

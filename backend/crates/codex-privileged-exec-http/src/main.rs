@@ -23,6 +23,7 @@ use codex_execpolicy::{
 use codex_shell_command::bash::parse_shell_lc_plain_commands;
 use codex_shell_command::parse_command::extract_shell_command;
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::AsyncReadExt,
@@ -605,6 +606,16 @@ struct CapturedOutput {
     truncated_stderr: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeLiveProcessRecord {
+    pid: i64,
+    process_group_id: Option<i64>,
+    command: String,
+    cwd: String,
+    started_at: u64,
+}
+
 async fn execute_argv(
     argv: &[String],
     cwd: &Path,
@@ -618,6 +629,15 @@ async fn execute_argv(
     command.kill_on_drop(true);
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     for (key, value) in filtered_caller_env(caller_env) {
         command.env(key, value);
     }
@@ -628,6 +648,24 @@ async fn execute_argv(
     let mut child = command
         .spawn()
         .with_context(|| format!("spawn {}", argv.join(" ")))?;
+
+    let child_pid = child
+        .id()
+        .ok_or_else(|| anyhow!("spawned process missing pid"))? as i64;
+    let process_group_id = process_group_id_for_pid(child_pid);
+    let process_id = child_pid.to_string();
+    notify_bridge_process_started(
+        caller_env,
+        &process_id,
+        &BridgeLiveProcessRecord {
+            pid: child_pid,
+            process_group_id,
+            command: shell_join(argv),
+            cwd: cwd.display().to_string(),
+            started_at: unix_now(),
+        },
+    )
+    .await;
 
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("child stdout was not captured"))?;
     let stderr = child.stderr.take().ok_or_else(|| anyhow!("child stderr was not captured"))?;
@@ -642,6 +680,7 @@ async fn execute_argv(
 
     let (stdout, truncated_stdout) = stdout_task.await.unwrap_or_default();
     let (stderr, truncated_stderr) = stderr_task.await.unwrap_or_default();
+    notify_bridge_process_completed(caller_env, &process_id).await;
     Ok(CapturedOutput {
         exit_code: status.code(),
         timed_out: false,
@@ -688,6 +727,61 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_secs())
         .unwrap_or(0)
+}
+
+fn shell_join(argv: &[String]) -> String {
+    argv.iter()
+        .map(|part| shell_escape(part))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_escape(part: &str) -> String {
+    if part.is_empty() {
+        return "''".to_string();
+    }
+    if part
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '_' | '-' | '.' | ':' | '='))
+    {
+        return part.to_string();
+    }
+    format!("'{}'", part.replace('\'', "'\"'\"'"))
+}
+
+fn process_group_id_for_pid(pid: i64) -> Option<i64> {
+    #[cfg(unix)]
+    {
+        let pgid = unsafe { libc::getpgid(pid as libc::pid_t) };
+        if pgid > 0 {
+            return Some(pgid as i64);
+        }
+    }
+    None
+}
+
+async fn notify_bridge_process_started(
+    caller_env: &BTreeMap<String, String>,
+    process_id: &str,
+    process: &BridgeLiveProcessRecord,
+) {
+    let Some(thread_id) = caller_env.get("CODEX_THREAD_ID").map(|value| value.trim()).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let url = format!("http://127.0.0.1:42080/threads/{thread_id}/processes/register");
+    let _ = Client::new().post(url).json(process).send().await;
+    let _ = process_id;
+}
+
+async fn notify_bridge_process_completed(
+    caller_env: &BTreeMap<String, String>,
+    process_id: &str,
+) {
+    let Some(thread_id) = caller_env.get("CODEX_THREAD_ID").map(|value| value.trim()).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let url = format!("http://127.0.0.1:42080/threads/{thread_id}/processes/{process_id}/complete");
+    let _ = Client::new().post(url).send().await;
 }
 
 fn into_http_error(error: anyhow::Error) -> (axum::http::StatusCode, Json<ErrorResponse>) {
