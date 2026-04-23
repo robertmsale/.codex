@@ -975,7 +975,8 @@ pub async fn execute_bridge_command(
                 runtime,
                 &state,
                 &recipient_thread_id,
-                &normalized_text,
+                Some(&normalized_text),
+                &[],
                 payload.get("modelID").and_then(Value::as_str),
                 payload.get("reasoningEffort").and_then(Value::as_str),
             )
@@ -2433,17 +2434,19 @@ pub(crate) async fn send_thread_input(
     runtime: &BridgeRuntime,
     state: &PersistedState,
     thread_id: &str,
-    text: &str,
+    text: Option<&str>,
+    local_image_paths: &[String],
     model: Option<&str>,
     effort: Option<&str>,
 ) -> Result<Value> {
+    let input = build_user_input_payload(text, local_image_paths)?;
     if let Some(active_turn_id) = runtime.active_turn_id_for_thread(thread_id).await {
         let steer_result = app_server_request_json(
             runtime,
             "turn/steer",
             json!({
                 "threadId": thread_id,
-                "input": [{"type":"text","text": text}],
+                "input": input,
                 "expectedTurnId": active_turn_id,
             }),
         )
@@ -2480,9 +2483,33 @@ pub(crate) async fn send_thread_input(
         personality: tracked_personality_for_thread(state, thread_id),
         ..Default::default()
     }
-    .turn_start_params(thread_id, json!([{"type":"text","text": text}]));
+    .turn_start_params(thread_id, input);
     let response = app_server_request_json(runtime, "turn/start", params).await?;
     Ok(response.get("turn").cloned().unwrap_or(response))
+}
+
+fn build_user_input_payload(text: Option<&str>, local_image_paths: &[String]) -> Result<Value> {
+    let mut input = Vec::new();
+    if let Some(text) = text.map(str::trim).filter(|value| !value.is_empty()) {
+        input.push(json!({
+            "type": "text",
+            "text": text,
+        }));
+    }
+    for path in local_image_paths {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        input.push(json!({
+            "type": "localImage",
+            "path": trimmed,
+        }));
+    }
+    if input.is_empty() {
+        anyhow::bail!("message must include text or images");
+    }
+    Ok(Value::Array(input))
 }
 
 fn steer_result_acknowledged(result: &Value, active_turn_id: &str) -> bool {
@@ -3036,7 +3063,8 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
         (None, None) => None,
     };
     if let Some(prompt) = prompt_to_send {
-        let _ = send_thread_input(runtime, &state, &thread_id, &prompt, None, None).await?;
+        let _ = send_thread_input(runtime, &state, &thread_id, Some(&prompt), &[], None, None)
+            .await?;
     }
 
     let mut agent = synthesized_agent_for_thread(
@@ -3101,17 +3129,35 @@ async fn create_thread(runtime: &BridgeRuntime, payload: &Value) -> Result<Value
 async fn create_thread_message(runtime: &BridgeRuntime, payload: &Value) -> Result<Value> {
     let state = parse_state(&runtime.state_document_value().await);
     let thread_id = required_string(payload, "threadId")?;
-    let text = required_string(payload, "text")?;
+    let text = payload
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_default();
+    let local_image_paths = payload
+        .get("localImagePaths")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let result = send_thread_input(
         runtime,
         &state,
         &thread_id,
-        &text,
+        Some(text.as_str()),
+        &local_image_paths,
         payload.get("modelID").and_then(Value::as_str),
         payload.get("reasoningEffort").and_then(Value::as_str),
     )
     .await?;
-    runtime.append_local_user_message(&thread_id, &text).await?;
+    runtime
+        .append_local_user_message(&thread_id, &text, &local_image_paths)
+        .await?;
     Ok(json!({
         "threadId": thread_id,
         "turn": result,
@@ -4158,7 +4204,16 @@ pub async fn orchestrator_send_message(
     let sender = scoped.sender;
     let recipient = resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?;
     let normalized_text = normalized_agent_input_text(text, sender.display_name.clone().or(Some(sender.thread_id.clone())));
-    let result = send_thread_input(runtime, &state, &recipient.thread_id, &normalized_text, None, None).await?;
+    let result = send_thread_input(
+        runtime,
+        &state,
+        &recipient.thread_id,
+        Some(&normalized_text),
+        &[],
+        None,
+        None,
+    )
+    .await?;
     Ok(json!({
         "recipientThreadId": recipient.thread_id,
         "recipientDisplayName": recipient.display_name,

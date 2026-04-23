@@ -30,7 +30,7 @@ class ChatTimeline extends StatefulWidget {
   final List<ChatEntry> entries;
   final String title;
   final int? contextWindowRemainingPercent;
-  final ValueChanged<String> onSend;
+  final ValueChanged<ComposerSubmission> onSend;
   final VoidCallback onInterrupt;
   final bool composerEnabled;
   final bool isRunning;

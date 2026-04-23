@@ -16,7 +16,7 @@ Use this skill when authoring or editing `integration_test/*.dart` for Flutter a
 Run a single integration test file with:
 
 ```bash
-command-parser flutter test \
+flutter test \
   --dart-define=TEST_BASE_URL=http://localhost:<PORT> \
   -d flutter-tester \
   integration_test/<test_file>.dart

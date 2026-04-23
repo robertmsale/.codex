@@ -32,10 +32,10 @@ remove_shadow_worktree_path() {
   [[ -n "$worktree_path" ]] || return 0
   [[ -e "$worktree_path" ]] || return 0
 
-  for attempt in 1 2 3; do
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
     rm -rf "$worktree_path" 2>/dev/null || true
     [[ ! -e "$worktree_path" ]] && return 0
-    sleep 0.2
+    sleep 0.5
   done
 
   if [[ -e "$worktree_path" ]]; then
@@ -363,6 +363,7 @@ git_worktree_root() {
 
 git_worktree_create_cmd() {
   local repo_path base_branch branch_name worktree_name worktree_root worktree_path
+  local stdout_file stderr_file rc detail
   repo_path="$(require_local_git_repo "$1")"
   base_branch="$2"
   branch_name="$3"
@@ -385,7 +386,26 @@ git_worktree_create_cmd() {
     echo "Local branch already exists: $branch_name" >&2
     return 1
   fi
-  run_checked "$repo_path" git -C "$repo_path" worktree add -b "$branch_name" "$worktree_path" "origin/$base_branch" >/dev/null
+  stdout_file="$(mktemp)"
+  stderr_file="$(mktemp)"
+  rc=0
+  env PATH="$(git_subprocess_path)" git -C "$repo_path" worktree add -b "$branch_name" "$worktree_path" "origin/$base_branch" >"$stdout_file" 2>"$stderr_file" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    detail="$(python3 -c 'import pathlib, sys; stderr = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace").strip(); stdout = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace").strip(); print(stderr or stdout or "command failed")' "$stderr_file" "$stdout_file")"
+    if [[ "$detail" == *"could not lock config file .git/config"* || "$detail" == *"unable to write upstream branch configuration"* ]]; then
+      if [[ -d "$worktree_path" ]] \
+        && env PATH="$(git_subprocess_path)" git -C "$repo_path" show-ref --verify --quiet "refs/heads/$branch_name" >/dev/null 2>&1 \
+        && [[ "$(env PATH="$(git_subprocess_path)" git -C "$worktree_path" rev-parse --abbrev-ref HEAD 2>/dev/null | tr -d '\n')" == "$branch_name" ]]
+      then
+        rc=0
+      fi
+    fi
+  fi
+  rm -f "$stdout_file" "$stderr_file"
+  if [[ "$rc" -ne 0 ]]; then
+    echo "${detail:-command failed}" >&2
+    return "$rc"
+  fi
   printf 'created worktree %s on branch %s from origin/%s\n' "$worktree_path" "$branch_name" "$base_branch"
 }
 
@@ -421,7 +441,7 @@ git_worktree_refresh_branch_cmd() {
 }
 
 git_worktree_cleanup_cmd() {
-  local worktree_path branch checked_out_elsewhere
+  local worktree_path branch checked_out_elsewhere attempt remove_rc
   worktree_path="$(absolute_path "$1")"
   if [[ ! -e "$worktree_path" ]]; then
     printf 'all clear: worktree path is already missing\n'
@@ -429,7 +449,19 @@ git_worktree_cleanup_cmd() {
   fi
   require_managed_worktree_path "$worktree_path"
   branch="$(current_branch "$REQUIRED_WORKTREE_ROOT")"
-  run_checked "$REQUIRED_REPO_ROOT" git -C "$REQUIRED_REPO_ROOT" worktree remove --force "$REQUIRED_WORKTREE_ROOT" >/dev/null
+  remove_rc=0
+  for attempt in 1 2 3 4 5 6; do
+    remove_rc=0
+    env PATH="$(git_subprocess_path)" git -C "$REQUIRED_REPO_ROOT" worktree remove --force "$REQUIRED_WORKTREE_ROOT" >/dev/null 2>&1 || remove_rc=$?
+    if [[ "$remove_rc" -eq 0 ]] || [[ ! -e "$REQUIRED_WORKTREE_ROOT" ]]; then
+      remove_rc=0
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$remove_rc" -ne 0 ]]; then
+    run_checked "$REQUIRED_REPO_ROOT" git -C "$REQUIRED_REPO_ROOT" worktree remove --force "$REQUIRED_WORKTREE_ROOT" >/dev/null
+  fi
   checked_out_elsewhere="$(env PATH="$(git_subprocess_path)" git -C "$REQUIRED_REPO_ROOT" worktree list --porcelain 2>/dev/null || true)"
   if [[ "$checked_out_elsewhere" != *"branch refs/heads/$branch"* ]]; then
     env PATH="$(git_subprocess_path)" git -C "$REQUIRED_REPO_ROOT" branch -D "$branch" >/dev/null 2>&1 || true
@@ -437,6 +469,39 @@ git_worktree_cleanup_cmd() {
   run_checked "$REQUIRED_REPO_ROOT" git -C "$REQUIRED_REPO_ROOT" worktree prune >/dev/null
   remove_shadow_worktree_path "$worktree_path"
   printf 'removed worktree %s and pruned metadata\n' "$REQUIRED_WORKTREE_ROOT"
+}
+
+fastforward_local_integration_branch_cmd() {
+  local repo_root integration_branch current_branch checked_out_elsewhere stash_name restore_message
+  repo_root="$(require_local_git_repo "$1")"
+  integration_branch="$2"
+  [[ -n "$integration_branch" ]] || { echo "integration_branch is required" >&2; return 1; }
+
+  run_checked "$repo_root" git -C "$repo_root" fetch -q origin --prune >/dev/null
+  run_checked "$repo_root" git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/$integration_branch" >/dev/null
+
+  current_branch="$(current_branch "$repo_root")"
+  if [[ "$current_branch" == "$integration_branch" ]]; then
+    stash_name="$(maybe_stash "$repo_root" "git-merge-worktree-$integration_branch")"
+    run_checked "$repo_root" git -C "$repo_root" merge --ff-only "origin/$integration_branch" >/dev/null
+    if [[ -n "$stash_name" ]]; then
+      restore_message="$(restore_stash "$repo_root" "$stash_name")"
+      printf '%s\n' "$restore_message" >&2
+    fi
+    return 0
+  fi
+
+  checked_out_elsewhere="$(env PATH="$(git_subprocess_path)" git -C "$repo_root" worktree list --porcelain 2>/dev/null || true)"
+  if [[ "$checked_out_elsewhere" == *"branch refs/heads/$integration_branch"* ]]; then
+    echo "Integration branch '$integration_branch' is checked out in another worktree; cannot fast-forward the local branch ref here." >&2
+    return 1
+  fi
+
+  if env PATH="$(git_subprocess_path)" git -C "$repo_root" show-ref --verify --quiet "refs/heads/$integration_branch" >/dev/null 2>&1; then
+    run_checked "$repo_root" git -C "$repo_root" branch -f "$integration_branch" "origin/$integration_branch" >/dev/null
+  else
+    run_checked "$repo_root" git -C "$repo_root" branch --track "$integration_branch" "origin/$integration_branch" >/dev/null
+  fi
 }
 
 git_sync_worktree_cmd() {
@@ -455,6 +520,39 @@ git_sync_worktree_cmd() {
   else
     printf 'rebased %s onto %s\n' "$branch" "$upstream"
   fi
+}
+
+git_recover_published_worktree_cmd() {
+  local worktree_path integration_branch
+  worktree_path="$(absolute_path "$1")"
+  integration_branch="${2:-}"
+  integration_branch="$(resolve_integration_branch "$worktree_path" "$integration_branch")"
+
+  if git_sync_worktree_cmd "$worktree_path" "origin/$integration_branch"; then
+    printf 'recovered published worktree %s in place on its existing PR branch. rerun proof, then publish with git-publish-worktree %s %s\n' \
+      "$worktree_path" "$worktree_path" "$integration_branch"
+    return 0
+  fi
+
+  if env PATH="$(git_subprocess_path)" git -C "$worktree_path" rev-parse --git-path rebase-merge >/dev/null 2>&1; then
+    local rebase_merge_path=""
+    local rebase_apply_path=""
+    rebase_merge_path="$(env PATH="$(git_subprocess_path)" git -C "$worktree_path" rev-parse --git-path rebase-merge 2>/dev/null || true)"
+    rebase_apply_path="$(env PATH="$(git_subprocess_path)" git -C "$worktree_path" rev-parse --git-path rebase-apply 2>/dev/null || true)"
+    if [[ -d "$rebase_merge_path" || -d "$rebase_apply_path" ]]; then
+      cat >&2 <<EOF
+Published PR branch recovery is in progress in this same worktree.
+Stay on the existing branch/worktree.
+Resolve conflicts here, stage the resolutions, then run:
+  git-rebase-continue $worktree_path
+After the rebase finishes:
+  rerun proof in this same worktree
+  git-publish-worktree $worktree_path $integration_branch
+Do not create a new branch or cherry-pick the old commit unless explicitly directed.
+EOF
+    fi
+  fi
+  return 1
 }
 
 git_fetch_cmd() {
@@ -587,7 +685,20 @@ git_merge_worktree_cmd() {
   pr_number="$(run_checked "$REQUIRED_WORKTREE_ROOT" gh pr view "$branch" --json number --jq .number | tr -d '\n')"
   [[ -n "$pr_number" ]] || { echo "No PR found for worktree branch: $branch" >&2; return 1; }
 
-  run_checked "$REQUIRED_WORKTREE_ROOT" gh pr merge "$pr_number" --squash >/dev/null
+  if ! env PATH="$(git_subprocess_path)" gh pr merge "$pr_number" --squash >/dev/null 2>&1; then
+    cat >&2 <<EOF
+Published PR branch is not mergeable right now.
+Stay on this same branch/worktree and recover it in place:
+  git-recover-published-worktree $REQUIRED_WORKTREE_ROOT $integration_branch
+If the rebase stops on conflicts:
+  resolve conflicts in this same worktree
+  git-rebase-continue $REQUIRED_WORKTREE_ROOT
+Then rerun proof and publish the same PR branch:
+  git-publish-worktree $REQUIRED_WORKTREE_ROOT $integration_branch
+Do not create a new branch/worktree or cherry-pick the old commit unless explicitly directed.
+EOF
+    return 1
+  fi
   completed_steps="squash-merged PR #$pr_number"
 
   if env PATH="$(git_subprocess_path)" git -C "$REQUIRED_REPO_ROOT" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
@@ -597,6 +708,8 @@ git_merge_worktree_cmd() {
 
   run_checked "$REQUIRED_REPO_ROOT" git -C "$REQUIRED_REPO_ROOT" fetch -q origin --prune >/dev/null
   completed_steps="$completed_steps. pruned remote refs"
+  fastforward_local_integration_branch_cmd "$REQUIRED_REPO_ROOT" "$integration_branch"
+  completed_steps="$completed_steps. fast-forwarded local $integration_branch to origin/$integration_branch"
 
   if cleanup_text="$(git_worktree_cleanup_cmd "$REQUIRED_WORKTREE_ROOT")"; then
     completed_steps="$completed_steps. $cleanup_text"

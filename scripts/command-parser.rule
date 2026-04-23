@@ -409,6 +409,7 @@ prefix_rule(
         "git-publish-worktree",
         "git-rebase-abort",
         "git-rebase-continue",
+        "git-recover-published-worktree",
         "git-stage-paths",
         "git-sync-worktree",
         "git-unstage-paths",

@@ -2,6 +2,7 @@ use std::{path::Path as FsPath, sync::Arc};
 
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{
         Path,
         Query, State,
@@ -64,6 +65,7 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/threads/{thread_id}/interrupt", post(thread_interrupt_http))
         .route("/mcp/refresh", post(mcp_refresh_http))
         .route("/threads/{thread_id}/messages", post(thread_message_create_http))
+        .route("/uploads/images", post(image_upload_http))
         .route("/threads/messages", get(thread_messages))
         .route("/events/replay", get(replay_events))
         .route("/orchestrator/whoami", get(orchestrator_whoami_route))
@@ -710,6 +712,59 @@ async fn thread_message_create_http(
         Ok(outcome) => (StatusCode::OK, Json(outcome.payload["payload"].clone())).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct ImageUploadQuery {
+    filename: Option<String>,
+}
+
+async fn image_upload_http(
+    State(_runtime): State<Arc<BridgeRuntime>>,
+    Query(query): Query<ImageUploadQuery>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, "image body is required").into_response();
+    }
+
+    let source_name = query.filename.as_deref().unwrap_or("image");
+    let extension = FsPath::new(source_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .filter(|value| {
+            matches!(
+                value.as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "heic" | "heif"
+            )
+        })
+        .unwrap_or_else(|| "png".to_string());
+
+    let upload_dir = std::env::temp_dir().join("robdex-uploads");
+    if let Err(error) = tokio::fs::create_dir_all(&upload_dir).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+    }
+
+    let now = crate::commands::unix_now();
+    let target = upload_dir.join(format!("upload-{now}-{}.{}", uuid_suffix(), extension));
+    if let Err(error) = tokio::fs::write(&target, body).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "path": target.to_string_lossy().into_owned(),
+        })),
+    )
+        .into_response()
+}
+
+fn uuid_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    NEXT_ID.fetch_add(1, Ordering::Relaxed).to_string()
 }
 
 async fn thread_archive_http(

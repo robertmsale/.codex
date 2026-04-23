@@ -40,6 +40,8 @@ dependencies:
   flutter_markdown_plus: ^1.0.7
   highlight: ^0.7.0
   shared_preferences: ^2.5.3
+  desktop_drop: ^0.7.1
+  file_selector: ^1.0.3
 
 dev_dependencies:
   flutter_test:

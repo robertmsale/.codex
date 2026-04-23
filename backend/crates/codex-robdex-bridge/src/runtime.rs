@@ -215,11 +215,35 @@ impl BridgeRuntime {
         }))
     }
 
-    pub async fn append_local_user_message(&self, thread_id: &str, text: &str) -> Result<()> {
+    pub async fn append_local_user_message(
+        &self,
+        thread_id: &str,
+        text: &str,
+        local_image_paths: &[String],
+    ) -> Result<()> {
         let text = text.trim();
-        if text.is_empty() {
+        if text.is_empty() && local_image_paths.is_empty() {
             return Ok(());
         }
+
+        let rendered_text = if local_image_paths.is_empty() {
+            text.to_string()
+        } else {
+            let mut lines = Vec::new();
+            if !text.is_empty() {
+                lines.push(text.to_string());
+            }
+            for path in local_image_paths {
+                if !path.trim().is_empty() {
+                    let label = std::path::Path::new(path.trim())
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or(path.trim());
+                    lines.push(format!("[local-image] {label}"));
+                }
+            }
+            lines.join("\n")
+        };
 
         let now = unix_now();
         let sequence = self.next_transport_request_id.fetch_add(1, Ordering::Relaxed);
@@ -227,7 +251,7 @@ impl BridgeRuntime {
             id: format!("local-user-{now}-{sequence}"),
             thread_id: thread_id.to_string(),
             role: "user".to_string(),
-            text: text.to_string(),
+            text: rendered_text.clone(),
             created_at: now,
             subtitle: None,
             tool_metadata: None,
@@ -244,7 +268,7 @@ impl BridgeRuntime {
                 .iter()
                 .rev()
                 .take(20)
-                .any(|existing| existing.role == "user" && existing.text.trim() == text)
+                .any(|existing| existing.role == "user" && existing.text.trim() == rendered_text.as_str())
             {
                 return Ok(());
             }
@@ -1224,7 +1248,16 @@ impl BridgeRuntime {
                     recipient_thread_id,
                     text,
                 } => {
-                    send_thread_input(self, state, recipient_thread_id, text, None, None).await?;
+                    send_thread_input(
+                        self,
+                        state,
+                        recipient_thread_id,
+                        Some(text),
+                        &[],
+                        None,
+                        None,
+                    )
+                    .await?;
                 }
                 HookAction::DeclineApproval { .. } => {
                     anyhow::bail!("declineApproval is only valid during onApprovalRequested hooks");

@@ -20,6 +20,7 @@ designer-hot-reload ...
 
 - `designer-drive`
   - direct ad-hoc simulator inspection and interaction through plain `idb` commands plus small Python HID helpers for text editing cases
+  - screenshot capture stays on the same `designer-drive screenshot` surface and falls back to simulator-native capture if `idb` bitmap capture is unavailable
 - `designer-flutter-run`
   - launches `flutter run -d <UDID>` in a tmux session from the designer worktree
 - `designer-hot-reload`
@@ -45,8 +46,8 @@ designer-hot-reload ...
 1. Launch the app from the designer worktree:
    - `designer-flutter-run --session designer-app --device-id <UDID> --workdir <worktree_path>`
 2. Inspect or interact with the running app:
-   - `designer-drive --launch-path <worktree_path> hierarchy --device-id <UDID>`
-   - `designer-drive --launch-path <worktree_path> command tapOn --device-id <UDID> --input '{"text":"Settings"}'`
+   - `designer-drive hierarchy --device-id <UDID>`
+   - `designer-drive command tapOn --device-id <UDID> --input '{"text":"Settings"}'`
    - `designer-crop-screenshot --input current.png --preset bottom_safe_area --out current-bottomsafe.png`
 3. After code changes, hot reload:
    - `designer-hot-reload --session designer-app`
@@ -62,30 +63,30 @@ designer-drive [global-options] <subcommand> [subcommand-options]
 Important:
 
 - Global flags must come before the subcommand.
-- In practice, that means `--launch-path`, `--app-id`, `--runtime-label`, and `--json` go before `apps`, `hierarchy`, `command`, `flow`, and so on.
+- In practice, that means `--app-id` and `--json` go before `apps`, `hierarchy`, `command`, `flow`, and so on.
 - Use a single command at a time. Wait for it to complete, inspect the result, then run the next command.
 
 Commands:
 
 ```sh
 designer-drive devices
-designer-drive --launch-path <path> apps --device-id <UDID>
-designer-drive --launch-path <path> hierarchy --device-id <UDID>
-designer-drive --launch-path <path> screenshot --device-id <UDID> --out current.png
-designer-drive --launch-path <path> command <name> --device-id <UDID> [--input <json>] [--label <text>] [--out <file>]
-designer-drive --launch-path <path> flow --device-id <UDID> --input <json-array> [--label <text>]
+designer-drive apps --device-id <UDID>
+designer-drive hierarchy --device-id <UDID>
+designer-drive screenshot --device-id <UDID> --out current.png
+designer-drive command <name> --device-id <UDID> [--input <json>] [--label <text>] [--out <file>]
+designer-drive flow --device-id <UDID> --input <json-array> [--label <text>]
 ```
 
-Use `devices` to list booted simulators visible to idb. All other commands target the UDID you were given and the worktree launch path you are piloting from.
+Use `devices` to list booted simulators visible to idb. All other commands target the UDID you were given. `designer-drive` uses the current working directory internally; designers should not need to pass a worktree path just to pilot a device.
 
 Common examples:
 
 ```sh
 designer-drive devices
-designer-drive --launch-path /path/to/worktree hierarchy --device-id <UDID>
-designer-drive --launch-path /path/to/worktree command tapOn --device-id <UDID> --input '{"text":"Continue"}'
-designer-drive --launch-path /path/to/worktree command clearAndInputText --device-id <UDID> --input 'New title'
-designer-drive --launch-path /path/to/worktree command takeScreenshot --device-id <UDID> --out current.png
+designer-drive hierarchy --device-id <UDID>
+designer-drive command tapOn --device-id <UDID> --input '{"text":"Continue"}'
+designer-drive command clearAndInputText --device-id <UDID> --input 'New title'
+designer-drive command takeScreenshot --device-id <UDID> --out current.png
 designer-hot-reload --session designer-app
 ```
 
@@ -105,7 +106,7 @@ Recommended operating pattern:
 
 1. Start the app with `designer-flutter-run`.
 2. Run `designer-drive devices` and confirm the target UDID.
-3. Use `designer-drive --launch-path <path> hierarchy --device-id <UDID>` to inspect the current screen.
+3. Use `designer-drive hierarchy --device-id <UDID>` to inspect the current screen.
 4. Run one interaction command.
 5. Re-run `hierarchy` or `takeScreenshot` to verify the result.
 6. If you need pixel-level review, crop the screenshot to the exact region you are inspecting.

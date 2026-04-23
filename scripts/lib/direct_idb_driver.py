@@ -63,6 +63,13 @@ def idb_executable() -> str:
     return str(Path.home() / ".local" / "bin" / "idb")
 
 
+def xcrun_executable() -> str | None:
+    configured = os.environ.get("XCRUN_BIN", "").strip()
+    if configured:
+        return configured
+    return shutil.which("xcrun")
+
+
 def launch_env() -> dict[str, str]:
     env = os.environ.copy()
     current_path = env.get("PATH", "")
@@ -151,6 +158,21 @@ def must_run_idb(*, argv: list[str], cwd: Path) -> str:
     if result.returncode != 0:
         raise DriverError((result.stderr or result.stdout or "idb command failed").strip())
     return result.stdout or ""
+
+
+def run_simctl_screenshot(*, device_id: str, destination: Path, cwd: Path) -> None:
+    xcrun = xcrun_executable()
+    if not xcrun:
+        raise DriverError("xcrun is not installed or not available on PATH.")
+    result = subprocess.run(
+        [xcrun, "simctl", "io", device_id, "screenshot", str(destination)],
+        capture_output=True,
+        text=True,
+        cwd=str(cwd),
+        env=launch_env(),
+    )
+    if result.returncode != 0:
+        raise DriverError((result.stderr or result.stdout or "simctl screenshot failed").strip())
 
 
 def list_devices(*, cwd: Path) -> list[dict[str, str]]:
@@ -345,7 +367,15 @@ def command_erase_text(*, device_id: str, count: Any, keycode: int, name: str) -
 def command_take_screenshot(*, device_id: str, cwd: Path, out_path: str) -> dict[str, Any]:
     destination = Path(out_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    must_run_idb(argv=["screenshot", "--udid", device_id, str(destination)], cwd=cwd)
+    result = run_idb(argv=["screenshot", "--udid", device_id, str(destination)], cwd=cwd)
+    if result.returncode != 0:
+        failure_text = (result.stderr or result.stdout or "").strip()
+        if "No Image available to encode" in failure_text:
+            run_simctl_screenshot(device_id=device_id, destination=destination, cwd=cwd)
+        else:
+            raise DriverError(failure_text or "idb screenshot failed")
+    if not destination.exists():
+        raise DriverError("Screenshot command completed without producing an image file.")
     payload = base64.b64encode(destination.read_bytes()).decode("ascii")
     return {"ok": True, "path": str(destination), "data_base64": payload}
 

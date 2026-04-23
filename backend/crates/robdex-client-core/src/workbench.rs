@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use reqwest::Client;
 use serde_json::{Value, json};
 
@@ -425,18 +425,55 @@ impl WorkbenchClient {
         build_workbench(snapshot, self.selected_thread_id.as_deref(), None, &self.endpoint).await
     }
 
-    pub async fn send_message(&self, thread_id: &str, text: &str) -> Result<()> {
+    pub async fn send_message(
+        &self,
+        thread_id: &str,
+        text: &str,
+        local_image_paths: &[String],
+    ) -> Result<()> {
+        let mut uploaded_paths = Vec::with_capacity(local_image_paths.len());
+        for local_path in local_image_paths {
+            uploaded_paths.push(self.upload_local_image(local_path).await?);
+        }
         self.client
             .post(
                 self.endpoint
                     .http_base
                     .join(&format!("/threads/{thread_id}/messages"))?,
             )
-            .json(&json!({ "text": text }))
+            .json(&json!({
+                "text": text,
+                "localImagePaths": uploaded_paths,
+            }))
             .send()
             .await?
             .error_for_status()?;
         Ok(())
+    }
+
+    async fn upload_local_image(&self, local_path: &str) -> Result<String> {
+        let path = std::path::Path::new(local_path);
+        let filename = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
+        let bytes = std::fs::read(path)?;
+        let response = self
+            .client
+            .post(self.endpoint.http_base.join("/uploads/images")?)
+            .query(&[("filename", filename)])
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        response
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("bridge upload response missing path"))
     }
 
     pub async fn terminate_command_execution(&self, thread_id: &str, process_id: &str) -> Result<()> {

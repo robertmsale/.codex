@@ -6,12 +6,20 @@ part of 'signals.dart';
 class SendThreadMessageSignal {
   const SendThreadMessageSignal({
     required this.text,
+    required this.localImagePaths,
   });
 
   static SendThreadMessageSignal deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
+    final text = deserializer.deserializeString();
+    final localImagePaths = <String>[];
+    final localImagePathsLength = deserializer.deserializeLength();
+    for (var i = 0; i < localImagePathsLength; i++) {
+      localImagePaths.add(deserializer.deserializeString());
+    }
     final instance = SendThreadMessageSignal(
-      text: deserializer.deserializeString(),
+      text: text,
+      localImagePaths: localImagePaths,
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -27,18 +35,25 @@ class SendThreadMessageSignal {
   }
 
   final String text;
+  final List<String> localImagePaths;
 
   SendThreadMessageSignal copyWith({
     String? text,
+    List<String>? localImagePaths,
   }) {
     return SendThreadMessageSignal(
       text: text ?? this.text,
+      localImagePaths: localImagePaths ?? this.localImagePaths,
     );
   }
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeString(text);
+    serializer.serializeLength(localImagePaths.length);
+    for (final item in localImagePaths) {
+      serializer.serializeString(item);
+    }
     serializer.decreaseContainerDepth();
   }
 
@@ -54,11 +69,12 @@ class SendThreadMessageSignal {
     if (other.runtimeType != runtimeType) return false;
 
     return other is SendThreadMessageSignal
-      && text == other.text;
+      && text == other.text
+      && _sameStringList(localImagePaths, other.localImagePaths);
   }
 
   @override
-  int get hashCode => text.hashCode;
+  int get hashCode => Object.hash(text, Object.hashAll(localImagePaths));
 
   @override
   String toString() {
@@ -66,13 +82,26 @@ class SendThreadMessageSignal {
 
     assert(() {
       fullString = '$runtimeType('
-        'text: $text'
+        'text: $text, '
+        'localImagePaths: $localImagePaths'
         ')';
       return true;
     }());
 
     return fullString ?? 'SendThreadMessageSignal';
   }
+}
+
+bool _sameStringList(List<String> a, List<String> b) {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 extension SendThreadMessageSignalDartSignalExt on SendThreadMessageSignal {

@@ -49,7 +49,7 @@ status = "out_of_scope"
 [[service]]
 name = "robdex-bridge-deno"
 crate = ""
-current_runner = "/Users/robertsale/.codex/backend/python/codex-services/scripts/run-robdex-bridge-deno"
-current_supervisor = "/Users/robertsale/.codex/backend/python/codex-services/supervisor/robdex-bridge-deno.ini"
+current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-robdex-bridge"
+current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/robdex-bridge.ini"
 port = 42080
 status = "out_of_scope"

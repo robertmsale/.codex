@@ -132,6 +132,7 @@ pub struct UpdateWorkerMetadataSignal {
 #[derive(Deserialize, DartSignal)]
 pub struct SendThreadMessageSignal {
     pub text: String,
+    pub local_image_paths: Vec<String>,
 }
 
 #[derive(Deserialize, DartSignal)]

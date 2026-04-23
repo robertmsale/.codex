@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../core/models/workbench_view_data.dart';
 import '../../core/models/workbench_models.dart';
 import '../chat/chat_timeline.dart';
+import '../composer/composer_panel.dart';
 import '../inspector/inspector_panel.dart';
 import '../sidebar/thread_list_panel.dart';
 
@@ -50,7 +51,7 @@ class RobdexShellScreen extends StatelessWidget {
   final ValueChanged<ProjectItem> onProjectSettings;
   final ValueChanged<ProjectItem> onCreateThread;
   final VoidCallback onSpawnAgent;
-  final ValueChanged<String> onSendMessage;
+  final ValueChanged<ComposerSubmission> onSendMessage;
   final VoidCallback onOpenHistory;
   final VoidCallback onCompactThread;
   final ValueChanged<String> onTerminateCommandExecution;
@@ -192,7 +193,7 @@ class _WideShell extends StatefulWidget {
   final ValueChanged<ProjectItem> onProjectSettings;
   final ValueChanged<ProjectItem> onCreateThread;
   final VoidCallback onSpawnAgent;
-  final ValueChanged<String> onSendMessage;
+  final ValueChanged<ComposerSubmission> onSendMessage;
   final VoidCallback onOpenHistory;
   final VoidCallback onCompactThread;
   final ValueChanged<String> onTerminateCommandExecution;
@@ -347,7 +348,7 @@ class _CompactShell extends StatefulWidget {
   final ValueChanged<ProjectItem> onProjectSettings;
   final ValueChanged<ProjectItem> onCreateThread;
   final VoidCallback onSpawnAgent;
-  final ValueChanged<String> onSendMessage;
+  final ValueChanged<ComposerSubmission> onSendMessage;
   final VoidCallback onOpenHistory;
   final VoidCallback onCompactThread;
   final ValueChanged<String> onTerminateCommandExecution;

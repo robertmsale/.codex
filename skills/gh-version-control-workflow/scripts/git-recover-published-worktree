@@ -1,0 +1,27 @@
+#!/bin/bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_worktree_lib.sh
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -eq 1 && ( "$1" == "--help" || "$1" == "-h" ) ]]; then
+  cat >&2 <<'EOF'
+Usage:
+  git-recover-published-worktree <worktree_path> [integration_branch]
+EOF
+  exit 0
+fi
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  cat >&2 <<'EOF'
+Usage:
+  git-recover-published-worktree <worktree_path> [integration_branch]
+EOF
+  exit 2
+fi
+
+worktree_path="$(normalize_mirrored_path "$1")"
+integration_branch="${2:-${GITOPS_INTEGRATION_BRANCH:-master}}"
+
+git_recover_published_worktree_cmd "$worktree_path" "$integration_branch"

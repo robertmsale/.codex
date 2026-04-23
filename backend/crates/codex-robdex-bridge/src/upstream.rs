@@ -996,7 +996,12 @@ fn render_user_input(input: &codex_app_server_adapter::app_server_protocol::User
         codex_app_server_adapter::app_server_protocol::UserInput::Text { text, .. } => text.clone(),
         codex_app_server_adapter::app_server_protocol::UserInput::Image { url } => format!("[image] {url}"),
         codex_app_server_adapter::app_server_protocol::UserInput::LocalImage { path } => {
-            format!("[local-image] {}", path.display())
+            let label = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            format!("[local-image] {label}")
         }
         codex_app_server_adapter::app_server_protocol::UserInput::Skill { name, .. } => format!("${name}"),
         codex_app_server_adapter::app_server_protocol::UserInput::Mention { name, .. } => format!("@{name}"),

@@ -94,7 +94,10 @@ enum Action {
         unblock_when: Option<String>,
         clear_blocked: bool,
     },
-    SendMessage(String),
+    SendMessage {
+        text: String,
+        local_image_paths: Vec<String>,
+    },
     InterruptThread,
     DecideApproval {
         approval_id: String,
@@ -213,11 +216,32 @@ fn apply_optimistic_action(current_view: &mut Option<WorkbenchViewData>, action:
     let Some(view) = current_view.as_mut() else {
         return;
     };
-    let Action::SendMessage(text) = action else {
+    let Action::SendMessage {
+        text,
+        local_image_paths,
+    } = action else {
         return;
     };
+    if view.selection.thread_id.is_none() {
+        return;
+    }
+    let mut lines = Vec::new();
     let body = text.trim();
-    if body.is_empty() || view.selection.thread_id.is_none() {
+    if !body.is_empty() {
+        lines.push(body.to_string());
+    }
+    for path in local_image_paths {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let label = std::path::Path::new(trimmed)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(trimmed);
+        lines.push(format!("[local-image] {label}"));
+    }
+    if lines.is_empty() {
         return;
     }
     view.chat_entries.push(UiChatEntry {
@@ -225,7 +249,7 @@ fn apply_optimistic_action(current_view: &mut Option<WorkbenchViewData>, action:
         author: "User".to_string(),
         display_label: "User".to_string(),
         timestamp: Some(unix_now_seconds()),
-        body: body.to_string(),
+        body: lines.join("\n"),
         subtitle: Some("Sending...".to_string()),
         kind: None,
         status: Some("pending".to_string()),
@@ -466,8 +490,9 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
             clear_blocked: signal.message.clear_blocked,
         }
     });
-    spawn_map::<SendThreadMessageSignal, _>(tx.clone(), |signal| {
-        Action::SendMessage(signal.message.text)
+    spawn_map::<SendThreadMessageSignal, _>(tx.clone(), |signal| Action::SendMessage {
+        text: signal.message.text,
+        local_image_paths: signal.message.local_image_paths,
     });
     spawn_unit::<InterruptThreadSignal, _>(tx.clone(), || Action::InterruptThread);
     spawn_map::<DecideApprovalSignal, _>(tx.clone(), |signal| Action::DecideApproval {
@@ -871,12 +896,19 @@ async fn handle_action(
                 .await?;
             current_view_clone(current_view)
         }
-        Action::SendMessage(text) => {
+        Action::SendMessage {
+            text,
+            local_image_paths,
+        } => {
             let thread_id = current_view
                 .as_ref()
                 .and_then(|view| view.selection.thread_id.clone())
                 .ok_or_else(|| anyhow!("No thread selected"))?;
-            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.send_message(&thread_id, &text).await?;
+            client
+                .as_mut()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .send_message(&thread_id, &text, &local_image_paths)
+                .await?;
             current_view_clone(current_view)
         }
         Action::InterruptThread => {

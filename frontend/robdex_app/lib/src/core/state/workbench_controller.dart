@@ -261,11 +261,15 @@ class WorkbenchController extends ChangeNotifier {
     ).sendSignalToRust();
   }
 
-  void sendMessage(String text) {
-    if (text.trim().isEmpty) {
+  void sendMessage(String text, {List<String> localImagePaths = const []}) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty && localImagePaths.isEmpty) {
       return;
     }
-    SendThreadMessageSignal(text: text.trim()).sendSignalToRust();
+    SendThreadMessageSignal(
+      text: trimmed,
+      localImagePaths: localImagePaths,
+    ).sendSignalToRust();
   }
 
   void interruptThread() {

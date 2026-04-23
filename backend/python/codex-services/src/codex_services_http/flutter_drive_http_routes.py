@@ -50,26 +50,6 @@ def _post_action_hierarchy(service: FlutterDriveService, *, reservation) -> str:
     return service.manager._serialize_idb_hierarchy(elements)  # noqa: SLF001
 
 
-def _idb_focus_app(*, service: FlutterDriveService, reservation, run_dir: Path | None = None) -> None:
-    result = service.manager._run_idb_cli(  # noqa: SLF001
-        argv=["focus", "--udid", reservation.device_id],
-        cwd=Path(reservation.launch_path),
-    )
-    if run_dir is not None:
-        focus_run_dir = run_dir / "focus"
-        focus_run_dir.mkdir(parents=True, exist_ok=True)
-        service.manager._write_driver_result(  # noqa: SLF001
-            run_dir=focus_run_dir,
-            kind="focus",
-            returncode=result.returncode,
-            stdout=result.stdout or "",
-            stderr=result.stderr or "",
-            metadata={"device_id": reservation.device_id},
-        )
-    if result.returncode != 0:
-        raise BridgeError((result.stderr or result.stdout or "idb focus failed").strip())
-
-
 def _normalized_swipe_duration(raw_duration: Any) -> float:
     try:
         duration = float(raw_duration)

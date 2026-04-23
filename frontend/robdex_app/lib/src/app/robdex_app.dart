@@ -301,7 +301,10 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           onProjectSettings: _showProjectSettingsDialog,
           onCreateThread: _showCreateThreadDialog,
           onSpawnAgent: _showSpawnAgentDialog,
-          onSendMessage: _controller.sendMessage,
+          onSendMessage: (submission) => _controller.sendMessage(
+            submission.text,
+            localImagePaths: submission.localImagePaths,
+          ),
           onOpenHistory: _showHistorySheet,
           onCompactThread: _controller.compactThread,
           onTerminateCommandExecution: _controller.terminateCommandExecution,
