@@ -13,11 +13,15 @@ use codex_app_server_adapter::{
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, connect_async_with_config,
+    tungstenite::{Message, protocol::WebSocketConfig},
+};
 
 use crate::upstream::UpstreamRuntimeEvent;
 
 pub const DEFAULT_RECONNECT_DELAY_MS: u64 = 5_000;
+const APP_SERVER_MAX_WEBSOCKET_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum TransportControlMessage {
@@ -38,9 +42,25 @@ pub struct AppServerConnection {
     stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
 }
 
+#[derive(Debug)]
+enum AppServerRequestError {
+    Request(anyhow::Error),
+    Transport(anyhow::Error),
+}
+
+impl std::fmt::Display for AppServerRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Request(error) | Self::Transport(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for AppServerRequestError {}
+
 impl AppServerConnection {
     pub async fn connect(url: &str) -> Result<Self> {
-        let (stream, _) = connect_async(url)
+        let (stream, _) = connect_async_with_config(url, Some(app_server_websocket_config()), false)
             .await
             .with_context(|| format!("failed to connect to app-server websocket at {url}"))?;
         Ok(Self { stream })
@@ -149,6 +169,14 @@ impl AppServerConnection {
                 }
             }
         }
+    }
+}
+
+fn app_server_websocket_config() -> WebSocketConfig {
+    WebSocketConfig {
+        max_message_size: Some(APP_SERVER_MAX_WEBSOCKET_MESSAGE_BYTES),
+        max_frame_size: Some(APP_SERVER_MAX_WEBSOCKET_MESSAGE_BYTES),
+        ..WebSocketConfig::default()
     }
 }
 
@@ -263,7 +291,14 @@ async fn forward_notification(
     notification: JSONRPCNotification,
     tx: Arc<mpsc::Sender<UpstreamRuntimeEvent>>,
 ) -> Result<()> {
-    let parsed = parse_server_notification(notification)?;
+    let method = notification.method.clone();
+    let parsed = match parse_server_notification(notification) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            tracing::warn!("dropping unhandled app-server notification `{method}`: {error}");
+            return Ok(());
+        }
+    };
     tx.send(UpstreamRuntimeEvent::Notification(parsed))
         .await
         .context("failed to forward upstream notification")
@@ -273,7 +308,14 @@ async fn forward_server_request(
     request: JSONRPCRequest,
     tx: Arc<mpsc::Sender<UpstreamRuntimeEvent>>,
 ) -> Result<()> {
-    let parsed: ServerRequest = parse_server_request(request)?;
+    let method = request.method.clone();
+    let parsed: ServerRequest = match parse_server_request(request) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            tracing::warn!("dropping unhandled app-server request `{method}`: {error}");
+            return Ok(());
+        }
+    };
     tx.send(UpstreamRuntimeEvent::ServerRequest(parsed))
         .await
         .context("failed to forward upstream server request")
@@ -312,7 +354,12 @@ async fn handle_transport_control(
                 let _ = ack.send(Ok(result));
                 Ok(())
             }
-            Err(error) => {
+            Err(AppServerRequestError::Request(error)) => {
+                let message = error.to_string();
+                let _ = ack.send(Err(anyhow::anyhow!(message.clone())));
+                Ok(())
+            }
+            Err(AppServerRequestError::Transport(error)) => {
                 let message = error.to_string();
                 let _ = ack.send(Err(anyhow::anyhow!(message.clone())));
                 Err(anyhow::anyhow!(message))
@@ -327,7 +374,7 @@ async fn request_json_over_connection(
     request_id: RequestId,
     method: String,
     params: serde_json::Value,
-) -> Result<serde_json::Value> {
+) -> Result<serde_json::Value, AppServerRequestError> {
     connection
         .send_request(JSONRPCRequest {
             id: request_id.clone(),
@@ -335,19 +382,30 @@ async fn request_json_over_connection(
             params: Some(params),
             trace: None,
         })
-        .await?;
+        .await
+        .map_err(AppServerRequestError::Transport)?;
 
     loop {
-        match connection.read_message().await? {
+        match connection.read_message().await.map_err(AppServerRequestError::Transport)? {
             JSONRPCMessage::Response(response) if response.id == request_id => return Ok(response.result),
             JSONRPCMessage::Error(error) if error.id == request_id => {
-                bail!("app-server returned JSON-RPC error: {}", error.error.message)
+                return Err(AppServerRequestError::Request(anyhow::anyhow!(
+                    "app-server returned JSON-RPC error: {}",
+                    error.error.message
+                )));
             }
-            JSONRPCMessage::Notification(notification) => forward_notification(notification, tx.clone()).await?,
-            JSONRPCMessage::Request(request) => forward_server_request(request, tx.clone()).await?,
+            JSONRPCMessage::Notification(notification) => forward_notification(notification, tx.clone())
+                .await
+                .map_err(AppServerRequestError::Transport)?,
+            JSONRPCMessage::Request(request) => forward_server_request(request, tx.clone())
+                .await
+                .map_err(AppServerRequestError::Transport)?,
             JSONRPCMessage::Response(_) => {}
             JSONRPCMessage::Error(error) => {
-                bail!("unexpected JSON-RPC error message: {}", error.error.message)
+                return Err(AppServerRequestError::Request(anyhow::anyhow!(
+                    "unexpected JSON-RPC error message: {}",
+                    error.error.message
+                )));
             }
         }
     }
@@ -463,6 +521,79 @@ mod tests {
                 ))
                 .await
                 .expect("send notification");
+            })
+        })
+        .await
+        .expect("server");
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let (_control_tx, control_rx) = mpsc::channel(16);
+        let transport = tokio::spawn(run_transport_loop(
+            format!("ws://{addr}"),
+            tx,
+            control_rx,
+            Duration::from_millis(10),
+        ));
+
+        let first = rx.recv().await.expect("first");
+        let second = rx.recv().await.expect("second");
+        let third = rx.recv().await.expect("third");
+
+        assert!(matches!(first, UpstreamRuntimeEvent::ConnectionStatus(ref value) if value.starts_with("connecting:")));
+        assert!(matches!(second, UpstreamRuntimeEvent::ConnectionStatus(ref value) if value == "connected"));
+        assert!(matches!(third, UpstreamRuntimeEvent::Notification(_)));
+
+        transport.abort();
+        task.await.expect("task");
+    }
+
+    #[tokio::test]
+    async fn transport_loop_ignores_unknown_notifications_without_disconnect() {
+        let (addr, task) = spawn_test_server(|mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("ws");
+                let text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init: {other:?}"),
+                };
+                let parsed = parse_jsonrpc_message(&text).expect("parse");
+                match parsed {
+                    JSONRPCMessage::Request(request) => {
+                        ws.send(Message::Text(
+                            serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                                id: request.id,
+                                result: serde_json::json!({
+                                    "userAgent": "codex",
+                                    "platformFamily": "unix",
+                                    "platformOs": "macos"
+                                }),
+                            }))
+                            .expect("response"),
+                        ))
+                        .await
+                        .expect("send response");
+                    }
+                    other => panic!("unexpected parsed init: {other:?}"),
+                }
+
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Notification(JSONRPCNotification {
+                        method: "future/notification".to_string(),
+                        params: Some(serde_json::json!({ "shape": "unknown" })),
+                    }))
+                    .expect("unknown notification"),
+                ))
+                .await
+                .expect("send unknown notification");
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Notification(JSONRPCNotification {
+                        method: "thread/closed".to_string(),
+                        params: Some(serde_json::json!({ "threadId": "thread-1" })),
+                    }))
+                    .expect("known notification"),
+                ))
+                .await
+                .expect("send known notification");
             })
         })
         .await

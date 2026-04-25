@@ -1,5 +1,60 @@
+use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RobdexAssistantFinalResponse {
+    pub response: String,
+    pub image_paths: Vec<String>,
+}
+
+pub fn robdex_assistant_final_response_schema() -> Value {
+    let schema = schema_for!(RobdexAssistantFinalResponse);
+    let mut schema =
+        serde_json::to_value(schema.schema).expect("RobdexAssistantFinalResponse schema serializes");
+    strip_schema_titles(&mut schema);
+    schema
+}
+
+pub fn strict_robdex_assistant_final_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "response": {
+                "type": "string"
+            },
+            "image_paths": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                }
+            }
+        },
+        "required": [
+            "image_paths",
+            "response"
+        ],
+        "additionalProperties": false
+    })
+}
+
+fn strip_schema_titles(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.remove("title");
+            for value in object.values_mut() {
+                strip_schema_titles(value);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_schema_titles(item);
+            }
+        }
+        _ => {}
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -270,4 +325,44 @@ pub struct HookFailureNotice {
     pub event: String,
     pub status: String,
     pub detail: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        RobdexAssistantFinalResponse, robdex_assistant_final_response_schema,
+        strict_robdex_assistant_final_response_schema,
+    };
+
+    #[test]
+    fn assistant_final_response_schema_matches_strict_openai_subset() {
+        assert_eq!(
+            robdex_assistant_final_response_schema(),
+            strict_robdex_assistant_final_response_schema()
+        );
+    }
+
+    #[test]
+    fn writes_schema_validation_fixture_files() {
+        let fixture_dir = std::path::PathBuf::from("/tmp/robdex-schema-validation");
+        std::fs::create_dir_all(&fixture_dir).expect("create schema validation fixture dir");
+        let schema_path = fixture_dir.join("schema.json");
+        let instructions_path = fixture_dir.join("say_hi.md");
+
+        let schema = robdex_assistant_final_response_schema();
+        std::fs::write(
+            &schema_path,
+            serde_json::to_string_pretty(&schema).expect("serialize schema"),
+        )
+        .expect("write schema fixture");
+        std::fs::write(&instructions_path, "say hi\n").expect("write minimal instructions fixture");
+
+        let decoded: RobdexAssistantFinalResponse =
+            serde_json::from_str(r#"{"response":"hi","image_paths":[]}"#)
+                .expect("sample response decodes");
+        assert_eq!(decoded.response, "hi");
+        assert!(decoded.image_paths.is_empty());
+        assert!(schema_path.exists());
+        assert!(instructions_path.exists());
+    }
 }

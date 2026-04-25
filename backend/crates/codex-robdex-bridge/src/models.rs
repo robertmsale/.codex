@@ -158,6 +158,7 @@ pub enum PendingApprovalKind {
     CommandExecution,
     FileChange,
     ToolUserInput,
+    McpElicitation,
     DynamicToolCall,
     ChatGptAuthRefresh,
 }
@@ -168,6 +169,7 @@ impl PendingApprovalKind {
             Self::CommandExecution => "commandExecution",
             Self::FileChange => "fileChange",
             Self::ToolUserInput => "toolUserInput",
+            Self::McpElicitation => "mcpElicitation",
             Self::DynamicToolCall => "dynamicToolCall",
             Self::ChatGptAuthRefresh => "chatGPTAuthRefresh",
         }
@@ -178,6 +180,7 @@ impl PendingApprovalKind {
             "commandExecution" => Some(Self::CommandExecution),
             "fileChange" => Some(Self::FileChange),
             "toolUserInput" => Some(Self::ToolUserInput),
+            "mcpElicitation" => Some(Self::McpElicitation),
             "dynamicToolCall" => Some(Self::DynamicToolCall),
             "chatGPTAuthRefresh" => Some(Self::ChatGptAuthRefresh),
             _ => None,
@@ -300,8 +303,12 @@ pub struct RobdexChatMessage {
     pub id: String,
     #[serde(rename = "threadID", alias = "threadId")]
     pub thread_id: String,
+    #[serde(default, rename = "turnID", alias = "turnId")]
+    pub turn_id: Option<String>,
     pub role: String,
     pub text: String,
+    #[serde(default)]
+    pub phase: Option<String>,
     #[serde(deserialize_with = "deserialize_timestamp")]
     pub created_at: u64,
     pub subtitle: Option<String>,

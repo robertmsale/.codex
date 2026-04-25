@@ -150,6 +150,7 @@ max_threads = 1
 
 [mcp_servers.openaiDeveloperDocs]
 url = "https://developers.openai.com/mcp"
+default_tools_approval_mode = "approve"
 
 ###############################################################################
 #                                                                             #
@@ -193,3 +194,6 @@ trust_level = "trusted"
 
 [projects."/Users/robertsale/.codex"]
 trust_level = "trusted"
+
+[tui]
+status_line = []

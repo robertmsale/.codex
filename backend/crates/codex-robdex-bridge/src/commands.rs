@@ -14,7 +14,10 @@ use crate::{
         compaction_payload, maybe_run_project_hook, qa_archive_payload, qa_create_payload, worker_archive_payload,
         worker_create_payload,
     },
-    models::{BridgeAgentSummary, BridgeAppStateSnapshot, BridgeInstanceSummary, LiveProcessRecord, PendingApproval, ThreadCachePayload},
+    models::{
+        BridgeAgentSummary, BridgeAppStateSnapshot, BridgeInstanceSummary, LiveProcessRecord, PendingApproval,
+        PendingApprovalKind, ThreadCachePayload,
+    },
     runtime::BridgeRuntime,
     transforms::{resolve_role_instructions, summarize_scoped_agent_record},
 };
@@ -22,7 +25,6 @@ use crate::{
 const HOOK_LIFECYCLE_STATE_KEY: &str = "robdexHookLifecycle";
 const HOOK_TELEMETRY_KEY: &str = "robdexHookTelemetry";
 const PROJECT_HOOK_TELEMETRY_KEY: &str = "robdexRecentHookTelemetry";
-const LIVE_PROCESSES_KEY: &str = "robdexLiveProcesses";
 const COMPACTION_STATE_KEY: &str = "robdexCompaction";
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -879,9 +881,7 @@ pub async fn execute_bridge_command(
             runtime
                 .send_server_response(
                     request_id,
-                    json!({
-                        "decision": decision,
-                    }),
+                    approval_response_payload(approval.as_ref(), &decision),
                 )
                 .await?;
             if let Some(approval) = approval {
@@ -918,9 +918,7 @@ pub async fn execute_bridge_command(
             runtime
                 .send_server_response(
                     request_id,
-                    json!({
-                        "decision": decision,
-                    }),
+                    approval_response_payload(approval.as_ref(), &decision),
                 )
                 .await?;
             if let Some(approval) = approval {
@@ -1177,47 +1175,6 @@ pub(crate) fn tracked_project_identity_for_thread(
         let project_name = project.name.clone().unwrap_or_else(|| project_id.clone());
         Some((project_id, project_name, project_root))
     })
-}
-
-fn prune_dead_live_processes_from_state(state: &mut PersistedState) -> bool {
-    let mut changed = false;
-    for project in state.projects.values_mut() {
-        for agent in project.agents.values_mut() {
-            let Some(value) = agent.extras.get(LIVE_PROCESSES_KEY).cloned() else {
-                continue;
-            };
-            let Some(mut processes) = serde_json::from_value::<Vec<LiveProcessRecord>>(value).ok() else {
-                continue;
-            };
-            let before = processes.len();
-            processes.retain(live_process_is_alive);
-            if processes.len() != before {
-                agent.extras.insert(
-                    LIVE_PROCESSES_KEY.to_string(),
-                    serde_json::to_value(&processes).unwrap_or_else(|_| Value::Array(Vec::new())),
-                );
-                changed = true;
-            }
-        }
-    }
-    if changed {
-        state.updated_at = Some(unix_now());
-    }
-    changed
-}
-
-fn live_process_is_alive(process: &LiveProcessRecord) -> bool {
-    let target = process
-        .process_group_id
-        .filter(|pgid| *pgid > 0)
-        .map(|pgid| -(pgid as libc::pid_t))
-        .unwrap_or(process.pid as libc::pid_t);
-    let rc = unsafe { libc::kill(target, 0) };
-    if rc == 0 {
-        return true;
-    }
-    let error = std::io::Error::last_os_error();
-    error.raw_os_error() == Some(libc::EPERM)
 }
 
 fn deserialize_optional_timestamp<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
@@ -3321,34 +3278,6 @@ fn persisted_agent_hook_state(state: &PersistedState, thread_id: &str) -> Option
         .and_then(|agent| agent.extras.get(HOOK_LIFECYCLE_STATE_KEY).cloned())
 }
 
-fn persisted_live_processes(state: &PersistedState, thread_id: &str) -> Vec<LiveProcessRecord> {
-    agent_state_for_thread(state, thread_id)
-        .and_then(|agent| agent.extras.get(LIVE_PROCESSES_KEY).cloned())
-        .and_then(|value| serde_json::from_value::<Vec<LiveProcessRecord>>(value).ok())
-        .unwrap_or_default()
-}
-
-fn persist_live_processes(state: &mut PersistedState, thread_id: &str, processes: &[LiveProcessRecord]) {
-    if let Some(agent) = agent_state_for_thread_mut(state, thread_id) {
-        agent.extras.insert(
-            LIVE_PROCESSES_KEY.to_string(),
-            serde_json::to_value(processes).unwrap_or_else(|_| Value::Array(Vec::new())),
-        );
-    }
-}
-
-fn prune_dead_live_processes_for_thread(state: &mut PersistedState, thread_id: &str) -> bool {
-    let mut processes = persisted_live_processes(state, thread_id);
-    let before = processes.len();
-    processes.retain(live_process_is_alive);
-    if processes.len() == before {
-        return false;
-    }
-    persist_live_processes(state, thread_id, &processes);
-    state.updated_at = Some(unix_now());
-    true
-}
-
 pub(crate) fn increment_compaction_count(
     state: &mut PersistedState,
     thread_id: &str,
@@ -4778,7 +4707,10 @@ pub async fn orchestrator_approval_decision(
         }
     }
     runtime
-        .send_server_response(approval.request_id.clone(), json!({ "decision": decision }))
+        .send_server_response(
+            approval.request_id.clone(),
+            approval_response_payload(Some(&approval), decision),
+        )
         .await?;
     runtime.clear_pending_approval(&approval.id).await;
     runtime
@@ -4793,6 +4725,26 @@ pub async fn orchestrator_approval_decision(
         "followUpMessageSent": requested && follow_up_error.is_none(),
         "followUpError": follow_up_error,
     }))
+}
+
+fn approval_response_payload(approval: Option<&PendingApproval>, decision: &str) -> Value {
+    if approval
+        .map(|approval| approval.kind == PendingApprovalKind::McpElicitation)
+        .unwrap_or(false)
+    {
+        let action = match decision {
+            "accept" | "approve" => "accept",
+            "cancel" => "cancel",
+            _ => "decline",
+        };
+        return json!({
+            "action": action,
+            "content": null,
+            "_meta": null,
+        });
+    }
+
+    json!({ "decision": decision })
 }
 
 fn basename(path: &str) -> String {
@@ -5573,35 +5525,8 @@ mod tests {
         assert_eq!(notice.detail, "");
     }
 
-    #[test]
-    fn persist_live_processes_round_trips_records() {
-        let mut state = sample_state();
-        let processes = vec![
-            LiveProcessRecord {
-                process_id: "2001".to_string(),
-                pid: 2001,
-                process_group_id: None,
-                command: "sleep 30".to_string(),
-                cwd: Some("/alpha".to_string()),
-                started_at: 10,
-            },
-            LiveProcessRecord {
-                process_id: "2002".to_string(),
-                pid: 2002,
-                process_group_id: None,
-                command: "cargo check".to_string(),
-                cwd: Some("/alpha".to_string()),
-                started_at: 20,
-            },
-        ];
-
-        persist_live_processes(&mut state, "worker-a", &processes);
-
-        assert_eq!(persisted_live_processes(&state, "worker-a"), processes);
-    }
-
     #[tokio::test]
-    async fn register_and_complete_live_process_updates_persisted_state() {
+    async fn register_and_complete_live_process_updates_runtime_state() {
         let temp = TempDir::new().expect("tempdir");
         let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:9".to_string()))
             .await
@@ -5643,18 +5568,23 @@ mod tests {
         .await
         .expect("register live process");
 
-        let state = parse_state(&runtime.state_document_value().await);
-        let processes = persisted_live_processes(&state, "worker-a");
+        let snapshot = runtime.workbench_snapshot_value().await;
+        let processes = snapshot["liveProcessesByThreadID"]["worker-a"]
+            .as_array()
+            .expect("worker live processes");
         assert_eq!(processes.len(), 1);
-        assert_eq!(processes[0].process_id, "3001");
-        assert_eq!(processes[0].command, "sleep 30");
+        assert_eq!(processes[0]["processId"], "3001");
+        assert_eq!(processes[0]["command"], "sleep 30");
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent = agent_state_for_thread(&state, "worker-a").expect("agent state");
+        assert!(agent.extras.is_empty());
 
         complete_live_process(&runtime, "worker-a", "3001")
             .await
             .expect("complete live process");
 
-        let state = parse_state(&runtime.state_document_value().await);
-        assert!(persisted_live_processes(&state, "worker-a").is_empty());
+        let snapshot = runtime.workbench_snapshot_value().await;
+        assert!(snapshot["liveProcessesByThreadID"].get("worker-a").is_none());
     }
 
     #[tokio::test]
@@ -7639,23 +7569,32 @@ mod tests {
         let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
             .await
             .expect("runtime");
-        let outcome = execute_bridge_command(
-            &runtime,
-            "skillsList",
-            json!({
-                "cwds": ["/tmp/project"],
-                "forceReload": true
-            }),
+        let transport = runtime.spawn_transport();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            execute_bridge_command(
+                &runtime,
+                "skillsList",
+                json!({
+                    "cwds": ["/tmp/project"],
+                    "forceReload": true
+                }),
+            ),
         )
         .await
+        .expect("skillsList timed out")
         .expect("skillsList");
 
-        let request = request_rx.await.expect("captured request");
+        let request = tokio::time::timeout(Duration::from_secs(2), request_rx)
+            .await
+            .expect("captured request timed out")
+            .expect("captured request");
         assert_eq!(request.method, "skills/list");
         let params = request.params.expect("params");
         assert_eq!(params["cwds"][0], "/tmp/project");
         assert_eq!(outcome.payload["type"], "skillsList");
         assert_eq!(outcome.payload["payload"]["data"][0]["skills"][0]["name"], "robdex-orchestrator");
+        transport.abort();
     }
 
     #[tokio::test]

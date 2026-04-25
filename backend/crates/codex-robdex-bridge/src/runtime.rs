@@ -11,8 +11,8 @@ use anyhow::{Context, Result};
 use codex_app_server_adapter::{
     app_server_protocol::{
         CommandExecutionRequestApprovalParams, DynamicToolCallParams, FileChangeRequestApprovalParams,
-        FileUpdateChange, McpServerElicitationRequestParams, PatchChangeKind, PermissionsRequestApprovalParams,
-        RequestId, ServerNotification, ServerRequest, ToolRequestUserInputParams,
+        FileUpdateChange, McpServerElicitationRequest, McpServerElicitationRequestParams, PatchChangeKind,
+        PermissionsRequestApprovalParams, RequestId, ServerNotification, ServerRequest, ToolRequestUserInputParams,
     },
     pinned_codex_version_label,
 };
@@ -67,6 +67,7 @@ pub struct BridgeRuntime {
     file_changes_by_item: RwLock<BTreeMap<String, Vec<PendingApprovalFileChange>>>,
     auto_routed_turn_keys: RwLock<BTreeSet<String>>,
     auto_routed_approval_keys: RwLock<BTreeSet<String>>,
+    quarantined_auto_resume_thread_ids: RwLock<BTreeSet<String>>,
     disconnect_running_state_clear_delay: Duration,
     disconnect_clear_task: Mutex<Option<JoinHandle<()>>>,
     pending_thread_cache_flush_ids: Mutex<BTreeSet<String>>,
@@ -116,6 +117,7 @@ impl BridgeRuntime {
             file_changes_by_item: RwLock::new(BTreeMap::new()),
             auto_routed_turn_keys: RwLock::new(BTreeSet::new()),
             auto_routed_approval_keys: RwLock::new(BTreeSet::new()),
+            quarantined_auto_resume_thread_ids: RwLock::new(BTreeSet::new()),
             disconnect_running_state_clear_delay,
             disconnect_clear_task: Mutex::new(None),
             pending_thread_cache_flush_ids: Mutex::new(BTreeSet::new()),
@@ -250,8 +252,10 @@ impl BridgeRuntime {
         let message = RobdexChatMessage {
             id: format!("local-user-{now}-{sequence}"),
             thread_id: thread_id.to_string(),
+            turn_id: None,
             role: "user".to_string(),
             text: rendered_text.clone(),
+            phase: None,
             created_at: now,
             subtitle: None,
             tool_metadata: None,
@@ -663,9 +667,6 @@ impl BridgeRuntime {
         if status == "connected" {
             self.cancel_disconnect_running_state_clear().await;
             self.resume_tracked_threads().await;
-            if let Err(error) = self.reconcile_running_threads_with_app_server().await {
-                tracing::warn!("running state reconciliation failed: {error}");
-            }
         } else if should_schedule_disconnect_running_state_clear(status) {
             self.schedule_disconnect_running_state_clear().await;
         }
@@ -674,9 +675,20 @@ impl BridgeRuntime {
     async fn resume_tracked_threads(&self) {
         let resume_requests = {
             let state = self.state_document.read().await;
+            let running_thread_ids = self
+                .thread_cache
+                .read()
+                .await
+                .running_thread_ids
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let quarantined = self.quarantined_auto_resume_thread_ids.read().await;
             let thread_ids = tracked_thread_ids_from_state(&state);
             thread_ids
                 .into_iter()
+                .filter(|thread_id| running_thread_ids.contains(thread_id))
+                .filter(|thread_id| !quarantined.contains(thread_id))
                 .map(|thread_id| {
                     let cwd = tracked_cwd_for_thread_value(&state, &thread_id);
                     let approval_policy =
@@ -722,7 +734,19 @@ impl BridgeRuntime {
                     }
                     continue;
                 }
-                tracing::warn!("resume tracked thread failed: {thread_id}: {error}");
+                if resume_error_means_transport_closed(&error) {
+                    self.quarantined_auto_resume_thread_ids
+                        .write()
+                        .await
+                        .insert(thread_id.clone());
+                    tracing::warn!(
+                        "resume tracked thread closed transport; quarantining automatic resume until bridge restart: {thread_id}: {error}"
+                    );
+                    continue;
+                }
+                tracing::warn!(
+                    "resume tracked thread failed: {thread_id}: {error}"
+                );
             }
         }
     }
@@ -737,78 +761,6 @@ impl BridgeRuntime {
             tracing::warn!(
                 "pruned tracked thread after missing rollout from app-server: {thread_id}"
             );
-        }
-        Ok(())
-    }
-
-    async fn reconcile_running_threads_with_app_server(&self) -> Result<()> {
-        let running_thread_ids = {
-            let thread_cache = self.thread_cache.read().await;
-            thread_cache.running_thread_ids.clone()
-        };
-        if running_thread_ids.is_empty() {
-            return Ok(());
-        }
-
-        let mut live_active_turn_ids = BTreeMap::new();
-        for thread_id in &running_thread_ids {
-            match self
-                .request_app_server_json(
-                    "thread/read",
-                    json!({
-                        "threadId": thread_id,
-                        "includeTurns": true,
-                    }),
-                )
-                .await
-            {
-                Ok(payload) => {
-                    if let Some(turn_id) = active_turn_id_from_thread_read_payload(&payload) {
-                        live_active_turn_ids.insert(thread_id.clone(), turn_id);
-                    } else if thread_read_payload_is_running(&payload) {
-                        tracing::warn!(
-                            "clearing running state for {thread_id}: app-server reports active but no in-progress turn was present"
-                        );
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        "clearing stale running state after thread/read failed for {thread_id}: {error}"
-                    );
-                }
-            }
-        }
-
-        let payloads = {
-            let mut thread_cache = self.thread_cache.write().await;
-            let before = thread_cache.running_thread_ids.iter().cloned().collect::<BTreeSet<_>>();
-            let live_running_ids = live_active_turn_ids.keys().cloned().collect::<BTreeSet<_>>();
-            if before == live_running_ids {
-                return Ok(());
-            }
-            {
-                let mut running_state = self.running_state.write().await;
-                for thread_id in before.union(&live_running_ids) {
-                    running_state.set_thread_active_turn_state(
-                        thread_id,
-                        live_active_turn_ids.get(thread_id).cloned(),
-                        &mut thread_cache,
-                    );
-                }
-            }
-            thread_cache.running_thread_ids = live_running_ids.iter().cloned().collect();
-            thread_cache.updated_at = Some(unix_now());
-            before
-                .union(&live_running_ids)
-                .map(|thread_id| thread_messages_changed_payload(&thread_cache, thread_id))
-                .collect::<Vec<_>>()
-        };
-
-        self.persist_thread_cache_now(&running_thread_ids).await?;
-        let state = self.state_document.read().await.clone();
-        self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
-        for payload in payloads {
-            self.push_event(BridgeEvent::ThreadMessagesChanged { payload }).await;
         }
         Ok(())
     }
@@ -1019,7 +971,7 @@ impl BridgeRuntime {
         let Some(orchestrator_thread_id) = project.orchestrator_thread_id.filter(|id| id != thread_id) else {
             return;
         };
-        let Some(assistant_text) = self.latest_assistant_text_for_thread(thread_id).await else {
+        let Some(assistant_text) = self.latest_assistant_text_for_thread(thread_id, Some(turn_id)).await else {
             return;
         };
 
@@ -1125,18 +1077,50 @@ impl BridgeRuntime {
         }
     }
 
-    async fn latest_assistant_text_for_thread(&self, thread_id: &str) -> Option<String> {
+    async fn latest_assistant_text_for_thread(&self, thread_id: &str, turn_id: Option<&str>) -> Option<String> {
         let thread_cache = self.thread_cache.read().await;
-        thread_cache
-            .message_cache_by_thread_id
-            .get(thread_id)
-            .and_then(|messages| {
-                messages
-                    .iter()
-                    .rev()
-                    .find(|message| message.role == "assistant" && !message.text.trim().is_empty())
-                    .map(|message| message.text.trim().to_string())
+        let messages = thread_cache.message_cache_by_thread_id.get(thread_id)?;
+        if let Some(turn_id) = turn_id {
+            let final_text = messages
+                .iter()
+                .filter(|message| {
+                    message.role == "assistant"
+                        && message.turn_id.as_deref() == Some(turn_id)
+                        && message.phase.as_deref() == Some("final_answer")
+                        && !message.text.trim().is_empty()
+                })
+                .map(|message| message.text.trim())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if !final_text.trim().is_empty() {
+                return Some(final_text);
+            }
+
+            let turn_text = messages
+                .iter()
+                .filter(|message| {
+                    message.role == "assistant"
+                        && message.turn_id.as_deref() == Some(turn_id)
+                        && message.phase.as_deref() != Some("commentary")
+                        && !message.text.trim().is_empty()
+                })
+                .map(|message| message.text.trim())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if !turn_text.trim().is_empty() {
+                return Some(turn_text);
+            }
+        }
+
+        messages
+            .iter()
+            .rev()
+            .find(|message| {
+                message.role == "assistant"
+                    && message.phase.as_deref() != Some("commentary")
+                    && !message.text.trim().is_empty()
             })
+            .map(|message| message.text.trim().to_string())
     }
 
     async fn maybe_run_approval_requested_hook(&self, approval: &PendingApproval) -> Result<bool> {
@@ -1291,7 +1275,10 @@ impl BridgeRuntime {
             &role,
             tracked_cwd_for_thread_value(&state_value, thread_id).as_deref(),
             project.orchestrator_thread_id.as_deref(),
-            &self.latest_assistant_text_for_thread(thread_id).await.unwrap_or_default(),
+            &self
+                .latest_assistant_text_for_thread(thread_id, Some(turn_id))
+                .await
+                .unwrap_or_default(),
         );
         let invocation = maybe_run_project_hook(&project_root, HookEvent::Stopped, payload).await;
         if let Some(result) = invocation.result.as_ref() {
@@ -1346,7 +1333,7 @@ impl BridgeRuntime {
                     if let Some(message) = follow_up {
                         send_follow_up_message(self, &approval, message).await?;
                     }
-                    self.send_server_response(approval.request_id.clone(), json!({ "decision": "decline" }))
+                    self.send_server_response(approval.request_id.clone(), approval_response_payload(&approval, "decline"))
                         .await?;
                     self.clear_pending_approval(&approval.id).await;
                     self.maybe_run_approval_resolved_hook(
@@ -1366,6 +1353,14 @@ impl BridgeRuntime {
 fn resume_error_means_missing_rollout(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     message.contains("no rollout found for thread id") || message.contains("\"code\": -32600")
+}
+
+fn resume_error_means_transport_closed(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("websocket receive error")
+        || message.contains("websocket closed")
+        || message.contains("websocket ended unexpectedly")
+        || message.contains("transport dropped app-server request acknowledgement")
 }
 
 fn file_change_cache_key(thread_id: &str, item_id: &str) -> String {
@@ -1399,6 +1394,18 @@ fn request_id_display(request_id: &RequestId) -> String {
         RequestId::Integer(value) => value.to_string(),
         RequestId::String(value) => value.clone(),
     }
+}
+
+fn approval_response_payload(approval: &PendingApproval, decision: &str) -> Value {
+    if approval.kind == PendingApprovalKind::McpElicitation {
+        return json!({
+            "action": if decision == "cancel" { "cancel" } else { "decline" },
+            "content": null,
+            "_meta": null,
+        });
+    }
+
+    json!({ "decision": decision })
 }
 
 fn normalize_file_change(change: &FileUpdateChange) -> PendingApprovalFileChange {
@@ -1604,6 +1611,18 @@ fn mcp_elicitation_from_request(
     request_id: RequestId,
     params: McpServerElicitationRequestParams,
 ) -> PendingApproval {
+    let detail = match &params.request {
+        McpServerElicitationRequest::Form { message, .. } => compact_optional_text(Some(message)),
+        McpServerElicitationRequest::Url {
+            message,
+            url,
+            elicitation_id,
+            ..
+        } => {
+            let lines = vec![message.as_str(), url.as_str(), elicitation_id.as_str()];
+            compact_optional_text(Some(&lines.join("\n")))
+        }
+    };
     PendingApproval {
         id: approval_id_for_request(&instance_id, &request_id),
         instance_id,
@@ -1611,9 +1630,9 @@ fn mcp_elicitation_from_request(
         thread_id: params.thread_id,
         turn_id: params.turn_id.unwrap_or_else(|| "__global__".to_string()),
         item_id: params.server_name.clone(),
-        kind: PendingApprovalKind::ToolUserInput,
+        kind: PendingApprovalKind::McpElicitation,
         title: format!("MCP elicitation: {}", params.server_name),
-        detail: None,
+        detail,
         approval_reason: None,
         tool_name: Some(params.server_name),
         tool_arguments: serde_json::to_value(params.request).ok(),
@@ -1824,57 +1843,6 @@ fn should_schedule_disconnect_running_state_clear(status: &str) -> bool {
         || status.starts_with("connect failed:")
         || status.starts_with("initialize failed:")
         || status == "disconnected"
-}
-
-fn thread_read_payload_is_running(payload: &Value) -> bool {
-    payload
-        .get("thread")
-        .and_then(|thread| thread.get("status"))
-        .map(thread_status_value_is_running)
-        .unwrap_or(false)
-}
-
-fn active_turn_id_from_thread_read_payload(payload: &Value) -> Option<String> {
-    payload
-        .get("thread")
-        .and_then(|thread| thread.get("turns"))
-        .and_then(Value::as_array)
-        .and_then(|turns| {
-            turns.iter().rev().find_map(|turn| {
-                let is_in_progress = turn
-                    .get("status")
-                    .map(turn_status_value_is_in_progress)
-                    .unwrap_or(false);
-                if !is_in_progress {
-                    return None;
-                }
-                turn.get("id").and_then(Value::as_str).map(str::to_string)
-            })
-        })
-}
-
-fn thread_status_value_is_running(status: &Value) -> bool {
-    match status {
-        Value::String(value) => matches!(value.as_str(), "active" | "inProgress" | "in_progress" | "running"),
-        Value::Object(object) => object
-            .get("type")
-            .and_then(Value::as_str)
-            .map(|value| matches!(value, "active" | "inProgress" | "in_progress" | "running"))
-            .unwrap_or(false),
-        _ => false,
-    }
-}
-
-fn turn_status_value_is_in_progress(status: &Value) -> bool {
-    match status {
-        Value::String(value) => matches!(value.as_str(), "inProgress" | "in_progress" | "running"),
-        Value::Object(object) => object
-            .get("type")
-            .and_then(Value::as_str)
-            .map(|value| matches!(value, "inProgress" | "in_progress" | "running"))
-            .unwrap_or(false),
-        _ => false,
-    }
 }
 
 #[derive(Clone)]
@@ -2367,6 +2335,39 @@ mod tests {
         assert!(info.sqlite_db_path.contains("state/robdex.sqlite"));
     }
 
+    #[tokio::test]
+    async fn latest_assistant_text_prefers_final_answer_for_completed_turn() {
+        let temp = TempDir::new().expect("tempdir");
+        let settings = BridgeSettings {
+            http: HttpArgs {
+                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 42080,
+            },
+            app_server_url: "ws://127.0.0.1:4200".to_string(),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
+            project_path: temp.path().to_path_buf(),
+            cwd: temp.path().to_path_buf(),
+            paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
+        };
+        let runtime = BridgeRuntime::new(settings).await.expect("runtime");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "thread-1".to_string(),
+                vec![
+                    test_chat_message("thread-1", "turn-1", "a", Some("commentary"), "still working"),
+                    test_chat_message("thread-1", "turn-1", "b", Some("final_answer"), "final answer"),
+                    test_chat_message("thread-1", "turn-2", "c", Some("final_answer"), "newer other turn"),
+                ],
+            );
+        }
+
+        assert_eq!(
+            runtime.latest_assistant_text_for_thread("thread-1", Some("turn-1")).await,
+            Some("final answer".to_string())
+        );
+    }
+
     fn sample_turn(id: &str, status: TurnStatus) -> Turn {
         Turn {
             id: id.to_string(),
@@ -2376,6 +2377,27 @@ mod tests {
             completed_at: None,
             duration_ms: None,
             error: None,
+        }
+    }
+
+    fn test_chat_message(
+        thread_id: &str,
+        turn_id: &str,
+        id: &str,
+        phase: Option<&str>,
+        text: &str,
+    ) -> RobdexChatMessage {
+        RobdexChatMessage {
+            id: id.to_string(),
+            thread_id: thread_id.to_string(),
+            turn_id: Some(turn_id.to_string()),
+            role: "assistant".to_string(),
+            text: text.to_string(),
+            phase: phase.map(str::to_string),
+            created_at: 1,
+            subtitle: None,
+            tool_metadata: None,
+            delivery_state: "confirmed".to_string(),
         }
     }
 

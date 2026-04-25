@@ -152,8 +152,10 @@ pub fn sample_message(thread_id: &str, id: &str) -> RobdexChatMessage {
     RobdexChatMessage {
         id: id.to_string(),
         thread_id: thread_id.to_string(),
+        turn_id: None,
         role: "assistant".to_string(),
         text: "hello".to_string(),
+        phase: None,
         created_at: 1,
         subtitle: None,
         tool_metadata: None,

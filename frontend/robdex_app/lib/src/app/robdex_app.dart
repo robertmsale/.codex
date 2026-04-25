@@ -2589,6 +2589,7 @@ class _ThreadHistorySheet extends StatefulWidget {
 class _ThreadHistorySheetState extends State<_ThreadHistorySheet> {
   late final TextEditingController _searchController;
   String _pattern = '';
+  _HistoryMessageType _messageType = _HistoryMessageType.all;
 
   @override
   void initState() {
@@ -2611,9 +2612,13 @@ class _ThreadHistorySheetState extends State<_ThreadHistorySheet> {
         builder: (context, _) {
           final error = widget.controller.threadHistoryError;
           final regex = _buildRegex(_pattern);
+          final historyEntries = widget.controller.threadHistoryEntries;
+          final typeFilteredEntries = historyEntries
+              .where((entry) => _messageType.matches(entry))
+              .toList(growable: false);
           final filteredEntries = regex == null
-              ? widget.controller.threadHistoryEntries
-              : widget.controller.threadHistoryEntries
+              ? typeFilteredEntries
+              : typeFilteredEntries
                   .where((entry) => regex.hasMatch(_searchableText(entry)))
                   .toList(growable: false);
 
@@ -2660,6 +2665,19 @@ class _ThreadHistorySheetState extends State<_ThreadHistorySheet> {
                         ),
                 ),
               ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  for (final type in _HistoryMessageType.values)
+                    ChoiceChip(
+                      label: Text(type.label),
+                      selected: _messageType == type,
+                      onSelected: (_) => setState(() => _messageType = type),
+                    ),
+                ],
+              ),
               if (_pattern.isNotEmpty && regex == null) ...[
                 const SizedBox(height: 6),
                 Text(
@@ -2702,7 +2720,7 @@ class _ThreadHistorySheetState extends State<_ThreadHistorySheet> {
                       if (widget.controller.isThreadHistoryLoading)
                         const SizedBox(width: 8),
                       Text(
-                        '${filteredEntries.length} results',
+                        '${filteredEntries.length} of ${historyEntries.length} results',
                         style: Theme.of(context).textTheme.labelSmall,
                       ),
                     ],
@@ -2715,6 +2733,58 @@ class _ThreadHistorySheetState extends State<_ThreadHistorySheet> {
       ),
     );
   }
+}
+
+enum _HistoryMessageType {
+  all('All'),
+  user('User'),
+  assistant('Assistant'),
+  tool('Tool'),
+  system('System'),
+  other('Other');
+
+  const _HistoryMessageType(this.label);
+
+  final String label;
+
+  bool matches(ChatEntry entry) {
+    return switch (this) {
+      _HistoryMessageType.all => true,
+      _HistoryMessageType.user => _entryType(entry) == _HistoryMessageType.user,
+      _HistoryMessageType.assistant => _entryType(entry) == _HistoryMessageType.assistant,
+      _HistoryMessageType.tool => _entryType(entry) == _HistoryMessageType.tool,
+      _HistoryMessageType.system => _entryType(entry) == _HistoryMessageType.system,
+      _HistoryMessageType.other => _entryType(entry) == _HistoryMessageType.other,
+    };
+  }
+}
+
+_HistoryMessageType _entryType(ChatEntry entry) {
+  if (entry.isTool || entry.command != null || entry.output != null) {
+    return _HistoryMessageType.tool;
+  }
+
+  final author = entry.author.trim().toLowerCase();
+  final label = entry.displayLabel.trim().toLowerCase();
+  if (author == 'user' || author == 'operator' || label == 'user' || label == 'operator') {
+    return _HistoryMessageType.user;
+  }
+  if (author == 'assistant' || label == 'assistant') {
+    return _HistoryMessageType.assistant;
+  }
+  if (author == 'system' || label == 'system') {
+    return _HistoryMessageType.system;
+  }
+
+  final kind = entry.kind?.trim().toLowerCase();
+  if (kind == 'commandexecution' ||
+      kind == 'filechange' ||
+      kind == 'mcptoolcall' ||
+      kind == 'tool') {
+    return _HistoryMessageType.tool;
+  }
+
+  return _HistoryMessageType.other;
 }
 
 RegExp? _buildRegex(String pattern) {

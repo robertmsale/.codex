@@ -4,13 +4,14 @@ use codex_app_server_adapter::app_server_protocol::{
     AgentMessageDeltaNotification, CommandExecutionOutputDeltaNotification, CommandExecutionStatus,
     FileChangeOutputDeltaNotification, FileUpdateChange, ItemCompletedNotification,
     ItemStartedNotification, McpToolCallStatus, ModelReroutedNotification, PatchApplyStatus,
-    PlanDeltaNotification, ReasoningSummaryPartAddedNotification, ReasoningSummaryTextDeltaNotification,
-    ReasoningTextDeltaNotification, ServerNotification, ServerRequest, TerminalInteractionNotification, Thread,
-    ThreadActiveFlag, ThreadClosedNotification, ThreadItem, ThreadStartedNotification, ThreadStatus,
-    ThreadStatusChangedNotification, ThreadTokenUsageUpdatedNotification, Turn, TurnCompletedNotification,
-    TurnDiffUpdatedNotification, TurnPlanStepStatus, TurnPlanUpdatedNotification, TurnStartedNotification,
-    TurnStatus,
+    PlanDeltaNotification, RawResponseItemCompletedNotification, ReasoningSummaryPartAddedNotification,
+    ReasoningSummaryTextDeltaNotification, ReasoningTextDeltaNotification, ServerNotification, ServerRequest,
+    TerminalInteractionNotification, Thread, ThreadActiveFlag, ThreadClosedNotification, ThreadItem,
+    ThreadStartedNotification, ThreadStatus, ThreadStatusChangedNotification, ThreadTokenUsageUpdatedNotification,
+    Turn, TurnCompletedNotification, TurnDiffUpdatedNotification, TurnPlanStepStatus, TurnPlanUpdatedNotification,
+    TurnStartedNotification, TurnStatus,
 };
+use codex_app_server_adapter::protocol::models::{ContentItem, MessagePhase, ResponseItem};
 
 use crate::{
     models::{
@@ -137,6 +138,26 @@ impl RunningStateReducer {
         changed_thread_ids: &mut BTreeSet<String>,
     ) -> bool {
         match notification {
+            ServerNotification::TurnStarted(payload) => {
+                self.apply_turn_items(
+                    &payload.thread_id,
+                    &payload.turn.id,
+                    &payload.turn.items,
+                    UpsertMode::Merge,
+                    thread_cache,
+                    changed_thread_ids,
+                )
+            }
+            ServerNotification::TurnCompleted(payload) => {
+                self.apply_turn_items(
+                    &payload.thread_id,
+                    &payload.turn.id,
+                    &payload.turn.items,
+                    UpsertMode::Replace,
+                    thread_cache,
+                    changed_thread_ids,
+                )
+            }
             ServerNotification::ItemStarted(payload) => {
                 self.apply_item_notification(payload, UpsertMode::Merge, thread_cache, changed_thread_ids)
             }
@@ -145,6 +166,9 @@ impl RunningStateReducer {
             }
             ServerNotification::AgentMessageDelta(payload) => {
                 self.apply_agent_message_delta(payload, thread_cache, changed_thread_ids)
+            }
+            ServerNotification::RawResponseItemCompleted(payload) => {
+                self.apply_raw_response_item_completed(payload, thread_cache, changed_thread_ids)
             }
             ServerNotification::PlanDelta(payload) => {
                 self.apply_plan_delta(payload, thread_cache, changed_thread_ids)
@@ -179,6 +203,25 @@ impl RunningStateReducer {
             }
             _ => false,
         }
+    }
+
+    fn apply_turn_items(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        items: &[ThreadItem],
+        mode: UpsertMode,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let mut changed = false;
+        for item in items {
+            let Some(message) = message_from_item(item, thread_id, Some(turn_id), mode) else {
+                continue;
+            };
+            changed |= upsert_message(thread_cache, thread_id, message, mode, changed_thread_ids);
+        }
+        changed
     }
 
     fn apply_context_window_notification(
@@ -286,9 +329,12 @@ impl RunningStateReducer {
         thread_cache: &mut ThreadCachePayload,
         changed_thread_ids: &mut BTreeSet<String>,
     ) -> bool {
-        let Some(message) = message_from_item(payload.item(), payload.thread_id(), mode) else {
+        let Some(message) = message_from_item(payload.item(), payload.thread_id(), Some(payload.turn_id()), mode) else {
             return false;
         };
+        if mode == UpsertMode::Replace && matches!(payload.item(), ThreadItem::AgentMessage { .. }) {
+            remove_superseded_agent_fragments(thread_cache, payload.thread_id(), payload.turn_id(), &message);
+        }
         upsert_message(
             thread_cache,
             payload.thread_id(),
@@ -305,11 +351,13 @@ impl RunningStateReducer {
         changed_thread_ids: &mut BTreeSet<String>,
     ) -> bool {
         let existing = find_message(thread_cache, &payload.thread_id, &payload.item_id);
-        let message = make_message(
+        let message = make_message_with_context(
             payload.item_id.clone(),
             payload.thread_id.clone(),
+            Some(payload.turn_id.clone()),
             "assistant",
             merge_delta_text(existing.map(|message| message.text.as_str()).unwrap_or(""), &payload.delta),
+            existing.and_then(|message| message.phase.clone()),
             existing.and_then(|message| message.subtitle.clone()),
             existing.and_then(|message| message.tool_metadata.clone()),
             existing.map(|message| message.created_at),
@@ -319,6 +367,25 @@ impl RunningStateReducer {
             &payload.thread_id,
             message,
             UpsertMode::Merge,
+            changed_thread_ids,
+        )
+    }
+
+    fn apply_raw_response_item_completed(
+        &self,
+        payload: &RawResponseItemCompletedNotification,
+        thread_cache: &mut ThreadCachePayload,
+        changed_thread_ids: &mut BTreeSet<String>,
+    ) -> bool {
+        let Some(message) = message_from_raw_response_item(&payload.item, &payload.thread_id, &payload.turn_id) else {
+            return false;
+        };
+        remove_superseded_agent_fragments(thread_cache, &payload.thread_id, &payload.turn_id, &message);
+        upsert_message(
+            thread_cache,
+            &payload.thread_id,
+            message,
+            UpsertMode::Replace,
             changed_thread_ids,
         )
     }
@@ -675,12 +742,17 @@ impl RunningStateReducer {
 
 trait ItemNotification {
     fn thread_id(&self) -> &str;
+    fn turn_id(&self) -> &str;
     fn item(&self) -> &ThreadItem;
 }
 
 impl ItemNotification for ItemStartedNotification {
     fn thread_id(&self) -> &str {
         &self.thread_id
+    }
+
+    fn turn_id(&self) -> &str {
+        &self.turn_id
     }
 
     fn item(&self) -> &ThreadItem {
@@ -691,6 +763,10 @@ impl ItemNotification for ItemStartedNotification {
 impl ItemNotification for ItemCompletedNotification {
     fn thread_id(&self) -> &str {
         &self.thread_id
+    }
+
+    fn turn_id(&self) -> &str {
+        &self.turn_id
     }
 
     fn item(&self) -> &ThreadItem {
@@ -747,6 +823,28 @@ fn upsert_message(
     next
 }
 
+fn remove_superseded_agent_fragments(
+    thread_cache: &mut ThreadCachePayload,
+    thread_id: &str,
+    turn_id: &str,
+    incoming: &RobdexChatMessage,
+) -> bool {
+    let Some(messages) = thread_cache.message_cache_by_thread_id.get_mut(thread_id) else {
+        return false;
+    };
+    let before = messages.len();
+    messages.retain(|message| {
+        if message.id == incoming.id {
+            return true;
+        }
+        if message.role != "assistant" || message.turn_id.as_deref() != Some(turn_id) {
+            return true;
+        }
+        !(message.phase.is_none() || message.phase == incoming.phase)
+    });
+    messages.len() != before
+}
+
 fn find_message<'a>(
     thread_cache: &'a ThreadCachePayload,
     thread_id: &str,
@@ -758,11 +856,15 @@ fn find_message<'a>(
         .and_then(|messages| messages.iter().find(|message| message.id == message_id))
 }
 
-fn replace_message(existing: RobdexChatMessage, incoming: RobdexChatMessage) -> RobdexChatMessage {
-    RobdexChatMessage {
-        created_at: existing.created_at,
-        ..incoming
+fn replace_message(existing: RobdexChatMessage, mut incoming: RobdexChatMessage) -> RobdexChatMessage {
+    incoming.created_at = existing.created_at;
+    if incoming.turn_id.is_none() {
+        incoming.turn_id = existing.turn_id;
     }
+    if incoming.phase.is_none() {
+        incoming.phase = existing.phase;
+    }
+    incoming
 }
 
 fn merge_chat_messages(existing: RobdexChatMessage, incoming: RobdexChatMessage) -> RobdexChatMessage {
@@ -793,8 +895,10 @@ fn merge_chat_messages(existing: RobdexChatMessage, incoming: RobdexChatMessage)
     RobdexChatMessage {
         id: existing.id,
         thread_id: existing.thread_id,
+        turn_id: incoming.turn_id.or(existing.turn_id),
         role: incoming.role,
         text: prefer_merged_text(&existing.text, &incoming.text),
+        phase: incoming.phase.or(existing.phase),
         created_at: existing.created_at,
         subtitle: incoming.subtitle.or(existing.subtitle),
         tool_metadata: merged_tool,
@@ -836,7 +940,12 @@ fn prefer_merged_text(existing: &str, incoming: &str) -> String {
     }
 }
 
-fn message_from_item(item: &ThreadItem, thread_id: &str, mode: UpsertMode) -> Option<RobdexChatMessage> {
+fn message_from_item(
+    item: &ThreadItem,
+    thread_id: &str,
+    turn_id: Option<&str>,
+    mode: UpsertMode,
+) -> Option<RobdexChatMessage> {
     match item {
         ThreadItem::UserMessage { id, content } => {
             let text = content
@@ -858,11 +967,15 @@ fn message_from_item(item: &ThreadItem, thread_id: &str, mode: UpsertMode) -> Op
                 None,
             ))
         }
-        ThreadItem::AgentMessage { id, text, .. } => Some(make_message(
+        ThreadItem::AgentMessage {
+            id, text, phase, ..
+        } => Some(make_message_with_context(
             id.clone(),
             thread_id.to_string(),
+            turn_id.map(str::to_string),
             "assistant",
             text.clone(),
+            agent_phase_label(phase.as_ref(), mode),
             None,
             None,
             None,
@@ -991,6 +1104,47 @@ fn message_from_item(item: &ThreadItem, thread_id: &str, mode: UpsertMode) -> Op
     }
 }
 
+fn message_from_raw_response_item(
+    item: &ResponseItem,
+    thread_id: &str,
+    turn_id: &str,
+) -> Option<RobdexChatMessage> {
+    let ResponseItem::Message {
+        id,
+        role,
+        content,
+        phase,
+        ..
+    } = item
+    else {
+        return None;
+    };
+    if role != "assistant" {
+        return None;
+    }
+    let text = content
+        .iter()
+        .filter_map(|entry| match entry {
+            ContentItem::OutputText { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(make_message_with_context(
+        id.clone().unwrap_or_else(|| format!("raw-agent-message-{turn_id}")),
+        thread_id.to_string(),
+        Some(turn_id.to_string()),
+        "assistant",
+        text,
+        agent_phase_label(phase.as_ref(), UpsertMode::Replace),
+        None,
+        None,
+        None,
+    ))
+}
+
 fn render_user_input(input: &codex_app_server_adapter::app_server_protocol::UserInput) -> String {
     match input {
         codex_app_server_adapter::app_server_protocol::UserInput::Text { text, .. } => text.clone(),
@@ -1017,15 +1171,57 @@ fn make_message(
     tool_metadata: Option<RobdexToolMetadata>,
     created_at: Option<u64>,
 ) -> RobdexChatMessage {
+    make_message_with_context(
+        id,
+        thread_id,
+        None,
+        role,
+        text,
+        None,
+        subtitle,
+        tool_metadata,
+        created_at,
+    )
+}
+
+fn make_message_with_context(
+    id: String,
+    thread_id: String,
+    turn_id: Option<String>,
+    role: &str,
+    text: String,
+    phase: Option<String>,
+    subtitle: Option<String>,
+    tool_metadata: Option<RobdexToolMetadata>,
+    created_at: Option<u64>,
+) -> RobdexChatMessage {
     RobdexChatMessage {
         id,
         thread_id,
+        turn_id,
         role: role.to_string(),
         text: truncate_bridge_text(&text, MAX_MESSAGE_TEXT_CHARS),
+        phase,
         created_at: created_at.unwrap_or_else(unix_now),
         subtitle,
         tool_metadata: sanitize_tool_metadata(tool_metadata),
         delivery_state: "confirmed".to_string(),
+    }
+}
+
+fn message_phase_label(phase: &MessagePhase) -> String {
+    match phase {
+        MessagePhase::Commentary => "commentary",
+        MessagePhase::FinalAnswer => "final_answer",
+    }
+    .to_string()
+}
+
+fn agent_phase_label(phase: Option<&MessagePhase>, mode: UpsertMode) -> Option<String> {
+    match phase {
+        Some(phase) => Some(message_phase_label(phase)),
+        None if mode == UpsertMode::Replace => Some("final_answer".to_string()),
+        None => None,
     }
 }
 
@@ -1293,6 +1489,117 @@ mod tests {
     }
 
     #[test]
+    fn turn_completed_caches_embedded_final_agent_message() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        let changed = reducer.apply_notification(
+            &ServerNotification::TurnCompleted(TurnCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn: Turn {
+                    id: "turn-1".to_string(),
+                    items: vec![ThreadItem::AgentMessage {
+                        id: "agent-final-1".to_string(),
+                        text: "final status from completed turn".to_string(),
+                        phase: None,
+                        memory_citation: None,
+                    }],
+                    status: TurnStatus::Completed,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                    error: None,
+                },
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        assert_eq!(changed.changed_thread_ids, vec!["thread-1".to_string()]);
+        let message = &cache.message_cache_by_thread_id["thread-1"][0];
+        assert_eq!(message.role, "assistant");
+        assert_eq!(message.text, "final status from completed turn");
+    }
+
+    #[test]
+    fn turn_completed_preserves_agent_message_phase_and_turn_id() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        let changed = reducer.apply_notification(
+            &ServerNotification::TurnCompleted(TurnCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn: Turn {
+                    id: "turn-1".to_string(),
+                    items: vec![ThreadItem::AgentMessage {
+                        id: "agent-final-1".to_string(),
+                        text: "final status".to_string(),
+                        phase: Some(MessagePhase::FinalAnswer),
+                        memory_citation: None,
+                    }],
+                    status: TurnStatus::Completed,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                    error: None,
+                },
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        let message = &cache.message_cache_by_thread_id["thread-1"][0];
+        assert_eq!(message.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(message.phase.as_deref(), Some("final_answer"));
+    }
+
+    #[test]
+    fn turn_completed_caches_embedded_command_message() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        let changed = reducer.apply_notification(
+            &ServerNotification::TurnCompleted(TurnCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn: Turn {
+                    id: "turn-1".to_string(),
+                    items: vec![ThreadItem::CommandExecution {
+                        id: "cmd-1".to_string(),
+                        command: "echo ok".to_string(),
+                        cwd: PathBuf::from("/tmp").try_into().expect("absolute cwd"),
+                        process_id: Some("123".to_string()),
+                        source: CommandExecutionSource::Agent,
+                        status: CommandExecutionStatus::Completed,
+                        command_actions: Vec::new(),
+                        aggregated_output: Some("ok\n".to_string()),
+                        exit_code: Some(0),
+                        duration_ms: Some(10),
+                    }],
+                    status: TurnStatus::Completed,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                    error: None,
+                },
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        assert_eq!(changed.changed_thread_ids, vec!["thread-1".to_string()]);
+        let message = &cache.message_cache_by_thread_id["thread-1"][0];
+        assert_eq!(message.role, "tool");
+        assert_eq!(message.subtitle.as_deref(), Some("commandExecution (completed)"));
+        assert_eq!(
+            message
+                .tool_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.output.as_deref()),
+            Some("ok\n")
+        );
+    }
+
+    #[test]
     fn active_thread_status_marks_running_without_turn_tracking() {
         let mut reducer = RunningStateReducer::default();
         let mut cache = ThreadCachePayload::default();
@@ -1373,6 +1680,81 @@ mod tests {
             cache.message_cache_by_thread_id["thread-1"][0].text,
             "hello world"
         );
+    }
+
+    #[test]
+    fn item_completed_agent_message_replaces_partial_delta_with_different_id() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        reducer.apply_notification(
+            &ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "streamed-agent-1".to_string(),
+                delta: "refix only".to_string(),
+            }),
+            &mut cache,
+        );
+        let changed = reducer.apply_notification(
+            &ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::AgentMessage {
+                    id: "completed-agent-1".to_string(),
+                    text: "Full prefix only".to_string(),
+                    phase: Some(MessagePhase::FinalAnswer),
+                    memory_citation: None,
+                },
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        let messages = &cache.message_cache_by_thread_id["thread-1"];
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, "completed-agent-1");
+        assert_eq!(messages[0].text, "Full prefix only");
+        assert_eq!(messages[0].phase.as_deref(), Some("final_answer"));
+    }
+
+    #[test]
+    fn raw_response_item_completed_replaces_partial_agent_delta() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        reducer.apply_notification(
+            &ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "streamed-agent-1".to_string(),
+                delta: "uffix-only final".to_string(),
+            }),
+            &mut cache,
+        );
+        let changed = reducer.apply_notification(
+            &ServerNotification::RawResponseItemCompleted(RawResponseItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: ResponseItem::Message {
+                    id: Some("response-agent-1".to_string()),
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "Full suffix-only final".to_string(),
+                    }],
+                    end_turn: None,
+                    phase: Some(MessagePhase::FinalAnswer),
+                },
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        let messages = &cache.message_cache_by_thread_id["thread-1"];
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, "response-agent-1");
+        assert_eq!(messages[0].text, "Full suffix-only final");
+        assert_eq!(messages[0].phase.as_deref(), Some("final_answer"));
     }
 
     #[test]
