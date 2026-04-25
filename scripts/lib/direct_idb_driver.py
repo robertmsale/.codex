@@ -27,11 +27,17 @@ from idb_accessibility import element_center
 from idb_accessibility import ensure_nonzero_element_frame
 from idb_accessibility import find_idb_element
 from idb_accessibility import normalized_swipe_duration
+from idb_accessibility import orientation_metadata_from_elements
 from idb_accessibility import render_raw_hierarchy
 from idb_accessibility import resolve_tap_point
 from idb_accessibility import root_frame_size
 from idb_accessibility import screen_dimensions_from_describe_output
 from idb_accessibility import tap_coordinates_for_accessibility_point
+from idb_accessibility import transform_accessibility_point
+from screenshot_crop import ScreenshotCropError
+from screenshot_crop import crop_image_by_selector
+from screenshot_crop import normalize_fresh_screenshot_orientation
+from screenshot_crop import parse_selector
 
 
 LEFT_COMMAND_KEYCODE = 227
@@ -270,31 +276,43 @@ def command_tap(*, device_id: str, cwd: Path, selector: Any, duration: float | N
     except AccessibilityError as error:
         raise DriverError(str(error)) from error
 
-    def probe_point(candidate: tuple[int, int]) -> dict[str, Any] | None:
-        result = run_idb(
-            argv=["ui", "describe-point", "--json", "--udid", device_id, str(candidate[0]), str(candidate[1])],
-            cwd=cwd,
-        )
-        if result.returncode != 0 or not (result.stdout or "").strip():
-            return None
-        try:
-            payload = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return None
-        return payload if isinstance(payload, dict) else None
-
-    try:
-        tap_point, _probes, _probed, _transform = resolve_tap_point(
+    orientation_metadata = orientation_metadata_from_elements(elements)
+    if orientation_metadata is not None:
+        tap_point = transform_accessibility_point(
             point=center,
-            expected_element=element,
             portrait_width=portrait_width,
             portrait_height=portrait_height,
-            root_width=root_width,
-            root_height=root_height,
-            probe_point=probe_point,
+            transform=str(orientation_metadata["transform"]),
         )
-    except AccessibilityError as error:
-        raise DriverError(str(error)) from error
+        transform = str(orientation_metadata["transform"])
+    else:
+        transform = None
+
+        def probe_point(candidate: tuple[int, int]) -> dict[str, Any] | None:
+            result = run_idb(
+                argv=["ui", "describe-point", "--json", "--udid", device_id, str(candidate[0]), str(candidate[1])],
+                cwd=cwd,
+            )
+            if result.returncode != 0 or not (result.stdout or "").strip():
+                return None
+            try:
+                payload = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                return None
+            return payload if isinstance(payload, dict) else None
+
+        try:
+            tap_point, _probes, _probed, transform = resolve_tap_point(
+                point=center,
+                expected_element=element,
+                portrait_width=portrait_width,
+                portrait_height=portrait_height,
+                root_width=root_width,
+                root_height=root_height,
+                probe_point=probe_point,
+            )
+        except AccessibilityError as error:
+            raise DriverError(str(error)) from error
     argv = ["ui", "tap"]
     if duration is not None:
         argv.extend(["--duration", str(duration)])
@@ -303,6 +321,7 @@ def command_tap(*, device_id: str, cwd: Path, selector: Any, duration: float | N
     return {
         "ok": True,
         "message": f"tapOn {selector!r} -> [{tap_point[0]},{tap_point[1]}]",
+        "transform": transform,
         "tapped_description": compact_idb_element(element),
         "post_hierarchy": json.dumps(describe_all(device_id=device_id, cwd=cwd), separators=(",", ":")),
     }
@@ -321,13 +340,22 @@ def command_tap_point(*, device_id: str, cwd: Path, payload: Any) -> dict[str, A
     try:
         portrait_width, portrait_height = screen_dimensions_from_describe_output(describe_output)
         root_width, root_height = root_frame_size(elements=elements)
-        tap_point = tap_coordinates_for_accessibility_point(
-            portrait_width=portrait_width,
-            portrait_height=portrait_height,
-            root_width=root_width,
-            root_height=root_height,
-            point=(x, y),
-        )
+        orientation_metadata = orientation_metadata_from_elements(elements)
+        if orientation_metadata is not None:
+            tap_point = transform_accessibility_point(
+                point=(x, y),
+                portrait_width=portrait_width,
+                portrait_height=portrait_height,
+                transform=str(orientation_metadata["transform"]),
+            )
+        else:
+            tap_point = tap_coordinates_for_accessibility_point(
+                portrait_width=portrait_width,
+                portrait_height=portrait_height,
+                root_width=root_width,
+                root_height=root_height,
+                point=(x, y),
+            )
     except AccessibilityError as error:
         raise DriverError(str(error)) from error
     must_run_idb(argv=["ui", "tap", "--udid", device_id, str(tap_point[0]), str(tap_point[1])], cwd=cwd)
@@ -364,7 +392,7 @@ def command_erase_text(*, device_id: str, count: Any, keycode: int, name: str) -
     return {"ok": True, "message": f"{name} {delete_count}"}
 
 
-def command_take_screenshot(*, device_id: str, cwd: Path, out_path: str) -> dict[str, Any]:
+def command_take_screenshot(*, device_id: str, cwd: Path, out_path: str, selector: Any | None = None) -> dict[str, Any]:
     destination = Path(out_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     result = run_idb(argv=["screenshot", "--udid", device_id, str(destination)], cwd=cwd)
@@ -376,8 +404,35 @@ def command_take_screenshot(*, device_id: str, cwd: Path, out_path: str) -> dict
             raise DriverError(failure_text or "idb screenshot failed")
     if not destination.exists():
         raise DriverError("Screenshot command completed without producing an image file.")
+    orientation_metadata: dict[str, Any] | None = None
+    try:
+        orientation_metadata = normalize_fresh_screenshot_orientation(image_path=destination, device_id=device_id)
+    except ScreenshotCropError as error:
+        print(f"screenshot orientation normalization failed: {error}", file=sys.stderr)
+    crop_metadata: dict[str, Any] | None = None
+    warning: str | None = None
+    if selector is not None:
+        try:
+            crop_metadata = crop_image_by_selector(
+                image_path=destination,
+                out_path=destination,
+                device_id=device_id,
+                selector=selector,
+            )
+        except ScreenshotCropError as error:
+            warning = f"selector not found: {error}"
+            print(warning, file=sys.stderr)
     payload = base64.b64encode(destination.read_bytes()).decode("ascii")
-    return {"ok": True, "path": str(destination), "data_base64": payload}
+    response: dict[str, Any] = {"ok": True, "path": str(destination), "data_base64": payload}
+    if orientation_metadata is not None:
+        response["orientation"] = orientation_metadata
+    if selector is not None:
+        response["selector"] = selector
+    if crop_metadata is not None:
+        response["crop"] = crop_metadata
+    if warning is not None:
+        response["warning"] = warning
+    return response
 
 
 def command_swipe(*, device_id: str, cwd: Path, payload: Any) -> dict[str, Any]:
@@ -396,20 +451,36 @@ def command_swipe(*, device_id: str, cwd: Path, payload: Any) -> dict[str, Any]:
     try:
         portrait_width, portrait_height = screen_dimensions_from_describe_output(describe_output)
         root_width, root_height = root_frame_size(elements=elements)
-        swipe_start = tap_coordinates_for_accessibility_point(
-            portrait_width=portrait_width,
-            portrait_height=portrait_height,
-            root_width=root_width,
-            root_height=root_height,
-            point=(x_start, y_start),
-        )
-        swipe_end = tap_coordinates_for_accessibility_point(
-            portrait_width=portrait_width,
-            portrait_height=portrait_height,
-            root_width=root_width,
-            root_height=root_height,
-            point=(x_end, y_end),
-        )
+        orientation_metadata = orientation_metadata_from_elements(elements)
+        if orientation_metadata is not None:
+            transform = str(orientation_metadata["transform"])
+            swipe_start = transform_accessibility_point(
+                point=(x_start, y_start),
+                portrait_width=portrait_width,
+                portrait_height=portrait_height,
+                transform=transform,
+            )
+            swipe_end = transform_accessibility_point(
+                point=(x_end, y_end),
+                portrait_width=portrait_width,
+                portrait_height=portrait_height,
+                transform=transform,
+            )
+        else:
+            swipe_start = tap_coordinates_for_accessibility_point(
+                portrait_width=portrait_width,
+                portrait_height=portrait_height,
+                root_width=root_width,
+                root_height=root_height,
+                point=(x_start, y_start),
+            )
+            swipe_end = tap_coordinates_for_accessibility_point(
+                portrait_width=portrait_width,
+                portrait_height=portrait_height,
+                root_width=root_width,
+                root_height=root_height,
+                point=(x_end, y_end),
+            )
         normalized_duration = normalized_swipe_duration(duration) if duration is not None else None
     except AccessibilityError as error:
         raise DriverError(str(error)) from error
@@ -451,7 +522,12 @@ def perform_command(
     if command_name in {"takeScreenshot", "screenshot"}:
         if not out_path:
             raise DriverError("Screenshot commands require --out.")
-        return command_take_screenshot(device_id=device_id, cwd=cwd, out_path=out_path)
+        selector = None
+        if input_payload is not None:
+            if not isinstance(input_payload, (dict, str)):
+                raise DriverError("Screenshot selector input must be a selector string or selector object.")
+            selector = input_payload
+        return command_take_screenshot(device_id=device_id, cwd=cwd, out_path=out_path, selector=selector)
     if command_name == "tapOn":
         return command_tap(device_id=device_id, cwd=cwd, selector=input_payload)
     if command_name == "longPressOn":
@@ -571,22 +647,54 @@ def add_common_subcommands(parser: argparse.ArgumentParser, *, include_devices: 
     widget_tree = subparsers.add_parser("widget-tree")
     widget_tree.add_argument("--device-id", required=True)
 
-    screenshot = subparsers.add_parser("screenshot")
+    screenshot = subparsers.add_parser(
+        "screenshot",
+        description=(
+            "Capture a screenshot to --out. The saved image is normalized to the live UI orientation first; "
+            "apps that export automation.orientationBeacon provide the preferred orientation source. "
+            "If --selector selector JSON matches a live accessibility element, the saved image is cropped to that frame. "
+            "If it does not match, stderr reports 'selector not found' and the full screenshot is kept."
+        ),
+    )
     screenshot.add_argument("--device-id", required=True)
     screenshot.add_argument("--out", required=True)
+    screenshot.add_argument(
+        "--selector",
+        help="Optional accessibility selector JSON string. Example: '{\"id\":\"node-style-minimal-flat\"}'. If it matches, the saved screenshot is cropped to that element frame. If not, stderr notes 'selector not found' and the full screenshot is kept.",
+    )
 
-    command = subparsers.add_parser("command")
+    command = subparsers.add_parser(
+        "command",
+        description=(
+            "Run a direct driver command. "
+            "For taps, swipes, and takeScreenshot/screenshot, apps that export automation.orientationBeacon "
+            "provide the preferred orientation source. "
+            "For takeScreenshot/screenshot, the saved image is normalized to the live UI orientation first. "
+            "For takeScreenshot/screenshot, pass an optional selector via --input as selector JSON or a selector JSON object "
+            "to crop the saved image in one step."
+        ),
+    )
     command.add_argument("command_name")
     command.add_argument("--device-id", required=True)
-    command.add_argument("--input")
+    command.add_argument("--input", help="Optional JSON/string payload. For takeScreenshot, this can be selector JSON used for inline cropping.")
     command.add_argument("--label")
     command.add_argument("--out")
 
     if include_driver_alias:
-        driver = subparsers.add_parser("driver")
+        driver = subparsers.add_parser(
+            "driver",
+            description=(
+                "Alias of command. "
+                "For taps, swipes, and takeScreenshot/screenshot, apps that export automation.orientationBeacon "
+                "provide the preferred orientation source. "
+                "For takeScreenshot/screenshot, the saved image is normalized to the live UI orientation first. "
+                "For takeScreenshot/screenshot, pass an optional selector via --input as selector JSON or a selector JSON object "
+                "to crop the saved image in one step."
+            ),
+        )
         driver.add_argument("command_name")
         driver.add_argument("--device-id", required=True)
-        driver.add_argument("--input")
+        driver.add_argument("--input", help="Optional JSON/string payload. For takeScreenshot, this can be selector JSON used for inline cropping.")
         driver.add_argument("--label")
         driver.add_argument("--out")
 
@@ -627,7 +735,10 @@ def run_cli(
                 mode = "apps"
             elif args.subcommand == "screenshot":
                 out_path = normalize_screenshot_out_path(device_id, args.out)
-                payload = command_take_screenshot(device_id=device_id, cwd=launch_path, out_path=out_path)
+                selector = None
+                if getattr(args, "selector", None):
+                    selector = parse_selector(args.selector)
+                payload = command_take_screenshot(device_id=device_id, cwd=launch_path, out_path=out_path, selector=selector)
                 mode = "screenshot"
             elif args.subcommand in {"command", "driver"}:
                 command_name = args.command_name

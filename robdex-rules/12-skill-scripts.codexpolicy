@@ -38,7 +38,7 @@ prefix_rule(
         "safe-delete", "/Users/robertsale/.codex/skills/safe-delete/scripts/safe-delete",
         "static-code-validation",
         "worktree-stack-role-instructions", "designer-crop-screenshot", "designer-drive", "designer-flutter-run", "designer-hot-reload",
-        "api-integration-harness",
+        "api-integration-harness", "git-recover-published-worktree", "git-rebase-continue",
     ]],
     decision = "allow",
 )

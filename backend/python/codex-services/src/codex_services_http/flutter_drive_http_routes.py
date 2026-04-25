@@ -10,6 +10,25 @@ from typing import Any
 
 from .bridge import BridgeError
 from .flutter_drive_service import FlutterDriveService
+from .idb_accessibility import AccessibilityError as SharedAccessibilityError
+from .idb_accessibility import best_element_containing_point as shared_best_element_containing_point
+from .idb_accessibility import best_matching_element as shared_best_matching_element
+from .idb_accessibility import element_area as shared_element_area
+from .idb_accessibility import element_contains_point as shared_element_contains_point
+from .idb_accessibility import element_frame_bounds as shared_element_frame_bounds
+from .idb_accessibility import element_role_priority as shared_element_role_priority
+from .idb_accessibility import ensure_nonzero_element_frame as shared_ensure_nonzero_element_frame
+from .idb_accessibility import find_idb_element as shared_find_idb_element
+from .idb_accessibility import matching_elements_for_selector as shared_matching_elements_for_selector
+from .idb_accessibility import normalized_accessibility_strings as shared_normalized_accessibility_strings
+from .idb_accessibility import normalized_swipe_duration as shared_normalized_swipe_duration
+from .idb_accessibility import orientation_metadata_from_elements as shared_orientation_metadata_from_elements
+from .idb_accessibility import point_candidates as shared_point_candidates
+from .idb_accessibility import probe_matches_element as shared_probe_matches_element
+from .idb_accessibility import resolve_tap_point as shared_resolve_tap_point
+from .idb_accessibility import root_frame_size as shared_root_frame_size
+from .idb_accessibility import selector_candidates as shared_selector_candidates
+from .idb_accessibility import transform_accessibility_point as shared_transform_accessibility_point
 
 from idb.common.hid import _key_down_event
 from idb.common.hid import _key_up_event
@@ -52,16 +71,9 @@ def _post_action_hierarchy(service: FlutterDriveService, *, reservation) -> str:
 
 def _normalized_swipe_duration(raw_duration: Any) -> float:
     try:
-        duration = float(raw_duration)
-    except Exception as error:
-        raise BridgeError("swipe duration must be numeric.") from error
-    if duration <= 0:
-        raise BridgeError("swipe duration must be greater than zero.")
-    # Agents routinely pass 300/350 expecting milliseconds. Accept that shape
-    # and convert to the seconds-based duration expected by idb.
-    if duration >= SWIPE_DURATION_MILLISECONDS_THRESHOLD:
-        return duration / 1000.0
-    return duration
+        return shared_normalized_swipe_duration(raw_duration)
+    except SharedAccessibilityError as error:
+        raise BridgeError(str(error)) from error
 
 
 def _idb_point_candidates(
@@ -72,27 +84,13 @@ def _idb_point_candidates(
     root_width: int,
     root_height: int,
 ) -> list[tuple[str, tuple[int, int]]]:
-    x, y = point
-    if root_width == portrait_width and root_height == portrait_height:
-        candidates = [
-            ("portrait_0", (x, y)),
-            ("portrait_180", (portrait_width - x, portrait_height - y)),
-        ]
-    elif root_width == portrait_height and root_height == portrait_width:
-        candidates = [
-            ("landscape_90", (portrait_width - y, x)),
-            ("landscape_270", (y, portrait_height - x)),
-        ]
-    else:
-        candidates = [("identity", (x, y))]
-    unique: list[tuple[str, tuple[int, int]]] = []
-    seen: set[tuple[int, int]] = set()
-    for name, candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        unique.append((name, candidate))
-    return unique
+    return shared_point_candidates(
+        portrait_width=portrait_width,
+        portrait_height=portrait_height,
+        point=point,
+        root_width=root_width,
+        root_height=root_height,
+    )
 
 
 def _idb_probe_point(service: FlutterDriveService, *, reservation, point: tuple[int, int]) -> dict[str, Any] | None:
@@ -110,187 +108,70 @@ def _idb_probe_point(service: FlutterDriveService, *, reservation, point: tuple[
 
 
 def _idb_probe_matches_element(*, probed: dict[str, Any] | None, element: dict[str, Any]) -> bool:
-    if not probed:
-        return False
-    for field in ("AXUniqueId", "AXLabel", "AXValue"):
-        expected = element.get(field)
-        actual = probed.get(field)
-        if isinstance(expected, str) and expected and expected == actual:
-            return True
-    probed_frame = probed.get("frame")
-    element_frame = element.get("frame")
-    return isinstance(probed_frame, dict) and isinstance(element_frame, dict) and probed_frame == element_frame
+    return shared_probe_matches_element(probed=probed, element=element)
 
 
 def _element_role_priority(element: dict[str, Any]) -> int:
-    role = str(element.get("role_description") or element.get("type") or "").strip().casefold()
-    if role in {"button", "text field", "switch", "tab", "link", "cell", "checkbox"}:
-        return 0
-    if role in {"image", "icon"}:
-        return 1
-    if role in {"text", "statictext", "group"}:
-        return 3
-    return 2
+    return shared_element_role_priority(element)
 
 
 def _element_frame_bounds(element: dict[str, Any]) -> tuple[float, float, float, float] | None:
-    frame = element.get("frame")
-    if not isinstance(frame, dict):
-        return None
-    try:
-        left = float(frame.get("x", 0))
-        top = float(frame.get("y", 0))
-        width = float(frame.get("width", 0))
-        height = float(frame.get("height", 0))
-    except Exception:
-        return None
-    return left, top, left + width, top + height
+    return shared_element_frame_bounds(element)
 
 
 def _element_area(element: dict[str, Any]) -> float:
-    bounds = _element_frame_bounds(element)
-    if bounds is None:
-        return float("inf")
-    left, top, right, bottom = bounds
-    return max(0.0, right - left) * max(0.0, bottom - top)
+    return shared_element_area(element)
 
 
 def _matching_elements_for_selector(*, elements: list[dict[str, Any]], selector: Any) -> list[dict[str, Any]]:
-    candidates = _route_selector_candidates(selector)
-    matches: list[dict[str, Any]] = []
-    seen_ids: set[int] = set()
-    for field, expected in candidates:
-        expected_variants = _normalized_accessibility_strings(expected)
-        expected_folded = {variant.casefold() for variant in expected_variants}
-        for element in elements:
-            actual = element.get(field)
-            if not isinstance(actual, str):
-                continue
-            actual_variants = _normalized_accessibility_strings(actual)
-            if any(variant.casefold() in expected_folded for variant in actual_variants):
-                marker = id(element)
-                if marker in seen_ids:
-                    continue
-                seen_ids.add(marker)
-                matches.append(element)
-    return matches
+    return shared_matching_elements_for_selector(elements=elements, selector=selector)
 
 
 def _best_matching_element(matches: list[dict[str, Any]]) -> dict[str, Any]:
-    if not matches:
-        raise BridgeError("No matching accessibility elements were found.")
-    positive_area_matches = [element for element in matches if _element_area(element) > 0]
-    ranked_matches = positive_area_matches or matches
-    return min(
-        ranked_matches,
-        key=lambda element: (
-            _element_role_priority(element),
-            _element_area(element),
-        ),
-    )
+    try:
+        return shared_best_matching_element(matches)
+    except SharedAccessibilityError as error:
+        raise BridgeError(str(error)) from error
 
 
 def _element_contains_point(*, element: dict[str, Any], point: tuple[int, int]) -> bool:
-    bounds = _element_frame_bounds(element)
-    if bounds is None:
-        return False
-    left, top, right, bottom = bounds
-    x, y = point
-    return left <= x <= right and top <= y <= bottom
+    return shared_element_contains_point(element=element, point=point)
 
 
 def _best_element_containing_point(*, elements: list[dict[str, Any]], point: tuple[int, int]) -> dict[str, Any] | None:
-    matches = [element for element in elements if _element_contains_point(element=element, point=point)]
-    if not matches:
-        return None
-    return _best_matching_element(matches)
+    return shared_best_element_containing_point(elements=elements, point=point)
 
 
 def _normalized_accessibility_strings(value: str) -> list[str]:
-    raw = value.strip()
-    if not raw:
-        return []
-    lines = [part.strip() for part in raw.splitlines() if part.strip()]
-    variants: list[str] = []
-    if raw:
-        variants.append(raw)
-    if lines:
-        variants.append("\n".join(lines))
-        deduped_lines: list[str] = []
-        for line in lines:
-            if deduped_lines and deduped_lines[-1] == line:
-                continue
-            deduped_lines.append(line)
-        if deduped_lines:
-            variants.append("\n".join(deduped_lines))
-            variants.extend(deduped_lines)
-    unique: list[str] = []
-    seen: set[str] = set()
-    for variant in variants:
-        folded = variant.casefold()
-        if folded in seen:
-            continue
-        seen.add(folded)
-        unique.append(variant)
-    return unique
+    return shared_normalized_accessibility_strings(value)
 
 
 def _route_selector_candidates(selector: Any) -> list[tuple[str, str]]:
-    if isinstance(selector, str):
-        value = selector.strip()
-        if not value:
-            raise BridgeError("Selector string cannot be empty.")
-        return [("AXLabel", value), ("AXUniqueId", value), ("AXValue", value)]
-    if not isinstance(selector, dict):
-        raise BridgeError("Selector must be a string or object.")
-    candidates: list[tuple[str, str]] = []
-    mapping = {
-        "id": "AXUniqueId",
-        "text": "AXLabel",
-        "label": "AXLabel",
-        "value": "AXValue",
-    }
-    for key, field in mapping.items():
-        value = selector.get(key)
-        if isinstance(value, str) and value.strip():
-            candidates.append((field, value.strip()))
-    if not candidates:
-        raise BridgeError("Selector object must include id, text, label, or value.")
-    return candidates
+    try:
+        return shared_selector_candidates(selector)
+    except SharedAccessibilityError as error:
+        raise BridgeError(str(error)) from error
 
 
 def _route_find_idb_element(*, elements: list[dict[str, Any]], selector: Any) -> dict[str, Any]:
-    matches = _matching_elements_for_selector(elements=elements, selector=selector)
-    if matches:
-        return _best_matching_element(matches)
-    raise BridgeError(f"Could not find an accessibility element matching {selector!r}.")
+    try:
+        return shared_find_idb_element(elements=elements, selector=selector)
+    except SharedAccessibilityError as error:
+        raise BridgeError(str(error)) from error
 
 
 def _idb_root_frame_size(*, elements: list[dict[str, Any]]) -> tuple[int, int]:
-    root_frame = elements[0].get("frame") if elements else None
-    if not isinstance(root_frame, dict):
-        raise BridgeError("Accessibility root is missing frame data.")
     try:
-        return int(round(float(root_frame["width"]))), int(round(float(root_frame["height"])))
-    except Exception as error:
-        raise BridgeError("Accessibility root frame is invalid.") from error
+        return shared_root_frame_size(elements=elements)
+    except SharedAccessibilityError as error:
+        raise BridgeError(str(error)) from error
 
 
 def _ensure_nonzero_element_frame(*, element: dict[str, Any], selector: Any) -> None:
-    frame = element.get("frame")
-    if not isinstance(frame, dict):
-        raise BridgeError(f"Element {selector!r} is missing frame data.")
     try:
-        width = float(frame.get("width", 0))
-        height = float(frame.get("height", 0))
-    except Exception as error:
-        raise BridgeError(f"Element {selector!r} has invalid frame data.") from error
-    if width <= 0 or height <= 0:
-        raise BridgeError(
-            f"Element {selector!r} is exported with a zero-sized accessibility frame. "
-            "This usually means the matched accessibility node is offscreen or virtualized; "
-            "scroll or filter until the row is visible, then retry."
-        )
+        shared_ensure_nonzero_element_frame(element=element, selector=selector)
+    except SharedAccessibilityError as error:
+        raise BridgeError(str(error)) from error
 
 
 def _idb_resolve_tap_point(
@@ -304,25 +185,39 @@ def _idb_resolve_tap_point(
     manager = service.manager
     portrait_width, portrait_height = manager._idb_screen_dimensions_points(reservation=reservation)  # noqa: SLF001
     root_width, root_height = _idb_root_frame_size(elements=elements)
-    probes: list[dict[str, Any]] = []
-    for transform_name, candidate in _idb_point_candidates(
-        portrait_width=portrait_width,
-        portrait_height=portrait_height,
-        point=point,
-        root_width=root_width,
-        root_height=root_height,
-    ):
-        probed = _idb_probe_point(service, reservation=reservation, point=candidate)
-        matched = _idb_probe_matches_element(probed=probed, element=expected_element) if expected_element is not None else bool(probed)
-        probes.append({"transform": transform_name, "candidate": list(candidate), "matched": matched, "probed": probed})
-        if matched:
-            return candidate, probes, probed, transform_name
-    fallback = manager._idb_tap_coordinates_for_accessibility_point(  # noqa: SLF001
-        reservation=reservation,
-        elements=elements,
-        point=point,
-    )
-    return fallback, probes, None, None
+    try:
+        orientation_metadata = shared_orientation_metadata_from_elements(elements)
+        if orientation_metadata is not None:
+            tap_point = shared_transform_accessibility_point(
+                point=point,
+                portrait_width=portrait_width,
+                portrait_height=portrait_height,
+                transform=str(orientation_metadata["transform"]),
+            )
+            return (
+                tap_point,
+                [
+                    {
+                        "transform": orientation_metadata["transform"],
+                        "candidate": list(tap_point),
+                        "matched": True,
+                        "source": "orientationBeacon",
+                    }
+                ],
+                None,
+                str(orientation_metadata["transform"]),
+            )
+        return shared_resolve_tap_point(
+            point=point,
+            expected_element=expected_element,
+            portrait_width=portrait_width,
+            portrait_height=portrait_height,
+            root_width=root_width,
+            root_height=root_height,
+            probe_point=lambda candidate: _idb_probe_point(service, reservation=reservation, point=candidate),
+        )
+    except SharedAccessibilityError as error:
+        raise BridgeError(str(error)) from error
 
 
 def _apply_transform(

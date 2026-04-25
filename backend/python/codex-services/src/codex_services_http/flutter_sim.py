@@ -31,6 +31,13 @@ from .bridge import BridgeError
 from .bridge import BridgePaths
 from .bridge import load_paths
 from .bridge import require_allowed_path
+from .idb_accessibility import AccessibilityError as SharedAccessibilityError
+from .idb_accessibility import find_idb_element as shared_find_idb_element
+from .idb_accessibility import normalized_swipe_duration as shared_normalized_swipe_duration
+from .idb_accessibility import orientation_metadata_from_elements as shared_orientation_metadata_from_elements
+from .idb_accessibility import selector_candidates as shared_selector_candidates
+from .idb_accessibility import tap_coordinates_for_accessibility_point as shared_tap_coordinates_for_accessibility_point
+from .idb_accessibility import transform_accessibility_point as shared_transform_accessibility_point
 
 
 DEVICE_BULLET = "•"
@@ -61,14 +68,9 @@ def idb_executable() -> str:
 
 def _normalized_swipe_duration(raw_duration: Any) -> float:
     try:
-        duration = float(raw_duration)
-    except Exception as error:
-        raise BridgeError("swipe duration must be numeric.") from error
-    if duration <= 0:
-        raise BridgeError("swipe duration must be greater than zero.")
-    if duration >= SWIPE_DURATION_MILLISECONDS_THRESHOLD:
-        return duration / 1000.0
-    return duration
+        return shared_normalized_swipe_duration(raw_duration)
+    except SharedAccessibilityError as error:
+        raise BridgeError(str(error)) from error
 
 
 def launch_env() -> dict[str, str]:
@@ -1690,6 +1692,7 @@ class FlutterSimManager:
         elements: list[dict[str, Any]],
         point: tuple[int, int],
     ) -> tuple[int, int]:
+        portrait_width, portrait_height = self._idb_screen_dimensions_points(reservation=reservation)
         if not elements:
             raise BridgeError("Accessibility dump is empty.")
         root = elements[0]
@@ -1701,54 +1704,36 @@ class FlutterSimManager:
             root_height = int(round(float(root_frame["height"])))
         except Exception as error:
             raise BridgeError("Accessibility root frame is invalid.") from error
-        portrait_width, portrait_height = self._idb_screen_dimensions_points(reservation=reservation)
-        x, y = point
-        if root_width == portrait_width and root_height == portrait_height:
-            return x, y
-        if root_width == portrait_height and root_height == portrait_width:
-            # Supported landscape orientation only. The operator agreed to keep
-            # simulators in the non-reversed landscape orientation.
-            return y, x
-        raise BridgeError(
-            "Unsupported simulator orientation for idb coordinate mapping. "
-            "Use portrait or the supported landscape orientation."
-        )
+        try:
+            orientation_metadata = shared_orientation_metadata_from_elements(elements)
+            if orientation_metadata is not None:
+                return shared_transform_accessibility_point(
+                    point=point,
+                    portrait_width=portrait_width,
+                    portrait_height=portrait_height,
+                    transform=str(orientation_metadata["transform"]),
+                )
+            return shared_tap_coordinates_for_accessibility_point(
+                portrait_width=portrait_width,
+                portrait_height=portrait_height,
+                root_width=root_width,
+                root_height=root_height,
+                point=point,
+            )
+        except SharedAccessibilityError as error:
+            raise BridgeError(str(error)) from error
 
     def _idb_selector_candidates(self, selector: Any) -> list[tuple[str, str]]:
-        if isinstance(selector, str):
-            value = selector.strip()
-            return [("AXLabel", value), ("AXUniqueId", value), ("AXValue", value)]
-        if not isinstance(selector, dict):
-            raise BridgeError("Selector must be a string or object.")
-        candidates: list[tuple[str, str]] = []
-        mapping = {
-            "id": "AXUniqueId",
-            "text": "AXLabel",
-            "label": "AXLabel",
-            "value": "AXValue",
-        }
-        for key, field in mapping.items():
-            value = selector.get(key)
-            if isinstance(value, str) and value.strip():
-                candidates.append((field, value.strip()))
-        if not candidates:
-            raise BridgeError("Selector object must include id, text, label, or value.")
-        return candidates
+        try:
+            return shared_selector_candidates(selector)
+        except SharedAccessibilityError as error:
+            raise BridgeError(str(error)) from error
 
     def _find_idb_element(self, elements: list[dict[str, Any]], selector: Any) -> dict[str, Any]:
-        candidates = self._idb_selector_candidates(selector)
-        for field, expected in candidates:
-            for element in elements:
-                actual = element.get(field)
-                if isinstance(actual, str) and actual == expected:
-                    return element
-        for field, expected in candidates:
-            lowered = expected.casefold()
-            for element in elements:
-                actual = element.get(field)
-                if isinstance(actual, str) and actual.casefold() == lowered:
-                    return element
-        raise BridgeError(f"Could not find an accessibility element matching {selector!r}.")
+        try:
+            return shared_find_idb_element(elements=elements, selector=selector)
+        except SharedAccessibilityError as error:
+            raise BridgeError(str(error)) from error
 
     def _idb_describe_all(self, *, reservation: Reservation) -> list[dict[str, Any]]:
         result = self._run_idb_cli(

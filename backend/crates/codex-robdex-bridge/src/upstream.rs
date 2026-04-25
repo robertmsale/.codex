@@ -1207,9 +1207,10 @@ mod tests {
     use super::*;
     use crate::models::MAX_TRANSPORT_MESSAGES_PER_THREAD;
     use codex_app_server_adapter::app_server_protocol::{
-        GitInfo, ItemCompletedNotification, ItemStartedNotification, ServerNotification, SessionSource, Thread,
-        ThreadClosedNotification, ThreadStartedNotification, ThreadStatus, ThreadStatusChangedNotification,
-        ThreadTokenUsage, ThreadTokenUsageUpdatedNotification, TokenUsageBreakdown, Turn, TurnCompletedNotification,
+        CommandExecutionSource, GitInfo, ItemCompletedNotification, ItemStartedNotification,
+        ServerNotification, SessionSource, Thread, ThreadClosedNotification, ThreadStartedNotification,
+        ThreadStatus, ThreadStatusChangedNotification, ThreadTokenUsage,
+        ThreadTokenUsageUpdatedNotification, TokenUsageBreakdown, Turn, TurnCompletedNotification,
         TurnStartedNotification, TurnStatus,
     };
     use std::path::PathBuf;
@@ -1223,9 +1224,10 @@ mod tests {
             created_at: 1,
             updated_at: 1,
             status,
+            forked_from_id: None,
             path: None,
-            cwd: PathBuf::from("/tmp"),
-            cli_version: "0.116.0".to_string(),
+            cwd: PathBuf::from("/tmp").try_into().expect("absolute cwd"),
+            cli_version: "0.124.0".to_string(),
             source: SessionSource::AppServer,
             agent_nickname: None,
             agent_role: None,
@@ -1240,6 +1242,9 @@ mod tests {
             id: id.to_string(),
             items: Vec::new(),
             status,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
             error: None,
         }
     }
@@ -1392,8 +1397,9 @@ mod tests {
                 item: ThreadItem::CommandExecution {
                     id: "cmd-1".to_string(),
                     command: "cargo test".to_string(),
-                    cwd: PathBuf::from("/tmp"),
+                    cwd: PathBuf::from("/tmp").try_into().expect("absolute cwd"),
                     process_id: Some("123".to_string()),
+                    source: CommandExecutionSource::Agent,
                     status: CommandExecutionStatus::Completed,
                     command_actions: Vec::new(),
                     aggregated_output: Some("stdout line\ncompleted".to_string()),

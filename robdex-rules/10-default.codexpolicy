@@ -29,3 +29,11 @@ prefix_rule(
     pattern = [["static-code-validation", "db_test.sh", "api-integration-harness"]],
     decision = "allow",
 )
+prefix_rule(
+    pattern = ["docker", ["build"]],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["fly"],
+    decision = "allow",
+)

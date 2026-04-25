@@ -3,10 +3,21 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
-import subprocess
 import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[4]
+SHARED_SCRIPT_LIB = ROOT / "scripts" / "lib"
+if str(SHARED_SCRIPT_LIB) not in sys.path:
+    sys.path.insert(0, str(SHARED_SCRIPT_LIB))
+
+from screenshot_crop import ScreenshotCropError
+from screenshot_crop import compute_exact_box
+from screenshot_crop import compute_selector_box
+from screenshot_crop import image_dimensions
+from screenshot_crop import parse_selector
+from screenshot_crop import resolve_magick
+from screenshot_crop import run_process
 
 
 ANCHORS: dict[str, tuple[float, float]] = {
@@ -30,65 +41,14 @@ PRESETS: dict[str, dict[str, object]] = {
 }
 
 
-class CropError(RuntimeError):
-    pass
-
-
-def resolve_magick() -> str:
-    preferred = Path("/opt/homebrew/bin/magick")
-    if preferred.exists():
-        return str(preferred)
-    resolved = shutil.which("magick")
-    if resolved:
-        return resolved
-    raise CropError("magick is not installed or not available on PATH.")
-
-
-def run_magick(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True)
-
-
-def image_dimensions(magick_bin: str, path: Path) -> tuple[int, int]:
-    result = run_magick([magick_bin, "identify", "-format", "%w %h", str(path)])
-    if result.returncode != 0:
-        raise CropError((result.stderr or result.stdout or "magick identify failed").strip())
-    try:
-        width_text, height_text = (result.stdout or "").strip().split()
-        return int(width_text), int(height_text)
-    except Exception as error:
-        raise CropError(f"could not parse image dimensions for {path}") from error
-
-
 def clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(value, maximum))
 
 
 def normalized_percent(value: float, field_name: str) -> float:
     if value <= 0 or value > 100:
-        raise CropError(f"{field_name} must be greater than 0 and at most 100.")
+        raise ScreenshotCropError(f"{field_name} must be greater than 0 and at most 100.")
     return value / 100.0
-
-
-def compute_exact_box(
-    *,
-    image_width: int,
-    image_height: int,
-    x: int,
-    y: int,
-    width: int,
-    height: int,
-) -> tuple[int, int, int, int]:
-    if width <= 0 or height <= 0:
-        raise CropError("width and height must be positive.")
-    if x < 0 or y < 0:
-        raise CropError("x and y must be non-negative.")
-    if x >= image_width or y >= image_height:
-        raise CropError("crop origin is outside the image bounds.")
-    width = min(width, image_width - x)
-    height = min(height, image_height - y)
-    if width <= 0 or height <= 0:
-        raise CropError("crop box is empty after clamping to image bounds.")
-    return x, y, width, height
 
 
 def compute_anchor_box(
@@ -104,7 +64,7 @@ def compute_anchor_box(
     width_ratio = normalized_percent(width_pct, "width_pct")
     height_ratio = normalized_percent(height_pct, "height_pct")
     if anchor not in ANCHORS:
-        raise CropError(f"unknown anchor `{anchor}`.")
+        raise ScreenshotCropError(f"unknown anchor `{anchor}`.")
 
     crop_width = max(1, int(round(image_width * width_ratio)))
     crop_height = max(1, int(round(image_height * height_ratio)))
@@ -125,14 +85,20 @@ def effective_relative_args(args: argparse.Namespace) -> tuple[str, float, float
     width_pct = args.width_pct if args.width_pct is not None else (preset or {}).get("width_pct")
     height_pct = args.height_pct if args.height_pct is not None else (preset or {}).get("height_pct")
     if width_pct is None or height_pct is None:
-        raise CropError(
+        raise ScreenshotCropError(
             "percentage mode requires --width-pct and --height-pct, or a preset that supplies them."
         )
     return anchor, float(width_pct), float(height_pct)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="designer-crop-screenshot")
+    parser = argparse.ArgumentParser(
+        prog="designer-crop-screenshot",
+        description=(
+            "Crop a screenshot by exact pixel box, anchor+percentages, preset, or a live hierarchy selector. "
+            "Selector mode requires --device-id and uses the current hierarchy frame scaled into screenshot pixels."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--input", required=True)
     parser.add_argument("--out", required=True)
@@ -146,6 +112,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--y", type=int)
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
+    parser.add_argument("--device-id", help="Required for --selector mode.")
+    parser.add_argument(
+        "--selector",
+        help="Accessibility selector for live hierarchy cropping, e.g. '{\"id\":\"node-style-minimal-flat\"}' or '{\"text\":\"Close\"}'.",
+    )
     return parser
 
 
@@ -172,11 +143,14 @@ def main() -> int:
 
     try:
         if not input_path.exists():
-            raise CropError(f"input image does not exist: {input_path}")
+            raise ScreenshotCropError(f"input image does not exist: {input_path}")
         magick_bin = resolve_magick()
         image_width, image_height = image_dimensions(magick_bin, input_path)
 
         exact_mode = all(value is not None for value in (args.x, args.y, args.width, args.height))
+        selector_mode = args.selector is not None
+        if exact_mode and selector_mode:
+            raise ScreenshotCropError("use either exact pixel mode or selector mode, not both.")
         if exact_mode:
             x, y, width, height = compute_exact_box(
                 image_width=image_width,
@@ -187,9 +161,20 @@ def main() -> int:
                 height=args.height,
             )
             mode = "exact"
+        elif selector_mode:
+            if not args.device_id:
+                raise ScreenshotCropError("selector mode requires --device-id.")
+            selector = parse_selector(args.selector)
+            x, y, width, height = compute_selector_box(
+                image_width=image_width,
+                image_height=image_height,
+                device_id=args.device_id,
+                selector=selector,
+            )
+            mode = "selector"
         else:
             if any(value is not None for value in (args.x, args.y, args.width, args.height)):
-                raise CropError("exact pixel mode requires --x, --y, --width, and --height together.")
+                raise ScreenshotCropError("exact pixel mode requires --x, --y, --width, and --height together.")
             anchor, width_pct, height_pct = effective_relative_args(args)
             x, y, width, height = compute_anchor_box(
                 image_width=image_width,
@@ -203,7 +188,7 @@ def main() -> int:
             mode = "relative"
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        crop_result = run_magick(
+        crop_result = run_process(
             [
                 magick_bin,
                 str(input_path),
@@ -214,7 +199,7 @@ def main() -> int:
             ]
         )
         if crop_result.returncode != 0:
-            raise CropError((crop_result.stderr or crop_result.stdout or "magick crop failed").strip())
+            raise ScreenshotCropError((crop_result.stderr or crop_result.stdout or "magick crop failed").strip())
 
         payload = {
             "ok": True,
@@ -222,6 +207,8 @@ def main() -> int:
             "out": str(out_path),
             "mode": mode,
             "preset": args.preset,
+            "device_id": args.device_id,
+            "selector": args.selector,
             "anchor": args.anchor if mode == "exact" else (args.anchor or (PRESETS.get(args.preset or "", {}) or {}).get("anchor") or "center"),
             "x": x,
             "y": y,
@@ -230,7 +217,7 @@ def main() -> int:
             "image_width": image_width,
             "image_height": image_height,
         }
-    except CropError as error:
+    except ScreenshotCropError as error:
         payload = {"ok": False, "message": str(error)}
 
     return render(payload, args.json)

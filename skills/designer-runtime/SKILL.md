@@ -20,13 +20,14 @@ designer-hot-reload ...
 
 - `designer-drive`
   - direct ad-hoc simulator inspection and interaction through plain `idb` commands plus small Python HID helpers for text editing cases
-  - screenshot capture stays on the same `designer-drive screenshot` surface and falls back to simulator-native capture if `idb` bitmap capture is unavailable
+  - screenshot capture stays on the same `designer-drive screenshot` surface, falls back to simulator-native capture if `idb` bitmap capture is unavailable, normalizes the saved image to the live UI orientation, and can crop directly to a live accessibility selector
+  - when the app exports `automation.orientationBeacon`, tap, swipe, and screenshot orientation use that accessibility sentinel instead of probe-based orientation guessing
 - `designer-flutter-run`
   - launches `flutter run -d <UDID>` in a tmux session from the designer worktree
 - `designer-hot-reload`
   - sends `r` to the tmux session running Flutter
 - `designer-crop-screenshot`
-  - crops screenshots for pixel-level review using exact boxes, percentage+anchor crops, or named presets
+  - crops screenshots for pixel-level review using exact boxes, percentage+anchor crops, named presets, or live hierarchy selectors
 
 ## Guardrails
 
@@ -39,7 +40,8 @@ designer-hot-reload ...
 - Run commands plainly and sequentially.
 - Do not combine designer runtime commands with shell operators or wrappers.
 - Do not use compound commands with `&&`, `||`, `;`, pipes, command substitution, or inline env wrappers when operating this tooling.
-- When reviewing a small UI region, take the screenshot first and crop it as a separate command.
+- When reviewing a small UI region, prefer `designer-drive screenshot --selector ...` if a live accessibility frame is enough.
+- Use `designer-crop-screenshot` when you need manual boxes, presets, percentages, or to crop an existing saved image.
 
 ## Typical Flow
 
@@ -48,6 +50,7 @@ designer-hot-reload ...
 2. Inspect or interact with the running app:
    - `designer-drive hierarchy --device-id <UDID>`
    - `designer-drive command tapOn --device-id <UDID> --input '{"text":"Settings"}'`
+   - `designer-drive screenshot --device-id <UDID> --selector '{"id":"node-style-minimal-flat"}' --out minimal-flat.png`
    - `designer-crop-screenshot --input current.png --preset bottom_safe_area --out current-bottomsafe.png`
 3. After code changes, hot reload:
    - `designer-hot-reload --session designer-app`
@@ -65,6 +68,10 @@ Important:
 - Global flags must come before the subcommand.
 - In practice, that means `--app-id` and `--json` go before `apps`, `hierarchy`, `command`, `flow`, and so on.
 - Use a single command at a time. Wait for it to complete, inspect the result, then run the next command.
+- For screenshot selector cropping, pass selector JSON such as `--selector '{"id":"node-style-minimal-flat"}'`.
+- Fresh screenshots from `designer-drive screenshot` are normalized to the live UI orientation before they are saved or cropped.
+- Flutter apps can expose a hidden accessibility sentinel with id `automation.orientationBeacon` and value `<orientation>|<width>|<height>`, for example `landscapeLeft|1366|1024`.
+- Supported sentinel orientations are `portraitUp`, `portraitDown`, `landscapeLeft`, and `landscapeRight`.
 
 Commands:
 
@@ -73,6 +80,7 @@ designer-drive devices
 designer-drive apps --device-id <UDID>
 designer-drive hierarchy --device-id <UDID>
 designer-drive screenshot --device-id <UDID> --out current.png
+designer-drive screenshot --device-id <UDID> --selector '{"id":"node-style-minimal-flat"}' --out minimal-flat.png
 designer-drive command <name> --device-id <UDID> [--input <json>] [--label <text>] [--out <file>]
 designer-drive flow --device-id <UDID> --input <json-array> [--label <text>]
 ```
@@ -85,6 +93,7 @@ Common examples:
 designer-drive devices
 designer-drive hierarchy --device-id <UDID>
 designer-drive command tapOn --device-id <UDID> --input '{"text":"Continue"}'
+designer-drive screenshot --device-id <UDID> --selector '{"text":"Close"}' --out close-button.png
 designer-drive command clearAndInputText --device-id <UDID> --input 'New title'
 designer-drive command takeScreenshot --device-id <UDID> --out current.png
 designer-hot-reload --session designer-app
@@ -109,17 +118,27 @@ Recommended operating pattern:
 3. Use `designer-drive hierarchy --device-id <UDID>` to inspect the current screen.
 4. Run one interaction command.
 5. Re-run `hierarchy` or `takeScreenshot` to verify the result.
-6. If you need pixel-level review, crop the screenshot to the exact region you are inspecting.
-7. After code edits, run `designer-hot-reload --session <session>`.
+6. If you want a one-step cropped screenshot, use `designer-drive screenshot --selector ...`.
+7. If you need a manual or preset crop flow, use `designer-crop-screenshot`.
+8. After code edits, run `designer-hot-reload --session <session>`.
 
 ## `designer-crop-screenshot`
 
 Use this when you need a stable screenshot region for bottom safe-area checks, header blur comparisons, or before/after diffs.
+If a single live selector crop is enough, prefer `designer-drive screenshot --selector ...` first.
+Selector mode uses selector JSON, for example `--selector '{"text":"Close"}'`.
 
 Usage shape:
 
 ```sh
 designer-crop-screenshot --input <image.png> --out <crop.png> [crop-mode-options]
+```
+
+Selector mode from live hierarchy:
+
+```sh
+designer-crop-screenshot --input shot.png --device-id <UDID> --selector '{"id":"node-style-minimal-flat"}' --out minimal-flat.png
+designer-crop-screenshot --input shot.png --device-id <UDID> --selector '{"text":"Close"}' --out close-button.png
 ```
 
 Exact pixel box:
@@ -166,6 +185,9 @@ Supported presets:
 Notes:
 
 - Use exact pixel mode when you need repeatable box-for-box comparisons.
+- Use selector mode when you want the crop region to come directly from the live accessibility frame in `designer-drive hierarchy`.
+- Selector-mode crops automatically scale hierarchy coordinates into screenshot pixel coordinates.
 - Use percentage + anchor mode when the same region should adapt across screen sizes.
 - Presets are shortcuts and can be used for quick review loops.
-- Cropping is a separate command from screenshot capture on purpose; keep the steps plain and sequential.
+- Prefer one-step selector crops from `designer-drive screenshot --selector ...` when that covers the review.
+- Use `designer-crop-screenshot` when you need a second explicit crop step.

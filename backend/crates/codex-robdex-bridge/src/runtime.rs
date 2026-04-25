@@ -2372,6 +2372,9 @@ mod tests {
             id: id.to_string(),
             items: Vec::new(),
             status,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
             error: None,
         }
     }
@@ -2534,7 +2537,6 @@ mod tests {
                 network_approval_context: None,
                 command_actions: None,
                 additional_permissions: None,
-                skill_metadata: None,
                 proposed_execpolicy_amendment: None,
                 proposed_network_policy_amendments: None,
                 available_decisions: None,

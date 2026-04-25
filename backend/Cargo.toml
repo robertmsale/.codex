@@ -22,7 +22,7 @@ edition = "2024"
 license = "UNLICENSED"
 version = "0.1.0"
 authors = ["Robert Sale"]
-rust-version = "1.85"
+rust-version = "1.91"
 
 [workspace.dependencies]
 anyhow = "1"

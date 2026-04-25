@@ -17,8 +17,7 @@ use axum::{
 use clap::Parser;
 use codex_backend_core::{HttpArgs, init_tracing};
 use codex_execpolicy::{
-    Decision, MatchOptions, Policy, RuleMatch,
-    execpolicycheck::load_policies,
+    Decision, MatchOptions, Policy, PolicyParser, RuleMatch,
 };
 use codex_shell_command::bash::parse_shell_lc_plain_commands;
 use codex_shell_command::parse_command::extract_shell_command;
@@ -241,11 +240,12 @@ async fn policy_check(
 
     let normalized = normalize_command(&request.command);
     let evaluation = evaluate_normalized(&app, &normalized).await;
+    let decision_reason = policy_decision_reason(&evaluation);
     Ok(Json(CheckResponse {
         ok: true,
         eligible: normalized.argv.is_some() && matches!(evaluation.decision, Some(Decision::Allow)),
         classification: normalized.classification,
-        reason: normalized.reason,
+        reason: normalized.reason.or(decision_reason),
         normalized_argv: normalized.argv,
         matched_rules: evaluation.matched_rules,
         decision: evaluation.decision,
@@ -286,21 +286,21 @@ async fn exec_run(
             return Ok(Json(rejected_run_response(
                 normalized,
                 evaluation,
-                "policy decision is prompt; privileged path requires explicit allow".to_string(),
+                Some("policy decision is prompt; privileged path requires explicit allow".to_string()),
             )));
         }
         Some(Decision::Forbidden) => {
             return Ok(Json(rejected_run_response(
                 normalized,
                 evaluation,
-                "policy decision is forbidden".to_string(),
+                None,
             )));
         }
         None => {
             return Ok(Json(rejected_run_response(
                 normalized,
                 evaluation,
-                "no privileged execpolicy rule matched; fall back to local sandboxed execution".to_string(),
+                Some("no privileged execpolicy rule matched; fall back to local sandboxed execution".to_string()),
             )));
         }
     }
@@ -335,13 +335,17 @@ async fn exec_run(
 fn rejected_run_response(
     normalized: NormalizedCommand,
     evaluation: EvaluationResult,
-    reason: String,
+    fallback_reason: Option<String>,
 ) -> RunResponse {
+    let reason = normalized
+        .reason
+        .or_else(|| policy_decision_reason(&evaluation))
+        .or(fallback_reason);
     RunResponse {
         ok: false,
         status: "rejected",
         classification: normalized.classification,
-        reason: Some(reason),
+        reason,
         normalized_argv: normalized.argv,
         matched_rules: evaluation.matched_rules,
         decision: evaluation.decision,
@@ -352,6 +356,29 @@ fn rejected_run_response(
         truncated_stdout: false,
         truncated_stderr: false,
     }
+}
+
+fn policy_decision_reason(evaluation: &EvaluationResult) -> Option<String> {
+    let decision = evaluation.decision?;
+    let justification = evaluation
+        .matched_rules
+        .iter()
+        .find_map(|matched_rule| match matched_rule {
+            RuleMatch::PrefixRuleMatch {
+                decision: rule_decision,
+                justification: Some(justification),
+                ..
+            } if *rule_decision == decision && !justification.trim().is_empty() => {
+                Some(justification.trim().to_string())
+            }
+            _ => None,
+        });
+    let decision_label = match decision {
+        Decision::Allow => "allow",
+        Decision::Prompt => "prompt",
+        Decision::Forbidden => "forbidden",
+    };
+    justification.or_else(|| Some(format!("policy decision is {decision_label}")))
 }
 
 fn validate_request(request: &ExecRequest) -> Result<()> {
@@ -514,7 +541,16 @@ async fn reload_policy(app: &AppState) -> Result<()> {
 
 fn load_policy_state(rule_inputs: &[PathBuf]) -> Result<LoadedPolicy> {
     let rule_paths = expand_rule_inputs(rule_inputs)?;
-    let policy = load_policies(&rule_paths)?;
+    let mut parser = PolicyParser::new();
+    for rule_path in &rule_paths {
+        let rule_file_contents = std::fs::read_to_string(rule_path)
+            .with_context(|| format!("failed to read policy at {}", rule_path.display()))?;
+        let rule_identifier = rule_path.to_string_lossy().to_string();
+        parser
+            .parse(&rule_identifier, &rule_file_contents)
+            .with_context(|| format!("failed to parse policy at {}", rule_path.display()))?;
+    }
+    let policy = parser.build();
     let rule_count = policy.rules().iter_all().map(|(_, rules)| rules.len()).sum();
     Ok(LoadedPolicy {
         policy,
@@ -948,6 +984,7 @@ prefix_rule(
 prefix_rule(
     pattern = ["rm"],
     decision = "forbidden",
+    justification = "absolutely never run rm -rf here",
     match = [["rm", "-rf", "/tmp/foo"]],
 )
 "#,
@@ -960,6 +997,40 @@ prefix_rule(
         );
         assert!(!matches.is_empty());
         assert_eq!(matches[0].decision(), Decision::Forbidden);
+        let evaluation = EvaluationResult {
+            matched_rules: matches,
+            decision: Some(Decision::Forbidden),
+        };
+        assert_eq!(
+            policy_decision_reason(&evaluation).as_deref(),
+            Some("absolutely never run rm -rf here")
+        );
+    }
+
+    #[test]
+    fn forbidden_rejection_uses_rule_justification() {
+        let response = rejected_run_response(
+            NormalizedCommand {
+                classification: "argv",
+                argv: Some(vec!["dart".to_string(), "format".to_string()]),
+                policy_argvs: vec![vec!["dart".to_string(), "format".to_string()]],
+                reason: None,
+            },
+            EvaluationResult {
+                matched_rules: vec![RuleMatch::PrefixRuleMatch {
+                    matched_prefix: vec!["dart".to_string(), "format".to_string()],
+                    decision: Decision::Forbidden,
+                    resolved_program: None,
+                    justification: Some("absolutely never run these".to_string()),
+                }],
+                decision: Some(Decision::Forbidden),
+            },
+            None,
+        );
+
+        assert_eq!(response.status, "rejected");
+        assert_eq!(response.decision, Some(Decision::Forbidden));
+        assert_eq!(response.reason.as_deref(), Some("absolutely never run these"));
     }
 
     #[test]

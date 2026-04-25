@@ -12,8 +12,8 @@ Current crate:
 
 Pinned upstream source:
 - git submodule at `backend/vendor/codex`
-- pinned commit: `38771c9082535aa16b4c4d0395d3532f32f656ff`
-- intended version label: `rust-v0.116.0`
+- pinned commit: `e9fb49366c93a1478ec71cc41ecee415a197d036`
+- intended version label: `rust-v0.124.0`
 
 Current implemented slices:
 - tmp-safe SQLite state store using `sqlx`

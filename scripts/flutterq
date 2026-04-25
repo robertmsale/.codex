@@ -78,6 +78,21 @@ append_if_absent_by_prefix() {
   fi
 }
 
+remove_all_args() {
+  local needle="$1"
+  shift
+  local target_name="$1"
+  shift
+  local -a filtered=()
+  local arg
+  local -a current=("${(@P)target_name}")
+  for arg in "${current[@]}"; do
+    [[ "$arg" == "$needle" ]] && continue
+    filtered+=("$arg")
+  done
+  eval "$target_name=(\"\${filtered[@]}\")"
+}
+
 run_build_command() {
   local -a build_cmd=("$@")
   exec "${build_cmd[@]}"
@@ -229,6 +244,16 @@ raise SystemExit(status)
 PY
 }
 
+run_analyze_command() {
+  local -a analyze_cmd=("$@")
+  local output
+  local cmd_status=0
+
+  output="$("${analyze_cmd[@]}" 2>&1)" || cmd_status=$?
+  printf '%s' "$output" | python3 "$HOME/.codex/scripts/filter_dart_analyze_output.py"
+  return "$cmd_status"
+}
+
 if [[ $# -eq 0 ]]; then
   show_usage >&2
   exit 2
@@ -278,7 +303,11 @@ case "$command" in
     if ! contains_arg "--suggestions" "${args[@]}" && ! contains_arg "--no-suggestions" "${args[@]}"; then
       args+=("--no-suggestions")
     fi
-    exec flutter "${args[@]}"
+    remove_all_args "--fatal-infos" args
+    if ! contains_arg "--no-fatal-infos" "${args[@]}"; then
+      args+=("--no-fatal-infos")
+    fi
+    run_analyze_command flutter "${args[@]}"
     ;;
   test)
     if ! contains_arg "--machine" "${args[@]}"; then

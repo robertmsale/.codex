@@ -190,3 +190,6 @@ enabled = false
 
 [projects."/Users/robertsale/Code/codex"]
 trust_level = "trusted"
+
+[projects."/Users/robertsale/.codex"]
+trust_level = "trusted"
