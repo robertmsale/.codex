@@ -122,3 +122,5 @@ session_index.jsonl
 robdex-thread-project-locks.json
 state_5.sqlite*
 memories/
+shim/
+installation_id
