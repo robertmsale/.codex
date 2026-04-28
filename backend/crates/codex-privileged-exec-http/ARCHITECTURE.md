@@ -9,8 +9,8 @@ remote shell:
 - policy matching is delegated to vendored `codex-execpolicy`
 - shell-shape classification is delegated to vendored `codex-shell-command`
 - actual execution is argv-based only
-- shell-form commands only qualify when they can be reduced to a single plain
-  command and pass an extra strict token check
+- shell-form commands qualify only when they can be reduced to one plain argv
+  command or a simple `&&` / `||` chain of plain argv commands
 
 ## Design
 
@@ -34,8 +34,10 @@ remote shell:
 - Direct argv requests are eligible as-is.
 - Shell-form requests (`bash -lc`, `zsh -lc`, `sh -lc`) are inspected with
   vendored tree-sitter helpers.
-- Only a single plain command is eligible for privileged execution.
-- Multi-command shell sequences, redirections, substitutions, control flow, and
+- A single plain command is eligible for privileged execution.
+- Simple `&&` / `||` chains are eligible only when every segment is a plain
+  command and every segment has an explicit allow match.
+- Semicolon sequences, pipes, redirections, substitutions, control flow, and
   other complex shell constructs are rejected from the privileged path.
 
 ### Execution
@@ -55,7 +57,8 @@ remote shell:
 
 ## Safety Constraints
 
-- No arbitrary shell string execution.
+- No arbitrary shell string execution; eligible chains are executed segment by
+  segment through argv with `&&` / `||` short-circuit semantics.
 - No implicit `bash -lc`.
 - No policyless privileged execution.
 - No `prompt` passthrough for now.

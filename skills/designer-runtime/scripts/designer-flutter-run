@@ -6,10 +6,33 @@ device_id=""
 workdir=""
 target=""
 flavor=""
+log_file=""
 declare -a extra_args=()
+
+usage() {
+  cat <<'EOF'
+Usage:
+  designer-flutter-run --session <tmux-session> --device-id <UDID> [--workdir <path>] [--target <dart-file>] [--flavor <flavor>] [--log <path>] [-- <flutter args>...]
+
+Launches `flutter run -d <UDID>` in a tmux session from the requested workdir.
+Output is also written to a log file so immediate tmux exits are diagnosable.
+
+Defaults:
+  --workdir defaults to the current directory.
+  --log defaults to /tmp/designer-flutter-run/<session>.log.
+
+After launch:
+  tmux attach -t <tmux-session>
+  designer-hot-reload --session <tmux-session>
+EOF
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
     --session)
       session="${2:-}"
       shift 2
@@ -30,6 +53,10 @@ while [[ $# -gt 0 ]]; do
       flavor="${2:-}"
       shift 2
       ;;
+    --log)
+      log_file="${2:-}"
+      shift 2
+      ;;
     --)
       shift
       extra_args=("$@")
@@ -46,6 +73,10 @@ done
 [[ -n "$device_id" ]] || { echo "--device-id is required" >&2; exit 2; }
 workdir="${workdir:-$PWD}"
 [[ -d "$workdir" ]] || { echo "workdir does not exist: $workdir" >&2; exit 1; }
+if [[ -z "$log_file" ]]; then
+  log_file="/tmp/designer-flutter-run/${session}.log"
+fi
+mkdir -p "$(dirname "$log_file")"
 
 if tmux has-session -t "$session" 2>/dev/null; then
   echo "tmux session already exists: $session" >&2
@@ -61,5 +92,7 @@ fi
 
 escaped_workdir="$(printf '%q' "$workdir")"
 escaped_cmd="$(printf '%q ' "${cmd[@]}")"
-tmux new-session -d -s "$session" "cd $escaped_workdir && ${escaped_cmd% }"
+escaped_log_file="$(printf '%q' "$log_file")"
+tmux new-session -d -s "$session" "cd $escaped_workdir && (ROBDEX_DESIGNER_FLUTTER_RUN=1 ${escaped_cmd% } 2>&1; printf '\n[designer-flutter-run] flutter exited with status %s\n' \"\$?\") | tee $escaped_log_file"
 printf 'started tmux session %s in %s\n' "$session" "$workdir"
+printf 'log file: %s\n' "$log_file"

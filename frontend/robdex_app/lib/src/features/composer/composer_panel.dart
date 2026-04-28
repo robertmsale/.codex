@@ -1,8 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:screen_capturer/screen_capturer.dart';
 
 class ComposerSubmission {
   const ComposerSubmission({
@@ -33,12 +36,19 @@ class ComposerPanel extends StatefulWidget {
 }
 
 class _ComposerPanelState extends State<ComposerPanel> {
+  static const _sendTransitionAsset = 'assets/animations/send-transition.gif';
+  static const _sendTransitionDuration = Duration(milliseconds: 2500);
+
   late final TextEditingController _controller;
   final FocusNode _focusNode = FocusNode();
   final List<String> _localImagePaths = <String>[];
   bool _hasDraftText = false;
   bool _isDesktopDragging = false;
   bool _isPickingImages = false;
+  bool _isCapturingScreenshot = false;
+  bool _isShowingSendTransition = false;
+  String? _attachmentError;
+  int _sendTransitionSerial = 0;
 
   @override
   void initState() {
@@ -69,6 +79,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
     if ((text.isEmpty && _localImagePaths.isEmpty) || !widget.enabled) {
       return;
     }
+    _showSendTransition();
     widget.onSend(
       ComposerSubmission(
         text: text,
@@ -78,6 +89,22 @@ class _ComposerPanelState extends State<ComposerPanel> {
     _controller.clear();
     setState(() {
       _localImagePaths.clear();
+    });
+  }
+
+  void _showSendTransition() {
+    final serial = _sendTransitionSerial + 1;
+    setState(() {
+      _sendTransitionSerial = serial;
+      _isShowingSendTransition = true;
+    });
+    Future<void>.delayed(_sendTransitionDuration, () {
+      if (!mounted || _sendTransitionSerial != serial) {
+        return;
+      }
+      setState(() {
+        _isShowingSendTransition = false;
+      });
     });
   }
 
@@ -108,7 +135,9 @@ class _ComposerPanelState extends State<ComposerPanel> {
     if (paths.isEmpty) {
       return;
     }
-    final next = paths.where((path) => path.isNotEmpty && _isImagePath(path)).toList(growable: false);
+    final next = paths
+        .where((path) => path.isNotEmpty && _isImagePath(path))
+        .toList(growable: false);
     if (next.isEmpty) {
       return;
     }
@@ -150,12 +179,89 @@ class _ComposerPanelState extends State<ComposerPanel> {
         return;
       }
       _appendImagePaths(
-        files.map((file) => file.path).whereType<String>().toList(growable: false),
+        files
+            .map((file) => file.path)
+            .whereType<String>()
+            .toList(growable: false),
       );
     } finally {
       if (mounted) {
         setState(() {
           _isPickingImages = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _captureScreenshot() async {
+    if (!widget.enabled || _isCapturingScreenshot) {
+      return;
+    }
+    setState(() {
+      _isCapturingScreenshot = true;
+      _attachmentError = null;
+    });
+    var requestedAccess = false;
+    try {
+      if (defaultTargetPlatform == TargetPlatform.macOS) {
+        final hasAccess = await screenCapturer.isAccessAllowed();
+        if (!hasAccess) {
+          requestedAccess = true;
+          await screenCapturer.requestAccess();
+        }
+      }
+
+      final directory = Directory(
+        '${Directory.systemTemp.path}/robdex/screenshots',
+      );
+      if (!directory.existsSync()) {
+        directory.createSync(recursive: true);
+      }
+      final imagePath =
+          '${directory.path}/screenshot-${DateTime.now().millisecondsSinceEpoch}.png';
+
+      final captured = await screenCapturer.capture(
+        mode: CaptureMode.region,
+        imagePath: imagePath,
+        copyToClipboard: false,
+      );
+      if (!mounted) {
+        return;
+      }
+
+      final capturedPath = captured?.imagePath ?? imagePath;
+      final file = File(capturedPath);
+      if (captured == null || !file.existsSync()) {
+        if (requestedAccess) {
+          setState(() {
+            _attachmentError =
+                'Allow Screen Recording in System Settings, then try again.';
+          });
+        }
+        return;
+      }
+
+      _appendImagePaths(<String>[capturedPath]);
+      _focusNode.requestFocus();
+    } on PlatformException {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _attachmentError =
+            'Allow Screen Recording in System Settings, then try again.';
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _attachmentError = 'Could not capture screenshot.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isCapturingScreenshot = false;
         });
       }
     }
@@ -180,13 +286,17 @@ class _ComposerPanelState extends State<ComposerPanel> {
       TargetPlatform.macOS || TargetPlatform.linux || TargetPlatform.windows => true,
       _ => false,
     };
-    final showsInterrupt = widget.isRunning && !_hasDraftText;
+    final supportsScreenshots = defaultTargetPlatform == TargetPlatform.macOS;
+    final showsInterrupt =
+        widget.isRunning && !_hasDraftText && !_isShowingSendTransition;
+    final showsSendTransition = _isShowingSendTransition;
     final actionBackground = showsInterrupt
         ? theme.colorScheme.error
         : theme.colorScheme.primary;
     final actionForeground = showsInterrupt
         ? theme.colorScheme.onError
         : const Color(0xFF08111A);
+    const actionButtonSize = 42.0;
 
     final panel = DecoratedBox(
       decoration: BoxDecoration(
@@ -268,6 +378,28 @@ class _ComposerPanelState extends State<ComposerPanel> {
                       : const Icon(Icons.add_photo_alternate_outlined),
                   visualDensity: VisualDensity.compact,
                 ),
+                if (supportsScreenshots) ...[
+                  const SizedBox(width: 2),
+                  IconButton(
+                    onPressed: widget.enabled && !_isCapturingScreenshot
+                        ? _captureScreenshot
+                        : null,
+                    tooltip: _isCapturingScreenshot
+                        ? 'Select an area to capture'
+                        : 'Capture screenshot',
+                    icon: _isCapturingScreenshot
+                        ? SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 1.8,
+                              color: theme.colorScheme.primary,
+                            ),
+                          )
+                        : const Icon(Icons.screenshot_monitor_outlined),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ],
                 const SizedBox(width: 8),
                 Expanded(
                   child: Focus(
@@ -319,13 +451,32 @@ class _ComposerPanelState extends State<ComposerPanel> {
                 const SizedBox(width: 8),
                 IconButton(
                   onPressed: widget.enabled
-                      ? (showsInterrupt ? widget.onInterrupt : _submit)
+                      ? (showsSendTransition
+                            ? () {}
+                            : showsInterrupt
+                                ? widget.onInterrupt
+                                : _submit)
                       : null,
-                  icon: Icon(
-                    showsInterrupt
-                        ? Icons.stop_rounded
-                        : Icons.arrow_upward_rounded,
-                    size: 18,
+                  icon: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 120),
+                    child: showsSendTransition
+                        ? ClipOval(
+                            key: ValueKey('send-transition-$_sendTransitionSerial'),
+                            child: Image.asset(
+                              _sendTransitionAsset,
+                              width: 28,
+                              height: 28,
+                              fit: BoxFit.cover,
+                              gaplessPlayback: false,
+                            ),
+                          )
+                        : Icon(
+                            showsInterrupt
+                                ? Icons.stop_rounded
+                                : Icons.arrow_upward_rounded,
+                            key: ValueKey(showsInterrupt ? 'stop' : 'send'),
+                            size: 18,
+                          ),
                   ),
                   style: IconButton.styleFrom(
                     backgroundColor: actionBackground,
@@ -334,7 +485,8 @@ class _ComposerPanelState extends State<ComposerPanel> {
                         theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
                     disabledForegroundColor:
                         theme.colorScheme.onSurface.withValues(alpha: 0.4),
-                    minimumSize: const Size(42, 42),
+                    minimumSize: const Size.square(actionButtonSize),
+                    fixedSize: const Size.square(actionButtonSize),
                     shape: const CircleBorder(),
                   ),
                   tooltip: showsInterrupt ? 'Interrupt' : 'Send',
@@ -345,6 +497,15 @@ class _ComposerPanelState extends State<ComposerPanel> {
               const SizedBox(height: 10),
               Text(
                 'Select a thread to enable the composer.',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.secondary,
+                ),
+              ),
+            ],
+            if (_attachmentError != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                _attachmentError!,
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: theme.colorScheme.secondary,
                 ),

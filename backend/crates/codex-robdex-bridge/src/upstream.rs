@@ -1423,7 +1423,7 @@ mod tests {
             forked_from_id: None,
             path: None,
             cwd: PathBuf::from("/tmp").try_into().expect("absolute cwd"),
-            cli_version: "0.124.0".to_string(),
+            cli_version: "0.125.0".to_string(),
             source: SessionSource::AppServer,
             agent_nickname: None,
             agent_role: None,

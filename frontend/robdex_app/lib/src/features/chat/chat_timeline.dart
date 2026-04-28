@@ -46,8 +46,6 @@ class ChatTimeline extends StatefulWidget {
 
 class _ChatTimelineState extends State<ChatTimeline> {
   late final ScrollController _scrollController;
-  final GlobalKey _timelineViewportKey = GlobalKey();
-  final Map<String, GlobalKey> _entryRenderKeys = <String, GlobalKey>{};
   final Set<String> _expandedEntryKeys = <String>{};
   bool _stickToBottom = true;
   bool _userScrollActive = false;
@@ -72,7 +70,6 @@ class _ChatTimelineState extends State<ChatTimeline> {
         .map(_entryStorageKey)
         .toSet();
     _expandedEntryKeys.removeWhere((key) => !currentKeys.contains(key));
-    _entryRenderKeys.removeWhere((key, _) => !currentKeys.contains(key));
 
     final threadChanged = widget.threadId != oldWidget.threadId;
     final entriesChanged = widget.entries.length != oldWidget.entries.length ||
@@ -81,14 +78,6 @@ class _ChatTimelineState extends State<ChatTimeline> {
     if (!threadChanged && !entriesChanged) {
       return;
     }
-
-    final oldEntryKeys =
-        oldWidget.entries.map(_entryStorageKey).toList(growable: false);
-    final newEntryKeys = widget.entries.map(_entryStorageKey).toList(growable: false);
-    final structuralChange = !_sameKeyOrder(oldEntryKeys, newEntryKeys);
-    final anchor = !threadChanged && structuralChange && !_stickToBottom
-        ? _captureScrollAnchor(oldEntryKeys)
-        : null;
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) {
@@ -117,78 +106,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
         }
         return;
       }
-      if (anchor == null) {
-        return;
-      }
-      final target = _targetPixelsForAnchor(anchor);
-      if (target == null || (position.pixels - target).abs() <= 1) {
-        return;
-      }
-      _scrollController.jumpTo(
-        target.clamp(position.minScrollExtent, position.maxScrollExtent),
-      );
     });
-  }
-
-  GlobalKey _entryKeyFor(String entryKey) =>
-      _entryRenderKeys.putIfAbsent(entryKey, GlobalKey.new);
-
-  _ScrollAnchor? _captureScrollAnchor(List<String> entryKeys) {
-    if (!_scrollController.hasClients) {
-      return null;
-    }
-    final viewportContext = _timelineViewportKey.currentContext;
-    if (viewportContext == null) {
-      return null;
-    }
-    final viewportBox = viewportContext.findRenderObject() as RenderBox?;
-    if (viewportBox == null || !viewportBox.hasSize) {
-      return null;
-    }
-    final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
-    final viewportBottom = viewportTop + viewportBox.size.height;
-    for (final entryKey in entryKeys) {
-      final entryContext = _entryRenderKeys[entryKey]?.currentContext;
-      if (entryContext == null) {
-        continue;
-      }
-      final entryBox = entryContext.findRenderObject() as RenderBox?;
-      if (entryBox == null || !entryBox.hasSize) {
-        continue;
-      }
-      final top = entryBox.localToGlobal(Offset.zero).dy;
-      final bottom = top + entryBox.size.height;
-      if (bottom > viewportTop + 4 && top < viewportBottom) {
-        return _ScrollAnchor(
-          entryKey: entryKey,
-          viewportOffset: top - viewportTop,
-        );
-      }
-    }
-    return null;
-  }
-
-  double? _targetPixelsForAnchor(_ScrollAnchor anchor) {
-    if (!_scrollController.hasClients) {
-      return null;
-    }
-    final viewportContext = _timelineViewportKey.currentContext;
-    final entryContext = _entryRenderKeys[anchor.entryKey]?.currentContext;
-    if (viewportContext == null || entryContext == null) {
-      return null;
-    }
-    final viewportBox = viewportContext.findRenderObject() as RenderBox?;
-    final entryBox = entryContext.findRenderObject() as RenderBox?;
-    if (viewportBox == null ||
-        entryBox == null ||
-        !viewportBox.hasSize ||
-        !entryBox.hasSize) {
-      return null;
-    }
-    final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
-    final entryTop = entryBox.localToGlobal(Offset.zero).dy;
-    final delta = entryTop - (viewportTop + anchor.viewportOffset);
-    return _scrollController.position.pixels + delta;
   }
 
   bool _isNearBottom() {
@@ -303,36 +221,31 @@ class _ChatTimelineState extends State<ChatTimeline> {
               NotificationListener<ScrollNotification>(
                 onNotification: _handleScrollNotification,
                 child: SelectionArea(
-                  child: KeyedSubtree(
-                    key: _timelineViewportKey,
-                    child: ListView.separated(
-                      controller: _scrollController,
-                      itemCount: widget.entries.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 6),
-                      itemBuilder: (context, index) {
-                        final entry = widget.entries[index];
-                        final entryKey = _entryStorageKey(entry);
-                        return KeyedSubtree(
-                          key: _entryKeyFor(entryKey),
-                          child: _ChatBubble(
-                            key: ValueKey(entryKey),
-                            entry: entry,
-                            expanded: _expandedEntryKeys.contains(entryKey),
-                            onExpandedChanged: (expanded) {
-                              setState(() {
-                                if (expanded) {
-                                  _expandedEntryKeys.add(entryKey);
-                                } else {
-                                  _expandedEntryKeys.remove(entryKey);
-                                }
-                              });
-                            },
-                            onTerminateCommandExecution:
-                                widget.onTerminateCommandExecution,
-                          ),
-                        );
-                      },
-                    ),
+                  child: ListView.separated(
+                    key: PageStorageKey<String>('chat-timeline-${widget.threadId ?? 'none'}'),
+                    controller: _scrollController,
+                    itemCount: widget.entries.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 6),
+                    itemBuilder: (context, index) {
+                      final entry = widget.entries[index];
+                      final entryKey = _entryStorageKey(entry);
+                      return _ChatBubble(
+                        key: ValueKey(entryKey),
+                        entry: entry,
+                        expanded: _expandedEntryKeys.contains(entryKey),
+                        onExpandedChanged: (expanded) {
+                          setState(() {
+                            if (expanded) {
+                              _expandedEntryKeys.add(entryKey);
+                            } else {
+                              _expandedEntryKeys.remove(entryKey);
+                            }
+                          });
+                        },
+                        onTerminateCommandExecution:
+                            widget.onTerminateCommandExecution,
+                      );
+                    },
                   ),
                 ),
               ),
@@ -358,28 +271,6 @@ class _ChatTimelineState extends State<ChatTimeline> {
       ],
     );
   }
-}
-
-class _ScrollAnchor {
-  const _ScrollAnchor({
-    required this.entryKey,
-    required this.viewportOffset,
-  });
-
-  final String entryKey;
-  final double viewportOffset;
-}
-
-bool _sameKeyOrder(List<String> a, List<String> b) {
-  if (a.length != b.length) {
-    return false;
-  }
-  for (var i = 0; i < a.length; i += 1) {
-    if (a[i] != b[i]) {
-      return false;
-    }
-  }
-  return true;
 }
 
 bool _sameEntryIdentity(List<ChatEntry> a, List<ChatEntry> b) {
@@ -426,8 +317,12 @@ class _ChatBubble extends StatelessWidget {
     final isConversation = !entry.isTool &&
         (entry.author == 'User' || entry.author == 'Assistant' || entry.author == 'Operator');
 
-    if (entry.hasPlanItems) {
-      return _PlanUpdateCard(entry: entry);
+    final fallbackPlanItems = entry.hasPlanItems ? const <PlanChecklistItem>[] : _planItemsFromBody(entry.body);
+    if (entry.hasPlanItems || fallbackPlanItems.isNotEmpty) {
+      return _PlanUpdateCard(
+        entry: entry,
+        fallbackItems: fallbackPlanItems,
+      );
     }
 
     if (!isConversation) {
@@ -516,13 +411,11 @@ class _ChatBubble extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
-                SelectionArea(
-                  child: MarkdownBody(
-                    data: entry.body,
-                    selectable: false,
-                    styleSheet: _conversationMarkdownStyle(theme, isPending),
-                    syntaxHighlighter: _ChatCodeSyntaxHighlighter(theme),
-                  ),
+                MarkdownBody(
+                  data: entry.body,
+                  selectable: false,
+                  styleSheet: _conversationMarkdownStyle(theme, isPending),
+                  syntaxHighlighter: _ChatCodeSyntaxHighlighter(theme),
                 ),
               ],
             ),
@@ -536,9 +429,11 @@ class _ChatBubble extends StatelessWidget {
 class _PlanUpdateCard extends StatelessWidget {
   const _PlanUpdateCard({
     required this.entry,
+    this.fallbackItems = const [],
   });
 
   final ChatEntry entry;
+  final List<PlanChecklistItem> fallbackItems;
 
   @override
   Widget build(BuildContext context) {
@@ -546,6 +441,7 @@ class _PlanUpdateCard extends StatelessWidget {
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
     final note = _planSummary(entry.body);
     final accent = entry.isStreaming ? Colors.amber.shade700 : theme.colorScheme.primary;
+    final items = entry.hasPlanItems ? entry.planItems : fallbackItems;
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -610,9 +506,9 @@ class _PlanUpdateCard extends StatelessWidget {
                   ),
                 ],
                 const SizedBox(height: 14),
-                ...entry.planItems.asMap().entries.map(
+                ...items.asMap().entries.map(
                   (entry) => Padding(
-                    padding: EdgeInsets.only(bottom: entry.key == this.entry.planItems.length - 1 ? 0 : 10),
+                    padding: EdgeInsets.only(bottom: entry.key == items.length - 1 ? 0 : 10),
                     child: _PlanChecklistRow(item: entry.value),
                   ),
                 ),
@@ -1039,7 +935,7 @@ class _CommandEventRow extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             if (expanded)
-              SelectableText(
+              Text(
                 entry.command?.trim().isNotEmpty == true ? entry.command!.trim() : entry.body.trim(),
                 style: theme.textTheme.bodySmall?.copyWith(
                   fontFamily: 'monospace',
@@ -1358,9 +1254,14 @@ class _DiffEventSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final lines = value.replaceAll('\r\n', '\n').split('\n');
+    final textStyle = (theme.textTheme.bodySmall ?? const TextStyle()).copyWith(
+      fontFamily: 'monospace',
+      height: 1.4,
+      color: theme.colorScheme.onSurface.withValues(alpha: 0.84),
+    );
     return Container(
       width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
         color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.18),
@@ -1370,100 +1271,58 @@ class _DiffEventSection extends StatelessWidget {
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (final line in lines) _DiffLineRow(line: line),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DiffLineRow extends StatelessWidget {
-  const _DiffLineRow({
-    required this.line,
-  });
-
-  final String line;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final kind = _classifyDiffLine(line);
-    final (bg, border, fg) = switch (kind) {
-      _DiffLineKind.added => (
-          Colors.green.shade900.withValues(alpha: 0.18),
-          Colors.green.shade400.withValues(alpha: 0.25),
-          Colors.green.shade100,
-        ),
-      _DiffLineKind.removed => (
-          Colors.red.shade900.withValues(alpha: 0.16),
-          Colors.red.shade400.withValues(alpha: 0.22),
-          Colors.red.shade100,
-        ),
-      _DiffLineKind.hunk => (
-          theme.colorScheme.primary.withValues(alpha: 0.12),
-          theme.colorScheme.primary.withValues(alpha: 0.18),
-          theme.colorScheme.primary.withValues(alpha: 0.94),
-        ),
-      _DiffLineKind.header => (
-          theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.42),
-          theme.colorScheme.outline.withValues(alpha: 0.10),
-          theme.colorScheme.onSurface.withValues(alpha: 0.62),
-        ),
-      _DiffLineKind.context => (
-          Colors.transparent,
-          Colors.transparent,
-          theme.colorScheme.onSurface.withValues(alpha: 0.82),
-        ),
-    };
-    final sign = line.isEmpty ? ' ' : line[0];
-    final content = line.isEmpty ? '' : line.substring(1);
-
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: bg,
-        border: Border(
-          left: BorderSide(color: border, width: kind == _DiffLineKind.context ? 0 : 1.5),
-        ),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 12,
-            child: Text(
-              line.isEmpty ? '' : sign,
-              style: theme.textTheme.bodySmall?.copyWith(
-                fontFamily: 'monospace',
-                fontWeight: FontWeight.w700,
-                color: fg,
-                height: 1.4,
-              ),
+        child: Text.rich(
+          TextSpan(
+            style: textStyle,
+            children: _diffTextSpans(
+              value.replaceAll('\r\n', '\n'),
+              theme,
+              textStyle,
             ),
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: SelectableText(
-              kind == _DiffLineKind.header ? line : content,
-              style: theme.textTheme.bodySmall?.copyWith(
-                fontFamily: 'monospace',
-                color: fg,
-                height: 1.4,
-              ),
-            ),
-          ),
-        ],
+          softWrap: true,
+        ),
       ),
     );
   }
 }
 
 enum _DiffLineKind { header, hunk, added, removed, context }
+
+List<InlineSpan> _diffTextSpans(
+  String value,
+  ThemeData theme,
+  TextStyle baseStyle,
+) {
+  final lines = value.split('\n');
+  return lines.asMap().entries.map((entry) {
+    final line = entry.value;
+    final kind = _classifyDiffLine(line);
+    final color = switch (kind) {
+      _DiffLineKind.added => Colors.green.shade100,
+      _DiffLineKind.removed => Colors.red.shade100,
+      _DiffLineKind.hunk => theme.colorScheme.primary.withValues(alpha: 0.94),
+      _DiffLineKind.header => theme.colorScheme.onSurface.withValues(alpha: 0.62),
+      _DiffLineKind.context => theme.colorScheme.onSurface.withValues(alpha: 0.82),
+    };
+    final backgroundColor = switch (kind) {
+      _DiffLineKind.added => Colors.green.shade900.withValues(alpha: 0.18),
+      _DiffLineKind.removed => Colors.red.shade900.withValues(alpha: 0.16),
+      _DiffLineKind.hunk => theme.colorScheme.primary.withValues(alpha: 0.12),
+      _DiffLineKind.header => theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.42),
+      _DiffLineKind.context => null,
+    };
+    final suffix = entry.key == lines.length - 1 ? '' : '\n';
+    return TextSpan(
+      text: '$line$suffix',
+      style: baseStyle.copyWith(
+        color: color,
+        backgroundColor: backgroundColor,
+        fontWeight: kind == _DiffLineKind.hunk ? FontWeight.w700 : null,
+      ),
+    );
+  }).toList(growable: false);
+}
 
 _DiffLineKind _classifyDiffLine(String line) {
   if (line.startsWith('diff --git') ||
@@ -1528,7 +1387,7 @@ class _EventSection extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 6),
-          SelectableText(
+          Text(
             value,
             style: theme.textTheme.bodySmall?.copyWith(
               fontFamily: mono ? 'monospace' : null,
@@ -1661,4 +1520,23 @@ String? _planSummary(String body) {
       })
       .where((line) => line.isNotEmpty)
       .join(' ');
+}
+
+List<PlanChecklistItem> _planItemsFromBody(String body) {
+  final statusPattern = RegExp(r'^\[(pending|in_progress|completed)\]\s+(.+)$');
+  return body
+      .replaceAll('\r\n', '\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .map(statusPattern.firstMatch)
+      .whereType<RegExpMatch>()
+      .map((match) {
+        final status = match.group(1)!;
+        return PlanChecklistItem(
+          text: match.group(2)!.trim(),
+          completed: status == 'completed',
+          status: status,
+        );
+      })
+      .toList(growable: false);
 }

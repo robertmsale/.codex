@@ -127,7 +127,7 @@ mod tests {
                     "createdAt": 1712188800,
                     "path": null,
                     "cwd": "/tmp",
-                    "cliVersion": "0.124.0",
+                    "cliVersion": "0.125.0",
                     "source": "appServer",
                     "agentNickname": null,
                     "agentRole": null,

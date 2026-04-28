@@ -5,4 +5,6 @@ cd /Users/robertsale/Code/robdex
 
 listen="${ROBDEX_APP_SERVER_LISTEN:-ws://127.0.0.1:4200}"
 
-/usr/local/bin/codex app-server --listen "$listen"
+codex_bin="/Users/robertsale/.codex/backend/vendor/codex/codex-rs/target/release/codex"
+
+exec "$codex_bin" app-server --listen "$listen"

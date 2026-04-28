@@ -24,6 +24,7 @@ designer-hot-reload ...
   - when the app exports `automation.orientationBeacon`, tap, swipe, and screenshot orientation use that accessibility sentinel instead of probe-based orientation guessing
 - `designer-flutter-run`
   - launches `flutter run -d <UDID>` in a tmux session from the designer worktree
+  - mirrors Flutter output to a log file so immediate tmux exits are diagnosable
 - `designer-hot-reload`
   - sends `r` to the tmux session running Flutter
 - `designer-crop-screenshot`
@@ -47,6 +48,7 @@ designer-hot-reload ...
 
 1. Launch the app from the designer worktree:
    - `designer-flutter-run --session designer-app --device-id <UDID> --workdir <worktree_path>`
+   - If the tmux session exits immediately, inspect the printed log file path.
 2. Inspect or interact with the running app:
    - `designer-drive hierarchy --device-id <UDID>`
    - `designer-drive command tapOn --device-id <UDID> --input '{"text":"Settings"}'`
@@ -121,6 +123,31 @@ Recommended operating pattern:
 6. If you want a one-step cropped screenshot, use `designer-drive screenshot --selector ...`.
 7. If you need a manual or preset crop flow, use `designer-crop-screenshot`.
 8. After code edits, run `designer-hot-reload --session <session>`.
+
+## `designer-flutter-run`
+
+Usage shape:
+
+```sh
+designer-flutter-run --session <tmux-session> --device-id <UDID> [--workdir <path>] [--target <dart-file>] [--flavor <flavor>] [--log <path>] [-- <flutter args>...]
+```
+
+Examples:
+
+```sh
+designer-flutter-run --session designer-app --device-id <UDID> --workdir <worktree_path>
+designer-flutter-run --session designer-app --device-id <UDID> --workdir <worktree_path> --log /tmp/designer-app.log
+designer-flutter-run --session designer-app --device-id <UDID> --workdir <worktree_path> -- --dart-define=FOO=bar
+```
+
+Notes:
+
+- `--help` prints the supported flags.
+- The default log is `/tmp/designer-flutter-run/<session>.log`.
+- The script prints the log path after launch.
+- `designer-flutter-run` is the sanctioned path for Flutter debug launching; raw `flutter run` remains blocked by the Flutter shim.
+- If `tmux list-sessions` no longer shows the session, inspect the log before retrying.
+- Do not replace this with raw `flutter run` unless the operator explicitly asks for a one-off diagnostic path.
 
 ## `designer-crop-screenshot`
 

@@ -42,6 +42,7 @@ void main() {
           onArchiveThreadGroup: (_) {},
           onMoveSelectedThreadToGroup: (_) {},
           onUpdateWorkerMetadata: (_) {},
+          enableGraphics: true,
         ),
       ),
     );
@@ -71,14 +72,10 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Plan Update'), findsOneWidget);
-    expect(find.text('0 done'), findsOneWidget);
-    expect(find.text('1 active'), findsOneWidget);
-    expect(find.text('2 queued'), findsOneWidget);
-    expect(find.text('Checklist'), findsOneWidget);
+    expect(find.text('Plan'), findsOneWidget);
     expect(find.text('Resume the three blocked workers with exact scope and proof constraints.'), findsOneWidget);
     expect(find.text('Keep the three QA agents held on warm simulator state pending their paired fixes.'), findsOneWidget);
-    expect(find.text('Active'), findsOneWidget);
+    expect(find.text('Monitor for worker replies and approval requests and steer immediately per constraints.'), findsOneWidget);
     expect(find.text('Resuming interrupted QA-driven reliability sweep from existing agents without re-auditing from scratch.'), findsOneWidget);
   });
 
@@ -211,7 +208,7 @@ ChatEntry _chatEntry(int index) {
     id: 'entry-$index',
     author: 'assistant',
     displayLabel: 'Assistant',
-    timestampLabel: 'now',
+    timestamp: null,
     body: 'Entry $index\n${'detail ' * 20}',
   );
 }

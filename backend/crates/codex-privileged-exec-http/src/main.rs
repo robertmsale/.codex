@@ -126,6 +126,7 @@ struct CheckResponse {
     classification: &'static str,
     reason: Option<String>,
     normalized_argv: Option<Vec<String>>,
+    normalized_argvs: Option<Vec<Vec<String>>>,
     matched_rules: Vec<RuleMatch>,
     decision: Option<Decision>,
 }
@@ -138,6 +139,7 @@ struct RunResponse {
     classification: &'static str,
     reason: Option<String>,
     normalized_argv: Option<Vec<String>>,
+    normalized_argvs: Option<Vec<Vec<String>>>,
     matched_rules: Vec<RuleMatch>,
     decision: Option<Decision>,
     exit_code: Option<i32>,
@@ -159,8 +161,27 @@ struct ErrorResponse {
 struct NormalizedCommand {
     classification: &'static str,
     argv: Option<Vec<String>>,
+    plan: Option<ExecutionPlan>,
     policy_argvs: Vec<Vec<String>>,
     reason: Option<String>,
+}
+
+#[derive(Debug)]
+enum ExecutionPlan {
+    Single(Vec<String>),
+    Chain(Vec<ChainStep>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChainOperator {
+    And,
+    Or,
+}
+
+#[derive(Debug)]
+struct ChainStep {
+    argv: Vec<String>,
+    operator_before: Option<ChainOperator>,
 }
 
 #[derive(Debug)]
@@ -241,12 +262,14 @@ async fn policy_check(
     let normalized = normalize_command(&request.command);
     let evaluation = evaluate_normalized(&app, &normalized).await;
     let decision_reason = policy_decision_reason(&evaluation);
+    let normalized_argvs = normalized_command_argvs(&normalized);
     Ok(Json(CheckResponse {
         ok: true,
-        eligible: normalized.argv.is_some() && matches!(evaluation.decision, Some(Decision::Allow)),
+        eligible: normalized.plan.is_some() && matches!(evaluation.decision, Some(Decision::Allow)),
         classification: normalized.classification,
         reason: normalized.reason.or(decision_reason),
         normalized_argv: normalized.argv,
+        normalized_argvs,
         matched_rules: evaluation.matched_rules,
         decision: evaluation.decision,
     }))
@@ -262,13 +285,15 @@ async fn exec_run(
 
     let normalized = normalize_command(&request.command);
     let evaluation = evaluate_normalized(&app, &normalized).await;
-    let Some(argv) = normalized.argv.clone() else {
+    let normalized_argvs = normalized_command_argvs(&normalized);
+    if normalized.plan.is_none() {
         return Ok(Json(RunResponse {
             ok: false,
             status: "rejected",
             classification: normalized.classification,
             reason: normalized.reason,
             normalized_argv: None,
+            normalized_argvs,
             matched_rules: evaluation.matched_rules,
             decision: evaluation.decision,
             exit_code: None,
@@ -278,7 +303,7 @@ async fn exec_run(
             truncated_stdout: false,
             truncated_stderr: false,
         }));
-    };
+    }
 
     match evaluation.decision {
         Some(Decision::Allow) => {}
@@ -305,8 +330,9 @@ async fn exec_run(
         }
     }
 
-    let output = execute_argv(
-        &argv,
+    let plan = normalized.plan.as_ref().expect("plan exists after eligibility check");
+    let output = execute_plan(
+        plan,
         Path::new(&request.cwd),
         &request.caller_env,
         &request.env_overrides,
@@ -320,7 +346,8 @@ async fn exec_run(
         status: if output.timed_out { "timed_out" } else { "completed" },
         classification: normalized.classification,
         reason: normalized.reason,
-        normalized_argv: Some(argv),
+        normalized_argv: normalized.argv,
+        normalized_argvs,
         matched_rules: evaluation.matched_rules,
         decision: evaluation.decision,
         exit_code: output.exit_code,
@@ -337,6 +364,7 @@ fn rejected_run_response(
     evaluation: EvaluationResult,
     fallback_reason: Option<String>,
 ) -> RunResponse {
+    let normalized_argvs = normalized_command_argvs(&normalized);
     let reason = normalized
         .reason
         .or_else(|| policy_decision_reason(&evaluation))
@@ -347,6 +375,7 @@ fn rejected_run_response(
         classification: normalized.classification,
         reason,
         normalized_argv: normalized.argv,
+        normalized_argvs,
         matched_rules: evaluation.matched_rules,
         decision: evaluation.decision,
         exit_code: None,
@@ -447,6 +476,7 @@ fn normalize_command(command: &[String]) -> NormalizedCommand {
         return NormalizedCommand {
             classification: "empty",
             argv: None,
+            plan: None,
             policy_argvs: Vec::new(),
             reason: Some("command was empty".to_string()),
         };
@@ -456,15 +486,18 @@ fn normalize_command(command: &[String]) -> NormalizedCommand {
         return NormalizedCommand {
             classification: "argv",
             argv: Some(command.to_vec()),
+            plan: Some(ExecutionPlan::Single(command.to_vec())),
             policy_argvs: vec![command.to_vec()],
             reason: None,
         };
     }
 
+    let script = extract_shell_command(command).map(|(_, script)| script.to_string());
     let Some(parsed_commands) = parse_shell_lc_plain_commands(command) else {
         return NormalizedCommand {
             classification: "shell_script",
             argv: None,
+            plan: None,
             policy_argvs: Vec::new(),
             reason: Some(
                 "shell command uses advanced shell features and is not eligible for privileged argv execution"
@@ -473,22 +506,99 @@ fn normalize_command(command: &[String]) -> NormalizedCommand {
         };
     };
     if parsed_commands.len() != 1 {
+        let Some(script) = script else {
+            return NormalizedCommand {
+                classification: "shell_sequence",
+                argv: None,
+                plan: None,
+                policy_argvs: parsed_commands,
+                reason: Some(
+                    "shell command sequence could not be inspected for supported operators"
+                        .to_string(),
+                ),
+            };
+        };
+        let Some(operators) = shell_chain_operators(&script, parsed_commands.len()) else {
+            return NormalizedCommand {
+                classification: "shell_sequence",
+                argv: None,
+                plan: None,
+                policy_argvs: parsed_commands,
+                reason: Some(
+                    "only && and || shell chains are eligible for privileged execution; run pipes, semicolons, and other shell operators as separate commands"
+                        .to_string(),
+                ),
+            };
+        };
+        let steps = parsed_commands
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, argv)| ChainStep {
+                argv,
+                operator_before: index.checked_sub(1).and_then(|operator_index| operators.get(operator_index)).copied(),
+            })
+            .collect::<Vec<_>>();
         return NormalizedCommand {
-            classification: "shell_sequence",
+            classification: "shell_plain_chain",
             argv: None,
+            plan: Some(ExecutionPlan::Chain(steps)),
             policy_argvs: parsed_commands,
-            reason: Some(
-                "only a single plain command is eligible for privileged execution; multi-command shell sequences fall back to local execution"
-                    .to_string(),
-            ),
+            reason: None,
         };
     }
     let argv = parsed_commands.into_iter().next().unwrap_or_default();
     NormalizedCommand {
         classification: "shell_plain_single",
         argv: Some(argv.clone()),
+        plan: Some(ExecutionPlan::Single(argv.clone())),
         policy_argvs: vec![argv],
         reason: None,
+    }
+}
+
+fn shell_chain_operators(script: &str, command_count: usize) -> Option<Vec<ChainOperator>> {
+    let mut operators = Vec::new();
+    let mut chars = script.char_indices().peekable();
+    let mut quote: Option<char> = None;
+    while let Some((_, ch)) = chars.next() {
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '&' => match chars.peek() {
+                Some((_, '&')) => {
+                    chars.next();
+                    operators.push(ChainOperator::And);
+                }
+                _ => return None,
+            },
+            '|' => match chars.peek() {
+                Some((_, '|')) => {
+                    chars.next();
+                    operators.push(ChainOperator::Or);
+                }
+                _ => return None,
+            },
+            ';' => return None,
+            _ => {}
+        }
+    }
+    if operators.len() == command_count.saturating_sub(1) {
+        Some(operators)
+    } else {
+        None
+    }
+}
+
+fn normalized_command_argvs(normalized: &NormalizedCommand) -> Option<Vec<Vec<String>>> {
+    match normalized.plan.as_ref()? {
+        ExecutionPlan::Single(argv) => Some(vec![argv.clone()]),
+        ExecutionPlan::Chain(steps) => Some(steps.iter().map(|step| step.argv.clone()).collect()),
     }
 }
 
@@ -500,21 +610,53 @@ async fn evaluate_normalized(app: &AppState, normalized: &NormalizedCommand) -> 
         };
     }
     let loaded = app.policy.read().await;
+    evaluate_normalized_with_policy(
+        &loaded.policy,
+        app.config.resolve_host_executables,
+        normalized,
+    )
+}
+
+fn evaluate_normalized_with_policy(
+    policy: &Policy,
+    resolve_host_executables: bool,
+    normalized: &NormalizedCommand,
+) -> EvaluationResult {
     let mut matched_rules = Vec::new();
-    let mut decision = None;
+    let mut all_commands_allowed = true;
+    let mut saw_prompt = false;
+    let mut saw_forbidden = false;
     for argv in &normalized.policy_argvs {
-        let mut per_command = loaded.policy.matches_for_command_with_options(
+        let mut per_command = policy.matches_for_command_with_options(
             argv,
             None,
             &MatchOptions {
-                resolve_host_executables: app.config.resolve_host_executables,
+                resolve_host_executables,
             },
         );
-        if let Some(per_decision) = per_command.iter().map(RuleMatch::decision).max() {
-            decision = Some(decision.map_or(per_decision, |current: Decision| current.max(per_decision)));
+        match per_command.iter().map(RuleMatch::decision).max() {
+            Some(Decision::Forbidden) => {
+                saw_forbidden = true;
+                all_commands_allowed = false;
+            }
+            Some(Decision::Prompt) => {
+                saw_prompt = true;
+                all_commands_allowed = false;
+            }
+            Some(Decision::Allow) => {}
+            None => all_commands_allowed = false,
         }
         matched_rules.append(&mut per_command);
     }
+    let decision = if saw_forbidden {
+        Some(Decision::Forbidden)
+    } else if saw_prompt {
+        Some(Decision::Prompt)
+    } else if all_commands_allowed {
+        Some(Decision::Allow)
+    } else {
+        None
+    };
     EvaluationResult {
         matched_rules,
         decision,
@@ -633,6 +775,7 @@ fn start_policy_watcher(app: AppState) -> Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
 struct CapturedOutput {
     exit_code: Option<i32>,
     timed_out: bool,
@@ -640,6 +783,47 @@ struct CapturedOutput {
     stderr: String,
     truncated_stdout: bool,
     truncated_stderr: bool,
+}
+
+impl CapturedOutput {
+    fn push(&mut self, output: CapturedOutput, max_output_bytes: usize) {
+        self.exit_code = output.exit_code;
+        self.timed_out |= output.timed_out;
+        append_capped(
+            &mut self.stdout,
+            &output.stdout,
+            max_output_bytes,
+            &mut self.truncated_stdout,
+        );
+        append_capped(
+            &mut self.stderr,
+            &output.stderr,
+            max_output_bytes,
+            &mut self.truncated_stderr,
+        );
+        self.truncated_stdout |= output.truncated_stdout;
+        self.truncated_stderr |= output.truncated_stderr;
+    }
+}
+
+fn append_capped(target: &mut String, chunk: &str, max_bytes: usize, truncated: &mut bool) {
+    let remaining = max_bytes.saturating_sub(target.len());
+    if remaining == 0 {
+        if !chunk.is_empty() {
+            *truncated = true;
+        }
+        return;
+    }
+    if chunk.len() <= remaining {
+        target.push_str(chunk);
+        return;
+    }
+    let mut end = remaining;
+    while !chunk.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    target.push_str(&chunk[..end]);
+    *truncated = true;
 }
 
 #[derive(Debug, Serialize)]
@@ -650,6 +834,40 @@ struct BridgeLiveProcessRecord {
     command: String,
     cwd: String,
     started_at: u64,
+}
+
+async fn execute_plan(
+    plan: &ExecutionPlan,
+    cwd: &Path,
+    caller_env: &BTreeMap<String, String>,
+    env_overrides: &BTreeMap<String, String>,
+    max_output_bytes: usize,
+) -> Result<CapturedOutput> {
+    match plan {
+        ExecutionPlan::Single(argv) => {
+            execute_argv(argv, cwd, caller_env, env_overrides, max_output_bytes).await
+        }
+        ExecutionPlan::Chain(steps) => {
+            let mut combined = CapturedOutput::default();
+            let mut previous_exit_code: Option<i32> = None;
+            for step in steps {
+                let should_run = match step.operator_before {
+                    None => true,
+                    Some(ChainOperator::And) => previous_exit_code == Some(0),
+                    Some(ChainOperator::Or) => previous_exit_code != Some(0),
+                };
+                if !should_run {
+                    continue;
+                }
+                let output =
+                    execute_argv(&step.argv, cwd, caller_env, env_overrides, max_output_bytes)
+                        .await?;
+                previous_exit_code = output.exit_code;
+                combined.push(output, max_output_bytes);
+            }
+            Ok(combined)
+        }
+    }
 }
 
 async fn execute_argv(
@@ -866,14 +1084,62 @@ mod tests {
     }
 
     #[test]
-    fn shell_sequence_is_not_privileged() {
+    fn shell_and_sequence_is_reduced_to_chain() {
         let normalized = normalize_command(&[
             "bash".to_string(),
             "-lc".to_string(),
             "xcodebuild -version && flutter --version".to_string(),
         ]);
+        assert_eq!(normalized.classification, "shell_plain_chain");
+        assert!(normalized.argv.is_none());
+        assert_eq!(
+            normalized_command_argvs(&normalized),
+            Some(vec![
+                vec!["xcodebuild".to_string(), "-version".to_string()],
+                vec!["flutter".to_string(), "--version".to_string()],
+            ])
+        );
+    }
+
+    #[test]
+    fn shell_or_sequence_is_reduced_to_chain() {
+        let normalized = normalize_command(&[
+            "bash".to_string(),
+            "-lc".to_string(),
+            "false || xcodebuild -version".to_string(),
+        ]);
+        assert_eq!(normalized.classification, "shell_plain_chain");
+        assert_eq!(
+            normalized_command_argvs(&normalized),
+            Some(vec![
+                vec!["false".to_string()],
+                vec!["xcodebuild".to_string(), "-version".to_string()],
+            ])
+        );
+    }
+
+    #[test]
+    fn shell_semicolon_sequence_is_not_privileged() {
+        let normalized = normalize_command(&[
+            "bash".to_string(),
+            "-lc".to_string(),
+            "xcodebuild -version; flutter --version".to_string(),
+        ]);
         assert_eq!(normalized.classification, "shell_sequence");
         assert!(normalized.argv.is_none());
+        assert!(normalized.plan.is_none());
+    }
+
+    #[test]
+    fn shell_pipe_sequence_is_not_privileged() {
+        let normalized = normalize_command(&[
+            "bash".to_string(),
+            "-lc".to_string(),
+            "xcodebuild -version | wc -l".to_string(),
+        ]);
+        assert_eq!(normalized.classification, "shell_sequence");
+        assert!(normalized.argv.is_none());
+        assert!(normalized.plan.is_none());
     }
 
     #[test]
@@ -935,6 +1201,27 @@ mod tests {
                 "/tmp/worktree".to_string(),
                 "--env".to_string(),
                 "QBO_BASE_URL_OVERRIDE=http://host.docker.internal:58081/v3/company/".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn shell_fly_secret_assignment_is_reduced_to_plain_argv() {
+        let normalized = normalize_command(&[
+            "bash".to_string(),
+            "-lc".to_string(),
+            "fly secrets set -a ezra-router-dev OAUTH_FLOW_SECRET=Y197bCh/wpJ2LiTmcpVvMAViXzcoX1FJ0G8RyfcdDDQ=".to_string(),
+        ]);
+        assert_eq!(normalized.classification, "shell_plain_single");
+        assert_eq!(
+            normalized.argv,
+            Some(vec![
+                "fly".to_string(),
+                "secrets".to_string(),
+                "set".to_string(),
+                "-a".to_string(),
+                "ezra-router-dev".to_string(),
+                "OAUTH_FLOW_SECRET=Y197bCh/wpJ2LiTmcpVvMAViXzcoX1FJ0G8RyfcdDDQ=".to_string(),
             ])
         );
     }
@@ -1013,6 +1300,10 @@ prefix_rule(
             NormalizedCommand {
                 classification: "argv",
                 argv: Some(vec!["dart".to_string(), "format".to_string()]),
+                plan: Some(ExecutionPlan::Single(vec![
+                    "dart".to_string(),
+                    "format".to_string(),
+                ])),
                 policy_argvs: vec![vec!["dart".to_string(), "format".to_string()]],
                 reason: None,
             },
@@ -1053,6 +1344,143 @@ prefix_rule(
             &MatchOptions::default(),
         );
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn chain_policy_allows_only_when_every_command_matches_allow() {
+        let temp = tempdir().expect("tempdir");
+        let rules = write_rules(
+            temp.path(),
+            r#"
+prefix_rule(
+    pattern = ["xcodebuild"],
+    decision = "allow",
+    match = [["xcodebuild", "-version"]],
+)
+prefix_rule(
+    pattern = ["flutter"],
+    decision = "allow",
+    match = [["flutter", "--version"]],
+)
+"#,
+        );
+        let loaded = load_policy_state(&[rules]).expect("load policy");
+        let normalized = normalize_command(&[
+            "bash".to_string(),
+            "-lc".to_string(),
+            "xcodebuild -version && flutter --version".to_string(),
+        ]);
+        let evaluation = evaluate_normalized_with_policy(&loaded.policy, true, &normalized);
+        assert_eq!(evaluation.decision, Some(Decision::Allow));
+        assert_eq!(evaluation.matched_rules.len(), 2);
+    }
+
+    #[test]
+    fn chain_policy_rejects_when_any_command_is_unmatched() {
+        let temp = tempdir().expect("tempdir");
+        let rules = write_rules(
+            temp.path(),
+            r#"
+prefix_rule(
+    pattern = ["xcodebuild"],
+    decision = "allow",
+    match = [["xcodebuild", "-version"]],
+)
+"#,
+        );
+        let loaded = load_policy_state(&[rules]).expect("load policy");
+        let normalized = normalize_command(&[
+            "bash".to_string(),
+            "-lc".to_string(),
+            "xcodebuild -version && flutter --version".to_string(),
+        ]);
+        let evaluation = evaluate_normalized_with_policy(&loaded.policy, true, &normalized);
+        assert_eq!(evaluation.decision, None);
+        assert_eq!(evaluation.matched_rules.len(), 1);
+    }
+
+    #[test]
+    fn chain_policy_forbidden_takes_precedence() {
+        let temp = tempdir().expect("tempdir");
+        let rules = write_rules(
+            temp.path(),
+            r#"
+prefix_rule(
+    pattern = ["xcodebuild"],
+    decision = "allow",
+    match = [["xcodebuild", "-version"]],
+)
+prefix_rule(
+    pattern = ["rm"],
+    decision = "forbidden",
+    justification = "do not remove files through compound commands",
+)
+"#,
+        );
+        let loaded = load_policy_state(&[rules]).expect("load policy");
+        let normalized = normalize_command(&[
+            "bash".to_string(),
+            "-lc".to_string(),
+            "xcodebuild -version && rm -rf /tmp/example".to_string(),
+        ]);
+        let evaluation = evaluate_normalized_with_policy(&loaded.policy, true, &normalized);
+        assert_eq!(evaluation.decision, Some(Decision::Forbidden));
+        assert_eq!(
+            policy_decision_reason(&evaluation).as_deref(),
+            Some("do not remove files through compound commands")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_chain_honors_and_short_circuit() {
+        let temp = tempdir().expect("tempdir");
+        let plan = ExecutionPlan::Chain(vec![
+            ChainStep {
+                argv: vec!["false".to_string()],
+                operator_before: None,
+            },
+            ChainStep {
+                argv: vec!["echo".to_string(), "should-not-run".to_string()],
+                operator_before: Some(ChainOperator::And),
+            },
+        ]);
+        let output = execute_plan(
+            &plan,
+            temp.path(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            DEFAULT_MAX_OUTPUT_BYTES,
+        )
+        .await
+        .expect("execute plan");
+        assert_eq!(output.exit_code, Some(1));
+        assert!(!output.stdout.contains("should-not-run"));
+    }
+
+    #[tokio::test]
+    async fn execute_chain_honors_or_short_circuit() {
+        let temp = tempdir().expect("tempdir");
+        let plan = ExecutionPlan::Chain(vec![
+            ChainStep {
+                argv: vec!["false".to_string()],
+                operator_before: None,
+            },
+            ChainStep {
+                argv: vec!["echo".to_string(), "fallback-ran".to_string()],
+                operator_before: Some(ChainOperator::Or),
+            },
+        ]);
+        let output = execute_plan(
+            &plan,
+            temp.path(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            DEFAULT_MAX_OUTPUT_BYTES,
+        )
+        .await
+        .expect("execute plan");
+        assert_eq!(output.exit_code, Some(0));
+        assert!(output.stdout.contains("fallback-ran"));
     }
 
     #[test]

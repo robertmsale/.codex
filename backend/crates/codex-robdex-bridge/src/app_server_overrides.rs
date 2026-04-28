@@ -18,6 +18,7 @@ pub struct AppServerThreadOverrides {
     pub persist_extended_history: Option<bool>,
     pub reasoning_effort: Option<String>,
     pub dynamic_tools: Option<Value>,
+    pub exclude_turns: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -76,6 +77,7 @@ impl AppServerThreadOverrides {
             self.persist_extended_history.map(Value::Bool),
         );
         insert_opt(&mut map, "dynamicTools", self.dynamic_tools);
+        insert_opt(&mut map, "excludeTurns", self.exclude_turns.map(Value::Bool));
         insert_opt(&mut map, "history", history);
         insert_opt(&mut map, "path", path);
         Value::Object(map)

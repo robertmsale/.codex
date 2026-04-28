@@ -322,6 +322,9 @@ case "$command" in
     exec flutter "${args[@]}"
     ;;
   run)
+    if [[ "${ROBDEX_DESIGNER_FLUTTER_RUN:-}" == "1" ]]; then
+      exec flutter "${args[@]}"
+    fi
     deny_command "run"
     ;;
   devices)

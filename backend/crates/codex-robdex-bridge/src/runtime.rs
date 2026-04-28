@@ -16,6 +16,7 @@ use codex_app_server_adapter::{
     },
     pinned_codex_version_label,
 };
+use codex_shell_command::parse_command::{extract_shell_command, shlex_join};
 use serde_json::{Value, json};
 use tokio::{
     sync::{Mutex, RwLock, broadcast, mpsc, oneshot},
@@ -675,19 +676,10 @@ impl BridgeRuntime {
     async fn resume_tracked_threads(&self) {
         let resume_requests = {
             let state = self.state_document.read().await;
-            let running_thread_ids = self
-                .thread_cache
-                .read()
-                .await
-                .running_thread_ids
-                .iter()
-                .cloned()
-                .collect::<BTreeSet<_>>();
             let quarantined = self.quarantined_auto_resume_thread_ids.read().await;
             let thread_ids = tracked_thread_ids_from_state(&state);
             thread_ids
                 .into_iter()
-                .filter(|thread_id| running_thread_ids.contains(thread_id))
                 .filter(|thread_id| !quarantined.contains(thread_id))
                 .map(|thread_id| {
                     let cwd = tracked_cwd_for_thread_value(&state, &thread_id);
@@ -716,6 +708,7 @@ impl BridgeRuntime {
                         developer_instructions,
                         persist_extended_history: tracked_persist_extended_history_for_thread_value(&state, &thread_id)
                             .or(Some(true)),
+                        exclude_turns: Some(true),
                         ..Default::default()
                     }
                     .thread_resume_params(thread_id.clone(), None, None);
@@ -1709,6 +1702,30 @@ fn file_change_label(kind: &PendingApprovalFileChangeKind) -> &'static str {
     }
 }
 
+fn split_command_string(command: &str) -> Vec<String> {
+    let Some(parts) = shlex::split(command) else {
+        return vec![command.to_string()];
+    };
+    match shlex::try_join(parts.iter().map(String::as_str)) {
+        Ok(round_trip)
+            if round_trip == command
+                || (!command.contains(":\\")
+                    && shlex::split(&round_trip).as_ref() == Some(&parts)) =>
+        {
+            parts
+        }
+        _ => vec![command.to_string()],
+    }
+}
+
+fn command_for_orchestrator_approval(command: &str) -> String {
+    let parts = split_command_string(command);
+    if let Some((_, script)) = extract_shell_command(&parts) {
+        return script.to_string();
+    }
+    shlex_join(&parts)
+}
+
 fn truncate_text(value: &str, max_len: usize) -> String {
     if value.chars().count() <= max_len {
         return value.to_string();
@@ -2213,7 +2230,10 @@ fn compose_auto_routed_approval_request(
     match approval.kind {
         PendingApprovalKind::CommandExecution => {
             if let Some(command) = compact_optional_text(approval.command.as_deref()) {
-                lines.push(format!("Command: {command}"));
+                lines.push(format!(
+                    "Command: {}",
+                    command_for_orchestrator_approval(&command)
+                ));
             }
             if let Some(cwd) = compact_optional_text(approval.command_cwd.as_deref()) {
                 lines.push(format!("CWD: {cwd}"));
@@ -2515,6 +2535,39 @@ mod tests {
         let text = compose_auto_routed_approval_request(&approval, "Worker");
         assert!(text.contains("File approval required"));
         assert_eq!(text.matches("/tmp/example").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn command_approval_auto_route_shows_agent_command_without_shell_wrapper() {
+        let raw_command =
+            "/Users/robertsale/.codex/scripts/zsh -lc 'git-sync-worktree /tmp/worker master'";
+        let approval = PendingApproval {
+            id: "approval-1".to_string(),
+            instance_id: "instance".to_string(),
+            request_id: RequestId::Integer(1),
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item_id: "item-1".to_string(),
+            kind: PendingApprovalKind::CommandExecution,
+            title: "Command approval".to_string(),
+            detail: None,
+            approval_reason: None,
+            tool_name: None,
+            tool_arguments: None,
+            tool_questions: Vec::new(),
+            auth_refresh_reason: None,
+            command: Some(raw_command.to_string()),
+            command_cwd: Some("/tmp/worker".to_string()),
+            file_grant_root: None,
+            file_changes: Vec::new(),
+        };
+
+        let text = compose_auto_routed_approval_request(&approval, "Worker");
+        assert!(text.contains("Command: git-sync-worktree /tmp/worker master"));
+        assert!(!text.contains("/Users/robertsale/.codex/scripts/zsh -lc"));
+
+        let payload = approval_payload_value(&approval);
+        assert_eq!(payload["command"].as_str(), Some(raw_command));
     }
 
     #[tokio::test]

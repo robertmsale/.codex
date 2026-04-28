@@ -177,6 +177,7 @@ impl ExplicitThreadSettings {
             ephemeral: self.ephemeral,
             persist_extended_history: self.persist_extended_history,
             dynamic_tools: self.dynamic_tools.clone(),
+            exclude_turns: None,
         }
     }
 
@@ -631,7 +632,9 @@ pub async fn execute_bridge_command(
                 approval_policy.and_then(|value| value.as_str().map(str::to_string)),
                 sandbox_mode,
             );
-            let params = settings.to_app_server_thread_overrides().thread_resume_params(
+            let mut overrides = settings.to_app_server_thread_overrides();
+            overrides.exclude_turns = Some(true);
+            let params = overrides.thread_resume_params(
                 thread_id.clone(),
                 payload.get("history").cloned(),
                 payload.get("path").cloned(),
@@ -668,9 +671,9 @@ pub async fn execute_bridge_command(
                 approval_policy.and_then(|value| value.as_str().map(str::to_string)),
                 sandbox_mode,
             );
-            let params = settings
-                .to_app_server_thread_overrides()
-                .thread_fork_params(thread_id.clone(), payload.get("path").cloned());
+            let mut overrides = settings.to_app_server_thread_overrides();
+            overrides.exclude_turns = Some(true);
+            let params = overrides.thread_fork_params(thread_id.clone(), payload.get("path").cloned());
             let result = app_server_request_json(runtime, "thread/fork", params).await?;
             if let Some(new_thread) = result.get("thread").cloned() {
                 let mut next_state = parse_state(&runtime.state_document_value().await);

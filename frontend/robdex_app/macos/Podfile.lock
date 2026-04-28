@@ -2,20 +2,26 @@ PODS:
   - FlutterMacOS (1.0.0)
   - rinf (0.1.0):
     - FlutterMacOS
+  - screen_capturer_macos (0.0.1):
+    - FlutterMacOS
 
 DEPENDENCIES:
   - FlutterMacOS (from `Flutter/ephemeral`)
   - rinf (from `Flutter/ephemeral/.symlinks/plugins/rinf/macos`)
+  - screen_capturer_macos (from `Flutter/ephemeral/.symlinks/plugins/screen_capturer_macos/macos`)
 
 EXTERNAL SOURCES:
   FlutterMacOS:
     :path: Flutter/ephemeral
   rinf:
     :path: Flutter/ephemeral/.symlinks/plugins/rinf/macos
+  screen_capturer_macos:
+    :path: Flutter/ephemeral/.symlinks/plugins/screen_capturer_macos/macos
 
 SPEC CHECKSUMS:
   FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
-  rinf: 663682fa60fb16c4c9533f289e1939cc1a59a0a5
+  rinf: 262f44da111bc09a28138d438caf7b9a29e9b411
+  screen_capturer_macos: 229306903c56767a7c7d3a48167ba303e95c6d29
 
 PODFILE CHECKSUM: 54d867c82ac51cbd61b565781b9fada492027009
 

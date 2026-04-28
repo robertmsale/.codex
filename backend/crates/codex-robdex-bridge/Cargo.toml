@@ -10,9 +10,11 @@ anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
 codex-app-server-adapter = { path = "../codex-app-server-adapter" }
+codex-shell-command = { path = "../../vendor/codex/codex-rs/shell-command" }
 futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+shlex = "1"
 sqlx.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

@@ -15,6 +15,10 @@ prefix_rule(
     justification = "Remote branch deletion must be handled with sanctioned gitops scripts.",
 )
 prefix_rule(
+    pattern = ["git", "status"],
+    decision = "allow",
+)
+prefix_rule(
     pattern = [[
         "git-branch-list","~/.codex/skills/gh-version-control-workflow/scripts/git-branch-list", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-branch-list",
         "git-commit","~/.codex/skills/gh-version-control-workflow/scripts/git-commit", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-commit",

@@ -1000,15 +1000,18 @@ async fn handle_action(
                 .thread_id
                 .clone()
                 .ok_or_else(|| anyhow!("No thread selected"))?;
-            let sender_thread_id = view
-                .selection
-                .project_orchestrator_thread_id
-                .clone()
-                .or_else(|| {
-                    (view.selection.thread_role.as_deref() == Some("orchestrator"))
-                        .then_some(recipient_thread_id.clone())
-                })
-                .ok_or_else(|| anyhow!("No project orchestrator configured"))?;
+            let can_self_handoff = matches!(
+                view.selection.thread_role.as_deref(),
+                Some("orchestrator" | "operator" | "hidden" | "designer")
+            );
+            let sender_thread_id = if can_self_handoff {
+                recipient_thread_id.clone()
+            } else {
+                view.selection
+                    .project_orchestrator_thread_id
+                    .clone()
+                    .ok_or_else(|| anyhow!("No project orchestrator configured"))?
+            };
             let project_path = view
                 .selection
                 .project_root_path

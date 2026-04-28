@@ -12,10 +12,11 @@ Use this skill when a command hits sandbox friction, triggers an approval reques
 - Re-run the needed command through the sanctioned public tool surface for the task.
 - Run commands plainly, synchronously, and sequentially.
 - Use one command at a time and wait for it to finish before issuing the next.
+- Simple `&&` and `||` chains are supported only when every segment is a plain sanctioned command.
 
 ## Command Shape Rules
 
-- Do not use logical operators like `&&` or `||`.
+- Use `&&` or `||` only for simple chains of plain commands where every command is independently sanctioned.
 - Do not use command separators like `;`.
 - Do not use pipes.
 - Do not use command substitution.
@@ -27,6 +28,17 @@ Use this skill when a command hits sandbox friction, triggers an approval reques
 
 - Shared skill scripts under `~/.codex/skills/*/scripts/*` are the default sanctioned privileged entrypoints when the active skill tells you to use them. Your CWD may include `<CWD>/.codex/skills/*/scripts/*` which are (or should be) added to privileged execution.
 - Some non-skill tools are sanctioned by the active workflow. If the current skill or role explicitly tells you to use a tool, follow that instruction plainly.
+- `public-dev-tunnel` is the sanctioned public HTTPS tunnel wrapper for local dev callbacks. It uses `cloudflared` and prints only the public base URL on `start`, `url`, and running `status`.
+
+## Public Dev Tunnels
+
+- Start: `public-dev-tunnel start http://127.0.0.1:<port> <name>`
+- Read URL: `public-dev-tunnel url <name>`
+- Status: `public-dev-tunnel status <name>`
+- Logs: `public-dev-tunnel logs <name>`
+- Stop: `public-dev-tunnel stop <name>`
+- For Ezra QBO dev router OAuth, set `QBO_OAUTH_CALLBACK_DEV_FORWARD_BASE_URL` to the URL printed by `public-dev-tunnel`.
+- If `cloudflared` is missing, stop and report that setup is required: `brew install cloudflared`.
 
 ## What Not To Assume
 
