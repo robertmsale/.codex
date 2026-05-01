@@ -120,6 +120,8 @@ memories = false                # Disabled for now, worth considering, requires 
 #sqlite = true                  # Potentially default enabled, don't wanna regress
 plugins = false                 # Need to understand what makes this different from apps/skills/mcp
 codex_hooks = true              # Much better running-state tracker
+responses_websockets = true     # Faster
+responses_websockets_v2 = true  # EVEN FASTER
 
 # Ones I don't
 unified_exec = false            # Enables parallel command execution, stdin polling, and the ability to use alternative shells
@@ -129,8 +131,6 @@ collaboration_modes = false     # UX variants managed by hand
 # collab = false                  # Deprecated (multi_agent)
 codex_git_commit = false        # Managed manually
 fast_mode = false               # Achieved through concurrency
-responses_websockets = true    # Absolutely gobbles rate limits
-responses_websockets_v2 = true # "I want 0% weekly as fast as possible"
 voice_transcription = false     # Wispr Flow
 undo = false                    # Conflicts with version control
 js_repl = false                 # Just open a terminal
@@ -230,3 +230,4 @@ trust_level = "trusted"
 
 [tui]
 status_line = []
+

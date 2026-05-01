@@ -124,3 +124,4 @@ state_5.sqlite*
 memories/
 shim/
 installation_id
+.tmp/

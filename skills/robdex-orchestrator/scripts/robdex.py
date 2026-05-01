@@ -371,14 +371,29 @@ def _print_group_mutation(payload: dict[str, Any]) -> None:
     print(" | ".join(parts))
 
 
-def _cmd_spawn_agent(thread_id: str, args: argparse.Namespace) -> None:
+def _cmd_spawn_agent(thread_id: str, args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    if args.prompt_file and args.prompt_stdin:
+        parser.error("spawn-agent accepts either --prompt-file or --prompt-stdin")
+    if args.prompt_file:
+        try:
+            prompt = Path(args.prompt_file).expanduser().read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise SystemExit(f"robdex: unable to read spawn prompt file: {exc}") from exc
+    elif args.prompt_stdin:
+        prompt = sys.stdin.read().strip()
+    else:
+        parser.error("spawn prompt input is required; use --prompt-file or --prompt-stdin")
+        raise AssertionError("unreachable")
+    if not prompt:
+        raise SystemExit("robdex: spawn prompt is empty")
+
     payload = _request_json(
         "POST",
         "/orchestrator/spawn-agent",
         body={
             "senderThreadId": thread_id,
             "name": args.name,
-            "prompt": args.prompt,
+            "prompt": prompt,
             "cwd": _normalize_path(args.cwd),
             "role": _normalize_text(args.role),
             "issueNumber": args.issue_number,
@@ -588,7 +603,13 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
 
     p_spawn = sub.add_parser("spawn-agent")
     p_spawn.add_argument("--name", required=True)
-    p_spawn.add_argument("--prompt", default="")
+    p_spawn.add_argument(
+        "--prompt",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    p_spawn.add_argument("--prompt-file")
+    p_spawn.add_argument("--prompt-stdin", action="store_true")
     p_spawn.add_argument("--cwd")
     p_spawn.add_argument("--role", choices=["worker", "qa", "hidden"], default="worker")
     p_spawn.add_argument("--issue-number", type=int)
@@ -634,11 +655,11 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     p_decline.add_argument("--approval-id", required=True)
     p_decline.add_argument("--message")
 
-    return parser, p_handoff
+    return parser, p_handoff, p_spawn
 
 
 def main() -> int:
-    parser, handoff_parser = build_parser()
+    parser, handoff_parser, spawn_parser = build_parser()
     if len(sys.argv) >= 2 and sys.argv[1] == "handoff" and any(flag in sys.argv[2:] for flag in ("-h", "--help")):
         _print_handoff_help(handoff_parser, _require_thread_id())
         return 0
@@ -724,7 +745,9 @@ def main() -> int:
         skipped_summary = ",".join(str(item).strip() for item in skipped) if isinstance(skipped, list) and skipped else "(none)"
         print(f"Archived {_quoted(title)} ({group_id}) | archived={archived_summary}; skipped={skipped_summary}")
     elif args.cmd == "spawn-agent":
-        _cmd_spawn_agent(thread_id, args)
+        if args.prompt:
+            raise SystemExit("robdex: --prompt no longer exists for spawn-agent; use --prompt-file or --prompt-stdin")
+        _cmd_spawn_agent(thread_id, args, spawn_parser)
     elif args.cmd == "archive-agent":
         _cmd_archive_agent(thread_id, args)
     elif args.cmd == "rename-agent":
