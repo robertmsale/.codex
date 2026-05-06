@@ -41,6 +41,7 @@ Once approved, tell the worker:
 - Preserve controllers, state flow, and backend contracts unless the task explicitly authorizes deeper changes.
 - Avoid shell/chrome changes unless authorized.
 - Keep screenshots/test artifacts in `/tmp` unless golden assets are explicitly requested.
+- Reject `--update-goldens` as the default screenshot path. Use it only when the task explicitly requests maintained golden baselines.
 
 ## Pre-Merge Visual Gate
 

@@ -26,6 +26,7 @@ Recommended dispatches:
 
 - The reference image is direction, not a pixel-perfect contract.
 - Default screenshot tests write temporary viewable artifacts to `/tmp`; do not add golden images to version control unless the task explicitly asks for golden tests.
+- Do not use `--update-goldens` by default. A design-worker screenshot test should render and write PNG artifacts to `/tmp`, not update tracked golden baselines.
 - If the page scrolls, capture enough screenshots to understand the whole page before asking for a full-page redesign.
 - Do not redesign the application shell/chrome unless the task explicitly includes shell work.
 - If the design needs backend behavior that does not exist, finish the design with safe mocked data and report the backend gap for a separate worker.

@@ -21,6 +21,7 @@ Produce viewable screenshots with Flutter tests where possible:
 - Prefer widget/test rendering that writes PNGs to `/tmp`.
 - Use `pumpAndSettle` only when appropriate and bounded by the test’s normal behavior.
 - Do not create or update golden assets by default.
+- Do not use `--update-goldens` unless the orchestrator explicitly requests maintained golden baselines.
 - Do not require emulator, simulator, container stack, or broker/device harness for this workflow unless the task requires real-device proof.
 - If the page scrolls, capture multiple scroll positions so the full page is represented.
 
