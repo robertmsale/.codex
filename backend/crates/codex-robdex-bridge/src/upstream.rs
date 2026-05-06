@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use base64::{Engine as _, engine::general_purpose};
 use codex_app_server_adapter::app_server_protocol::{
     AgentMessageDeltaNotification, CommandExecutionOutputDeltaNotification, CommandExecutionStatus,
     FileChangeOutputDeltaNotification, FileUpdateChange, ItemCompletedNotification,
@@ -377,7 +378,7 @@ impl RunningStateReducer {
         thread_cache: &mut ThreadCachePayload,
         changed_thread_ids: &mut BTreeSet<String>,
     ) -> bool {
-        let Some(message) = message_from_raw_response_item(&payload.item, &payload.thread_id, &payload.turn_id) else {
+    let Some(message) = message_from_raw_response_item(&payload.item, &payload.thread_id, &payload.turn_id) else {
             return false;
         };
         remove_superseded_agent_fragments(thread_cache, &payload.thread_id, &payload.turn_id, &message);
@@ -781,6 +782,9 @@ fn upsert_message(
     mode: UpsertMode,
     changed_thread_ids: &mut BTreeSet<String>,
 ) -> bool {
+    if !is_renderable_message(&message) && find_message(thread_cache, thread_id, &message.id).is_none() {
+        return false;
+    }
     let messages = thread_cache
         .message_cache_by_thread_id
         .entry(thread_id.to_string())
@@ -821,6 +825,12 @@ fn upsert_message(
         changed_thread_ids.insert(thread_id.to_string());
     }
     next
+}
+
+fn is_renderable_message(message: &RobdexChatMessage) -> bool {
+    !message.text.trim().is_empty()
+        || message.subtitle.as_deref().is_some_and(|value| !value.trim().is_empty())
+        || message.tool_metadata.is_some()
 }
 
 fn remove_superseded_agent_fragments(
@@ -1077,8 +1087,67 @@ fn message_from_item(
                     .or_else(|| error.as_ref().and_then(|error| serde_json::to_string_pretty(error).ok())),
                 process_id: None,
             }),
-            None,
-        )),
+                None,
+            )),
+        ThreadItem::ImageView { id, path } => {
+            let path = path.display().to_string();
+            Some(make_message_with_context(
+                id.clone(),
+                thread_id.to_string(),
+                turn_id.map(str::to_string),
+                "tool",
+                format!("Viewed image: {path}"),
+                None,
+                Some("imageView".to_string()),
+                Some(RobdexToolMetadata {
+                    kind: "imageView".to_string(),
+                    status: Some("viewed".to_string()),
+                    command: Some("view_image".to_string()),
+                    output: Some(path),
+                    process_id: None,
+                }),
+                None,
+            ))
+        }
+        ThreadItem::ImageGeneration {
+            id,
+            status,
+            revised_prompt,
+            saved_path,
+            ..
+        } => {
+            let path = saved_path.as_ref().map(|path| path.display().to_string());
+            let body = match (status.trim(), path.as_deref()) {
+                ("", Some(path)) => format!("Generated image saved to {path}"),
+                ("", None) => "Image generation started.".to_string(),
+                (status, Some(path)) => format!("Image generation {status}: {path}"),
+                (status, None) => format!("Image generation {status}."),
+            };
+            Some(make_message_with_context(
+                id.clone(),
+                thread_id.to_string(),
+                turn_id.map(str::to_string),
+                "tool",
+                body,
+                None,
+                Some(format!(
+                    "imageGeneration ({})",
+                    if status.trim().is_empty() { "running" } else { status.trim() }
+                )),
+                Some(RobdexToolMetadata {
+                    kind: "imageGeneration".to_string(),
+                    status: Some(if status.trim().is_empty() {
+                        "running".to_string()
+                    } else {
+                        status.clone()
+                    }),
+                    command: revised_prompt.clone(),
+                    output: path,
+                    process_id: None,
+                }),
+                None,
+            ))
+        }
         ThreadItem::ContextCompaction { id } => {
             let (text, subtitle) = match mode {
                 UpsertMode::Merge => (
@@ -1109,40 +1178,110 @@ fn message_from_raw_response_item(
     thread_id: &str,
     turn_id: &str,
 ) -> Option<RobdexChatMessage> {
-    let ResponseItem::Message {
-        id,
-        role,
-        content,
-        phase,
-        ..
-    } = item
-    else {
-        return None;
-    };
-    if role != "assistant" {
+    match item {
+        ResponseItem::Message {
+            id,
+            role,
+            content,
+            phase,
+            ..
+        } => {
+            if role != "assistant" {
+                return None;
+            }
+            let text = content
+                .iter()
+                .filter_map(|entry| match entry {
+                    ContentItem::OutputText { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>();
+            if text.trim().is_empty() {
+                return None;
+            }
+            Some(make_message_with_context(
+                id.clone().unwrap_or_else(|| format!("raw-agent-message-{turn_id}")),
+                thread_id.to_string(),
+                Some(turn_id.to_string()),
+                "assistant",
+                text,
+                agent_phase_label(phase.as_ref(), UpsertMode::Replace),
+                None,
+                None,
+                None,
+            ))
+        }
+        ResponseItem::ImageGenerationCall {
+            id,
+            status,
+            revised_prompt,
+            result,
+            ..
+        } => {
+            let saved_path = save_raw_image_generation_result(thread_id, id, result);
+            let body = match (status.trim(), saved_path.as_deref()) {
+                ("", Some(path)) => format!("Image generation completed: {path}"),
+                ("", None) => "Image generation completed.".to_string(),
+                (status, Some(path)) => format!("Image generation {status}: {path}"),
+                (status, None) => format!("Image generation {status}."),
+            };
+            Some(make_message_with_context(
+                id.clone(),
+                thread_id.to_string(),
+                Some(turn_id.to_string()),
+                "tool",
+                body,
+                None,
+                Some(format!(
+                    "imageGeneration ({})",
+                    if status.trim().is_empty() { "completed" } else { status.trim() }
+                )),
+                Some(RobdexToolMetadata {
+                    kind: "imageGeneration".to_string(),
+                    status: Some(if status.trim().is_empty() {
+                        "completed".to_string()
+                    } else {
+                        status.clone()
+                    }),
+                    command: revised_prompt.clone(),
+                    output: saved_path,
+                    process_id: None,
+                }),
+                None,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn save_raw_image_generation_result(thread_id: &str, image_id: &str, result: &str) -> Option<String> {
+    if result.trim().is_empty() {
         return None;
     }
-    let text = content
-        .iter()
-        .filter_map(|entry| match entry {
-            ContentItem::OutputText { text } => Some(text.as_str()),
-            _ => None,
+    let bytes = general_purpose::STANDARD.decode(result.trim()).ok()?;
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".codex")))?;
+    let output_dir = codex_home.join("generated_images").join(sanitize_image_path_component(thread_id));
+    std::fs::create_dir_all(&output_dir).ok()?;
+    let path = output_dir.join(format!("{}.png", sanitize_image_path_component(image_id)));
+    std::fs::write(&path, bytes).ok()?;
+    Some(path.display().to_string())
+}
+
+fn sanitize_image_path_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => ch,
+            _ => '_',
         })
         .collect::<String>();
-    if text.trim().is_empty() {
-        return None;
+    if sanitized.trim_matches('_').is_empty() {
+        "image".to_string()
+    } else {
+        sanitized
     }
-    Some(make_message_with_context(
-        id.clone().unwrap_or_else(|| format!("raw-agent-message-{turn_id}")),
-        thread_id.to_string(),
-        Some(turn_id.to_string()),
-        "assistant",
-        text,
-        agent_phase_label(phase.as_ref(), UpsertMode::Replace),
-        None,
-        None,
-        None,
-    ))
 }
 
 fn render_user_input(input: &codex_app_server_adapter::app_server_protocol::UserInput) -> String {

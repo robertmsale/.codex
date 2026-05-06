@@ -5,8 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/robertsale/Code/parallels-sync/scripts/run-codex-turn-lifecycle-hook",
-            "statusMessage": "Notifying Robdex turn start"
+            "command": "/Users/robertsale/.codex/hooks/run-codex-turn-lifecycle-hook",
+            "statusMessage": "Recording Codex user prompt hook"
           }
         ]
       }
@@ -16,8 +16,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/robertsale/Code/parallels-sync/scripts/run-codex-turn-lifecycle-hook",
-            "statusMessage": "Notifying Robdex turn stop"
+            "command": "/Users/robertsale/.codex/hooks/run-codex-turn-lifecycle-hook",
+            "statusMessage": "Recording Codex stop hook"
           }
         ]
       }

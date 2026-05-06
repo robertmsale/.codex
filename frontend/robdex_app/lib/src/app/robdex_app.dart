@@ -361,6 +361,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             unblockWhen: draft.unblockWhen,
             clearBlocked: draft.clearBlocked,
           ),
+          bridgeBaseUri: _bridgeBaseUri,
         );
       },
     );
@@ -452,6 +453,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
               threadName: _controller.view?.selection.threadName ?? 'History',
               contextWindowRemainingPercent:
                   _controller.view?.contextWindowRemainingPercent,
+              bridgeBaseUri: _bridgeBaseUri,
             ),
           ),
         );
@@ -2575,12 +2577,14 @@ class _ThreadHistorySheet extends StatefulWidget {
     required this.threadId,
     required this.threadName,
     required this.contextWindowRemainingPercent,
+    required this.bridgeBaseUri,
   });
 
   final WorkbenchController controller;
   final String threadId;
   final String threadName;
   final int? contextWindowRemainingPercent;
+  final Uri bridgeBaseUri;
 
   @override
   State<_ThreadHistorySheet> createState() => _ThreadHistorySheetState();
@@ -2708,6 +2712,7 @@ class _ThreadHistorySheetState extends State<_ThreadHistorySheet> {
                   onInterrupt: () {},
                   composerEnabled: false,
                   isRunning: false,
+                  bridgeBaseUri: widget.bridgeBaseUri,
                   showComposer: false,
                   headerControls: Row(
                     children: [

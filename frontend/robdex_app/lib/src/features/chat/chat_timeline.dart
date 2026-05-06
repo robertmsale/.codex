@@ -23,6 +23,7 @@ class ChatTimeline extends StatefulWidget {
     this.headerControls,
     this.overlay,
     this.leading,
+    this.bridgeBaseUri,
     this.onTerminateCommandExecution,
   });
 
@@ -38,6 +39,7 @@ class ChatTimeline extends StatefulWidget {
   final Widget? headerControls;
   final Widget? overlay;
   final Widget? leading;
+  final Uri? bridgeBaseUri;
   final ValueChanged<String>? onTerminateCommandExecution;
 
   @override
@@ -244,6 +246,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
                         },
                         onTerminateCommandExecution:
                             widget.onTerminateCommandExecution,
+                        bridgeBaseUri: widget.bridgeBaseUri,
                       );
                     },
                   ),
@@ -303,12 +306,14 @@ class _ChatBubble extends StatelessWidget {
     required this.expanded,
     required this.onExpandedChanged,
     this.onTerminateCommandExecution,
+    this.bridgeBaseUri,
   });
 
   final ChatEntry entry;
   final bool expanded;
   final ValueChanged<bool> onExpandedChanged;
   final ValueChanged<String>? onTerminateCommandExecution;
+  final Uri? bridgeBaseUri;
 
   @override
   Widget build(BuildContext context) {
@@ -331,6 +336,7 @@ class _ChatBubble extends StatelessWidget {
         expanded: expanded,
         onExpandedChanged: onExpandedChanged,
         onTerminateCommandExecution: onTerminateCommandExecution,
+        bridgeBaseUri: bridgeBaseUri,
       );
     }
 
@@ -810,12 +816,14 @@ class _InlineEventRow extends StatelessWidget {
     required this.expanded,
     required this.onExpandedChanged,
     this.onTerminateCommandExecution,
+    this.bridgeBaseUri,
   });
 
   final ChatEntry entry;
   final bool expanded;
   final ValueChanged<bool> onExpandedChanged;
   final ValueChanged<String>? onTerminateCommandExecution;
+  final Uri? bridgeBaseUri;
 
   @override
   Widget build(BuildContext context) {
@@ -826,6 +834,16 @@ class _InlineEventRow extends StatelessWidget {
           expanded: expanded,
           onExpandedChanged: onExpandedChanged,
           onTerminateCommandExecution: onTerminateCommandExecution,
+        );
+      case 'imageGeneration':
+        return _ImageGenerationEventRow(
+          entry: entry,
+          bridgeBaseUri: bridgeBaseUri,
+        );
+      case 'imageView':
+        return _ImageGenerationEventRow(
+          entry: entry,
+          bridgeBaseUri: bridgeBaseUri,
         );
       case 'mcpToolCall':
         return _ToolEventRow(
@@ -846,6 +864,182 @@ class _InlineEventRow extends StatelessWidget {
           onExpandedChanged: onExpandedChanged,
         );
     }
+  }
+}
+
+class _ImageGenerationEventRow extends StatelessWidget {
+  const _ImageGenerationEventRow({
+    required this.entry,
+    required this.bridgeBaseUri,
+  });
+
+  final ChatEntry entry;
+  final Uri? bridgeBaseUri;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final timestampLabel = formatLocalTimeLabel(entry.timestamp);
+    final path = entry.output?.trim();
+    final canLoad = bridgeBaseUri != null && path != null && path.isNotEmpty;
+    final thumbnailUri = canLoad
+        ? bridgeBaseUri!.resolve('/images/thumbnail').replace(
+              queryParameters: {'saved_path': path},
+            )
+        : null;
+    final imageUri = canLoad
+        ? bridgeBaseUri!.resolve('/images/image').replace(
+              queryParameters: {'saved_path': path},
+            )
+        : null;
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 760),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (thumbnailUri != null) ...[
+              InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: () => _showImageDialog(context, imageUri!, path!),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: Image.network(
+                    thumbnailUri.toString(),
+                    width: 100,
+                    height: 100,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => const _ImagePlaceholder(),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+            ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'Image',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          color: theme.colorScheme.onSurface.withValues(alpha: 0.9),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      _AnimatedStatusIcon(
+                        icon: _eventStatusIcon(entry),
+                        color: _eventStatusColor(theme, entry),
+                        identity: '${entry.status}|${entry.isStreaming}',
+                      ),
+                      const Spacer(),
+                      Text(
+                        timestampLabel,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurface.withValues(alpha: 0.58),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (entry.command?.trim().isNotEmpty ?? false) ...[
+                    const SizedBox(height: 6),
+                    SelectableText(
+                      entry.command!.trim(),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.88),
+                      ),
+                    ),
+                  ],
+                  if (path != null && path.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    SelectableText(
+                      path,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontFamily: 'monospace',
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.62),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showImageDialog(BuildContext context, Uri imageUri, String path) {
+    showDialog<void>(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.black,
+          insetPadding: const EdgeInsets.all(18),
+          child: Stack(
+            children: [
+              InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 6,
+                child: Center(
+                  child: Image.network(
+                    imageUri.toString(),
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, _, _) => const Padding(
+                      padding: EdgeInsets.all(32),
+                      child: _ImagePlaceholder(),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 8,
+                right: 8,
+                child: IconButton.filledTonal(
+                  tooltip: 'Close',
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.close),
+                ),
+              ),
+              Positioned(
+                left: 12,
+                right: 64,
+                bottom: 12,
+                child: SelectableText(
+                  path,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.78),
+                      ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ImagePlaceholder extends StatelessWidget {
+  const _ImagePlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 100,
+      height: 100,
+      alignment: Alignment.center,
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Text(
+        'Image unavailable',
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.labelSmall,
+      ),
+    );
   }
 }
 

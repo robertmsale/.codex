@@ -40,6 +40,7 @@ class RobdexShellScreen extends StatelessWidget {
     required this.onArchiveThreadGroup,
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
+    this.bridgeBaseUri,
   });
 
   final bool enableGraphics;
@@ -70,6 +71,7 @@ class RobdexShellScreen extends StatelessWidget {
   final ValueChanged<String> onArchiveThreadGroup;
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
+  final Uri? bridgeBaseUri;
 
   @override
   Widget build(BuildContext context) {
@@ -115,6 +117,7 @@ class RobdexShellScreen extends StatelessWidget {
                               onArchiveThreadGroup: onArchiveThreadGroup,
                               onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
                               onUpdateWorkerMetadata: onUpdateWorkerMetadata,
+                              bridgeBaseUri: bridgeBaseUri,
                             ),
                           )
                         : RepaintBoundary(
@@ -144,6 +147,7 @@ class RobdexShellScreen extends StatelessWidget {
                               onArchiveThreadGroup: onArchiveThreadGroup,
                               onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
                               onUpdateWorkerMetadata: onUpdateWorkerMetadata,
+                              bridgeBaseUri: bridgeBaseUri,
                             ),
                           ),
                   );
@@ -184,6 +188,7 @@ class _WideShell extends StatefulWidget {
     required this.onArchiveThreadGroup,
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
+    required this.bridgeBaseUri,
   });
 
   final WorkbenchViewData workbench;
@@ -212,6 +217,7 @@ class _WideShell extends StatefulWidget {
   final ValueChanged<String> onArchiveThreadGroup;
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
+  final Uri? bridgeBaseUri;
 
   @override
   State<_WideShell> createState() => _WideShellState();
@@ -268,6 +274,7 @@ class _WideShellState extends State<_WideShell> {
                 onSend: widget.onSendMessage,
                 onInterrupt: widget.onInterruptThread,
                 onTerminateCommandExecution: widget.onTerminateCommandExecution,
+                bridgeBaseUri: widget.bridgeBaseUri,
                 composerEnabled: workbench.selection.threadId != null,
                 isRunning: workbench.selection.isRunning,
                 headerControls: _DesktopThreadControls(
@@ -339,6 +346,7 @@ class _CompactShell extends StatefulWidget {
     required this.onArchiveThreadGroup,
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
+    required this.bridgeBaseUri,
   });
 
   final WorkbenchViewData workbench;
@@ -367,6 +375,7 @@ class _CompactShell extends StatefulWidget {
   final ValueChanged<String> onArchiveThreadGroup;
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
+  final Uri? bridgeBaseUri;
 
   @override
   State<_CompactShell> createState() => _CompactShellState();
@@ -673,6 +682,7 @@ class _CompactShellState extends State<_CompactShell> {
       onSend: widget.onSendMessage,
       onInterrupt: widget.onInterruptThread,
       onTerminateCommandExecution: widget.onTerminateCommandExecution,
+      bridgeBaseUri: widget.bridgeBaseUri,
       composerEnabled: true,
       isRunning: widget.workbench.selection.isRunning,
       overlay: _ApprovalOverlay(

@@ -8,7 +8,7 @@ use axum::{
         Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::StatusCode,
+    http::{StatusCode, header},
     response::IntoResponse,
     routing::{delete, get, post},
 };
@@ -66,6 +66,8 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/mcp/refresh", post(mcp_refresh_http))
         .route("/threads/{thread_id}/messages", post(thread_message_create_http))
         .route("/uploads/images", post(image_upload_http))
+        .route("/images/thumbnail", get(image_thumbnail_http))
+        .route("/images/image", get(image_file_http))
         .route("/threads/messages", get(thread_messages))
         .route("/events/replay", get(replay_events))
         .route("/orchestrator/whoami", get(orchestrator_whoami_route))
@@ -719,6 +721,11 @@ struct ImageUploadQuery {
     filename: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SavedImageQuery {
+    saved_path: String,
+}
+
 async fn image_upload_http(
     State(_runtime): State<Arc<BridgeRuntime>>,
     Query(query): Query<ImageUploadQuery>,
@@ -759,6 +766,69 @@ async fn image_upload_http(
         })),
     )
         .into_response()
+}
+
+async fn image_file_http(Query(query): Query<SavedImageQuery>) -> impl IntoResponse {
+    let path = FsPath::new(query.saved_path.trim());
+    if !path.is_absolute() {
+        return (StatusCode::BAD_REQUEST, "saved_path must be absolute").into_response();
+    }
+
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) => return (StatusCode::NOT_FOUND, error.to_string()).into_response(),
+    };
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, image_content_type(path))],
+        bytes,
+    )
+        .into_response()
+}
+
+async fn image_thumbnail_http(Query(query): Query<SavedImageQuery>) -> impl IntoResponse {
+    let path = FsPath::new(query.saved_path.trim());
+    if !path.is_absolute() {
+        return (StatusCode::BAD_REQUEST, "saved_path must be absolute").into_response();
+    }
+
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) => return (StatusCode::NOT_FOUND, error.to_string()).into_response(),
+    };
+    let image = match image::load_from_memory(&bytes) {
+        Ok(image) => image,
+        Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    };
+    let thumbnail = image.thumbnail(100, 100);
+    let mut output = std::io::Cursor::new(Vec::new());
+    if let Err(error) = thumbnail.write_to(&mut output, image::ImageFormat::Png) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+    }
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "image/png")],
+        output.into_inner(),
+    )
+        .into_response()
+}
+
+fn image_content_type(path: &FsPath) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("bmp") => "image/bmp",
+        Some("heic" | "heif") => "image/heif",
+        _ => "image/png",
+    }
 }
 
 fn uuid_suffix() -> String {

@@ -964,13 +964,14 @@ impl BridgeRuntime {
         let Some(orchestrator_thread_id) = project.orchestrator_thread_id.filter(|id| id != thread_id) else {
             return;
         };
-        let Some(assistant_text) = self.latest_assistant_text_for_thread(thread_id, Some(turn_id)).await else {
+        let Some(route_content) = self.auto_route_content_for_thread(thread_id, Some(turn_id)).await else {
             return;
         };
 
         let routed_text = compose_auto_routed_reply(
-            &assistant_text,
+            &route_content.text,
             &sender_label_for_thread(&state, thread_id),
+            &route_content.local_image_paths,
         );
         if routed_text.trim().is_empty() {
             return;
@@ -993,7 +994,7 @@ impl BridgeRuntime {
         }
         .turn_start_params(
             orchestrator_thread_id.clone(),
-            json!([{"type":"text","text": routed_text}]),
+            build_auto_route_input(routed_text, &route_content.local_image_paths),
         );
 
         if self.request_app_server_json("turn/start", params).await.is_ok()
@@ -1070,6 +1071,18 @@ impl BridgeRuntime {
         }
     }
 
+    async fn auto_route_content_for_thread(&self, thread_id: &str, turn_id: Option<&str>) -> Option<AutoRouteContent> {
+        let text = self.latest_assistant_text_for_thread(thread_id, turn_id).await.unwrap_or_default();
+        let local_image_paths = self.generated_image_paths_for_thread(thread_id, turn_id).await;
+        if text.trim().is_empty() && local_image_paths.is_empty() {
+            return None;
+        }
+        Some(AutoRouteContent {
+            text,
+            local_image_paths,
+        })
+    }
+
     async fn latest_assistant_text_for_thread(&self, thread_id: &str, turn_id: Option<&str>) -> Option<String> {
         let thread_cache = self.thread_cache.read().await;
         let messages = thread_cache.message_cache_by_thread_id.get(thread_id)?;
@@ -1114,6 +1127,34 @@ impl BridgeRuntime {
                     && !message.text.trim().is_empty()
             })
             .map(|message| message.text.trim().to_string())
+    }
+
+    async fn generated_image_paths_for_thread(&self, thread_id: &str, turn_id: Option<&str>) -> Vec<String> {
+        let thread_cache = self.thread_cache.read().await;
+        let Some(messages) = thread_cache.message_cache_by_thread_id.get(thread_id) else {
+            return Vec::new();
+        };
+        let mut paths = Vec::new();
+        for message in messages {
+            if let Some(turn_id) = turn_id
+                && message.turn_id.as_deref() != Some(turn_id)
+            {
+                continue;
+            }
+            let Some(tool) = &message.tool_metadata else {
+                continue;
+            };
+            if tool.kind != "imageGeneration" {
+                continue;
+            }
+            let Some(path) = tool.output.as_deref().map(str::trim).filter(|value| !value.is_empty()) else {
+                continue;
+            };
+            if !paths.iter().any(|existing| existing == path) {
+                paths.push(path.to_string());
+            }
+        }
+        paths
     }
 
     async fn maybe_run_approval_requested_hook(&self, approval: &PendingApproval) -> Result<bool> {
@@ -2197,12 +2238,31 @@ fn sender_label_for_thread(state: &Value, thread_id: &str) -> String {
         .unwrap_or_else(|| thread_id.to_string())
 }
 
-fn compose_auto_routed_reply(text: &str, sender_label: &str) -> String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutoRouteContent {
+    text: String,
+    local_image_paths: Vec<String>,
+}
+
+fn build_auto_route_input(text: String, local_image_paths: &[String]) -> Value {
+    let mut input = vec![json!({"type":"text","text": text})];
+    input.extend(local_image_paths.iter().map(|path| {
+        json!({
+            "type": "localImage",
+            "path": path,
+        })
+    }));
+    Value::Array(input)
+}
+
+fn compose_auto_routed_reply(text: &str, sender_label: &str, local_image_paths: &[String]) -> String {
     let trimmed = text.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() && local_image_paths.is_empty() {
         return String::new();
     }
-    let prefixed = if trimmed.starts_with('[') && trimmed.contains("]: ") {
+    let prefixed = if trimmed.is_empty() {
+        format!("[{sender_label}]: Generated image artifact(s) for review.")
+    } else if trimmed.starts_with('[') && trimmed.contains("]: ") {
         trimmed.to_string()
     } else {
         format!("[{sender_label}]: {trimmed}")
@@ -2212,8 +2272,20 @@ fn compose_auto_routed_reply(text: &str, sender_label: &str) -> String {
     } else {
         format!("[End of Turn] {prefixed}")
     };
+    let artifact_note = if local_image_paths.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nGenerated image artifact(s) attached for review:\n{}",
+            local_image_paths
+                .iter()
+                .map(|path| format!("- {path}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
     format!(
-        "{body}\n\n**CRITICAL**: This agent is STOPPED. You must use `robdex send-message --name \"{sender_label}\" --text-stdin` following the $robdex-orchestrator instructions if you need to respond to this agent."
+        "{body}{artifact_note}\n\n**CRITICAL**: This agent is STOPPED. You must use `robdex send-message --name \"{sender_label}\" --text-stdin` following the $robdex-orchestrator instructions if you need to respond to this agent."
     )
 }
 
@@ -2873,9 +2945,24 @@ mod tests {
 
     #[test]
     fn auto_routed_reply_uses_end_of_turn_prefix_and_sender_label() {
-        let routed = compose_auto_routed_reply("hi", "Bridge Agent Smoke");
+        let routed = compose_auto_routed_reply("hi", "Bridge Agent Smoke", &[]);
         assert!(routed.starts_with("[End of Turn] [Bridge Agent Smoke]: hi"));
         assert!(routed.contains("robdex send-message --name \"Bridge Agent Smoke\" --text-stdin"));
+    }
+
+    #[test]
+    fn auto_routed_reply_can_forward_image_only_turns() {
+        let images = vec!["/tmp/design.png".to_string()];
+        let routed = compose_auto_routed_reply("", "Bridge Agent Smoke", &images);
+        assert!(routed.starts_with(
+            "[End of Turn] [Bridge Agent Smoke]: Generated image artifact(s) for review."
+        ));
+        assert!(routed.contains("Generated image artifact(s) attached for review:\n- /tmp/design.png"));
+
+        let input = build_auto_route_input(routed, &images);
+        assert_eq!(input[0]["type"], "text");
+        assert_eq!(input[1]["type"], "localImage");
+        assert_eq!(input[1]["path"], "/tmp/design.png");
     }
 
     #[test]

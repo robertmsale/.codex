@@ -112,6 +112,7 @@ model_reasoning_effort = "high"
 # Ones I care about
 shell_zsh_fork = true           # Synchronous, custom codex uncapped execution :)
 view_image = true               # Handy, obvious
+image_generation = true         # Generate/edit images from Codex turns
 steer = true                    # Enables mid-turn and inter-agent communication, vital feature
 apps = false                    # Need to find use for this (what apps are available/worthy of enablement)
 tui_app_server = true
@@ -126,6 +127,7 @@ responses_websockets_v2 = true  # EVEN FASTER
 # Ones I don't
 unified_exec = false            # Enables parallel command execution, stdin polling, and the ability to use alternative shells
 multi_agent = false             # Incompatible orchestration pattern
+multi_agent_v2 = false          # Sneaky... v3 wen?
 shell_snapshot = false          # Interferes with shell wrapper
 collaboration_modes = false     # UX variants managed by hand
 # collab = false                  # Deprecated (multi_agent)
@@ -195,39 +197,5 @@ trust_level = "trusted"
 [projects."/Users/robertsale/.codex"]
 trust_level = "trusted"
 
-[projects."/private/var/folders/93/q92vby7x26l6sdymzvgl3pbm0000gn/T/codex-aux/command-parser-d46ae10b89c0e0d2"]
-trust_level = "trusted"
-
-[projects."/private/var/folders/93/q92vby7x26l6sdymzvgl3pbm0000gn/T/codex-aux/command-parser-3881bc71a3e3e7c0"]
-trust_level = "trusted"
-
-[projects."/private/tmp"]
-trust_level = "trusted"
-
-[projects."/private/var/folders/93/q92vby7x26l6sdymzvgl3pbm0000gn/T/codex-aux/command-parser-a4f0312353a3ef12"]
-trust_level = "trusted"
-
-[projects."/private/var/folders/93/q92vby7x26l6sdymzvgl3pbm0000gn/T/codex-aux/command-parser-2b6a72512144270b"]
-trust_level = "trusted"
-
-[projects."/private/var/folders/93/q92vby7x26l6sdymzvgl3pbm0000gn/T/codex-aux/command-parser-7f1fe99ea036b121"]
-trust_level = "trusted"
-
-[projects."/private/var/folders/93/q92vby7x26l6sdymzvgl3pbm0000gn/T/codex-aux/command-parser-bfcf10ffb8a6d08f"]
-trust_level = "trusted"
-
-[projects."/private/var/folders/93/q92vby7x26l6sdymzvgl3pbm0000gn/T/codex-aux/command-parser-1d76b3dcce2dfc4"]
-trust_level = "trusted"
-
-[projects."/private/var/folders/93/q92vby7x26l6sdymzvgl3pbm0000gn/T/codex-aux/command-parser-795a9bf8d7dc8182"]
-trust_level = "trusted"
-
-[projects."/private/var/folders/93/q92vby7x26l6sdymzvgl3pbm0000gn/T/codex-aux/command-parser-b9518e36cf5f4187"]
-trust_level = "trusted"
-
-[projects."/private/var/folders/93/q92vby7x26l6sdymzvgl3pbm0000gn/T/codex-aux/command-parser-75d8a011320c38ff"]
-trust_level = "trusted"
-
 [tui]
 status_line = []
-

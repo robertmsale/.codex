@@ -776,11 +776,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "clap",
  "codex-app-server-adapter",
  "codex-backend-core",
  "codex-shell-command",
  "futures-util",
+ "image",
  "libc",
  "reqwest",
  "robdex-protocol",
