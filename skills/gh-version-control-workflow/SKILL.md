@@ -1,6 +1,6 @@
 ---
 name: gh-version-control-workflow
-description: Script-first worktree/branch/PR workflow using local scripts under `scripts/` plus direct `git`/`gh`. Use this when you need the sanctioned mutating git and GitHub workflow tools. [skill-hash:4d10e27]
+description: Script-first worktree/branch/PR workflow using local scripts under `scripts/` plus direct `git`/`gh`. Use this when you need the sanctioned mutating git and GitHub workflow tools. [skill-hash:7b3f0c2]
 ---
 
 # GH Version Control Workflow
@@ -15,6 +15,11 @@ Use this skill when you need the sanctioned wrappers for mutating git or GitHub 
 - use `request-review` before publish when the current project/operator workflow requires review
 
 Use the shared `~/.codex` skill script paths shown here unless a project-local skill explicitly says otherwise.
+
+Run each mutating git wrapper as its own command. Do not chain `git-stage-paths`,
+`git-commit`, `git-publish-worktree`, or other mutating wrappers with `&&`,
+`||`, `;`, pipes, or shell wrappers. Wait for one step to finish, inspect the
+result if needed, then run the next step.
 
 ## Mutating Commands
 
@@ -94,3 +99,4 @@ Do not cherry-pick the old commit onto a new branch unless an operator explicitl
 - A published PR branch must be recovered in place on that same worktree and branch.
 - Do not manually create or clean up a worker worktree when project hooks already own that lifecycle.
 - If publish, review, or cleanup state is unclear, inspect the real state and continue with the sanctioned script instead of inventing a new path.
+- Do not chain mutating git wrappers. Stage, commit, publish, merge, and cleanup are separate operations.

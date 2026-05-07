@@ -23,6 +23,8 @@ Produce viewable screenshots with Flutter tests where possible:
 - Do not create or update golden assets by default.
 - Do not use `--update-goldens` unless the orchestrator explicitly requests maintained golden baselines.
 - Do not require emulator, simulator, container stack, or broker/device harness for this workflow unless the task requires real-device proof.
+- If the task explicitly requires live simulator capture, load `$designer-runtime` and use `designer-drive` with the provided device ID.
+- Do not use `flutter-sim`, `flutter-drive`, or managed broker reservation commands for design-worker simulator capture unless the operator explicitly assigns a QA broker-managed slot.
 - If the page scrolls, capture multiple scroll positions so the full page is represented.
 
 After each screenshot is written, view it so the model has the actual pixels in context before asking for a redesign.
@@ -67,7 +69,15 @@ Before review/merge:
 
 - Rerun the screenshot-rendering test and write a fresh implemented UI image to `/tmp`.
 - View the implemented image.
-- Compare it to the approved reference image.
+- Run `design-review <reference-image> <implemented-image> [context...]`.
+- The context is mandatory for useful review. State exactly which reference region and implementation region are in scope.
+- Explicitly say whether shell, nav, app chrome, global headers, sidebars, breadcrumbs, device frames, and surrounding scaffold are out of scope.
+- If the generated reference includes a custom shell but the task is page-content only, say: `Shell/nav/chrome in the reference is out of scope; grade only the page content surface inside the real Ezra shell.`
+- State unavailable backend/product contracts that should not be required, such as fake rows/actions/results that were only visual placeholders.
+- Tell the reviewer what fidelity target matters, for example pane proportions, table/list density, inspector layout, non-clipping iPad layout, typography, or card rhythm.
+- Include the full `design-review` verdict, score, mismatches, and required fixes in your report.
+- If `design-review` returns `FAIL`, fix the visual gaps and rerun the implemented screenshot plus `design-review` before requesting merge approval.
+- If you believe a `FAIL` is wrong because the reviewer misunderstood an explicit task boundary, explain that boundary clearly and stop for orchestrator judgment.
 - Report what matches, what intentionally differs, and any remaining design risk.
 
 The goal is high-confidence visual alignment, not pixel-perfect identity.

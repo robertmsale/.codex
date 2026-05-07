@@ -16,6 +16,7 @@ prefix_rule(
         "designer-drive", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-drive",
         "designer-flutter-run", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-flutter-run",
         "designer-hot-reload", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-hot-reload",
+        "design-review", "/Users/robertsale/.codex/skills/design-worker/scripts/design-review",
         "api-integration-harness",
         "api_integration_reaper",
         "api_integration_reaper_start",

@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  design-review <reference-image> <actual-image> [context...]
+
+Runs an ephemeral Codex visual design review. The first image is the reference;
+the second image is the actual implementation rendering.
+
+Set DESIGN_REVIEW_TIMEOUT_SECONDS to override the default 180 second timeout.
+EOF
+}
+
+if [[ $# -lt 2 || "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 2
+fi
+
+reference_image="$1"
+actual_image="$2"
+shift 2
+
+if [[ ! -f "$reference_image" ]]; then
+  echo "design-review: reference image not found: $reference_image" >&2
+  exit 2
+fi
+
+if [[ ! -f "$actual_image" ]]; then
+  echo "design-review: actual image not found: $actual_image" >&2
+  exit 2
+fi
+
+reference_image="$(cd "$(dirname "$reference_image")" && pwd)/$(basename "$reference_image")"
+actual_image="$(cd "$(dirname "$actual_image")" && pwd)/$(basename "$actual_image")"
+
+context="${*:-}"
+if [[ -z "$context" && ! -t 0 ]]; then
+  context="$(cat)"
+fi
+if [[ -z "$context" ]]; then
+  context="Scope: page content surface only. Shell, navigation, app chrome, device frame, and surrounding scaffold are out of scope unless they appear inside the content surface. Compare the in-scope reference region to the in-scope implementation rendering and grade visual fidelity for layout, hierarchy, density, typography, spacing, color, surfaces, and non-clipping responsive behavior."
+fi
+
+timeout_seconds="${DESIGN_REVIEW_TIMEOUT_SECONDS:-180}"
+
+python3 - "$timeout_seconds" "$reference_image" "$actual_image" "$context" <<'PY'
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+
+timeout_seconds = int(sys.argv[1])
+reference_image = sys.argv[2]
+actual_image = sys.argv[3]
+context = sys.argv[4]
+
+env = os.environ.copy()
+runtime_home = tempfile.mkdtemp(prefix="design-review-codex-home-")
+for key in (
+    "CODEX_THREAD_ID",
+    "CODEX_SANDBOX",
+    "CODEX_ESCALATE_SOCKET",
+    "EXEC_WRAPPER",
+    "CODEX_SHIM_INTERNAL",
+):
+    env.pop(key, None)
+
+env["CODEX_HOME"] = runtime_home
+
+source_home = os.path.expanduser("~/.codex")
+for filename in ("auth.json", "config.toml"):
+    source_path = os.path.join(source_home, filename)
+    target_path = os.path.join(runtime_home, filename)
+    if os.path.exists(source_path):
+        try:
+            os.symlink(source_path, target_path)
+        except OSError:
+            shutil.copy2(source_path, target_path)
+
+cmd = [
+    "codex",
+    "exec",
+    "--ephemeral",
+    "--skip-git-repo-check",
+    "--output-last-message",
+    "",
+    "--sandbox",
+    "workspace-write",
+    "-c",
+    'approval_policy="never"',
+    "--disable",
+    "responses_websockets",
+    "--disable",
+    "responses_websockets_v2",
+    "-p",
+    "design-review",
+    "--image",
+    reference_image,
+    "--image",
+    actual_image,
+    "-",
+]
+
+output_file = tempfile.NamedTemporaryFile(prefix="design-review-", suffix=".txt", delete=False)
+output_file_path = output_file.name
+output_file.close()
+cmd[cmd.index("--output-last-message") + 1] = output_file_path
+
+process = subprocess.Popen(
+    cmd,
+    cwd="/tmp",
+    env=env,
+    text=True,
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    start_new_session=True,
+)
+
+try:
+    stdout, stderr = process.communicate(input=context, timeout=timeout_seconds)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except OSError:
+        pass
+    try:
+        stdout, stderr = process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        stdout, stderr = process.communicate()
+    if stdout:
+        sys.stdout.write(stdout)
+    if stderr:
+        sys.stderr.write(stderr)
+    try:
+        os.unlink(output_file_path)
+    except OSError:
+        pass
+    shutil.rmtree(runtime_home, ignore_errors=True)
+    print(f"design-review: timed out after {timeout_seconds}s", file=sys.stderr)
+    raise SystemExit(124)
+
+try:
+    with open(output_file_path, "r", encoding="utf-8") as handle:
+        final_message = handle.read().strip()
+except OSError:
+    final_message = ""
+
+if final_message:
+    sys.stdout.write(final_message + "\n")
+else:
+    if stdout:
+        sys.stdout.write(stdout)
+    if stderr:
+        sys.stderr.write(stderr)
+
+try:
+    os.unlink(output_file_path)
+except OSError:
+    pass
+
+if final_message and stderr and process.returncode != 0:
+    sys.stderr.write(stderr)
+shutil.rmtree(runtime_home, ignore_errors=True)
+raise SystemExit(process.returncode)
+PY

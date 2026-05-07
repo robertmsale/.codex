@@ -1,6 +1,6 @@
 ---
 name: design-worker
-description: Use for orchestrating or executing screenshot-driven Flutter redesign work where workers generate reference images, compare against rendered UI screenshots, and implement only after visual approval. [skill-hash:b7c2a91]
+description: Use for orchestrating or executing screenshot-driven Flutter redesign work where workers generate reference images, compare against rendered UI screenshots, run visual design review, and implement only after visual approval. [skill-hash:fdc9a72]
 ---
 
 # Design Worker
@@ -11,6 +11,12 @@ This skill is for orchestrators and workers. Load only the role reference that m
 
 - Orchestrator: read `references/orchestrator.md`.
 - Worker: read `references/worker.md`.
+
+## Script
+
+Workers use `design-review <reference-image> <actual-image> [context...]` before
+requesting merge approval. The first image must be the generated reference; the
+second image must be the actual rendered implementation.
 
 ## Required Quality Source
 
@@ -30,4 +36,5 @@ Recommended dispatches:
 - If the page scrolls, capture enough screenshots to understand the whole page before asking for a full-page redesign.
 - Do not redesign the application shell/chrome unless the task explicitly includes shell work.
 - If the design needs backend behavior that does not exist, finish the design with safe mocked data and report the backend gap for a separate worker.
-- Do not use emulator, device harness, or container stack unless the task specifically requires runtime/device proof. Prefer Flutter tests that render widgets and write screenshots.
+- Do not use emulator, device harness, QA broker, or container stack unless the task specifically requires runtime/device proof. Prefer Flutter tests that render widgets and write screenshots.
+- If runtime simulator capture is explicitly required for a designer/design-worker, use `$designer-runtime`; do not use `flutter-sim`, `flutter-drive`, or the managed reservation path.
