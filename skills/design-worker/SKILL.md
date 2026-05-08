@@ -1,6 +1,6 @@
 ---
 name: design-worker
-description: Use for orchestrating or executing screenshot-driven Flutter redesign work where workers generate reference images, compare against rendered UI screenshots, run visual design review, and implement only after visual approval. [skill-hash:fdc9a72]
+description: Use for orchestrating or executing screenshot-driven Flutter redesign work where workers generate reference images, compare against rendered UI screenshots, run visual design review, and implement only after visual approval. [skill-hash:8b4f0d1]
 ---
 
 # Design Worker
@@ -12,11 +12,14 @@ This skill is for orchestrators and workers. Load only the role reference that m
 - Orchestrator: read `references/orchestrator.md`.
 - Worker: read `references/worker.md`.
 
-## Script
+## Scripts
 
 Workers use `design-review <reference-image> <actual-image> [context...]` before
 requesting merge approval. The first image must be the generated reference; the
 second image must be the actual rendered implementation.
+
+Use `design-review-eval <case-id>` or `design-review-eval --all` only when
+tuning the reviewer against the curated local eval assets.
 
 ## Required Quality Source
 

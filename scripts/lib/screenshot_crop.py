@@ -185,6 +185,34 @@ def rotate_image_in_place(*, image_path: Path, degrees: int) -> None:
             temp_path.unlink(missing_ok=True)
 
 
+def screenshot_rotation_for_transform(
+    *,
+    transform: str,
+    image_width: int,
+    image_height: int,
+    root_width: int,
+    root_height: int,
+) -> int | None:
+    if transform == "portrait_180":
+        return 180
+    if root_width > root_height and image_width < image_height:
+        if transform == "landscape_90":
+            return 270
+        if transform == "landscape_270":
+            return 90
+        if transform == "landscape_root_aspect":
+            # idb often emits the portrait backing buffer even while the app
+            # accessibility tree is landscape. This matches the historical
+            # fallback orientation used by the direct driver.
+            return 90
+    if root_width < root_height and image_width > image_height:
+        if transform == "portrait_0":
+            return 90
+        if transform == "portrait_180":
+            return 270
+    return None
+
+
 def normalize_fresh_screenshot_orientation(*, image_path: Path, device_id: str) -> dict[str, Any] | None:
     elements = live_hierarchy_elements(device_id)
     try:
@@ -199,21 +227,28 @@ def normalize_fresh_screenshot_orientation(*, image_path: Path, device_id: str) 
         if orientation_metadata is not None
         else infer_orientation_transform(device_id=device_id, elements=elements)
     )
+    transform_source = "orientation_beacon" if orientation_metadata is not None else "probe"
+    if transform is None and root_width > root_height and image_width < image_height:
+        transform = "landscape_root_aspect"
+        transform_source = "root_aspect"
     if transform is None:
         return None
-    rotation: int | None = None
-    if transform == "portrait_180":
-        rotation = 180
-    elif transform == "landscape_90" and image_width < image_height and root_width > root_height:
-        rotation = 270
-    elif transform == "landscape_270" and image_width < image_height and root_width > root_height:
-        rotation = 90
+    rotation = screenshot_rotation_for_transform(
+        transform=transform,
+        image_width=image_width,
+        image_height=image_height,
+        root_width=root_width,
+        root_height=root_height,
+    )
     if rotation is None:
         metadata: dict[str, Any] = {
             "transform": transform,
+            "source": transform_source,
             "rotated": False,
             "image_width": image_width,
             "image_height": image_height,
+            "root_width": root_width,
+            "root_height": root_height,
         }
         if orientation_metadata is not None:
             metadata["orientation"] = orientation_metadata
@@ -222,10 +257,13 @@ def normalize_fresh_screenshot_orientation(*, image_path: Path, device_id: str) 
     normalized_width, normalized_height = image_dimensions(magick_bin, image_path)
     metadata = {
         "transform": transform,
+        "source": transform_source,
         "rotation_degrees": rotation,
         "rotated": True,
         "image_width": normalized_width,
         "image_height": normalized_height,
+        "root_width": root_width,
+        "root_height": root_height,
     }
     if orientation_metadata is not None:
         metadata["orientation"] = orientation_metadata

@@ -70,17 +70,56 @@ Before review/merge:
 - Rerun the screenshot-rendering test and write a fresh implemented UI image to `/tmp`.
 - View the implemented image.
 - Run `design-review <reference-image> <implemented-image> [context...]`.
-- The context is mandatory for useful review. State exactly which reference region and implementation region are in scope.
+- The context is mandatory for useful review, but it must be neutral. State what screen/region is being graded, not what verdict the reviewer should return.
+- If the reference image is a composite with multiple pages or concepts, crop to the relevant page/region before running `design-review` whenever practical. If you cannot crop, state exactly which panel/region of the composite is in scope.
 - Explicitly say whether shell, nav, app chrome, global headers, sidebars, breadcrumbs, device frames, and surrounding scaffold are out of scope.
 - If the generated reference includes a custom shell but the task is page-content only, say: `Shell/nav/chrome in the reference is out of scope; grade only the page content surface inside the real Ezra shell.`
 - State unavailable backend/product contracts that should not be required, such as fake rows/actions/results that were only visual placeholders.
-- Tell the reviewer what fidelity target matters, for example pane proportions, table/list density, inspector layout, non-clipping iPad layout, typography, or card rhythm.
-- Include the full `design-review` verdict, score, mismatches, and required fixes in your report.
+- If fake live data is forbidden, say so explicitly. Ask the reviewer to grade locked/skeleton/unavailable/readiness states for geometry, rhythm, hierarchy, and polish rather than requiring populated fake rows/results.
+- Tell the reviewer what neutral fidelity target matters, for example pane proportions, table/list density, inspector layout, non-clipping iPad layout, typography, card rhythm, page grammar, semantic cleanliness, workflow clarity, or shell restraint.
+- Do not tell the reviewer your implementation is better, tasteful, principled, acceptable, close enough, intentionally improved, or already approved.
+- Do not tell the reviewer what defect to find or what score/verdict to return. The prompt may say `Scope: Accounting overview page content inside the existing Ezra shell`; it must not say `Reward this calmer implementation` or `Ignore that the reference is overdone`.
+- Include the full `design-review` verdict, page type classification, content verdict/score, shell verdict/score, full-reference likeness score, semantic cleanliness, slop/dashboardification notes, style drift notes, intelligent divergence, acceptable scope/product deviations, and required fixes in your report.
+- The reviewer returns separate content and shell grades. If your task was page-content only, use the content grade for merge readiness and treat shell grade as diagnostic only. If your task was shell-only, use the shell grade.
 - If `design-review` returns `FAIL`, fix the visual gaps and rerun the implemented screenshot plus `design-review` before requesting merge approval.
 - If you believe a `FAIL` is wrong because the reviewer misunderstood an explicit task boundary, explain that boundary clearly and stop for orchestrator judgment.
 - Report what matches, what intentionally differs, and any remaining design risk.
 
 The goal is high-confidence visual alignment, not pixel-perfect identity.
+
+## Design-Review Prompt Contract
+
+The third argument to `design-review` should be a concise scope contract:
+
+- Name the screen, page, component, or flow.
+- Say whether content, shell, or both are in scope.
+- Identify the exact reference region if the reference is cropped or composite.
+- Identify the exact actual region if the implementation screenshot includes extra surrounding UI.
+- State hard product constraints: no shell changes, no fake live data, unavailable backend behavior, locked/readiness states, or viewport/device target.
+- State neutral review dimensions: product intent, page grammar, workflow clarity, semantic cleanliness, density discipline, visual hierarchy, style drift, shell restraint.
+
+Good examples:
+
+```text
+Scope: Accounting overview page content inside the existing Ezra shell. Shell/nav/chrome are out of scope. Grade product intent, page grammar, pane proportions, table density, semantic cleanliness, visual hierarchy, and non-clipping iPad layout. Fake live QBO data is forbidden; locked/readiness rows should be graded for geometry and polish, not treated as required populated data.
+```
+
+```text
+Scope: Nexus Orion Expansion Initiative overview dashboard, including the visible application shell. Grade dashboard structure, data hierarchy, product identity, semantic cleanliness, style drift, shell restraint, and workflow clarity.
+```
+
+Bad examples:
+
+```text
+This implementation is a principled restraint pass and the reference is overwrought. Reward the actual even though full-reference likeness is lower.
+```
+
+```text
+The only problem is shell mismatch; ignore everything else and pass if the page content seems close.
+```
+
+If you need to explain why you disagree with a review, do it after the review
+returns. Do not preload the reviewer with your conclusion.
 
 ## If Blocked
 

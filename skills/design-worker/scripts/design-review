@@ -9,6 +9,9 @@ Usage:
 Runs an ephemeral Codex visual design review. The first image is the reference;
 the second image is the actual implementation rendering.
 
+The reviewer returns separate content and shell grades. The context must state
+which regions are in scope and whether shell/chrome should be scored.
+
 Set DESIGN_REVIEW_TIMEOUT_SECONDS to override the default 180 second timeout.
 EOF
 }
@@ -40,7 +43,7 @@ if [[ -z "$context" && ! -t 0 ]]; then
   context="$(cat)"
 fi
 if [[ -z "$context" ]]; then
-  context="Scope: page content surface only. Shell, navigation, app chrome, device frame, and surrounding scaffold are out of scope unless they appear inside the content surface. Compare the in-scope reference region to the in-scope implementation rendering and grade visual fidelity for layout, hierarchy, density, typography, spacing, color, surfaces, and non-clipping responsive behavior."
+  context="Scope: page content surface only. Shell, navigation, app chrome, device frame, and surrounding scaffold are out of scope unless they appear inside the content surface. Score content as the merge gate and mark shell not scored. Compare the in-scope reference region to the in-scope implementation rendering for product intent, page grammar, workflow clarity, semantic cleanliness, slop/dashboardification, style drift, layout, hierarchy, density, typography, spacing, color, surfaces, and non-clipping responsive behavior."
 fi
 
 timeout_seconds="${DESIGN_REVIEW_TIMEOUT_SECONDS:-180}"
