@@ -214,6 +214,7 @@ class ThreadItem {
     required this.preview,
     required this.isRunning,
     required this.unreadCount,
+    required this.requirementReview,
   });
 
   final String id;
@@ -223,6 +224,7 @@ class ThreadItem {
   final String preview;
   final bool isRunning;
   final int unreadCount;
+  final RequirementReviewSummary? requirementReview;
 
   factory ThreadItem.fromJson(Map<String, dynamic> json) {
     return ThreadItem(
@@ -233,6 +235,147 @@ class ThreadItem {
       preview: json['preview'] as String? ?? '',
       isRunning: json['isRunning'] as bool? ?? false,
       unreadCount: json['unreadCount'] as int? ?? 0,
+      requirementReview: (json['requirementReview'] as Map<String, dynamic>?) == null
+          ? null
+          : RequirementReviewSummary.fromJson(
+              json['requirementReview'] as Map<String, dynamic>,
+            ),
+    );
+  }
+}
+
+class RequirementReviewSummary {
+  const RequirementReviewSummary({
+    required this.activeRequirementCount,
+    required this.status,
+    required this.reviewerThreadId,
+    required this.parentThreadId,
+    required this.requirementSetId,
+    required this.latestClaimPacket,
+    required this.latestVerdictPacket,
+    required this.passedCount,
+    required this.failedCount,
+    required this.blockedCount,
+    required this.waiverRequiredCount,
+    required this.unknownCount,
+    required this.updatedAt,
+    required this.requirements,
+    required this.verdicts,
+  });
+
+  final int activeRequirementCount;
+  final String? status;
+  final String? reviewerThreadId;
+  final String? parentThreadId;
+  final String? requirementSetId;
+  final Map<String, dynamic>? latestClaimPacket;
+  final Map<String, dynamic>? latestVerdictPacket;
+  final int passedCount;
+  final int failedCount;
+  final int blockedCount;
+  final int waiverRequiredCount;
+  final int unknownCount;
+  final int? updatedAt;
+  final List<RequirementReviewRequirement> requirements;
+  final List<RequirementVerdictSummary> verdicts;
+
+  bool get hasActionableReview =>
+      failedCount > 0 || blockedCount > 0 || waiverRequiredCount > 0;
+
+  String get displayStatus {
+    return switch (status) {
+      'inReview' => 'In review',
+      'passed' => 'Passed',
+      'failed' => 'Failed',
+      'blocked' => 'Blocked',
+      'waiverRequired' => 'Waiver required',
+      _ => activeRequirementCount > 0 ? 'Requirements active' : 'No review',
+    };
+  }
+
+  factory RequirementReviewSummary.fromJson(Map<String, dynamic> json) {
+    return RequirementReviewSummary(
+      activeRequirementCount: json['activeRequirementCount'] as int? ?? 0,
+      status: json['status'] as String?,
+      reviewerThreadId: json['reviewerThreadId'] as String?,
+      parentThreadId: json['parentThreadId'] as String?,
+      requirementSetId: json['requirementSetId'] as String?,
+      latestClaimPacket: json['latestClaimPacket'] as Map<String, dynamic>?,
+      latestVerdictPacket: json['latestVerdictPacket'] as Map<String, dynamic>?,
+      passedCount: json['passedCount'] as int? ?? 0,
+      failedCount: json['failedCount'] as int? ?? 0,
+      blockedCount: json['blockedCount'] as int? ?? 0,
+      waiverRequiredCount: json['waiverRequiredCount'] as int? ?? 0,
+      unknownCount: json['unknownCount'] as int? ?? 0,
+      updatedAt: json['updatedAt'] as int?,
+      requirements: (json['requirements'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(RequirementReviewRequirement.fromJson)
+          .toList(growable: false),
+      verdicts: (json['verdicts'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(RequirementVerdictSummary.fromJson)
+          .toList(growable: false),
+    );
+  }
+}
+
+class RequirementReviewRequirement {
+  const RequirementReviewRequirement({
+    required this.key,
+    required this.statement,
+    required this.severity,
+    required this.verificationMethod,
+  });
+
+  final String key;
+  final String statement;
+  final String severity;
+  final String verificationMethod;
+
+  factory RequirementReviewRequirement.fromJson(Map<String, dynamic> json) {
+    return RequirementReviewRequirement(
+      key: json['key'] as String? ?? '',
+      statement: json['statement'] as String? ?? '',
+      severity: json['severity'] as String? ?? 'medium',
+      verificationMethod: json['verificationMethod'] as String? ?? 'manualEvidence',
+    );
+  }
+}
+
+class RequirementVerdictSummary {
+  const RequirementVerdictSummary({
+    required this.key,
+    required this.verdict,
+    required this.reason,
+    required this.evidenceAssessment,
+    required this.requiredCorrection,
+  });
+
+  final String key;
+  final String? verdict;
+  final String? reason;
+  final String? evidenceAssessment;
+  final String? requiredCorrection;
+
+  String get displayVerdict {
+    return switch (verdict) {
+      'pass' => 'Pass',
+      'fail' => 'Fail',
+      'acceptedBlocked' => 'Blocked',
+      'rejectedBlocked' => 'Rejected blocker',
+      'waiverRequired' => 'Waiver required',
+      _ => 'Pending',
+    };
+  }
+
+  factory RequirementVerdictSummary.fromJson(Map<String, dynamic> json) {
+    return RequirementVerdictSummary(
+      key: json['key'] as String? ?? '',
+      verdict: json['verdict'] as String?,
+      reason: json['reason'] as String?,
+      evidenceAssessment: json['evidenceAssessment'] as String?,
+      requiredCorrection: json['requiredCorrection'] as String?,
     );
   }
 }

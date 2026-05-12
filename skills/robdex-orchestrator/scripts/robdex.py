@@ -336,6 +336,72 @@ def _cmd_list_pending_approvals(thread_id: str) -> None:
     _print_lines(lines)
 
 
+def _cmd_requirements_status(thread_id: str, args: argparse.Namespace) -> None:
+    payload = _request_json(
+        "POST",
+        "/orchestrator/requirements/status",
+        body={
+            "senderThreadId": thread_id,
+            "recipientThreadId": _normalize_text(args.to_thread_id),
+            "recipientName": _normalize_text(args.name),
+            "projectPath": _normalize_path(args.project_path),
+        },
+    )
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    review = payload.get("requirementReview") if isinstance(payload.get("requirementReview"), dict) else {}
+    requirements = payload.get("requirements") if isinstance(payload.get("requirements"), dict) else {}
+    requirement_items = requirements.get("requirements") if isinstance(requirements, dict) else []
+    lines = [
+        f"thread={payload.get('displayName') or payload.get('threadId') or 'unknown'}",
+        f"status={summary.get('status') or review.get('status') or 'notStarted'}",
+        f"active_requirements={summary.get('activeRequirementCount') or 0}",
+        (
+            "counts="
+            f"pass:{summary.get('passedCount') or 0} "
+            f"fail:{summary.get('failedCount') or 0} "
+            f"blocked:{summary.get('blockedCount') or 0} "
+            f"waiver:{summary.get('waiverRequiredCount') or 0} "
+            f"pending:{summary.get('unknownCount') or 0}"
+        ),
+    ]
+    reviewer = _normalize_text(str(summary.get("reviewerThreadId") or review.get("reviewerThreadId") or ""))
+    if reviewer:
+        lines.append(f"reviewer_thread_id={reviewer}")
+    requirement_set = _normalize_text(str(summary.get("requirementSetId") or ""))
+    if requirement_set:
+        lines.append(f"requirement_set_id={requirement_set}")
+    verdicts = summary.get("verdicts") if isinstance(summary.get("verdicts"), list) else []
+    verdict_by_key = {
+        str(item.get("key")): item
+        for item in verdicts
+        if isinstance(item, dict) and _normalize_text(str(item.get("key") or ""))
+    }
+    if isinstance(requirement_items, list) and requirement_items:
+        lines.append("")
+        lines.append("Requirements:")
+        for requirement in requirement_items:
+            if not isinstance(requirement, dict):
+                continue
+            key = _normalize_text(str(requirement.get("key") or "")) or "unknown"
+            statement = _normalize_text(str(requirement.get("statement") or "")) or "(no statement)"
+            severity = _normalize_text(str(requirement.get("severity") or "")) or "medium"
+            verification = _normalize_text(str(requirement.get("verificationMethod") or "")) or "manualEvidence"
+            verdict = verdict_by_key.get(key, {}).get("verdict") or "pending"
+            lines.append(f"- {key}: {verdict} [{severity}; {verification}] {statement}")
+            details = verdict_by_key.get(key, {})
+            for label, field in (
+                ("reason", "reason"),
+                ("evidence", "evidenceAssessment"),
+                ("required_correction", "requiredCorrection"),
+            ):
+                value = _normalize_text(str(details.get(field) or ""))
+                if value:
+                    lines.append(f"  {label}: {value}")
+    else:
+        lines.append("No active requirements.")
+    _print_lines(lines)
+
+
 def _cmd_list_thread_groups(thread_id: str, project_path: str | None) -> None:
     query = {"senderThreadId": thread_id}
     normalized_project = _normalize_path(project_path)
@@ -646,13 +712,30 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     p_meta.add_argument("--unblock-when")
     p_meta.add_argument("--clear-blocked", action="store_true")
 
-    p_req_set = sub.add_parser("set-requirements")
+    p_req_set = sub.add_parser(
+        "set-requirements",
+        help="Attach a requirements JSON file to an agent/thread.",
+        epilog='Example: robdex set-requirements --name "Ezra Worker 1A" --requirements-file /tmp/requirements.json',
+    )
     p_req_set.add_argument("--to-thread-id")
     p_req_set.add_argument("--name")
     p_req_set.add_argument("--project-path")
     p_req_set.add_argument("--requirements-file", required=True)
 
-    p_req_review = sub.add_parser("request-requirements-review")
+    p_req_status = sub.add_parser(
+        "requirements-status",
+        help="Print active requirements and latest claim/review verdict state.",
+        epilog='Example: robdex requirements-status --name "Ezra Worker 1A"',
+    )
+    p_req_status.add_argument("--to-thread-id")
+    p_req_status.add_argument("--name")
+    p_req_status.add_argument("--project-path")
+
+    p_req_review = sub.add_parser(
+        "request-requirements-review",
+        help="Ask a source agent to produce its structured requirements claim packet.",
+        epilog='Example: robdex request-requirements-review --name "Ezra Worker 1A" --note "Review current implementation against the active requirements."',
+    )
     p_req_review.add_argument("--to-thread-id")
     p_req_review.add_argument("--name")
     p_req_review.add_argument("--project-path")
@@ -790,6 +873,8 @@ def main() -> int:
             f"{_quoted(str(payload.get('displayName') or payload.get('threadId') or 'unknown'))} "
             f"| count={payload.get('requirementCount')} enforceOnTurns={payload.get('enforceOnTurns')}"
         )
+    elif args.cmd == "requirements-status":
+        _cmd_requirements_status(thread_id, args)
     elif args.cmd == "request-requirements-review":
         payload = _request_json(
             "POST",

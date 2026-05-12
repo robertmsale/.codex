@@ -313,12 +313,22 @@ async fn reduce_message(
             let Some(snapshot) = event.get("data").cloned() else {
                 return Ok(ReduceOutcome::None);
             };
-            let preserved_messages = current_view
+            let should_preserve_messages = current_view
                 .selection
                 .thread_id
                 .as_ref()
-                .filter(|thread_id| Some(thread_id.as_str()) == selected_thread_id)
-                .map(|_| current_view.chat_entries.clone());
+                .map(|thread_id| Some(thread_id.as_str()) == selected_thread_id)
+                .unwrap_or(false)
+                && current_view.chat_entries.iter().any(|entry| {
+                    entry.is_streaming
+                        || entry
+                            .delivery_state
+                            .as_deref()
+                            .map(|state| state == "pending")
+                            .unwrap_or(false)
+                });
+            let preserved_messages =
+                should_preserve_messages.then(|| current_view.chat_entries.clone());
             let next_view = build_workbench_with_models(
                 snapshot,
                 selected_thread_id,

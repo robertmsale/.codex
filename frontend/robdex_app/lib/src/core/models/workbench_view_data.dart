@@ -14,6 +14,7 @@ class WorkbenchViewData {
     required this.inspectorFacts,
     required this.pendingApprovals,
     required this.workerMetadata,
+    required this.requirementReview,
     required this.statusHeadline,
     required this.statusDetail,
     required this.composerHint,
@@ -31,6 +32,7 @@ class WorkbenchViewData {
   final List<InspectorFact> inspectorFacts;
   final List<PendingApprovalItem> pendingApprovals;
   final WorkerMetadata? workerMetadata;
+  final RequirementReviewSummary? requirementReview;
   final String statusHeadline;
   final String statusDetail;
   final String composerHint;
@@ -66,6 +68,11 @@ class WorkbenchViewData {
           : WorkerMetadata.fromJson(
               json['workerMetadata'] as Map<String, dynamic>,
             ),
+      requirementReview: (json['requirementReview'] as Map<String, dynamic>?) == null
+          ? null
+          : RequirementReviewSummary.fromJson(
+              json['requirementReview'] as Map<String, dynamic>,
+            ),
       statusHeadline: (json['statusHeadline'] as String?) ?? 'Bridge Unknown',
       statusDetail: (json['statusDetail'] as String?) ?? '',
       composerHint: (json['composerHint'] as String?) ?? '',
@@ -85,6 +92,7 @@ class WorkbenchViewData {
     List<InspectorFact>? inspectorFacts,
     List<PendingApprovalItem>? pendingApprovals,
     WorkerMetadata? workerMetadata,
+    RequirementReviewSummary? requirementReview,
     String? statusHeadline,
     String? statusDetail,
     String? composerHint,
@@ -103,6 +111,7 @@ class WorkbenchViewData {
       inspectorFacts: inspectorFacts ?? this.inspectorFacts,
       pendingApprovals: pendingApprovals ?? this.pendingApprovals,
       workerMetadata: workerMetadata ?? this.workerMetadata,
+      requirementReview: requirementReview ?? this.requirementReview,
       statusHeadline: statusHeadline ?? this.statusHeadline,
       statusDetail: statusDetail ?? this.statusDetail,
       composerHint: composerHint ?? this.composerHint,

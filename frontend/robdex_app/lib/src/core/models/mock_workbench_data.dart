@@ -82,6 +82,7 @@ const mockWorkbenchData = WorkbenchViewData(
       preview: 'Bridge stable. Flutter shell scaffold next.',
       isRunning: true,
       unreadCount: 0,
+      requirementReview: null,
     ),
     ThreadItem(
       id: 'approval-smoke',
@@ -91,6 +92,7 @@ const mockWorkbenchData = WorkbenchViewData(
       preview: 'Approval and archive flow recovered.',
       isRunning: false,
       unreadCount: 0,
+      requirementReview: null,
     ),
     ThreadItem(
       id: 'ezra-wave-b',
@@ -100,6 +102,7 @@ const mockWorkbenchData = WorkbenchViewData(
       preview: 'Harness clarity issue tracked.',
       isRunning: false,
       unreadCount: 2,
+      requirementReview: null,
     ),
   ],
   threadGroups: [
@@ -179,6 +182,7 @@ const mockWorkbenchData = WorkbenchViewData(
   liveProcesses: [],
   pendingApprovals: [],
   workerMetadata: null,
+  requirementReview: null,
   statusHeadline: 'Rust-first Robdex shell',
   statusDetail: 'UI regions are now modular. Next step is swapping mock data for live bridge state from shared Rust core.',
   composerHint: 'Composer is intentionally passive for now. The next slice wires commands and session flow through Rust.',

@@ -17,6 +17,7 @@ import '../core/state/workbench_controller.dart';
 import '../core/models/workbench_models.dart';
 import '../features/chat/chat_timeline.dart';
 import '../features/shell/robdex_shell_screen.dart';
+import '../web/dom_mirror/dom_mirror.dart';
 import '../theme/robdex_theme.dart';
 
 class RobdexApp extends StatelessWidget {
@@ -62,6 +63,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   late final AnimationController _spaceController;
   late final Future<FragmentProgram?> _nebulaProgramFuture;
   late final Future<FragmentProgram?> _peripheralProgramFuture;
+  late final DomMirrorController _domMirrorController;
   StreamSubscription<RustSignalPack<HookToastSignal>>? _hookToastSubscription;
   bool _didRequestConnect = false;
   late final TextEditingController _hostController;
@@ -80,6 +82,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     )..repeat();
     _nebulaProgramFuture = _loadNebulaProgram();
     _peripheralProgramFuture = _loadPeripheralProgram();
+    _domMirrorController = DomMirrorController();
     _hostController = TextEditingController(text: '127.0.0.1');
     _portController = TextEditingController(text: '42080');
     _hostFocusNode = FocusNode();
@@ -126,6 +129,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     _persistBridgeSettings();
     _listener.dispose();
     _spaceController.dispose();
+    _domMirrorController.dispose();
     _hookToastSubscription?.cancel();
     _hostFocusNode.dispose();
     _portFocusNode.dispose();
@@ -305,6 +309,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       animation: _controller,
       builder: (context, _) {
         if (_controller.view == null) {
+          _domMirrorController.clear();
           if (kIsWeb) {
             return _WebConnectionScreen(
               errorText: _controller.error?.toString(),
@@ -332,6 +337,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             onGraphicsEnabledChanged: _setGraphicsEnabled,
           );
         }
+        _domMirrorController.update(_controller.view);
         return RobdexShellScreen(
           enableGraphics: _graphicsEnabled,
           workbench: _controller.view!,

@@ -8,6 +8,7 @@ crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
 anyhow = "1"
+js-sys = "0.3.77"
 rinf = "8.10.0"
 robdex-client-core = { path = "../../../../backend/crates/robdex-client-core" }
 robdex-protocol = { path = "../../../../backend/crates/robdex-protocol" }

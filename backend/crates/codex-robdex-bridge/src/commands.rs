@@ -4491,6 +4491,105 @@ pub async fn orchestrator_request_requirements_review(
     }))
 }
 
+pub async fn orchestrator_requirements_status(
+    runtime: &BridgeRuntime,
+    sender_thread_id: &str,
+    recipient_thread_id: Option<&str>,
+    recipient_name: Option<&str>,
+    project_path: Option<&str>,
+) -> Result<Value> {
+    let state = parse_state(&runtime.state_document_value().await);
+    let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
+    let records = all_agent_records(&state, &running);
+    let scoped = scoped_agent_context(&records, sender_thread_id, true)?;
+    let recipient =
+        resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?;
+    for project in state.projects.values() {
+        let Some(agent) = project.agents.get(&recipient.thread_id) else {
+            continue;
+        };
+        let requirements = agent.requirements.clone();
+        let review = agent.requirement_review.clone();
+        let latest_verdict_packet = review
+            .as_ref()
+            .and_then(|binding| binding.latest_verdict_packet.clone());
+        let mut passed_count = 0_u32;
+        let mut failed_count = 0_u32;
+        let mut blocked_count = 0_u32;
+        let mut waiver_required_count = 0_u32;
+        let mut unknown_count = 0_u32;
+        let verdicts = requirements
+            .as_ref()
+            .map(|set| {
+                set.requirements
+                    .iter()
+                    .map(|requirement| {
+                        let verdict = latest_verdict_packet
+                            .as_ref()
+                            .and_then(|packet| packet.get(&requirement.key))
+                            .and_then(|item| item.get("verdict"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        match verdict.as_deref() {
+                            Some("pass") => passed_count += 1,
+                            Some("fail") | Some("rejectedBlocked") => failed_count += 1,
+                            Some("acceptedBlocked") => blocked_count += 1,
+                            Some("waiverRequired") => waiver_required_count += 1,
+                            _ => unknown_count += 1,
+                        }
+                        json!({
+                            "key": requirement.key,
+                            "statement": requirement.statement,
+                            "severity": requirement.severity,
+                            "verificationMethod": requirement.verification_method,
+                            "verdict": verdict,
+                            "reason": latest_verdict_packet
+                                .as_ref()
+                                .and_then(|packet| packet.get(&requirement.key))
+                                .and_then(|item| item.get("reason"))
+                                .and_then(Value::as_str),
+                            "evidenceAssessment": latest_verdict_packet
+                                .as_ref()
+                                .and_then(|packet| packet.get(&requirement.key))
+                                .and_then(|item| item.get("evidenceAssessment"))
+                                .and_then(Value::as_str),
+                            "requiredCorrection": latest_verdict_packet
+                                .as_ref()
+                                .and_then(|packet| packet.get(&requirement.key))
+                                .and_then(|item| item.get("requiredCorrection"))
+                                .and_then(Value::as_str),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        return Ok(json!({
+            "threadId": recipient.thread_id,
+            "displayName": recipient.display_name,
+            "requirements": requirements,
+            "requirementReview": review,
+            "requirementPackets": agent.requirement_packets,
+            "summary": {
+                "activeRequirementCount": requirements.as_ref().map(|set| set.requirements.len()).unwrap_or(0),
+                "status": review.as_ref().map(|binding| binding.status.clone()),
+                "reviewerThreadId": review.as_ref().map(|binding| binding.reviewer_thread_id.clone()),
+                "requirementSetId": review
+                    .as_ref()
+                    .and_then(|binding| binding.requirement_set_id.clone())
+                    .or_else(|| requirements.as_ref().and_then(|set| set.id.clone())),
+                "updatedAt": review.as_ref().map(|binding| binding.updated_at),
+                "passedCount": passed_count,
+                "failedCount": failed_count,
+                "blockedCount": blocked_count,
+                "waiverRequiredCount": waiver_required_count,
+                "unknownCount": unknown_count,
+                "verdicts": verdicts,
+            }
+        }));
+    }
+    bail!("Recipient `{}` is not a tracked agent.", recipient.thread_id)
+}
+
 fn parse_requirement_set_payload(payload: Value) -> Result<RequirementSetState> {
     if payload.get("requirements").is_some() {
         Ok(serde_json::from_value(payload).context("invalid requirement set payload")?)
@@ -5515,6 +5614,66 @@ mod tests {
         assert!(required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
         assert!(required.iter().any(|value| value.as_str() == Some("overallVerdict")));
         assert!(required.iter().any(|value| value.as_str() == Some("route")));
+    }
+
+    fn assert_strict_object_schema(value: &Value) {
+        match value {
+            Value::Object(object) => {
+                if object.get("type").and_then(Value::as_str) == Some("object") {
+                    assert_eq!(
+                        object.get("additionalProperties").and_then(Value::as_bool),
+                        Some(false),
+                        "object schema must set additionalProperties=false: {value}"
+                    );
+                    let properties = object
+                        .get("properties")
+                        .and_then(Value::as_object)
+                        .expect("object schema must define properties");
+                    let required = object
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .expect("object schema must define required");
+                    for key in properties.keys() {
+                        assert!(
+                            required.iter().any(|item| item.as_str() == Some(key.as_str())),
+                            "strict OpenAI schemas require every property to be required: {key}"
+                        );
+                    }
+                }
+                for item in object.values() {
+                    assert_strict_object_schema(item);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    assert_strict_object_schema(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn requirements_schemas_are_strict_openai_shapes() {
+        assert_strict_object_schema(&requirements_claim_schema(&sample_requirement_set()));
+        assert_strict_object_schema(&requirements_verdict_schema(&sample_requirement_set()));
+    }
+
+    #[test]
+    fn writes_requirements_schema_validation_fixtures() {
+        let fixture_dir = std::path::PathBuf::from("/tmp/robdex-requirements-schema-validation");
+        std::fs::create_dir_all(&fixture_dir).expect("create requirements schema fixture dir");
+        let set = sample_requirement_set();
+        std::fs::write(
+            fixture_dir.join("claim.schema.json"),
+            serde_json::to_string_pretty(&requirements_claim_schema(&set)).expect("serialize claim schema"),
+        )
+        .expect("write claim schema fixture");
+        std::fs::write(
+            fixture_dir.join("verdict.schema.json"),
+            serde_json::to_string_pretty(&requirements_verdict_schema(&set)).expect("serialize verdict schema"),
+        )
+        .expect("write verdict schema fixture");
     }
 
     fn scoped_ids(scoped: &ScopedContext) -> Vec<&str> {

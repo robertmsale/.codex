@@ -245,6 +245,10 @@ class _ThreadTile extends StatelessWidget {
                 const _PendingApprovalBadge(),
                 const SizedBox(width: 6),
               ],
+              if (thread.requirementReview != null) ...[
+                _RequirementReviewBadge(summary: thread.requirementReview!),
+                const SizedBox(width: 6),
+              ],
               _RoleBadge(role: thread.role),
               if (thread.unreadCount > 0) ...[
                 const SizedBox(width: 6),
@@ -295,6 +299,46 @@ class _SemanticIconButton extends StatelessWidget {
           tooltip: tooltip,
           icon: icon,
           visualDensity: visualDensity,
+        ),
+      ),
+    );
+  }
+}
+
+class _RequirementReviewBadge extends StatelessWidget {
+  const _RequirementReviewBadge({required this.summary});
+
+  final RequirementReviewSummary summary;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final (color, icon) = switch (summary.status) {
+      'passed' => (Colors.green.shade700, Icons.check_rounded),
+      'failed' => (theme.colorScheme.error, Icons.close_rounded),
+      'blocked' => (Colors.amber.shade800, Icons.warning_amber_rounded),
+      'waiverRequired' => (Colors.deepOrange.shade700, Icons.policy_outlined),
+      'inReview' => (theme.colorScheme.secondary, Icons.rate_review_outlined),
+      _ => (theme.colorScheme.tertiary, Icons.rule_outlined),
+    };
+    return Semantics(
+      key: ValueKey('semantic.thread.requirements.${summary.status ?? 'active'}'),
+      container: true,
+      label: 'Requirements review ${summary.displayStatus}',
+      child: ExcludeSemantics(
+        child: Tooltip(
+          message: 'Requirements: ${summary.displayStatus}',
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: color.withValues(alpha: 0.38)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Icon(icon, size: 12, color: color),
+            ),
+          ),
         ),
       ),
     );

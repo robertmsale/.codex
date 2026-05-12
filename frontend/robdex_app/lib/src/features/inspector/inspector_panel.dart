@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../../core/models/workbench_models.dart';
 
@@ -9,6 +12,9 @@ class InspectorPanel extends StatelessWidget {
     required this.availableModels,
     required this.threadGroups,
     required this.workerMetadata,
+    required this.requirementReview,
+    required this.bridgeBaseUri,
+    required this.onOpenThread,
     required this.onSettingsChanged,
     required this.onRunningStateChanged,
     required this.onRenameThread,
@@ -26,6 +32,9 @@ class InspectorPanel extends StatelessWidget {
   final List<ModelItem> availableModels;
   final List<ThreadGroupItem> threadGroups;
   final WorkerMetadata? workerMetadata;
+  final RequirementReviewSummary? requirementReview;
+  final Uri? bridgeBaseUri;
+  final ValueChanged<String> onOpenThread;
   final ValueChanged<ThreadSettingsDraft> onSettingsChanged;
   final ValueChanged<bool> onRunningStateChanged;
   final ValueChanged<String> onRenameThread;
@@ -81,12 +90,359 @@ class InspectorPanel extends StatelessWidget {
                   onUpdateWorkerMetadata: onUpdateWorkerMetadata,
                 ),
               ],
+              if (selection.threadId != null) ...[
+                const SizedBox(height: 10),
+                _RequirementsReviewCard(
+                  summary: requirementReview,
+                  sourceThreadId: selection.threadId,
+                  bridgeBaseUri: bridgeBaseUri,
+                  onOpenThread: onOpenThread,
+                ),
+              ],
             ],
           ),
         ),
       ],
     );
   }
+}
+
+class _RequirementsReviewCard extends StatelessWidget {
+  const _RequirementsReviewCard({
+    required this.summary,
+    required this.sourceThreadId,
+    required this.bridgeBaseUri,
+    required this.onOpenThread,
+  });
+
+  final RequirementReviewSummary? summary;
+  final String? sourceThreadId;
+  final Uri? bridgeBaseUri;
+  final ValueChanged<String> onOpenThread;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final summary = this.summary;
+    final reviewerThreadId = summary?.reviewerThreadId;
+    final hasActiveRequirements = (summary?.activeRequirementCount ?? 0) > 0;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: theme.colorScheme.outline)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Requirements',
+              style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            if (summary == null)
+              Text(
+                'No active requirements are attached to this thread.',
+                style: theme.textTheme.labelSmall,
+              )
+            else ...[
+              _ReviewFact(label: 'Status', value: summary.displayStatus),
+              if (summary.requirementSetId != null)
+                _ReviewFact(label: 'Requirement set', value: summary.requirementSetId!),
+              if (summary.updatedAt != null)
+                _ReviewFact(label: 'Last updated', value: _formatTimestamp(summary.updatedAt!)),
+              _ReviewFact(
+                label: 'Verdicts',
+                value:
+                    '${summary.passedCount} passed · ${summary.failedCount} failed · ${summary.blockedCount} blocked',
+              ),
+            ],
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: sourceThreadId == null || bridgeBaseUri == null
+                  ? null
+                  : () => _setRequirements(context),
+              icon: const Icon(Icons.rule_folder_outlined, size: 16),
+              label: Text(hasActiveRequirements ? 'Replace requirements' : 'Set requirements'),
+            ),
+            const SizedBox(height: 6),
+            if (reviewerThreadId != null && reviewerThreadId.isNotEmpty)
+              OutlinedButton.icon(
+                onPressed: () => onOpenThread(reviewerThreadId),
+                icon: const Icon(Icons.rate_review_outlined, size: 16),
+                label: const Text('Open review thread'),
+              ),
+            if (hasActiveRequirements) ...[
+              const SizedBox(height: 6),
+              OutlinedButton.icon(
+                onPressed: sourceThreadId == null || bridgeBaseUri == null
+                    ? null
+                    : () => _requestReview(context),
+                icon: const Icon(Icons.outgoing_mail, size: 16),
+                label: const Text('Request review'),
+              ),
+            ],
+            const SizedBox(height: 8),
+            if (summary == null)
+              const SizedBox.shrink()
+            else if (summary.verdicts.isEmpty)
+              Text(
+                'No reviewer verdict packet yet.',
+                style: theme.textTheme.labelSmall,
+              )
+            else
+              ...summary.verdicts.map((verdict) {
+                final color = switch (verdict.verdict) {
+                  'pass' => Colors.green.shade700,
+                  'fail' || 'rejectedBlocked' => theme.colorScheme.error,
+                  'acceptedBlocked' => Colors.amber.shade800,
+                  'waiverRequired' => Colors.deepOrange.shade700,
+                  _ => theme.colorScheme.onSurface.withValues(alpha: 0.62),
+                };
+                final icon = switch (verdict.verdict) {
+                  'pass' => Icons.check_rounded,
+                  'fail' || 'rejectedBlocked' => Icons.close_rounded,
+                  'acceptedBlocked' => Icons.warning_amber_rounded,
+                  'waiverRequired' => Icons.policy_outlined,
+                  _ => Icons.more_horiz,
+                };
+                final hasDetails = verdict.reason != null ||
+                    verdict.evidenceAssessment != null ||
+                    verdict.requiredCorrection != null;
+                return ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: const EdgeInsets.only(left: 24, right: 4, bottom: 8),
+                  leading: Icon(icon, size: 16, color: color),
+                  title: Text(
+                    verdict.key,
+                    style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: Text(
+                    verdict.displayVerdict,
+                    style: theme.textTheme.labelSmall?.copyWith(color: color),
+                  ),
+                  enabled: hasDetails,
+                  children: [
+                    if (verdict.reason != null)
+                      _ReviewDetail(label: 'Reason', value: verdict.reason!),
+                    if (verdict.evidenceAssessment != null)
+                      _ReviewDetail(
+                        label: 'Evidence',
+                        value: verdict.evidenceAssessment!,
+                      ),
+                    if (verdict.requiredCorrection != null)
+                      _ReviewDetail(
+                        label: 'Required correction',
+                        value: verdict.requiredCorrection!,
+                      ),
+                  ],
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _setRequirements(BuildContext context) async {
+    final sourceId = sourceThreadId;
+    final baseUri = bridgeBaseUri;
+    if (sourceId == null || baseUri == null) {
+      return;
+    }
+    final initialJson = const JsonEncoder.withIndent('  ').convert({
+      'active': true,
+      'enforceOnTurns': true,
+      'requirements': [
+        {
+          'key': 'replaceWithSemanticRequirementKey',
+          'statement': 'Replace this with the exact requirement.',
+          'severity': 'blocker',
+          'verificationMethod': 'manualEvidence',
+        }
+      ],
+    });
+    final controller = TextEditingController(text: initialJson);
+    final submitted = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Set Requirements'),
+        content: SizedBox(
+          width: 560,
+          child: TextField(
+            controller: controller,
+            minLines: 12,
+            maxLines: 22,
+            decoration: const InputDecoration(
+              labelText: 'RequirementSet JSON',
+              alignLabelWithHint: true,
+            ),
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('Set'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (submitted == null || submitted.trim().isEmpty) {
+      return;
+    }
+    Object decoded;
+    try {
+      decoded = jsonDecode(submitted);
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Invalid requirements JSON: $error')),
+      );
+      return;
+    }
+    try {
+      final response = await http.post(
+        baseUri.resolve('/orchestrator/requirements/set'),
+        headers: const {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'senderThreadId': sourceId,
+          'recipientThreadId': sourceId,
+          'requirementSet': decoded,
+        }),
+      );
+      if (!context.mounted) {
+        return;
+      }
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Requirements set.')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Set requirements failed: ${response.body}')),
+        );
+      }
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Set requirements failed: $error')),
+      );
+    }
+  }
+
+  Future<void> _requestReview(BuildContext context) async {
+    final sourceId = sourceThreadId;
+    final baseUri = bridgeBaseUri;
+    if (sourceId == null || baseUri == null) {
+      return;
+    }
+    try {
+      final response = await http.post(
+        baseUri.resolve('/orchestrator/requirements/request-review'),
+        headers: const {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'senderThreadId': sourceId,
+          'recipientThreadId': sourceId,
+        }),
+      );
+      if (!context.mounted) {
+        return;
+      }
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Requirements review requested.')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Review request failed: ${response.body}')),
+        );
+      }
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Review request failed: $error')),
+      );
+    }
+  }
+}
+
+class _ReviewFact extends StatelessWidget {
+  const _ReviewFact({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 105,
+            child: Text(label, style: theme.textTheme.labelSmall),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReviewDetail extends StatelessWidget {
+  const _ReviewDetail({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 2),
+          SelectableText(value, style: theme.textTheme.bodySmall),
+        ],
+      ),
+    );
+  }
+}
+
+String _formatTimestamp(int seconds) {
+  final time = DateTime.fromMillisecondsSinceEpoch(seconds * 1000).toLocal();
+  final hour = time.hour == 0 ? 12 : time.hour > 12 ? time.hour - 12 : time.hour;
+  final minute = time.minute.toString().padLeft(2, '0');
+  final suffix = time.hour >= 12 ? 'PM' : 'AM';
+  return '$hour:$minute $suffix';
 }
 
 class ThreadSettingsDraft {

@@ -290,6 +290,8 @@ class _WideShellState extends State<_WideShell> {
                   onMore: () => _showInspectorDialog(
                     context,
                     workbench: workbench,
+                    onThreadSelected: widget.onThreadSelected,
+                    bridgeBaseUri: widget.bridgeBaseUri,
                     onApprovalDecision: widget.onApprovalDecision,
                     onSettingsChanged: widget.onSettingsChanged,
                     onRunningStateChanged: widget.onRunningStateChanged,
@@ -748,6 +750,8 @@ class _CompactShellState extends State<_CompactShell> {
               onPressed: () => _showInspectorSheet(
                 context,
                 workbench: widget.workbench,
+                onThreadSelected: widget.onThreadSelected,
+                bridgeBaseUri: widget.bridgeBaseUri,
                 onApprovalDecision: widget.onApprovalDecision,
                 onSettingsChanged: widget.onSettingsChanged,
                 onRunningStateChanged: widget.onRunningStateChanged,
@@ -1731,6 +1735,8 @@ Future<String?> _promptDeclineMessage(BuildContext context) async {
 Future<void> _showInspectorDialog(
   BuildContext context, {
   required WorkbenchViewData workbench,
+  required ValueChanged<String> onThreadSelected,
+  required Uri? bridgeBaseUri,
   required Future<void> Function(PendingApprovalItem approval, String decision, String? message)
       onApprovalDecision,
   required ValueChanged<ThreadSettingsDraft> onSettingsChanged,
@@ -1759,6 +1765,9 @@ Future<void> _showInspectorDialog(
             availableModels: workbench.availableModels,
             threadGroups: workbench.threadGroups,
             workerMetadata: workbench.workerMetadata,
+            requirementReview: workbench.requirementReview,
+            bridgeBaseUri: bridgeBaseUri,
+            onOpenThread: onThreadSelected,
             onSettingsChanged: onSettingsChanged,
             onRunningStateChanged: onRunningStateChanged,
             onRenameThread: onRenameThread,
@@ -1780,6 +1789,8 @@ Future<void> _showInspectorDialog(
 Future<void> _showInspectorSheet(
   BuildContext context, {
   required WorkbenchViewData workbench,
+  required ValueChanged<String> onThreadSelected,
+  required Uri? bridgeBaseUri,
   required Future<void> Function(PendingApprovalItem approval, String decision, String? message)
       onApprovalDecision,
   required ValueChanged<ThreadSettingsDraft> onSettingsChanged,
@@ -1808,6 +1819,9 @@ Future<void> _showInspectorSheet(
             availableModels: workbench.availableModels,
             threadGroups: workbench.threadGroups,
             workerMetadata: workbench.workerMetadata,
+            requirementReview: workbench.requirementReview,
+            bridgeBaseUri: bridgeBaseUri,
+            onOpenThread: onThreadSelected,
             onSettingsChanged: onSettingsChanged,
             onRunningStateChanged: onRunningStateChanged,
             onRenameThread: onRenameThread,

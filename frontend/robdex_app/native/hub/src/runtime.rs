@@ -1,7 +1,7 @@
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
 use robdex_client_core::{bridge::BridgeEndpoint, LiveSessionEvent, LiveSessionHandle, WorkbenchClient, start_live_session};
@@ -269,17 +269,31 @@ fn current_view_clone(current_view: &Option<WorkbenchViewData>) -> Result<Workbe
 }
 
 fn unix_now_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_millis())
-        .unwrap_or_default()
+    #[cfg(target_arch = "wasm32")]
+    {
+        return js_sys::Date::now() as u128;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_millis())
+            .unwrap_or_default()
+    }
 }
 
 fn unix_now_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_secs())
-        .unwrap_or_default()
+    #[cfg(target_arch = "wasm32")]
+    {
+        return (js_sys::Date::now() / 1000.0) as u64;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_secs())
+            .unwrap_or_default()
+    }
 }
 
 async fn recv_live_event(

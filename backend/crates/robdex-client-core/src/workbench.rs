@@ -5,8 +5,9 @@ use serde_json::{Value, json};
 
 use robdex_protocol::{
     UiChatEntry, UiInspectorFact, UiLiveProcessItem, UiModelItem, UiPendingApprovalItem,
-    UiProjectItem, UiThreadGroupItem, UiThreadItem, UiWorkerMetadata, UiWorkspaceFile,
-    UiWorkspaceSelection, WorkbenchViewData,
+    UiProjectItem, UiRequirementReviewRequirement, UiRequirementReviewSummary,
+    UiRequirementVerdictSummary, UiThreadGroupItem, UiThreadItem, UiWorkerMetadata,
+    UiWorkspaceFile, UiWorkspaceSelection, WorkbenchViewData,
 };
 
 use crate::{
@@ -647,7 +648,8 @@ pub async fn build_workbench_with_models(
     let selected_project_id = selected_project_id(&snapshot);
     let running_ids = running_thread_ids(&snapshot);
     let project_records = extract_project_records(&snapshot);
-    let thread_records = extract_thread_records(&snapshot);
+    let visible_thread_records = extract_thread_records(&snapshot);
+    let selectable_thread_records = extract_thread_records_including_hidden(&snapshot);
 
     let projects = project_records
         .iter()
@@ -677,7 +679,7 @@ pub async fn build_workbench_with_models(
         })
         .collect::<Vec<_>>();
 
-    let threads = thread_records
+    let threads = visible_thread_records
         .iter()
         .map(|record| UiThreadItem {
             id: record.id.clone(),
@@ -687,14 +689,15 @@ pub async fn build_workbench_with_models(
             preview: record.preview.clone(),
             is_running: running_ids.contains(&record.id),
             unread_count: 0,
+            requirement_review: record.requirement_review.clone(),
         })
         .collect::<Vec<_>>();
 
     let selected = selected_thread_id
-        .and_then(|thread_id| thread_records.iter().find(|record| record.id == thread_id))
+        .and_then(|thread_id| selectable_thread_records.iter().find(|record| record.id == thread_id))
         .or_else(|| {
             if selected_thread_id.is_some() {
-                thread_records.first()
+                visible_thread_records.first()
             } else {
                 None
             }
@@ -783,7 +786,7 @@ pub async fn build_workbench_with_models(
                 selected_project(&snapshot, selected_project_id.as_deref())
                     .and_then(|project| project.orchestrator_thread_id)
                     .and_then(|thread_id| {
-                        thread_records
+                        selectable_thread_records
                             .iter()
                             .find(|record| record.id == thread_id)
                             .map(|record| record.display_name.clone())
@@ -879,10 +882,11 @@ pub async fn build_workbench_with_models(
         inspector_facts,
         pending_approvals: extract_pending_approvals(&snapshot),
         worker_metadata: selected.and_then(worker_metadata_from_record),
+        requirement_review: selected.and_then(|record| record.requirement_review.clone()),
         status_headline: format!("Bridge {}", capitalize(connection_status)),
         status_detail: format!(
             "{} visible threads across {} projects. Selected history loads on demand from the live bridge.",
-            thread_records.len(),
+            visible_thread_records.len(),
             project_records.len()
         ),
         composer_hint: String::new(),
@@ -1093,6 +1097,7 @@ struct ThreadRecord {
     blocked_reason: Option<String>,
     unblock_when: Option<String>,
     live_processes: Vec<UiLiveProcessItem>,
+    requirement_review: Option<UiRequirementReviewSummary>,
     preview: String,
 }
 
@@ -1130,6 +1135,14 @@ struct GlobalDefaults {
 }
 
 fn extract_thread_records(snapshot: &Value) -> Vec<ThreadRecord> {
+    extract_thread_records_with_options(snapshot, false)
+}
+
+fn extract_thread_records_including_hidden(snapshot: &Value) -> Vec<ThreadRecord> {
+    extract_thread_records_with_options(snapshot, true)
+}
+
+fn extract_thread_records_with_options(snapshot: &Value, include_hidden_from_peer_list: bool) -> Vec<ThreadRecord> {
     let mut records = Vec::new();
     let Some(projects) = snapshot
         .get("state")
@@ -1177,7 +1190,7 @@ fn extract_thread_records(snapshot: &Value) -> Vec<ThreadRecord> {
                 .and_then(Value::as_bool)
                 == Some(true);
             let role = agent.get("role").and_then(Value::as_str).unwrap_or("worker");
-            if archived || hidden_from_peer_list {
+            if archived || (!include_hidden_from_peer_list && hidden_from_peer_list) {
                 continue;
             }
             let cwd = agent
@@ -1225,6 +1238,7 @@ fn extract_thread_records(snapshot: &Value) -> Vec<ThreadRecord> {
                     .and_then(Value::as_str)
                     .map(str::to_string),
                 live_processes: snapshot_live_processes(snapshot, thread_id),
+                requirement_review: requirement_review_summary(agent),
                 preview: format!("{} · {}", role.to_uppercase(), cwd),
             });
         }
@@ -1257,6 +1271,132 @@ fn snapshot_live_processes(snapshot: &Value, thread_id: &str) -> Vec<UiLiveProce
         .and_then(Value::as_array)
         .map(|items| parse_live_process_items(items))
         .unwrap_or_default()
+}
+
+fn requirement_review_summary(agent: &serde_json::Map<String, Value>) -> Option<UiRequirementReviewSummary> {
+    let requirements_set = agent.get("requirements").and_then(Value::as_object);
+    let active_requirements = requirements_set
+        .and_then(|set| set.get("requirements"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_object)
+                .filter_map(|requirement| {
+                    let key = requirement.get("key").and_then(Value::as_str)?.to_string();
+                    Some(UiRequirementReviewRequirement {
+                        key,
+                        statement: requirement
+                            .get("statement")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        severity: requirement
+                            .get("severity")
+                            .and_then(Value::as_str)
+                            .unwrap_or("medium")
+                            .to_string(),
+                        verification_method: requirement
+                            .get("verificationMethod")
+                            .and_then(Value::as_str)
+                            .unwrap_or("manualEvidence")
+                            .to_string(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let review = agent.get("requirementReview").and_then(Value::as_object);
+    let parent_thread_id = agent
+        .get("parentThreadId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if active_requirements.is_empty() && review.is_none() && parent_thread_id.is_none() {
+        return None;
+    }
+
+    let latest_verdict_packet = review
+        .and_then(|review| review.get("latestVerdictPacket"))
+        .cloned();
+    let latest_claim_packet = review
+        .and_then(|review| review.get("latestClaimPacket"))
+        .cloned();
+    let mut passed_count = 0;
+    let mut failed_count = 0;
+    let mut blocked_count = 0;
+    let mut waiver_required_count = 0;
+    let mut unknown_count = 0;
+    let verdicts = active_requirements
+        .iter()
+        .map(|requirement| {
+            let verdict_object = latest_verdict_packet
+                .as_ref()
+                .and_then(|packet| packet.get(&requirement.key))
+                .and_then(Value::as_object);
+            let verdict = verdict_object
+                .and_then(|item| item.get("verdict"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            match verdict.as_deref() {
+                Some("pass") => passed_count += 1,
+                Some("fail") | Some("rejectedBlocked") => failed_count += 1,
+                Some("acceptedBlocked") => blocked_count += 1,
+                Some("waiverRequired") => waiver_required_count += 1,
+                _ => unknown_count += 1,
+            }
+            UiRequirementVerdictSummary {
+                key: requirement.key.clone(),
+                verdict,
+                reason: verdict_object
+                    .and_then(|item| item.get("reason"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                evidence_assessment: verdict_object
+                    .and_then(|item| item.get("evidenceAssessment"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                required_correction: verdict_object
+                    .and_then(|item| item.get("requiredCorrection"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Some(UiRequirementReviewSummary {
+        active_requirement_count: active_requirements.len(),
+        status: review
+            .and_then(|review| review.get("status"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        reviewer_thread_id: review
+            .and_then(|review| review.get("reviewerThreadId"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        parent_thread_id,
+        requirement_set_id: review
+            .and_then(|review| review.get("requirementSetId"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                requirements_set
+                    .and_then(|set| set.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
+        latest_claim_packet,
+        latest_verdict_packet,
+        passed_count,
+        failed_count,
+        blocked_count,
+        waiver_required_count,
+        unknown_count,
+        updated_at: review
+            .and_then(|review| review.get("updatedAt"))
+            .and_then(Value::as_u64),
+        requirements: active_requirements,
+        verdicts,
+    })
 }
 
 pub fn parse_live_process_items(items: &[Value]) -> Vec<UiLiveProcessItem> {
@@ -1616,6 +1756,83 @@ fn extract_pending_approvals(snapshot: &Value) -> Vec<UiPendingApprovalItem> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidden_review_threads_are_filtered_but_selectable() {
+        let snapshot = json!({
+            "state": {
+                "projects": {
+                    "p1": {
+                        "id": "p1",
+                        "name": "Project",
+                        "projectRoot": "/tmp/project",
+                        "agents": {
+                            "source": {
+                                "displayName": "Source",
+                                "role": "worker",
+                                "cwd": "/tmp/project/source"
+                            },
+                            "reviewer": {
+                                "displayName": "Requirements Reviewer",
+                                "role": "requirementsReviewer",
+                                "cwd": "/tmp/project",
+                                "parentThreadId": "source",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let visible = extract_thread_records(&snapshot);
+        let all = extract_thread_records_including_hidden(&snapshot);
+        assert_eq!(visible.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(), vec!["source"]);
+        assert!(all.iter().any(|record| record.id == "reviewer"));
+        assert_eq!(
+            all.iter()
+                .find(|record| record.id == "reviewer")
+                .and_then(|record| record.requirement_review.as_ref())
+                .and_then(|summary| summary.parent_thread_id.as_deref()),
+            Some("source")
+        );
+    }
+
+    #[test]
+    fn requirement_review_summary_counts_latest_verdict_packet() {
+        let agent = json!({
+            "requirements": {
+                "id": "reqs",
+                "requirements": [
+                    {"key": "nativeGuiIsSourceOfTruth", "statement": "Mirror native.", "severity": "blocker", "verificationMethod": "screenshotReview"},
+                    {"key": "buildAndTypecheckPass", "statement": "Build passes.", "severity": "high", "verificationMethod": "commandOutput"},
+                    {"key": "externalCredential", "statement": "Needs credential.", "severity": "high", "verificationMethod": "manualEvidence"}
+                ]
+            },
+            "requirementReview": {
+                "status": "failed",
+                "reviewerThreadId": "reviewer",
+                "requirementSetId": "reqs",
+                "updatedAt": 123,
+                "latestVerdictPacket": {
+                    "nativeGuiIsSourceOfTruth": {"verdict": "pass", "reason": "Matched."},
+                    "buildAndTypecheckPass": {"verdict": "fail", "reason": "No check output."},
+                    "externalCredential": {"verdict": "acceptedBlocked", "reason": "Secret missing."}
+                }
+            }
+        });
+        let summary = requirement_review_summary(agent.as_object().unwrap()).unwrap();
+        assert_eq!(summary.active_requirement_count, 3);
+        assert_eq!(summary.passed_count, 1);
+        assert_eq!(summary.failed_count, 1);
+        assert_eq!(summary.blocked_count, 1);
+        assert_eq!(summary.unknown_count, 0);
+        assert_eq!(summary.reviewer_thread_id.as_deref(), Some("reviewer"));
+    }
 }
 
 fn author_for_role(role: Option<&str>) -> String {

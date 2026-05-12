@@ -207,6 +207,46 @@ pub struct UiThreadItem {
     pub preview: String,
     pub is_running: bool,
     pub unread_count: u32,
+    pub requirement_review: Option<UiRequirementReviewSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiRequirementReviewSummary {
+    pub active_requirement_count: usize,
+    pub status: Option<String>,
+    pub reviewer_thread_id: Option<String>,
+    pub parent_thread_id: Option<String>,
+    pub requirement_set_id: Option<String>,
+    pub latest_claim_packet: Option<Value>,
+    pub latest_verdict_packet: Option<Value>,
+    pub passed_count: u32,
+    pub failed_count: u32,
+    pub blocked_count: u32,
+    pub waiver_required_count: u32,
+    pub unknown_count: u32,
+    pub updated_at: Option<u64>,
+    pub requirements: Vec<UiRequirementReviewRequirement>,
+    pub verdicts: Vec<UiRequirementVerdictSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiRequirementReviewRequirement {
+    pub key: String,
+    pub statement: String,
+    pub severity: String,
+    pub verification_method: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiRequirementVerdictSummary {
+    pub key: String,
+    pub verdict: Option<String>,
+    pub reason: Option<String>,
+    pub evidence_assessment: Option<String>,
+    pub required_correction: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -309,6 +349,7 @@ pub struct WorkbenchViewData {
     pub inspector_facts: Vec<UiInspectorFact>,
     pub pending_approvals: Vec<UiPendingApprovalItem>,
     pub worker_metadata: Option<UiWorkerMetadata>,
+    pub requirement_review: Option<UiRequirementReviewSummary>,
     pub status_headline: String,
     pub status_detail: String,
     pub composer_hint: String,
