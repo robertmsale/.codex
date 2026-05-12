@@ -28,6 +28,8 @@ version.json
 .system/
 build/
 target/
+frontend/robdex_web/dist/
+frontend/robdex_web/node_modules/
 __pycache__/
 *.pyc
 *.pyo

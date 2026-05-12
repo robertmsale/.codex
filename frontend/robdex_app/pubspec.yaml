@@ -43,6 +43,7 @@ dependencies:
   desktop_drop: ^0.7.1
   file_selector: ^1.0.3
   screen_capturer: ^0.2.3
+  webview_flutter: ^4.13.1
 
 dev_dependencies:
   flutter_test:

@@ -1,8 +1,13 @@
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, sleep};
+use tokio::time::sleep;
+
+#[cfg(target_arch = "wasm32")]
+use gloo_net::websocket::{Message, futures::WebSocket};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{
@@ -59,6 +64,7 @@ pub fn start_live_session(
     (LiveSessionHandle { command_tx }, event_rx)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn run_live_session(
     mut current_view: WorkbenchViewData,
     endpoint: BridgeEndpoint,
@@ -173,6 +179,116 @@ async fn run_live_session(
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+async fn run_live_session(
+    mut current_view: WorkbenchViewData,
+    endpoint: BridgeEndpoint,
+    mut command_rx: mpsc::UnboundedReceiver<LiveSessionCommand>,
+    event_tx: mpsc::UnboundedSender<LiveSessionEvent>,
+) {
+    let mut selected_thread_id = current_view.selection.thread_id.clone();
+
+    loop {
+        let ws_url = match endpoint.workbench_ws_url() {
+            Ok(url) => url,
+            Err(error) => {
+                let _ = event_tx.send(LiveSessionEvent::Error(error.to_string()));
+                sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+
+        match WebSocket::open(ws_url.as_str()) {
+            Ok(socket) => {
+                let (mut write, mut read) = socket.split();
+
+                if send_json(&mut write, &json!({"type":"hello","payload":{}})).await.is_err() {
+                    let _ = event_tx.send(LiveSessionEvent::Error("Failed to send hello".to_string()));
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+                if let Some(thread_id) = selected_thread_id.clone() {
+                    if send_thread_selection(&mut write, &thread_id).await.is_err() {
+                        let _ = event_tx.send(LiveSessionEvent::Error("Failed to send thread selection".to_string()));
+                    }
+                }
+
+                loop {
+                    tokio::select! {
+                        maybe_command = command_rx.recv() => {
+                            let Some(command) = maybe_command else {
+                                return;
+                            };
+                            match command {
+                                LiveSessionCommand::SelectThread(thread_id) => {
+                                    if selected_thread_id == thread_id {
+                                        current_view.selection.thread_id = thread_id;
+                                        continue;
+                                    }
+                                    selected_thread_id = thread_id.clone();
+                                    current_view.selection.thread_id = thread_id.clone();
+                                    if let Some(thread_id) = thread_id {
+                                        if send_thread_selection(&mut write, &thread_id).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                LiveSessionCommand::SyncView(view) => {
+                                    let next_thread_id = view.selection.thread_id.clone();
+                                    let selection_changed = selected_thread_id != next_thread_id;
+                                    selected_thread_id = view.selection.thread_id.clone();
+                                    current_view = view;
+                                    if selection_changed && let Some(thread_id) = selected_thread_id.clone() {
+                                        if send_thread_selection(&mut write, &thread_id).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        maybe_message = read.next() => {
+                            let Some(message_result) = maybe_message else {
+                                break;
+                            };
+                            let Ok(message) = message_result else {
+                                break;
+                            };
+                            match message {
+                                Message::Text(text) => {
+                                    match reduce_message(
+                                        &text,
+                                        &current_view,
+                                        selected_thread_id.as_deref(),
+                                        &endpoint,
+                                    ).await {
+                                        Ok(ReduceOutcome::View(next_view)) => {
+                                            current_view = next_view.clone();
+                                            let _ = event_tx.send(LiveSessionEvent::View(next_view));
+                                        }
+                                        Ok(ReduceOutcome::HookFailure(notice)) => {
+                                            let _ = event_tx.send(LiveSessionEvent::HookFailure(notice));
+                                        }
+                                        Ok(ReduceOutcome::None) => {}
+                                        Err(error) => {
+                                            let _ = event_tx.send(LiveSessionEvent::Error(error.to_string()));
+                                        }
+                                    }
+                                }
+                                Message::Bytes(_) => {}
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                let _ = event_tx.send(LiveSessionEvent::Error(error.to_string()));
+            }
+        }
+
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
 async fn reduce_message(
     text: &str,
     current_view: &WorkbenchViewData,
@@ -263,6 +379,7 @@ async fn reduce_message(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn send_json(
     write: &mut futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream<
@@ -276,6 +393,16 @@ async fn send_json(
     Ok(())
 }
 
+#[cfg(target_arch = "wasm32")]
+async fn send_json(
+    write: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    value: &Value,
+) -> Result<()> {
+    write.send(Message::Text(value.to_string())).await?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 async fn send_thread_selection(
     write: &mut futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream<
@@ -283,6 +410,29 @@ async fn send_thread_selection(
         >,
         Message,
     >,
+    thread_id: &str,
+) -> Result<()> {
+    send_json(
+        write,
+        &json!({
+            "type": "command",
+            "payload": {
+                "id": format!("thread-select-{thread_id}"),
+                "command": {
+                    "name": "threadSelectionSet",
+                    "payload": {
+                        "threadId": thread_id,
+                    }
+                }
+            }
+        }),
+    )
+    .await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn send_thread_selection(
+    write: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     thread_id: &str,
 ) -> Result<()> {
     send_json(

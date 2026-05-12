@@ -9,10 +9,16 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 futures-util.workspace = true
-reqwest.workspace = true
 robdex-protocol = { path = "../robdex-protocol" }
 serde.workspace = true
 serde_json.workspace = true
+url.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
-url.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = { version = "0.6", features = ["http", "websocket"] }
+tokio = { package = "tokio_with_wasm", version = "0.8.5", features = ["rt", "sync", "time", "macros"] }

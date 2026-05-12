@@ -82,7 +82,7 @@ class RobdexShellScreen extends StatelessWidget {
         child: SafeArea(
           child: Stack(
             children: [
-              if (enableGraphics && !isIOS)
+              if (enableGraphics && !isIOS && !kIsWeb)
                 const Positioned.fill(child: _ShellNebulaBackdrop()),
               LayoutBuilder(
                 builder: (context, constraints) {
@@ -690,13 +690,21 @@ class _CompactShellState extends State<_CompactShell> {
         pendingApprovals: widget.workbench.pendingApprovals,
         onApprovalDecision: widget.onApprovalDecision,
       ),
-      leading: IconButton(
-        icon: const Icon(Icons.arrow_back),
-        onPressed: () {
-          setState(() {
-            _showThread = false;
-          });
-        },
+      leading: Semantics(
+        key: const ValueKey('semantic.thread.backToThreads'),
+        container: true,
+        button: true,
+        label: 'Back to thread list',
+        child: ExcludeSemantics(
+          child: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () {
+              setState(() {
+                _showThread = false;
+              });
+            },
+          ),
+        ),
       ),
       headerControls: Align(
         alignment: Alignment.centerRight,
@@ -707,15 +715,31 @@ class _CompactShellState extends State<_CompactShell> {
               liveProcesses: widget.workbench.liveProcesses,
               onTerminateCommandExecution: widget.onTerminateCommandExecution,
             ),
-            IconButton(
-              onPressed: widget.onOpenHistory,
-              tooltip: 'History',
-              icon: const Icon(Icons.history),
+            Semantics(
+              key: const ValueKey('semantic.thread.history'),
+              container: true,
+              button: true,
+              label: 'Open thread history',
+              child: ExcludeSemantics(
+                child: IconButton(
+                  onPressed: widget.onOpenHistory,
+                  tooltip: 'History',
+                  icon: const Icon(Icons.history),
+                ),
+              ),
             ),
-            IconButton(
-              icon: const Icon(Icons.compress_rounded),
-              tooltip: 'Compact thread',
-              onPressed: widget.onCompactThread,
+            Semantics(
+              key: const ValueKey('semantic.thread.compact'),
+              container: true,
+              button: true,
+              label: 'Compact selected thread',
+              child: ExcludeSemantics(
+                child: IconButton(
+                  icon: const Icon(Icons.compress_rounded),
+                  tooltip: 'Compact thread',
+                  onPressed: widget.onCompactThread,
+                ),
+              ),
             ),
             _HeaderIconButton(
               tooltip: 'Thread settings',
@@ -762,38 +786,49 @@ class _HeaderIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        IconButton(
-          onPressed: onPressed,
-          tooltip: tooltip,
-          icon: icon,
-        ),
-        if (badgeCount > 0)
-          Positioned(
-            right: 2,
-            top: 2,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.error,
-                borderRadius: BorderRadius.circular(999),
-              ),
-              constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
-              child: Center(
-                child: Text(
-                  '$badgeCount',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onError,
-                    fontSize: 9,
-                    fontWeight: FontWeight.w700,
+    final semanticId = tooltip.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '.');
+    return Semantics(
+      key: ValueKey('semantic.headerButton.$semanticId'),
+      container: true,
+      button: true,
+      enabled: onPressed != null,
+      label: tooltip,
+      value: badgeCount > 0 ? '$badgeCount pending item${badgeCount == 1 ? '' : 's'}' : null,
+      child: ExcludeSemantics(
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            IconButton(
+              onPressed: onPressed,
+              tooltip: tooltip,
+              icon: icon,
+            ),
+            if (badgeCount > 0)
+              Positioned(
+                right: 2,
+                top: 2,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.error,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                  child: Center(
+                    child: Text(
+                      '$badgeCount',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onError,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
-      ],
+          ],
+        ),
+      ),
     );
   }
 }
@@ -923,10 +958,19 @@ class _DesktopThreadControls extends StatelessWidget {
           effectiveValue: selection.effectiveNetworkAccess,
           onChanged: (value) => onSettingsChanged(draft(networkAccessMode: value)),
         ),
-        IconButton.outlined(
-          onPressed: enabled ? () => onRunningStateChanged(!selection.isRunning) : null,
-          tooltip: selection.isRunning ? 'Mark idle' : 'Mark running',
-          icon: Icon(selection.isRunning ? Icons.pause_circle_outline : Icons.play_arrow),
+        Semantics(
+          key: const ValueKey('semantic.thread.runningToggle'),
+          container: true,
+          button: true,
+          enabled: enabled,
+          label: selection.isRunning ? 'Mark selected thread idle' : 'Mark selected thread running',
+          child: ExcludeSemantics(
+            child: IconButton.outlined(
+              onPressed: enabled ? () => onRunningStateChanged(!selection.isRunning) : null,
+              tooltip: selection.isRunning ? 'Mark idle' : 'Mark running',
+              icon: Icon(selection.isRunning ? Icons.pause_circle_outline : Icons.play_arrow),
+            ),
+          ),
         ),
         _CompactDropdown(
           width: 144,
@@ -945,20 +989,38 @@ class _DesktopThreadControls extends StatelessWidget {
           ],
           onChanged: (value) => onSettingsChanged(draft(approvalPolicy: value)),
         ),
-        IconButton(
-          onPressed: enabled ? onOpenHistory : null,
-          tooltip: 'History',
-          icon: const Icon(Icons.history),
+        Semantics(
+          key: const ValueKey('semantic.thread.history'),
+          container: true,
+          button: true,
+          enabled: enabled,
+          label: 'Open thread history',
+          child: ExcludeSemantics(
+            child: IconButton(
+              onPressed: enabled ? onOpenHistory : null,
+              tooltip: 'History',
+              icon: const Icon(Icons.history),
+            ),
+          ),
         ),
         _ProcessManagerButton(
           liveProcesses: liveProcesses,
           onTerminateCommandExecution: onTerminateCommandExecution,
           enabled: enabled,
         ),
-        IconButton.outlined(
-          onPressed: enabled ? onCompactThread : null,
-          tooltip: 'Compact thread',
-          icon: const Icon(Icons.compress_rounded),
+        Semantics(
+          key: const ValueKey('semantic.thread.compact'),
+          container: true,
+          button: true,
+          enabled: enabled,
+          label: 'Compact selected thread',
+          child: ExcludeSemantics(
+            child: IconButton.outlined(
+              onPressed: enabled ? onCompactThread : null,
+              tooltip: 'Compact thread',
+              icon: const Icon(Icons.compress_rounded),
+            ),
+          ),
         ),
         _HeaderIconButton(
           tooltip: 'Thread settings',
@@ -1066,11 +1128,19 @@ Future<void> _showProcessManagerSheet(
                             ),
                           ),
                           const SizedBox(width: 12),
-                          IconButton.outlined(
-                            onPressed: () => onTerminateCommandExecution(process.processId),
-                            tooltip: 'Terminate process',
-                            icon: const Icon(Icons.stop_circle_outlined),
-                            color: theme.colorScheme.error,
+                          Semantics(
+                            key: ValueKey('semantic.process.terminate.${process.processId}'),
+                            container: true,
+                            button: true,
+                            label: 'Terminate process ${process.processId}',
+                            child: ExcludeSemantics(
+                              child: IconButton.outlined(
+                                onPressed: () => onTerminateCommandExecution(process.processId),
+                                tooltip: 'Terminate process',
+                                icon: const Icon(Icons.stop_circle_outlined),
+                                color: theme.colorScheme.error,
+                              ),
+                            ),
                           ),
                         ],
                       );
@@ -1210,44 +1280,54 @@ class _ReasoningControl extends StatelessWidget {
   Widget build(BuildContext context) {
     final tone = overridden ? Colors.green.shade600 : Colors.amber.shade700;
     final level = _levelFor(effectiveValue);
-    return PopupMenuButton<String>(
+    return Semantics(
+      key: const ValueKey('semantic.thread.reasoningDropdown'),
+      container: true,
+      button: true,
       enabled: enabled,
-      tooltip: '',
-      onSelected: onSelected,
-      itemBuilder: (context) => [
-        PopupMenuItem(
-          value: '',
-          child: Row(
-            children: [
-              _ReasoningGlyph(level: _levelFor(effectiveValue), color: Colors.amber.shade700),
-              const SizedBox(width: 8),
-              const Text('System'),
-            ],
-          ),
-        ),
-        for (final option in [('low', 'Low'), ('medium', 'Medium'), ('high', 'High')])
-          PopupMenuItem(
-            value: option.$1,
+      label: 'Reasoning effort',
+      value: effectiveValue ?? 'system default',
+      child: ExcludeSemantics(
+        child: PopupMenuButton<String>(
+          enabled: enabled,
+          tooltip: '',
+          onSelected: onSelected,
+          itemBuilder: (context) => [
+            PopupMenuItem(
+              value: '',
+              child: Row(
+                children: [
+                  _ReasoningGlyph(level: _levelFor(effectiveValue), color: Colors.amber.shade700),
+                  const SizedBox(width: 8),
+                  const Text('System'),
+                ],
+              ),
+            ),
+            for (final option in [('low', 'Low'), ('medium', 'Medium'), ('high', 'High')])
+              PopupMenuItem(
+                value: option.$1,
+                child: Row(
+                  children: [
+                    _ReasoningGlyph(level: _levelFor(option.$1), color: Colors.green.shade600),
+                    const SizedBox(width: 8),
+                    Text(option.$2),
+                  ],
+                ),
+              ),
+          ],
+          child: _VisualSettingFrame(
+            tooltip: overridden ? 'Reasoning override' : 'Reasoning inherited',
+            enabled: enabled,
+            overridden: overridden,
             child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                _ReasoningGlyph(level: _levelFor(option.$1), color: Colors.green.shade600),
-                const SizedBox(width: 8),
-                Text(option.$2),
+                _ReasoningGlyph(level: level, color: tone),
+                const SizedBox(width: 4),
+                Icon(Icons.arrow_drop_down_rounded, size: 16, color: tone),
               ],
             ),
           ),
-      ],
-      child: _VisualSettingFrame(
-        tooltip: overridden ? 'Reasoning override' : 'Reasoning inherited',
-        enabled: enabled,
-        overridden: overridden,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _ReasoningGlyph(level: level, color: tone),
-            const SizedBox(width: 4),
-            Icon(Icons.arrow_drop_down_rounded, size: 16, color: tone),
-          ],
         ),
       ),
     );
@@ -1271,26 +1351,36 @@ class _TierControl extends StatelessWidget {
   Widget build(BuildContext context) {
     final tone = overridden ? Colors.green.shade600 : Colors.amber.shade700;
     final isFast = effectiveValue?.trim().toLowerCase() == 'fast';
-    return PopupMenuButton<String>(
+    return Semantics(
+      key: const ValueKey('semantic.thread.serviceTierDropdown'),
+      container: true,
+      button: true,
       enabled: enabled,
-      tooltip: '',
-      onSelected: onSelected,
-      itemBuilder: (context) => [
-        const PopupMenuItem(value: '', child: Text('System')),
-        const PopupMenuItem(value: 'fast', child: Text('⚡ Fast')),
-        const PopupMenuItem(value: 'flex', child: Text('🐢 Flex')),
-      ],
-      child: _VisualSettingFrame(
-        tooltip: overridden ? 'Tier override' : 'Tier inherited',
-        enabled: enabled,
-        overridden: overridden,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(isFast ? '⚡' : '🐢', style: const TextStyle(fontSize: 16)),
-            const SizedBox(width: 2),
-            Icon(Icons.arrow_drop_down_rounded, size: 16, color: tone),
+      label: 'Service tier',
+      value: effectiveValue ?? 'system default',
+      child: ExcludeSemantics(
+        child: PopupMenuButton<String>(
+          enabled: enabled,
+          tooltip: '',
+          onSelected: onSelected,
+          itemBuilder: (context) => [
+            const PopupMenuItem(value: '', child: Text('System')),
+            const PopupMenuItem(value: 'fast', child: Text('Fast')),
+            const PopupMenuItem(value: 'flex', child: Text('Flex')),
           ],
+          child: _VisualSettingFrame(
+            tooltip: overridden ? 'Tier override' : 'Tier inherited',
+            enabled: enabled,
+            overridden: overridden,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(isFast ? '⚡' : '🐢', style: const TextStyle(fontSize: 16)),
+                const SizedBox(width: 2),
+                Icon(Icons.arrow_drop_down_rounded, size: 16, color: tone),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1325,27 +1415,37 @@ class _SandboxControl extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tone = overridden ? Colors.green.shade600 : Colors.amber.shade700;
-    return PopupMenuButton<String>(
+    return Semantics(
+      key: const ValueKey('semantic.thread.sandboxDropdown'),
+      container: true,
+      button: true,
       enabled: enabled,
-      tooltip: '',
-      onSelected: onSelected,
-      itemBuilder: (context) => [
-        PopupMenuItem(value: '', child: Text('System ${_emojiFor(effectiveValue)}')),
-        const PopupMenuItem(value: 'read-only', child: Text('👼 Read-only')),
-        const PopupMenuItem(value: 'workspace-write', child: Text('👷 Workspace')),
-        const PopupMenuItem(value: 'danger-full-access', child: Text('😈 Danger')),
-      ],
-      child: _VisualSettingFrame(
-        tooltip: overridden ? 'Sandbox override' : 'Sandbox inherited',
-        enabled: enabled,
-        overridden: overridden,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(_emojiFor(effectiveValue), style: const TextStyle(fontSize: 16)),
-            const SizedBox(width: 2),
-            Icon(Icons.arrow_drop_down_rounded, size: 16, color: tone),
+      label: 'Sandbox mode',
+      value: effectiveValue ?? 'system default',
+      child: ExcludeSemantics(
+        child: PopupMenuButton<String>(
+          enabled: enabled,
+          tooltip: '',
+          onSelected: onSelected,
+          itemBuilder: (context) => [
+            PopupMenuItem(value: '', child: Text('System ${_emojiFor(effectiveValue)}')),
+            const PopupMenuItem(value: 'read-only', child: Text('Read-only')),
+            const PopupMenuItem(value: 'workspace-write', child: Text('Workspace')),
+            const PopupMenuItem(value: 'danger-full-access', child: Text('Danger')),
           ],
+          child: _VisualSettingFrame(
+            tooltip: overridden ? 'Sandbox override' : 'Sandbox inherited',
+            enabled: enabled,
+            overridden: overridden,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(_emojiFor(effectiveValue), style: const TextStyle(fontSize: 16)),
+                const SizedBox(width: 2),
+                Icon(Icons.arrow_drop_down_rounded, size: 16, color: tone),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1368,22 +1468,32 @@ class _NetworkControl extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isOn = effectiveValue ?? false;
-    return _VisualSettingFrame(
-      tooltip: overridden
-          ? 'Network override'
-          : 'Network inherited (long-press to restore default after toggle)',
+    return Semantics(
+      key: const ValueKey('semantic.thread.networkToggle'),
+      container: true,
+      button: true,
       enabled: enabled,
-      overridden: overridden,
-      onTap: () => onChanged(isOn ? 'disabled' : 'enabled'),
-      onLongPress: () => onChanged('default'),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            isOn ? Icons.wifi_rounded : Icons.wifi_off_rounded,
-            size: 16,
+      label: 'Network access',
+      value: isOn ? 'enabled' : 'disabled',
+      child: ExcludeSemantics(
+        child: _VisualSettingFrame(
+          tooltip: overridden
+              ? 'Network override'
+              : 'Network inherited (long-press to restore default after toggle)',
+          enabled: enabled,
+          overridden: overridden,
+          onTap: () => onChanged(isOn ? 'disabled' : 'enabled'),
+          onLongPress: () => onChanged('default'),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isOn ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+                size: 16,
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -1410,33 +1520,43 @@ class _CompactDropdown extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final safeValue = items.any((item) => item.value == value) ? value : items.first.value ?? '';
-    return SizedBox(
-      width: width,
-      child: InputDecorator(
-        decoration: InputDecoration(
-          labelText: label,
-          isDense: true,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        ),
-        child: DropdownButtonHideUnderline(
-          child: DropdownButton<String>(
-            value: safeValue,
-            isDense: true,
-            isExpanded: true,
-            style: theme.textTheme.labelSmall?.copyWith(
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
-              color: theme.colorScheme.onSurface,
+    return Semantics(
+      key: ValueKey('semantic.thread.${label.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '.')}Dropdown'),
+      container: true,
+      button: true,
+      enabled: enabled,
+      label: label,
+      value: safeValue.isEmpty ? 'system default' : safeValue,
+      child: ExcludeSemantics(
+        child: SizedBox(
+          width: width,
+          child: InputDecorator(
+            decoration: InputDecoration(
+              labelText: label,
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             ),
-            menuMaxHeight: 320,
-            items: items,
-            onChanged: enabled
-                ? (value) {
-                    if (value != null) {
-                      onChanged(value);
-                    }
-                  }
-                : null,
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: safeValue,
+                isDense: true,
+                isExpanded: true,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: theme.colorScheme.onSurface,
+                ),
+                menuMaxHeight: 320,
+                items: items,
+                onChanged: enabled
+                    ? (value) {
+                        if (value != null) {
+                          onChanged(value);
+                        }
+                      }
+                    : null,
+              ),
+            ),
           ),
         ),
       ),

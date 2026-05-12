@@ -1,4 +1,7 @@
-use std::{path::Path as FsPath, sync::Arc};
+use std::{
+    path::{Path as FsPath, PathBuf},
+    sync::Arc,
+};
 
 use axum::{
     Json, Router,
@@ -16,6 +19,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::error;
 
 use crate::{
@@ -66,6 +70,7 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/mcp/refresh", post(mcp_refresh_http))
         .route("/threads/{thread_id}/messages", post(thread_message_create_http))
         .route("/uploads/images", post(image_upload_http))
+        .route("/uploads/images/instant", post(image_upload_http))
         .route("/images/thumbnail", get(image_thumbnail_http))
         .route("/images/image", get(image_file_http))
         .route("/threads/messages", get(thread_messages))
@@ -90,7 +95,15 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/orchestrator/approval-decision", post(orchestrator_approval_decision_route))
         .route("/ws", get(ws_upgrade))
         .route("/workbench/ws", get(workbench_ws_upgrade))
+        .fallback_service(ServeDir::new(web_build_dir()).not_found_service(ServeFile::new(
+            web_build_dir().join("index.html"),
+        )))
         .with_state(runtime)
+}
+
+fn web_build_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../frontend/robdex_web/dist")
 }
 
 async fn healthz() -> impl IntoResponse {
@@ -1578,7 +1591,7 @@ enum WorkbenchOutboundEnvelope {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "camelCase")]
 enum InboundEnvelope {
-    Hello(()),
+    Hello(Value),
     Command(InboundCommand),
 }
 
@@ -1753,7 +1766,8 @@ async fn handle_incoming_message(
         Message::Text(text) => {
             let envelope = serde_json::from_str::<InboundEnvelope>(&text).map_err(|_| ())?;
             match envelope {
-                InboundEnvelope::Hello(_) => {
+                InboundEnvelope::Hello(payload) => {
+                    drop(payload);
                     send_envelope(sender, OutboundEnvelope::HelloAck(make_hello_ack(runtime).await))
                         .await
                         .map_err(|_| ())?;
@@ -1806,6 +1820,7 @@ async fn handle_command(
                 .map_err(|_| ())?;
             }
         }
+        return Ok(());
     }
     let outcome = match execute_bridge_command(runtime, &command.command.name, command.command.payload.clone()).await {
         Ok(outcome) => outcome,
@@ -1842,7 +1857,8 @@ async fn handle_workbench_incoming_message(
         Message::Text(text) => {
             let envelope = serde_json::from_str::<InboundEnvelope>(&text).map_err(|_| ())?;
             match envelope {
-                InboundEnvelope::Hello(_) => {
+                InboundEnvelope::Hello(payload) => {
+                    drop(payload);
                     send_workbench_envelope(
                         sender,
                         WorkbenchOutboundEnvelope::HelloAck(make_hello_ack(runtime).await),
@@ -1898,6 +1914,7 @@ async fn handle_workbench_command(
                 .map_err(|_| ())?;
             }
         }
+        return Ok(());
     }
 
     let outcome = match execute_bridge_command(runtime, &command.command.name, command.command.payload.clone()).await {

@@ -71,12 +71,16 @@ class ThreadListPanel extends StatelessWidget {
                 ),
               ),
               const Spacer(),
-              IconButton(
+              _SemanticIconButton(
+                id: 'semantic.sidebar.newProject',
+                label: 'Create new project',
                 onPressed: onCreateProject,
                 tooltip: 'New project',
                 icon: const Icon(Icons.create_new_folder_outlined, size: 16),
               ),
-              IconButton(
+              _SemanticIconButton(
+                id: 'semantic.sidebar.disconnect',
+                label: 'Disconnect from bridge',
                 onPressed: onDisconnect,
                 tooltip: 'Disconnect',
                 icon: const Icon(Icons.link_off, size: 18),
@@ -149,13 +153,17 @@ class _ProjectSection extends StatelessWidget {
                 ),
               ),
             ),
-            IconButton(
+            _SemanticIconButton(
+              id: 'semantic.project.settings.${project.id}',
+              label: 'Project settings for ${project.name}',
               onPressed: onProjectSettings,
               tooltip: 'Project settings for ${project.name}',
               icon: const Icon(Icons.settings_outlined, size: 15),
               visualDensity: VisualDensity.compact,
             ),
-            IconButton(
+            _SemanticIconButton(
+              id: 'semantic.project.createThread.${project.id}',
+              label: 'Create thread in ${project.name}',
               onPressed: onCreateThread,
               tooltip: 'Create thread in ${project.name}',
               icon: const Icon(Icons.add, size: 15),
@@ -256,19 +264,63 @@ class _ThreadTile extends StatelessWidget {
   }
 }
 
+class _SemanticIconButton extends StatelessWidget {
+  const _SemanticIconButton({
+    required this.id,
+    required this.label,
+    required this.onPressed,
+    required this.tooltip,
+    required this.icon,
+    this.visualDensity,
+  });
+
+  final String id;
+  final String label;
+  final VoidCallback? onPressed;
+  final String tooltip;
+  final Widget icon;
+  final VisualDensity? visualDensity;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      key: ValueKey(id),
+      container: true,
+      button: true,
+      enabled: onPressed != null,
+      label: label,
+      child: ExcludeSemantics(
+        child: IconButton(
+          onPressed: onPressed,
+          tooltip: tooltip,
+          icon: icon,
+          visualDensity: visualDensity,
+        ),
+      ),
+    );
+  }
+}
+
 class _PendingApprovalBadge extends StatelessWidget {
   const _PendingApprovalBadge();
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: 'Pending approval',
-      child: Container(
-        width: 8,
-        height: 8,
-        decoration: BoxDecoration(
-          color: Colors.amber.shade700,
-          shape: BoxShape.circle,
+    return Semantics(
+      key: const ValueKey('semantic.thread.pendingApprovalBadge'),
+      container: true,
+      label: 'Thread has a pending approval request',
+      child: ExcludeSemantics(
+        child: Tooltip(
+          message: 'Pending approval',
+          child: Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: Colors.amber.shade700,
+              shape: BoxShape.circle,
+            ),
+          ),
         ),
       ),
     );
@@ -283,20 +335,27 @@ class _RunningBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = Colors.green.shade700;
-    return Tooltip(
-      message: 'Running',
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: color.withValues(alpha: 0.45)),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(5),
-          child: Icon(
-            Icons.bolt_rounded,
-            size: 11,
-            color: color,
+    return Semantics(
+      key: const ValueKey('semantic.thread.runningBadge'),
+      container: true,
+      label: 'Thread is marked running',
+      child: ExcludeSemantics(
+        child: Tooltip(
+          message: 'Running',
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: color.withValues(alpha: 0.45)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(5),
+              child: Icon(
+                Icons.bolt_rounded,
+                size: 11,
+                color: color,
+              ),
+            ),
           ),
         ),
       ),
@@ -351,16 +410,23 @@ class _RoleBadge extends StatelessWidget {
         ),
     };
 
-    return Tooltip(
-      message: tooltip,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: background,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(4),
-          child: Icon(icon, size: 12, color: foreground),
+    return Semantics(
+      key: ValueKey('semantic.thread.roleBadge.$role'),
+      container: true,
+      label: 'Thread role: $tooltip',
+      child: ExcludeSemantics(
+        child: Tooltip(
+          message: tooltip,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: background,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Icon(icon, size: 12, color: foreground),
+            ),
+          ),
         ),
       ),
     );

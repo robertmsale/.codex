@@ -1,5 +1,6 @@
-use anyhow::{Result, anyhow};
-use reqwest::Client;
+#[cfg(not(target_arch = "wasm32"))]
+use anyhow::anyhow;
+use anyhow::Result;
 use serde_json::{Value, json};
 
 use robdex_protocol::{
@@ -8,12 +9,17 @@ use robdex_protocol::{
     UiWorkspaceSelection, WorkbenchViewData,
 };
 
-use crate::bridge::BridgeEndpoint;
+use crate::{
+    bridge::BridgeEndpoint,
+    net::{HttpClient, delete as http_delete, get_json, http_client, post_empty, post_json},
+};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::net::post_bytes;
 
 #[derive(Debug, Clone)]
 pub struct WorkbenchClient {
     endpoint: BridgeEndpoint,
-    client: Client,
+    client: HttpClient,
     selected_thread_id: Option<String>,
     available_models: Option<Vec<UiModelItem>>,
 }
@@ -26,7 +32,7 @@ impl WorkbenchClient {
     pub fn new(endpoint: BridgeEndpoint) -> Self {
         Self {
             endpoint,
-            client: Client::new(),
+            client: http_client(),
             selected_thread_id: None,
             available_models: None,
         }
@@ -76,35 +82,31 @@ impl WorkbenchClient {
         root_path: String,
         default_cwd: String,
     ) -> Result<()> {
-        self.client
-            .post(self.endpoint.http_base.join("/projects")?)
-            .json(&json!({
+        post_json(&self.client, self.endpoint.http_base.join("/projects")?, json!({
                 "name": name,
                 "rootPath": root_path,
                 "defaultCWD": default_cwd,
             }))
-            .send()
-            .await?
-            .error_for_status()?;
+            .await?;
         Ok(())
     }
 
     pub async fn select_project(&mut self, project_id: Option<String>) -> Result<()> {
-        self.client
-            .post(self.endpoint.http_base.join("/projects/select")?)
-            .json(&json!({ "projectId": project_id }))
-            .send()
-            .await?
-            .error_for_status()?;
+        post_json(
+            &self.client,
+            self.endpoint.http_base.join("/projects/select")?,
+            json!({ "projectId": project_id }),
+        )
+        .await?;
         Ok(())
     }
 
     pub async fn delete_project(&mut self, project_id: String) -> Result<()> {
-        self.client
-            .delete(self.endpoint.http_base.join(&format!("/projects/{project_id}"))?)
-            .send()
-            .await?
-            .error_for_status()?;
+        http_delete(
+            &self.client,
+            self.endpoint.http_base.join(&format!("/projects/{project_id}"))?,
+        )
+        .await?;
         Ok(())
     }
 
@@ -131,9 +133,7 @@ impl WorkbenchClient {
         operator_developer_instructions: Option<String>,
         hidden_developer_instructions: Option<String>,
     ) -> Result<()> {
-        self.client
-            .post(self.endpoint.http_base.join(&format!("/projects/{project_id}"))?)
-            .json(&json!({
+        post_json(&self.client, self.endpoint.http_base.join(&format!("/projects/{project_id}"))?, json!({
                 "name": name,
                 "defaultCWD": default_cwd,
                 "autoRouteReplies": auto_route_replies,
@@ -166,9 +166,7 @@ impl WorkbenchClient {
                     "hidden": hidden_developer_instructions,
                 }
             }))
-            .send()
-            .await?
-            .error_for_status()?;
+            .await?;
         Ok(())
     }
 
@@ -184,10 +182,7 @@ impl WorkbenchClient {
         model_id: Option<String>,
         reasoning_effort: Option<String>,
     ) -> Result<()> {
-        let payload = self
-            .client
-            .post(self.endpoint.http_base.join("/threads")?)
-            .json(&json!({
+        let payload = post_json(&self.client, self.endpoint.http_base.join("/threads")?, json!({
                 "projectId": project_id,
                 "title": title,
                 "initialPrompt": initial_prompt,
@@ -198,10 +193,6 @@ impl WorkbenchClient {
                 "modelID": model_id,
                 "reasoningEffort": reasoning_effort,
             }))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
             .await?;
         self.selected_thread_id = payload.get("threadId").and_then(Value::as_str).map(str::to_string);
         Ok(())
@@ -217,19 +208,12 @@ impl WorkbenchClient {
             .selected_thread_id
             .clone()
             .ok_or_else(|| anyhow::anyhow!("No orchestrator thread selected"))?;
-        let payload = self
-            .client
-            .post(self.endpoint.http_base.join("/orchestrator/spawn-agent")?)
-            .json(&json!({
+        let payload = post_json(&self.client, self.endpoint.http_base.join("/orchestrator/spawn-agent")?, json!({
                 "senderThreadId": sender_thread_id,
                 "name": name,
                 "role": role,
                 "prompt": prompt,
             }))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
             .await?;
         let thread_id = payload
             .get("agent")
@@ -247,15 +231,11 @@ impl WorkbenchClient {
         project_path: &str,
         thread_id: &str,
     ) -> Result<()> {
-        self.client
-            .post(self.endpoint.http_base.join(&format!("/projects/{project_id}/orchestrator"))?)
-            .json(&json!({
+        post_json(&self.client, self.endpoint.http_base.join(&format!("/projects/{project_id}/orchestrator"))?, json!({
                 "threadId": thread_id,
                 "projectPath": project_path,
             }))
-            .send()
-            .await?
-            .error_for_status()?;
+            .await?;
         Ok(())
     }
 
@@ -266,17 +246,13 @@ impl WorkbenchClient {
         title: &str,
         seed_thread_id: Option<&str>,
     ) -> Result<()> {
-        self.client
-            .post(self.endpoint.http_base.join("/orchestrator/thread-groups/create")?)
-            .json(&json!({
+        post_json(&self.client, self.endpoint.http_base.join("/orchestrator/thread-groups/create")?, json!({
                 "senderThreadId": sender_thread_id,
                 "projectPath": project_path,
                 "title": title,
                 "seedThreadId": seed_thread_id,
             }))
-            .send()
-            .await?
-            .error_for_status()?;
+            .await?;
         Ok(())
     }
 
@@ -288,18 +264,14 @@ impl WorkbenchClient {
         title: Option<&str>,
         collapsed: Option<bool>,
     ) -> Result<()> {
-        self.client
-            .post(self.endpoint.http_base.join("/orchestrator/thread-groups/update")?)
-            .json(&json!({
+        post_json(&self.client, self.endpoint.http_base.join("/orchestrator/thread-groups/update")?, json!({
                 "senderThreadId": sender_thread_id,
                 "projectPath": project_path,
                 "groupId": group_id,
                 "title": title,
                 "collapsed": collapsed,
             }))
-            .send()
-            .await?
-            .error_for_status()?;
+            .await?;
         Ok(())
     }
 
@@ -310,17 +282,13 @@ impl WorkbenchClient {
         thread_id: &str,
         target_group_id: Option<&str>,
     ) -> Result<()> {
-        self.client
-            .post(self.endpoint.http_base.join("/orchestrator/thread-groups/move-thread")?)
-            .json(&json!({
+        post_json(&self.client, self.endpoint.http_base.join("/orchestrator/thread-groups/move-thread")?, json!({
                 "senderThreadId": sender_thread_id,
                 "projectPath": project_path,
                 "threadId": thread_id,
                 "targetGroupId": target_group_id,
             }))
-            .send()
-            .await?
-            .error_for_status()?;
+            .await?;
         Ok(())
     }
 
@@ -330,16 +298,12 @@ impl WorkbenchClient {
         project_path: &str,
         group_id: &str,
     ) -> Result<()> {
-        self.client
-            .post(self.endpoint.http_base.join("/orchestrator/thread-groups/delete")?)
-            .json(&json!({
+        post_json(&self.client, self.endpoint.http_base.join("/orchestrator/thread-groups/delete")?, json!({
                 "senderThreadId": sender_thread_id,
                 "projectPath": project_path,
                 "groupId": group_id,
             }))
-            .send()
-            .await?
-            .error_for_status()?;
+            .await?;
         Ok(())
     }
 
@@ -349,16 +313,12 @@ impl WorkbenchClient {
         project_path: &str,
         group_id: &str,
     ) -> Result<()> {
-        self.client
-            .post(self.endpoint.http_base.join("/orchestrator/thread-groups/archive")?)
-            .json(&json!({
+        post_json(&self.client, self.endpoint.http_base.join("/orchestrator/thread-groups/archive")?, json!({
                 "senderThreadId": sender_thread_id,
                 "projectPath": project_path,
                 "groupId": group_id,
             }))
-            .send()
-            .await?
-            .error_for_status()?;
+            .await?;
         Ok(())
     }
 
@@ -373,9 +333,7 @@ impl WorkbenchClient {
         unblock_when: Option<&str>,
         clear_blocked: bool,
     ) -> Result<()> {
-        self.client
-            .post(self.endpoint.http_base.join("/orchestrator/worker-metadata")?)
-            .json(&json!({
+        post_json(&self.client, self.endpoint.http_base.join("/orchestrator/worker-metadata")?, json!({
                 "senderThreadId": sender_thread_id,
                 "recipientThreadId": recipient_thread_id,
                 "projectPath": project_path,
@@ -387,9 +345,7 @@ impl WorkbenchClient {
                 "unblockWhen": unblock_when,
                 "clearBlocked": clear_blocked,
             }))
-            .send()
-            .await?
-            .error_for_status()?;
+            .await?;
         Ok(())
     }
 
@@ -400,19 +356,12 @@ impl WorkbenchClient {
         project_path: &str,
         prompt: &str,
     ) -> Result<WorkbenchViewData> {
-        let payload = self
-            .client
-            .post(self.endpoint.http_base.join("/orchestrator/warm-handoff")?)
-            .json(&json!({
+        let payload = post_json(&self.client, self.endpoint.http_base.join("/orchestrator/warm-handoff")?, json!({
                 "senderThreadId": sender_thread_id,
                 "recipientThreadId": recipient_thread_id,
                 "projectPath": project_path,
                 "prompt": prompt,
             }))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
             .await?;
         let replacement_thread_id = payload
             .get("replacementThreadId")
@@ -431,26 +380,29 @@ impl WorkbenchClient {
         text: &str,
         local_image_paths: &[String],
     ) -> Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        let uploaded_paths = local_image_paths.to_vec();
+        #[cfg(not(target_arch = "wasm32"))]
         let mut uploaded_paths = Vec::with_capacity(local_image_paths.len());
+        #[cfg(not(target_arch = "wasm32"))]
         for local_path in local_image_paths {
             uploaded_paths.push(self.upload_local_image(local_path).await?);
         }
-        self.client
-            .post(
-                self.endpoint
-                    .http_base
-                    .join(&format!("/threads/{thread_id}/messages"))?,
-            )
-            .json(&json!({
+        post_json(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join(&format!("/threads/{thread_id}/messages"))?,
+            json!({
                 "text": text,
                 "localImagePaths": uploaded_paths,
-            }))
-            .send()
-            .await?
-            .error_for_status()?;
+            }),
+        )
+        .await?;
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     async fn upload_local_image(&self, local_path: &str) -> Result<String> {
         let path = std::path::Path::new(local_path);
         let filename = path
@@ -458,17 +410,14 @@ impl WorkbenchClient {
             .and_then(|value| value.to_str())
             .unwrap_or("image");
         let bytes = std::fs::read(path)?;
-        let response = self
-            .client
-            .post(self.endpoint.http_base.join("/uploads/images")?)
-            .query(&[("filename", filename)])
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(bytes)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
-            .await?;
+        let response = post_bytes(
+            &self.client,
+            self.endpoint.http_base.join("/uploads/images")?,
+            filename,
+            bytes,
+            "application/octet-stream",
+        )
+        .await?;
         response
             .get("path")
             .and_then(Value::as_str)
@@ -477,16 +426,14 @@ impl WorkbenchClient {
     }
 
     pub async fn terminate_command_execution(&self, thread_id: &str, process_id: &str) -> Result<()> {
-        self.client
-            .post(
-                self.endpoint
-                    .http_base
-                    .join(&format!("/threads/{thread_id}/commands/terminate"))?,
-            )
-            .json(&json!({ "processId": process_id }))
-            .send()
-            .await?
-            .error_for_status()?;
+        post_json(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join(&format!("/threads/{thread_id}/commands/terminate"))?,
+            json!({ "processId": process_id }),
+        )
+        .await?;
         Ok(())
     }
 
@@ -497,17 +444,13 @@ impl WorkbenchClient {
         decision: &str,
         message: Option<&str>,
     ) -> Result<()> {
-        self.client
-            .post(self.endpoint.http_base.join("/orchestrator/approval-decision")?)
-            .json(&json!({
+        post_json(&self.client, self.endpoint.http_base.join("/orchestrator/approval-decision")?, json!({
                 "senderThreadId": sender_thread_id,
                 "approvalId": approval_id,
                 "decision": decision,
                 "message": message,
             }))
-            .send()
-            .await?
-            .error_for_status()?;
+            .await?;
         Ok(())
     }
 
@@ -522,13 +465,12 @@ impl WorkbenchClient {
         reasoning_effort: Option<&str>,
         service_tier: Option<&str>,
     ) -> Result<()> {
-        self.client
-            .post(
-                self.endpoint
-                    .http_base
-                    .join(&format!("/threads/{thread_id}/metadata"))?,
-            )
-            .json(&json!({
+        post_json(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join(&format!("/threads/{thread_id}/metadata"))?,
+            json!({
                 "role": role,
                 "approvalPolicy": approval_policy,
                 "sandboxMode": sandbox_mode,
@@ -536,79 +478,68 @@ impl WorkbenchClient {
                 "modelID": model_id,
                 "reasoningEffort": reasoning_effort,
                 "serviceTier": service_tier,
-            }))
-            .send()
-            .await?
-            .error_for_status()?;
+            }),
+        )
+        .await?;
         Ok(())
     }
 
     pub async fn thread_compact(&self, thread_id: &str) -> Result<()> {
-        self.client
-            .post(
-                self.endpoint
-                    .http_base
-                    .join(&format!("/threads/{thread_id}/compact"))?,
-            )
-            .send()
-            .await?
-            .error_for_status()?;
+        post_empty(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join(&format!("/threads/{thread_id}/compact"))?,
+        )
+        .await?;
         Ok(())
     }
 
     pub async fn set_thread_running_state(&self, thread_id: &str, running: bool) -> Result<()> {
-        self.client
-            .post(
-                self.endpoint
-                    .http_base
-                    .join(&format!("/threads/{thread_id}/running-state"))?,
-            )
-            .json(&json!({
+        post_json(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join(&format!("/threads/{thread_id}/running-state"))?,
+            json!({
                 "running": running,
-            }))
-            .send()
-            .await?
-            .error_for_status()?;
+            }),
+        )
+        .await?;
         Ok(())
     }
 
     pub async fn interrupt_thread(&self, thread_id: &str) -> Result<()> {
-        self.client
-            .post(
-                self.endpoint
-                    .http_base
-                    .join(&format!("/threads/{thread_id}/interrupt"))?,
-            )
-            .send()
-            .await?
-            .error_for_status()?;
+        post_empty(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join(&format!("/threads/{thread_id}/interrupt"))?,
+        )
+        .await?;
         Ok(())
     }
 
     pub async fn rename_thread(&self, thread_id: &str, name: &str) -> Result<()> {
-        self.client
-            .post(
-                self.endpoint
-                    .http_base
-                    .join(&format!("/threads/{thread_id}/name"))?,
-            )
-            .json(&json!({ "name": name }))
-            .send()
-            .await?
-            .error_for_status()?;
+        post_json(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join(&format!("/threads/{thread_id}/name"))?,
+            json!({ "name": name }),
+        )
+        .await?;
         Ok(())
     }
 
     pub async fn archive_thread(&self, thread_id: &str) -> Result<()> {
-        self.client
-            .delete(
-                self.endpoint
-                    .http_base
-                    .join(&format!("/threads/{thread_id}"))?,
-            )
-            .send()
-            .await?
-            .error_for_status()?;
+        http_delete(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join(&format!("/threads/{thread_id}"))?,
+        )
+        .await?;
         Ok(())
     }
 
@@ -620,14 +551,7 @@ impl WorkbenchClient {
     }
 
     async fn fetch_snapshot_json(&self) -> Result<Value> {
-        Ok(self
-            .client
-            .get(self.endpoint.workbench_bootstrap_url()?)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
-            .await?)
+        get_json(&self.client, self.endpoint.workbench_bootstrap_url()?).await
     }
 
     async fn ensure_available_models(&mut self) -> Result<Vec<UiModelItem>> {
@@ -660,14 +584,8 @@ impl WorkbenchClient {
 }
 
 async fn fetch_available_models(endpoint: &BridgeEndpoint) -> Result<Vec<UiModelItem>> {
-    let client = Client::new();
-    let payload = client
-        .get(endpoint.models_url()?)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Value>()
-        .await?;
+    let client = http_client();
+    let payload = get_json(&client, endpoint.models_url()?).await?;
     Ok(payload
         .as_array()
         .map(|models| {
@@ -1020,35 +938,36 @@ pub async fn fetch_thread_messages(
     thread_id: &str,
     limit: Option<usize>,
 ) -> Result<Vec<UiChatEntry>> {
-    let client = Client::new();
-    let request = client
-        .get(endpoint.http_base.join("/threads/messages")?)
-        .query(&[("threadId", thread_id)]);
-    let request = if let Some(limit) = limit {
-        request.query(&[("limit", limit)])
-    } else {
-        request
-    };
-    let response = request.send().await?;
-    if !response.status().is_success() {
-        return Ok(vec![UiChatEntry {
-            id: "messages-unavailable".to_string(),
-            author: "Bridge".to_string(),
-            display_label: "Bridge".to_string(),
-            timestamp: None,
-            body: format!("Thread history unavailable ({}).", response.status()),
-            subtitle: None,
-            kind: None,
-            status: None,
-            process_id: None,
-            command: None,
-            output: None,
-            delivery_state: None,
-            is_streaming: false,
-            is_tool: true,
-        }]);
+    let client = http_client();
+    let mut url = endpoint.http_base.join("/threads/messages")?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("threadId", thread_id);
+        if let Some(limit) = limit {
+            query.append_pair("limit", &limit.to_string());
+        }
     }
-    let payload = response.json::<Value>().await?;
+    let payload = match get_json(&client, url).await {
+        Ok(payload) => payload,
+        Err(error) => {
+            return Ok(vec![UiChatEntry {
+                id: "messages-unavailable".to_string(),
+                author: "Bridge".to_string(),
+                display_label: "Bridge".to_string(),
+                timestamp: None,
+                body: format!("Thread history unavailable ({error})."),
+                subtitle: None,
+                kind: None,
+                status: None,
+                process_id: None,
+                command: None,
+                output: None,
+                delivery_state: None,
+                is_streaming: false,
+                is_tool: true,
+            }]);
+        }
+    };
     Ok(chat_entries_from_thread_payload(&payload))
 }
 

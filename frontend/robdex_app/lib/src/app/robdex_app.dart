@@ -68,7 +68,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   late final TextEditingController _portController;
   late final FocusNode _hostFocusNode;
   late final FocusNode _portFocusNode;
-  bool _graphicsEnabled = true;
+  bool _graphicsEnabled = !kIsWeb;
 
   @override
   void initState() {
@@ -84,7 +84,11 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     _portController = TextEditingController(text: '42080');
     _hostFocusNode = FocusNode();
     _portFocusNode = FocusNode();
-    _restoreBridgeSettings();
+    if (kIsWeb) {
+      _connectToSameOriginBridge();
+    } else {
+      _restoreBridgeSettings();
+    }
     _hookToastSubscription = HookToastSignal.rustSignalStream.listen((pack) {
       final signal = pack.message;
       if (!mounted) {
@@ -132,6 +136,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   }
 
   Future<void> _restoreBridgeSettings() async {
+    if (kIsWeb) {
+      return;
+    }
     final prefs = await SharedPreferences.getInstance();
     final host = prefs.getString(_hostPreferenceKey);
     final port = prefs.getInt(_portPreferenceKey);
@@ -157,6 +164,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   }
 
   Future<FragmentProgram?> _loadNebulaProgram() async {
+    if (kIsWeb) {
+      return null;
+    }
     try {
       return await FragmentProgram.fromAsset('shaders/connection_nebula.frag');
     } catch (_) {
@@ -165,6 +175,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   }
 
   Future<FragmentProgram?> _loadPeripheralProgram() async {
+    if (kIsWeb) {
+      return null;
+    }
     try {
       return await FragmentProgram.fromAsset(
         'shaders/peripheral_vision_filter.frag',
@@ -175,6 +188,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   }
 
   Future<void> _persistBridgeSettings() async {
+    if (kIsWeb) {
+      return;
+    }
     final prefs = await SharedPreferences.getInstance();
     final host = _hostController.text.trim();
     final port = int.tryParse(_portController.text.trim());
@@ -191,6 +207,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   }
 
   Future<void> _setGraphicsEnabled(bool value) async {
+    if (kIsWeb) {
+      return;
+    }
     if (_graphicsEnabled == value) {
       return;
     }
@@ -199,6 +218,21 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     });
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_graphicsEnabledPreferenceKey, value);
+  }
+
+  void _connectToSameOriginBridge() {
+    final uri = Uri.base;
+    final host = uri.host.isEmpty ? '127.0.0.1' : uri.host;
+    final port = uri.hasPort
+        ? uri.port
+        : uri.scheme == 'https'
+            ? 443
+            : 80;
+    _hostController.text = host;
+    _portController.text = port.toString();
+    _graphicsEnabled = false;
+    _didRequestConnect = true;
+    _controller.start(host: host, port: port);
   }
 
   Future<void> _attemptConnect() async {
@@ -219,6 +253,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   }
 
   Uri get _bridgeBaseUri {
+    if (kIsWeb) {
+      return Uri.base.resolve('/');
+    }
     final host = _hostController.text.trim().isEmpty
         ? '127.0.0.1'
         : _hostController.text.trim();
@@ -268,6 +305,12 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       animation: _controller,
       builder: (context, _) {
         if (_controller.view == null) {
+          if (kIsWeb) {
+            return _WebConnectionScreen(
+              errorText: _controller.error?.toString(),
+              onRetry: _connectToSameOriginBridge,
+            );
+          }
           final stage = _controller.error != null
               ? _ConnectionStage.error
               : _didRequestConnect
@@ -1510,6 +1553,59 @@ end: ${end.toStringAsFixed(2)}
 blur: ${blur.toStringAsFixed(2)}
 chroma: ${chroma.toStringAsFixed(2)}
 warp: ${warp.toStringAsFixed(3)}''';
+  }
+}
+
+class _WebConnectionScreen extends StatelessWidget {
+  const _WebConnectionScreen({
+    required this.errorText,
+    required this.onRetry,
+  });
+
+  final String? errorText;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      backgroundColor: const Color(0xFF05090F),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface.withValues(alpha: 0.86),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: theme.colorScheme.outline),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Connecting to Robdex', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 12),
+                  Text(
+                    errorText ?? 'Using the bridge that served this web app.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 18),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton(
+                      onPressed: onRetry,
+                      child: const Text('Retry'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

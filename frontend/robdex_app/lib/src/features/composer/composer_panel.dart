@@ -1,11 +1,13 @@
-import 'dart:io';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
-import 'package:screen_capturer/screen_capturer.dart';
+import 'package:http/http.dart' as http;
+
+import 'screenshot_capture.dart';
 
 class ComposerSubmission {
   const ComposerSubmission({
@@ -24,12 +26,14 @@ class ComposerPanel extends StatefulWidget {
     required this.isRunning,
     required this.onSend,
     required this.onInterrupt,
+    this.bridgeBaseUri,
   });
 
   final bool enabled;
   final bool isRunning;
   final ValueChanged<ComposerSubmission> onSend;
   final VoidCallback onInterrupt;
+  final Uri? bridgeBaseUri;
 
   @override
   State<ComposerPanel> createState() => _ComposerPanelState();
@@ -67,11 +71,9 @@ class _ComposerPanelState extends State<ComposerPanel> {
 
   void _handleDraftChanged() {
     final next = _controller.text.trim().isNotEmpty;
-    if (next != _hasDraftText) {
-      setState(() {
-        _hasDraftText = next;
-      });
-    }
+    setState(() {
+      _hasDraftText = next;
+    });
   }
 
   void _submit() {
@@ -156,6 +158,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
     }
     setState(() {
       _isPickingImages = true;
+      _attachmentError = null;
     });
     try {
       final files = await openFiles(
@@ -178,12 +181,22 @@ class _ComposerPanelState extends State<ComposerPanel> {
       if (!mounted || files.isEmpty) {
         return;
       }
-      _appendImagePaths(
-        files
-            .map((file) => file.path)
-            .whereType<String>()
-            .toList(growable: false),
-      );
+      if (kIsWeb) {
+        await _uploadWebImages(files);
+      } else {
+        _appendImagePaths(
+          files
+              .map((file) => file.path)
+              .whereType<String>()
+              .toList(growable: false),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _attachmentError = 'Could not upload image attachment.';
+        });
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -191,6 +204,58 @@ class _ComposerPanelState extends State<ComposerPanel> {
         });
       }
     }
+  }
+
+  Future<void> _uploadWebImages(List<XFile> files) async {
+    final baseUri = widget.bridgeBaseUri;
+    if (baseUri == null) {
+      setState(() {
+        _attachmentError = 'Bridge URL is unavailable for image upload.';
+      });
+      return;
+    }
+
+    final uploaded = <String>[];
+    for (final file in files) {
+      final filename = file.name.trim().isEmpty ? 'image' : file.name.trim();
+      final uploadUri = baseUri.resolve('/uploads/images/instant').replace(
+        queryParameters: {'filename': filename},
+      );
+      final bytes = await file.readAsBytes();
+      final response = await http.post(
+        uploadUri,
+        headers: {'content-type': _contentTypeFor(filename)},
+        body: bytes,
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw StateError('Image upload failed with ${response.statusCode}');
+      }
+      final payload = jsonDecode(response.body);
+      final savedPath = payload is Map<String, dynamic> ? payload['path'] as String? : null;
+      if (savedPath == null || savedPath.trim().isEmpty) {
+        throw StateError('Image upload response missing path');
+      }
+      uploaded.add(savedPath);
+    }
+
+    _appendImagePaths(uploaded);
+  }
+
+  String _contentTypeFor(String path) {
+    final lower = path.toLowerCase();
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+      return 'image/jpeg';
+    }
+    if (lower.endsWith('.gif')) {
+      return 'image/gif';
+    }
+    if (lower.endsWith('.webp')) {
+      return 'image/webp';
+    }
+    if (lower.endsWith('.bmp')) {
+      return 'image/bmp';
+    }
+    return 'image/png';
   }
 
   Future<void> _captureScreenshot() async {
@@ -201,43 +266,16 @@ class _ComposerPanelState extends State<ComposerPanel> {
       _isCapturingScreenshot = true;
       _attachmentError = null;
     });
-    var requestedAccess = false;
     try {
-      if (defaultTargetPlatform == TargetPlatform.macOS) {
-        final hasAccess = await screenCapturer.isAccessAllowed();
-        if (!hasAccess) {
-          requestedAccess = true;
-          await screenCapturer.requestAccess();
-        }
-      }
-
-      final directory = Directory(
-        '${Directory.systemTemp.path}/robdex/screenshots',
-      );
-      if (!directory.existsSync()) {
-        directory.createSync(recursive: true);
-      }
-      final imagePath =
-          '${directory.path}/screenshot-${DateTime.now().millisecondsSinceEpoch}.png';
-
-      final captured = await screenCapturer.capture(
-        mode: CaptureMode.region,
-        imagePath: imagePath,
-        copyToClipboard: false,
-      );
+      final capturedPath = await captureRobdexScreenshot();
       if (!mounted) {
         return;
       }
-
-      final capturedPath = captured?.imagePath ?? imagePath;
-      final file = File(capturedPath);
-      if (captured == null || !file.existsSync()) {
-        if (requestedAccess) {
-          setState(() {
-            _attachmentError =
-                'Allow Screen Recording in System Settings, then try again.';
-          });
-        }
+      if (capturedPath == null) {
+        setState(() {
+          _attachmentError =
+              'Allow Screen Recording in System Settings, then try again.';
+        });
         return;
       }
 
@@ -273,6 +311,16 @@ class _ComposerPanelState extends State<ComposerPanel> {
     return lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
   }
 
+  Uri? _thumbnailUriFor(String path) {
+    final baseUri = widget.bridgeBaseUri;
+    if (baseUri == null || path.trim().isEmpty) {
+      return null;
+    }
+    return baseUri.resolve('/images/thumbnail').replace(
+      queryParameters: {'saved_path': path},
+    );
+  }
+
   void _removeImageAt(int index) {
     setState(() {
       _localImagePaths.removeAt(index);
@@ -286,6 +334,8 @@ class _ComposerPanelState extends State<ComposerPanel> {
       TargetPlatform.macOS || TargetPlatform.linux || TargetPlatform.windows => true,
       _ => false,
     };
+    final supportsPathAttachments = !kIsWeb;
+    final supportsImagePicker = supportsPathAttachments || widget.bridgeBaseUri != null;
     final supportsScreenshots = defaultTargetPlatform == TargetPlatform.macOS;
     final showsInterrupt =
         widget.isRunning && !_hasDraftText && !_isShowingSendTransition;
@@ -328,10 +378,31 @@ class _ComposerPanelState extends State<ComposerPanel> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(
-                            Icons.image_outlined,
-                            size: 15,
-                            color: theme.colorScheme.secondary,
+                          Builder(
+                            builder: (context) {
+                              final thumbnailUri = kIsWeb ? _thumbnailUriFor(path) : null;
+                              if (thumbnailUri == null) {
+                                return Icon(
+                                  Icons.image_outlined,
+                                  size: 15,
+                                  color: theme.colorScheme.secondary,
+                                );
+                              }
+                              return ClipRRect(
+                                borderRadius: BorderRadius.circular(6),
+                                child: Image.network(
+                                  thumbnailUri.toString(),
+                                  width: 22,
+                                  height: 22,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, _, _) => Icon(
+                                    Icons.image_outlined,
+                                    size: 15,
+                                    color: theme.colorScheme.secondary,
+                                  ),
+                                ),
+                              );
+                            },
                           ),
                           const SizedBox(width: 8),
                           ConstrainedBox(
@@ -363,41 +434,60 @@ class _ComposerPanelState extends State<ComposerPanel> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                IconButton(
-                  onPressed: widget.enabled && !_isPickingImages ? _pickImages : null,
-                  tooltip: 'Add images',
-                  icon: _isPickingImages
-                      ? SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 1.8,
-                            color: theme.colorScheme.primary,
-                          ),
-                        )
-                      : const Icon(Icons.add_photo_alternate_outlined),
-                  visualDensity: VisualDensity.compact,
-                ),
-                if (supportsScreenshots) ...[
+                if (supportsImagePicker)
+                  Semantics(
+                    key: const ValueKey('semantic.composer.addImages'),
+                    container: true,
+                    button: true,
+                    enabled: widget.enabled && !_isPickingImages,
+                    label: 'Add images to message',
+                    child: ExcludeSemantics(
+                      child: IconButton(
+                        onPressed: widget.enabled && !_isPickingImages ? _pickImages : null,
+                        tooltip: 'Add images',
+                        icon: _isPickingImages
+                            ? SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 1.8,
+                                  color: theme.colorScheme.primary,
+                                ),
+                              )
+                            : const Icon(Icons.add_photo_alternate_outlined),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ),
+                if (supportsPathAttachments && supportsScreenshots) ...[
                   const SizedBox(width: 2),
-                  IconButton(
-                    onPressed: widget.enabled && !_isCapturingScreenshot
-                        ? _captureScreenshot
-                        : null,
-                    tooltip: _isCapturingScreenshot
-                        ? 'Select an area to capture'
-                        : 'Capture screenshot',
-                    icon: _isCapturingScreenshot
-                        ? SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 1.8,
-                              color: theme.colorScheme.primary,
-                            ),
-                          )
-                        : const Icon(Icons.screenshot_monitor_outlined),
-                    visualDensity: VisualDensity.compact,
+                  Semantics(
+                    key: const ValueKey('semantic.composer.captureScreenshot'),
+                    container: true,
+                    button: true,
+                    enabled: widget.enabled && !_isCapturingScreenshot,
+                    label: 'Capture screenshot attachment',
+                    child: ExcludeSemantics(
+                      child: IconButton(
+                        onPressed: widget.enabled && !_isCapturingScreenshot
+                            ? _captureScreenshot
+                            : null,
+                        tooltip: _isCapturingScreenshot
+                            ? 'Select an area to capture'
+                            : 'Capture screenshot',
+                        icon: _isCapturingScreenshot
+                            ? SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 1.8,
+                                  color: theme.colorScheme.primary,
+                                ),
+                              )
+                            : const Icon(Icons.screenshot_monitor_outlined),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
                   ),
                 ],
                 const SizedBox(width: 8),
@@ -422,74 +512,97 @@ class _ComposerPanelState extends State<ComposerPanel> {
                       _submit();
                       return KeyEventResult.handled;
                     },
-                    child: TextField(
-                      controller: _controller,
-                      focusNode: _focusNode,
+                    child: Semantics(
+                      key: const ValueKey('semantic.composer.messageInput'),
+                      container: true,
+                      textField: true,
                       enabled: widget.enabled,
-                      minLines: 1,
-                      maxLines: 4,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        fontSize: 11,
-                        height: 1.3,
-                      ),
-                      onSubmitted: (_) {
-                        if (!isDesktopPlatform) {
-                          return;
-                        }
-                        _submit();
-                      },
-                      decoration: InputDecoration(
-                        hintText: 'Send a message to the selected thread',
-                        hintStyle: theme.textTheme.bodySmall?.copyWith(
-                          fontSize: 11,
-                          color: theme.colorScheme.onSurface.withValues(alpha: 0.48),
+                      label: 'Chat message input',
+                      value: _controller.text,
+                      child: ExcludeSemantics(
+                        child: TextField(
+                          controller: _controller,
+                          focusNode: _focusNode,
+                          enabled: widget.enabled,
+                          minLines: 1,
+                          maxLines: 4,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontSize: 11,
+                            height: 1.3,
+                          ),
+                          onSubmitted: (_) {
+                            if (!isDesktopPlatform) {
+                              return;
+                            }
+                            _submit();
+                          },
+                          decoration: InputDecoration(
+                            hintText: 'Send a message to the selected thread',
+                            hintStyle: theme.textTheme.bodySmall?.copyWith(
+                              fontSize: 11,
+                              color: theme.colorScheme.onSurface.withValues(alpha: 0.48),
+                            ),
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
-                IconButton(
-                  onPressed: widget.enabled
-                      ? (showsSendTransition
-                            ? () {}
-                            : showsInterrupt
-                                ? widget.onInterrupt
-                                : _submit)
-                      : null,
-                  icon: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 120),
-                    child: showsSendTransition
-                        ? ClipOval(
-                            key: ValueKey('send-transition-$_sendTransitionSerial'),
-                            child: Image.asset(
-                              _sendTransitionAsset,
-                              width: 28,
-                              height: 28,
-                              fit: BoxFit.cover,
-                              gaplessPlayback: false,
-                            ),
-                          )
-                        : Icon(
-                            showsInterrupt
-                                ? Icons.stop_rounded
-                                : Icons.arrow_upward_rounded,
-                            key: ValueKey(showsInterrupt ? 'stop' : 'send'),
-                            size: 18,
-                          ),
+                Semantics(
+                  key: ValueKey(
+                    showsInterrupt
+                        ? 'semantic.composer.interrupt'
+                        : 'semantic.composer.send',
                   ),
-                  style: IconButton.styleFrom(
-                    backgroundColor: actionBackground,
-                    foregroundColor: actionForeground,
-                    disabledBackgroundColor:
-                        theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
-                    disabledForegroundColor:
-                        theme.colorScheme.onSurface.withValues(alpha: 0.4),
-                    minimumSize: const Size.square(actionButtonSize),
-                    fixedSize: const Size.square(actionButtonSize),
-                    shape: const CircleBorder(),
+                  container: true,
+                  button: true,
+                  enabled: widget.enabled,
+                  label: showsInterrupt ? 'Interrupt running thread' : 'Send message',
+                  child: ExcludeSemantics(
+                    child: IconButton(
+                      onPressed: widget.enabled
+                          ? (showsSendTransition
+                                ? () {}
+                                : showsInterrupt
+                                    ? widget.onInterrupt
+                                    : _submit)
+                          : null,
+                      icon: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 120),
+                        child: showsSendTransition
+                            ? ClipOval(
+                                key: ValueKey('send-transition-$_sendTransitionSerial'),
+                                child: Image.asset(
+                                  _sendTransitionAsset,
+                                  width: 28,
+                                  height: 28,
+                                  fit: BoxFit.cover,
+                                  gaplessPlayback: false,
+                                ),
+                              )
+                            : Icon(
+                                showsInterrupt
+                                    ? Icons.stop_rounded
+                                    : Icons.arrow_upward_rounded,
+                                key: ValueKey(showsInterrupt ? 'stop' : 'send'),
+                                size: 18,
+                              ),
+                      ),
+                      style: IconButton.styleFrom(
+                        backgroundColor: actionBackground,
+                        foregroundColor: actionForeground,
+                        disabledBackgroundColor:
+                            theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
+                        disabledForegroundColor:
+                            theme.colorScheme.onSurface.withValues(alpha: 0.4),
+                        minimumSize: const Size.square(actionButtonSize),
+                        fixedSize: const Size.square(actionButtonSize),
+                        shape: const CircleBorder(),
+                      ),
+                      tooltip: showsInterrupt ? 'Interrupt' : 'Send',
+                    ),
                   ),
-                  tooltip: showsInterrupt ? 'Interrupt' : 'Send',
                 ),
               ],
             ),
@@ -516,7 +629,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
       ),
     );
 
-    if (!isDesktopPlatform) {
+    if (!isDesktopPlatform || !supportsPathAttachments) {
       return panel;
     }
 

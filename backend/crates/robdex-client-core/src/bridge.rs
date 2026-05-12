@@ -1,6 +1,8 @@
 use anyhow::Result;
-use reqwest::Url;
 use robdex_protocol::{AppSnapshot, BridgeCommandEnvelope};
+use url::Url;
+
+use crate::net::{get_json, http_client};
 
 #[derive(Debug, Clone)]
 pub struct BridgeEndpoint {
@@ -46,7 +48,7 @@ impl BridgeEndpoint {
 
     pub async fn fetch_snapshot(&self) -> Result<AppSnapshot> {
         let url = self.http_base.join("/state/snapshot")?;
-        Ok(reqwest::get(url).await?.json::<AppSnapshot>().await?)
+        Ok(serde_json::from_value(get_json(&http_client(), url).await?)?)
     }
 
     pub fn command(&self, name: impl Into<String>, payload: serde_json::Value) -> BridgeCommandEnvelope {
