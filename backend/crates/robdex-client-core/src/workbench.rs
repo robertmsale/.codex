@@ -1172,8 +1172,12 @@ fn extract_thread_records(snapshot: &Value) -> Vec<ThreadRecord> {
                 continue;
             };
             let archived = agent.get("archived").and_then(Value::as_bool) == Some(true);
+            let hidden_from_peer_list = agent
+                .get("hiddenFromPeerList")
+                .and_then(Value::as_bool)
+                == Some(true);
             let role = agent.get("role").and_then(Value::as_str).unwrap_or("worker");
-            if archived {
+            if archived || hidden_from_peer_list {
                 continue;
             }
             let cwd = agent

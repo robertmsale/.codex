@@ -1,6 +1,6 @@
 ---
 name: design-worker
-description: Use for orchestrating or executing screenshot-driven Flutter redesign work where workers generate reference images, compare against rendered UI screenshots, run visual design review, and implement only after visual approval. [skill-hash:8b4f0d1]
+description: Use for orchestrating or executing screenshot-driven Flutter redesign work where workers generate reference images, compare against rendered UI screenshots, run visual design review, and implement only after visual approval. [skill-hash:ddda03a]
 ---
 
 # Design Worker

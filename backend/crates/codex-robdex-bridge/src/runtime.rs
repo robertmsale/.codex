@@ -26,9 +26,12 @@ use tokio::{
 use crate::{
     app_server_overrides::{AppServerThreadOverrides, AppServerTurnOverrides, simple_sandbox_policy},
     commands::{
-        increment_compaction_count, parse_state, persist_state, prune_archived_thread_locally,
-        run_compaction_hook_best_effort, send_follow_up_message, send_thread_input,
-        tracked_project_identity_for_thread, PersistedState,
+        active_requirements_for_thread, increment_compaction_count, mark_requirements_review_in_progress,
+        mark_requirements_review_verdict, parse_state, persist_state, prune_archived_thread_locally,
+        record_requirement_packet, requirements_review_prompt, requirements_review_target_for_thread,
+        requirements_verdict_schema, run_compaction_hook_best_effort, send_follow_up_message,
+        send_thread_input, tracked_project_identity_for_thread,
+        PersistedState, RequirementPacketState,
     },
     config::BridgeSettings,
     hooks::{
@@ -617,8 +620,11 @@ impl BridgeRuntime {
                 if let Some((thread_id, turn_id)) = turn_completed {
                     let hook_configured = self.maybe_run_stopped_hook(&thread_id, &turn_id).await?;
                     if !hook_configured {
-                        self.maybe_auto_route_reply_to_orchestrator(&thread_id, &turn_id)
-                            .await;
+                        self.maybe_record_requirements_verdict(&thread_id, &turn_id).await;
+                        if !self.maybe_route_requirements_review(&thread_id, &turn_id).await {
+                            self.maybe_auto_route_reply_to_orchestrator(&thread_id, &turn_id)
+                                .await;
+                        }
                     }
                 }
                 if let Some(thread_id) = compaction_completed_thread_id {
@@ -937,6 +943,135 @@ impl BridgeRuntime {
             )),
             _ => None,
         }
+    }
+
+    async fn maybe_record_requirements_verdict(&self, thread_id: &str, turn_id: &str) {
+        let state = self.state_document.read().await.clone();
+        if !matches!(
+            tracked_role_for_thread(&state, thread_id).as_deref(),
+            Some("requirements-reviewer") | Some("requirementsReviewer")
+        ) {
+            return;
+        }
+        let Some(verdict_text) = self.latest_assistant_text_for_thread(thread_id, Some(turn_id)).await else {
+            return;
+        };
+        let Some(source_thread_id) = self.latest_requirements_review_source_thread_id(thread_id).await else {
+            return;
+        };
+        let payload = serde_json::from_str(verdict_text.trim())
+            .unwrap_or_else(|_| json!({ "raw": verdict_text.trim() }));
+        let _ = mark_requirements_review_verdict(self, &source_thread_id, thread_id, payload.clone()).await;
+        let _ = record_requirement_packet(
+            self,
+            &source_thread_id,
+            RequirementPacketState {
+                packet_type: "verdict".to_string(),
+                source_thread_id: source_thread_id.clone(),
+                turn_id: Some(turn_id.to_string()),
+                target_thread_id: Some(thread_id.to_string()),
+                payload,
+                created_at: crate::commands::unix_now(),
+            },
+        )
+        .await;
+    }
+
+    async fn latest_requirements_review_source_thread_id(&self, reviewer_thread_id: &str) -> Option<String> {
+        let thread_cache = self.thread_cache.read().await;
+        let messages = thread_cache.message_cache_by_thread_id.get(reviewer_thread_id)?;
+        messages
+            .iter()
+            .rev()
+            .filter(|message| message.role == "user")
+            .flat_map(|message| message.text.lines())
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("Source thread ID:")
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+    }
+
+    async fn maybe_route_requirements_review(&self, thread_id: &str, turn_id: &str) -> bool {
+        let state = self.state_document.read().await.clone();
+        if matches!(
+            tracked_role_for_thread(&state, thread_id).as_deref(),
+            Some("requirements-reviewer") | Some("requirementsReviewer")
+        ) {
+            return false;
+        }
+        let parsed_state = parse_state(&state);
+        let Some(set) = active_requirements_for_thread(&parsed_state, thread_id) else {
+            return false;
+        };
+        let Some(route_content) = self.auto_route_content_for_thread(thread_id, Some(turn_id)).await else {
+            return false;
+        };
+        let claim_text = route_content.text.trim();
+        if claim_text.is_empty() {
+            return false;
+        }
+        let Some(reviewer_thread_id) = requirements_review_target_for_thread(&parsed_state, thread_id, &set) else {
+            return false;
+        };
+        if reviewer_thread_id == thread_id {
+            return false;
+        }
+
+        let project = tracked_project_for_thread(&state, thread_id);
+        let cwd = tracked_cwd_for_thread_value(&state, &reviewer_thread_id)
+            .or_else(|| project.as_ref().and_then(|project| project.cwd.clone()))
+            .or_else(|| project.as_ref().and_then(|project| project.project_root.clone()));
+        let prompt = requirements_review_prompt(
+            &set,
+            &sender_label_for_thread(&state, thread_id),
+            thread_id,
+            turn_id,
+            claim_text,
+        );
+        let params = AppServerTurnOverrides {
+            cwd,
+            approval_policy: tracked_approval_policy_for_thread_value(&state, &reviewer_thread_id)
+                .map(Value::String),
+            sandbox_policy: tracked_sandbox_policy_for_thread_value(&state, &reviewer_thread_id),
+            model: tracked_model_for_thread_value(&state, &reviewer_thread_id),
+            effort: tracked_reasoning_for_thread_value(&state, &reviewer_thread_id),
+            service_tier: tracked_service_tier_for_thread_value(&state, &reviewer_thread_id),
+            approvals_reviewer: tracked_approvals_reviewer_for_thread_value(&state, &reviewer_thread_id),
+            personality: tracked_personality_for_thread_value(&state, &reviewer_thread_id),
+            output_schema: Some(requirements_verdict_schema(&set)),
+            ..Default::default()
+        }
+        .turn_start_params(reviewer_thread_id.clone(), json!([{"type":"text","text": prompt}]));
+
+        if self.request_app_server_json("turn/start", params).await.is_ok() {
+            let claim_payload = serde_json::from_str(claim_text).unwrap_or_else(|_| json!({ "raw": claim_text }));
+            let _ = mark_requirements_review_in_progress(
+                self,
+                thread_id,
+                &reviewer_thread_id,
+                &set,
+                claim_payload.clone(),
+            )
+            .await;
+            let _ = record_requirement_packet(
+                self,
+                thread_id,
+                RequirementPacketState {
+                    packet_type: "claim".to_string(),
+                    source_thread_id: thread_id.to_string(),
+                    turn_id: Some(turn_id.to_string()),
+                    target_thread_id: Some(reviewer_thread_id),
+                    payload: claim_payload,
+                    created_at: crate::commands::unix_now(),
+                },
+            )
+            .await;
+            return true;
+        }
+        false
     }
 
     async fn maybe_auto_route_reply_to_orchestrator(&self, thread_id: &str, turn_id: &str) {

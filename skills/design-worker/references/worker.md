@@ -76,6 +76,7 @@ Before review/merge:
 - If the generated reference includes a custom shell but the task is page-content only, say: `Shell/nav/chrome in the reference is out of scope; grade only the page content surface inside the real Ezra shell.`
 - State unavailable backend/product contracts that should not be required, such as fake rows/actions/results that were only visual placeholders.
 - If fake live data is forbidden, say so explicitly. Ask the reviewer to grade locked/skeleton/unavailable/readiness states for geometry, rhythm, hierarchy, and polish rather than requiring populated fake rows/results.
+- Do not use data or backend constraints to excuse missing dominant page composition. If the reference's main artifact is a map, calendar, table/list, dashboard canvas, inspector rail, editor canvas, or similar core surface, the actual must preserve that core surface as a polished real/empty/readiness state.
 - Tell the reviewer what neutral fidelity target matters, for example pane proportions, table/list density, inspector layout, non-clipping iPad layout, typography, card rhythm, page grammar, semantic cleanliness, workflow clarity, or shell restraint.
 - Do not tell the reviewer your implementation is better, tasteful, principled, acceptable, close enough, intentionally improved, or already approved.
 - Do not tell the reviewer what defect to find or what score/verdict to return. The prompt may say `Scope: Accounting overview page content inside the existing Ezra shell`; it must not say `Reward this calmer implementation` or `Ignore that the reference is overdone`.
@@ -96,12 +97,17 @@ The third argument to `design-review` should be a concise scope contract:
 - Identify the exact reference region if the reference is cropped or composite.
 - Identify the exact actual region if the implementation screenshot includes extra surrounding UI.
 - State hard product constraints: no shell changes, no fake live data, unavailable backend behavior, locked/readiness states, or viewport/device target.
+- State dominant page artifacts neutrally when they are central to the reference: route map/navigation cockpit, calendar grid, table/list, dashboard data canvas, inspector/detail rail, editor canvas, etc.
 - State neutral review dimensions: product intent, page grammar, workflow clarity, semantic cleanliness, density discipline, visual hierarchy, style drift, shell restraint.
 
 Good examples:
 
 ```text
 Scope: Accounting overview page content inside the existing Ezra shell. Shell/nav/chrome are out of scope. Grade product intent, page grammar, pane proportions, table density, semantic cleanliness, visual hierarchy, and non-clipping iPad layout. Fake live QBO data is forbidden; locked/readiness rows should be graded for geometry and polish, not treated as required populated data.
+```
+
+```text
+Scope: Technician GPS Navigation page content inside the existing Ezra shell. Shell/nav/chrome are out of scope. The route map/navigation cockpit is the dominant in-scope page artifact. Grade whether the actual preserves route-map composition, guidance affordances, job context, hierarchy, semantic cleanliness, density discipline, and non-clipping iPad layout. Real GPS data may be unavailable, but unavailable/readiness states must preserve the designed map/navigation geometry and core affordances.
 ```
 
 ```text

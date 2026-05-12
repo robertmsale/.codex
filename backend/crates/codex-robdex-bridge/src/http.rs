@@ -26,7 +26,8 @@ use crate::{
     commands::{
         CommandOutcome, execute_bridge_command, make_app_state_snapshot, make_event_replay_response, orchestrator_agents, orchestrator_approval_decision,
         orchestrator_archive_agent, orchestrator_lookup, orchestrator_pending_approvals, orchestrator_rename_agent,
-        orchestrator_send_message, orchestrator_spawn_agent, orchestrator_thread_group_archive,
+        orchestrator_request_requirements_review, orchestrator_send_message, orchestrator_set_requirements,
+        orchestrator_spawn_agent, orchestrator_thread_group_archive,
         orchestrator_thread_group_create, orchestrator_thread_group_delete, orchestrator_thread_group_move_thread,
         orchestrator_thread_group_update, orchestrator_thread_groups, orchestrator_threads,
         orchestrator_warm_handoff, register_live_process, complete_live_process,
@@ -92,6 +93,8 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/orchestrator/archive-agent", post(orchestrator_archive_agent_route))
         .route("/orchestrator/rename-agent", post(orchestrator_rename_agent_route))
         .route("/orchestrator/worker-metadata", post(orchestrator_worker_metadata_route))
+        .route("/orchestrator/requirements/set", post(orchestrator_requirements_set_route))
+        .route("/orchestrator/requirements/request-review", post(orchestrator_requirements_request_review_route))
         .route("/orchestrator/approval-decision", post(orchestrator_approval_decision_route))
         .route("/ws", get(ws_upgrade))
         .route("/workbench/ws", get(workbench_ws_upgrade))
@@ -1438,6 +1441,56 @@ async fn orchestrator_worker_metadata_route(
             payload.get("projectPath").and_then(Value::as_str),
             &payload,
         ).await {
+            Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+            Err(error) => map_orchestrator_error(error.to_string()),
+        },
+        Err(error) => map_bad_request(error),
+    }
+}
+
+async fn orchestrator_requirements_set_route(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    let sender = payload.get("senderThreadId").and_then(Value::as_str);
+    let set_payload = payload
+        .get("requirementSet")
+        .cloned()
+        .or_else(|| payload.get("requirements").cloned());
+    match (require_sender_thread(sender), set_payload) {
+        (Ok(sender_thread_id), Some(set_payload)) => match orchestrator_set_requirements(
+            &runtime,
+            sender_thread_id,
+            payload.get("recipientThreadId").and_then(Value::as_str),
+            payload.get("recipientName").and_then(Value::as_str),
+            payload.get("projectPath").and_then(Value::as_str),
+            set_payload,
+        )
+        .await
+        {
+            Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+            Err(error) => map_orchestrator_error(error.to_string()),
+        },
+        (Err(error), _) => map_bad_request(error),
+        (_, None) => map_bad_request("requirementSet or requirements is required"),
+    }
+}
+
+async fn orchestrator_requirements_request_review_route(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    match require_sender_thread(payload.get("senderThreadId").and_then(Value::as_str)) {
+        Ok(sender_thread_id) => match orchestrator_request_requirements_review(
+            &runtime,
+            sender_thread_id,
+            payload.get("recipientThreadId").and_then(Value::as_str),
+            payload.get("recipientName").and_then(Value::as_str),
+            payload.get("projectPath").and_then(Value::as_str),
+            payload.get("note").and_then(Value::as_str),
+        )
+        .await
+        {
             Ok(body) => (StatusCode::OK, Json(body)).into_response(),
             Err(error) => map_orchestrator_error(error.to_string()),
         },

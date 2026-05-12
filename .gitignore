@@ -13,6 +13,9 @@ sqlite/
 tmp/
 vendor_imports/
 .codex-global-state.json
+.codex-global-state.json.bak
+plugins/cache/
+cache/
 .personality_migration
 auth.json
 history.jsonl

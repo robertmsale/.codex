@@ -611,7 +611,7 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     p_spawn.add_argument("--prompt-file")
     p_spawn.add_argument("--prompt-stdin", action="store_true")
     p_spawn.add_argument("--cwd")
-    p_spawn.add_argument("--role", choices=["worker", "qa", "hidden"], default="worker")
+    p_spawn.add_argument("--role", choices=["worker", "qa", "hidden", "requirements-reviewer"], default="worker")
     p_spawn.add_argument("--issue-number", type=int)
 
     p_archive = sub.add_parser("archive-agent")
@@ -645,6 +645,18 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     p_meta.add_argument("--blocked-reason")
     p_meta.add_argument("--unblock-when")
     p_meta.add_argument("--clear-blocked", action="store_true")
+
+    p_req_set = sub.add_parser("set-requirements")
+    p_req_set.add_argument("--to-thread-id")
+    p_req_set.add_argument("--name")
+    p_req_set.add_argument("--project-path")
+    p_req_set.add_argument("--requirements-file", required=True)
+
+    p_req_review = sub.add_parser("request-requirements-review")
+    p_req_review.add_argument("--to-thread-id")
+    p_req_review.add_argument("--name")
+    p_req_review.add_argument("--project-path")
+    p_req_review.add_argument("--note")
 
     p_handoff = _add_handoff_parser(sub)
 
@@ -756,6 +768,44 @@ def main() -> int:
         _cmd_send_message(thread_id, args, parser)
     elif args.cmd == "set-worker-metadata":
         _cmd_set_worker_metadata(thread_id, args)
+    elif args.cmd == "set-requirements":
+        requirement_path = Path(args.requirements_file).expanduser()
+        try:
+            requirements_payload = json.loads(requirement_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"robdex: invalid JSON in {requirement_path}: {exc}") from exc
+        payload = _request_json(
+            "POST",
+            "/orchestrator/requirements/set",
+            body={
+                "senderThreadId": thread_id,
+                "recipientThreadId": _normalize_text(args.to_thread_id),
+                "recipientName": _normalize_text(args.name),
+                "projectPath": _normalize_path(args.project_path),
+                "requirementSet": requirements_payload,
+            },
+        )
+        print(
+            "Set requirements for "
+            f"{_quoted(str(payload.get('displayName') or payload.get('threadId') or 'unknown'))} "
+            f"| count={payload.get('requirementCount')} enforceOnTurns={payload.get('enforceOnTurns')}"
+        )
+    elif args.cmd == "request-requirements-review":
+        payload = _request_json(
+            "POST",
+            "/orchestrator/requirements/request-review",
+            body={
+                "senderThreadId": thread_id,
+                "recipientThreadId": _normalize_text(args.to_thread_id),
+                "recipientName": _normalize_text(args.name),
+                "projectPath": _normalize_path(args.project_path),
+                "note": _normalize_text(args.note),
+            },
+        )
+        print(
+            "Requested requirements review from "
+            f"{_quoted(str(payload.get('displayName') or payload.get('threadId') or 'unknown'))}"
+        )
     elif args.cmd == "handoff":
         _cmd_handoff(thread_id, args, parser)
     elif args.cmd == "approve-approval":

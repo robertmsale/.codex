@@ -111,9 +111,85 @@ struct PersistedAgentState {
     pull_request_number: Option<u64>,
     blocked_reason: Option<String>,
     unblock_when: Option<String>,
+    #[serde(default)]
+    requirements: Option<RequirementSetState>,
+    #[serde(default)]
+    requirement_packets: Vec<RequirementPacketState>,
+    #[serde(default)]
+    requirement_review: Option<RequirementReviewBindingState>,
+    #[serde(default)]
+    parent_thread_id: Option<String>,
+    #[serde(default)]
+    hidden_from_peer_list: bool,
     archived: Option<bool>,
     #[serde(flatten, default)]
     extras: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequirementSetState {
+    pub id: Option<String>,
+    #[serde(default = "default_true")]
+    pub active: bool,
+    #[serde(default = "default_true")]
+    pub enforce_on_turns: bool,
+    #[serde(default)]
+    pub reviewer_thread_id: Option<String>,
+    #[serde(default)]
+    pub requirements: Vec<RequirementState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequirementState {
+    pub key: String,
+    pub statement: String,
+    #[serde(default = "default_requirement_severity")]
+    pub severity: String,
+    #[serde(default)]
+    pub claim_schema_description: Option<String>,
+    #[serde(default)]
+    pub verdict_schema_description: Option<String>,
+    #[serde(default = "default_verification_method")]
+    pub verification_method: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequirementPacketState {
+    pub packet_type: String,
+    pub source_thread_id: String,
+    pub turn_id: Option<String>,
+    pub target_thread_id: Option<String>,
+    pub payload: Value,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequirementReviewBindingState {
+    pub source_thread_id: String,
+    pub reviewer_thread_id: String,
+    pub requirement_set_id: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub latest_claim_packet: Option<Value>,
+    #[serde(default)]
+    pub latest_verdict_packet: Option<Value>,
+    pub updated_at: u64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_requirement_severity() -> String {
+    "medium".to_string()
+}
+
+fn default_verification_method() -> String {
+    "manualEvidence".to_string()
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -378,6 +454,10 @@ fn bridge_state_payload(state: &PersistedState) -> Value {
                     "displayName": agent.display_name,
                     "role": agent.role,
                     "hidden": if agent.role.as_deref() == Some("hidden") { Some(true) } else { None::<bool> },
+                    "hiddenFromPeerList": agent.hidden_from_peer_list,
+                    "parentThreadId": agent.parent_thread_id,
+                    "requirements": agent.requirements,
+                    "requirementReview": agent.requirement_review,
                     "issueNumber": agent.issue_number,
                     "pullRequestNumber": agent.pull_request_number,
                     "blockedReason": agent.blocked_reason,
@@ -797,7 +877,10 @@ pub async fn execute_bridge_command(
                     .or_else(|| tracked_approvals_reviewer_for_thread(&state, &thread_id)),
                 summary: payload.get("summary").cloned(),
                 personality: payload.get("personality").cloned().or_else(|| tracked_personality_for_thread(&state, &thread_id)),
-                output_schema: payload.get("outputSchema").cloned(),
+                output_schema: payload
+                    .get("outputSchema")
+                    .cloned()
+                    .or_else(|| active_requirements_claim_schema_for_thread(&state, &thread_id)),
                 collaboration_mode: payload.get("collaborationMode").cloned(),
             }
             .turn_start_params(thread_id, json!([{"type":"text","text": required_string(&payload, "text")?}]));
@@ -1703,6 +1786,14 @@ fn register_tracked_thread(state: &mut PersistedState, payload: &Value) -> Resul
             pull_request_number: payload.get("pullRequestNumber").and_then(Value::as_u64),
             blocked_reason: payload.get("blockedReason").and_then(Value::as_str).map(str::to_string),
             unblock_when: payload.get("unblockWhen").and_then(Value::as_str).map(str::to_string),
+            requirements: None,
+            requirement_packets: Vec::new(),
+            requirement_review: None,
+            parent_thread_id: payload.get("parentThreadId").and_then(Value::as_str).map(str::to_string),
+            hidden_from_peer_list: payload
+                .get("hiddenFromPeerList")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             archived: Some(false),
             extras: BTreeMap::new(),
         },
@@ -2004,6 +2095,9 @@ fn all_agent_records(
         let cwd = project.cwd.clone().unwrap_or_else(|| project_root.clone());
         let mut saw_orchestrator = false;
         for (thread_id, agent) in &project.agents {
+            if agent.hidden_from_peer_list {
+                continue;
+            }
             let role = agent.role.clone().unwrap_or_else(|| "worker".to_string());
             let is_orchestrator =
                 role == "orchestrator" || project.orchestrator_thread_id.as_deref() == Some(thread_id.as_str());
@@ -2441,6 +2535,7 @@ pub(crate) async fn send_thread_input(
         service_tier: tracked_service_tier_for_thread(state, thread_id),
         approvals_reviewer: tracked_approvals_reviewer_for_thread(state, thread_id),
         personality: tracked_personality_for_thread(state, thread_id),
+        output_schema: active_requirements_claim_schema_for_thread(state, thread_id),
         ..Default::default()
     }
     .turn_start_params(thread_id, input);
@@ -2626,6 +2721,168 @@ fn tracked_approvals_reviewer_for_thread(state: &PersistedState, thread_id: &str
             .agents
             .get(thread_id)
             .and_then(|agent| agent.approvals_reviewer.clone())
+    })
+}
+
+pub(crate) fn active_requirements_for_thread(
+    state: &PersistedState,
+    thread_id: &str,
+) -> Option<RequirementSetState> {
+    state
+        .projects
+        .values()
+        .find_map(|project| project.agents.get(thread_id))
+        .and_then(|agent| agent.requirements.clone())
+        .filter(|set| set.active && !set.requirements.is_empty())
+}
+
+pub(crate) fn active_requirements_claim_schema_for_thread(
+    state: &PersistedState,
+    thread_id: &str,
+) -> Option<Value> {
+    let set = active_requirements_for_thread(state, thread_id)?;
+    set.enforce_on_turns.then(|| requirements_claim_schema(&set))
+}
+
+pub(crate) fn requirements_claim_schema(set: &RequirementSetState) -> Value {
+    let mut properties = serde_json::Map::new();
+    let mut required = vec!["summary".to_string()];
+    properties.insert(
+        "summary".to_string(),
+        json!({
+            "type": "string",
+            "description": "Concise summary of the actual work completed. Do not use this to hide or merge requirement status."
+        }),
+    );
+    for requirement in &set.requirements {
+        let key = requirement.key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        required.push(key.to_string());
+        let default_description = format!("Requirement: {}", requirement.statement);
+        properties.insert(
+            key.to_string(),
+            claim_property_schema(
+                requirement
+                    .claim_schema_description
+                    .as_deref()
+                    .unwrap_or(default_description.as_str()),
+            ),
+        );
+    }
+    required.push("finalDisposition".to_string());
+    properties.insert(
+        "finalDisposition".to_string(),
+        json!({
+            "type": "string",
+            "enum": ["readyForRequirementsReview", "blockedNeedsOwnerAction", "continueWorkNeeded"],
+            "description": "Blocked and continueWorkNeeded are not success states. Use readyForRequirementsReview only when every active requirement has direct evidence."
+        }),
+    );
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false
+    })
+}
+
+pub(crate) fn requirements_verdict_schema(set: &RequirementSetState) -> Value {
+    let mut properties = serde_json::Map::new();
+    let mut required = Vec::new();
+    for requirement in &set.requirements {
+        let key = requirement.key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        required.push(key.to_string());
+        let default_description = format!("Review requirement: {}", requirement.statement);
+        properties.insert(
+            key.to_string(),
+            verdict_property_schema(
+                requirement
+                    .verdict_schema_description
+                    .as_deref()
+                    .unwrap_or(default_description.as_str()),
+            ),
+        );
+    }
+    required.push("overallVerdict".to_string());
+    required.push("route".to_string());
+    properties.insert(
+        "overallVerdict".to_string(),
+        json!({
+            "type": "string",
+            "enum": ["pass", "fail", "acceptedBlocked", "rejectedBlocked", "needsHumanWaiver"],
+            "description": "Overall gate verdict. Blocked is not success; only acceptedBlocked can leave the source agent, and only when evidence proves a true external dependency."
+        }),
+    );
+    properties.insert(
+        "route".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "destination": {
+                    "type": "string",
+                    "enum": ["sourceAgent", "orchestrator", "owner", "none"]
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Curated routing message with exact failed requirements or owner action."
+                }
+            },
+            "required": ["destination", "message"],
+            "additionalProperties": false
+        }),
+    );
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false
+    })
+}
+
+fn claim_property_schema(description: &str) -> Value {
+    json!({
+        "type": "object",
+        "description": description,
+        "properties": {
+            "claim": {
+                "type": "string",
+                "enum": ["satisfied", "notSatisfied", "blocked", "notApplicable"]
+            },
+            "justification": { "type": "string" },
+            "evidence": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "risk": {
+                "type": "string",
+                "enum": ["none", "low", "medium", "high", "unknown"]
+            }
+        },
+        "required": ["claim", "justification", "evidence", "risk"],
+        "additionalProperties": false
+    })
+}
+
+fn verdict_property_schema(description: &str) -> Value {
+    json!({
+        "type": "object",
+        "description": description,
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "enum": ["pass", "fail", "acceptedBlocked", "rejectedBlocked", "waiverRequired"]
+            },
+            "reason": { "type": "string" },
+            "evidenceAssessment": { "type": "string" },
+            "requiredCorrection": { "type": "string" }
+        },
+        "required": ["verdict", "reason", "evidenceAssessment", "requiredCorrection"],
+        "additionalProperties": false
     })
 }
 
@@ -4153,6 +4410,314 @@ pub async fn orchestrator_send_message(
     }))
 }
 
+pub async fn orchestrator_set_requirements(
+    runtime: &BridgeRuntime,
+    sender_thread_id: &str,
+    recipient_thread_id: Option<&str>,
+    recipient_name: Option<&str>,
+    project_path: Option<&str>,
+    set_payload: Value,
+) -> Result<Value> {
+    let mut set = parse_requirement_set_payload(set_payload)?;
+    validate_requirement_set(&set)?;
+
+    let _state_guard = runtime.lock_state_mutation().await;
+    let mut state = parse_state(&runtime.state_document_value().await);
+    let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
+    let records = all_agent_records(&state, &running);
+    let scoped = scoped_agent_context(&records, sender_thread_id, true)?;
+    let recipient =
+        resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?;
+    if set.id.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+        set.id = Some(format!("requirements-{}", unix_now()));
+    }
+    for project in state.projects.values_mut() {
+        if let Some(agent) = project.agents.get_mut(&recipient.thread_id) {
+            agent.requirements = Some(set.clone());
+            persist_state(runtime, &state).await?;
+            runtime
+                .push_event(crate::models::BridgeEvent::AppStateSnapshot {
+                    state: runtime.state_document_value().await,
+                })
+                .await;
+            return Ok(json!({
+                "threadId": recipient.thread_id,
+                "displayName": recipient.display_name,
+                "requirementSetId": set.id,
+                "requirementCount": set.requirements.len(),
+                "enforceOnTurns": set.enforce_on_turns,
+            }));
+        }
+    }
+    bail!("Recipient `{}` is not a tracked agent.", recipient.thread_id)
+}
+
+pub async fn orchestrator_request_requirements_review(
+    runtime: &BridgeRuntime,
+    sender_thread_id: &str,
+    recipient_thread_id: Option<&str>,
+    recipient_name: Option<&str>,
+    project_path: Option<&str>,
+    note: Option<&str>,
+) -> Result<Value> {
+    let state = parse_state(&runtime.state_document_value().await);
+    let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
+    let records = all_agent_records(&state, &running);
+    let scoped = scoped_agent_context(&records, sender_thread_id, true)?;
+    let recipient =
+        resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?;
+    let set = active_requirements_for_thread(&state, &recipient.thread_id)
+        .ok_or_else(|| anyhow::anyhow!("Recipient `{}` has no active requirements.", recipient.thread_id))?;
+    let mut prompt = requirements_claim_prompt(&set);
+    if let Some(note) = note.map(str::trim).filter(|value| !value.is_empty()) {
+        prompt.push_str("\n\nOperator/orchestrator note:\n");
+        prompt.push_str(note);
+    }
+    let result = send_thread_input(
+        runtime,
+        &state,
+        &recipient.thread_id,
+        Some(&prompt),
+        &[],
+        None,
+        None,
+    )
+    .await?;
+    Ok(json!({
+        "threadId": recipient.thread_id,
+        "displayName": recipient.display_name,
+        "turn": result,
+        "requirementSetId": set.id,
+    }))
+}
+
+fn parse_requirement_set_payload(payload: Value) -> Result<RequirementSetState> {
+    if payload.get("requirements").is_some() {
+        Ok(serde_json::from_value(payload).context("invalid requirement set payload")?)
+    } else if payload.is_array() {
+        Ok(RequirementSetState {
+            requirements: serde_json::from_value(payload).context("invalid requirements array")?,
+            ..Default::default()
+        })
+    } else {
+        bail!("requirements payload must be an object with `requirements` or an array")
+    }
+}
+
+fn validate_requirement_set(set: &RequirementSetState) -> Result<()> {
+    let mut keys = std::collections::BTreeSet::new();
+    for requirement in &set.requirements {
+        let key = requirement.key.trim();
+        if key.is_empty() {
+            bail!("requirement key must be non-empty");
+        }
+        if key.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+            bail!("requirement key `{key}` must be semantic, not numbered");
+        }
+        if !key
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            bail!("requirement key `{key}` must contain only letters, numbers, and underscores");
+        }
+        if requirement.statement.trim().is_empty() {
+            bail!("requirement `{key}` statement must be non-empty");
+        }
+        if !keys.insert(key.to_string()) {
+            bail!("duplicate requirement key `{key}`");
+        }
+    }
+    if keys.is_empty() {
+        bail!("at least one requirement is required");
+    }
+    Ok(())
+}
+
+fn requirements_claim_prompt(set: &RequirementSetState) -> String {
+    let mut prompt = String::from(
+        "Active Requirements are attached to this task. You must finish this turn with the required structured JSON claim packet. Do not summarize around requirements. For each top-level requirement property, make a direct claim with concrete evidence. Blocked is not success; use blocked only for a true external dependency with proof.\n\nRequirements:\n",
+    );
+    for requirement in &set.requirements {
+        prompt.push_str(&format!(
+            "- `{}` [{}; verification={}]: {}\n",
+            requirement.key, requirement.severity, requirement.verification_method, requirement.statement
+        ));
+    }
+    prompt
+}
+
+pub(crate) fn requirements_review_target_for_thread(
+    state: &PersistedState,
+    source_thread_id: &str,
+    set: &RequirementSetState,
+) -> Option<String> {
+    if let Some(thread_id) = set
+        .reviewer_thread_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(thread_id.to_string());
+    }
+    for project in state.projects.values() {
+        if !project.agents.contains_key(source_thread_id) {
+            continue;
+        }
+        if let Some((thread_id, _)) = project.agents.iter().find(|(_, agent)| {
+            matches!(
+                agent.role.as_deref(),
+                Some("requirements-reviewer") | Some("requirementsReviewer")
+            )
+        }) {
+            return Some(thread_id.clone());
+        }
+        return project.orchestrator_thread_id.clone();
+    }
+    None
+}
+
+pub(crate) fn requirements_review_prompt(
+    set: &RequirementSetState,
+    source_label: &str,
+    source_thread_id: &str,
+    turn_id: &str,
+    claim_text: &str,
+) -> String {
+    let mut prompt = format!(
+        "Perform an adversarial Requirements Review.\n\nSource agent: {source_label}\nSource thread ID: {source_thread_id}\nSource turn ID: {turn_id}\n\nRules:\n- Compare each requirement against the actual claim/evidence.\n- Fail missing, weak, circular, or unverifiable evidence.\n- Reject fake blockers.\n- Accept true external blockers only with concrete proof.\n- Never implement fixes and never relax requirements.\n- Shell/chrome or scope exclusions cannot erase core in-scope requirements.\n\nRequirements:\n"
+    );
+    for requirement in &set.requirements {
+        prompt.push_str(&format!(
+            "- `{}` [{}; verification={}]: {}\n",
+            requirement.key, requirement.severity, requirement.verification_method, requirement.statement
+        ));
+    }
+    prompt.push_str("\nSource agent claim packet:\n");
+    prompt.push_str(claim_text.trim());
+    prompt
+}
+
+pub(crate) async fn record_requirement_packet(
+    runtime: &BridgeRuntime,
+    source_thread_id: &str,
+    packet: RequirementPacketState,
+) -> Result<()> {
+    let _state_guard = runtime.lock_state_mutation().await;
+    let mut state = parse_state(&runtime.state_document_value().await);
+    for project in state.projects.values_mut() {
+        if let Some(agent) = project.agents.get_mut(source_thread_id) {
+            agent.requirement_packets.push(packet);
+            persist_state(runtime, &state).await?;
+            runtime
+                .push_event(crate::models::BridgeEvent::AppStateSnapshot {
+                    state: runtime.state_document_value().await,
+                })
+                .await;
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn mark_requirements_review_in_progress(
+    runtime: &BridgeRuntime,
+    source_thread_id: &str,
+    reviewer_thread_id: &str,
+    set: &RequirementSetState,
+    claim_payload: Value,
+) -> Result<()> {
+    let _state_guard = runtime.lock_state_mutation().await;
+    let mut state = parse_state(&runtime.state_document_value().await);
+    for project in state.projects.values_mut() {
+        let has_source = project.agents.contains_key(source_thread_id);
+        let has_reviewer = project.agents.contains_key(reviewer_thread_id);
+        if !has_source {
+            continue;
+        }
+        if let Some(source) = project.agents.get_mut(source_thread_id) {
+            source.requirement_review = Some(RequirementReviewBindingState {
+                source_thread_id: source_thread_id.to_string(),
+                reviewer_thread_id: reviewer_thread_id.to_string(),
+                requirement_set_id: set.id.clone(),
+                status: "inReview".to_string(),
+                latest_claim_packet: Some(claim_payload),
+                latest_verdict_packet: None,
+                updated_at: unix_now(),
+            });
+        }
+        if has_reviewer
+            && let Some(reviewer) = project.agents.get_mut(reviewer_thread_id)
+        {
+            reviewer.parent_thread_id = Some(source_thread_id.to_string());
+            reviewer.hidden_from_peer_list = true;
+        }
+        project.updated_at = Some(unix_now());
+        state.updated_at = Some(unix_now());
+        persist_state(runtime, &state).await?;
+        runtime
+            .push_event(crate::models::BridgeEvent::AppStateSnapshot {
+                state: runtime.state_document_value().await,
+            })
+            .await;
+        return Ok(());
+    }
+    Ok(())
+}
+
+pub(crate) async fn mark_requirements_review_verdict(
+    runtime: &BridgeRuntime,
+    source_thread_id: &str,
+    reviewer_thread_id: &str,
+    verdict_payload: Value,
+) -> Result<()> {
+    let _state_guard = runtime.lock_state_mutation().await;
+    let mut state = parse_state(&runtime.state_document_value().await);
+    for project in state.projects.values_mut() {
+        let Some(source) = project.agents.get_mut(source_thread_id) else {
+            continue;
+        };
+        let status = requirement_status_from_verdict(&verdict_payload);
+        if let Some(binding) = source.requirement_review.as_mut() {
+            binding.reviewer_thread_id = reviewer_thread_id.to_string();
+            binding.status = status;
+            binding.latest_verdict_packet = Some(verdict_payload);
+            binding.updated_at = unix_now();
+        } else {
+            source.requirement_review = Some(RequirementReviewBindingState {
+                source_thread_id: source_thread_id.to_string(),
+                reviewer_thread_id: reviewer_thread_id.to_string(),
+                requirement_set_id: source.requirements.as_ref().and_then(|set| set.id.clone()),
+                status,
+                latest_claim_packet: None,
+                latest_verdict_packet: Some(verdict_payload),
+                updated_at: unix_now(),
+            });
+        }
+        project.updated_at = Some(unix_now());
+        state.updated_at = Some(unix_now());
+        persist_state(runtime, &state).await?;
+        runtime
+            .push_event(crate::models::BridgeEvent::AppStateSnapshot {
+                state: runtime.state_document_value().await,
+            })
+            .await;
+        return Ok(());
+    }
+    Ok(())
+}
+
+fn requirement_status_from_verdict(verdict_payload: &Value) -> String {
+    match verdict_payload.get("overallVerdict").and_then(Value::as_str) {
+        Some("pass") => "passed",
+        Some("fail") => "failed",
+        Some("acceptedBlocked") => "blocked",
+        Some("rejectedBlocked") => "failed",
+        Some("needsHumanWaiver") => "waiverRequired",
+        _ => "inReview",
+    }
+    .to_string()
+}
+
 pub async fn orchestrator_spawn_agent(
     runtime: &BridgeRuntime,
     sender_thread_id: &str,
@@ -4181,7 +4746,8 @@ pub async fn orchestrator_spawn_agent(
     let target_role = match role.unwrap_or("worker") {
         "worker" => "worker",
         "qa" => "qa",
-        other => bail!("Orchestrators may only spawn worker or qa agents, not `{other}`."),
+        "requirements-reviewer" | "requirementsReviewer" => "requirements-reviewer",
+        other => bail!("Orchestrators may only spawn worker, qa, or requirements-reviewer agents, not `{other}`."),
     };
     let authoritative =
         authoritative_spawn_defaults_for_project(&state, sender.project_path.as_str()).ok_or_else(
@@ -4898,6 +5464,57 @@ mod tests {
         state.projects.insert("alpha".to_string(), project_alpha);
         state.projects.insert("beta".to_string(), project_beta);
         state
+    }
+
+    fn sample_requirement_set() -> RequirementSetState {
+        RequirementSetState {
+            requirements: vec![
+                RequirementState {
+                    key: "nativeGuiIsSourceOfTruth".to_string(),
+                    statement: "The web GUI must mirror the native Flutter GUI.".to_string(),
+                    severity: "blocker".to_string(),
+                    claim_schema_description: None,
+                    verdict_schema_description: None,
+                    verification_method: "diffReview".to_string(),
+                },
+                RequirementState {
+                    key: "noInventedWebsocketEventShapes".to_string(),
+                    statement: "Do not invent websocket or HTTP event shapes.".to_string(),
+                    severity: "blocker".to_string(),
+                    claim_schema_description: None,
+                    verdict_schema_description: None,
+                    verification_method: "diffReview".to_string(),
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn requirements_claim_schema_uses_required_semantic_top_level_properties() {
+        let schema = requirements_claim_schema(&sample_requirement_set());
+        let required = schema
+            .get("required")
+            .and_then(Value::as_array)
+            .expect("required array");
+        assert!(required.iter().any(|value| value.as_str() == Some("nativeGuiIsSourceOfTruth")));
+        assert!(required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
+        assert!(required.iter().any(|value| value.as_str() == Some("summary")));
+        assert!(required.iter().any(|value| value.as_str() == Some("finalDisposition")));
+        assert!(schema.get("properties").and_then(|value| value.get("requirements")).is_none());
+    }
+
+    #[test]
+    fn requirements_verdict_schema_mirrors_requirement_keys() {
+        let schema = requirements_verdict_schema(&sample_requirement_set());
+        let required = schema
+            .get("required")
+            .and_then(Value::as_array)
+            .expect("required array");
+        assert!(required.iter().any(|value| value.as_str() == Some("nativeGuiIsSourceOfTruth")));
+        assert!(required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
+        assert!(required.iter().any(|value| value.as_str() == Some("overallVerdict")));
+        assert!(required.iter().any(|value| value.as_str() == Some("route")));
     }
 
     fn scoped_ids(scoped: &ScopedContext) -> Vec<&str> {

@@ -69,6 +69,7 @@ Acceptable context includes:
 - whether content, shell, or both are in scope
 - exact reference/actual region to grade
 - explicit exclusions such as shell out of scope, device frame out of scope, or fake live data forbidden
+- dominant in-scope page artifact, such as route map/navigation cockpit, calendar grid, table/list, dashboard data canvas, inspector/detail rail, or editor canvas
 - neutral grading dimensions such as product intent, page grammar, workflow clarity, semantic cleanliness, density discipline, style drift, and shell restraint
 
 Unacceptable context includes:
@@ -100,6 +101,12 @@ metrics, providers, charts, exports, or actions that the task forbids, treat tha
 as a calibration/context issue. Ask the worker to rerun `design-review` with
 explicit honest-data constraints and require the review to grade unavailable or
 readiness states for geometry and polish.
+
+Do not accept honest-data constraints as an excuse for missing the dominant
+reference composition. If a GPS/navigation page has a blank map placeholder
+instead of a route-map/navigation cockpit, or any page omits its primary product
+artifact, require a FAIL or rerun with a neutral scope that names the missing
+core artifact.
 
 Use visual judgment, not pixel-perfect matching. The question is whether the implementation strongly fulfills the reference direction and product goal.
 

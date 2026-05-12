@@ -1,6 +1,6 @@
 ---
 name: robdex-orchestrator
-description: Use Robdex communication via `robdex`. This skill is only for the tool surface and shared usage rules. Role behavior lives in the base instructions. [skill-hash:0f9b7c1]
+description: Use Robdex communication via `robdex`. This skill is only for the tool surface and shared usage rules. Role behavior lives in the base instructions. [skill-hash:a782d9f]
 ---
 
 # Robdex Orchestrator
@@ -32,11 +32,41 @@ Use this skill for Robdex-backed communication.
   - `robdex list-pending-approvals`
   - `robdex decline-approval --approval-id <id> [--message "<note>"]`
 - Agent lifecycle and bookkeeping:
-  - `robdex spawn-agent --role worker|qa|hidden ...`
+  - `robdex spawn-agent --role worker|qa|hidden|requirements-reviewer ...`
   - `robdex archive-agent ...`
   - `robdex rename-agent ...`
   - `robdex set-worker-metadata ...`
   - `robdex handoff --help`
+- Requirements:
+  - `robdex set-requirements --name "<agent name>" --requirements-file /absolute/path/to/requirements.json`
+  - `robdex request-requirements-review --name "<agent name>" [--note "<checkpoint context>"]`
+
+## Requirements
+
+Use Requirements when task constraints must become an explicit completion contract rather than prompt prose.
+
+The requirements file is JSON. It may be either an array of requirement objects or an object with a `requirements` array. Use semantic keys, not numbered keys.
+
+```json
+{
+  "requirements": [
+    {
+      "key": "nativeGuiIsSourceOfTruth",
+      "statement": "The web GUI must mirror the native Flutter GUI. Native chat timeline, composer, controls, and density are source of truth.",
+      "severity": "blocker",
+      "verificationMethod": "diffReview"
+    },
+    {
+      "key": "noInventedWebsocketEventShapes",
+      "statement": "Do not invent websocket or HTTP event shapes. Use the existing bridge protocol unless deliberately updating the protocol and proving compatibility.",
+      "severity": "blocker",
+      "verificationMethod": "diffReview"
+    }
+  ]
+}
+```
+
+When active, Robdex injects a structured output schema into the source agent's turns. Each requirement becomes a required top-level JSON property. A completed claim is routed to a requirements reviewer when one is configured or available in the same project.
 
 ## Shared Guardrails
 
