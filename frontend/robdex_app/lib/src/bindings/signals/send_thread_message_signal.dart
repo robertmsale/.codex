@@ -12,15 +12,9 @@ class SendThreadMessageSignal {
 
   static SendThreadMessageSignal deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
-    final text = deserializer.deserializeString();
-    final localImagePaths = <String>[];
-    final localImagePathsLength = deserializer.deserializeLength();
-    for (var i = 0; i < localImagePathsLength; i++) {
-      localImagePaths.add(deserializer.deserializeString());
-    }
     final instance = SendThreadMessageSignal(
-      text: text,
-      localImagePaths: localImagePaths,
+      text: deserializer.deserializeString(),
+      localImagePaths: TraitHelpers.deserializeVectorStr(deserializer),
       requirementSetJson: deserializer.deserializeString(),
     );
     deserializer.decreaseContainerDepth();
@@ -55,10 +49,7 @@ class SendThreadMessageSignal {
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeString(text);
-    serializer.serializeLength(localImagePaths.length);
-    for (final item in localImagePaths) {
-      serializer.serializeString(item);
-    }
+    TraitHelpers.serializeVectorStr(localImagePaths, serializer);
     serializer.serializeString(requirementSetJson);
     serializer.decreaseContainerDepth();
   }
@@ -76,12 +67,16 @@ class SendThreadMessageSignal {
 
     return other is SendThreadMessageSignal
       && text == other.text
-      && _sameStringList(localImagePaths, other.localImagePaths)
+      && listEquals(localImagePaths, other.localImagePaths)
       && requirementSetJson == other.requirementSetJson;
   }
 
   @override
-  int get hashCode => Object.hash(text, Object.hashAll(localImagePaths), requirementSetJson);
+  int get hashCode => Object.hash(
+        text,
+        localImagePaths,
+        requirementSetJson,
+      );
 
   @override
   String toString() {
@@ -98,18 +93,6 @@ class SendThreadMessageSignal {
 
     return fullString ?? 'SendThreadMessageSignal';
   }
-}
-
-bool _sameStringList(List<String> a, List<String> b) {
-  if (a.length != b.length) {
-    return false;
-  }
-  for (var i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) {
-      return false;
-    }
-  }
-  return true;
 }
 
 extension SendThreadMessageSignalDartSignalExt on SendThreadMessageSignal {

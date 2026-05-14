@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,10 +18,13 @@ use crate::signals::{
     FetchThreadHistorySignal, InitializeWorkbenchSignal, MoveSelectedThreadToGroupSignal, ReloadWorkbenchSignal,
     RenameThreadGroupSignal, RenameThreadSignal, SelectProjectSignal, SelectThreadSignal,
     SendThreadMessageSignal, SetProjectOrchestratorSignal, SetThreadRunningStateSignal,
-    SpawnAgentSignal, TerminateCommandExecutionSignal, ThreadCompactSignal, UpdateProjectSignal,
-    UpdateThreadSettingsSignal, UpdateWorkerMetadataSignal, InterruptThreadSignal, ThreadHistoryStateSignal,
-    HookToastSignal, WarmHandoffSignal, WorkbenchStateSignal,
+    SpawnAgentSignal, TerminalCloseAllSignal, TerminalCloseSignal, TerminalInputSignal,
+    TerminalEventSignal, TerminalOpenSignal, TerminalResizeSignal, TerminateCommandExecutionSignal,
+    ThreadCompactSignal, UpdateProjectSignal, UpdateThreadSettingsSignal,
+    UpdateWorkerMetadataSignal, InterruptThreadSignal, ThreadHistoryStateSignal, HookToastSignal,
+    WarmHandoffSignal, WorkbenchStateSignal,
 };
+use crate::terminal::TerminalRegistry;
 
 enum Action {
     Initialize { host: String, port: u16 },
@@ -120,6 +124,24 @@ enum Action {
     RenameThread(String),
     ArchiveThread,
     WarmHandoff(String),
+    TerminalOpen {
+        request_id: String,
+        host: String,
+        username: String,
+        cols: u32,
+        rows: u32,
+    },
+    TerminalInput {
+        session_id: String,
+        data: String,
+    },
+    TerminalResize {
+        session_id: String,
+        cols: u32,
+        rows: u32,
+    },
+    TerminalClose(String),
+    TerminalCloseAll,
 }
 
 pub async fn run() {
@@ -131,8 +153,10 @@ pub async fn run() {
     let mut live_session: Option<LiveSessionHandle> = None;
     let mut live_event_rx: Option<mpsc::UnboundedReceiver<LiveSessionEvent>> = None;
     let mut initialized = false;
+    let mut terminals = TerminalRegistry::new();
 
     loop {
+        terminals.reap_finished();
         select! {
             maybe_action = rx.recv() => {
                 let Some(action) = maybe_action else {
@@ -144,7 +168,7 @@ pub async fn run() {
                 apply_optimistic_action(&mut current_view, &action);
                 let show_loading = current_view.is_none();
                 emit_state(current_view.as_ref(), show_loading, "");
-                let result = handle_action(&mut client, &current_view, action).await;
+                let result = handle_action(&mut client, &current_view, &mut terminals, action).await;
                 match result {
                     Ok(next_view) => {
                         current_view = Some(next_view);
@@ -210,9 +234,14 @@ pub async fn run() {
                         live_session = None;
                     }
                 }
+                terminals.reap_finished();
+            }
+            _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                terminals.reap_finished();
             }
         }
     }
+    terminals.close_all();
 }
 
 fn apply_optimistic_action(current_view: &mut Option<WorkbenchViewData>, action: &Action) {
@@ -590,7 +619,27 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
         Action::RenameThread(signal.message.name)
     });
     spawn_unit::<ArchiveThreadSignal, _>(tx.clone(), || Action::ArchiveThread);
-    spawn_map::<WarmHandoffSignal, _>(tx, |signal| Action::WarmHandoff(signal.message.prompt));
+    spawn_map::<WarmHandoffSignal, _>(tx.clone(), |signal| Action::WarmHandoff(signal.message.prompt));
+    spawn_map::<TerminalOpenSignal, _>(tx.clone(), |signal| Action::TerminalOpen {
+        request_id: signal.message.request_id,
+        host: signal.message.host,
+        username: signal.message.username,
+        cols: signal.message.cols,
+        rows: signal.message.rows,
+    });
+    spawn_map::<TerminalInputSignal, _>(tx.clone(), |signal| Action::TerminalInput {
+        session_id: signal.message.session_id,
+        data: signal.message.data,
+    });
+    spawn_map::<TerminalResizeSignal, _>(tx.clone(), |signal| Action::TerminalResize {
+        session_id: signal.message.session_id,
+        cols: signal.message.cols,
+        rows: signal.message.rows,
+    });
+    spawn_map::<TerminalCloseSignal, _>(tx.clone(), |signal| {
+        Action::TerminalClose(signal.message.session_id)
+    });
+    spawn_unit::<TerminalCloseAllSignal, _>(tx, || Action::TerminalCloseAll);
 }
 
 fn spawn_unit<TSignal, F>(tx: mpsc::UnboundedSender<Action>, map: F)
@@ -624,6 +673,7 @@ where
 async fn handle_action(
     client: &mut Option<WorkbenchClient>,
     current_view: &Option<WorkbenchViewData>,
+    terminals: &mut TerminalRegistry,
     action: Action,
 ) -> Result<WorkbenchViewData> {
     match action {
@@ -1058,6 +1108,46 @@ async fn handle_action(
                 .ok_or_else(|| anyhow!("Not connected"))?
                 .warm_handoff(&sender_thread_id, &recipient_thread_id, &project_path, &prompt)
                 .await
+        }
+        Action::TerminalOpen {
+            request_id,
+            host,
+            username,
+            cols,
+            rows,
+        } => {
+            if let Err(error) = terminals.open(request_id.clone(), host.clone(), username.clone(), cols, rows) {
+                TerminalEventSignal {
+                    request_id,
+                    session_id: String::new(),
+                    kind: "error".to_string(),
+                    data: error.to_string(),
+                    host,
+                    username,
+                }
+                .send_signal_to_dart();
+            }
+            current_view_clone(current_view)
+        }
+        Action::TerminalInput { session_id, data } => {
+            terminals.input(&session_id, &data)?;
+            current_view_clone(current_view)
+        }
+        Action::TerminalResize {
+            session_id,
+            cols,
+            rows,
+        } => {
+            terminals.resize(&session_id, cols, rows)?;
+            current_view_clone(current_view)
+        }
+        Action::TerminalClose(session_id) => {
+            terminals.close(&session_id);
+            current_view_clone(current_view)
+        }
+        Action::TerminalCloseAll => {
+            terminals.close_all();
+            current_view_clone(current_view)
         }
     }
 }

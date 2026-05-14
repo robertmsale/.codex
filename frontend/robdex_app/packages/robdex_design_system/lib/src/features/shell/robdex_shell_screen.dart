@@ -41,6 +41,7 @@ class RobdexShellScreen extends StatelessWidget {
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
     this.bridgeBaseUri,
+    this.chatBottomDrawer,
   });
 
   final bool enableGraphics;
@@ -72,6 +73,7 @@ class RobdexShellScreen extends StatelessWidget {
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
   final Uri? bridgeBaseUri;
+  final Widget? chatBottomDrawer;
 
   @override
   Widget build(BuildContext context) {
@@ -148,6 +150,7 @@ class RobdexShellScreen extends StatelessWidget {
                               onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
                               onUpdateWorkerMetadata: onUpdateWorkerMetadata,
                               bridgeBaseUri: bridgeBaseUri,
+                              chatBottomDrawer: chatBottomDrawer,
                             ),
                           ),
                   );
@@ -189,6 +192,7 @@ class _WideShell extends StatefulWidget {
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
     required this.bridgeBaseUri,
+    required this.chatBottomDrawer,
   });
 
   final WorkbenchViewData workbench;
@@ -218,6 +222,7 @@ class _WideShell extends StatefulWidget {
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
   final Uri? bridgeBaseUri;
+  final Widget? chatBottomDrawer;
 
   @override
   State<_WideShell> createState() => _WideShellState();
@@ -274,58 +279,77 @@ class _WideShellState extends State<_WideShell> {
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(28, 16, 62, 22),
                 child: RepaintBoundary(
-                  child: ChatTimeline(
-                    threadId: workbench.selection.threadId,
-                    entries: workbench.chatEntries,
-                    title: workbench.selection.threadName,
-                    contextWindowRemainingPercent:
-                        workbench.contextWindowRemainingPercent,
-                    onSend: widget.onSendMessage,
-                    onInterrupt: widget.onInterruptThread,
-                    onTerminateCommandExecution: widget.onTerminateCommandExecution,
-                    bridgeBaseUri: widget.bridgeBaseUri,
-                    composerEnabled: workbench.selection.threadId != null,
-                    isRunning: workbench.selection.isRunning,
-                    selection: workbench.selection,
-                    availableModels: workbench.availableModels,
-                    onSettingsChanged: widget.onSettingsChanged,
-                    requirementReview: workbench.requirementReview,
-                    onOpenThread: widget.onThreadSelected,
-                    headerControls: _DesktopThreadControls(
-                      selection: workbench.selection,
-                      availableModels: workbench.availableModels,
-                      liveProcesses: workbench.liveProcesses,
-                      pendingApprovalCount: workbench.pendingApprovals.length,
-                      onOpenHistory: widget.onOpenHistory,
-                      onCompactThread: widget.onCompactThread,
-                      onTerminateCommandExecution: widget.onTerminateCommandExecution,
-                      onSettingsChanged: widget.onSettingsChanged,
-                      onRunningStateChanged: widget.onRunningStateChanged,
-                      onMore: () => _showInspectorDialog(
-                        context,
-                        workbench: workbench,
-                        onThreadSelected: widget.onThreadSelected,
-                        bridgeBaseUri: widget.bridgeBaseUri,
-                        onApprovalDecision: widget.onApprovalDecision,
-                        onSettingsChanged: widget.onSettingsChanged,
-                        onRunningStateChanged: widget.onRunningStateChanged,
-                        onRenameThread: widget.onRenameThread,
-                        onArchiveThread: widget.onArchiveThread,
-                        onWarmHandoff: widget.onWarmHandoff,
-                        onSetProjectOrchestrator: widget.onSetProjectOrchestrator,
-                        onCreateThreadGroup: widget.onCreateThreadGroup,
-                        onRenameThreadGroup: widget.onRenameThreadGroup,
-                        onDeleteThreadGroup: widget.onDeleteThreadGroup,
-                        onArchiveThreadGroup: widget.onArchiveThreadGroup,
-                        onMoveSelectedThreadToGroup: widget.onMoveSelectedThreadToGroup,
-                        onUpdateWorkerMetadata: widget.onUpdateWorkerMetadata,
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: ChatTimeline(
+                          threadId: workbench.selection.threadId,
+                          entries: workbench.chatEntries,
+                          title: workbench.selection.threadName,
+                          contextWindowRemainingPercent:
+                              workbench.contextWindowRemainingPercent,
+                          onSend: widget.onSendMessage,
+                          onInterrupt: widget.onInterruptThread,
+                          onTerminateCommandExecution:
+                              widget.onTerminateCommandExecution,
+                          bridgeBaseUri: widget.bridgeBaseUri,
+                          composerEnabled: workbench.selection.threadId != null,
+                          isRunning: workbench.selection.isRunning,
+                          selection: workbench.selection,
+                          availableModels: workbench.availableModels,
+                          onSettingsChanged: widget.onSettingsChanged,
+                          requirementReview: workbench.requirementReview,
+                          onOpenThread: widget.onThreadSelected,
+                          headerControls: _DesktopThreadControls(
+                            selection: workbench.selection,
+                            availableModels: workbench.availableModels,
+                            liveProcesses: workbench.liveProcesses,
+                            pendingApprovalCount:
+                                workbench.pendingApprovals.length,
+                            onOpenHistory: widget.onOpenHistory,
+                            onCompactThread: widget.onCompactThread,
+                            onTerminateCommandExecution:
+                                widget.onTerminateCommandExecution,
+                            onSettingsChanged: widget.onSettingsChanged,
+                            onRunningStateChanged:
+                                widget.onRunningStateChanged,
+                            onMore: () => _showInspectorDialog(
+                              context,
+                              workbench: workbench,
+                              onThreadSelected: widget.onThreadSelected,
+                              bridgeBaseUri: widget.bridgeBaseUri,
+                              onApprovalDecision: widget.onApprovalDecision,
+                              onSettingsChanged: widget.onSettingsChanged,
+                              onRunningStateChanged:
+                                  widget.onRunningStateChanged,
+                              onRenameThread: widget.onRenameThread,
+                              onArchiveThread: widget.onArchiveThread,
+                              onWarmHandoff: widget.onWarmHandoff,
+                              onSetProjectOrchestrator:
+                                  widget.onSetProjectOrchestrator,
+                              onCreateThreadGroup: widget.onCreateThreadGroup,
+                              onRenameThreadGroup:
+                                  widget.onRenameThreadGroup,
+                              onDeleteThreadGroup:
+                                  widget.onDeleteThreadGroup,
+                              onArchiveThreadGroup:
+                                  widget.onArchiveThreadGroup,
+                              onMoveSelectedThreadToGroup:
+                                  widget.onMoveSelectedThreadToGroup,
+                              onUpdateWorkerMetadata:
+                                  widget.onUpdateWorkerMetadata,
+                            ),
+                          ),
+                          overlay: _ApprovalOverlay(
+                            selection: workbench.selection,
+                            pendingApprovals: workbench.pendingApprovals,
+                            onApprovalDecision: widget.onApprovalDecision,
+                          ),
+                        ),
                       ),
-                    ),
-                    overlay: _ApprovalOverlay(
-                      selection: workbench.selection,
-                      pendingApprovals: workbench.pendingApprovals,
-                      onApprovalDecision: widget.onApprovalDecision,
-                    ),
+                      if (widget.chatBottomDrawer != null)
+                        widget.chatBottomDrawer!,
+                    ],
                   ),
                 ),
               ),

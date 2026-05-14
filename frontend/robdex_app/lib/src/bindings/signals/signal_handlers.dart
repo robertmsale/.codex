@@ -10,6 +10,15 @@ final assignRustSignal = <String, void Function(Uint8List, Uint8List)>{
     _hookToastSignalStreamController.add(rustSignal);
     HookToastSignal.latestRustSignal = rustSignal;
   },
+  'TerminalEventSignal': (Uint8List messageBytes, Uint8List binary) {
+    final message = TerminalEventSignal.bincodeDeserialize(messageBytes);
+    final rustSignal = RustSignalPack(
+      message,
+      binary,
+    );
+    _terminalEventSignalStreamController.add(rustSignal);
+    TerminalEventSignal.latestRustSignal = rustSignal;
+  },
   'ThreadHistoryStateSignal': (Uint8List messageBytes, Uint8List binary) {
     final message = ThreadHistoryStateSignal.bincodeDeserialize(messageBytes);
     final rustSignal = RustSignalPack(

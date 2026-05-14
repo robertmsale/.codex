@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../bindings/bindings.dart';
 import '../core/state/workbench_controller.dart';
+import '../terminal/integrated_terminal.dart';
 import '../web/dom_mirror/dom_mirror.dart';
 
 class RobdexApp extends StatelessWidget {
@@ -59,6 +60,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   late final Future<FragmentProgram?> _nebulaProgramFuture;
   late final Future<FragmentProgram?> _peripheralProgramFuture;
   late final DomMirrorController _domMirrorController;
+  late final IntegratedTerminalController _terminalController;
   StreamSubscription<RustSignalPack<HookToastSignal>>? _hookToastSubscription;
   bool _didRequestConnect = false;
   late final TextEditingController _hostController;
@@ -78,6 +80,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     _nebulaProgramFuture = _loadNebulaProgram();
     _peripheralProgramFuture = _loadPeripheralProgram();
     _domMirrorController = DomMirrorController();
+    _terminalController = IntegratedTerminalController();
     _hostController = TextEditingController(text: '127.0.0.1');
     _portController = TextEditingController(text: '42080');
     _hostFocusNode = FocusNode();
@@ -113,6 +116,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     });
     _listener = AppLifecycleListener(
       onExitRequested: () async {
+        _terminalController.closeAll();
         finalizeRust();
         return AppExitResponse.exit;
       },
@@ -125,6 +129,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     _listener.dispose();
     _spaceController.dispose();
     _domMirrorController.dispose();
+    _terminalController.dispose();
     _hookToastSubscription?.cancel();
     _hostFocusNode.dispose();
     _portFocusNode.dispose();
@@ -407,6 +412,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             clearBlocked: draft.clearBlocked,
           ),
           bridgeBaseUri: _bridgeBaseUri,
+          chatBottomDrawer: IntegratedTerminalDrawer(
+            controller: _terminalController,
+          ),
         );
       },
     );

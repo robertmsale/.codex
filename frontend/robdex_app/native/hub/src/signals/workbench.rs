@@ -177,6 +177,36 @@ pub struct WarmHandoffSignal {
     pub prompt: String,
 }
 
+#[derive(Deserialize, DartSignal)]
+pub struct TerminalOpenSignal {
+    pub request_id: String,
+    pub host: String,
+    pub username: String,
+    pub cols: u32,
+    pub rows: u32,
+}
+
+#[derive(Deserialize, DartSignal)]
+pub struct TerminalInputSignal {
+    pub session_id: String,
+    pub data: String,
+}
+
+#[derive(Deserialize, DartSignal)]
+pub struct TerminalResizeSignal {
+    pub session_id: String,
+    pub cols: u32,
+    pub rows: u32,
+}
+
+#[derive(Deserialize, DartSignal)]
+pub struct TerminalCloseSignal {
+    pub session_id: String,
+}
+
+#[derive(Deserialize, DartSignal)]
+pub struct TerminalCloseAllSignal;
+
 #[derive(Serialize, RustSignal)]
 pub struct WorkbenchStateSignal {
     pub view_json: String,
@@ -197,4 +227,14 @@ pub struct HookToastSignal {
     pub detail: String,
     pub copy_text: String,
     pub duration_ms: u32,
+}
+
+#[derive(Serialize, RustSignal)]
+pub struct TerminalEventSignal {
+    pub request_id: String,
+    pub session_id: String,
+    pub kind: String,
+    pub data: String,
+    pub host: String,
+    pub username: String,
 }

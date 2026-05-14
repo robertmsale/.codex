@@ -121,13 +121,11 @@ class UpdateProjectSignal {
       qaModelId: qaModelId ?? this.qaModelId,
       qaReasoningEffort: qaReasoningEffort ?? this.qaReasoningEffort,
       designerModelId: designerModelId ?? this.designerModelId,
-      designerReasoningEffort:
-          designerReasoningEffort ?? this.designerReasoningEffort,
+      designerReasoningEffort: designerReasoningEffort ?? this.designerReasoningEffort,
       orchestratorDeveloperInstructions: orchestratorDeveloperInstructions ?? this.orchestratorDeveloperInstructions,
       workerDeveloperInstructions: workerDeveloperInstructions ?? this.workerDeveloperInstructions,
       qaDeveloperInstructions: qaDeveloperInstructions ?? this.qaDeveloperInstructions,
-      designerDeveloperInstructions:
-          designerDeveloperInstructions ?? this.designerDeveloperInstructions,
+      designerDeveloperInstructions: designerDeveloperInstructions ?? this.designerDeveloperInstructions,
       operatorDeveloperInstructions: operatorDeveloperInstructions ?? this.operatorDeveloperInstructions,
       hiddenDeveloperInstructions: hiddenDeveloperInstructions ?? this.hiddenDeveloperInstructions,
     );

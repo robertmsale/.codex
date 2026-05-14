@@ -1,5 +1,6 @@
 mod runtime;
 mod signals;
+mod terminal;
 
 use rinf::{dart_shutdown, write_interface};
 use tokio::spawn;

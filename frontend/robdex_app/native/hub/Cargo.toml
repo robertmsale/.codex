@@ -17,3 +17,6 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 tokio_with_wasm = { version = "0.8.5", features = ["rt", "sync", "time", "macros"] }
 wasm-bindgen = "0.2.100"
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+portable-pty = "0.8"
