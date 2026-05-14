@@ -142,6 +142,91 @@ void main() {
         .writeAsBytes(bytes!.buffer.asUint8List());
   }, skip: true);
 
+  testWidgets('requirements commentary packet renders summary without raw json', (
+    WidgetTester tester,
+  ) async {
+    const commentaryJson = '''
+{"summary":"Still validating bridge health before final review.","requirements":null}
+''';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: Scaffold(
+          body: ChatTimeline(
+            threadId: 'worker',
+            entries: const [
+              ChatEntry(
+                id: 'claim-commentary',
+                author: 'Assistant',
+                displayLabel: 'Assistant',
+                timestamp: null,
+                body: commentaryJson,
+              ),
+            ],
+            title: 'Worker',
+            contextWindowRemainingPercent: 92,
+            onSend: (_) {},
+            onInterrupt: () {},
+            composerEnabled: false,
+            isRunning: false,
+            showComposer: false,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Requirements Commentary'), findsOneWidget);
+    expect(find.text('Still validating bridge health before final review.'), findsOneWidget);
+    expect(find.text('commentary'), findsOneWidget);
+    expect(find.textContaining('"requirements"'), findsNothing);
+  });
+
+  testWidgets('nested requirements claim packet renders claim rows without raw json', (
+    WidgetTester tester,
+  ) async {
+    const claimJson = '''
+{"summary":"Frontend rendering now understands nested Requirements packets.","requirements":{"chatRendersNullPacket":{"claim":"satisfied","evidence":["Widget test covers requirements:null rendering."],"justification":"The card renders the summary and hides raw JSON.","risk":"low"},"chatRendersClaimObject":{"claim":"satisfied","evidence":["Widget test covers nested claim rows."],"justification":"The nested requirements object supplies the displayed claim entries.","risk":"low"}}}
+''';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: Scaffold(
+          body: ChatTimeline(
+            threadId: 'worker',
+            entries: const [
+              ChatEntry(
+                id: 'claim-object',
+                author: 'Assistant',
+                displayLabel: 'Assistant',
+                timestamp: null,
+                body: claimJson,
+              ),
+            ],
+            title: 'Worker',
+            contextWindowRemainingPercent: 92,
+            onSend: (_) {},
+            onInterrupt: () {},
+            composerEnabled: false,
+            isRunning: false,
+            showComposer: false,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Requirements Claim'), findsOneWidget);
+    expect(find.text('2 claims'), findsOneWidget);
+    expect(find.text('Frontend rendering now understands nested Requirements packets.'), findsOneWidget);
+    expect(find.text('chatRendersNullPacket'), findsOneWidget);
+    expect(find.text('chatRendersClaimObject'), findsOneWidget);
+    expect(find.textContaining('Widget test covers nested claim rows.'), findsOneWidget);
+    expect(find.textContaining('"requirements"'), findsNothing);
+  });
+
   testWidgets('chat timeline preserves scroll position when new entries arrive away from bottom', (
     WidgetTester tester,
   ) async {

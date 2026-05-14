@@ -2834,8 +2834,8 @@ pub(crate) fn requirements_verdict_schema(set: &RequirementSetState) -> Value {
         "overallVerdict".to_string(),
         json!({
             "type": "string",
-            "enum": ["pass", "fail", "acceptedBlocked", "rejectedBlocked", "needsHumanWaiver"],
-            "description": "Overall gate verdict. Blocked is not success; only acceptedBlocked can leave the source agent, and only when evidence proves a true external dependency."
+            "enum": ["pass", "fail", "acceptedBlocked", "rejectedBlocked", "needsHumanWaiver", "waiverAccepted"],
+            "description": "Overall gate verdict. Blocked is not success; only acceptedBlocked can leave the source agent, and only when evidence proves a true external dependency. Use waiverAccepted only after an explicit human/owner waiver has been accepted."
         }),
     );
     properties.insert(
@@ -4601,6 +4601,7 @@ pub async fn orchestrator_requirements_status(
         let mut failed_count = 0_u32;
         let mut blocked_count = 0_u32;
         let mut waiver_required_count = 0_u32;
+        let mut waiver_accepted_count = 0_u32;
         let mut unknown_count = 0_u32;
         let verdicts = if active_requirements.is_empty() {
             Vec::new()
@@ -4619,6 +4620,7 @@ pub async fn orchestrator_requirements_status(
                             Some("fail") | Some("rejectedBlocked") => failed_count += 1,
                             Some("acceptedBlocked") => blocked_count += 1,
                             Some("waiverRequired") => waiver_required_count += 1,
+                            Some("waiverAccepted") => waiver_accepted_count += 1,
                             _ => unknown_count += 1,
                         }
                         json!({
@@ -4665,6 +4667,7 @@ pub async fn orchestrator_requirements_status(
                 "failedCount": failed_count,
                 "blockedCount": blocked_count,
                 "waiverRequiredCount": waiver_required_count,
+                "waiverAcceptedCount": waiver_accepted_count,
                 "unknownCount": unknown_count,
                 "verdicts": verdicts,
             }
@@ -4915,10 +4918,11 @@ fn compact_requirements_claim_summary(claim_text: &str) -> Option<String> {
             lines.push(format!("- Summary: {}", summary.trim()));
         }
     }
-    for (key, value) in object {
-        if matches!(key.as_str(), "summary" | "finalDisposition") {
-            continue;
-        }
+    let claims_object = object
+        .get("requirements")
+        .and_then(Value::as_object)
+        .unwrap_or(object);
+    for (key, value) in claims_object {
         let Some(claim) = value.as_object() else {
             continue;
         };
@@ -5023,13 +5027,32 @@ pub(crate) async fn mark_requirements_review_verdict(
             continue;
         };
         let status = requirement_status_from_verdict(&verdict_payload);
-        if status == "passed"
+        let is_terminal = matches!(status.as_str(), "passed" | "waiverAccepted");
+        if is_terminal
             && let Some(requirements) = source.requirements.as_mut()
         {
             requirements.active = false;
         }
         if status == "passed" {
             source.requirement_review = None;
+            if let Some(reviewer) = project.agents.get_mut(reviewer_thread_id) {
+                reviewer.parent_thread_id = None;
+                reviewer.hidden_from_peer_list = true;
+            }
+        } else if status == "waiverAccepted" {
+            let latest_claim_packet = source
+                .requirement_review
+                .as_ref()
+                .and_then(|binding| binding.latest_claim_packet.clone());
+            source.requirement_review = Some(RequirementReviewBindingState {
+                source_thread_id: source_thread_id.to_string(),
+                reviewer_thread_id: reviewer_thread_id.to_string(),
+                requirement_set_id: source.requirements.as_ref().and_then(|set| set.id.clone()),
+                status,
+                latest_claim_packet,
+                latest_verdict_packet: Some(verdict_payload),
+                updated_at: unix_now(),
+            });
             if let Some(reviewer) = project.agents.get_mut(reviewer_thread_id) {
                 reviewer.parent_thread_id = None;
                 reviewer.hidden_from_peer_list = true;
@@ -5070,6 +5093,7 @@ fn requirement_status_from_verdict(verdict_payload: &Value) -> String {
         Some("acceptedBlocked") => "blocked",
         Some("rejectedBlocked") => "failed",
         Some("needsHumanWaiver") => "waiverRequired",
+        Some("waiverAccepted") => "waiverAccepted",
         _ => "inReview",
     }
     .to_string()
@@ -5939,17 +5963,25 @@ mod tests {
     }
 
     #[test]
-    fn requirements_claim_schema_uses_required_semantic_top_level_properties() {
+    fn requirements_claim_schema_uses_summary_and_nullable_requirements_object() {
         let schema = requirements_claim_schema(&sample_requirement_set());
         let required = schema
             .get("required")
             .and_then(Value::as_array)
             .expect("required array");
-        assert!(required.iter().any(|value| value.as_str() == Some("nativeGuiIsSourceOfTruth")));
-        assert!(required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
-        assert!(required.iter().any(|value| value.as_str() == Some("summary")));
-        assert!(required.iter().any(|value| value.as_str() == Some("finalDisposition")));
-        assert!(schema.get("properties").and_then(|value| value.get("requirements")).is_none());
+        assert_eq!(
+            required,
+            &vec![json!("summary"), json!("requirements")]
+        );
+        let requirements_schema = &schema["properties"]["requirements"];
+        assert_eq!(requirements_schema["type"], json!(["object", "null"]));
+        assert_eq!(
+            requirements_schema["required"],
+            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
+        );
+        assert!(requirements_schema["properties"].get("nativeGuiIsSourceOfTruth").is_some());
+        assert!(requirements_schema["properties"].get("noInventedWebsocketEventShapes").is_some());
+        assert!(schema["properties"].get("finalDisposition").is_none());
     }
 
     #[test]
@@ -6049,6 +6081,95 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn accepted_waiver_is_terminal_and_deactivates_requirement_set() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut state = PersistedState::default();
+        let mut project = PersistedProjectState {
+            project_root: Some(temp.path().display().to_string()),
+            cwd: Some(temp.path().display().to_string()),
+            updated_at: Some(100),
+            ..Default::default()
+        };
+        project.agents.insert(
+            "source-thread".to_string(),
+            PersistedAgentState {
+                display_name: Some("Source".to_string()),
+                role: Some("worker".to_string()),
+                requirements: Some(sample_requirement_set()),
+                requirement_review: Some(RequirementReviewBindingState {
+                    source_thread_id: "source-thread".to_string(),
+                    reviewer_thread_id: "reviewer-thread".to_string(),
+                    requirement_set_id: Some("web-gui-contract".to_string()),
+                    status: "waiverRequired".to_string(),
+                    latest_claim_packet: Some(json!({"summary": "claimed", "requirements": {}})),
+                    latest_verdict_packet: None,
+                    updated_at: 100,
+                }),
+                ..Default::default()
+            },
+        );
+        project.agents.insert(
+            "reviewer-thread".to_string(),
+            PersistedAgentState {
+                display_name: Some("Requirements Reviewer".to_string()),
+                role: Some("requirements-reviewer".to_string()),
+                parent_thread_id: Some("source-thread".to_string()),
+                hidden_from_peer_list: true,
+                ..Default::default()
+            },
+        );
+        state.projects.insert("project".to_string(), project);
+        persist_state(&runtime, &state).await.expect("persist state");
+
+        mark_requirements_review_verdict(
+            &runtime,
+            "source-thread",
+            "reviewer-thread",
+            json!({
+                "overallVerdict": "waiverAccepted",
+                "nativeGuiIsSourceOfTruth": {
+                    "verdict": "waiverAccepted",
+                    "reason": "Owner accepted waiver.",
+                    "evidenceAssessment": "Explicit owner decision.",
+                    "requiredCorrection": ""
+                },
+                "noInventedWebsocketEventShapes": {
+                    "verdict": "pass",
+                    "reason": "Evidence matches.",
+                    "evidenceAssessment": "Sufficient.",
+                    "requiredCorrection": ""
+                },
+                "route": {
+                    "destination": "none",
+                    "message": "Owner waiver accepted."
+                }
+            }),
+        )
+        .await
+        .expect("mark verdict");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent = agent_state_for_thread(&state, "source-thread").expect("source agent");
+        assert_eq!(agent.requirements.as_ref().map(|set| set.active), Some(false));
+        let review = agent.requirement_review.as_ref().expect("review state retained");
+        assert_eq!(review.status, "waiverAccepted");
+        assert_eq!(
+            review
+                .latest_verdict_packet
+                .as_ref()
+                .and_then(|packet| packet.get("overallVerdict"))
+                .and_then(Value::as_str),
+            Some("waiverAccepted")
+        );
+        let reviewer = agent_state_for_thread(&state, "reviewer-thread").expect("reviewer agent");
+        assert_eq!(reviewer.parent_thread_id, None);
+        assert!(reviewer.hidden_from_peer_list);
+    }
+
     #[test]
     fn requirements_review_prompt_includes_compact_evidence_without_ids_or_raw_packet() {
         let prompt = requirements_review_prompt(
@@ -6058,13 +6179,14 @@ mod tests {
             "turn-secret",
             r#"{
                 "summary": "Rendered reviewer verdict card.",
-                "nativeGuiIsSourceOfTruth": {
-                    "claim": "satisfied",
-                    "evidence": ["/tmp/reviewer-verdict-card.png"],
-                    "justification": "Screenshot shows formatted card.",
-                    "risk": "low"
-                },
-                "finalDisposition": "readyForRequirementsReview"
+                "requirements": {
+                    "nativeGuiIsSourceOfTruth": {
+                        "claim": "satisfied",
+                        "evidence": ["/tmp/reviewer-verdict-card.png"],
+                        "justification": "Screenshot shows formatted card.",
+                        "risk": "low"
+                    }
+                }
             }"#,
         );
         assert!(prompt.contains("Review subject: Config Operator"));
@@ -6076,13 +6198,23 @@ mod tests {
         assert!(!prompt.contains("Source agent claim packet"));
         assert!(!prompt.contains("thread-secret"));
         assert!(!prompt.contains("turn-secret"));
-        assert!(!prompt.contains("\"finalDisposition\""));
+        assert!(!prompt.contains("\"requirements\""));
     }
 
     fn assert_strict_object_schema(value: &Value) {
         match value {
             Value::Object(object) => {
-                if object.get("type").and_then(Value::as_str) == Some("object") {
+                let is_object_schema = object
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .map(|kind| kind == "object")
+                    .or_else(|| {
+                        object.get("type").and_then(Value::as_array).map(|types| {
+                            types.iter().any(|kind| kind.as_str() == Some("object"))
+                        })
+                    })
+                    .unwrap_or(false);
+                if is_object_schema {
                     assert_eq!(
                         object.get("additionalProperties").and_then(Value::as_bool),
                         Some(false),
@@ -7092,15 +7224,14 @@ mod tests {
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(
             schema["required"],
-            json!([
-                "summary",
-                "nativeGuiIsSourceOfTruth",
-                "noInventedWebsocketEventShapes",
-                "finalDisposition"
-            ])
+            json!(["summary", "requirements"])
         );
         assert_eq!(
-            schema["properties"]["nativeGuiIsSourceOfTruth"]["description"],
+            schema["properties"]["requirements"]["required"],
+            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
+        );
+        assert_eq!(
+            schema["properties"]["requirements"]["properties"]["nativeGuiIsSourceOfTruth"]["description"],
             "Requirement: The web GUI must mirror the native Flutter GUI."
         );
         transport.abort();

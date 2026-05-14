@@ -759,24 +759,48 @@ class _RequirementsClaimCard extends StatelessWidget {
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
     final disposition = payload['finalDisposition'] as String? ?? 'unknown';
     final summary = payload['summary'] as String? ?? '';
-    final requirementEntries = payload.entries
-        .where((entry) =>
-            entry.key != 'summary' &&
-            entry.key != 'finalDisposition' &&
-            entry.value is Map<String, dynamic>)
-        .toList(growable: false);
-    final accent = switch (disposition) {
-      'readyForRequirementsReview' => Colors.green.shade700,
-      'blockedNeedsOwnerAction' => Colors.amber.shade800,
-      'continueWorkNeeded' => theme.colorScheme.error,
-      _ => theme.colorScheme.secondary,
-    };
-    final title = switch (disposition) {
-      'readyForRequirementsReview' => 'Requirements Claim',
-      'blockedNeedsOwnerAction' => 'Requirements Blocked',
-      'continueWorkNeeded' => 'Requirements Need Work',
-      _ => 'Requirements Output',
-    };
+    final nestedRequirements = payload['requirements'];
+    final requirementEntries = nestedRequirements is Map<String, dynamic>
+        ? nestedRequirements.entries
+            .where((entry) => entry.value is Map<String, dynamic>)
+            .toList(growable: false)
+        : payload.entries
+            .where((entry) =>
+                entry.key != 'summary' &&
+                entry.key != 'finalDisposition' &&
+                entry.key != 'requirements' &&
+                entry.value is Map<String, dynamic>)
+            .toList(growable: false);
+    final isCommentaryPacket = payload.containsKey('requirements') && nestedRequirements == null;
+    final accent = isCommentaryPacket
+        ? theme.colorScheme.secondary
+        : switch (disposition) {
+            'readyForRequirementsReview' => Colors.green.shade700,
+            'blockedNeedsOwnerAction' => Colors.amber.shade800,
+            'continueWorkNeeded' => theme.colorScheme.error,
+            _ => requirementEntries.isEmpty ? theme.colorScheme.secondary : Colors.green.shade700,
+          };
+    final title = isCommentaryPacket
+        ? 'Requirements Commentary'
+        : switch (disposition) {
+            'readyForRequirementsReview' => 'Requirements Claim',
+            'blockedNeedsOwnerAction' => 'Requirements Blocked',
+            'continueWorkNeeded' => 'Requirements Need Work',
+            _ => requirementEntries.isEmpty ? 'Requirements Output' : 'Requirements Claim',
+          };
+    final icon = isCommentaryPacket
+        ? Icons.notes_rounded
+        : switch (disposition) {
+            'readyForRequirementsReview' => _requirementsDispositionIcon(disposition),
+            'blockedNeedsOwnerAction' => _requirementsDispositionIcon(disposition),
+            'continueWorkNeeded' => _requirementsDispositionIcon(disposition),
+            _ => requirementEntries.isEmpty ? Icons.rule_outlined : Icons.fact_check_rounded,
+          };
+    final statusLabel = isCommentaryPacket
+        ? 'commentary'
+        : requirementEntries.isEmpty
+            ? null
+            : '${requirementEntries.length} ${requirementEntries.length == 1 ? 'claim' : 'claims'}';
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -798,7 +822,7 @@ class _RequirementsClaimCard extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Icon(_requirementsDispositionIcon(disposition), color: accent, size: 18),
+                    Icon(icon, color: accent, size: 18),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -808,6 +832,24 @@ class _RequirementsClaimCard extends StatelessWidget {
                         ),
                       ),
                     ),
+                    if (statusLabel != null) ...[
+                      Container(
+                        margin: const EdgeInsets.only(right: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: accent.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(color: accent.withValues(alpha: 0.24)),
+                        ),
+                        child: Text(
+                          statusLabel,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: accent,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
                     Text(
                       timestampLabel,
                       style: theme.textTheme.labelSmall?.copyWith(
@@ -826,7 +868,7 @@ class _RequirementsClaimCard extends StatelessWidget {
                     ),
                   ),
                 ],
-                const SizedBox(height: 12),
+                if (requirementEntries.isNotEmpty) const SizedBox(height: 12),
                 ...requirementEntries.map((entry) {
                   final value = entry.value as Map<String, dynamic>;
                   final claim = value['claim'] as String? ?? 'unknown';
@@ -1185,6 +1227,11 @@ Map<String, dynamic>? _requirementsClaimPayloadFromBody(ChatEntry entry) {
       return null;
     }
     final disposition = decoded['finalDisposition'];
+    final requirements = decoded['requirements'];
+    if (decoded['summary'] is String &&
+        (requirements == null || requirements is Map<String, dynamic>)) {
+      return decoded;
+    }
     if (disposition is String && decoded['summary'] is String) {
       return decoded;
     }

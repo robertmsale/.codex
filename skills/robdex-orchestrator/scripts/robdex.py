@@ -419,6 +419,7 @@ def _cmd_requirements_status(thread_id: str, args: argparse.Namespace) -> None:
             f"fail:{summary.get('failedCount') or 0} "
             f"blocked:{summary.get('blockedCount') or 0} "
             f"waiver:{summary.get('waiverRequiredCount') or 0} "
+            f"waived:{summary.get('waiverAcceptedCount') or 0} "
             f"pending:{summary.get('unknownCount') or 0}"
         ),
     ]

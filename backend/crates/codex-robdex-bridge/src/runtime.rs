@@ -1027,7 +1027,7 @@ impl BridgeRuntime {
         let parsed_state = parse_state(&state_value);
         let destination_thread_id = match overall {
             "fail" | "rejectedBlocked" => source_thread_id.to_string(),
-            "pass" | "acceptedBlocked" | "needsHumanWaiver" => {
+            "pass" | "acceptedBlocked" | "needsHumanWaiver" | "waiverAccepted" => {
                 let Some(project) = tracked_project_for_thread(&state_value, source_thread_id) else {
                     return;
                 };
@@ -1126,6 +1126,51 @@ impl BridgeRuntime {
         if claim_text.is_empty() {
             return false;
         }
+        let claim_payload = serde_json::from_str::<Value>(claim_text).unwrap_or_else(|_| json!({ "raw": claim_text }));
+        let reviewable_claim_payload = match reviewable_requirements_claim_payload(&claim_payload) {
+            ReviewableRequirementsClaim::Claims(value) => value,
+            ReviewableRequirementsClaim::NullCommentary => {
+                let text = requirements_null_claim_prompt();
+                let _ = send_thread_input(
+                    self,
+                    &parsed_state,
+                    thread_id,
+                    Some(&text),
+                    &[],
+                    None,
+                    None,
+                )
+                .await;
+                let _ = record_requirement_packet(
+                    self,
+                    thread_id,
+                    RequirementPacketState {
+                        packet_type: "claimNull".to_string(),
+                        source_thread_id: thread_id.to_string(),
+                        turn_id: Some(turn_id.to_string()),
+                        target_thread_id: None,
+                        payload: claim_payload,
+                        created_at: crate::commands::unix_now(),
+                    },
+                )
+                .await;
+                return true;
+            }
+            ReviewableRequirementsClaim::Invalid => {
+                let text = requirements_invalid_claim_prompt();
+                let _ = send_thread_input(
+                    self,
+                    &parsed_state,
+                    thread_id,
+                    Some(&text),
+                    &[],
+                    None,
+                    None,
+                )
+                .await;
+                return true;
+            }
+        };
         let reviewer_thread_id =
             match requirements_review_target_for_thread(&parsed_state, thread_id, &set)
                 .filter(|reviewer_thread_id| reviewer_thread_id != thread_id)
@@ -1164,13 +1209,12 @@ impl BridgeRuntime {
         .turn_start_params(reviewer_thread_id.clone(), json!([{"type":"text","text": prompt}]));
 
         if self.request_app_server_json("turn/start", params).await.is_ok() {
-            let claim_payload = serde_json::from_str(claim_text).unwrap_or_else(|_| json!({ "raw": claim_text }));
             let _ = mark_requirements_review_in_progress(
                 self,
                 thread_id,
                 &reviewer_thread_id,
                 &set,
-                claim_payload.clone(),
+                reviewable_claim_payload.clone(),
             )
             .await;
             let _ = record_requirement_packet(
@@ -1181,7 +1225,7 @@ impl BridgeRuntime {
                     source_thread_id: thread_id.to_string(),
                     turn_id: Some(turn_id.to_string()),
                     target_thread_id: Some(reviewer_thread_id),
-                    payload: claim_payload,
+                    payload: reviewable_claim_payload,
                     created_at: crate::commands::unix_now(),
                 },
             )
@@ -2553,6 +2597,7 @@ fn compose_requirements_verdict_route_message(
         "acceptedBlocked" => "Requirements review accepted a true blocker.",
         "rejectedBlocked" => "Requirements review rejected the blocker claim.",
         "needsHumanWaiver" => "Requirements review requires a human waiver.",
+        "waiverAccepted" => "Requirements review recorded an accepted human waiver.",
         _ => "Requirements review completed.",
     };
     let mut lines = vec![
@@ -2595,6 +2640,32 @@ fn compose_requirements_verdict_route_message(
         lines.extend(requirement_lines);
     }
     lines.join("\n")
+}
+
+enum ReviewableRequirementsClaim {
+    Claims(Value),
+    NullCommentary,
+    Invalid,
+}
+
+fn reviewable_requirements_claim_payload(payload: &Value) -> ReviewableRequirementsClaim {
+    let Some(object) = payload.as_object() else {
+        return ReviewableRequirementsClaim::Invalid;
+    };
+    match object.get("requirements") {
+        Some(Value::Null) => ReviewableRequirementsClaim::NullCommentary,
+        Some(Value::Object(_)) => ReviewableRequirementsClaim::Claims(payload.clone()),
+        Some(_) => ReviewableRequirementsClaim::Invalid,
+        None => ReviewableRequirementsClaim::Claims(payload.clone()),
+    }
+}
+
+fn requirements_null_claim_prompt() -> String {
+    "[Requirements] Active Requirements are still attached. Your last response used `requirements: null`, which is only allowed for mid-turn commentary. Please provide the full final Requirements claim packet with `requirements` set to the object containing every requirement claim. Keep `summary` global and concise; do not duplicate evidence between summary, evidence, and justification.".to_string()
+}
+
+fn requirements_invalid_claim_prompt() -> String {
+    "[Requirements] Active Requirements are still attached, but the final structured packet did not contain a valid `requirements` object. Please provide the full Requirements claim packet with `summary` and `requirements` containing every requirement claim.".to_string()
 }
 
 fn compose_auto_routed_approval_request(
@@ -2978,8 +3049,164 @@ mod tests {
             .and_then(|project| project.get("agents"))
             .and_then(|agents| agents.get("worker-1"))
             .expect("source");
-        assert!(source.get("requirementReview").is_none());
+        assert!(source.get("requirementReview").is_none_or(Value::is_null));
         assert_eq!(source["requirements"]["active"], true);
+    }
+
+    #[tokio::test]
+    async fn final_null_requirements_packet_prompts_source_without_review() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "requirements": [{
+                                        "key": "mustProvideClaims",
+                                        "statement": "Final packets must include requirement claims.",
+                                        "severity": "blocker",
+                                        "verificationMethod": "manualEvidence"
+                                    }]
+                                }
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "worker-1".to_string(),
+                vec![test_chat_message(
+                    "worker-1",
+                    "turn-null",
+                    "final-null",
+                    Some("final_answer"),
+                    "{\"summary\":\"still working\",\"requirements\":null}",
+                )],
+            );
+        }
+
+        assert!(runtime.maybe_route_requirements_review("worker-1", "turn-null").await);
+
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "worker-1");
+        assert!(
+            request["params"]["input"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("requirements: null")
+        );
+        match tokio::time::timeout(std::time::Duration::from_millis(100), requests.recv()).await {
+            Ok(Some(extra)) => panic!("unexpected reviewer request: {extra}"),
+            Ok(None) | Err(_) => {}
+        }
+        let state = runtime.state_document_value().await;
+        let source = state
+            .get("projects")
+            .and_then(|projects| projects.get("alpha"))
+            .and_then(|project| project.get("agents"))
+            .and_then(|agents| agents.get("worker-1"))
+            .expect("source");
+        assert!(source.get("requirementReview").is_none_or(Value::is_null));
+        assert_eq!(source["requirements"]["active"], true);
+        assert_eq!(source["requirementPackets"][0]["packetType"], "claimNull");
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn nested_requirements_claim_routes_to_reviewer_summary() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirements": [{
+                                        "key": "mustProvideClaims",
+                                        "statement": "Final packets must include requirement claims.",
+                                        "severity": "blocker",
+                                        "verificationMethod": "manualEvidence"
+                                    }]
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "worker-1".to_string(),
+                vec![test_chat_message(
+                    "worker-1",
+                    "turn-claims",
+                    "final-claims",
+                    Some("final_answer"),
+                    r#"{"summary":"implemented","requirements":{"mustProvideClaims":{"claim":"satisfied","evidence":["cargo test passed"],"justification":"The test covers the behavior.","risk":"low"}}}"#,
+                )],
+            );
+        }
+
+        assert!(runtime.maybe_route_requirements_review("worker-1", "turn-claims").await);
+
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "reviewer-1");
+        let prompt = request["params"]["input"][0]["text"].as_str().unwrap_or_default();
+        assert!(prompt.contains("Source evidence summary:"));
+        assert!(prompt.contains("implemented"));
+        assert!(prompt.contains("cargo test passed"));
+        assert!(prompt.contains("`mustProvideClaims`: claim=satisfied; risk=low"));
+        assert!(!prompt.contains("\"requirements\""));
+        transport.abort();
+        server.abort();
     }
 
     #[tokio::test]
