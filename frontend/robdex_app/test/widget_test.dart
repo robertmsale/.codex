@@ -227,7 +227,10 @@ void main() {
                         onTerminalPressed: controller.showDrawer,
                       ),
                     ),
-                    IntegratedTerminalDrawer(controller: controller),
+                    IntegratedTerminalDrawer(
+                      controller: controller,
+                      host: 'bridge.internal',
+                    ),
                   ],
                 ),
               ),
@@ -239,14 +242,15 @@ void main() {
     await tester.pumpAndSettle();
 
     final threadListSizeBefore = tester.getSize(find.byKey(const ValueKey('thread-list-pane')));
-    expect(find.text('Host'), findsNothing);
+    expect(find.text('Bridge host'), findsNothing);
     expect(find.byKey(const ValueKey('semantic.composer.terminal')), findsOneWidget);
 
     await tester.ensureVisible(find.byTooltip('Open terminal'));
     await tester.tap(find.byTooltip('Open terminal'), warnIfMissed: false);
     await tester.pumpAndSettle();
 
-    expect(find.text('Host'), findsOneWidget);
+    expect(find.text('Bridge host'), findsOneWidget);
+    expect(find.text('bridge.internal'), findsOneWidget);
     expect(find.text('Username'), findsOneWidget);
     expect(find.text('Connect'), findsOneWidget);
     expect(find.byKey(const ValueKey('semantic.terminal.resizeHandle')), findsOneWidget);
@@ -271,7 +275,10 @@ void main() {
           body: Column(
             children: [
               const Expanded(child: SizedBox()),
-              IntegratedTerminalDrawer(controller: controller),
+              IntegratedTerminalDrawer(
+                controller: controller,
+                host: 'bridge.internal',
+              ),
             ],
           ),
         ),

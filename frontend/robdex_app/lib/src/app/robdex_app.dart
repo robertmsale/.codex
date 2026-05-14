@@ -415,12 +415,18 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           bridgeBaseUri: _bridgeBaseUri,
           chatBottomDrawer: IntegratedTerminalDrawer(
             controller: _terminalController,
+            host: _bridgeHost,
           ),
           terminalAvailable: _terminalController.isAvailable,
           onTerminalPressed: _terminalController.showDrawer,
         );
       },
     );
+  }
+
+  String get _bridgeHost {
+    final host = _hostController.text.trim();
+    return host.isEmpty ? '127.0.0.1' : host;
   }
 
   Future<void> _showCreateProjectDialog() async {

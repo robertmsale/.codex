@@ -265,18 +265,19 @@ class IntegratedTerminalDrawer extends StatefulWidget {
   const IntegratedTerminalDrawer({
     super.key,
     required this.controller,
+    required this.host,
   });
 
   final IntegratedTerminalController controller;
+  final String host;
 
   @override
   State<IntegratedTerminalDrawer> createState() => _IntegratedTerminalDrawerState();
 }
 
 class _IntegratedTerminalDrawerState extends State<IntegratedTerminalDrawer> {
-  final TextEditingController _hostController = TextEditingController();
   final TextEditingController _usernameController = TextEditingController();
-  final FocusNode _hostFocusNode = FocusNode();
+  final FocusNode _usernameFocusNode = FocusNode();
   bool _didRequestInitialFocus = false;
 
   @override
@@ -284,13 +285,21 @@ class _IntegratedTerminalDrawerState extends State<IntegratedTerminalDrawer> {
     super.initState();
     widget.controller.addListener(_syncFromController);
     widget.controller.terminal.write('Robdex SSH terminal\r\n');
+    unawaited(_loadUsername(widget.host));
+  }
+
+  @override
+  void didUpdateWidget(IntegratedTerminalDrawer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.host != oldWidget.host && _usernameController.text.trim().isEmpty) {
+      unawaited(_loadUsername(widget.host));
+    }
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(_syncFromController);
-    _hostFocusNode.dispose();
-    _hostController.dispose();
+    _usernameFocusNode.dispose();
     _usernameController.dispose();
     super.dispose();
   }
@@ -303,7 +312,7 @@ class _IntegratedTerminalDrawerState extends State<IntegratedTerminalDrawer> {
       _didRequestInitialFocus = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && widget.controller.isDrawerVisible && widget.controller.host == null) {
-          _hostFocusNode.requestFocus();
+          _usernameFocusNode.requestFocus();
         }
       });
     } else if (!widget.controller.isDrawerVisible) {
@@ -314,7 +323,7 @@ class _IntegratedTerminalDrawerState extends State<IntegratedTerminalDrawer> {
 
   Future<void> _open() async {
     await widget.controller.open(
-      host: _hostController.text,
+      host: widget.host,
       username: _usernameController.text,
     );
   }
@@ -345,11 +354,10 @@ class _IntegratedTerminalDrawerState extends State<IntegratedTerminalDrawer> {
                   height: controller.drawerHeight,
                   child: _TerminalDrawerBody(
                     controller: controller,
-                    hostController: _hostController,
+                    host: widget.host,
                     usernameController: _usernameController,
-                    hostFocusNode: _hostFocusNode,
+                    usernameFocusNode: _usernameFocusNode,
                     onOpen: _open,
-                    onLoadUsername: _loadUsername,
                   ),
                 )
               : const SizedBox.shrink(),
@@ -362,19 +370,17 @@ class _IntegratedTerminalDrawerState extends State<IntegratedTerminalDrawer> {
 class _TerminalDrawerBody extends StatelessWidget {
   const _TerminalDrawerBody({
     required this.controller,
-    required this.hostController,
+    required this.host,
     required this.usernameController,
-    required this.hostFocusNode,
+    required this.usernameFocusNode,
     required this.onOpen,
-    required this.onLoadUsername,
   });
 
   final IntegratedTerminalController controller;
-  final TextEditingController hostController;
+  final String host;
   final TextEditingController usernameController;
-  final FocusNode hostFocusNode;
+  final FocusNode usernameFocusNode;
   final Future<void> Function() onOpen;
-  final Future<void> Function(String value) onLoadUsername;
 
   @override
   Widget build(BuildContext context) {
@@ -421,18 +427,18 @@ class _TerminalDrawerBody extends StatelessWidget {
                 const Icon(Icons.terminal, size: 16),
                 const SizedBox(width: 10),
                 Flexible(
-                  flex: 3,
+                  flex: 4,
                   child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 220),
-                    child: TextField(
-                      controller: hostController,
-                      focusNode: hostFocusNode,
-                      enabled: !controller.isConnecting && controller.host == null,
-                      onChanged: onLoadUsername,
-                      onSubmitted: (_) => onOpen(),
+                    constraints: const BoxConstraints(maxWidth: 260),
+                    child: InputDecorator(
                       decoration: const InputDecoration(
                         isDense: true,
-                        labelText: 'Host',
+                        labelText: 'Bridge host',
+                      ),
+                      child: Text(
+                        host,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ),
@@ -444,6 +450,7 @@ class _TerminalDrawerBody extends StatelessWidget {
                     constraints: const BoxConstraints(maxWidth: 160),
                     child: TextField(
                       controller: usernameController,
+                      focusNode: usernameFocusNode,
                       enabled: !controller.isConnecting && controller.host == null,
                       onSubmitted: (_) => onOpen(),
                       decoration: const InputDecoration(
