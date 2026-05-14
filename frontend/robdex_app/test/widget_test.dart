@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:robdex_app/src/terminal/integrated_terminal.dart';
 import 'package:robdex_design_system/robdex_design_system.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:xterm/xterm.dart';
 
 void main() {
   testWidgets('workbench shell renders primary regions', (WidgetTester tester) async {
@@ -337,7 +338,77 @@ void main() {
     expect(find.text('Bridge host'), findsNothing);
     expect(find.text('Username'), findsNothing);
     expect(find.text('Connect'), findsNothing);
-    expect(find.text('Connected to robertsale@bridge.internal'), findsOneWidget);
+    expect(find.text('Connected to robertsale@bridge.internal'), findsNothing);
+    expect(find.byType(TerminalView), findsOneWidget);
+
+    debugDefaultTargetPlatformOverride = null;
+    controller.dispose();
+  });
+
+  testWidgets('terminal composer button toggles drawer without closing session', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final controller = IntegratedTerminalController();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              Expanded(
+                child: ChatTimeline(
+                  threadId: 'config-operator',
+                  entries: const [],
+                  title: 'Config Operator',
+                  contextWindowRemainingPercent: 92,
+                  onSend: (_) {},
+                  onInterrupt: () {},
+                  composerEnabled: true,
+                  isRunning: false,
+                  showComposer: true,
+                  selection: mockWorkbenchData.selection,
+                  availableModels: mockWorkbenchData.availableModels,
+                  onSettingsChanged: (_) {},
+                  terminalAvailable: controller.isAvailable,
+                  onTerminalPressed: controller.toggleDrawer,
+                ),
+              ),
+              IntegratedTerminalDrawer(
+                controller: controller,
+                host: 'bridge.internal',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    controller.markConnectedForTest(
+      sessionId: 'ssh-test',
+      host: 'bridge.internal',
+      username: 'robertsale',
+    );
+    await tester.pumpAndSettle();
+    expect(controller.isOpen, true);
+    expect(controller.isDrawerVisible, true);
+    expect(find.byType(TerminalView), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Open terminal'));
+    await tester.pumpAndSettle();
+    expect(controller.isOpen, true);
+    expect(controller.isDrawerVisible, false);
+    expect(find.byType(TerminalView), findsNothing);
+
+    await tester.tap(find.byTooltip('Open terminal'));
+    await tester.pumpAndSettle();
+    expect(controller.isOpen, true);
+    expect(controller.isDrawerVisible, true);
+    expect(find.byType(TerminalView), findsOneWidget);
+    expect(find.text('Bridge host'), findsNothing);
+    expect(find.text('Username'), findsNothing);
+    expect(find.text('Connect'), findsNothing);
 
     debugDefaultTargetPlatformOverride = null;
     controller.dispose();

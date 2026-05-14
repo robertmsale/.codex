@@ -418,7 +418,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             host: _bridgeHost,
           ),
           terminalAvailable: _terminalController.isAvailable,
-          onTerminalPressed: _terminalController.showDrawer,
+          onTerminalPressed: _terminalController.toggleDrawer,
         );
       },
     );

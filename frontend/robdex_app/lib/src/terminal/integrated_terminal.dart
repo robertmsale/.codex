@@ -83,6 +83,14 @@ class IntegratedTerminalController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void toggleDrawer() {
+    if (!isAvailable) {
+      return;
+    }
+    _isDrawerVisible = !_isDrawerVisible;
+    notifyListeners();
+  }
+
   void hideDrawer() {
     _isDrawerVisible = false;
     notifyListeners();
@@ -437,7 +445,7 @@ class _TerminalDrawerBody extends StatelessWidget {
               ),
             ),
           ),
-          if (!controller.isOpen) ...[
+          if (!controller.isOpen)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 8, 8),
               child: Row(
@@ -503,43 +511,6 @@ class _TerminalDrawerBody extends StatelessWidget {
                 ],
               ),
             ),
-          ] else ...[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 8, 8),
-              child: Row(
-                children: [
-                  const Icon(Icons.terminal, size: 16),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      controller.host == null
-                          ? 'Connected'
-                          : 'Connected to ${controller.username?.isNotEmpty == true ? '${controller.username}@' : ''}${controller.host}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    onPressed: controller.close,
-                    tooltip: 'Close terminal',
-                    icon: const Icon(Icons.close, size: 18),
-                  ),
-                  if ((controller.status ?? '').isNotEmpty) ...[
-                    const SizedBox(width: 8),
-                    Text(
-                      controller.status!,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: Colors.white.withValues(alpha: 0.72),
-                          ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ],
           Expanded(
             child: TerminalView(
               controller.terminal,
