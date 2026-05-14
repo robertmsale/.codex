@@ -11,9 +11,14 @@ import '../bindings/bindings.dart';
 class IntegratedTerminalController extends ChangeNotifier {
   IntegratedTerminalController() {
     _subscription = TerminalEventSignal.rustSignalStream.listen(_handleEvent);
+    unawaited(_restoreDrawerHeight());
   }
 
   static const _usernamePrefix = 'terminal.username.';
+  static const _drawerHeightPreferenceKey = 'terminal.drawerHeight';
+  static const double minDrawerHeight = 180;
+  static const double maxDrawerHeight = 560;
+  static const double defaultDrawerHeight = 284;
 
   final Terminal terminal = Terminal(maxLines: 5000);
   StreamSubscription<RustSignalPack<TerminalEventSignal>>? _subscription;
@@ -25,16 +30,63 @@ class IntegratedTerminalController extends ChangeNotifier {
   int _nextRequestId = 1;
   final Set<String> _cancelledRequestIds = <String>{};
   bool _isOpen = false;
+  bool _isDrawerVisible = false;
   bool _isConnecting = false;
+  double _drawerHeight = defaultDrawerHeight;
   int _cols = 100;
   int _rows = 24;
 
   bool get isAvailable => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
   bool get isOpen => _isOpen;
+  bool get isDrawerVisible => _isDrawerVisible;
   bool get isConnecting => _isConnecting;
+  double get drawerHeight => _drawerHeight;
   String? get host => _host;
   String? get username => _username;
   String? get status => _status;
+
+  Future<void> _restoreDrawerHeight() async {
+    if (!isAvailable) {
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    final stored = prefs.getDouble(_drawerHeightPreferenceKey);
+    if (stored == null) {
+      return;
+    }
+    _drawerHeight = stored.clamp(minDrawerHeight, maxDrawerHeight).toDouble();
+    notifyListeners();
+  }
+
+  void showDrawer() {
+    if (!isAvailable) {
+      return;
+    }
+    _isDrawerVisible = true;
+    notifyListeners();
+  }
+
+  void hideDrawer() {
+    _isDrawerVisible = false;
+    notifyListeners();
+  }
+
+  void setDrawerHeight(double height) {
+    final next = height.clamp(minDrawerHeight, maxDrawerHeight).toDouble();
+    if (next == _drawerHeight) {
+      return;
+    }
+    _drawerHeight = next;
+    notifyListeners();
+  }
+
+  Future<void> persistDrawerHeight() async {
+    if (!isAvailable) {
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_drawerHeightPreferenceKey, _drawerHeight);
+  }
 
   Future<String> usernameForHost(String host) async {
     final prefs = await SharedPreferences.getInstance();
@@ -66,6 +118,7 @@ class IntegratedTerminalController extends ChangeNotifier {
     _status = 'Connecting';
     _isConnecting = true;
     _isOpen = true;
+    _isDrawerVisible = true;
     terminal.write('\x1b[2J\x1b[H');
     terminal.write('\r\nConnecting to $cleanHost...\r\n');
     terminal.onOutput = _sendInput;
@@ -108,6 +161,7 @@ class IntegratedTerminalController extends ChangeNotifier {
     _username = null;
     _isConnecting = false;
     _isOpen = false;
+    _isDrawerVisible = false;
     _status = null;
     terminal.onOutput = null;
     terminal.onResize = null;
@@ -129,6 +183,7 @@ class IntegratedTerminalController extends ChangeNotifier {
     _username = null;
     _isConnecting = false;
     _isOpen = false;
+    _isDrawerVisible = false;
     _status = null;
     terminal.onOutput = null;
     terminal.onResize = null;
@@ -168,6 +223,7 @@ class IntegratedTerminalController extends ChangeNotifier {
         _username = event.username;
         _isConnecting = false;
         _isOpen = true;
+        _isDrawerVisible = true;
         _status = 'Connected';
         break;
       case 'output':
@@ -190,6 +246,7 @@ class IntegratedTerminalController extends ChangeNotifier {
         _host = null;
         _username = null;
         _isConnecting = false;
+        _isOpen = false;
         _status = 'Closed';
         break;
     }
@@ -220,7 +277,7 @@ class _IntegratedTerminalDrawerState extends State<IntegratedTerminalDrawer> {
   final TextEditingController _hostController = TextEditingController();
   final TextEditingController _usernameController = TextEditingController();
   final FocusNode _hostFocusNode = FocusNode();
-  double _height = 284;
+  bool _didRequestInitialFocus = false;
 
   @override
   void initState() {
@@ -241,6 +298,16 @@ class _IntegratedTerminalDrawerState extends State<IntegratedTerminalDrawer> {
   void _syncFromController() {
     if (!mounted) {
       return;
+    }
+    if (widget.controller.isDrawerVisible && !_didRequestInitialFocus) {
+      _didRequestInitialFocus = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.controller.isDrawerVisible && widget.controller.host == null) {
+          _hostFocusNode.requestFocus();
+        }
+      });
+    } else if (!widget.controller.isDrawerVisible) {
+      _didRequestInitialFocus = false;
     }
     setState(() {});
   }
@@ -269,116 +336,159 @@ class _IntegratedTerminalDrawerState extends State<IntegratedTerminalDrawer> {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
-        if (!controller.isOpen && !_hostFocusNode.hasFocus) {
-          return Align(
-            alignment: Alignment.centerRight,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: OutlinedButton.icon(
-                onPressed: () {
-                  setState(() {
-                    _hostFocusNode.requestFocus();
-                  });
-                },
-                icon: const Icon(Icons.terminal, size: 16),
-                label: const Text('Terminal'),
+        return AnimatedSize(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.bottomCenter,
+          child: controller.isDrawerVisible
+              ? SizedBox(
+                  height: controller.drawerHeight,
+                  child: _TerminalDrawerBody(
+                    controller: controller,
+                    hostController: _hostController,
+                    usernameController: _usernameController,
+                    hostFocusNode: _hostFocusNode,
+                    onOpen: _open,
+                    onLoadUsername: _loadUsername,
+                  ),
+                )
+              : const SizedBox.shrink(),
+        );
+      },
+    );
+  }
+}
+
+class _TerminalDrawerBody extends StatelessWidget {
+  const _TerminalDrawerBody({
+    required this.controller,
+    required this.hostController,
+    required this.usernameController,
+    required this.hostFocusNode,
+    required this.onOpen,
+    required this.onLoadUsername,
+  });
+
+  final IntegratedTerminalController controller;
+  final TextEditingController hostController;
+  final TextEditingController usernameController;
+  final FocusNode hostFocusNode;
+  final Future<void> Function() onOpen;
+  final Future<void> Function(String value) onLoadUsername;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: Color(0xFF070A0F),
+        border: Border(top: BorderSide(color: Color(0xFF30343B))),
+      ),
+      child: Column(
+        children: [
+          MouseRegion(
+            cursor: SystemMouseCursors.resizeUpDown,
+            child: GestureDetector(
+              key: const ValueKey('semantic.terminal.resizeHandle'),
+              behavior: HitTestBehavior.opaque,
+              onVerticalDragUpdate: (details) {
+                controller.setDrawerHeight(controller.drawerHeight - details.delta.dy);
+              },
+              onVerticalDragEnd: (_) {
+                unawaited(controller.persistDrawerHeight());
+              },
+              child: Semantics(
+                label: 'Resize terminal drawer',
+                child: SizedBox(
+                  height: 12,
+                  child: Center(
+                    child: Container(
+                      width: 48,
+                      height: 3,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF59606A),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
-          );
-        }
-        return SizedBox(
-          height: _height,
-          child: DecoratedBox(
-            decoration: const BoxDecoration(
-              color: Color(0xFF070A0F),
-              border: Border(top: BorderSide(color: Color(0xFF30343B))),
-            ),
-            child: Column(
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 8, 8),
+            child: Row(
               children: [
-                MouseRegion(
-                  cursor: SystemMouseCursors.resizeUpDown,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onVerticalDragUpdate: (details) {
-                      setState(() {
-                        _height = (_height - details.delta.dy).clamp(180, 520);
-                      });
-                    },
-                    child: const SizedBox(height: 8),
+                const Icon(Icons.terminal, size: 16),
+                const SizedBox(width: 10),
+                Flexible(
+                  flex: 3,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 220),
+                    child: TextField(
+                      controller: hostController,
+                      focusNode: hostFocusNode,
+                      enabled: !controller.isConnecting && controller.host == null,
+                      onChanged: onLoadUsername,
+                      onSubmitted: (_) => onOpen(),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        labelText: 'Host',
+                      ),
+                    ),
                   ),
                 ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 8, 8),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.terminal, size: 16),
-                      const SizedBox(width: 10),
-                      SizedBox(
-                        width: 220,
-                        child: TextField(
-                          controller: _hostController,
-                          focusNode: _hostFocusNode,
-                          enabled: !controller.isConnecting && controller.host == null,
-                          onChanged: _loadUsername,
-                          onSubmitted: (_) => _open(),
-                          decoration: const InputDecoration(
-                            isDense: true,
-                            labelText: 'Host',
-                          ),
-                        ),
+                const SizedBox(width: 8),
+                Flexible(
+                  flex: 2,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 160),
+                    child: TextField(
+                      controller: usernameController,
+                      enabled: !controller.isConnecting && controller.host == null,
+                      onSubmitted: (_) => onOpen(),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        labelText: 'Username',
                       ),
-                      const SizedBox(width: 8),
-                      SizedBox(
-                        width: 160,
-                        child: TextField(
-                          controller: _usernameController,
-                          enabled: !controller.isConnecting && controller.host == null,
-                          onSubmitted: (_) => _open(),
-                          decoration: const InputDecoration(
-                            isDense: true,
-                            labelText: 'Username',
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      FilledButton(
-                        onPressed: controller.isConnecting || controller.host != null
-                            ? null
-                            : _open,
-                        child: const Text('Connect'),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        onPressed: controller.isOpen ? controller.close : null,
-                        tooltip: 'Close terminal',
-                        icon: const Icon(Icons.close, size: 18),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          controller.status ?? '',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          textAlign: TextAlign.right,
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
-                Expanded(
-                  child: TerminalView(
-                    controller.terminal,
-                    autofocus: controller.isOpen,
-                    backgroundOpacity: 1,
-                    theme: TerminalThemes.defaultTheme,
-                    textStyle: const TerminalStyle(fontSize: 13),
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: controller.isConnecting || controller.host != null
+                      ? null
+                      : onOpen,
+                  child: const Text('Connect'),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: controller.isOpen ? controller.close : controller.hideDrawer,
+                  tooltip: controller.isOpen ? 'Close terminal' : 'Hide terminal',
+                  icon: const Icon(Icons.close, size: 18),
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    controller.status ?? '',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.right,
                   ),
                 ),
               ],
             ),
           ),
-        );
-      },
+          Expanded(
+            child: TerminalView(
+              controller.terminal,
+              autofocus: controller.isOpen,
+              backgroundOpacity: 1,
+              theme: TerminalThemes.defaultTheme,
+              textStyle: const TerminalStyle(fontSize: 13),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

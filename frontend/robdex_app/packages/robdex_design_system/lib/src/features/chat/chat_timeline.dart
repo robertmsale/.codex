@@ -33,6 +33,8 @@ class ChatTimeline extends StatefulWidget {
     this.onTerminateCommandExecution,
     this.requirementReview,
     this.onOpenThread,
+    this.terminalAvailable = false,
+    this.onTerminalPressed,
   });
 
   final String? threadId;
@@ -54,6 +56,8 @@ class ChatTimeline extends StatefulWidget {
   final ValueChanged<String>? onTerminateCommandExecution;
   final RequirementReviewSummary? requirementReview;
   final ValueChanged<String>? onOpenThread;
+  final bool terminalAvailable;
+  final VoidCallback? onTerminalPressed;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -294,6 +298,8 @@ class _ChatTimelineState extends State<ChatTimeline> {
             availableModels: widget.availableModels,
             onSettingsChanged: widget.onSettingsChanged ?? (_) {},
             bridgeBaseUri: widget.bridgeBaseUri,
+            terminalAvailable: widget.terminalAvailable,
+            onTerminalPressed: widget.onTerminalPressed,
             onSend: widget.onSend,
             onInterrupt: widget.onInterrupt,
           ),

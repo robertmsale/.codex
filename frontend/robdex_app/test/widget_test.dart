@@ -3,8 +3,11 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:robdex_app/src/terminal/integrated_terminal.dart';
 import 'package:robdex_design_system/robdex_design_system.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   testWidgets('workbench shell renders primary regions', (WidgetTester tester) async {
@@ -141,6 +144,152 @@ void main() {
     await File('/tmp/robdex-requirements-review-verdict-card.png')
         .writeAsBytes(bytes!.buffer.asUint8List());
   }, skip: true);
+
+  testWidgets('terminal composer button is icon-only and placed after network', (
+    WidgetTester tester,
+  ) async {
+    var pressed = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 980,
+            height: 360,
+            child: ChatTimeline(
+              threadId: 'config-operator',
+              entries: const [],
+              title: 'Config Operator',
+              contextWindowRemainingPercent: 92,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: true,
+              isRunning: false,
+              showComposer: true,
+              selection: mockWorkbenchData.selection,
+              availableModels: mockWorkbenchData.availableModels,
+              onSettingsChanged: (_) {},
+              terminalAvailable: true,
+              onTerminalPressed: () => pressed += 1,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final networkFinder = find.byKey(const ValueKey('semantic.composer.networkDropdown'));
+    final terminalFinder = find.byKey(const ValueKey('semantic.composer.terminal'));
+    expect(networkFinder, findsOneWidget);
+    expect(terminalFinder, findsOneWidget);
+    expect(find.widgetWithText(IconButton, 'Terminal'), findsNothing);
+    expect(tester.getTopLeft(terminalFinder).dx, greaterThan(tester.getTopLeft(networkFinder).dx));
+
+    await tester.tap(find.byTooltip('Open terminal'));
+    await tester.pump();
+    expect(pressed, 1);
+  });
+
+  testWidgets('terminal button opens drawer with ssh form without affecting thread list', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final controller = IntegratedTerminalController();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Row(
+            children: [
+              const SizedBox(
+                key: ValueKey('thread-list-pane'),
+                width: 294,
+                child: ColoredBox(color: Colors.black),
+              ),
+              Expanded(
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: ChatTimeline(
+                        threadId: 'config-operator',
+                        entries: const [],
+                        title: 'Config Operator',
+                        contextWindowRemainingPercent: 92,
+                        onSend: (_) {},
+                        onInterrupt: () {},
+                        composerEnabled: true,
+                        isRunning: false,
+                        showComposer: true,
+                        selection: mockWorkbenchData.selection,
+                        availableModels: mockWorkbenchData.availableModels,
+                        onSettingsChanged: (_) {},
+                        terminalAvailable: controller.isAvailable,
+                        onTerminalPressed: controller.showDrawer,
+                      ),
+                    ),
+                    IntegratedTerminalDrawer(controller: controller),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final threadListSizeBefore = tester.getSize(find.byKey(const ValueKey('thread-list-pane')));
+    expect(find.text('Host'), findsNothing);
+    expect(find.byKey(const ValueKey('semantic.composer.terminal')), findsOneWidget);
+
+    await tester.ensureVisible(find.byTooltip('Open terminal'));
+    await tester.tap(find.byTooltip('Open terminal'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Host'), findsOneWidget);
+    expect(find.text('Username'), findsOneWidget);
+    expect(find.text('Connect'), findsOneWidget);
+    expect(find.byKey(const ValueKey('semantic.terminal.resizeHandle')), findsOneWidget);
+    expect(controller.isDrawerVisible, true);
+    expect(tester.getSize(find.byKey(const ValueKey('thread-list-pane'))), threadListSizeBefore);
+    debugDefaultTargetPlatformOverride = null;
+    controller.dispose();
+  });
+
+  testWidgets('terminal drawer height clamps and persists on drag end', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'terminal.drawerHeight': 340.0,
+    });
+    final controller = IntegratedTerminalController();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              const Expanded(child: SizedBox()),
+              IntegratedTerminalDrawer(controller: controller),
+            ],
+          ),
+        ),
+      ),
+    );
+    controller.showDrawer();
+    await tester.pumpAndSettle();
+    expect(controller.drawerHeight, 340);
+
+    await tester.drag(find.byKey(const ValueKey('semantic.terminal.resizeHandle')), const Offset(0, -80));
+    await tester.pumpAndSettle();
+    expect(controller.drawerHeight, 420);
+
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getDouble('terminal.drawerHeight'), 420);
+    debugDefaultTargetPlatformOverride = null;
+    controller.dispose();
+  });
 
   testWidgets('requirements commentary packet renders summary without raw json', (
     WidgetTester tester,

@@ -35,6 +35,8 @@ class ComposerPanel extends StatefulWidget {
     required this.availableModels,
     required this.onSettingsChanged,
     this.bridgeBaseUri,
+    this.terminalAvailable = false,
+    this.onTerminalPressed,
   });
 
   final bool enabled;
@@ -45,6 +47,8 @@ class ComposerPanel extends StatefulWidget {
   final List<ModelItem> availableModels;
   final ValueChanged<ThreadSettingsDraft> onSettingsChanged;
   final Uri? bridgeBaseUri;
+  final bool terminalAvailable;
+  final VoidCallback? onTerminalPressed;
 
   @override
   State<ComposerPanel> createState() => _ComposerPanelState();
@@ -608,6 +612,8 @@ class _ComposerPanelState extends State<ComposerPanel> {
                         selection: widget.selection,
                         availableModels: widget.availableModels,
                         onSettingsChanged: widget.onSettingsChanged,
+                        terminalAvailable: widget.terminalAvailable,
+                        onTerminalPressed: widget.onTerminalPressed,
                       ),
                     ),
                     Semantics(
@@ -745,12 +751,16 @@ class _ComposerSettingsControls extends StatelessWidget {
     required this.selection,
     required this.availableModels,
     required this.onSettingsChanged,
+    required this.terminalAvailable,
+    required this.onTerminalPressed,
   });
 
   final bool enabled;
   final WorkspaceSelection selection;
   final List<ModelItem> availableModels;
   final ValueChanged<ThreadSettingsDraft> onSettingsChanged;
+  final bool terminalAvailable;
+  final VoidCallback? onTerminalPressed;
 
   @override
   Widget build(BuildContext context) {
@@ -849,6 +859,7 @@ class _ComposerSettingsControls extends StatelessWidget {
             onSelected: (value) => onSettingsChanged(_draft(sandboxMode: value)),
           ),
           _ComposerDropdownControl(
+            key: const ValueKey('semantic.composer.networkDropdown'),
             enabled: enabled,
             label: 'Network',
             icon: (selection.networkAccess ?? selection.effectiveNetworkAccess ?? false)
@@ -861,6 +872,50 @@ class _ComposerSettingsControls extends StatelessWidget {
             ],
             onSelected: (value) => onSettingsChanged(_draft(networkAccessMode: value)),
           ),
+          if (terminalAvailable)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: Semantics(
+                key: const ValueKey('semantic.composer.terminal'),
+                container: true,
+                button: true,
+                enabled: enabled && onTerminalPressed != null,
+                label: 'Open integrated terminal',
+                child: ExcludeSemantics(
+                  child: IconButton(
+                    onPressed: enabled ? onTerminalPressed : null,
+                    icon: const Icon(Icons.terminal_rounded, size: 15),
+                    tooltip: 'Open terminal',
+                    style: IconButton.styleFrom(
+                      minimumSize: const Size.square(31),
+                      fixedSize: const Size.square(31),
+                      padding: EdgeInsets.zero,
+                      backgroundColor: Theme.of(context)
+                          .colorScheme
+                          .surface
+                          .withValues(alpha: 0.26),
+                      foregroundColor: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: enabled ? 0.82 : 0.32),
+                      disabledForegroundColor: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.32),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        side: BorderSide(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .outline
+                              .withValues(alpha: 0.34),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -913,6 +968,7 @@ class _ComposerSettingsControls extends StatelessWidget {
 
 class _ComposerDropdownControl extends StatelessWidget {
   const _ComposerDropdownControl({
+    super.key,
     required this.enabled,
     required this.label,
     required this.icon,

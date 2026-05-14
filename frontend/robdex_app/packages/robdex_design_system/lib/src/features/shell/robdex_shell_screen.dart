@@ -42,6 +42,8 @@ class RobdexShellScreen extends StatelessWidget {
     required this.onUpdateWorkerMetadata,
     this.bridgeBaseUri,
     this.chatBottomDrawer,
+    this.terminalAvailable = false,
+    this.onTerminalPressed,
   });
 
   final bool enableGraphics;
@@ -74,6 +76,8 @@ class RobdexShellScreen extends StatelessWidget {
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
   final Uri? bridgeBaseUri;
   final Widget? chatBottomDrawer;
+  final bool terminalAvailable;
+  final VoidCallback? onTerminalPressed;
 
   @override
   Widget build(BuildContext context) {
@@ -120,6 +124,8 @@ class RobdexShellScreen extends StatelessWidget {
                               onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
                               onUpdateWorkerMetadata: onUpdateWorkerMetadata,
                               bridgeBaseUri: bridgeBaseUri,
+                              terminalAvailable: terminalAvailable,
+                              onTerminalPressed: onTerminalPressed,
                             ),
                           )
                         : RepaintBoundary(
@@ -151,6 +157,8 @@ class RobdexShellScreen extends StatelessWidget {
                               onUpdateWorkerMetadata: onUpdateWorkerMetadata,
                               bridgeBaseUri: bridgeBaseUri,
                               chatBottomDrawer: chatBottomDrawer,
+                              terminalAvailable: terminalAvailable,
+                              onTerminalPressed: onTerminalPressed,
                             ),
                           ),
                   );
@@ -193,6 +201,8 @@ class _WideShell extends StatefulWidget {
     required this.onUpdateWorkerMetadata,
     required this.bridgeBaseUri,
     required this.chatBottomDrawer,
+    required this.terminalAvailable,
+    required this.onTerminalPressed,
   });
 
   final WorkbenchViewData workbench;
@@ -223,6 +233,8 @@ class _WideShell extends StatefulWidget {
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
   final Uri? bridgeBaseUri;
   final Widget? chatBottomDrawer;
+  final bool terminalAvailable;
+  final VoidCallback? onTerminalPressed;
 
   @override
   State<_WideShell> createState() => _WideShellState();
@@ -300,6 +312,8 @@ class _WideShellState extends State<_WideShell> {
                           onSettingsChanged: widget.onSettingsChanged,
                           requirementReview: workbench.requirementReview,
                           onOpenThread: widget.onThreadSelected,
+                          terminalAvailable: widget.terminalAvailable,
+                          onTerminalPressed: widget.onTerminalPressed,
                           headerControls: _DesktopThreadControls(
                             selection: workbench.selection,
                             availableModels: workbench.availableModels,
@@ -422,6 +436,8 @@ class _CompactShell extends StatefulWidget {
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
     required this.bridgeBaseUri,
+    required this.terminalAvailable,
+    required this.onTerminalPressed,
   });
 
   final WorkbenchViewData workbench;
@@ -451,6 +467,8 @@ class _CompactShell extends StatefulWidget {
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
   final Uri? bridgeBaseUri;
+  final bool terminalAvailable;
+  final VoidCallback? onTerminalPressed;
 
   @override
   State<_CompactShell> createState() => _CompactShellState();
@@ -664,6 +682,8 @@ class _CompactShellState extends State<_CompactShell> {
       onSettingsChanged: widget.onSettingsChanged,
       requirementReview: widget.workbench.requirementReview,
       onOpenThread: widget.onThreadSelected,
+      terminalAvailable: widget.terminalAvailable,
+      onTerminalPressed: widget.onTerminalPressed,
       overlay: _ApprovalOverlay(
         selection: widget.workbench.selection,
         pendingApprovals: widget.workbench.pendingApprovals,

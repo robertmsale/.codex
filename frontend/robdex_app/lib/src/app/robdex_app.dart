@@ -295,6 +295,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   }
 
   void _returnToLogin() {
+    _terminalController.closeAll();
     _controller.disconnect();
     if (mounted) {
       setState(() {
@@ -415,6 +416,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           chatBottomDrawer: IntegratedTerminalDrawer(
             controller: _terminalController,
           ),
+          terminalAvailable: _terminalController.isAvailable,
+          onTerminalPressed: _terminalController.showDrawer,
         );
       },
     );
