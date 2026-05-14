@@ -298,6 +298,51 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets('terminal connection form hides after connected', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final controller = IntegratedTerminalController();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              const Expanded(child: SizedBox()),
+              IntegratedTerminalDrawer(
+                controller: controller,
+                host: 'bridge.internal',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    controller.showDrawer();
+    await tester.pumpAndSettle();
+    expect(find.text('Bridge host'), findsOneWidget);
+    expect(find.text('Username'), findsOneWidget);
+    expect(find.text('Connect'), findsOneWidget);
+
+    controller.markConnectedForTest(
+      sessionId: 'ssh-test',
+      host: 'bridge.internal',
+      username: 'robertsale',
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Bridge host'), findsNothing);
+    expect(find.text('Username'), findsNothing);
+    expect(find.text('Connect'), findsNothing);
+    expect(find.text('Connected to robertsale@bridge.internal'), findsOneWidget);
+
+    debugDefaultTargetPlatformOverride = null;
+    controller.dispose();
+  });
+
   testWidgets('requirements commentary packet renders summary without raw json', (
     WidgetTester tester,
   ) async {

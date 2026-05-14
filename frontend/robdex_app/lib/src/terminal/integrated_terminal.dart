@@ -45,6 +45,23 @@ class IntegratedTerminalController extends ChangeNotifier {
   String? get username => _username;
   String? get status => _status;
 
+  @visibleForTesting
+  void markConnectedForTest({
+    required String sessionId,
+    required String host,
+    required String username,
+  }) {
+    _sessionId = sessionId;
+    _host = host;
+    _username = username;
+    _pendingRequestId = null;
+    _isConnecting = false;
+    _isOpen = true;
+    _isDrawerVisible = true;
+    _status = 'Connected';
+    notifyListeners();
+  }
+
   Future<void> _restoreDrawerHeight() async {
     if (!isAvailable) {
       return;
@@ -420,71 +437,109 @@ class _TerminalDrawerBody extends StatelessWidget {
               ),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 8, 8),
-            child: Row(
-              children: [
-                const Icon(Icons.terminal, size: 16),
-                const SizedBox(width: 10),
-                Flexible(
-                  flex: 4,
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 260),
-                    child: InputDecorator(
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        labelText: 'Bridge host',
-                      ),
-                      child: Text(
-                        host,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Flexible(
-                  flex: 2,
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 160),
-                    child: TextField(
-                      controller: usernameController,
-                      focusNode: usernameFocusNode,
-                      enabled: !controller.isConnecting && controller.host == null,
-                      onSubmitted: (_) => onOpen(),
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        labelText: 'Username',
+          if (!controller.isOpen) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 8, 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.terminal, size: 16),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    flex: 4,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 260),
+                      child: InputDecorator(
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Bridge host',
+                        ),
+                        child: Text(
+                          host,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: controller.isConnecting || controller.host != null
-                      ? null
-                      : onOpen,
-                  child: const Text('Connect'),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  onPressed: controller.isOpen ? controller.close : controller.hideDrawer,
-                  tooltip: controller.isOpen ? 'Close terminal' : 'Hide terminal',
-                  icon: const Icon(Icons.close, size: 18),
-                ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-                    controller.status ?? '',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.right,
+                  const SizedBox(width: 8),
+                  Flexible(
+                    flex: 2,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 160),
+                      child: TextField(
+                        controller: usernameController,
+                        focusNode: usernameFocusNode,
+                        enabled: !controller.isConnecting && controller.host == null,
+                        onSubmitted: (_) => onOpen(),
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Username',
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: controller.isConnecting || controller.host != null
+                        ? null
+                        : onOpen,
+                    child: const Text('Connect'),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    onPressed: controller.hideDrawer,
+                    tooltip: 'Hide terminal',
+                    icon: const Icon(Icons.close, size: 18),
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      controller.status ?? '',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
+          ] else ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 8, 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.terminal, size: 16),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      controller.host == null
+                          ? 'Connected'
+                          : 'Connected to ${controller.username?.isNotEmpty == true ? '${controller.username}@' : ''}${controller.host}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    onPressed: controller.close,
+                    tooltip: 'Close terminal',
+                    icon: const Icon(Icons.close, size: 18),
+                  ),
+                  if ((controller.status ?? '').isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    Text(
+                      controller.status!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: Colors.white.withValues(alpha: 0.72),
+                          ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
           Expanded(
             child: TerminalView(
               controller.terminal,
