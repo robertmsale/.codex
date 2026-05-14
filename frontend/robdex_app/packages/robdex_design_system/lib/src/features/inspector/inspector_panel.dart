@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import '../../core/models/workbench_models.dart';
+import '../requirements/requirement_set_form.dart';
 
 class InspectorPanel extends StatelessWidget {
   const InspectorPanel({
@@ -250,49 +251,18 @@ class _RequirementsReviewCard extends StatelessWidget {
     if (sourceId == null || baseUri == null) {
       return;
     }
-    final initialJson = const JsonEncoder.withIndent('  ').convert({
-      'active': true,
-      'enforceOnTurns': true,
-      'requirements': [
-        {
-          'key': 'replaceWithSemanticRequirementKey',
-          'statement': 'Replace this with the exact requirement.',
-          'severity': 'blocker',
-          'verificationMethod': 'manualEvidence',
-        }
-      ],
-    });
-    final controller = TextEditingController(text: initialJson);
-    final submitted = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Set Requirements'),
-        content: SizedBox(
-          width: 560,
-          child: TextField(
-            controller: controller,
-            minLines: 12,
-            maxLines: 22,
-            decoration: const InputDecoration(
-              labelText: 'RequirementSet JSON',
-              alignLabelWithHint: true,
-            ),
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text),
-            child: const Text('Set'),
-          ),
-        ],
-      ),
+    final initialJson = summary == null
+        ? null
+        : requirementSetJsonFromReviewSummary(summary!);
+    final submitted = await showRequirementSetFormDialog(
+      context,
+      initialJson: initialJson,
+      title: 'Set Requirements',
+      actionLabel: 'Set',
+      helperText: 'Define active requirements for this thread. Robdex generates and submits the JSON contract.',
+      showDeactivate: (summary?.activeRequirementCount ?? 0) > 0,
+      bridgeBaseUri: bridgeBaseUri,
     );
-    controller.dispose();
     if (submitted == null || submitted.trim().isEmpty) {
       return;
     }

@@ -1328,6 +1328,7 @@ async fn orchestrator_spawn_agent_route(
             payload.get("cwd").and_then(Value::as_str),
             payload.get("role").and_then(Value::as_str),
             payload.get("issueNumber").and_then(Value::as_u64),
+            payload.get("requirementSet").cloned(),
         ).await {
             Ok(body) => (StatusCode::OK, Json(body)).into_response(),
             Err(error) => map_orchestrator_error(error.to_string()),

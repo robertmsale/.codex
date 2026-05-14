@@ -1,5 +1,4 @@
-import '../../core/models/workbench_models.dart';
-import '../../core/models/workbench_view_data.dart';
+import 'package:robdex_design_system/robdex_design_system.dart';
 
 const int _maxCommandLength = 1200;
 const int _maxOutputLength = 2400;

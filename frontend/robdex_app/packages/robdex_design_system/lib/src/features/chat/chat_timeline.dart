@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -7,6 +9,7 @@ import 'package:highlight/highlight.dart' as hl;
 import '../../core/formatters/timestamps.dart';
 import '../../core/models/workbench_models.dart';
 import '../composer/composer_panel.dart';
+import '../inspector/inspector_panel.dart';
 
 class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
@@ -19,12 +22,17 @@ class ChatTimeline extends StatefulWidget {
     required this.onInterrupt,
     required this.composerEnabled,
     required this.isRunning,
+    this.selection,
+    this.availableModels = const [],
+    this.onSettingsChanged,
     this.showComposer = true,
     this.headerControls,
     this.overlay,
     this.leading,
     this.bridgeBaseUri,
     this.onTerminateCommandExecution,
+    this.requirementReview,
+    this.onOpenThread,
   });
 
   final String? threadId;
@@ -35,12 +43,17 @@ class ChatTimeline extends StatefulWidget {
   final VoidCallback onInterrupt;
   final bool composerEnabled;
   final bool isRunning;
+  final WorkspaceSelection? selection;
+  final List<ModelItem> availableModels;
+  final ValueChanged<ThreadSettingsDraft>? onSettingsChanged;
   final bool showComposer;
   final Widget? headerControls;
   final Widget? overlay;
   final Widget? leading;
   final Uri? bridgeBaseUri;
   final ValueChanged<String>? onTerminateCommandExecution;
+  final RequirementReviewSummary? requirementReview;
+  final ValueChanged<String>? onOpenThread;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -167,7 +180,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             if (widget.leading != null) ...[
               Padding(
@@ -182,7 +195,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
                 children: [
                   Text(
                     widget.title,
-                    style: theme.textTheme.bodyMedium?.copyWith(
+                    style: theme.textTheme.bodyLarge?.copyWith(
                       fontWeight: FontWeight.w700,
                     ),
                   ),
@@ -198,25 +211,35 @@ class _ChatTimelineState extends State<ChatTimeline> {
                 ],
               ),
             ),
+            if (widget.headerControls != null) ...[
+              const SizedBox(width: 18),
+              Flexible(
+                flex: 0,
+                child: DefaultTextStyle.merge(
+                  style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.74),
+                      ) ??
+                      const TextStyle(),
+                  child: widget.headerControls!,
+                ),
+              ),
+            ],
           ],
         ),
-        if (widget.headerControls != null) ...[
+        const SizedBox(height: 16),
+        Divider(
+          height: 1,
+          color: theme.colorScheme.outline.withValues(alpha: 0.64),
+        ),
+        if (widget.requirementReview != null) ...[
           const SizedBox(height: 10),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Padding(
-              padding: const EdgeInsets.only(left: 2),
-              child: DefaultTextStyle.merge(
-                style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.74),
-                    ) ??
-                    const TextStyle(),
-                child: widget.headerControls!,
-              ),
-            ),
+          _RequirementsReviewInlineBanner(
+            summary: widget.requirementReview!,
+            selectedThreadRole: widget.selection?.threadRole,
+            onOpenThread: widget.onOpenThread,
           ),
         ],
-        const SizedBox(height: 12),
+        const SizedBox(height: 18),
         Expanded(
           child: Stack(
             children: [
@@ -267,12 +290,120 @@ class _ChatTimelineState extends State<ChatTimeline> {
           ComposerPanel(
             enabled: widget.composerEnabled,
             isRunning: widget.isRunning,
+            selection: widget.selection ?? _emptySelection,
+            availableModels: widget.availableModels,
+            onSettingsChanged: widget.onSettingsChanged ?? (_) {},
             bridgeBaseUri: widget.bridgeBaseUri,
             onSend: widget.onSend,
             onInterrupt: widget.onInterrupt,
           ),
         ],
       ],
+    );
+  }
+}
+
+const WorkspaceSelection _emptySelection = WorkspaceSelection(
+  projectId: null,
+  projectRootPath: null,
+  projectOrchestratorThreadId: null,
+  projectOrchestratorName: null,
+  threadId: null,
+  threadRole: null,
+  projectName: 'No Project',
+  threadName: 'No Thread Selected',
+  connectionLabel: 'Bridge Unknown',
+);
+
+class _RequirementsReviewInlineBanner extends StatelessWidget {
+  const _RequirementsReviewInlineBanner({
+    required this.summary,
+    required this.selectedThreadRole,
+    required this.onOpenThread,
+  });
+
+  final RequirementReviewSummary summary;
+  final String? selectedThreadRole;
+  final ValueChanged<String>? onOpenThread;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final reviewerThreadId = summary.reviewerThreadId;
+    final parentThreadId = summary.parentThreadId;
+    final isReviewerThread = selectedThreadRole == 'requirements-reviewer' ||
+        selectedThreadRole == 'requirementsReviewer';
+    final targetThreadId = isReviewerThread ? parentThreadId : reviewerThreadId;
+    final buttonLabel = isReviewerThread ? 'Back to source thread' : 'Open review thread';
+    final statusText = isReviewerThread
+        ? 'Nested requirements reviewer'
+        : 'Requirements ${summary.displayStatus.toLowerCase()}';
+    final counts = summary.verdicts.isEmpty
+        ? '${summary.activeRequirementCount} active'
+        : '${summary.passedCount} passed · ${summary.failedCount} failed · ${summary.blockedCount} blocked';
+
+    return Semantics(
+      key: const ValueKey('semantic.requirementsReview.inline'),
+      container: true,
+      label: statusText,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFF111923),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: theme.colorScheme.outline.withValues(alpha: 0.72)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          child: Row(
+            children: [
+              Icon(
+                isReviewerThread
+                    ? Icons.rate_review_outlined
+                    : Icons.rule_folder_outlined,
+                color: theme.colorScheme.primary,
+                size: 16,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      statusText,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.88),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      counts,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.52),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (targetThreadId != null && targetThreadId.isNotEmpty && onOpenThread != null)
+                TextButton.icon(
+                  onPressed: () => onOpenThread!(targetThreadId),
+                  icon: Icon(
+                    isReviewerThread
+                        ? Icons.arrow_back_rounded
+                        : Icons.open_in_new_rounded,
+                    size: 14,
+                  ),
+                  label: Text(buttonLabel),
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -338,6 +469,22 @@ class _ChatBubble extends StatelessWidget {
         onExpandedChanged: onExpandedChanged,
         onTerminateCommandExecution: onTerminateCommandExecution,
         bridgeBaseUri: bridgeBaseUri,
+      );
+    }
+
+    final requirementsVerdictPayload = _requirementsVerdictPayloadFromBody(entry);
+    if (requirementsVerdictPayload != null) {
+      return _RequirementsVerdictCard(
+        entry: entry,
+        payload: requirementsVerdictPayload,
+      );
+    }
+
+    final requirementsPayload = _requirementsClaimPayloadFromBody(entry);
+    if (requirementsPayload != null) {
+      return _RequirementsClaimCard(
+        entry: entry,
+        payload: requirementsPayload,
       );
     }
 
@@ -597,6 +744,354 @@ class _PlanChecklistRow extends StatelessWidget {
   }
 }
 
+class _RequirementsClaimCard extends StatelessWidget {
+  const _RequirementsClaimCard({
+    required this.entry,
+    required this.payload,
+  });
+
+  final ChatEntry entry;
+  final Map<String, dynamic> payload;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final timestampLabel = formatLocalTimeLabel(entry.timestamp);
+    final disposition = payload['finalDisposition'] as String? ?? 'unknown';
+    final summary = payload['summary'] as String? ?? '';
+    final requirementEntries = payload.entries
+        .where((entry) =>
+            entry.key != 'summary' &&
+            entry.key != 'finalDisposition' &&
+            entry.value is Map<String, dynamic>)
+        .toList(growable: false);
+    final accent = switch (disposition) {
+      'readyForRequirementsReview' => Colors.green.shade700,
+      'blockedNeedsOwnerAction' => Colors.amber.shade800,
+      'continueWorkNeeded' => theme.colorScheme.error,
+      _ => theme.colorScheme.secondary,
+    };
+    final title = switch (disposition) {
+      'readyForRequirementsReview' => 'Requirements Claim',
+      'blockedNeedsOwnerAction' => 'Requirements Blocked',
+      'continueWorkNeeded' => 'Requirements Need Work',
+      _ => 'Requirements Output',
+    };
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            color: Color.alphaBlend(
+              accent.withValues(alpha: 0.08),
+              theme.colorScheme.surface,
+            ),
+            border: Border.all(color: accent.withValues(alpha: 0.28)),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(_requirementsDispositionIcon(disposition), color: accent, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      timestampLabel,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.58),
+                      ),
+                    ),
+                  ],
+                ),
+                if (summary.trim().isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    summary.trim(),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      height: 1.36,
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                ...requirementEntries.map((entry) {
+                  final value = entry.value as Map<String, dynamic>;
+                  final claim = value['claim'] as String? ?? 'unknown';
+                  final risk = value['risk'] as String? ?? 'unknown';
+                  final justification = value['justification'] as String? ?? '';
+                  final evidence = (value['evidence'] as List<dynamic>? ?? const [])
+                      .whereType<String>()
+                      .toList(growable: false);
+                  final claimColor = _requirementsClaimColor(theme, claim);
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        border: Border(
+                          left: BorderSide(color: claimColor, width: 3),
+                        ),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 10),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(_requirementsClaimIcon(claim), color: claimColor, size: 16),
+                                const SizedBox(width: 7),
+                                Expanded(
+                                  child: Text(
+                                    entry.key,
+                                    style: theme.textTheme.labelLarge?.copyWith(
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  '${_titleCaseClaim(claim)} · risk $risk',
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: claimColor,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (justification.trim().isNotEmpty) ...[
+                              const SizedBox(height: 5),
+                              Text(
+                                justification.trim(),
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  height: 1.34,
+                                  color: theme.colorScheme.onSurface.withValues(alpha: 0.78),
+                                ),
+                              ),
+                            ],
+                            if (evidence.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              for (final item in evidence.take(4))
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 3),
+                                  child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '• ',
+                                        style: theme.textTheme.bodySmall?.copyWith(
+                                          color: theme.colorScheme.onSurface.withValues(alpha: 0.56),
+                                        ),
+                                      ),
+                                      Expanded(
+                                        child: Text(
+                                          item,
+                                          style: theme.textTheme.bodySmall?.copyWith(
+                                            height: 1.32,
+                                            color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RequirementsVerdictCard extends StatelessWidget {
+  const _RequirementsVerdictCard({
+    required this.entry,
+    required this.payload,
+  });
+
+  final ChatEntry entry;
+  final Map<String, dynamic> payload;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final timestampLabel = formatLocalTimeLabel(entry.timestamp);
+    final overall = payload['overallVerdict'] as String? ?? 'unknown';
+    final route = payload['route'] is Map<String, dynamic>
+        ? payload['route'] as Map<String, dynamic>
+        : const <String, dynamic>{};
+    final routeMessage = route['message'] as String? ?? '';
+    final requirementEntries = payload.entries
+        .where((entry) =>
+            entry.key != 'overallVerdict' &&
+            entry.key != 'route' &&
+            entry.value is Map<String, dynamic>)
+        .toList(growable: false);
+    final accent = _requirementsVerdictColor(theme, overall);
+    final title = switch (overall) {
+      'pass' => 'Requirements Review Passed',
+      'fail' => 'Requirements Review Failed',
+      'acceptedBlocked' => 'Requirements Review Accepted Blocker',
+      'rejectedBlocked' => 'Requirements Review Rejected Blocker',
+      'needsHumanWaiver' => 'Requirements Review Needs Waiver',
+      _ => 'Requirements Review',
+    };
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            color: Color.alphaBlend(
+              accent.withValues(alpha: 0.08),
+              theme.colorScheme.surface,
+            ),
+            border: Border.all(color: accent.withValues(alpha: 0.28)),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(_requirementsVerdictIcon(overall), color: accent, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      timestampLabel,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.58),
+                      ),
+                    ),
+                  ],
+                ),
+                if (routeMessage.trim().isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    routeMessage.trim(),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      height: 1.36,
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                ...requirementEntries.map((entry) {
+                  final value = entry.value as Map<String, dynamic>;
+                  final verdict = value['verdict'] as String? ?? 'unknown';
+                  final reason = value['reason'] as String? ?? '';
+                  final evidenceAssessment = value['evidenceAssessment'] as String? ?? '';
+                  final requiredCorrection = value['requiredCorrection'] as String? ?? '';
+                  final verdictColor = _requirementsVerdictColor(theme, verdict);
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        border: Border(
+                          left: BorderSide(color: verdictColor, width: 3),
+                        ),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 10),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(_requirementsVerdictIcon(verdict), color: verdictColor, size: 16),
+                                const SizedBox(width: 7),
+                                Expanded(
+                                  child: Text(
+                                    entry.key,
+                                    style: theme.textTheme.labelLarge?.copyWith(
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  _titleCaseVerdict(verdict),
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: verdictColor,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (reason.trim().isNotEmpty) ...[
+                              const SizedBox(height: 5),
+                              Text(
+                                reason.trim(),
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  height: 1.34,
+                                  color: theme.colorScheme.onSurface.withValues(alpha: 0.78),
+                                ),
+                              ),
+                            ],
+                            if (evidenceAssessment.trim().isNotEmpty) ...[
+                              const SizedBox(height: 5),
+                              Text(
+                                'Evidence: ${evidenceAssessment.trim()}',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  height: 1.32,
+                                  color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                                ),
+                              ),
+                            ],
+                            if (requiredCorrection.trim().isNotEmpty) ...[
+                              const SizedBox(height: 5),
+                              Text(
+                                'Correction: ${requiredCorrection.trim()}',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  height: 1.32,
+                                  color: verdictColor.withValues(alpha: 0.9),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _AnimatedStatusIcon extends StatelessWidget {
   const _AnimatedStatusIcon({
     required this.icon,
@@ -674,6 +1169,119 @@ void _copyBubbleText(BuildContext context, String text) {
       duration: Duration(milliseconds: 900),
     ),
   );
+}
+
+Map<String, dynamic>? _requirementsClaimPayloadFromBody(ChatEntry entry) {
+  if (entry.isStreaming || entry.author != 'Assistant') {
+    return null;
+  }
+  final text = entry.body.trim();
+  if (!text.startsWith('{') || !text.endsWith('}')) {
+    return null;
+  }
+  try {
+    final decoded = jsonDecode(text);
+    if (decoded is! Map<String, dynamic>) {
+      return null;
+    }
+    final disposition = decoded['finalDisposition'];
+    if (disposition is String && decoded['summary'] is String) {
+      return decoded;
+    }
+  } catch (_) {
+    return null;
+  }
+  return null;
+}
+
+Map<String, dynamic>? _requirementsVerdictPayloadFromBody(ChatEntry entry) {
+  if (entry.isStreaming || entry.author != 'Assistant') {
+    return null;
+  }
+  final text = entry.body.trim();
+  if (!text.startsWith('{') || !text.endsWith('}')) {
+    return null;
+  }
+  try {
+    final decoded = jsonDecode(text);
+    if (decoded is! Map<String, dynamic>) {
+      return null;
+    }
+    final overall = decoded['overallVerdict'];
+    final route = decoded['route'];
+    if (overall is String && route is Map<String, dynamic>) {
+      return decoded;
+    }
+  } catch (_) {
+    return null;
+  }
+  return null;
+}
+
+IconData _requirementsDispositionIcon(String disposition) {
+  return switch (disposition) {
+    'readyForRequirementsReview' => Icons.fact_check_rounded,
+    'blockedNeedsOwnerAction' => Icons.warning_amber_rounded,
+    'continueWorkNeeded' => Icons.build_circle_outlined,
+    _ => Icons.rule_outlined,
+  };
+}
+
+IconData _requirementsVerdictIcon(String verdict) {
+  return switch (verdict) {
+    'pass' => Icons.verified_rounded,
+    'fail' => Icons.cancel_rounded,
+    'acceptedBlocked' => Icons.warning_amber_rounded,
+    'rejectedBlocked' => Icons.report_problem_outlined,
+    'needsHumanWaiver' => Icons.gavel_rounded,
+    _ => Icons.rate_review_outlined,
+  };
+}
+
+IconData _requirementsClaimIcon(String claim) {
+  return switch (claim) {
+    'satisfied' => Icons.check_circle_rounded,
+    'notSatisfied' => Icons.cancel_rounded,
+    'blocked' => Icons.warning_amber_rounded,
+    'notApplicable' => Icons.remove_circle_outline,
+    _ => Icons.radio_button_checked_rounded,
+  };
+}
+
+Color _requirementsVerdictColor(ThemeData theme, String verdict) {
+  return switch (verdict) {
+    'pass' => Colors.green.shade700,
+    'fail' || 'rejectedBlocked' => theme.colorScheme.error,
+    'acceptedBlocked' || 'needsHumanWaiver' => Colors.amber.shade800,
+    _ => theme.colorScheme.secondary,
+  };
+}
+
+Color _requirementsClaimColor(ThemeData theme, String claim) {
+  return switch (claim) {
+    'satisfied' => Colors.green.shade700,
+    'notSatisfied' => theme.colorScheme.error,
+    'blocked' => Colors.amber.shade800,
+    'notApplicable' => theme.colorScheme.outline,
+    _ => theme.colorScheme.secondary,
+  };
+}
+
+String _titleCaseVerdict(String verdict) {
+  return switch (verdict) {
+    'acceptedBlocked' => 'Accepted blocker',
+    'rejectedBlocked' => 'Rejected blocker',
+    'needsHumanWaiver' => 'Needs waiver',
+    _ => verdict.isEmpty ? 'Unknown' : verdict[0].toUpperCase() + verdict.substring(1),
+  };
+}
+
+String _titleCaseClaim(String claim) {
+  return switch (claim) {
+    'notSatisfied' => 'Not satisfied',
+    'notApplicable' => 'Not applicable',
+    _ => claim.isEmpty ? 'Unknown' : claim[0].toUpperCase() + claim.substring(1),
+  };
 }
 
 MarkdownStyleSheet _conversationMarkdownStyle(ThemeData theme, bool isPending) {

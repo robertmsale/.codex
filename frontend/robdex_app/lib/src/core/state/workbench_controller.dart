@@ -3,10 +3,9 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:rinf/rinf.dart';
+import 'package:robdex_design_system/robdex_design_system.dart';
 
 import '../../bindings/bindings.dart';
-import '../models/workbench_models.dart';
-import '../models/workbench_view_data.dart';
 
 class WorkbenchController extends ChangeNotifier {
   WorkbenchController();
@@ -121,6 +120,7 @@ class WorkbenchController extends ChangeNotifier {
     required String networkAccessMode,
     required String modelId,
     required String reasoningEffort,
+    String? requirementSetJson,
   }) {
     CreateThreadSignal(
       projectId: projectId,
@@ -132,6 +132,7 @@ class WorkbenchController extends ChangeNotifier {
       networkAccessMode: networkAccessMode,
       modelId: modelId,
       reasoningEffort: reasoningEffort,
+      requirementSetJson: requirementSetJson ?? '',
     ).sendSignalToRust();
   }
 
@@ -139,11 +140,13 @@ class WorkbenchController extends ChangeNotifier {
     required String name,
     required String role,
     required String prompt,
+    String? requirementSetJson,
   }) {
     SpawnAgentSignal(
       name: name,
       role: role,
       prompt: prompt,
+      requirementSetJson: requirementSetJson ?? '',
     ).sendSignalToRust();
   }
 
@@ -261,7 +264,11 @@ class WorkbenchController extends ChangeNotifier {
     ).sendSignalToRust();
   }
 
-  void sendMessage(String text, {List<String> localImagePaths = const []}) {
+  void sendMessage(
+    String text, {
+    List<String> localImagePaths = const [],
+    String? requirementSetJson,
+  }) {
     final trimmed = text.trim();
     if (trimmed.isEmpty && localImagePaths.isEmpty) {
       return;
@@ -269,6 +276,7 @@ class WorkbenchController extends ChangeNotifier {
     SendThreadMessageSignal(
       text: trimmed,
       localImagePaths: localImagePaths,
+      requirementSetJson: requirementSetJson ?? '',
     ).sendSignalToRust();
   }
 

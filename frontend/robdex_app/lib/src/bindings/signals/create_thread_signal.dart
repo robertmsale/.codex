@@ -14,6 +14,7 @@ class CreateThreadSignal {
     required this.networkAccessMode,
     required this.modelId,
     required this.reasoningEffort,
+    required this.requirementSetJson,
   });
 
   static CreateThreadSignal deserialize(BinaryDeserializer deserializer) {
@@ -28,6 +29,7 @@ class CreateThreadSignal {
       networkAccessMode: deserializer.deserializeString(),
       modelId: deserializer.deserializeString(),
       reasoningEffort: deserializer.deserializeString(),
+      requirementSetJson: deserializer.deserializeString(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -51,6 +53,7 @@ class CreateThreadSignal {
   final String networkAccessMode;
   final String modelId;
   final String reasoningEffort;
+  final String requirementSetJson;
 
   CreateThreadSignal copyWith({
     String? projectId,
@@ -62,6 +65,7 @@ class CreateThreadSignal {
     String? networkAccessMode,
     String? modelId,
     String? reasoningEffort,
+    String? requirementSetJson,
   }) {
     return CreateThreadSignal(
       projectId: projectId ?? this.projectId,
@@ -73,6 +77,7 @@ class CreateThreadSignal {
       networkAccessMode: networkAccessMode ?? this.networkAccessMode,
       modelId: modelId ?? this.modelId,
       reasoningEffort: reasoningEffort ?? this.reasoningEffort,
+      requirementSetJson: requirementSetJson ?? this.requirementSetJson,
     );
   }
 
@@ -87,6 +92,7 @@ class CreateThreadSignal {
     serializer.serializeString(networkAccessMode);
     serializer.serializeString(modelId);
     serializer.serializeString(reasoningEffort);
+    serializer.serializeString(requirementSetJson);
     serializer.decreaseContainerDepth();
   }
 
@@ -110,7 +116,8 @@ class CreateThreadSignal {
       && sandboxMode == other.sandboxMode
       && networkAccessMode == other.networkAccessMode
       && modelId == other.modelId
-      && reasoningEffort == other.reasoningEffort;
+      && reasoningEffort == other.reasoningEffort
+      && requirementSetJson == other.requirementSetJson;
   }
 
   @override
@@ -124,6 +131,7 @@ class CreateThreadSignal {
         networkAccessMode,
         modelId,
         reasoningEffort,
+        requirementSetJson,
       );
 
   @override
@@ -140,7 +148,8 @@ class CreateThreadSignal {
         'sandboxMode: $sandboxMode, '
         'networkAccessMode: $networkAccessMode, '
         'modelId: $modelId, '
-        'reasoningEffort: $reasoningEffort'
+        'reasoningEffort: $reasoningEffort, '
+        'requirementSetJson: $requirementSetJson'
         ')';
       return true;
     }());

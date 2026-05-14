@@ -1,0 +1,8 @@
+{
+  "name": "Robdex Design Lab",
+  "short_name": "Robdex Lab",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#071016",
+  "theme_color": "#071016"
+}

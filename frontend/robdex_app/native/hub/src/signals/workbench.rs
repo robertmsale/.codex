@@ -78,6 +78,7 @@ pub struct CreateThreadSignal {
     pub network_access_mode: String,
     pub model_id: String,
     pub reasoning_effort: String,
+    pub requirement_set_json: String,
 }
 
 #[derive(Deserialize, DartSignal)]
@@ -85,6 +86,7 @@ pub struct SpawnAgentSignal {
     pub name: String,
     pub role: String,
     pub prompt: String,
+    pub requirement_set_json: String,
 }
 
 #[derive(Deserialize, DartSignal)]
@@ -133,6 +135,7 @@ pub struct UpdateWorkerMetadataSignal {
 pub struct SendThreadMessageSignal {
     pub text: String,
     pub local_image_paths: Vec<String>,
+    pub requirement_set_json: String,
 }
 
 #[derive(Deserialize, DartSignal)]

@@ -33,6 +33,7 @@ build/
 target/
 frontend/robdex_web/dist/
 frontend/robdex_web/node_modules/
+frontend/robdex_app/web/pkg/
 __pycache__/
 *.pyc
 *.pyo

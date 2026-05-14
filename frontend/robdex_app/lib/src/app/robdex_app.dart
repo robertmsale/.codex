@@ -7,18 +7,13 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:rinf/rinf.dart';
+import 'package:robdex_design_system/robdex_design_system.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:rinf/rinf.dart';
-
 import '../bindings/bindings.dart';
-import '../core/formatters/timestamps.dart';
 import '../core/state/workbench_controller.dart';
-import '../core/models/workbench_models.dart';
-import '../features/chat/chat_timeline.dart';
-import '../features/shell/robdex_shell_screen.dart';
 import '../web/dom_mirror/dom_mirror.dart';
-import '../theme/robdex_theme.dart';
 
 class RobdexApp extends StatelessWidget {
   const RobdexApp({super.key});
@@ -353,6 +348,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           onSendMessage: (submission) => _controller.sendMessage(
             submission.text,
             localImagePaths: submission.localImagePaths,
+            requirementSetJson: submission.requirementSetJson,
           ),
           onOpenHistory: _showHistorySheet,
           onCompactThread: _controller.compactThread,
@@ -515,6 +511,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     final availableModels = view?.availableModels ?? const <ModelItem>[];
     final titleController = TextEditingController();
     final promptController = TextEditingController();
+    String requirementSetJson = '';
     String role = 'worker';
     String approvalPolicy = '';
     String sandboxMode = '';
@@ -570,6 +567,36 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                       minLines: 3,
                       maxLines: 8,
                       decoration: const InputDecoration(labelText: 'Initial prompt'),
+                    ),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        final next = await showRequirementSetFormDialog(
+                          context,
+                          initialJson: requirementSetJson,
+                          title: 'Thread Requirements',
+                          actionLabel: 'Attach',
+                          helperText:
+                              'These requirements are attached before the first turn starts.',
+                          bridgeBaseUri: _bridgeBaseUri,
+                        );
+                        if (next == null) {
+                          return;
+                        }
+                        setDialogState(() {
+                          requirementSetJson = next;
+                        });
+                      },
+                      icon: Icon(
+                        requirementSetJson.trim().isEmpty
+                            ? Icons.rule_outlined
+                            : Icons.rule_rounded,
+                      ),
+                      label: Text(
+                        requirementSetJson.trim().isEmpty
+                            ? 'Add requirements'
+                            : 'Requirements attached',
+                      ),
                     ),
                     const SizedBox(height: 12),
                     DropdownButtonFormField<String>(
@@ -673,6 +700,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                         networkAccessMode: networkAccessMode,
                         modelId: modelId,
                         reasoningEffort: reasoningEffort,
+                        requirementSetJson: requirementSetJson,
                       ),
                     );
                   },
@@ -700,6 +728,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       networkAccessMode: result.networkAccessMode,
       modelId: result.modelId,
       reasoningEffort: result.reasoningEffort,
+      requirementSetJson: result.requirementSetJson,
     );
   }
 
@@ -1405,6 +1434,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   Future<void> _showSpawnAgentDialog() async {
     final nameController = TextEditingController();
     final promptController = TextEditingController();
+    String requirementSetJson = '';
     String role = 'worker';
     final result = await showDialog<_AgentDraft>(
       context: context,
@@ -1445,6 +1475,36 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                       maxLines: 6,
                       decoration: const InputDecoration(labelText: 'Initial prompt'),
                     ),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        final next = await showRequirementSetFormDialog(
+                          context,
+                          initialJson: requirementSetJson,
+                          title: 'Agent Requirements',
+                          actionLabel: 'Attach',
+                          helperText:
+                              'These requirements are attached before the spawned agent starts its first turn.',
+                          bridgeBaseUri: _bridgeBaseUri,
+                        );
+                        if (next == null) {
+                          return;
+                        }
+                        setDialogState(() {
+                          requirementSetJson = next;
+                        });
+                      },
+                      icon: Icon(
+                        requirementSetJson.trim().isEmpty
+                            ? Icons.rule_outlined
+                            : Icons.rule_rounded,
+                      ),
+                      label: Text(
+                        requirementSetJson.trim().isEmpty
+                            ? 'Add requirements'
+                            : 'Requirements attached',
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1460,6 +1520,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                         name: nameController.text,
                         role: role,
                         prompt: promptController.text,
+                        requirementSetJson: requirementSetJson,
                       ),
                     );
                   },
@@ -1481,6 +1542,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       name: result.name,
       role: result.role,
       prompt: result.prompt,
+      requirementSetJson: result.requirementSetJson,
     );
   }
 
@@ -2941,6 +3003,7 @@ class _ThreadDraft {
     required this.networkAccessMode,
     required this.modelId,
     required this.reasoningEffort,
+    required this.requirementSetJson,
   });
 
   final String projectId;
@@ -2952,6 +3015,7 @@ class _ThreadDraft {
   final String networkAccessMode;
   final String modelId;
   final String reasoningEffort;
+  final String requirementSetJson;
 }
 
 class _AgentDraft {
@@ -2959,11 +3023,13 @@ class _AgentDraft {
     required this.name,
     required this.role,
     required this.prompt,
+    required this.requirementSetJson,
   });
 
   final String name;
   final String role;
   final String prompt;
+  final String requirementSetJson;
 }
 
 class _HookLogEntry {

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PORT="${ROBDEX_DESIGN_LAB_PORT:-43110}"
+URL="${1:-http://127.0.0.1:$PORT}"
+OUT="${2:-/tmp/robdex-design-lab.png}"
+CHROME="${CHROME_BIN:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
+
+if [[ ! -x "$CHROME" ]]; then
+  echo "design-lab-screenshot: Chrome not found at $CHROME" >&2
+  echo "Set CHROME_BIN to a Chromium-compatible browser binary." >&2
+  exit 1
+fi
+
+"$CHROME" \
+  --headless=new \
+  --disable-gpu \
+  --hide-scrollbars \
+  --virtual-time-budget=5000 \
+  --window-size=1800,1200 \
+  --screenshot="$OUT" \
+  "$URL" >/dev/null
+
+echo "$OUT"

@@ -7,6 +7,7 @@ class SendThreadMessageSignal {
   const SendThreadMessageSignal({
     required this.text,
     required this.localImagePaths,
+    required this.requirementSetJson,
   });
 
   static SendThreadMessageSignal deserialize(BinaryDeserializer deserializer) {
@@ -20,6 +21,7 @@ class SendThreadMessageSignal {
     final instance = SendThreadMessageSignal(
       text: text,
       localImagePaths: localImagePaths,
+      requirementSetJson: deserializer.deserializeString(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -36,14 +38,17 @@ class SendThreadMessageSignal {
 
   final String text;
   final List<String> localImagePaths;
+  final String requirementSetJson;
 
   SendThreadMessageSignal copyWith({
     String? text,
     List<String>? localImagePaths,
+    String? requirementSetJson,
   }) {
     return SendThreadMessageSignal(
       text: text ?? this.text,
       localImagePaths: localImagePaths ?? this.localImagePaths,
+      requirementSetJson: requirementSetJson ?? this.requirementSetJson,
     );
   }
 
@@ -54,6 +59,7 @@ class SendThreadMessageSignal {
     for (final item in localImagePaths) {
       serializer.serializeString(item);
     }
+    serializer.serializeString(requirementSetJson);
     serializer.decreaseContainerDepth();
   }
 
@@ -70,11 +76,12 @@ class SendThreadMessageSignal {
 
     return other is SendThreadMessageSignal
       && text == other.text
-      && _sameStringList(localImagePaths, other.localImagePaths);
+      && _sameStringList(localImagePaths, other.localImagePaths)
+      && requirementSetJson == other.requirementSetJson;
   }
 
   @override
-  int get hashCode => Object.hash(text, Object.hashAll(localImagePaths));
+  int get hashCode => Object.hash(text, Object.hashAll(localImagePaths), requirementSetJson);
 
   @override
   String toString() {
@@ -83,7 +90,8 @@ class SendThreadMessageSignal {
     assert(() {
       fullString = '$runtimeType('
         'text: $text, '
-        'localImagePaths: $localImagePaths'
+        'localImagePaths: $localImagePaths, '
+        'requirementSetJson: $requirementSetJson'
         ')';
       return true;
     }());

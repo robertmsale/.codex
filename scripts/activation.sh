@@ -27,6 +27,30 @@ try_activate_codex_root() {
   source "$activate_script" "$codex_root" >/dev/null 2>&1 || true
 }
 
+nearest_codex_root_path() {
+  local start_path="${1:-}"
+  local current=""
+  [[ -n "$start_path" ]] || return 0
+  current="$start_path"
+  if [[ -f "$current" ]]; then
+    current="$(dirname "$current")"
+  fi
+  while [[ -n "$current" && "$current" != "/" ]]; do
+    if [[ -d "$current/.codex/skills" ]]; then
+      printf '%s/.codex\n' "$current"
+      return 0
+    fi
+    current="$(dirname "$current")"
+  done
+}
+
+try_activate_nearest_codex_root() {
+  local codex_root=""
+  if codex_root="$(nearest_codex_root_path "${1:-}")" && [[ -n "$codex_root" ]]; then
+    try_activate_codex_root "$codex_root"
+  fi
+}
+
 activation_bridge_curl() {
   if typeset -f codex_exec_internal_shimmed >/dev/null 2>&1; then
     codex_exec_internal_shimmed curl "$@"
@@ -56,14 +80,24 @@ resolve_agent_codex_root_from_bridge() {
     return 0
   fi
 
-  [[ -n "$project_path" ]] && printf '%s/.codex\n' "$project_path" && return 0
-
   if ! cwd="$(python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); print(data.get("cwd",""))' <<<"$payload" 2>/dev/null)"; then
     return 0
   fi
 
-  [[ -n "$cwd" ]] || return 0
-  printf '%s/.codex\n' "$cwd"
+  if [[ -n "$project_path" ]]; then
+    if codex_root="$(nearest_codex_root_path "$project_path")" && [[ -n "$codex_root" ]]; then
+      printf '%s\n' "$codex_root"
+      return 0
+    fi
+    if codex_root="$(nearest_codex_root_path "$cwd")" && [[ -n "$codex_root" ]]; then
+      printf '%s\n' "$codex_root"
+      return 0
+    fi
+  fi
+
+  if codex_root="$(nearest_codex_root_path "$cwd")" && [[ -n "$codex_root" ]]; then
+    printf '%s\n' "$codex_root"
+  fi
 }
 
 setup_codex_activation() {
@@ -76,6 +110,8 @@ setup_codex_activation() {
   fi
   if [[ -n "${AGENT_CWD:-}" ]]; then
     try_activate_codex_root "${AGENT_CWD}/.codex"
+    try_activate_nearest_codex_root "$AGENT_CWD"
   fi
+  try_activate_nearest_codex_root "$PWD"
   ensure_minimum_runtime_path
 }

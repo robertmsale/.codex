@@ -1,7 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:robdex_app/src/core/models/mock_workbench_data.dart';
-import 'package:robdex_app/src/core/models/workbench_models.dart';
+import 'package:robdex_design_system/robdex_design_system.dart';
 import 'package:robdex_app/src/web/dom_mirror/dom_mirror.dart';
 import 'package:robdex_app/src/web/dom_mirror/dom_mirror_snapshot.dart';
 

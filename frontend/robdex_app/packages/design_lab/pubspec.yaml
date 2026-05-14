@@ -1,0 +1,22 @@
+name: robdex_design_lab
+description: Mocked Robdex design lab for screenshot-driven UI review.
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ">=3.11.4 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  robdex_design_system:
+    path: ../robdex_design_system
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

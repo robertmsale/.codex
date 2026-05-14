@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -93,6 +94,63 @@ def _request_json(
 def _read_resource_text(*parts: str) -> str:
     path = RESOURCE_DIR.joinpath(*parts)
     return path.read_text(encoding="utf-8").strip()
+
+
+def _read_json_file(path_text: str, label: str) -> Any:
+    path = Path(path_text).expanduser()
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise SystemExit(f"robdex: unable to read {label} file {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"robdex: invalid JSON in {path}: {exc}") from exc
+
+
+def _camel_case_key(text: str, fallback: str) -> str:
+    words = re.findall(r"[A-Za-z0-9]+", text)
+    if not words:
+        return fallback
+    first, *rest = words[:8]
+    key = first[:1].lower() + first[1:]
+    key += "".join(word[:1].upper() + word[1:] for word in rest)
+    if key[:1].isdigit():
+        key = f"requirement{key}"
+    return key
+
+
+def _requirements_from_prose(title: str, text: str) -> dict[str, Any]:
+    candidates: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        line = re.sub(r"^[-*+]\s+", "", line)
+        line = re.sub(r"^\d+[.)]\s+", "", line)
+        if line:
+            candidates.append(line)
+    if not candidates and text.strip():
+        candidates = [text.strip()]
+    if not candidates:
+        raise SystemExit("robdex: no requirement prose provided")
+
+    seen: dict[str, int] = {}
+    requirements = []
+    for index, statement in enumerate(candidates, start=1):
+        base_key = _camel_case_key(statement, f"requirement{index}")
+        count = seen.get(base_key, 0) + 1
+        seen[base_key] = count
+        key = base_key if count == 1 else f"{base_key}{count}"
+        requirements.append(
+            {
+                "key": key,
+                "statement": statement,
+                "severity": "high",
+                "verificationMethod": "manualEvidence",
+            }
+        )
+    return {
+        "id": _camel_case_key(title, "requirements"),
+        "title": title,
+        "requirements": requirements,
+    }
 
 
 def _whoami(thread_id: str) -> dict[str, Any]:
@@ -402,6 +460,41 @@ def _cmd_requirements_status(thread_id: str, args: argparse.Namespace) -> None:
     _print_lines(lines)
 
 
+def _cmd_requirements_from_prose(
+    thread_id: str,
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> None:
+    text = _resolve_text_input(
+        parser,
+        args,
+        inline_attr="text",
+        file_attr="text_file",
+        stdin_attr="text_stdin",
+        label="requirements prose",
+    )
+    requirement_set = _requirements_from_prose(args.title, text)
+    if not args.attach:
+        print(json.dumps(requirement_set, indent=2, sort_keys=True))
+        return
+    payload = _request_json(
+        "POST",
+        "/orchestrator/requirements/set",
+        body={
+            "senderThreadId": thread_id,
+            "recipientThreadId": _normalize_text(args.to_thread_id),
+            "recipientName": _normalize_text(args.name),
+            "projectPath": _normalize_path(args.project_path),
+            "requirementSet": requirement_set,
+        },
+    )
+    print(
+        "Set requirements for "
+        f"{_quoted(str(payload.get('displayName') or payload.get('threadId') or 'unknown'))} "
+        f"| count={payload.get('requirementCount')} enforceOnTurns={payload.get('enforceOnTurns')}"
+    )
+
+
 def _cmd_list_thread_groups(thread_id: str, project_path: str | None) -> None:
     query = {"senderThreadId": thread_id}
     normalized_project = _normalize_path(project_path)
@@ -453,6 +546,14 @@ def _cmd_spawn_agent(thread_id: str, args: argparse.Namespace, parser: argparse.
     if not prompt:
         raise SystemExit("robdex: spawn prompt is empty")
 
+    if args.requirements_json and args.requirements_file:
+        parser.error("spawn-agent accepts either --requirements-json or --requirements-file")
+
+    requirement_set = None
+    requirements_path = args.requirements_json or args.requirements_file
+    if requirements_path:
+        requirement_set = _read_json_file(requirements_path, "requirements")
+
     payload = _request_json(
         "POST",
         "/orchestrator/spawn-agent",
@@ -463,6 +564,7 @@ def _cmd_spawn_agent(thread_id: str, args: argparse.Namespace, parser: argparse.
             "cwd": _normalize_path(args.cwd),
             "role": _normalize_text(args.role),
             "issueNumber": args.issue_number,
+            "requirementSet": requirement_set,
         },
     )
     agent = payload.get("agent")
@@ -679,6 +781,14 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     p_spawn.add_argument("--cwd")
     p_spawn.add_argument("--role", choices=["worker", "qa", "hidden", "requirements-reviewer"], default="worker")
     p_spawn.add_argument("--issue-number", type=int)
+    p_spawn.add_argument(
+        "--requirements-json",
+        help="Path to a RequirementSet JSON file to attach before the first turn starts.",
+    )
+    p_spawn.add_argument(
+        "--requirements-file",
+        help="Alias for --requirements-json.",
+    )
 
     p_archive = sub.add_parser("archive-agent")
     p_archive.add_argument("--to-thread-id")
@@ -730,6 +840,24 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     p_req_status.add_argument("--to-thread-id")
     p_req_status.add_argument("--name")
     p_req_status.add_argument("--project-path")
+
+    p_req_from_prose = sub.add_parser(
+        "requirements-from-prose",
+        help="Convert requirement-like prose into a RequirementSet JSON, optionally attaching it.",
+        epilog=(
+            'Example: printf "%s\\n" "Match the reference image" | '
+            'robdex requirements-from-prose --title "Design gate" --text-stdin --attach --name "Codex Config Operator"'
+        ),
+    )
+    p_req_from_prose.add_argument("--title", required=True)
+    prose_input = p_req_from_prose.add_mutually_exclusive_group(required=True)
+    prose_input.add_argument("--text")
+    prose_input.add_argument("--text-file")
+    prose_input.add_argument("--text-stdin", action="store_true")
+    p_req_from_prose.add_argument("--attach", action="store_true")
+    p_req_from_prose.add_argument("--to-thread-id")
+    p_req_from_prose.add_argument("--name")
+    p_req_from_prose.add_argument("--project-path")
 
     p_req_review = sub.add_parser(
         "request-requirements-review",
@@ -852,11 +980,7 @@ def main() -> int:
     elif args.cmd == "set-worker-metadata":
         _cmd_set_worker_metadata(thread_id, args)
     elif args.cmd == "set-requirements":
-        requirement_path = Path(args.requirements_file).expanduser()
-        try:
-            requirements_payload = json.loads(requirement_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise SystemExit(f"robdex: invalid JSON in {requirement_path}: {exc}") from exc
+        requirements_payload = _read_json_file(args.requirements_file, "requirements")
         payload = _request_json(
             "POST",
             "/orchestrator/requirements/set",
@@ -875,6 +999,8 @@ def main() -> int:
         )
     elif args.cmd == "requirements-status":
         _cmd_requirements_status(thread_id, args)
+    elif args.cmd == "requirements-from-prose":
+        _cmd_requirements_from_prose(thread_id, args, parser)
     elif args.cmd == "request-requirements-review":
         payload = _request_json(
             "POST",

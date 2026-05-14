@@ -13,6 +13,7 @@ use codex_app_server_adapter::{
         CommandExecutionRequestApprovalParams, DynamicToolCallParams, FileChangeRequestApprovalParams,
         FileUpdateChange, McpServerElicitationRequest, McpServerElicitationRequestParams, PatchChangeKind,
         PermissionsRequestApprovalParams, RequestId, ServerNotification, ServerRequest, ToolRequestUserInputParams,
+        TurnStatus,
     },
     pinned_codex_version_label,
 };
@@ -26,9 +27,9 @@ use tokio::{
 use crate::{
     app_server_overrides::{AppServerThreadOverrides, AppServerTurnOverrides, simple_sandbox_policy},
     commands::{
-        active_requirements_for_thread, increment_compaction_count, mark_requirements_review_in_progress,
+        active_requirements_for_thread, archive_thread, ensure_requirements_reviewer_for_thread, increment_compaction_count, mark_requirements_review_in_progress,
         mark_requirements_review_verdict, parse_state, persist_state, prune_archived_thread_locally,
-        record_requirement_packet, requirements_review_prompt, requirements_review_target_for_thread,
+        record_requirement_packet, requirements_review_prompt, requirements_review_source_for_reviewer, requirements_review_target_for_thread,
         requirements_verdict_schema, run_compaction_hook_best_effort, send_follow_up_message,
         send_thread_input, tracked_project_identity_for_thread,
         PersistedState, RequirementPacketState,
@@ -578,7 +579,11 @@ impl BridgeRuntime {
                 };
                 let turn_completed = match &notification {
                     ServerNotification::TurnCompleted(payload) => {
-                        Some((payload.thread_id.clone(), payload.turn.id.clone()))
+                        Some((
+                            payload.thread_id.clone(),
+                            payload.turn.id.clone(),
+                            payload.turn.status.clone(),
+                        ))
                     }
                     _ => None,
                 };
@@ -617,11 +622,16 @@ impl BridgeRuntime {
                         .await;
                     }
                 }
-                if let Some((thread_id, turn_id)) = turn_completed {
-                    let hook_configured = self.maybe_run_stopped_hook(&thread_id, &turn_id).await?;
-                    if !hook_configured {
+                if let Some((thread_id, turn_id, turn_status)) = turn_completed
+                    && turn_status == TurnStatus::Completed
+                {
+                    let handled_requirements_verdict =
                         self.maybe_record_requirements_verdict(&thread_id, &turn_id).await;
-                        if !self.maybe_route_requirements_review(&thread_id, &turn_id).await {
+                    if !handled_requirements_verdict
+                        && !self.maybe_route_requirements_review(&thread_id, &turn_id).await
+                    {
+                        let hook_configured = self.maybe_run_stopped_hook(&thread_id, &turn_id).await?;
+                        if !hook_configured {
                             self.maybe_auto_route_reply_to_orchestrator(&thread_id, &turn_id)
                                 .await;
                         }
@@ -753,12 +763,15 @@ impl BridgeRuntime {
     async fn prune_missing_tracked_thread(&self, thread_id: &str) -> Result<()> {
         let _guard = self.lock_state_mutation().await;
         let mut state = parse_state(&self.state_document_value().await);
-        let pruned = prune_archived_thread_locally(&mut state, thread_id);
-        if pruned {
+        let pruned_thread_ids = prune_archived_thread_locally(&mut state, thread_id);
+        if !pruned_thread_ids.is_empty() {
             persist_state(self, &state).await?;
-            self.prune_thread_local(thread_id).await?;
+            for pruned_thread_id in &pruned_thread_ids {
+                self.prune_thread_local(pruned_thread_id).await?;
+            }
             tracing::warn!(
-                "pruned tracked thread after missing rollout from app-server: {thread_id}"
+                "pruned tracked thread(s) after missing rollout from app-server: {:?}",
+                pruned_thread_ids
             );
         }
         Ok(())
@@ -945,19 +958,19 @@ impl BridgeRuntime {
         }
     }
 
-    async fn maybe_record_requirements_verdict(&self, thread_id: &str, turn_id: &str) {
+    async fn maybe_record_requirements_verdict(&self, thread_id: &str, turn_id: &str) -> bool {
         let state = self.state_document.read().await.clone();
         if !matches!(
             tracked_role_for_thread(&state, thread_id).as_deref(),
             Some("requirements-reviewer") | Some("requirementsReviewer")
         ) {
-            return;
+            return false;
         }
         let Some(verdict_text) = self.latest_assistant_text_for_thread(thread_id, Some(turn_id)).await else {
-            return;
+            return true;
         };
         let Some(source_thread_id) = self.latest_requirements_review_source_thread_id(thread_id).await else {
-            return;
+            return true;
         };
         let payload = serde_json::from_str(verdict_text.trim())
             .unwrap_or_else(|_| json!({ "raw": verdict_text.trim() }));
@@ -970,14 +983,114 @@ impl BridgeRuntime {
                 source_thread_id: source_thread_id.clone(),
                 turn_id: Some(turn_id.to_string()),
                 target_thread_id: Some(thread_id.to_string()),
-                payload,
+                payload: payload.clone(),
                 created_at: crate::commands::unix_now(),
             },
         )
         .await;
+        self.maybe_route_requirements_verdict(&source_thread_id, thread_id, turn_id, &payload)
+            .await;
+        true
+    }
+
+    async fn maybe_route_requirements_verdict(
+        &self,
+        source_thread_id: &str,
+        reviewer_thread_id: &str,
+        turn_id: &str,
+        payload: &Value,
+    ) {
+        let dedupe_key = format!("requirements-verdict|{reviewer_thread_id}|{turn_id}");
+        {
+            let routed = self.auto_routed_turn_keys.read().await;
+            if routed.contains(&dedupe_key) {
+                return;
+            }
+        }
+
+        let overall = payload
+            .get("overallVerdict")
+            .and_then(Value::as_str)
+            .unwrap_or("fail");
+        let route_message = payload
+            .get("route")
+            .and_then(|route| route.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let state_value = self.state_document.read().await.clone();
+        let source_label = sender_label_for_thread(&state_value, source_thread_id);
+        let text = compose_requirements_verdict_route_message(overall, &source_label, route_message, payload);
+        if text.trim().is_empty() {
+            return;
+        }
+
+        let parsed_state = parse_state(&state_value);
+        let destination_thread_id = match overall {
+            "fail" | "rejectedBlocked" => source_thread_id.to_string(),
+            "pass" | "acceptedBlocked" | "needsHumanWaiver" => {
+                let Some(project) = tracked_project_for_thread(&state_value, source_thread_id) else {
+                    return;
+                };
+                project
+                    .orchestrator_thread_id
+                    .filter(|id| id != reviewer_thread_id)
+                    .unwrap_or_else(|| source_thread_id.to_string())
+            }
+            _ => source_thread_id.to_string(),
+        };
+
+        let result = if destination_thread_id == source_thread_id {
+            send_thread_input(
+                self,
+                &parsed_state,
+                &destination_thread_id,
+                Some(&text),
+                &[],
+                None,
+                None,
+            )
+            .await
+        } else {
+            let project = tracked_project_for_thread(&state_value, &destination_thread_id);
+            let cwd = tracked_cwd_for_thread_value(&state_value, &destination_thread_id)
+                .or_else(|| project.as_ref().and_then(|project| project.cwd.clone()))
+                .or_else(|| project.as_ref().and_then(|project| project.project_root.clone()));
+            let params = AppServerTurnOverrides {
+                cwd,
+                approval_policy: tracked_approval_policy_for_thread_value(&state_value, &destination_thread_id)
+                    .map(Value::String),
+                sandbox_policy: tracked_sandbox_policy_for_thread_value(&state_value, &destination_thread_id),
+                model: tracked_model_for_thread_value(&state_value, &destination_thread_id),
+                effort: tracked_reasoning_for_thread_value(&state_value, &destination_thread_id),
+                service_tier: tracked_service_tier_for_thread_value(&state_value, &destination_thread_id),
+                approvals_reviewer: tracked_approvals_reviewer_for_thread_value(&state_value, &destination_thread_id),
+                personality: tracked_personality_for_thread_value(&state_value, &destination_thread_id),
+                ..Default::default()
+            }
+            .turn_start_params(destination_thread_id.clone(), json!([{"type":"text","text": text}]));
+            self.request_app_server_json("turn/start", params).await
+        };
+        if result.is_ok() {
+            self.auto_routed_turn_keys
+                .write()
+                .await
+                .insert(dedupe_key);
+            if overall == "pass" {
+                if let Err(error) = archive_thread(self, reviewer_thread_id).await {
+                    tracing::warn!(
+                        "failed to archive completed requirements reviewer {reviewer_thread_id}: {error}"
+                    );
+                }
+            }
+        }
     }
 
     async fn latest_requirements_review_source_thread_id(&self, reviewer_thread_id: &str) -> Option<String> {
+        let state = parse_state(&self.state_document.read().await.clone());
+        if let Some(source_thread_id) = requirements_review_source_for_reviewer(&state, reviewer_thread_id) {
+            return Some(source_thread_id);
+        }
+
         let thread_cache = self.thread_cache.read().await;
         let messages = thread_cache.message_cache_by_thread_id.get(reviewer_thread_id)?;
         messages
@@ -1013,12 +1126,16 @@ impl BridgeRuntime {
         if claim_text.is_empty() {
             return false;
         }
-        let Some(reviewer_thread_id) = requirements_review_target_for_thread(&parsed_state, thread_id, &set) else {
-            return false;
-        };
-        if reviewer_thread_id == thread_id {
-            return false;
-        }
+        let reviewer_thread_id =
+            match requirements_review_target_for_thread(&parsed_state, thread_id, &set)
+                .filter(|reviewer_thread_id| reviewer_thread_id != thread_id)
+            {
+                Some(reviewer_thread_id) => reviewer_thread_id,
+                None => match ensure_requirements_reviewer_for_thread(self, thread_id).await {
+                    Ok(Some(reviewer_thread_id)) if reviewer_thread_id != thread_id => reviewer_thread_id,
+                    _ => return false,
+                },
+            };
 
         let project = tracked_project_for_thread(&state, thread_id);
         let cwd = tracked_cwd_for_thread_value(&state, &reviewer_thread_id)
@@ -2424,6 +2541,62 @@ fn compose_auto_routed_reply(text: &str, sender_label: &str, local_image_paths: 
     )
 }
 
+fn compose_requirements_verdict_route_message(
+    overall: &str,
+    source_label: &str,
+    route_message: &str,
+    payload: &Value,
+) -> String {
+    let headline = match overall {
+        "pass" => "Requirements review passed.",
+        "fail" => "Requirements review failed.",
+        "acceptedBlocked" => "Requirements review accepted a true blocker.",
+        "rejectedBlocked" => "Requirements review rejected the blocker claim.",
+        "needsHumanWaiver" => "Requirements review requires a human waiver.",
+        _ => "Requirements review completed.",
+    };
+    let mut lines = vec![
+        format!("[Requirements Review] {headline}"),
+        format!("Source agent: {source_label}"),
+    ];
+    if !route_message.trim().is_empty() {
+        lines.push(String::new());
+        lines.push(route_message.trim().to_string());
+    }
+    let requirement_lines = payload
+        .as_object()
+        .into_iter()
+        .flat_map(|object| object.iter())
+        .filter(|(key, value)| {
+            *key != "overallVerdict" && *key != "route" && value.is_object()
+        })
+        .filter_map(|(key, value)| {
+            let verdict = value.get("verdict").and_then(Value::as_str)?;
+            let reason = value.get("reason").and_then(Value::as_str).unwrap_or("");
+            let correction = value
+                .get("requiredCorrection")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let detail = if !correction.trim().is_empty() {
+                correction.trim()
+            } else {
+                reason.trim()
+            };
+            Some(if detail.is_empty() {
+                format!("- `{key}`: {verdict}")
+            } else {
+                format!("- `{key}`: {verdict} — {detail}")
+            })
+        })
+        .collect::<Vec<_>>();
+    if !requirement_lines.is_empty() {
+        lines.push(String::new());
+        lines.push("Requirement verdicts:".to_string());
+        lines.extend(requirement_lines);
+    }
+    lines.join("\n")
+}
+
 fn compose_auto_routed_approval_request(
     approval: &PendingApproval,
     sender_label: &str,
@@ -2522,9 +2695,9 @@ mod tests {
     };
     use codex_backend_core::HttpArgs;
     use futures_util::{SinkExt, StreamExt};
-    use std::{net::{IpAddr, Ipv4Addr}, path::PathBuf};
+    use std::{net::{IpAddr, Ipv4Addr}, path::PathBuf, sync::Arc};
     use tempfile::TempDir;
-    use tokio::net::TcpListener;
+    use tokio::{net::TcpListener, sync::mpsc};
     use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     #[tokio::test]
@@ -2628,6 +2801,65 @@ mod tests {
         }
     }
 
+    async fn runtime_with_captured_app_server_requests(
+        temp: &TempDir,
+    ) -> (
+        Arc<BridgeRuntime>,
+        tokio::task::JoinHandle<()>,
+        mpsc::UnboundedReceiver<Value>,
+    ) {
+        let (request_tx, request_rx) = mpsc::unbounded_channel::<Value>();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws = accept_async(stream).await.expect("ws");
+            while let Some(frame) = ws.next().await {
+                let frame = frame.expect("frame");
+                let text = match frame {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected frame: {other:?}"),
+                };
+                let request: Value = serde_json::from_str(&text).expect("json request");
+                let id = request.get("id").cloned().unwrap_or(Value::Null);
+                let method = request.get("method").and_then(Value::as_str).unwrap_or_default();
+                let result = if method == "initialize" {
+                    json!({
+                        "userAgent": "codex",
+                        "platformFamily": "unix",
+                        "platformOs": "macos"
+                    })
+                } else {
+                    request_tx.send(request).expect("capture request");
+                    json!({
+                        "turn": {
+                            "id": "routed-turn",
+                            "items": [],
+                            "status": "inProgress",
+                            "error": null
+                        }
+                    })
+                };
+                ws.send(Message::Text(json!({"id": id, "result": result}).to_string()))
+                    .await
+                    .expect("send response");
+            }
+        });
+        let settings = BridgeSettings {
+            http: HttpArgs {
+                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 42080,
+            },
+            app_server_url: format!("ws://{addr}"),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
+            project_path: temp.path().to_path_buf(),
+            cwd: temp.path().to_path_buf(),
+            paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
+        };
+        let runtime = BridgeRuntime::new(settings).await.expect("runtime");
+        (runtime, server, request_rx)
+    }
+
     #[tokio::test]
     async fn synthetic_turn_events_toggle_running_state_in_temp_store() {
         let temp = TempDir::new().expect("tempdir");
@@ -2667,6 +2899,331 @@ mod tests {
         let snapshot = runtime.snapshot().await.expect("snapshot");
         assert!(snapshot.thread_cache.running_thread_ids.is_empty());
         assert!(snapshot.latest_sequence >= 2);
+    }
+
+    #[tokio::test]
+    async fn interrupted_turn_with_active_requirements_does_not_start_review() {
+        let temp = TempDir::new().expect("tempdir");
+        let settings = BridgeSettings {
+            http: HttpArgs {
+                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 42080,
+            },
+            app_server_url: "ws://127.0.0.1:4200".to_string(),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
+            project_path: temp.path().to_path_buf(),
+            cwd: temp.path().to_path_buf(),
+            paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
+        };
+
+        let runtime = BridgeRuntime::new(settings).await.expect("runtime");
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "requirements": [{
+                                        "key": "mustNotReviewInterruptedTurns",
+                                        "statement": "Interrupted turns must not trigger requirements review.",
+                                        "severity": "high",
+                                        "verificationMethod": "manualEvidence"
+                                    }]
+                                }
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "worker-1".to_string(),
+                vec![test_chat_message(
+                    "worker-1",
+                    "turn-1",
+                    "final-1",
+                    Some("final_answer"),
+                    "{\"summary\":\"interrupted\"}",
+                )],
+            );
+        }
+
+        let tx = runtime.upstream_sender();
+        tx.send(UpstreamRuntimeEvent::Notification(ServerNotification::TurnCompleted(
+            TurnCompletedNotification {
+                thread_id: "worker-1".to_string(),
+                turn: sample_turn("turn-1", TurnStatus::Interrupted),
+            },
+        )))
+        .await
+        .expect("send interrupted");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let state = runtime.state_document_value().await;
+        let source = state
+            .get("projects")
+            .and_then(|projects| projects.get("alpha"))
+            .and_then(|project| project.get("agents"))
+            .and_then(|agents| agents.get("worker-1"))
+            .expect("source");
+        assert!(source.get("requirementReview").is_none());
+        assert_eq!(source["requirements"]["active"], true);
+    }
+
+    #[tokio::test]
+    async fn failed_requirements_verdict_routes_only_to_source_worker() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "autoRouteReplies": true,
+                        "orchestratorThreadID": "orch-1",
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string()
+                            },
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string()
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        runtime
+            .maybe_route_requirements_verdict(
+                "worker-1",
+                "reviewer-1",
+                "review-turn-1",
+                &json!({
+                    "overallVerdict": "fail",
+                    "route": {
+                        "target": "sourceAgent",
+                        "message": "Fix the missing proof."
+                    },
+                    "mustProve": {
+                        "verdict": "fail",
+                        "reason": "No proof.",
+                        "evidenceAssessment": "missing",
+                        "requiredCorrection": "Add proof."
+                    }
+                }),
+            )
+            .await;
+
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "worker-1");
+        assert!(
+            request["params"]["input"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Requirements review failed.")
+        );
+        match tokio::time::timeout(std::time::Duration::from_millis(100), requests.recv()).await {
+            Ok(Some(extra)) => panic!("unexpected extra routed request: {extra}"),
+            Ok(None) | Err(_) => {}
+        }
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn pass_and_true_blocker_requirements_verdicts_route_to_orchestrator() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "orchestratorThreadID": "orch-1",
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string()
+                            },
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string()
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        for (turn_id, verdict, headline) in [
+            ("review-turn-pass", "pass", "Requirements review passed."),
+            (
+                "review-turn-blocked",
+                "acceptedBlocked",
+                "Requirements review accepted a true blocker.",
+            ),
+        ] {
+            runtime
+                .maybe_route_requirements_verdict(
+                    "worker-1",
+                    "reviewer-1",
+                    turn_id,
+                    &json!({
+                        "overallVerdict": verdict,
+                        "route": {
+                            "target": "orchestrator",
+                            "message": "Route beyond the worker."
+                        },
+                        "mustProve": {
+                            "verdict": verdict,
+                            "reason": "Reviewed.",
+                            "evidenceAssessment": "sufficient",
+                            "requiredCorrection": ""
+                        }
+                    }),
+                )
+                .await;
+            let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+                .await
+                .expect("request timeout")
+                .expect("request");
+            assert_eq!(request["method"], "turn/start");
+            assert_eq!(request["params"]["threadId"], "orch-1");
+            assert!(
+                request["params"]["input"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains(headline)
+            );
+            if verdict == "pass" {
+                let archive_request =
+                    tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+                        .await
+                        .expect("archive request timeout")
+                        .expect("archive request");
+                assert_eq!(archive_request["method"], "thread/archive");
+                assert_eq!(archive_request["params"]["threadId"], "reviewer-1");
+            }
+        }
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn requirements_reviewer_turn_is_consumed_before_generic_auto_route() {
+        let temp = TempDir::new().expect("tempdir");
+        let settings = BridgeSettings {
+            http: HttpArgs {
+                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 42080,
+            },
+            app_server_url: "ws://127.0.0.1:9".to_string(),
+            qa_harness_url: "http://127.0.0.1:8775".to_string(),
+            project_path: temp.path().to_path_buf(),
+            cwd: temp.path().to_path_buf(),
+            paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
+        };
+        let runtime = BridgeRuntime::new(settings).await.expect("runtime");
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "autoRouteReplies": true,
+                        "orchestratorThreadID": "orch-1",
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string()
+                            },
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string()
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "reviewer-1".to_string(),
+                vec![test_chat_message(
+                    "reviewer-1",
+                    "review-turn-1",
+                    "final-1",
+                    Some("final_answer"),
+                    "{\"overallVerdict\":\"fail\",\"route\":{\"message\":\"worker only\"}}",
+                )],
+            );
+        }
+
+        assert!(
+            runtime
+                .maybe_record_requirements_verdict("reviewer-1", "review-turn-1")
+                .await
+        );
     }
 
     #[tokio::test]

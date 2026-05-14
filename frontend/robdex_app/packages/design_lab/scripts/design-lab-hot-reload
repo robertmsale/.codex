@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SESSION="${1:-robdex-design-lab}"
+
+tmux send-keys -t "$SESSION" r
+echo "sent hot reload to tmux session: $SESSION"

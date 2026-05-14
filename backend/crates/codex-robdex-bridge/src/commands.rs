@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, env, path::{Path, PathBuf}, time::{Duration, Instant}};
+use std::{collections::{BTreeMap, BTreeSet}, env, path::{Path, PathBuf}, time::{Duration, Instant}};
 
 use anyhow::{Context, Result, bail};
 use codex_app_server_adapter::app_server_protocol::RequestId;
@@ -629,6 +629,7 @@ pub async fn execute_bridge_command(
         }
         "threadStart" => {
             let state = parse_state(&runtime.state_document_value().await);
+            let _requirement_set = parse_optional_requirement_set_payload(&payload)?;
             let role = payload.get("role").and_then(Value::as_str);
             let project_path = payload.get("projectPath").and_then(Value::as_str);
             let cwd = required_string(&payload, "cwd")?;
@@ -677,10 +678,13 @@ pub async fn execute_bridge_command(
                 let mut next_state = parse_state(&runtime.state_document_value().await);
                 register_tracked_thread(
                     &mut next_state,
-                    &settings.to_registration_payload(
-                        result.get("thread").cloned().unwrap_or(result.clone()),
-                        project_path,
-                        role.unwrap_or("worker"),
+                    &registration_payload_with_requirement_set(
+                        settings.to_registration_payload(
+                            result.get("thread").cloned().unwrap_or(result.clone()),
+                            project_path,
+                            role.unwrap_or("worker"),
+                        ),
+                        &payload,
                     ),
                 )?;
                 persist_state(runtime, &next_state).await?;
@@ -1729,6 +1733,7 @@ fn register_tracked_thread(state: &mut PersistedState, payload: &Value) -> Resul
     let project_path = required_string(payload, "projectPath")?;
     let preferred_cwd = payload.get("preferredCWD").and_then(Value::as_str).map(str::to_string);
     let role = payload.get("role").and_then(Value::as_str).unwrap_or("worker").to_string();
+    let requirements = parse_optional_requirement_set_payload(payload)?;
 
     let key = state
         .projects
@@ -1786,7 +1791,7 @@ fn register_tracked_thread(state: &mut PersistedState, payload: &Value) -> Resul
             pull_request_number: payload.get("pullRequestNumber").and_then(Value::as_u64),
             blocked_reason: payload.get("blockedReason").and_then(Value::as_str).map(str::to_string),
             unblock_when: payload.get("unblockWhen").and_then(Value::as_str).map(str::to_string),
-            requirements: None,
+            requirements,
             requirement_packets: Vec::new(),
             requirement_review: None,
             parent_thread_id: payload.get("parentThreadId").and_then(Value::as_str).map(str::to_string),
@@ -1804,6 +1809,19 @@ fn register_tracked_thread(state: &mut PersistedState, payload: &Value) -> Resul
     project.updated_at = Some(unix_now());
     state.updated_at = Some(unix_now());
     Ok(())
+}
+
+fn registration_payload_with_requirement_set(mut registration_payload: Value, source_payload: &Value) -> Value {
+    if let Some(requirement_set) = source_payload
+        .get("requirementSet")
+        .filter(|value| !value.is_null())
+        .cloned()
+    {
+        if let Some(object) = registration_payload.as_object_mut() {
+            object.insert("requirementSet".to_string(), requirement_set);
+        }
+    }
+    registration_payload
 }
 
 fn set_tracked_thread_display_name(state: &mut PersistedState, thread_id: &str, display_name: &str) {
@@ -3009,8 +3027,9 @@ pub(crate) async fn send_follow_up_message(
     Ok(())
 }
 
-async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeAgentSummary> {
+pub(crate) async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeAgentSummary> {
     let state = parse_state(&runtime.state_document_value().await);
+    let _requirement_set = parse_optional_requirement_set_payload(payload)?;
     let role = payload.get("role").and_then(Value::as_str);
     let role_value = role.unwrap_or("worker").to_string();
     let project_path = payload
@@ -3226,7 +3245,10 @@ async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeA
     let mut state = parse_state(&runtime.state_document_value().await);
     register_tracked_thread(
         &mut state,
-        &settings.to_registration_payload(thread, &project_path, &role_value),
+        &registration_payload_with_requirement_set(
+            settings.to_registration_payload(thread, &project_path, &role_value),
+            payload,
+        ),
     )?;
     if let Some(display_name) = display_name {
         set_tracked_thread_display_name(&mut state, &thread_id, display_name);
@@ -3332,6 +3354,7 @@ async fn create_thread(runtime: &BridgeRuntime, payload: &Value) -> Result<Value
         "serviceName": payload.get("serviceName").cloned().unwrap_or(Value::Null),
         "ephemeral": payload.get("ephemeral").cloned().unwrap_or(Value::Null),
         "dynamicTools": payload.get("dynamicTools").cloned().unwrap_or(Value::Null),
+        "requirementSet": payload.get("requirementSet").cloned().unwrap_or(Value::Null),
     });
     let agent = spawn_agent(runtime, &spawn_payload).await?;
     Ok(json!({
@@ -3344,7 +3367,6 @@ async fn create_thread(runtime: &BridgeRuntime, payload: &Value) -> Result<Value
 }
 
 async fn create_thread_message(runtime: &BridgeRuntime, payload: &Value) -> Result<Value> {
-    let state = parse_state(&runtime.state_document_value().await);
     let thread_id = required_string(payload, "threadId")?;
     let text = payload
         .get("text")
@@ -3362,6 +3384,15 @@ async fn create_thread_message(runtime: &BridgeRuntime, payload: &Value) -> Resu
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let requirement_set = parse_optional_requirement_set_payload(payload)?;
+    if requirement_set.is_some() && runtime.active_turn_id_for_thread(&thread_id).await.is_some() {
+        bail!("Requirements can only be attached when starting a new turn; turn/steer cannot change output schemas.");
+    }
+    let state = if let Some(requirement_set) = requirement_set {
+        persist_requirements_for_thread(runtime, &thread_id, requirement_set).await?
+    } else {
+        parse_state(&runtime.state_document_value().await)
+    };
     let result = send_thread_input(
         runtime,
         &state,
@@ -3531,6 +3562,25 @@ fn agent_state_for_thread_mut<'a>(
         .projects
         .values_mut()
         .find_map(|project| project.agents.get_mut(thread_id))
+}
+
+pub(crate) fn requirements_review_source_for_reviewer(
+    state: &PersistedState,
+    reviewer_thread_id: &str,
+) -> Option<String> {
+    for project in state.projects.values() {
+        for (source_thread_id, agent) in &project.agents {
+            if agent
+                .requirement_review
+                .as_ref()
+                .map(|review| review.reviewer_thread_id.as_str() == reviewer_thread_id)
+                .unwrap_or(false)
+            {
+                return Some(source_thread_id.clone());
+            }
+        }
+    }
+    None
 }
 
 fn persisted_agent_hook_state(state: &PersistedState, thread_id: &str) -> Option<Value> {
@@ -4269,42 +4319,65 @@ pub async fn orchestrator_thread_group_archive(
         bail!("Only orchestrator threads can manage thread groups.");
     }
     let project_key = resolve_scoped_project_key(&state, &scoped.sender, project_path)?;
-    let project = state
+    let group = state
         .projects
-        .get_mut(&project_key)
-        .ok_or_else(|| anyhow::anyhow!("Unknown project `{project_key}`."))?;
-    let group = project
+        .get(&project_key)
+        .ok_or_else(|| anyhow::anyhow!("Unknown project `{project_key}`."))?
         .thread_groups
         .iter()
         .find(|group| group.id == group_id)
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("Unknown thread group `{group_id}`."))?;
-    let mut archived_thread_ids = Vec::new();
+    let group_title = group.title.clone();
+    let project_path_value = state
+        .projects
+        .get(&project_key)
+        .and_then(|project| project.project_root.clone());
+    let mut archived_thread_ids = BTreeSet::new();
     let mut skipped_thread_ids = Vec::new();
     for member_thread_id in &group.thread_ids {
         if member_thread_id == sender_thread_id {
             skipped_thread_ids.push(member_thread_id.clone());
             continue;
         }
-        match project.agents.get_mut(member_thread_id) {
-            Some(agent) => {
-                if agent.archived.unwrap_or(false) {
+        let member_state = state
+            .projects
+            .get(&project_key)
+            .and_then(|project| project.agents.get(member_thread_id))
+            .map(|agent| {
+                (
+                    agent.role.as_deref().unwrap_or("worker").to_string(),
+                    !agent.archived.unwrap_or(false),
+                )
+            });
+        match member_state {
+            Some((role, true)) if orchestrator_can_archive_agent_role(&role) => {
+                archived_thread_ids.insert(member_thread_id.clone());
+            }
+            Some(_) | None => {
+                if !archived_thread_ids.contains(member_thread_id) {
                     skipped_thread_ids.push(member_thread_id.clone());
-                } else {
-                    agent.archived = Some(true);
-                    archived_thread_ids.push(member_thread_id.clone());
                 }
             }
-            None => skipped_thread_ids.push(member_thread_id.clone()),
         }
     }
-    project.updated_at = Some(unix_now());
-    state.updated_at = Some(unix_now());
-    let project_path_value = project.project_root.clone();
-    let group_id_value = group.id.clone();
-    let group_title = group.title.clone();
-    persist_state(runtime, &state).await?;
-    for archived_thread_id in &archived_thread_ids {
+    let mut pruned_thread_ids = BTreeSet::new();
+    for archived_thread_id in archived_thread_ids {
+        for pruned_thread_id in prune_archived_thread_locally_filtered(
+            &mut state,
+            &archived_thread_id,
+            orchestrator_can_archive_agent_role,
+        ) {
+            pruned_thread_ids.insert(pruned_thread_id);
+        }
+    }
+    if !pruned_thread_ids.is_empty() {
+        persist_state(runtime, &state).await?;
+        for pruned_thread_id in &pruned_thread_ids {
+            runtime.prune_thread_local(pruned_thread_id).await?;
+        }
+    }
+    for archived_thread_id in &pruned_thread_ids {
         let _ = app_server_request_json(
             runtime,
             "thread/archive",
@@ -4314,9 +4387,9 @@ pub async fn orchestrator_thread_group_archive(
     }
     Ok(json!({
         "projectPath": project_path_value,
-        "groupId": group_id_value,
+        "groupId": group.id,
         "title": group_title,
-        "archivedThreadIds": archived_thread_ids,
+        "archivedThreadIds": pruned_thread_ids.into_iter().collect::<Vec<_>>(),
         "skippedThreadIds": skipped_thread_ids,
     }))
 }
@@ -4426,14 +4499,18 @@ pub async fn orchestrator_set_requirements(
     let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
     let records = all_agent_records(&state, &running);
     let scoped = scoped_agent_context(&records, sender_thread_id, true)?;
-    let recipient =
-        resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?;
+    let recipient = if recipient_thread_id.is_none() && recipient_name.is_none() {
+        scoped.sender.clone()
+    } else {
+        resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?
+    };
     if set.id.as_deref().map(str::trim).unwrap_or_default().is_empty() {
         set.id = Some(format!("requirements-{}", unix_now()));
     }
     for project in state.projects.values_mut() {
         if let Some(agent) = project.agents.get_mut(&recipient.thread_id) {
             agent.requirements = Some(set.clone());
+            agent.requirement_review = None;
             persist_state(runtime, &state).await?;
             runtime
                 .push_event(crate::models::BridgeEvent::AppStateSnapshot {
@@ -4509,6 +4586,11 @@ pub async fn orchestrator_requirements_status(
             continue;
         };
         let requirements = agent.requirements.clone();
+        let active_requirements = requirements
+            .as_ref()
+            .filter(|set| set.active)
+            .map(|set| set.requirements.clone())
+            .unwrap_or_default();
         let review = agent.requirement_review.clone();
         let latest_verdict_packet = review
             .as_ref()
@@ -4518,10 +4600,10 @@ pub async fn orchestrator_requirements_status(
         let mut blocked_count = 0_u32;
         let mut waiver_required_count = 0_u32;
         let mut unknown_count = 0_u32;
-        let verdicts = requirements
-            .as_ref()
-            .map(|set| {
-                set.requirements
+        let verdicts = if active_requirements.is_empty() {
+            Vec::new()
+        } else {
+            active_requirements
                     .iter()
                     .map(|requirement| {
                         let verdict = latest_verdict_packet
@@ -4561,8 +4643,7 @@ pub async fn orchestrator_requirements_status(
                         })
                     })
                     .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        };
         return Ok(json!({
             "threadId": recipient.thread_id,
             "displayName": recipient.display_name,
@@ -4570,7 +4651,7 @@ pub async fn orchestrator_requirements_status(
             "requirementReview": review,
             "requirementPackets": agent.requirement_packets,
             "summary": {
-                "activeRequirementCount": requirements.as_ref().map(|set| set.requirements.len()).unwrap_or(0),
+                "activeRequirementCount": active_requirements.len(),
                 "status": review.as_ref().map(|binding| binding.status.clone()),
                 "reviewerThreadId": review.as_ref().map(|binding| binding.reviewer_thread_id.clone()),
                 "requirementSetId": review
@@ -4601,6 +4682,47 @@ fn parse_requirement_set_payload(payload: Value) -> Result<RequirementSetState> 
     } else {
         bail!("requirements payload must be an object with `requirements` or an array")
     }
+}
+
+fn parse_optional_requirement_set_payload(payload: &Value) -> Result<Option<RequirementSetState>> {
+    let Some(requirement_set_payload) = payload
+        .get("requirementSet")
+        .filter(|value| !value.is_null())
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let mut set = parse_requirement_set_payload(requirement_set_payload)?;
+    validate_requirement_set(&set)?;
+    if set.id.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+        set.id = Some(format!("requirements-{}", unix_now()));
+    }
+    Ok(Some(set))
+}
+
+async fn persist_requirements_for_thread(
+    runtime: &BridgeRuntime,
+    thread_id: &str,
+    set: RequirementSetState,
+) -> Result<PersistedState> {
+    let _state_guard = runtime.lock_state_mutation().await;
+    let mut state = parse_state(&runtime.state_document_value().await);
+    for project in state.projects.values_mut() {
+        if let Some(agent) = project.agents.get_mut(thread_id) {
+            agent.requirements = Some(set);
+            agent.requirement_review = None;
+            project.updated_at = Some(unix_now());
+            state.updated_at = Some(unix_now());
+            persist_state(runtime, &state).await?;
+            runtime
+                .push_event(crate::models::BridgeEvent::AppStateSnapshot {
+                    state: runtime.state_document_value().await,
+                })
+                .await;
+            return Ok(state);
+        }
+    }
+    bail!("Thread `{thread_id}` is not a tracked agent.");
 }
 
 fn validate_requirement_set(set: &RequirementSetState) -> Result<()> {
@@ -4662,28 +4784,112 @@ pub(crate) fn requirements_review_target_for_thread(
         if !project.agents.contains_key(source_thread_id) {
             continue;
         }
+        if let Some(thread_id) = project
+            .agents
+            .get(source_thread_id)
+            .and_then(|agent| agent.requirement_review.as_ref())
+            .map(|review| review.reviewer_thread_id.as_str())
+            .filter(|thread_id| {
+                project.agents.get(*thread_id).is_some_and(|agent| {
+                    matches!(
+                        agent.role.as_deref(),
+                        Some("requirements-reviewer") | Some("requirementsReviewer")
+                    )
+                })
+            })
+        {
+            return Some(thread_id.to_string());
+        }
         if let Some((thread_id, _)) = project.agents.iter().find(|(_, agent)| {
             matches!(
                 agent.role.as_deref(),
                 Some("requirements-reviewer") | Some("requirementsReviewer")
             )
+            && agent.parent_thread_id.as_deref() == Some(source_thread_id)
         }) {
             return Some(thread_id.clone());
         }
-        return project.orchestrator_thread_id.clone();
+        return None;
     }
     None
+}
+
+pub(crate) async fn ensure_requirements_reviewer_for_thread(
+    runtime: &BridgeRuntime,
+    source_thread_id: &str,
+) -> Result<Option<String>> {
+    let state = parse_state(&runtime.state_document_value().await);
+    for project in state.projects.values() {
+        let Some(source) = project.agents.get(source_thread_id) else {
+            continue;
+        };
+        if let Some((thread_id, _)) = project.agents.iter().find(|(_, agent)| {
+            matches!(
+                agent.role.as_deref(),
+                Some("requirements-reviewer") | Some("requirementsReviewer")
+            )
+            && agent.parent_thread_id.as_deref() == Some(source_thread_id)
+        }) {
+            return Ok(Some(thread_id.clone()));
+        }
+
+        let source_name = source
+            .display_name
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("source agent");
+        let project_path = source
+            .project_root
+            .clone()
+            .or_else(|| project.project_root.clone())
+            .unwrap_or_else(|| runtime.settings().project_path.display().to_string());
+        let cwd = source
+            .cwd
+            .clone()
+            .or_else(|| project.cwd.clone())
+            .or_else(|| project.project_root.clone())
+            .unwrap_or_else(|| runtime.settings().cwd.display().to_string());
+        let base_instructions = resolve_role_instructions_for(Some("requirements-reviewer"))
+            .ok()
+            .flatten();
+        let payload = json!({
+            "displayName": format!("Requirements Reviewer: {source_name}"),
+            "cwd": cwd,
+            "projectPath": project_path,
+            "role": "requirements-reviewer",
+            "parentAgentId": source_thread_id,
+            "approvalPolicy": "never",
+            "sandboxMode": "workspace-write",
+            "networkAccess": false,
+            "modelID": source.model.clone(),
+            "modelProvider": source.model_provider.clone(),
+            "reasoningEffort": source.reasoning_effort.clone(),
+            "serviceTier": source.service_tier.clone(),
+            "approvalsReviewer": source.approvals_reviewer.clone(),
+            "personality": source.personality.clone(),
+            "config": source.config.clone(),
+            "baseInstructions": base_instructions,
+            "developerInstructions": source.developer_instructions.clone(),
+            "persistExtendedHistory": source.persist_extended_history,
+            "serviceName": source.service_name.clone(),
+            "ephemeral": source.ephemeral,
+            "dynamicTools": source.dynamic_tools.clone(),
+        });
+        let reviewer = spawn_agent(runtime, &payload).await?;
+        return Ok(Some(reviewer.id));
+    }
+    Ok(None)
 }
 
 pub(crate) fn requirements_review_prompt(
     set: &RequirementSetState,
     source_label: &str,
-    source_thread_id: &str,
-    turn_id: &str,
+    _source_thread_id: &str,
+    _turn_id: &str,
     claim_text: &str,
 ) -> String {
     let mut prompt = format!(
-        "Perform an adversarial Requirements Review.\n\nSource agent: {source_label}\nSource thread ID: {source_thread_id}\nSource turn ID: {turn_id}\n\nRules:\n- Compare each requirement against the actual claim/evidence.\n- Fail missing, weak, circular, or unverifiable evidence.\n- Reject fake blockers.\n- Accept true external blockers only with concrete proof.\n- Never implement fixes and never relax requirements.\n- Shell/chrome or scope exclusions cannot erase core in-scope requirements.\n\nRequirements:\n"
+        "Perform an adversarial Requirements Review.\n\nReview subject: {source_label}\n\nRules:\n- Compare each requirement against the actual work and available evidence.\n- Fail missing, weak, circular, or unverifiable evidence.\n- Reject fake blockers.\n- Accept true external blockers only with concrete proof.\n- Never implement fixes and never relax requirements.\n- Shell/chrome or scope exclusions cannot erase core in-scope requirements.\n\nRequirements:\n"
     );
     for requirement in &set.requirements {
         prompt.push_str(&format!(
@@ -4691,9 +4897,48 @@ pub(crate) fn requirements_review_prompt(
             requirement.key, requirement.severity, requirement.verification_method, requirement.statement
         ));
     }
-    prompt.push_str("\nSource agent claim packet:\n");
-    prompt.push_str(claim_text.trim());
+    if let Some(summary) = compact_requirements_claim_summary(claim_text) {
+        prompt.push_str("\nSource evidence summary:\n");
+        prompt.push_str(&summary);
+    }
     prompt
+}
+
+fn compact_requirements_claim_summary(claim_text: &str) -> Option<String> {
+    let payload = serde_json::from_str::<Value>(claim_text.trim()).ok()?;
+    let object = payload.as_object()?;
+    let mut lines = Vec::new();
+    if let Some(summary) = object.get("summary").and_then(Value::as_str) {
+        if !summary.trim().is_empty() {
+            lines.push(format!("- Summary: {}", summary.trim()));
+        }
+    }
+    for (key, value) in object {
+        if matches!(key.as_str(), "summary" | "finalDisposition") {
+            continue;
+        }
+        let Some(claim) = value.as_object() else {
+            continue;
+        };
+        let claim_value = claim.get("claim").and_then(Value::as_str).unwrap_or("unknown");
+        let risk = claim.get("risk").and_then(Value::as_str).unwrap_or("unknown");
+        lines.push(format!("- `{key}`: claim={claim_value}; risk={risk}"));
+        if let Some(justification) = claim.get("justification").and_then(Value::as_str) {
+            if !justification.trim().is_empty() {
+                lines.push(format!("  Justification: {}", justification.trim()));
+            }
+        }
+        if let Some(evidence) = claim.get("evidence").and_then(Value::as_array) {
+            for item in evidence.iter().filter_map(Value::as_str).filter(|item| !item.trim().is_empty()) {
+                lines.push(format!("  Evidence: {}", item.trim()));
+            }
+        }
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
 }
 
 pub(crate) async fn record_requirement_packet(
@@ -4776,7 +5021,18 @@ pub(crate) async fn mark_requirements_review_verdict(
             continue;
         };
         let status = requirement_status_from_verdict(&verdict_payload);
-        if let Some(binding) = source.requirement_review.as_mut() {
+        if status == "passed"
+            && let Some(requirements) = source.requirements.as_mut()
+        {
+            requirements.active = false;
+        }
+        if status == "passed" {
+            source.requirement_review = None;
+            if let Some(reviewer) = project.agents.get_mut(reviewer_thread_id) {
+                reviewer.parent_thread_id = None;
+                reviewer.hidden_from_peer_list = true;
+            }
+        } else if let Some(binding) = source.requirement_review.as_mut() {
             binding.reviewer_thread_id = reviewer_thread_id.to_string();
             binding.status = status;
             binding.latest_verdict_packet = Some(verdict_payload);
@@ -4825,6 +5081,7 @@ pub async fn orchestrator_spawn_agent(
     _cwd: Option<&str>,
     role: Option<&str>,
     issue_number: Option<u64>,
+    requirement_set: Option<Value>,
 ) -> Result<Value> {
     // Important policy boundary:
     // - this path is for orchestrator-as-agent subordinate spawns only
@@ -4887,6 +5144,7 @@ pub async fn orchestrator_spawn_agent(
         "serviceName": authoritative.service_name,
         "ephemeral": authoritative.ephemeral,
         "dynamicTools": authoritative.dynamic_tools,
+        "requirementSet": requirement_set.unwrap_or(Value::Null),
     });
     let mut agent = spawn_agent(runtime, &payload).await?;
     if let Some(issue_number) = issue_number {
@@ -5029,15 +5287,22 @@ pub async fn orchestrator_warm_handoff(
     }
     next_state.updated_at = Some(unix_now());
     persist_state(runtime, &next_state).await?;
-    if pruned_old {
-        runtime.prune_thread_local(&recipient.thread_id).await?;
+    for pruned_thread_id in &pruned_old {
+        runtime.prune_thread_local(pruned_thread_id).await?;
     }
-    let _ = app_server_request_json(
-        runtime,
-        "thread/archive",
-        json!({"threadId": recipient.thread_id}),
-    )
-    .await;
+    let app_server_archive_ids = if pruned_old.is_empty() {
+        vec![recipient.thread_id.clone()]
+    } else {
+        pruned_old
+    };
+    for archive_thread_id in app_server_archive_ids {
+        let _ = app_server_request_json(
+            runtime,
+            "thread/archive",
+            json!({"threadId": archive_thread_id}),
+        )
+        .await;
+    }
     replacement.parent_agent_id = Some(sender_thread_id.to_string());
     Ok(json!({
         "previousThreadId": recipient.thread_id,
@@ -5066,19 +5331,29 @@ pub async fn orchestrator_archive_agent(
     if recipient.thread_id == sender.thread_id {
         bail!("Orchestrator thread `{}` cannot archive itself.", sender.thread_id);
     }
+    if !orchestrator_can_archive_agent_role(&recipient.role) {
+        bail!(
+            "Orchestrators may only archive worker and qa agents, not `{}`.",
+            recipient.role
+        );
+    }
     let already_archived = state
         .projects
         .values()
         .all(|project| !project.agents.contains_key(&recipient.thread_id))
         && records.iter().all(|record| record.thread_id != recipient.thread_id || record.is_archived);
     if !already_archived {
-        archive_thread(runtime, &recipient.thread_id).await?;
+        archive_thread_filtered(runtime, &recipient.thread_id, orchestrator_can_archive_agent_role).await?;
     }
     Ok(json!({
         "recipientThreadId": recipient.thread_id,
         "recipientDisplayName": recipient.display_name,
         "alreadyArchived": already_archived,
     }))
+}
+
+fn orchestrator_can_archive_agent_role(role: &str) -> bool {
+    matches!(role, "worker" | "qa")
 }
 
 pub async fn orchestrator_rename_agent(
@@ -5120,7 +5395,14 @@ pub async fn orchestrator_rename_agent(
     }))
 }
 
-async fn archive_thread(runtime: &BridgeRuntime, thread_id: &str) -> Result<()> {
+pub(crate) async fn archive_thread(runtime: &BridgeRuntime, thread_id: &str) -> Result<()> {
+    archive_thread_filtered(runtime, thread_id, |_| true).await
+}
+
+async fn archive_thread_filtered<F>(runtime: &BridgeRuntime, thread_id: &str, can_archive_role: F) -> Result<()>
+where
+    F: Fn(&str) -> bool + Copy,
+{
     let mut state = parse_state(&runtime.state_document_value().await);
     let hook_context = agent_state_for_thread(&state, thread_id).and_then(|agent| {
         matches!(agent.role.as_deref(), Some("worker") | Some("qa")).then(|| {
@@ -5220,38 +5502,63 @@ async fn archive_thread(runtime: &BridgeRuntime, thread_id: &str) -> Result<()> 
             }
         }
     }
-    let pruned = prune_archived_thread_locally(&mut state, thread_id);
-    if pruned {
+    let pruned_thread_ids = prune_archived_thread_locally_filtered(&mut state, thread_id, can_archive_role);
+    if !pruned_thread_ids.is_empty() {
         persist_state(runtime, &state).await?;
-        runtime.prune_thread_local(thread_id).await?;
+        for pruned_thread_id in &pruned_thread_ids {
+            runtime.prune_thread_local(pruned_thread_id).await?;
+        }
     }
     if runtime.info().await.connection_status != "connected" {
         return Ok(());
     }
-    if let Err(error) = app_server_request_json(runtime, "thread/archive", json!({"threadId": thread_id})).await {
-        let message = error.to_string();
-        if !message.contains("no rollout found for thread id") && !message.contains("\"code\": -32600") {
-            return Err(error);
+    let app_server_archive_ids = if pruned_thread_ids.is_empty() {
+        vec![thread_id.to_string()]
+    } else {
+        pruned_thread_ids
+    };
+    for archive_thread_id in app_server_archive_ids {
+        if let Err(error) = app_server_request_json(runtime, "thread/archive", json!({"threadId": archive_thread_id})).await {
+            let message = error.to_string();
+            if !message.contains("no rollout found for thread id") && !message.contains("\"code\": -32600") {
+                return Err(error);
+            }
         }
     }
     Ok(())
 }
 
-pub(crate) fn prune_archived_thread_locally(state: &mut PersistedState, thread_id: &str) -> bool {
+pub(crate) fn prune_archived_thread_locally(state: &mut PersistedState, thread_id: &str) -> Vec<String> {
+    prune_archived_thread_locally_filtered(state, thread_id, |_| true)
+}
+
+fn prune_archived_thread_locally_filtered<F>(
+    state: &mut PersistedState,
+    thread_id: &str,
+    can_archive_role: F,
+) -> Vec<String>
+where
+    F: Fn(&str) -> bool + Copy,
+{
+    let thread_ids = linked_archive_thread_ids_filtered(state, thread_id, can_archive_role);
+    let mut pruned_thread_ids = BTreeSet::new();
     let mut changed = false;
     for project in state.projects.values_mut() {
         let mut project_changed = false;
-        if project.agents.remove(thread_id).is_some() {
-            project_changed = true;
-        }
-        if project.orchestrator_thread_id.as_deref() == Some(thread_id) {
-            project.orchestrator_thread_id = None;
-            project_changed = true;
+        for archive_thread_id in &thread_ids {
+            if project.agents.remove(archive_thread_id).is_some() {
+                pruned_thread_ids.insert(archive_thread_id.clone());
+                project_changed = true;
+            }
+            if project.orchestrator_thread_id.as_deref() == Some(archive_thread_id.as_str()) {
+                project.orchestrator_thread_id = None;
+                project_changed = true;
+            }
         }
         let mut next_groups = Vec::new();
         for mut group in project.thread_groups.clone() {
             let original = group.thread_ids.len();
-            group.thread_ids.retain(|id| id != thread_id);
+            group.thread_ids.retain(|id| !thread_ids.contains(id));
             let filtered_len = group.thread_ids.len();
             if !group.thread_ids.is_empty() {
                 next_groups.push(group);
@@ -5272,7 +5579,47 @@ pub(crate) fn prune_archived_thread_locally(state: &mut PersistedState, thread_i
     if changed {
         state.updated_at = Some(unix_now());
     }
-    changed
+    pruned_thread_ids.into_iter().collect()
+}
+
+fn linked_archive_thread_ids_filtered<F>(
+    state: &PersistedState,
+    thread_id: &str,
+    can_archive_role: F,
+) -> BTreeSet<String>
+where
+    F: Fn(&str) -> bool + Copy,
+{
+    let mut ids = BTreeSet::from([thread_id.to_string()]);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for project in state.projects.values() {
+            for (agent_thread_id, agent) in &project.agents {
+                let role = agent.role.as_deref().unwrap_or("worker");
+                if !can_archive_role(role) {
+                    continue;
+                }
+                let source_review_child = ids.iter().any(|id| {
+                    project
+                        .agents
+                        .get(id)
+                        .and_then(|source| source.requirement_review.as_ref())
+                        .map(|review| review.reviewer_thread_id.as_str() == agent_thread_id.as_str())
+                        .unwrap_or(false)
+                });
+                let parent_child = agent
+                    .parent_thread_id
+                    .as_deref()
+                    .map(|parent| ids.contains(parent))
+                    .unwrap_or(false);
+                if (source_review_child || parent_child) && ids.insert(agent_thread_id.clone()) {
+                    changed = true;
+                }
+            }
+        }
+    }
+    ids
 }
 
 pub async fn orchestrator_update_worker_metadata(
@@ -5458,7 +5805,7 @@ mod tests {
         time::Duration,
     };
     use tempfile::TempDir;
-    use tokio::{net::TcpListener, sync::oneshot};
+    use tokio::{net::TcpListener, sync::{mpsc, oneshot}};
     use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
     fn sample_state() -> PersistedState {
@@ -5616,6 +5963,120 @@ mod tests {
         assert!(required.iter().any(|value| value.as_str() == Some("route")));
     }
 
+    #[tokio::test]
+    async fn passing_requirements_review_deactivates_requirement_set() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut state = PersistedState::default();
+        let mut project = PersistedProjectState {
+            project_root: Some(temp.path().display().to_string()),
+            cwd: Some(temp.path().display().to_string()),
+            updated_at: Some(100),
+            ..Default::default()
+        };
+        project.agents.insert(
+            "source-thread".to_string(),
+            PersistedAgentState {
+                display_name: Some("Source".to_string()),
+                role: Some("worker".to_string()),
+                requirements: Some(sample_requirement_set()),
+                requirement_review: Some(RequirementReviewBindingState {
+                    source_thread_id: "source-thread".to_string(),
+                    reviewer_thread_id: "reviewer-thread".to_string(),
+                    requirement_set_id: Some("web-gui-contract".to_string()),
+                    status: "inReview".to_string(),
+                    latest_claim_packet: Some(json!({"summary": "claimed"})),
+                    latest_verdict_packet: None,
+                    updated_at: 100,
+                }),
+                ..Default::default()
+            },
+        );
+        project.agents.insert(
+            "reviewer-thread".to_string(),
+            PersistedAgentState {
+                display_name: Some("Requirements Reviewer".to_string()),
+                role: Some("requirements-reviewer".to_string()),
+                parent_thread_id: Some("source-thread".to_string()),
+                hidden_from_peer_list: true,
+                ..Default::default()
+            },
+        );
+        state.projects.insert("project".to_string(), project);
+        persist_state(&runtime, &state).await.expect("persist state");
+
+        mark_requirements_review_verdict(
+            &runtime,
+            "source-thread",
+            "reviewer-thread",
+            json!({
+                "overallVerdict": "pass",
+                "nativeGuiIsSourceOfTruth": {
+                    "verdict": "pass",
+                    "reason": "Evidence matches.",
+                    "evidenceAssessment": "Sufficient.",
+                    "requiredCorrection": ""
+                },
+                "noInventedWebsocketEventShapes": {
+                    "verdict": "pass",
+                    "reason": "Evidence matches.",
+                    "evidenceAssessment": "Sufficient.",
+                    "requiredCorrection": ""
+                },
+                "route": {
+                    "destination": "orchestrator",
+                    "message": "All requirements passed."
+                }
+            }),
+        )
+        .await
+        .expect("mark verdict");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent = agent_state_for_thread(&state, "source-thread").expect("source agent");
+        assert_eq!(agent.requirements.as_ref().map(|set| set.active), Some(false));
+        assert!(agent.requirement_review.is_none());
+        let reviewer = agent_state_for_thread(&state, "reviewer-thread").expect("reviewer agent");
+        assert_eq!(reviewer.parent_thread_id, None);
+        assert!(reviewer.hidden_from_peer_list);
+        assert_eq!(
+            requirements_review_target_for_thread(&state, "source-thread", &sample_requirement_set()),
+            None
+        );
+    }
+
+    #[test]
+    fn requirements_review_prompt_includes_compact_evidence_without_ids_or_raw_packet() {
+        let prompt = requirements_review_prompt(
+            &sample_requirement_set(),
+            "Config Operator",
+            "thread-secret",
+            "turn-secret",
+            r#"{
+                "summary": "Rendered reviewer verdict card.",
+                "nativeGuiIsSourceOfTruth": {
+                    "claim": "satisfied",
+                    "evidence": ["/tmp/reviewer-verdict-card.png"],
+                    "justification": "Screenshot shows formatted card.",
+                    "risk": "low"
+                },
+                "finalDisposition": "readyForRequirementsReview"
+            }"#,
+        );
+        assert!(prompt.contains("Review subject: Config Operator"));
+        assert!(prompt.contains("Source evidence summary:"));
+        assert!(prompt.contains("Rendered reviewer verdict card."));
+        assert!(prompt.contains("/tmp/reviewer-verdict-card.png"));
+        assert!(!prompt.contains("Source thread ID"));
+        assert!(!prompt.contains("Source turn ID"));
+        assert!(!prompt.contains("Source agent claim packet"));
+        assert!(!prompt.contains("thread-secret"));
+        assert!(!prompt.contains("turn-secret"));
+        assert!(!prompt.contains("\"finalDisposition\""));
+    }
+
     fn assert_strict_object_schema(value: &Value) {
         match value {
             Value::Object(object) => {
@@ -5657,6 +6118,28 @@ mod tests {
     fn requirements_schemas_are_strict_openai_shapes() {
         assert_strict_object_schema(&requirements_claim_schema(&sample_requirement_set()));
         assert_strict_object_schema(&requirements_verdict_schema(&sample_requirement_set()));
+    }
+
+    #[test]
+    fn requirement_set_payload_validation_rejects_bad_creation_keys() {
+        let error = parse_optional_requirement_set_payload(&json!({
+            "requirementSet": {
+                "requirements": [
+                    {
+                        "key": "requirement-1",
+                        "statement": "Bad key names must not enter thread creation.",
+                        "severity": "blocker",
+                        "verificationMethod": "diffReview"
+                    }
+                ]
+            }
+        }))
+        .expect_err("invalid requirement key should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("must contain only letters, numbers, and underscores")
+        );
     }
 
     #[test]
@@ -6484,6 +6967,144 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_agent_with_requirement_set_gates_initial_turn() {
+        let temp = TempDir::new().expect("tempdir");
+        let (prompt_tx, prompt_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            let mut prompt_tx = Some(prompt_tx);
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    let result = match request.method.as_str() {
+                        "thread/start" => json!({"thread": {"id": "thread-requirements-worker", "title": "Requirements Worker"}}),
+                        "thread/name/set" => json!({}),
+                        "turn/start" => {
+                            prompt_tx
+                                .take()
+                                .expect("prompt sender")
+                                .send(request.clone())
+                                .expect("record prompt request");
+                            json!({"turn": {"id": "turn-requirements-1", "status": "inProgress", "items": [], "error": null}})
+                        }
+                        _ => json!({}),
+                    };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result,
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "turn/start" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        let requirement_set = json!({
+            "id": "web-gui-contract",
+            "requirements": [
+                {
+                    "key": "nativeGuiIsSourceOfTruth",
+                    "statement": "The web GUI must mirror the native Flutter GUI.",
+                    "severity": "blocker",
+                    "verificationMethod": "screenshotReview"
+                },
+                {
+                    "key": "noInventedWebsocketEventShapes",
+                    "statement": "Do not invent websocket event shapes.",
+                    "severity": "high",
+                    "verificationMethod": "diffReview"
+                }
+            ]
+        });
+
+        let outcome = execute_bridge_command(
+            &runtime,
+            "spawnAgent",
+            json!({
+                "role": "worker",
+                "projectPath": temp.path().display().to_string(),
+                "displayName": "Requirements Worker",
+                "initialPrompt": "Implement the web GUI slice.",
+                "requirementSet": requirement_set,
+            }),
+        )
+        .await
+        .expect("spawnAgent");
+
+        assert_eq!(outcome.payload["payload"]["threadId"], "thread-requirements-worker");
+        let state = parse_state(&runtime.state_document_value().await);
+        let tracked = agent_state_for_thread(&state, "thread-requirements-worker").expect("tracked agent state");
+        let requirements = tracked.requirements.as_ref().expect("requirements persisted");
+        assert_eq!(requirements.id.as_deref(), Some("web-gui-contract"));
+        assert_eq!(requirements.requirements.len(), 2);
+
+        let prompt_request = prompt_rx.await.expect("captured prompt request");
+        assert_eq!(prompt_request.method, "turn/start");
+        let prompt_params = prompt_request.params.expect("prompt params");
+        assert_eq!(prompt_params["threadId"], "thread-requirements-worker");
+        let schema = prompt_params
+            .get("outputSchema")
+            .expect("initial turn output schema");
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(
+            schema["required"],
+            json!([
+                "summary",
+                "nativeGuiIsSourceOfTruth",
+                "noInventedWebsocketEventShapes",
+                "finalDisposition"
+            ])
+        );
+        assert_eq!(
+            schema["properties"]["nativeGuiIsSourceOfTruth"]["description"],
+            "Requirement: The web GUI must mirror the native Flutter GUI."
+        );
+        transport.abort();
+    }
+
+    #[tokio::test]
     async fn orchestrator_spawn_agent_uses_target_role_defaults_not_orchestrator_role_settings() {
         let temp = TempDir::new().expect("tempdir");
         let (thread_tx, thread_rx) = oneshot::channel();
@@ -6605,6 +7226,7 @@ mod tests {
             "Fix the bug",
             None,
             Some("worker"),
+            None,
             None,
         )
         .await
@@ -6765,6 +7387,7 @@ mod tests {
             Some("/tmp/ignored"),
             Some("worker"),
             None,
+            None,
         )
         .await
         .expect("orchestrator spawn");
@@ -6836,6 +7459,7 @@ mod tests {
             "Do not run",
             None,
             Some("designer"),
+            None,
             None,
         )
         .await
@@ -7679,6 +8303,584 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn archive_worker_with_requirements_archives_linked_reviewer_child() {
+        let temp = TempDir::new().expect("tempdir");
+        let (archive_tx, mut archive_rx) = mpsc::unbounded_channel::<String>();
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                let mut archive_count = 0;
+                while archive_count < 2 {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    if request.method == "thread/archive" {
+                        archive_count += 1;
+                        archive_tx
+                            .send(
+                                request
+                                    .params
+                                    .as_ref()
+                                    .and_then(|params| params.get("threadId"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            )
+                            .expect("send archive id");
+                    }
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result: json!({}),
+                        }))
+                        .expect("archive response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "id": "project-alpha",
+                        "name": "Alpha",
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "threadGroups": [{
+                            "id": "group-1",
+                            "title": "Workers",
+                            "threadIds": ["worker-1", "reviewer-1"]
+                        }],
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": sample_requirement_set(),
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "requirements-alpha",
+                                    "status": "inReview",
+                                    "updatedAt": 100
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        archive_thread(&runtime, "worker-1").await.expect("archive thread");
+
+        let mut archived_ids = BTreeSet::new();
+        for _ in 0..2 {
+            archived_ids.insert(
+                tokio::time::timeout(Duration::from_secs(1), archive_rx.recv())
+                    .await
+                    .expect("archive id timeout")
+                    .expect("archive id"),
+            );
+        }
+        assert_eq!(
+            archived_ids,
+            BTreeSet::from(["reviewer-1".to_string(), "worker-1".to_string()])
+        );
+        let state = parse_state(&runtime.state_document_value().await);
+        assert!(agent_state_for_thread(&state, "worker-1").is_none());
+        assert!(agent_state_for_thread(&state, "reviewer-1").is_none());
+        let project = state.projects.get("alpha").expect("project");
+        assert!(project.thread_groups.is_empty());
+
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn orchestrator_group_archive_prunes_worker_requirements_reviewer_child() {
+        let temp = TempDir::new().expect("tempdir");
+        let project_root = normalize_path(temp.path().display().to_string());
+        let (archive_tx, mut archive_rx) = mpsc::unbounded_channel::<String>();
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                let mut archive_count = 0;
+                while archive_count < 2 {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    if request.method == "thread/archive" {
+                        archive_count += 1;
+                        archive_tx
+                            .send(
+                                request
+                                    .params
+                                    .as_ref()
+                                    .and_then(|params| params.get("threadId"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            )
+                            .expect("send archive id");
+                    }
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result: json!({}),
+                        }))
+                        .expect("archive response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                }
+            })
+        })
+        .await;
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "id": "project-alpha",
+                        "name": "Alpha",
+                        "projectRoot": project_root,
+                        "cwd": project_root,
+                        "orchestratorThreadId": "orch-1",
+                        "threadGroups": [{
+                            "id": "group-1",
+                            "title": "Workers",
+                            "threadIds": ["worker-1", "reviewer-1", "worker-2", "designer-1"]
+                        }],
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": project_root,
+                                "cwd": project_root
+                            },
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": project_root,
+                                "cwd": project_root,
+                                "requirements": sample_requirement_set(),
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "requirements-alpha",
+                                    "status": "inReview",
+                                    "updatedAt": 100
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": project_root,
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            },
+                            "worker-2": {
+                                "displayName": "Worker Two",
+                                "role": "worker",
+                                "projectRoot": project_root,
+                                "cwd": project_root
+                            },
+                            "designer-1": {
+                                "displayName": "Designer One",
+                                "role": "designer",
+                                "projectRoot": project_root,
+                                "cwd": project_root
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let outcome = orchestrator_thread_group_archive(&runtime, "orch-1", None, "group-1")
+            .await
+            .expect("archive group");
+        let archived_ids = outcome
+            .get("archivedThreadIds")
+            .and_then(Value::as_array)
+            .expect("archived ids")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            archived_ids,
+            BTreeSet::from(["worker-1", "worker-2"])
+        );
+        let skipped_ids = outcome
+            .get("skippedThreadIds")
+            .and_then(Value::as_array)
+            .expect("skipped ids")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(skipped_ids, BTreeSet::from(["designer-1", "reviewer-1"]));
+        let mut backend_archived_ids = BTreeSet::new();
+        for _ in 0..2 {
+            backend_archived_ids.insert(
+                tokio::time::timeout(Duration::from_secs(1), archive_rx.recv())
+                    .await
+                    .expect("archive id timeout")
+                    .expect("archive id"),
+            );
+        }
+        assert_eq!(
+            backend_archived_ids,
+            BTreeSet::from(["worker-1".to_string(), "worker-2".to_string()])
+        );
+        let state = parse_state(&runtime.state_document_value().await);
+        assert!(agent_state_for_thread(&state, "worker-1").is_none());
+        assert!(agent_state_for_thread(&state, "reviewer-1").is_some());
+        assert!(agent_state_for_thread(&state, "worker-2").is_none());
+        assert!(agent_state_for_thread(&state, "orch-1").is_some());
+        assert!(agent_state_for_thread(&state, "designer-1").is_some());
+        let project = state.projects.get("alpha").expect("project");
+        assert_eq!(project.thread_groups.len(), 1);
+        assert_eq!(
+            project.thread_groups[0].thread_ids,
+            vec!["reviewer-1".to_string(), "designer-1".to_string()]
+        );
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn orchestrator_archive_worker_preserves_linked_non_worker_child() {
+        let temp = TempDir::new().expect("tempdir");
+        let project_root = normalize_path(temp.path().display().to_string());
+        let (archive_tx, mut archive_rx) = mpsc::unbounded_channel::<String>();
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    if request.method == "thread/archive" {
+                        archive_tx
+                            .send(
+                                request
+                                    .params
+                                    .as_ref()
+                                    .and_then(|params| params.get("threadId"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            )
+                            .expect("send archive id");
+                    }
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result: json!({}),
+                        }))
+                        .expect("archive response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "thread/archive" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "id": "project-alpha",
+                        "name": "Alpha",
+                        "projectRoot": project_root,
+                        "cwd": project_root,
+                        "orchestratorThreadId": "orch-1",
+                        "threadGroups": [{
+                            "id": "group-1",
+                            "title": "Reviewing",
+                            "threadIds": ["worker-1", "reviewer-1"]
+                        }],
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": project_root,
+                                "cwd": project_root
+                            },
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": project_root,
+                                "cwd": project_root,
+                                "requirements": sample_requirement_set(),
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "requirements-alpha",
+                                    "status": "inReview",
+                                    "updatedAt": 100
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": project_root,
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let response = orchestrator_archive_agent(&runtime, "orch-1", Some("worker-1"), None, None)
+            .await
+            .expect("worker archive");
+        assert_eq!(response["recipientThreadId"], "worker-1");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), archive_rx.recv())
+                .await
+                .expect("archive id timeout")
+                .expect("archive id"),
+            "worker-1"
+        );
+        match tokio::time::timeout(Duration::from_millis(100), archive_rx.recv()).await {
+            Ok(Some(extra)) => panic!("unexpected extra archived thread id: {extra}"),
+            Ok(None) | Err(_) => {}
+        }
+        let state = parse_state(&runtime.state_document_value().await);
+        assert!(agent_state_for_thread(&state, "worker-1").is_none());
+        assert!(agent_state_for_thread(&state, "reviewer-1").is_some());
+        let project = state.projects.get("alpha").expect("project");
+        assert_eq!(project.thread_groups.len(), 1);
+        assert_eq!(project.thread_groups[0].thread_ids, vec!["reviewer-1".to_string()]);
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn orchestrator_archive_agent_rejects_designer() {
+        let temp = TempDir::new().expect("tempdir");
+        let project_root = normalize_path(temp.path().display().to_string());
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+                while let Some(next) = ws.next().await {
+                    let next = next.expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    if request.method == "thread/archive" {
+                        panic!("designer archive should be rejected before app-server archive");
+                    }
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result: json!({}),
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                }
+            })
+        })
+        .await;
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "id": "project-alpha",
+                        "name": "Alpha",
+                        "projectRoot": project_root,
+                        "cwd": project_root,
+                        "orchestratorThreadId": "orch-1",
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": project_root,
+                                "cwd": project_root
+                            },
+                            "designer-1": {
+                                "displayName": "Designer One",
+                                "role": "designer",
+                                "projectRoot": project_root,
+                                "cwd": project_root
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let error = orchestrator_archive_agent(&runtime, "orch-1", Some("designer-1"), None, None)
+            .await
+            .expect_err("designer archive should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("Orchestrators may only archive worker and qa agents")
+        );
+        let state = parse_state(&runtime.state_document_value().await);
+        assert!(agent_state_for_thread(&state, "designer-1").is_some());
+        transport.abort();
+    }
+
+    #[test]
+    fn orchestrator_archive_role_allowlist_is_worker_and_qa_only() {
+        assert!(orchestrator_can_archive_agent_role("worker"));
+        assert!(orchestrator_can_archive_agent_role("qa"));
+        assert!(!orchestrator_can_archive_agent_role("designer"));
+        assert!(!orchestrator_can_archive_agent_role("orchestrator"));
+        assert!(!orchestrator_can_archive_agent_role("operator"));
+        assert!(!orchestrator_can_archive_agent_role("hidden"));
+        assert!(!orchestrator_can_archive_agent_role("requirements-reviewer"));
+    }
+
+    #[tokio::test]
     async fn archive_qa_thread_records_hook_failure_and_prunes_agent() {
         let temp = TempDir::new().expect("tempdir");
         write_project_hook(
@@ -8504,11 +9706,132 @@ mod tests {
         );
         state.projects.insert("alpha".to_string(), project);
 
-        assert!(prune_archived_thread_locally(&mut state, "worker-1"));
+        assert_eq!(
+            prune_archived_thread_locally(&mut state, "worker-1"),
+            vec!["worker-1".to_string()]
+        );
         let project = state.projects.get("alpha").expect("project");
         assert!(!project.agents.contains_key("worker-1"));
         assert_eq!(project.thread_groups.len(), 1);
         assert_eq!(project.thread_groups[0].thread_ids, vec!["worker-2".to_string()]);
+    }
+
+    #[test]
+    fn prune_archived_thread_locally_removes_requirements_reviewer_child() {
+        let mut state = PersistedState::default();
+        let mut project = PersistedProjectState {
+            project_root: Some("/alpha".to_string()),
+            cwd: Some("/alpha".to_string()),
+            orchestrator_thread_id: Some("orch-a".to_string()),
+            thread_groups: vec![ThreadGroupState {
+                id: "group-1".to_string(),
+                title: "Reviewing".to_string(),
+                thread_ids: vec![
+                    "worker-1".to_string(),
+                    "reviewer-1".to_string(),
+                    "worker-2".to_string(),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        project.agents.insert(
+            "worker-1".to_string(),
+            PersistedAgentState {
+                display_name: Some("Worker One".to_string()),
+                role: Some("worker".to_string()),
+                project_root: Some("/alpha".to_string()),
+                requirements: Some(sample_requirement_set()),
+                requirement_review: Some(RequirementReviewBindingState {
+                    source_thread_id: "worker-1".to_string(),
+                    reviewer_thread_id: "reviewer-1".to_string(),
+                    requirement_set_id: Some("requirements-alpha".to_string()),
+                    status: "inReview".to_string(),
+                    latest_claim_packet: None,
+                    latest_verdict_packet: None,
+                    updated_at: 100,
+                }),
+                ..Default::default()
+            },
+        );
+        project.agents.insert(
+            "reviewer-1".to_string(),
+            PersistedAgentState {
+                display_name: Some("Requirements Reviewer: Worker One".to_string()),
+                role: Some("requirements-reviewer".to_string()),
+                project_root: Some("/alpha".to_string()),
+                parent_thread_id: Some("worker-1".to_string()),
+                hidden_from_peer_list: true,
+                ..Default::default()
+            },
+        );
+        project.agents.insert(
+            "worker-2".to_string(),
+            PersistedAgentState {
+                display_name: Some("Worker Two".to_string()),
+                role: Some("worker".to_string()),
+                project_root: Some("/alpha".to_string()),
+                ..Default::default()
+            },
+        );
+        state.projects.insert("alpha".to_string(), project);
+
+        assert_eq!(
+            prune_archived_thread_locally(&mut state, "worker-1"),
+            vec!["reviewer-1".to_string(), "worker-1".to_string()]
+        );
+        let project = state.projects.get("alpha").expect("project");
+        assert!(!project.agents.contains_key("worker-1"));
+        assert!(!project.agents.contains_key("reviewer-1"));
+        assert!(project.agents.contains_key("worker-2"));
+        assert_eq!(project.thread_groups.len(), 1);
+        assert_eq!(project.thread_groups[0].thread_ids, vec!["worker-2".to_string()]);
+    }
+
+    #[test]
+    fn requirements_review_target_uses_only_linked_reviewer_for_source() {
+        let mut state = PersistedState::default();
+        let mut project = PersistedProjectState {
+            project_root: Some("/alpha".to_string()),
+            cwd: Some("/alpha".to_string()),
+            orchestrator_thread_id: Some("orch-a".to_string()),
+            ..Default::default()
+        };
+        project.agents.insert(
+            "worker-1".to_string(),
+            PersistedAgentState {
+                display_name: Some("Worker One".to_string()),
+                role: Some("worker".to_string()),
+                project_root: Some("/alpha".to_string()),
+                ..Default::default()
+            },
+        );
+        project.agents.insert(
+            "worker-2".to_string(),
+            PersistedAgentState {
+                display_name: Some("Worker Two".to_string()),
+                role: Some("worker".to_string()),
+                project_root: Some("/alpha".to_string()),
+                ..Default::default()
+            },
+        );
+        project.agents.insert(
+            "reviewer-2".to_string(),
+            PersistedAgentState {
+                display_name: Some("Requirements Reviewer: Worker Two".to_string()),
+                role: Some("requirements-reviewer".to_string()),
+                project_root: Some("/alpha".to_string()),
+                parent_thread_id: Some("worker-2".to_string()),
+                hidden_from_peer_list: true,
+                ..Default::default()
+            },
+        );
+        state.projects.insert("alpha".to_string(), project);
+
+        assert_eq!(
+            requirements_review_target_for_thread(&state, "worker-1", &sample_requirement_set()),
+            None
+        );
     }
 
     #[test]

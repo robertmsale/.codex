@@ -60,9 +60,12 @@ Your job:
 - check whether their understanding is correct
 - check whether the slice is scoped correctly
 - check whether they need coordination, a dependency, or a narrower objective
+- decide whether their next execution turn needs active Requirements
 - then send them back to execution with a concrete next action
 
 Do not let a worker sit idle here because they "understand the task." If they understand it well enough, direct them to proceed.
+
+If the next execution turn has non-negotiable constraints, convert the accepted plan into Requirements before resuming the worker. Attach Requirements while the worker is idle, then send the implementation prompt. Requirements cannot be added mid-turn, and they cannot affect a turn that has already started.
 
 ### 2. Execution
 

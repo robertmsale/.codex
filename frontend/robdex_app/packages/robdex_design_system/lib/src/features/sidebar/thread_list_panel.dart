@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../core/models/workbench_models.dart';
 
@@ -50,26 +51,11 @@ class ThreadListPanel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 4, 2, 12),
           child: Row(
             children: [
-              Text(
-                'Threads',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                '${threads.length}',
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.onSurface.withValues(alpha: 0.52),
-                ),
-              ),
+              if (kIsWeb) const _MacWindowDots(),
               const Spacer(),
               _SemanticIconButton(
                 id: 'semantic.sidebar.newProject',
@@ -88,7 +74,37 @@ class ThreadListPanel extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(height: 10),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 0, 4, 10),
+          child: Row(
+            children: [
+              Text(
+                'Threads',
+                style: theme.textTheme.labelLarge?.copyWith(
+                  fontWeight: FontWeight.w500,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.88),
+                ),
+              ),
+              const SizedBox(width: 6),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.52),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  child: Text(
+                    '${threads.length}',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.62),
+                      fontSize: 10,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
         Expanded(
           child: ListView.builder(
             itemCount: orderedProjects.length,
@@ -148,8 +164,8 @@ class _ProjectSection extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.labelSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
+                  fontWeight: FontWeight.w500,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.84),
                 ),
               ),
             ),
@@ -202,7 +218,9 @@ class _ThreadTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final foreground = isSelected ? theme.colorScheme.primary : theme.colorScheme.onSurface;
+    final foreground = theme.colorScheme.onSurface.withValues(
+      alpha: isSelected ? 0.94 : 0.82,
+    );
 
     return Material(
       color: Colors.transparent,
@@ -211,15 +229,15 @@ class _ThreadTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         child: Container(
           margin: const EdgeInsets.only(bottom: 2),
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(7),
             color: isSelected
-                ? theme.colorScheme.primary.withValues(alpha: 0.08)
+                ? Colors.white.withValues(alpha: 0.06)
                 : Colors.transparent,
             border: Border.all(
               color: isSelected
-                  ? theme.colorScheme.primary.withValues(alpha: 0.24)
+                  ? Colors.white.withValues(alpha: 0.035)
                   : Colors.transparent,
             ),
           ),
@@ -231,7 +249,7 @@ class _ThreadTile extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.bodySmall?.copyWith(
-                    fontWeight: FontWeight.w600,
+                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
                     color: foreground,
                   ),
                 ),
@@ -245,7 +263,7 @@ class _ThreadTile extends StatelessWidget {
                 const _PendingApprovalBadge(),
                 const SizedBox(width: 6),
               ],
-              if (thread.requirementReview != null) ...[
+              if ((thread.requirementReview?.activeRequirementCount ?? 0) > 0) ...[
                 _RequirementReviewBadge(summary: thread.requirementReview!),
                 const SizedBox(width: 6),
               ],
@@ -301,6 +319,41 @@ class _SemanticIconButton extends StatelessWidget {
           visualDensity: visualDensity,
         ),
       ),
+    );
+  }
+}
+
+class _MacWindowDots extends StatelessWidget {
+  const _MacWindowDots();
+
+  @override
+  Widget build(BuildContext context) {
+    const colors = [
+      Color(0xFFFF5F57),
+      Color(0xFFFFBD2E),
+      Color(0xFF28C840),
+    ];
+    return Row(
+      children: [
+        for (final color in colors) ...[
+          Container(
+            width: 12,
+            height: 12,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.18),
+                  blurRadius: 3,
+                  offset: const Offset(0, 1),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 7),
+        ],
+      ],
     );
   }
 }

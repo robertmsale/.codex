@@ -1,10 +1,10 @@
-import 'package:flutter/material.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'dart:io';
+import 'dart:ui' as ui;
 
-import 'package:robdex_app/src/core/models/mock_workbench_data.dart';
-import 'package:robdex_app/src/core/models/workbench_models.dart';
-import 'package:robdex_app/src/features/chat/chat_timeline.dart';
-import 'package:robdex_app/src/features/shell/robdex_shell_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:robdex_design_system/robdex_design_system.dart';
 
 void main() {
   testWidgets('workbench shell renders primary regions', (WidgetTester tester) async {
@@ -78,6 +78,69 @@ void main() {
     expect(find.text('Monitor for worker replies and approval requests and steer immediately per constraints.'), findsOneWidget);
     expect(find.text('Resuming interrupted QA-driven reliability sweep from existing agents without re-auditing from scratch.'), findsOneWidget);
   });
+
+  testWidgets('requirements reviewer verdict renders as formatted card', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 620);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final boundaryKey = GlobalKey();
+    const verdictJson = '''
+{"overallVerdict":"pass","route":{"destination":"orchestrator","message":"Requirement passed after required short delay."},"workerDoesNotHaveToDoAnything":{"verdict":"pass","reason":"The worker slept for 20 seconds as instructed.","evidenceAssessment":"The command output shows the requested delay completed.","requiredCorrection":"None."}}
+''';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: Scaffold(
+          body: RepaintBoundary(
+            key: boundaryKey,
+            child: SizedBox(
+              width: 900,
+              height: 620,
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: ChatTimeline(
+                  threadId: 'requirements-reviewer',
+                  entries: const [
+                    ChatEntry(
+                      id: 'verdict-1',
+                      author: 'Assistant',
+                      displayLabel: 'Assistant',
+                      timestamp: null,
+                      body: verdictJson,
+                    ),
+                  ],
+                  title: 'Requirements Reviewer',
+                  contextWindowRemainingPercent: 92,
+                  onSend: (_) {},
+                  onInterrupt: () {},
+                  composerEnabled: false,
+                  isRunning: false,
+                  showComposer: false,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Requirements Review Passed'), findsOneWidget);
+    expect(find.text('workerDoesNotHaveToDoAnything'), findsOneWidget);
+    expect(find.textContaining('Requirement passed after required short delay.'), findsOneWidget);
+    expect(find.textContaining('overallVerdict'), findsNothing);
+
+    final boundary = boundaryKey.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+    final image = await boundary.toImage(pixelRatio: 1.0);
+    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    await File('/tmp/robdex-requirements-review-verdict-card.png')
+        .writeAsBytes(bytes!.buffer.asUint8List());
+  }, skip: true);
 
   testWidgets('chat timeline preserves scroll position when new entries arrive away from bottom', (
     WidgetTester tester,

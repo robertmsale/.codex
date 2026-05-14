@@ -1,6 +1,6 @@
 ---
 name: robdex-orchestrator
-description: Use Robdex communication via `robdex`. This skill is only for the tool surface and shared usage rules. Role behavior lives in the base instructions. [skill-hash:a782d9f]
+description: Use Robdex communication via `robdex`. This skill is only for the tool surface and shared usage rules. Role behavior lives in the base instructions. [skill-hash:b4c19a2]
 ---
 
 # Robdex Orchestrator
@@ -38,12 +38,22 @@ Use this skill for Robdex-backed communication.
   - `robdex set-worker-metadata ...`
   - `robdex handoff --help`
 - Requirements:
+  - `robdex requirements-from-prose --title "<title>" --text-stdin`
+  - `robdex requirements-from-prose --title "<title>" --text-stdin --attach --name "<agent name>"`
   - `robdex set-requirements --name "<agent name>" --requirements-file /absolute/path/to/requirements.json`
   - `robdex request-requirements-review --name "<agent name>" [--note "<checkpoint context>"]`
 
 ## Requirements
 
 Use Requirements when task constraints must become an explicit completion contract rather than prompt prose.
+
+Normal worker flow:
+- Spawn workers without Requirements when the first turn is discovery, triage, planning, or pre-implementation.
+- When the worker stops at pre-implementation, review their plan and convert the accepted implementation contract into Requirements.
+- Attach Requirements while the worker is idle, before sending the execution prompt.
+- Then send the implementation prompt. The next turn will be requirements-gated from the start.
+
+Do not try to attach Requirements to a running turn. Requirements apply to `turn/start`; they cannot change the schema of an already-running turn or a mid-turn steer.
 
 The requirements file is JSON. It may be either an array of requirement objects or an object with a `requirements` array. Use semantic keys, not numbered keys.
 
@@ -67,6 +77,11 @@ The requirements file is JSON. It may be either an array of requirement objects 
 ```
 
 When active, Robdex injects a structured output schema into the source agent's turns. Each requirement becomes a required top-level JSON property. A completed claim is routed to a requirements reviewer when one is configured or available in the same project.
+
+Review lifecycle:
+- A failed review routes the failed requirements back to the source agent.
+- An accepted true blocker routes to the owner/orchestrator.
+- A passing review clears the active Requirements and detaches/archives the reviewer so future Requirements get a fresh reviewer.
 
 ## Shared Guardrails
 

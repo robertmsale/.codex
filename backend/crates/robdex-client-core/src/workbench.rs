@@ -182,7 +182,9 @@ impl WorkbenchClient {
         network_access: Option<bool>,
         model_id: Option<String>,
         reasoning_effort: Option<String>,
+        requirement_set_json: Option<String>,
     ) -> Result<()> {
+        let requirement_set = parse_optional_json_text(requirement_set_json.as_deref(), "requirement set")?;
         let payload = post_json(&self.client, self.endpoint.http_base.join("/threads")?, json!({
                 "projectId": project_id,
                 "title": title,
@@ -193,6 +195,7 @@ impl WorkbenchClient {
                 "networkAccess": network_access,
                 "modelID": model_id,
                 "reasoningEffort": reasoning_effort,
+                "requirementSet": requirement_set,
             }))
             .await?;
         self.selected_thread_id = payload.get("threadId").and_then(Value::as_str).map(str::to_string);
@@ -204,7 +207,9 @@ impl WorkbenchClient {
         name: String,
         role: String,
         prompt: String,
+        requirement_set_json: Option<String>,
     ) -> Result<()> {
+        let requirement_set = parse_optional_json_text(requirement_set_json.as_deref(), "requirement set")?;
         let sender_thread_id = self
             .selected_thread_id
             .clone()
@@ -214,6 +219,7 @@ impl WorkbenchClient {
                 "name": name,
                 "role": role,
                 "prompt": prompt,
+                "requirementSet": requirement_set,
             }))
             .await?;
         let thread_id = payload
@@ -380,7 +386,9 @@ impl WorkbenchClient {
         thread_id: &str,
         text: &str,
         local_image_paths: &[String],
+        requirement_set_json: Option<String>,
     ) -> Result<()> {
+        let requirement_set = parse_optional_json_text(requirement_set_json.as_deref(), "requirement set")?;
         #[cfg(target_arch = "wasm32")]
         let uploaded_paths = local_image_paths.to_vec();
         #[cfg(not(target_arch = "wasm32"))]
@@ -397,6 +405,7 @@ impl WorkbenchClient {
             json!({
                 "text": text,
                 "localImagePaths": uploaded_paths,
+                "requirementSet": requirement_set,
             }),
         )
         .await?;
@@ -582,6 +591,13 @@ impl WorkbenchClient {
         self.sync_view(&view);
         Ok(view)
     }
+}
+
+fn parse_optional_json_text(value: Option<&str>, label: &str) -> Result<Value> {
+    let Some(trimmed) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(Value::Null);
+    };
+    serde_json::from_str(trimmed).map_err(|error| anyhow::anyhow!("invalid {label} JSON: {error}"))
 }
 
 async fn fetch_available_models(endpoint: &BridgeEndpoint) -> Result<Vec<UiModelItem>> {
@@ -1275,7 +1291,12 @@ fn snapshot_live_processes(snapshot: &Value, thread_id: &str) -> Vec<UiLiveProce
 
 fn requirement_review_summary(agent: &serde_json::Map<String, Value>) -> Option<UiRequirementReviewSummary> {
     let requirements_set = agent.get("requirements").and_then(Value::as_object);
+    let requirements_active = requirements_set
+        .and_then(|set| set.get("active"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     let active_requirements = requirements_set
+        .filter(|_| requirements_active)
         .and_then(|set| set.get("requirements"))
         .and_then(Value::as_array)
         .map(|items| {

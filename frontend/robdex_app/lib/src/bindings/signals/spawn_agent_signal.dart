@@ -8,6 +8,7 @@ class SpawnAgentSignal {
     required this.name,
     required this.role,
     required this.prompt,
+    required this.requirementSetJson,
   });
 
   static SpawnAgentSignal deserialize(BinaryDeserializer deserializer) {
@@ -16,6 +17,7 @@ class SpawnAgentSignal {
       name: deserializer.deserializeString(),
       role: deserializer.deserializeString(),
       prompt: deserializer.deserializeString(),
+      requirementSetJson: deserializer.deserializeString(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -33,16 +35,19 @@ class SpawnAgentSignal {
   final String name;
   final String role;
   final String prompt;
+  final String requirementSetJson;
 
   SpawnAgentSignal copyWith({
     String? name,
     String? role,
     String? prompt,
+    String? requirementSetJson,
   }) {
     return SpawnAgentSignal(
       name: name ?? this.name,
       role: role ?? this.role,
       prompt: prompt ?? this.prompt,
+      requirementSetJson: requirementSetJson ?? this.requirementSetJson,
     );
   }
 
@@ -51,6 +56,7 @@ class SpawnAgentSignal {
     serializer.serializeString(name);
     serializer.serializeString(role);
     serializer.serializeString(prompt);
+    serializer.serializeString(requirementSetJson);
     serializer.decreaseContainerDepth();
   }
 
@@ -68,7 +74,8 @@ class SpawnAgentSignal {
     return other is SpawnAgentSignal
       && name == other.name
       && role == other.role
-      && prompt == other.prompt;
+      && prompt == other.prompt
+      && requirementSetJson == other.requirementSetJson;
   }
 
   @override
@@ -76,6 +83,7 @@ class SpawnAgentSignal {
         name,
         role,
         prompt,
+        requirementSetJson,
       );
 
   @override
@@ -86,7 +94,8 @@ class SpawnAgentSignal {
       fullString = '$runtimeType('
         'name: $name, '
         'role: $role, '
-        'prompt: $prompt'
+        'prompt: $prompt, '
+        'requirementSetJson: $requirementSetJson'
         ')';
       return true;
     }());

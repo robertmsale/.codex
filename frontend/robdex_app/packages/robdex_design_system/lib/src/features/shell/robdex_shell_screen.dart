@@ -88,7 +88,7 @@ class RobdexShellScreen extends StatelessWidget {
                 builder: (context, constraints) {
                   final isCompact = constraints.maxWidth < 860;
                   return Padding(
-                    padding: const EdgeInsets.all(12),
+                    padding: kIsWeb ? const EdgeInsets.all(12) : EdgeInsets.zero,
                     child: isCompact
                         ? RepaintBoundary(
                             child: _CompactShell(
@@ -224,99 +224,148 @@ class _WideShell extends StatefulWidget {
 }
 
 class _WideShellState extends State<_WideShell> {
-  double _sidebarWidth = 360;
+  double _sidebarWidth = 294;
 
   void _resizeSidebar(double delta) {
     setState(() {
-      _sidebarWidth = (_sidebarWidth + delta).clamp(280, 520);
+      _sidebarWidth = (_sidebarWidth + delta).clamp(260, 420);
     });
   }
 
   @override
   Widget build(BuildContext context) {
     final workbench = widget.workbench;
-    return Row(
+    final shell = Row(
       children: [
-        AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
-          width: _sidebarWidth,
-          child: _PaneSurface(
-            accent: const Color(0xFF53C6FF),
-            child: RepaintBoundary(
-              child: ThreadListPanel(
-                selection: workbench.selection,
-                projects: workbench.projects,
-                threads: workbench.threads,
-                pendingApprovals: workbench.pendingApprovals,
-                onDisconnect: widget.onDisconnect,
-                onThreadSelected: widget.onThreadSelected,
-                onCreateProject: widget.onCreateProject,
-                onProjectSettings: widget.onProjectSettings,
-                onCreateThread: widget.onCreateThread,
-                onSpawnAgent: widget.onSpawnAgent,
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            width: _sidebarWidth,
+            child: DecoratedBox(
+              decoration: const BoxDecoration(
+                color: Color(0xCC12161D),
+                border: Border(
+                  right: BorderSide(color: Color(0xFF30343B)),
+                ),
               ),
-            ),
-          ),
-        ),
-        _SidebarResizeHandle(onDrag: _resizeSidebar),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _PaneSurface(
-            accent: const Color(0xFFF3A43B),
-            child: RepaintBoundary(
-              child: ChatTimeline(
-                threadId: workbench.selection.threadId,
-                entries: workbench.chatEntries,
-                title: workbench.selection.threadName,
-                contextWindowRemainingPercent:
-                    workbench.contextWindowRemainingPercent,
-                onSend: widget.onSendMessage,
-                onInterrupt: widget.onInterruptThread,
-                onTerminateCommandExecution: widget.onTerminateCommandExecution,
-                bridgeBaseUri: widget.bridgeBaseUri,
-                composerEnabled: workbench.selection.threadId != null,
-                isRunning: workbench.selection.isRunning,
-                headerControls: _DesktopThreadControls(
-                  selection: workbench.selection,
-                  availableModels: workbench.availableModels,
-                  liveProcesses: workbench.liveProcesses,
-                  pendingApprovalCount: workbench.pendingApprovals.length,
-                  onOpenHistory: widget.onOpenHistory,
-                  onCompactThread: widget.onCompactThread,
-                  onTerminateCommandExecution: widget.onTerminateCommandExecution,
-                  onSettingsChanged: widget.onSettingsChanged,
-                  onRunningStateChanged: widget.onRunningStateChanged,
-                  onMore: () => _showInspectorDialog(
-                    context,
-                    workbench: workbench,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
+                child: RepaintBoundary(
+                  child: ThreadListPanel(
+                    selection: workbench.selection,
+                    projects: workbench.projects,
+                    threads: workbench.threads,
+                    pendingApprovals: workbench.pendingApprovals,
+                    onDisconnect: widget.onDisconnect,
                     onThreadSelected: widget.onThreadSelected,
-                    bridgeBaseUri: widget.bridgeBaseUri,
-                    onApprovalDecision: widget.onApprovalDecision,
-                    onSettingsChanged: widget.onSettingsChanged,
-                    onRunningStateChanged: widget.onRunningStateChanged,
-                    onRenameThread: widget.onRenameThread,
-                    onArchiveThread: widget.onArchiveThread,
-                    onWarmHandoff: widget.onWarmHandoff,
-                    onSetProjectOrchestrator: widget.onSetProjectOrchestrator,
-                    onCreateThreadGroup: widget.onCreateThreadGroup,
-                    onRenameThreadGroup: widget.onRenameThreadGroup,
-                    onDeleteThreadGroup: widget.onDeleteThreadGroup,
-                    onArchiveThreadGroup: widget.onArchiveThreadGroup,
-                    onMoveSelectedThreadToGroup: widget.onMoveSelectedThreadToGroup,
-                    onUpdateWorkerMetadata: widget.onUpdateWorkerMetadata,
+                    onCreateProject: widget.onCreateProject,
+                    onProjectSettings: widget.onProjectSettings,
+                    onCreateThread: widget.onCreateThread,
+                    onSpawnAgent: widget.onSpawnAgent,
                   ),
                 ),
-                overlay: _ApprovalOverlay(
-                  selection: workbench.selection,
-                  pendingApprovals: workbench.pendingApprovals,
-                  onApprovalDecision: widget.onApprovalDecision,
+              ),
+            ),
+          ),
+          _SidebarResizeHandle(onDrag: _resizeSidebar),
+          Expanded(
+            child: DecoratedBox(
+              decoration: const BoxDecoration(color: Color(0xFF171C22)),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(28, 16, 62, 22),
+                child: RepaintBoundary(
+                  child: ChatTimeline(
+                    threadId: workbench.selection.threadId,
+                    entries: workbench.chatEntries,
+                    title: workbench.selection.threadName,
+                    contextWindowRemainingPercent:
+                        workbench.contextWindowRemainingPercent,
+                    onSend: widget.onSendMessage,
+                    onInterrupt: widget.onInterruptThread,
+                    onTerminateCommandExecution: widget.onTerminateCommandExecution,
+                    bridgeBaseUri: widget.bridgeBaseUri,
+                    composerEnabled: workbench.selection.threadId != null,
+                    isRunning: workbench.selection.isRunning,
+                    selection: workbench.selection,
+                    availableModels: workbench.availableModels,
+                    onSettingsChanged: widget.onSettingsChanged,
+                    requirementReview: workbench.requirementReview,
+                    onOpenThread: widget.onThreadSelected,
+                    headerControls: _DesktopThreadControls(
+                      selection: workbench.selection,
+                      availableModels: workbench.availableModels,
+                      liveProcesses: workbench.liveProcesses,
+                      pendingApprovalCount: workbench.pendingApprovals.length,
+                      onOpenHistory: widget.onOpenHistory,
+                      onCompactThread: widget.onCompactThread,
+                      onTerminateCommandExecution: widget.onTerminateCommandExecution,
+                      onSettingsChanged: widget.onSettingsChanged,
+                      onRunningStateChanged: widget.onRunningStateChanged,
+                      onMore: () => _showInspectorDialog(
+                        context,
+                        workbench: workbench,
+                        onThreadSelected: widget.onThreadSelected,
+                        bridgeBaseUri: widget.bridgeBaseUri,
+                        onApprovalDecision: widget.onApprovalDecision,
+                        onSettingsChanged: widget.onSettingsChanged,
+                        onRunningStateChanged: widget.onRunningStateChanged,
+                        onRenameThread: widget.onRenameThread,
+                        onArchiveThread: widget.onArchiveThread,
+                        onWarmHandoff: widget.onWarmHandoff,
+                        onSetProjectOrchestrator: widget.onSetProjectOrchestrator,
+                        onCreateThreadGroup: widget.onCreateThreadGroup,
+                        onRenameThreadGroup: widget.onRenameThreadGroup,
+                        onDeleteThreadGroup: widget.onDeleteThreadGroup,
+                        onArchiveThreadGroup: widget.onArchiveThreadGroup,
+                        onMoveSelectedThreadToGroup: widget.onMoveSelectedThreadToGroup,
+                        onUpdateWorkerMetadata: widget.onUpdateWorkerMetadata,
+                      ),
+                    ),
+                    overlay: _ApprovalOverlay(
+                      selection: workbench.selection,
+                      pendingApprovals: workbench.pendingApprovals,
+                      onApprovalDecision: widget.onApprovalDecision,
+                    ),
+                  ),
                 ),
               ),
             ),
           ),
-        ),
       ],
+    );
+    if (kIsWeb) {
+      return _MacWindowFrame(child: shell);
+    }
+    return shell;
+  }
+}
+
+class _MacWindowFrame extends StatelessWidget {
+  const _MacWindowFrame({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: const Color(0xEE1A1D22),
+            border: Border.all(color: const Color(0xFF3A3E45)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.36),
+                blurRadius: 32,
+                offset: const Offset(0, 20),
+              ),
+            ],
+          ),
+          child: child,
+        ),
+      ),
     );
   }
 }
@@ -383,98 +432,6 @@ class _CompactShell extends StatefulWidget {
   State<_CompactShell> createState() => _CompactShellState();
 }
 
-class _PaneSurface extends StatelessWidget {
-  const _PaneSurface({
-    required this.child,
-    required this.accent,
-  });
-
-  final Widget child;
-  final Color accent;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(22),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                theme.colorScheme.surface.withValues(alpha: 0.5),
-                theme.colorScheme.surfaceContainer.withValues(alpha: 0.34),
-              ],
-            ),
-            border: Border.all(
-              color: accent.withValues(alpha: 0.14),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.08),
-                blurRadius: 20,
-                offset: const Offset(0, 14),
-              ),
-            ],
-          ),
-          child: Stack(
-            children: [
-              Positioned(
-                top: -70,
-                right: -30,
-                child: IgnorePointer(
-                  child: Container(
-                    width: 180,
-                    height: 180,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: RadialGradient(
-                        colors: [
-                          accent.withValues(alpha: 0.08),
-                          accent.withValues(alpha: 0.0),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              Positioned(
-                left: -60,
-                bottom: -80,
-                child: IgnorePointer(
-                  child: Transform.rotate(
-                    angle: -0.3,
-                    child: Container(
-                      width: 180,
-                      height: 180,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(40),
-                        gradient: LinearGradient(
-                          colors: [
-                            const Color(0xFF1A2B3C).withValues(alpha: 0.1),
-                            Colors.transparent,
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(12),
-                child: child,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _ShellNebulaBackdrop extends StatefulWidget {
   const _ShellNebulaBackdrop();
 
@@ -500,7 +457,7 @@ class _ShellNebulaBackdropState extends State<_ShellNebulaBackdrop>
   Future<void> _loadShader() async {
     try {
       final program = await FragmentProgram.fromAsset(
-        'shaders/connection_nebula.frag',
+        'packages/robdex_design_system/shaders/connection_nebula.frag',
       );
       if (!mounted) {
         return;
@@ -609,22 +566,13 @@ class _SidebarResizeHandle extends StatelessWidget {
         behavior: HitTestBehavior.translucent,
         onHorizontalDragUpdate: (details) => onDrag(details.delta.dx),
         child: SizedBox(
-          width: 10,
+          width: 6,
           child: Center(
             child: Container(
-              width: 4,
-              height: 72,
+              width: 1,
+              height: double.infinity,
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(999),
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    theme.colorScheme.secondary.withValues(alpha: 0.15),
-                    theme.colorScheme.primary.withValues(alpha: 0.5),
-                    theme.colorScheme.secondary.withValues(alpha: 0.15),
-                  ],
-                ),
+                color: theme.colorScheme.outline.withValues(alpha: 0.18),
               ),
             ),
           ),
@@ -687,6 +635,11 @@ class _CompactShellState extends State<_CompactShell> {
       bridgeBaseUri: widget.bridgeBaseUri,
       composerEnabled: true,
       isRunning: widget.workbench.selection.isRunning,
+      selection: widget.workbench.selection,
+      availableModels: widget.workbench.availableModels,
+      onSettingsChanged: widget.onSettingsChanged,
+      requirementReview: widget.workbench.requirementReview,
+      onOpenThread: widget.onThreadSelected,
       overlay: _ApprovalOverlay(
         selection: widget.workbench.selection,
         pendingApprovals: widget.workbench.pendingApprovals,
@@ -873,22 +826,6 @@ class _DesktopThreadControls extends StatelessWidget {
     String inheritedLabel(String value) => '(${titleCaseWords(value)})';
     String inheritedOrSystem(String? value, {String system = 'System'}) =>
         inheritedLabel((value?.trim().isNotEmpty ?? false) ? value! : system);
-    String modelLabel(String? modelId) {
-      if (modelId == null || modelId.trim().isEmpty) {
-        return inheritedOrSystem(null);
-      }
-      ModelItem? match;
-      for (final model in availableModels) {
-        if (model.id == modelId) {
-          match = model;
-          break;
-        }
-      }
-      final display = match?.name?.trim().isNotEmpty == true ? match!.name! : modelId;
-      return inheritedLabel(display);
-    }
-    bool isOverridden(String? value) => value != null && value.trim().isNotEmpty;
-    bool isNetworkOverridden() => selection.networkAccess != null;
     ThreadSettingsDraft draft({
       String? role,
       String? approvalPolicy,
@@ -913,86 +850,10 @@ class _DesktopThreadControls extends StatelessWidget {
     }
 
     return Wrap(
-      spacing: 8,
+      spacing: 12,
       runSpacing: 8,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        _CompactDropdown(
-          width: 140,
-          label: 'Model',
-          value: selection.model ?? '',
-          enabled: enabled,
-          items: [
-            DropdownMenuItem(
-              value: '',
-              child: Text(modelLabel(selection.effectiveModel)),
-            ),
-            ...availableModels
-                .where((model) => !model.hidden || model.id == (selection.model ?? ''))
-                .map(
-                  (model) => DropdownMenuItem(
-                    value: model.id,
-                    child: Text(model.name?.trim().isNotEmpty == true ? model.name! : model.id),
-                  ),
-                ),
-          ],
-          onChanged: (value) => onSettingsChanged(draft(modelId: value)),
-        ),
-        _ReasoningControl(
-          enabled: enabled,
-          overridden: isOverridden(selection.reasoningEffort),
-          effectiveValue: selection.effectiveReasoningEffort,
-          onSelected: (value) => onSettingsChanged(draft(reasoningEffort: value)),
-        ),
-        _TierControl(
-          enabled: enabled,
-          overridden: isOverridden(selection.serviceTier),
-          effectiveValue: selection.effectiveServiceTier,
-          onSelected: (value) => onSettingsChanged(draft(serviceTier: value)),
-        ),
-        _SandboxControl(
-          enabled: enabled,
-          overridden: isOverridden(selection.sandboxMode),
-          effectiveValue: selection.effectiveSandboxMode,
-          onSelected: (value) => onSettingsChanged(draft(sandboxMode: value)),
-        ),
-        _NetworkControl(
-          enabled: enabled,
-          overridden: isNetworkOverridden(),
-          effectiveValue: selection.effectiveNetworkAccess,
-          onChanged: (value) => onSettingsChanged(draft(networkAccessMode: value)),
-        ),
-        Semantics(
-          key: const ValueKey('semantic.thread.runningToggle'),
-          container: true,
-          button: true,
-          enabled: enabled,
-          label: selection.isRunning ? 'Mark selected thread idle' : 'Mark selected thread running',
-          child: ExcludeSemantics(
-            child: IconButton.outlined(
-              onPressed: enabled ? () => onRunningStateChanged(!selection.isRunning) : null,
-              tooltip: selection.isRunning ? 'Mark idle' : 'Mark running',
-              icon: Icon(selection.isRunning ? Icons.pause_circle_outline : Icons.play_arrow),
-            ),
-          ),
-        ),
-        _CompactDropdown(
-          width: 144,
-          label: 'Approval',
-          value: selection.approvalPolicy ?? '',
-          enabled: enabled,
-          items: [
-            DropdownMenuItem(
-              value: '',
-              child: Text(inheritedOrSystem(selection.effectiveApprovalPolicy)),
-            ),
-            const DropdownMenuItem(value: 'untrusted', child: Text('untrusted')),
-            const DropdownMenuItem(value: 'on-failure', child: Text('on-failure')),
-            const DropdownMenuItem(value: 'on-request', child: Text('on-request')),
-            const DropdownMenuItem(value: 'never', child: Text('never')),
-          ],
-          onChanged: (value) => onSettingsChanged(draft(approvalPolicy: value)),
-        ),
         Semantics(
           key: const ValueKey('semantic.thread.history'),
           container: true,
@@ -1026,9 +887,26 @@ class _DesktopThreadControls extends StatelessWidget {
             ),
           ),
         ),
+        _CompactDropdown(
+          width: 220,
+          label: 'Approval',
+          value: selection.approvalPolicy ?? '',
+          enabled: enabled,
+          items: [
+            DropdownMenuItem(
+              value: '',
+              child: Text(inheritedOrSystem(selection.effectiveApprovalPolicy)),
+            ),
+            const DropdownMenuItem(value: 'untrusted', child: Text('untrusted')),
+            const DropdownMenuItem(value: 'on-failure', child: Text('on-failure')),
+            const DropdownMenuItem(value: 'on-request', child: Text('on-request')),
+            const DropdownMenuItem(value: 'never', child: Text('never')),
+          ],
+          onChanged: (value) => onSettingsChanged(draft(approvalPolicy: value)),
+        ),
         _HeaderIconButton(
           tooltip: 'Thread settings',
-          icon: const Icon(Icons.tune),
+          icon: const Icon(Icons.settings_outlined),
           badgeCount: pendingApprovalCount,
           onPressed: enabled ? onMore : null,
         ),
@@ -1157,350 +1035,6 @@ Future<void> _showProcessManagerSheet(
       ),
     ),
   );
-}
-
-
-class _VisualSettingFrame extends StatelessWidget {
-  const _VisualSettingFrame({
-    required this.tooltip,
-    required this.enabled,
-    required this.overridden,
-    required this.child,
-    this.onTap,
-    this.onLongPress,
-  });
-
-  final String tooltip;
-  final bool enabled;
-  final bool overridden;
-  final Widget child;
-  final VoidCallback? onTap;
-  final VoidCallback? onLongPress;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final tone = overridden ? Colors.green.shade600 : Colors.amber.shade700;
-    return Tooltip(
-      message: tooltip,
-      child: InkWell(
-        onTap: enabled ? onTap : null,
-        onLongPress: enabled ? onLongPress : null,
-        borderRadius: BorderRadius.circular(14),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          curve: Curves.easeOutCubic,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            color: enabled
-                ? tone.withValues(alpha: overridden ? 0.14 : 0.16)
-                : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.22),
-            border: Border.all(
-              color: enabled
-                  ? tone.withValues(alpha: overridden ? 0.32 : 0.28)
-                  : theme.colorScheme.outline.withValues(alpha: 0.12),
-            ),
-          ),
-          child: DefaultTextStyle.merge(
-            style: theme.textTheme.labelSmall?.copyWith(
-                  color: enabled
-                      ? theme.colorScheme.onSurface.withValues(alpha: 0.88)
-                      : theme.colorScheme.onSurface.withValues(alpha: 0.42),
-                  fontWeight: FontWeight.w700,
-                ) ??
-                const TextStyle(),
-            child: child,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ReasoningGlyph extends StatelessWidget {
-  const _ReasoningGlyph({
-    required this.level,
-    required this.color,
-  });
-
-  final int level;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 22,
-      height: 14,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: List.generate(3, (index) {
-          final active = index < level;
-          final heights = [5.0, 9.0, 13.0];
-          return Padding(
-            padding: EdgeInsets.only(right: index == 2 ? 0 : 2),
-            child: Container(
-              width: 3.5,
-              height: heights[index],
-              decoration: BoxDecoration(
-                color: active ? color : color.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(999),
-              ),
-            ),
-          );
-        }),
-      ),
-    );
-  }
-}
-
-class _ReasoningControl extends StatelessWidget {
-  const _ReasoningControl({
-    required this.enabled,
-    required this.overridden,
-    required this.effectiveValue,
-    required this.onSelected,
-  });
-
-  final bool enabled;
-  final bool overridden;
-  final String? effectiveValue;
-  final ValueChanged<String> onSelected;
-
-  int _levelFor(String? value) {
-    switch (value?.trim().toLowerCase()) {
-      case 'low':
-        return 1;
-      case 'medium':
-        return 2;
-      case 'high':
-        return 3;
-      default:
-        return 0;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final tone = overridden ? Colors.green.shade600 : Colors.amber.shade700;
-    final level = _levelFor(effectiveValue);
-    return Semantics(
-      key: const ValueKey('semantic.thread.reasoningDropdown'),
-      container: true,
-      button: true,
-      enabled: enabled,
-      label: 'Reasoning effort',
-      value: effectiveValue ?? 'system default',
-      child: ExcludeSemantics(
-        child: PopupMenuButton<String>(
-          enabled: enabled,
-          tooltip: '',
-          onSelected: onSelected,
-          itemBuilder: (context) => [
-            PopupMenuItem(
-              value: '',
-              child: Row(
-                children: [
-                  _ReasoningGlyph(level: _levelFor(effectiveValue), color: Colors.amber.shade700),
-                  const SizedBox(width: 8),
-                  const Text('System'),
-                ],
-              ),
-            ),
-            for (final option in [('low', 'Low'), ('medium', 'Medium'), ('high', 'High')])
-              PopupMenuItem(
-                value: option.$1,
-                child: Row(
-                  children: [
-                    _ReasoningGlyph(level: _levelFor(option.$1), color: Colors.green.shade600),
-                    const SizedBox(width: 8),
-                    Text(option.$2),
-                  ],
-                ),
-              ),
-          ],
-          child: _VisualSettingFrame(
-            tooltip: overridden ? 'Reasoning override' : 'Reasoning inherited',
-            enabled: enabled,
-            overridden: overridden,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _ReasoningGlyph(level: level, color: tone),
-                const SizedBox(width: 4),
-                Icon(Icons.arrow_drop_down_rounded, size: 16, color: tone),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _TierControl extends StatelessWidget {
-  const _TierControl({
-    required this.enabled,
-    required this.overridden,
-    required this.effectiveValue,
-    required this.onSelected,
-  });
-
-  final bool enabled;
-  final bool overridden;
-  final String? effectiveValue;
-  final ValueChanged<String> onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    final tone = overridden ? Colors.green.shade600 : Colors.amber.shade700;
-    final isFast = effectiveValue?.trim().toLowerCase() == 'fast';
-    return Semantics(
-      key: const ValueKey('semantic.thread.serviceTierDropdown'),
-      container: true,
-      button: true,
-      enabled: enabled,
-      label: 'Service tier',
-      value: effectiveValue ?? 'system default',
-      child: ExcludeSemantics(
-        child: PopupMenuButton<String>(
-          enabled: enabled,
-          tooltip: '',
-          onSelected: onSelected,
-          itemBuilder: (context) => [
-            const PopupMenuItem(value: '', child: Text('System')),
-            const PopupMenuItem(value: 'fast', child: Text('Fast')),
-            const PopupMenuItem(value: 'flex', child: Text('Flex')),
-          ],
-          child: _VisualSettingFrame(
-            tooltip: overridden ? 'Tier override' : 'Tier inherited',
-            enabled: enabled,
-            overridden: overridden,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(isFast ? '⚡' : '🐢', style: const TextStyle(fontSize: 16)),
-                const SizedBox(width: 2),
-                Icon(Icons.arrow_drop_down_rounded, size: 16, color: tone),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SandboxControl extends StatelessWidget {
-  const _SandboxControl({
-    required this.enabled,
-    required this.overridden,
-    required this.effectiveValue,
-    required this.onSelected,
-  });
-
-  final bool enabled;
-  final bool overridden;
-  final String? effectiveValue;
-  final ValueChanged<String> onSelected;
-
-  String _emojiFor(String? value) {
-    switch (value?.trim().toLowerCase()) {
-      case 'read-only':
-        return '👼';
-      case 'danger-full-access':
-        return '😈';
-      case 'workspace-write':
-      default:
-        return '👷';
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final tone = overridden ? Colors.green.shade600 : Colors.amber.shade700;
-    return Semantics(
-      key: const ValueKey('semantic.thread.sandboxDropdown'),
-      container: true,
-      button: true,
-      enabled: enabled,
-      label: 'Sandbox mode',
-      value: effectiveValue ?? 'system default',
-      child: ExcludeSemantics(
-        child: PopupMenuButton<String>(
-          enabled: enabled,
-          tooltip: '',
-          onSelected: onSelected,
-          itemBuilder: (context) => [
-            PopupMenuItem(value: '', child: Text('System ${_emojiFor(effectiveValue)}')),
-            const PopupMenuItem(value: 'read-only', child: Text('Read-only')),
-            const PopupMenuItem(value: 'workspace-write', child: Text('Workspace')),
-            const PopupMenuItem(value: 'danger-full-access', child: Text('Danger')),
-          ],
-          child: _VisualSettingFrame(
-            tooltip: overridden ? 'Sandbox override' : 'Sandbox inherited',
-            enabled: enabled,
-            overridden: overridden,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(_emojiFor(effectiveValue), style: const TextStyle(fontSize: 16)),
-                const SizedBox(width: 2),
-                Icon(Icons.arrow_drop_down_rounded, size: 16, color: tone),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _NetworkControl extends StatelessWidget {
-  const _NetworkControl({
-    required this.enabled,
-    required this.overridden,
-    required this.effectiveValue,
-    required this.onChanged,
-  });
-
-  final bool enabled;
-  final bool overridden;
-  final bool? effectiveValue;
-  final ValueChanged<String> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final isOn = effectiveValue ?? false;
-    return Semantics(
-      key: const ValueKey('semantic.thread.networkToggle'),
-      container: true,
-      button: true,
-      enabled: enabled,
-      label: 'Network access',
-      value: isOn ? 'enabled' : 'disabled',
-      child: ExcludeSemantics(
-        child: _VisualSettingFrame(
-          tooltip: overridden
-              ? 'Network override'
-              : 'Network inherited (long-press to restore default after toggle)',
-          enabled: enabled,
-          overridden: overridden,
-          onTap: () => onChanged(isOn ? 'disabled' : 'enabled'),
-          onLongPress: () => onChanged('default'),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                isOn ? Icons.wifi_rounded : Icons.wifi_off_rounded,
-                size: 16,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class _CompactDropdown extends StatelessWidget {

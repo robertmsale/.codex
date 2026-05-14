@@ -68,11 +68,13 @@ enum Action {
         network_access: Option<bool>,
         model_id: Option<String>,
         reasoning_effort: Option<String>,
+        requirement_set_json: Option<String>,
     },
     SpawnAgent {
         name: String,
         role: String,
         prompt: String,
+        requirement_set_json: Option<String>,
     },
     SetProjectOrchestrator {
         project_id: String,
@@ -97,6 +99,7 @@ enum Action {
     SendMessage {
         text: String,
         local_image_paths: Vec<String>,
+        requirement_set_json: Option<String>,
     },
     InterruptThread,
     DecideApproval {
@@ -219,6 +222,7 @@ fn apply_optimistic_action(current_view: &mut Option<WorkbenchViewData>, action:
     let Action::SendMessage {
         text,
         local_image_paths,
+        ..
     } = action else {
         return;
     };
@@ -447,11 +451,21 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
         } else {
             Some(signal.message.reasoning_effort)
         },
+        requirement_set_json: if signal.message.requirement_set_json.trim().is_empty() {
+            None
+        } else {
+            Some(signal.message.requirement_set_json)
+        },
     });
     spawn_map::<SpawnAgentSignal, _>(tx.clone(), |signal| Action::SpawnAgent {
         name: signal.message.name,
         role: signal.message.role,
         prompt: signal.message.prompt,
+        requirement_set_json: if signal.message.requirement_set_json.trim().is_empty() {
+            None
+        } else {
+            Some(signal.message.requirement_set_json)
+        },
     });
     spawn_map::<SetProjectOrchestratorSignal, _>(tx.clone(), |signal| {
         Action::SetProjectOrchestrator {
@@ -507,6 +521,11 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
     spawn_map::<SendThreadMessageSignal, _>(tx.clone(), |signal| Action::SendMessage {
         text: signal.message.text,
         local_image_paths: signal.message.local_image_paths,
+        requirement_set_json: if signal.message.requirement_set_json.trim().is_empty() {
+            None
+        } else {
+            Some(signal.message.requirement_set_json)
+        },
     });
     spawn_unit::<InterruptThreadSignal, _>(tx.clone(), || Action::InterruptThread);
     spawn_map::<DecideApprovalSignal, _>(tx.clone(), |signal| Action::DecideApproval {
@@ -735,6 +754,7 @@ async fn handle_action(
             network_access,
             model_id,
             reasoning_effort,
+            requirement_set_json,
         } => {
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
                 .create_thread(
@@ -747,13 +767,14 @@ async fn handle_action(
                     network_access,
                     model_id,
                     reasoning_effort,
+                    requirement_set_json,
                 )
                 .await?;
             current_view_clone(current_view)
         }
-        Action::SpawnAgent { name, role, prompt } => {
+        Action::SpawnAgent { name, role, prompt, requirement_set_json } => {
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
-                .spawn_agent(name, role, prompt)
+                .spawn_agent(name, role, prompt, requirement_set_json)
                 .await?;
             current_view_clone(current_view)
         }
@@ -913,6 +934,7 @@ async fn handle_action(
         Action::SendMessage {
             text,
             local_image_paths,
+            requirement_set_json,
         } => {
             let thread_id = current_view
                 .as_ref()
@@ -921,7 +943,7 @@ async fn handle_action(
             client
                 .as_mut()
                 .ok_or_else(|| anyhow!("Not connected"))?
-                .send_message(&thread_id, &text, &local_image_paths)
+                .send_message(&thread_id, &text, &local_image_paths, requirement_set_json)
                 .await?;
             current_view_clone(current_view)
         }

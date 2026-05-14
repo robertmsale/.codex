@@ -5,7 +5,14 @@ prefix_rule(
     pattern = ["git-worktree-create"],
     decision = "allow",
 )
-
+prefix_rule(
+    pattern = ["npm", "run", "bun:shot"],
+    decision = "allow",
+)
+prefix_rule(
+    pattern = ["npm", "install"],
+    decision = "allow",
+)
 prefix_rule(
     pattern = [[
         "build-command-parser-image", "/Users/robertsale/.codex/skills/command-parser/scripts/build-command-parser-image",

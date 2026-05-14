@@ -1,0 +1,32 @@
+name: robdex_design_system
+description: Shared Robdex UI widgets, models, mock data, and visual theme.
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ">=3.11.4 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  desktop_drop: ^0.7.1
+  file_selector: ^1.0.3
+  flutter_markdown_plus: ^1.0.7
+  google_fonts: ^6.3.2
+  highlight: ^0.7.0
+  http: ^1.6.0
+  screen_capturer: ^0.2.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/animations/
+    - assets/mock/
+  shaders:
+    - shaders/connection_nebula.frag
+    - shaders/peripheral_vision_filter.frag

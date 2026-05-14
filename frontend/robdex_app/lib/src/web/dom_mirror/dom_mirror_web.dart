@@ -1,7 +1,7 @@
 import 'dart:html';
 // ignore_for_file: deprecated_member_use, avoid_web_libraries_in_flutter
 
-import '../../core/models/workbench_view_data.dart';
+import 'package:robdex_design_system/robdex_design_system.dart';
 import 'dom_mirror_snapshot.dart';
 
 const String _mirrorElementId = 'robdex-dom-mirror';

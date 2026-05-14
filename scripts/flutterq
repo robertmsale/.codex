@@ -144,8 +144,31 @@ run_test_command() {
   local cmd_status=0
 
   output="$("${test_cmd[@]}" 2>&1)" || cmd_status=$?
+  if [[ "$cmd_status" -ne 0 ]] && flutter_test_needs_ephemeral_packages_retry "$output"; then
+    if cleanup_flutter_ephemeral_packages; then
+      output="$("${test_cmd[@]}" 2>&1)" || cmd_status=$?
+    fi
+  fi
 
   printf '%s' "$output" | python3 "$HOME/.codex/scripts/lib/filter_flutter_test_output.py" "$cmd_status"
+}
+
+flutter_test_needs_ephemeral_packages_retry() {
+  local output="$1"
+  [[ "$output" == *"Unable to delete file or directory"* ]] || return 1
+  [[ "$output" == *"/ios/Flutter/ephemeral/Packages/.packages"* ]] || return 1
+  return 0
+}
+
+cleanup_flutter_ephemeral_packages() {
+  local cwd
+  local target
+  cwd="$(pwd -P)"
+  target="$cwd/ios/Flutter/ephemeral/Packages/.packages"
+  [[ -d "$target" ]] || return 1
+  [[ "$target" == "$cwd"/ios/Flutter/ephemeral/Packages/.packages ]] || return 1
+  /usr/bin/xattr -cr "$target" >/dev/null 2>&1 || true
+  /bin/rm -rf -- "$target"
 }
 
 run_analyze_command() {
