@@ -22,6 +22,18 @@ if [[ ${#_codex_path_prefixes[@]} -eq 0 ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
+_codex_clean_path=""
+while IFS= read -r _codex_path_entry; do
+  [[ -n "${_codex_path_entry}" ]] || continue
+  case "${_codex_path_entry}" in
+    "${_codex_skills_dir}/"*/scripts)
+      [[ -d "${_codex_path_entry}" ]] || continue
+      ;;
+  esac
+  _codex_clean_path="${_codex_clean_path:+${_codex_clean_path}:}${_codex_path_entry}"
+done < <(printf '%s' "${PATH:-}" | tr ':' '\n')
+export PATH="${_codex_clean_path}"
+
 for _codex_scripts_dir in "${_codex_path_prefixes[@]}"; do
   case ":${PATH:-}:" in
     *:"${_codex_scripts_dir}":*)
@@ -47,3 +59,5 @@ unset _codex_skills_dir
 unset _codex_shim_dir
 unset _codex_path_prefixes
 unset _codex_scripts_dir
+unset _codex_clean_path
+unset _codex_path_entry

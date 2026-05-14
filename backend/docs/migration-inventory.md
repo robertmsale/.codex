@@ -31,7 +31,8 @@ Out of scope for the first pass:
 3. `codex-flutter-sim-http`
 Rationale:
 
-- `codex-aux-http` is probably the smallest service and a good pattern-setter.
+- `codex-aux-http` is now narrowed to request-review support and remains the
+  smallest service pattern-setter.
 - `flutter-http` looks narrower than the sim broker.
 - `flutter-sim-http` has the most subprocess and device-management complexity.
 

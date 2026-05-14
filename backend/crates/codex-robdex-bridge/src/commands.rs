@@ -2763,23 +2763,16 @@ pub(crate) fn active_requirements_claim_schema_for_thread(
 }
 
 pub(crate) fn requirements_claim_schema(set: &RequirementSetState) -> Value {
-    let mut properties = serde_json::Map::new();
-    let mut required = vec!["summary".to_string()];
-    properties.insert(
-        "summary".to_string(),
-        json!({
-            "type": "string",
-            "description": "Concise summary of the actual work completed. Do not use this to hide or merge requirement status."
-        }),
-    );
+    let mut requirement_properties = serde_json::Map::new();
+    let mut requirement_required = Vec::new();
     for requirement in &set.requirements {
         let key = requirement.key.trim();
         if key.is_empty() {
             continue;
         }
-        required.push(key.to_string());
+        requirement_required.push(key.to_string());
         let default_description = format!("Requirement: {}", requirement.statement);
-        properties.insert(
+        requirement_properties.insert(
             key.to_string(),
             claim_property_schema(
                 requirement
@@ -2789,19 +2782,28 @@ pub(crate) fn requirements_claim_schema(set: &RequirementSetState) -> Value {
             ),
         );
     }
-    required.push("finalDisposition".to_string());
+    let mut properties = serde_json::Map::new();
     properties.insert(
-        "finalDisposition".to_string(),
+        "summary".to_string(),
         json!({
             "type": "string",
-            "enum": ["readyForRequirementsReview", "blockedNeedsOwnerAction", "continueWorkNeeded"],
-            "description": "Blocked and continueWorkNeeded are not success states. Use readyForRequirementsReview only when every active requirement has direct evidence."
+            "description": "Concise global outcome or progress note. Do not duplicate per-requirement evidence here."
+        }),
+    );
+    properties.insert(
+        "requirements".to_string(),
+        json!({
+            "type": ["object", "null"],
+            "description": "Use null for mid-turn commentary. Use the object only for an end-of-turn Requirements claim packet.",
+            "properties": requirement_properties,
+            "required": requirement_required,
+            "additionalProperties": false
         }),
     );
     json!({
         "type": "object",
         "properties": properties,
-        "required": required,
+        "required": ["summary", "requirements"],
         "additionalProperties": false
     })
 }
@@ -2893,7 +2895,7 @@ fn verdict_property_schema(description: &str) -> Value {
         "properties": {
             "verdict": {
                 "type": "string",
-                "enum": ["pass", "fail", "acceptedBlocked", "rejectedBlocked", "waiverRequired"]
+                "enum": ["pass", "fail", "acceptedBlocked", "rejectedBlocked", "waiverRequired", "waiverAccepted"]
             },
             "reason": { "type": "string" },
             "evidenceAssessment": { "type": "string" },
@@ -4756,7 +4758,7 @@ fn validate_requirement_set(set: &RequirementSetState) -> Result<()> {
 
 fn requirements_claim_prompt(set: &RequirementSetState) -> String {
     let mut prompt = String::from(
-        "Active Requirements are attached to this task. You must finish this turn with the required structured JSON claim packet. Do not summarize around requirements. For each top-level requirement property, make a direct claim with concrete evidence. Blocked is not success; use blocked only for a true external dependency with proof.\n\nRequirements:\n",
+        "Active Requirements are attached to this task. Structured responses use `summary` plus `requirements`.\n\nUse `requirements: null` only for mid-turn commentary or progress updates. When finishing a turn, `requirements` must be the object containing every requirement claim.\n\nKeep fields non-duplicative:\n- `summary`: one or two concise global outcome sentences only; do not list per-requirement evidence.\n- `evidence`: concrete proof only, such as files, commands, exit statuses, diffs, health checks, or reviewer facts.\n- `justification`: one concise causal sentence explaining why the evidence satisfies the requirement; do not repeat the evidence list.\n- `risk`: residual risk only.\n\nBlocked is not success; use blocked only for a true external dependency with proof.\n\nRequirements:\n",
     );
     for requirement in &set.requirements {
         prompt.push_str(&format!(

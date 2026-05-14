@@ -1,4 +1,0 @@
-#!/bin/zsh
-set -euo pipefail
-
-exec "$HOME/.codex/scripts/zsh" "$@"

@@ -29,7 +29,6 @@ resource_root="$codex_root/scripts"
 source "$resource_root/common.sh"
 source "$resource_root/activation.sh"
 source "$resource_root/privileged_exec.sh"
-source "$resource_root/output_postprocess.sh"
 
 setup_codex_activation
 normalize_cwd_alias
@@ -54,6 +53,16 @@ shim_mark_process_complete_once() {
   [[ -n "${local_child_pid:-}" ]] || return 0
   shim_live_process_complete "$local_child_pid"
   shim_process_completed=1
+}
+
+shim_emit_captured_output() {
+  local stdout_file="${1:?stdout file required}"
+  local stderr_file="${2:?stderr file required}"
+  local exit_code="${3:?exit code required}"
+
+  [[ -f "$stdout_file" ]] && cat "$stdout_file"
+  [[ -f "$stderr_file" ]] && cat "$stderr_file" >&2
+  return "$exit_code"
 }
 
 shim_handle_signal_exit() {
@@ -165,18 +174,17 @@ shift
 
 requested_command=("$real_zsh" "$mode" "$command_text" "$@")
 
-if shim_disable_postprocess; then
+if [[ "${CODEX_ZSH_PLAIN_EXEC:-0}" == "1" ]]; then
   exec "$real_zsh" "${requested_command[@]:1}"
 fi
 
 run_via_privileged_exec_if_allowed "${requested_command[@]}"
 case "$PRIVILEGED_EXEC_OUTCOME" in
   handled)
-    command_postprocess_output \
+    shim_emit_captured_output \
       "$PRIVILEGED_EXEC_STDOUT_FILE" \
       "$PRIVILEGED_EXEC_STDERR_FILE" \
-      "$PRIVILEGED_EXEC_STATUS" \
-      "${requested_command[@]}"
+      "$PRIVILEGED_EXEC_STATUS"
     exit $?
     ;;
   reject)
@@ -194,5 +202,5 @@ shim_live_process_register "$local_child_pid" "$command_text"
 wait "$local_child_pid" || local_exit_code=$?
 shim_mark_process_complete_once
 
-command_postprocess_output "$shim_stdout_file" "$shim_stderr_file" "$local_exit_code" "${requested_command[@]}"
+shim_emit_captured_output "$shim_stdout_file" "$shim_stderr_file" "$local_exit_code"
 exit $?

@@ -28,9 +28,6 @@ It is the runtime home for:
 
 Important skills in active use:
 
-- `command-parser`
-  Large command output is compacted automatically when thresholds are exceeded. The standalone wrapper still exists for targeted use.
-
 - `request-review`
   Review wrapper for code changes.
 
@@ -42,6 +39,12 @@ Important skills in active use:
 
 - `safe-delete`
   Non-destructive delete flow. Throws items into `/tmp` to be reconciled manually or on reboot.
+
+Retired workflows:
+
+- `command-parser`
+  Removed from the active workflow. It previously compacted noisy shell output,
+  but now adds overhead. See [`docs/command-parser-decommission.md`](~/.codex/docs/command-parser-decommission.md).
 
 ### Backend services
 
@@ -58,7 +61,7 @@ Current layout:
 Notable pieces:
 
 - Rust Robdex bridge
-- Rust aux HTTP server for `command-parser` and `request-review`
+- Rust aux HTTP server for `request-review`
 - simulator broker and Flutter helper services
 
 See [`backend/README.md`](~/.codex/backend/README.md) for the service-level breakdown.
@@ -84,14 +87,14 @@ Important files:
 ### Command execution
 
 - Agents run through the configured `zsh` wrapper at [`scripts/zsh`](/Users/robertsale/.codex/scripts/zsh).
-- The wrapper reconstructs `PATH`, applies the dynamic privileged-exec policy, and auto-compacts noisy command output when configured thresholds are exceeded.
+- The wrapper reconstructs `PATH`, applies the dynamic privileged-exec policy, reports live process state, and preserves synchronous command execution.
 - Long-running commands are synchronous. There is no command-execution job/MCP wait path anymore.
 
-### Noisy commands
+### Requirements
 
-- Large outputs are compacted automatically.
-- When auto-compaction runs, the user gets condensed errors/warnings plus a path to the full log.
-- The `command-parser` wrapper remains available for targeted use and operator debugging.
+- Requirements are an active completion-contract mechanism.
+- When active, requirement claims are schema-gated and routed to a requirements reviewer.
+- Passing review clears the active Requirements; failed review routes corrections back to the source agent.
 
 ### Robdex
 
@@ -113,7 +116,7 @@ Important files:
 - [`robdex/robdex.sqlite`](~/.codex/robdex/robdex.sqlite)
 - [`rules/`](~/.codex/rules)
 
-Changes here can affect active agents, approvals, orchestration, or bridge behavior immediately.
+Changes here can affect active agents, approvals, orchestration, shell execution, or bridge behavior immediately.
 
 ## Short version ✨
 

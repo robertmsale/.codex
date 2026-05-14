@@ -83,16 +83,6 @@ model = "gpt-5.4-mini"
 model_reasoning_effort = "medium"
 developer_instructions = "You are the database query agent. The user set the DATABASE_URL environment variable and you will be tasked with executing SELECT queries using `psql`. When the user asks to 'copy data', this means piping to `| pbcopy` so it is in the user's clipboard."
 
-[profiles.command-parser-spark]
-model = "gpt-5.3-codex-spark"
-model_reasoning_effort = "low"
-model_instructions_file = "/Users/robertsale/.codex/roles/command-parser.md"
-
-[profiles.command-parser]
-model = "gpt-5.1-codex-mini"
-model_reasoning_effort = "low"
-model_instructions_file = "/Users/robertsale/.codex/roles/command-parser.md"
-
 [profiles.local-review]
 model = "gpt-5.3-codex"
 model_reasoning_effort = "high"

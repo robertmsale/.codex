@@ -8,8 +8,8 @@ Current goal:
 - create a stable Rust development area under `~/.codex/backend`
 - keep codex-owned Python service code under the same root when Python is the
   right implementation choice
-- mirror the currently running service surface
-- keep existing Python and Deno services in place until each Rust replacement is
+- mirror the currently running service surface where it remains active
+- keep existing Python services in place until each Rust replacement is
   implemented and cut over deliberately
 
 Live service inventory at scaffold time:
@@ -26,7 +26,7 @@ remain external until you decide to migrate them.
 ## Workspace Layout
 
 - `crates/codex-backend-core`: shared runtime/config helpers
-- `crates/codex-aux-http`: replacement for the current Deno aux server
+- `crates/codex-aux-http`: request-review support HTTP service
 - `crates/codex-flutter-sim-http`: project-scoped Flutter simulator broker/reservation service
 - `crates/codex-flutter-http`: generic Flutter execution service
 - `crates/codex-supervisor`: supervisor config inventory and future management tooling
@@ -37,8 +37,9 @@ remain external until you decide to migrate them.
 
 ## Migration Note
 
-The backend-local Python services now own the active auxiliary service surface
-for aux + Flutter broker lanes. Historical references to the old
+The Rust `codex-aux-http` service owns the request-review support surface. The
+backend-local Python services own the remaining Flutter broker lanes.
+Historical references to the old
 `~/Code/parallels-sync` home remain only for provenance.
 
 ## Next Step

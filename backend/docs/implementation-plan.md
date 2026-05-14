@@ -19,9 +19,9 @@ planning and implementation review.
 
 ### codex-aux-http
 
-- document current HTTP routes and command execution contract
-- implement minimal Rust clone
-- compare responses against the Deno server
+- keep the Rust request-review HTTP route healthy
+- remove retired command-parser routes instead of preserving parity for them
+- compare active request-review behavior against the previous service contract
 
 ### flutter services
 

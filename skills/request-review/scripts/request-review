@@ -52,7 +52,7 @@ normalize_repo_path() {
 }
 
 codex_aux_http_base_url() {
-  printf '%s\n' "${CODEX_AUX_SERVER_BASE_URL:-http://127.0.0.1:8771}"
+  printf '%s\n' "${CODEX_AUX_SERVER_BASE_URL:-http://127.0.0.1:8871}"
 }
 
 json_build_request() {

@@ -15,10 +15,6 @@ prefix_rule(
 )
 prefix_rule(
     pattern = [[
-        "build-command-parser-image", "/Users/robertsale/.codex/skills/command-parser/scripts/build-command-parser-image",
-        "command-parser", "/Users/robertsale/.codex/skills/command-parser/scripts/command-parser",
-        "command-parser-new", "/Users/robertsale/.codex/skills/command-parser/scripts/command-parser-new",
-        "db_test.sh", "/Users/robertsale/.codex/skills/command-parser/scripts/db_test.sh",
         "designer-crop-screenshot", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-crop-screenshot",
         "designer-drive", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-drive",
         "designer-flutter-run", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-flutter-run",

@@ -3,7 +3,6 @@ members = [
   "crates/codex-backend-core",
   "crates/codex-aux-http",
   "crates/codex-app-server-adapter",
-  "crates/codex-command-parser-client",
   "crates/codex-privileged-exec-http",
   "crates/codex-qa-harness",
   "crates/codex-robdex-bridge",

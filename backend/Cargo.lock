@@ -602,17 +602,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-command-parser-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "reqwest",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "codex-execpolicy"
 version = "0.125.0"
 dependencies = [
