@@ -20,8 +20,8 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
-  rinf: 262f44da111bc09a28138d438caf7b9a29e9b411
-  screen_capturer_macos: 229306903c56767a7c7d3a48167ba303e95c6d29
+  rinf: 663682fa60fb16c4c9533f289e1939cc1a59a0a5
+  screen_capturer_macos: e91a66e1eeefd5e4fe068bb1bffc053cc34b63b8
 
 PODFILE CHECKSUM: 54d867c82ac51cbd61b565781b9fada492027009
 
