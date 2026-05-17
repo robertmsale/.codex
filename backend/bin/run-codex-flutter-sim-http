@@ -5,6 +5,9 @@ cd /Users/robertsale/.codex/backend
 export PATH="/Users/robertsale/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
 binary="/Users/robertsale/.codex/backend/target/release/codex-flutter-sim-http"
 
+echo "warning: codex-flutter-sim-http is legacy/deprecated and is not required for active Robdex QA." >&2
+echo "QA agents should use assigned worktrees and device UDIDs with designer-runtime tooling." >&2
+
 if [[ ! -x "$binary" ]]; then
   echo "codex-flutter-sim-http release binary is missing: $binary" >&2
   echo "Build it with: cargo build --release -p codex-flutter-sim-http" >&2

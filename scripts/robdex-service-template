@@ -1,0 +1,154 @@
+#!/bin/zsh
+set -euo pipefail
+
+show_help() {
+  cat <<'EOF'
+Usage: robdex-service-template --platform macos|linux|supervisor --out-dir PATH
+
+Generate service templates for the Robdex app-server and bridge stack.
+Templates derive paths from ROBDEX_HOME, CODEX_HOME, ROBDEX_STATE_HOME, and
+documented service variables. Generation does not install or start services.
+EOF
+}
+
+script_path="${0:A}"
+script_dir="${script_path:h}"
+robdex_home="${ROBDEX_HOME:-${script_dir:h}}"
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+state_home="${ROBDEX_STATE_HOME:-$codex_home/robdex}"
+bridge_host="${ROBDEX_BRIDGE_HOST:-127.0.0.1}"
+bridge_port="${ROBDEX_BRIDGE_PORT:-42080}"
+app_server_listen="${ROBDEX_APP_SERVER_LISTEN:-ws://127.0.0.1:4200}"
+app_server_url="${ROBDEX_BRIDGE_APP_SERVER_URL:-$app_server_listen}"
+platform=""
+out_dir=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --platform)
+      platform="${2:-}"
+      shift 2
+      ;;
+    --out-dir)
+      out_dir="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      echo "robdex-service-template: unknown argument: $1" >&2
+      show_help >&2
+      exit 2
+      ;;
+  esac
+done
+
+[[ -n "$platform" && -n "$out_dir" ]] || {
+  show_help >&2
+  exit 2
+}
+
+mkdir -p "$out_dir"
+
+case "$platform" in
+  macos)
+    cat >"$out_dir/com.robdex.app-server.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.robdex.app-server</string>
+  <key>ProgramArguments</key><array><string>$robdex_home/scripts/run-robdex-app-server</string></array>
+  <key>EnvironmentVariables</key><dict>
+    <key>ROBDEX_HOME</key><string>$robdex_home</string>
+    <key>CODEX_HOME</key><string>$codex_home</string>
+    <key>ROBDEX_STATE_HOME</key><string>$state_home</string>
+    <key>ROBDEX_APP_SERVER_LISTEN</key><string>$app_server_listen</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$state_home/logs/app-server.log</string>
+  <key>StandardErrorPath</key><string>$state_home/logs/app-server.err.log</string>
+</dict></plist>
+EOF
+    cat >"$out_dir/com.robdex.bridge.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.robdex.bridge</string>
+  <key>ProgramArguments</key><array>
+    <string>$robdex_home/backend/target/release/codex-robdex-bridge</string>
+    <string>--host</string><string>$bridge_host</string>
+    <string>--port</string><string>$bridge_port</string>
+    <string>--app-server-url</string><string>$app_server_url</string>
+    <string>--project-path</string><string>$robdex_home</string>
+    <string>--cwd</string><string>$robdex_home</string>
+    <string>--state-root</string><string>$state_home</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>ROBDEX_HOME</key><string>$robdex_home</string>
+    <key>CODEX_HOME</key><string>$codex_home</string>
+    <key>ROBDEX_STATE_HOME</key><string>$state_home</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$state_home/logs/bridge.log</string>
+  <key>StandardErrorPath</key><string>$state_home/logs/bridge.err.log</string>
+</dict></plist>
+EOF
+    ;;
+  linux)
+    cat >"$out_dir/robdex-app-server.service" <<EOF
+[Unit]
+Description=Robdex app-server
+
+[Service]
+Environment=ROBDEX_HOME=$robdex_home
+Environment=CODEX_HOME=$codex_home
+Environment=ROBDEX_STATE_HOME=$state_home
+Environment=ROBDEX_APP_SERVER_LISTEN=$app_server_listen
+ExecStart=$robdex_home/scripts/run-robdex-app-server
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
+    cat >"$out_dir/robdex-bridge.service" <<EOF
+[Unit]
+Description=Robdex bridge
+After=robdex-app-server.service
+
+[Service]
+Environment=ROBDEX_HOME=$robdex_home
+Environment=CODEX_HOME=$codex_home
+Environment=ROBDEX_STATE_HOME=$state_home
+ExecStart=$robdex_home/backend/target/release/codex-robdex-bridge --host $bridge_host --port $bridge_port --app-server-url $app_server_url --project-path $robdex_home --cwd $robdex_home --state-root $state_home
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
+    ;;
+  supervisor)
+    cat >"$out_dir/robdex-supervisor.conf" <<EOF
+[program:robdex-app-server]
+command=$robdex_home/scripts/run-robdex-app-server
+environment=ROBDEX_HOME="$robdex_home",CODEX_HOME="$codex_home",ROBDEX_STATE_HOME="$state_home",ROBDEX_APP_SERVER_LISTEN="$app_server_listen"
+autorestart=true
+stdout_logfile=$state_home/logs/app-server.log
+stderr_logfile=$state_home/logs/app-server.err.log
+
+[program:robdex-bridge]
+command=$robdex_home/backend/target/release/codex-robdex-bridge --host $bridge_host --port $bridge_port --app-server-url $app_server_url --project-path $robdex_home --cwd $robdex_home --state-root $state_home
+environment=ROBDEX_HOME="$robdex_home",CODEX_HOME="$codex_home",ROBDEX_STATE_HOME="$state_home"
+autorestart=true
+stdout_logfile=$state_home/logs/bridge.log
+stderr_logfile=$state_home/logs/bridge.err.log
+EOF
+    ;;
+  *)
+    echo "robdex-service-template: unsupported platform: $platform" >&2
+    exit 2
+    ;;
+esac
+
+echo "Generated $platform service templates in $out_dir"

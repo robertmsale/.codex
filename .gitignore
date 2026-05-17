@@ -1,6 +1,12 @@
 # ~/.codex specific
 archived_sessions/
 configs/
+!configs/
+# Root-level config snapshots can contain private MCP/API credentials.
+configs/*.toml
+!configs/robdex/
+!configs/robdex/profiles/
+!configs/robdex/profiles/*.toml
 !frontend/robdex_app/macos/Runner/Configs/
 !frontend/robdex_app/macos/Runner/Configs/AppInfo.xcconfig
 !frontend/robdex_app/macos/Runner/Configs/Debug.xcconfig
@@ -44,6 +50,8 @@ __pycache__/
 .venv/
 .robdex-integration/
 .robdex-integration-thread
+ambient-suggestions
+computer-use
 
 # Cache files for Sublime Text
 *.tmlanguage.cache
@@ -123,6 +131,10 @@ nohup.out
 .worktrees/
 .zed/
 robdex/
+!configs/
+!configs/robdex/
+!configs/robdex/profiles/
+!configs/robdex/profiles/*.toml
 session_index.jsonl
 *.log
 robdex-thread-project-locks.json

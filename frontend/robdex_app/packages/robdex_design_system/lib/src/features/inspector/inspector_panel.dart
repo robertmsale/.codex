@@ -50,20 +50,12 @@ class InspectorPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'Inspector',
-          style: theme.textTheme.bodyMedium?.copyWith(
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        const SizedBox(height: 8),
         Expanded(
           child: ListView(
+            padding: EdgeInsets.zero,
             children: [
               _ThreadSettingsCard(
                 selection: selection,
@@ -108,6 +100,262 @@ class InspectorPanel extends StatelessWidget {
   }
 }
 
+class _InspectorSection extends StatelessWidget {
+  const _InspectorSection({
+    required this.title,
+    required this.child,
+  });
+
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 4),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withValues(alpha: 0.48),
+        border: Border.all(color: theme.colorScheme.outline.withValues(alpha: 0.88)),
+        borderRadius: BorderRadius.circular(6),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.12),
+            blurRadius: 18,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0,
+              ),
+            ),
+            const SizedBox(height: 8),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InspectorIconBox extends StatelessWidget {
+  const _InspectorIconBox({
+    required this.icon,
+    this.foreground,
+  });
+
+  final IconData icon;
+  final Color? foreground;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: 28,
+      height: 28,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.onSurface.withValues(alpha: 0.045),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Icon(
+        icon,
+        size: 17,
+        color: foreground ?? theme.colorScheme.onSurface.withValues(alpha: 0.68),
+      ),
+    );
+  }
+}
+
+class _OverviewFact extends StatelessWidget {
+  const _OverviewFact({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.statusColor,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color? statusColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        Icon(icon, size: 16, color: theme.colorScheme.onSurface.withValues(alpha: 0.72)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.56),
+                  fontSize: 10,
+                  height: 1.1,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Row(
+                children: [
+                  if (statusColor != null) ...[
+                    Container(
+                      width: 7,
+                      height: 7,
+                      decoration: BoxDecoration(
+                        color: statusColor,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                  ],
+                  Expanded(
+                    child: Text(
+                      value,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        height: 1.15,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SettingsRow extends StatelessWidget {
+  const _SettingsRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.control,
+    this.iconColor,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Widget control;
+  final Color? iconColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: theme.colorScheme.outline.withValues(alpha: 0.68)),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        children: [
+          Icon(
+            icon,
+            size: 17,
+            color: iconColor ?? theme.colorScheme.onSurface.withValues(alpha: 0.68),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.56),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          SizedBox(width: 150, child: control),
+        ],
+      ),
+    );
+  }
+}
+
+class _InspectorActionButton extends StatelessWidget {
+  const _InspectorActionButton({
+    required this.label,
+    required this.icon,
+    required this.onPressed,
+    this.primary = false,
+    this.danger = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback? onPressed;
+  final bool primary;
+  final bool danger;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final foreground = danger ? theme.colorScheme.error : theme.colorScheme.onSurface.withValues(alpha: 0.86);
+    final child = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 14),
+        const SizedBox(width: 7),
+        Flexible(child: Text(label, overflow: TextOverflow.ellipsis)),
+      ],
+    );
+    if (primary) {
+      return FilledButton(
+        onPressed: onPressed,
+        style: FilledButton.styleFrom(
+          backgroundColor: const Color(0xFF2D7DFF),
+          foregroundColor: Colors.white,
+        ),
+        child: child,
+      );
+    }
+    return OutlinedButton(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: foreground,
+        side: BorderSide(
+          color: danger
+              ? foreground.withValues(alpha: 0.48)
+              : theme.colorScheme.outline.withValues(alpha: 0.9),
+        ),
+      ),
+      child: child,
+    );
+  }
+}
+
 class _RequirementsReviewCard extends StatelessWidget {
   const _RequirementsReviewCard({
     required this.summary,
@@ -127,24 +375,40 @@ class _RequirementsReviewCard extends StatelessWidget {
     final summary = this.summary;
     final reviewerThreadId = summary?.reviewerThreadId;
     final hasActiveRequirements = (summary?.activeRequirementCount ?? 0) > 0;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border(top: BorderSide(color: theme.colorScheme.outline)),
-      ),
+    return _InspectorSection(
+      title: 'Requirements',
       child: Padding(
-        padding: const EdgeInsets.only(top: 8),
+        padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Requirements',
-              style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 6),
             if (summary == null)
-              Text(
-                'No active requirements are attached to this thread.',
-                style: theme.textTheme.labelSmall,
+              Row(
+                children: [
+                  _InspectorIconBox(
+                    icon: Icons.verified_user_outlined,
+                    foreground: theme.colorScheme.onSurface.withValues(alpha: 0.72),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'No active requirements',
+                          style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Attach a requirement set to gate future turns.',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withValues(alpha: 0.58),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               )
             else ...[
               _ReviewFact(label: 'Status', value: summary.displayStatus),
@@ -159,86 +423,89 @@ class _RequirementsReviewCard extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: sourceThreadId == null || bridgeBaseUri == null
-                  ? null
-                  : () => _setRequirements(context),
-              icon: const Icon(Icons.rule_folder_outlined, size: 16),
-              label: Text(hasActiveRequirements ? 'Replace requirements' : 'Set requirements'),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _InspectorActionButton(
+                  label: hasActiveRequirements ? 'Replace Requirements' : 'Attach Requirements',
+                  icon: Icons.rule_folder_outlined,
+                  onPressed: sourceThreadId == null || bridgeBaseUri == null
+                      ? null
+                      : () => _setRequirements(context),
+                ),
+                if (reviewerThreadId != null && reviewerThreadId.isNotEmpty)
+                  _InspectorActionButton(
+                    label: 'Open Review Thread',
+                    icon: Icons.rate_review_outlined,
+                    onPressed: () => onOpenThread(reviewerThreadId),
+                  ),
+                if (hasActiveRequirements)
+                  _InspectorActionButton(
+                    label: 'Request Review',
+                    icon: Icons.outgoing_mail,
+                    onPressed: sourceThreadId == null || bridgeBaseUri == null
+                        ? null
+                        : () => _requestReview(context),
+                  ),
+              ],
             ),
-            const SizedBox(height: 6),
-            if (reviewerThreadId != null && reviewerThreadId.isNotEmpty)
-              OutlinedButton.icon(
-                onPressed: () => onOpenThread(reviewerThreadId),
-                icon: const Icon(Icons.rate_review_outlined, size: 16),
-                label: const Text('Open review thread'),
-              ),
-            if (hasActiveRequirements) ...[
-              const SizedBox(height: 6),
-              OutlinedButton.icon(
-                onPressed: sourceThreadId == null || bridgeBaseUri == null
-                    ? null
-                    : () => _requestReview(context),
-                icon: const Icon(Icons.outgoing_mail, size: 16),
-                label: const Text('Request review'),
-              ),
+            if (summary != null) ...[
+              const SizedBox(height: 8),
+              if (summary.verdicts.isEmpty)
+                Text(
+                  'No reviewer verdict packet yet.',
+                  style: theme.textTheme.labelSmall,
+                )
+              else
+                ...summary.verdicts.map((verdict) {
+                  final color = switch (verdict.verdict) {
+                    'pass' => Colors.green.shade700,
+                    'fail' || 'rejectedBlocked' => theme.colorScheme.error,
+                    'acceptedBlocked' => Colors.amber.shade800,
+                    'waiverRequired' => Colors.deepOrange.shade700,
+                    _ => theme.colorScheme.onSurface.withValues(alpha: 0.62),
+                  };
+                  final icon = switch (verdict.verdict) {
+                    'pass' => Icons.check_rounded,
+                    'fail' || 'rejectedBlocked' => Icons.close_rounded,
+                    'acceptedBlocked' => Icons.warning_amber_rounded,
+                    'waiverRequired' => Icons.policy_outlined,
+                    _ => Icons.more_horiz,
+                  };
+                  final hasDetails = verdict.reason != null ||
+                      verdict.evidenceAssessment != null ||
+                      verdict.requiredCorrection != null;
+                  return ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    childrenPadding: const EdgeInsets.only(left: 24, right: 4, bottom: 8),
+                    leading: Icon(icon, size: 16, color: color),
+                    title: Text(
+                      verdict.key,
+                      style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: Text(
+                      verdict.displayVerdict,
+                      style: theme.textTheme.labelSmall?.copyWith(color: color),
+                    ),
+                    enabled: hasDetails,
+                    children: [
+                      if (verdict.reason != null)
+                        _ReviewDetail(label: 'Reason', value: verdict.reason!),
+                      if (verdict.evidenceAssessment != null)
+                        _ReviewDetail(
+                          label: 'Evidence',
+                          value: verdict.evidenceAssessment!,
+                        ),
+                      if (verdict.requiredCorrection != null)
+                        _ReviewDetail(
+                          label: 'Required correction',
+                          value: verdict.requiredCorrection!,
+                        ),
+                    ],
+                  );
+                }),
             ],
-            const SizedBox(height: 8),
-            if (summary == null)
-              const SizedBox.shrink()
-            else if (summary.verdicts.isEmpty)
-              Text(
-                'No reviewer verdict packet yet.',
-                style: theme.textTheme.labelSmall,
-              )
-            else
-              ...summary.verdicts.map((verdict) {
-                final color = switch (verdict.verdict) {
-                  'pass' => Colors.green.shade700,
-                  'fail' || 'rejectedBlocked' => theme.colorScheme.error,
-                  'acceptedBlocked' => Colors.amber.shade800,
-                  'waiverRequired' => Colors.deepOrange.shade700,
-                  _ => theme.colorScheme.onSurface.withValues(alpha: 0.62),
-                };
-                final icon = switch (verdict.verdict) {
-                  'pass' => Icons.check_rounded,
-                  'fail' || 'rejectedBlocked' => Icons.close_rounded,
-                  'acceptedBlocked' => Icons.warning_amber_rounded,
-                  'waiverRequired' => Icons.policy_outlined,
-                  _ => Icons.more_horiz,
-                };
-                final hasDetails = verdict.reason != null ||
-                    verdict.evidenceAssessment != null ||
-                    verdict.requiredCorrection != null;
-                return ExpansionTile(
-                  tilePadding: EdgeInsets.zero,
-                  childrenPadding: const EdgeInsets.only(left: 24, right: 4, bottom: 8),
-                  leading: Icon(icon, size: 16, color: color),
-                  title: Text(
-                    verdict.key,
-                    style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: Text(
-                    verdict.displayVerdict,
-                    style: theme.textTheme.labelSmall?.copyWith(color: color),
-                  ),
-                  enabled: hasDetails,
-                  children: [
-                    if (verdict.reason != null)
-                      _ReviewDetail(label: 'Reason', value: verdict.reason!),
-                    if (verdict.evidenceAssessment != null)
-                      _ReviewDetail(
-                        label: 'Evidence',
-                        value: verdict.evidenceAssessment!,
-                      ),
-                    if (verdict.requiredCorrection != null)
-                      _ReviewDetail(
-                        label: 'Required correction',
-                        value: verdict.requiredCorrection!,
-                      ),
-                  ],
-                );
-              }),
           ],
         ),
       ),
@@ -263,20 +530,24 @@ class _RequirementsReviewCard extends StatelessWidget {
       showDeactivate: (summary?.activeRequirementCount ?? 0) > 0,
       bridgeBaseUri: bridgeBaseUri,
     );
-    if (submitted == null || submitted.trim().isEmpty) {
+    if (submitted == null) {
       return;
     }
-    Object decoded;
-    try {
-      decoded = jsonDecode(submitted);
-    } catch (error) {
-      if (!context.mounted) {
+    Object? decoded;
+    if (submitted.trim().isEmpty) {
+      decoded = null;
+    } else {
+      try {
+        decoded = jsonDecode(submitted);
+      } catch (error) {
+        if (!context.mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Invalid requirements JSON: $error')),
+        );
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Invalid requirements JSON: $error')),
-      );
-      return;
     }
     try {
       final response = await http.post(
@@ -296,7 +567,7 @@ class _RequirementsReviewCard extends StatelessWidget {
       }
       if (response.statusCode >= 200 && response.statusCode < 300) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Requirements set.')),
+          SnackBar(content: Text(decoded == null ? 'Requirements cleared.' : 'Requirements set.')),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -498,34 +769,57 @@ class _ProjectGroupsCard extends StatelessWidget {
     final theme = Theme.of(context);
     final enabled = selection.projectId != null;
     final canAssign = enabled && selection.threadId != null;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border(
-          top: BorderSide(color: theme.colorScheme.outline),
+    return _InspectorSection(
+      title: 'Project',
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.onSurface.withValues(alpha: 0.025),
+          border: Border.all(color: theme.colorScheme.outline.withValues(alpha: 0.82)),
+          borderRadius: BorderRadius.circular(6),
         ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.only(top: 8),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Text(
-              'Project Controls',
-              style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.groups_outlined,
+                  size: 16,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.72),
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    selection.projectOrchestratorName == null
+                        ? 'No orchestrator assigned'
+                        : 'Orchestrator: ${selection.projectOrchestratorName}',
+                    textAlign: TextAlign.center,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 2),
             Text(
-              selection.projectOrchestratorName == null
-                  ? 'No orchestrator assigned'
-                  : 'Orchestrator: ${selection.projectOrchestratorName}',
-              style: theme.textTheme.labelSmall,
+              'Assign an orchestrator or create a group for this project.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.58),
+              ),
             ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
               runSpacing: 8,
+              alignment: WrapAlignment.center,
               children: [
-                OutlinedButton(
+                _InspectorActionButton(
+                  label: 'Create Group',
+                  icon: Icons.create_new_folder_outlined,
                   onPressed: enabled
                       ? () async {
                           final title = await _promptInline(context, 'New Thread Group', '');
@@ -534,25 +828,20 @@ class _ProjectGroupsCard extends StatelessWidget {
                           }
                         }
                       : null,
-                  child: const Text('Create Group'),
                 ),
-                OutlinedButton(
+                _InspectorActionButton(
+                  label: 'Ungroup Selected',
+                  icon: Icons.link_off_outlined,
                   onPressed: canAssign ? () => onMoveSelectedThreadToGroup(null) : null,
-                  child: const Text('Ungroup Selected'),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            if (threadGroups.isEmpty)
-              Text(
-                'No thread groups yet.',
-                style: theme.textTheme.labelSmall,
-              )
-            else
+            if (threadGroups.isNotEmpty) ...[
+              const SizedBox(height: 12),
               ...threadGroups.map(
                 (group) => Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: _ThreadGroupTile(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: _ThreadGroupTile(
                     group: group,
                     canAssignSelected: canAssign,
                     onAssignSelected: () => onMoveSelectedThreadToGroup(group.id),
@@ -562,6 +851,7 @@ class _ProjectGroupsCard extends StatelessWidget {
                   ),
                 ),
               ),
+            ],
           ],
         ),
       ),
@@ -711,96 +1001,99 @@ class _WorkerMetadataCardState extends State<_WorkerMetadataCard> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border(
-          top: BorderSide(color: theme.colorScheme.outline),
-        ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.only(top: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Worker Metadata',
-              style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                SizedBox(
-                  width: 128,
-                  child: TextField(
-                    controller: _issueController,
-                    decoration: const InputDecoration(labelText: 'Issue'),
-                    keyboardType: TextInputType.number,
+    return _InspectorSection(
+      title: 'Worker metadata',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _issueController,
+                  decoration: const InputDecoration(
+                    labelText: 'Issue',
+                    hintText: 'e.g. #1234',
                   ),
+                  keyboardType: TextInputType.number,
                 ),
-                SizedBox(
-                  width: 128,
-                  child: TextField(
-                    controller: _pullRequestController,
-                    decoration: const InputDecoration(labelText: 'PR'),
-                    keyboardType: TextInputType.number,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _pullRequestController,
+                  decoration: const InputDecoration(
+                    labelText: 'PR',
+                    hintText: 'e.g. #5678',
                   ),
+                  keyboardType: TextInputType.number,
                 ),
-              ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _blockedReasonController,
+            minLines: 1,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              labelText: 'Blocked reason',
+              hintText: 'Add a reason...',
+              alignLabelWithHint: true,
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _blockedReasonController,
-              minLines: 1,
-              maxLines: 3,
-              decoration: const InputDecoration(labelText: 'Blocked Reason'),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _unblockWhenController,
+            minLines: 1,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              labelText: 'Unblock when',
+              hintText: 'Add condition...',
+              alignLabelWithHint: true,
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _unblockWhenController,
-              decoration: const InputDecoration(labelText: 'Unblock When'),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                FilledButton.tonal(
-                  onPressed: () {
-                    widget.onUpdateWorkerMetadata(
-                      WorkerMetadataDraft(
-                        issueNumber: _issueController.text,
-                        pullRequestNumber: _pullRequestController.text,
-                        blockedReason: _blockedReasonController.text,
-                        unblockWhen: _unblockWhenController.text,
-                        clearBlocked: false,
-                      ),
-                    );
-                  },
-                  child: const Text('Save Metadata'),
-                ),
-                OutlinedButton(
-                  onPressed: () {
-                    _blockedReasonController.clear();
-                    _unblockWhenController.clear();
-                    widget.onUpdateWorkerMetadata(
-                      WorkerMetadataDraft(
-                        issueNumber: _issueController.text,
-                        pullRequestNumber: _pullRequestController.text,
-                        blockedReason: '',
-                        unblockWhen: '',
-                        clearBlocked: true,
-                      ),
-                    );
-                  },
-                  child: const Text('Clear Blocked'),
-                ),
-              ],
-            ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _InspectorActionButton(
+                label: 'Save Metadata',
+                icon: Icons.save_outlined,
+                primary: true,
+                onPressed: () {
+                  widget.onUpdateWorkerMetadata(
+                    WorkerMetadataDraft(
+                      issueNumber: _issueController.text,
+                      pullRequestNumber: _pullRequestController.text,
+                      blockedReason: _blockedReasonController.text,
+                      unblockWhen: _unblockWhenController.text,
+                      clearBlocked: false,
+                    ),
+                  );
+                },
+              ),
+              _InspectorActionButton(
+                label: 'Clear Blocked',
+                icon: Icons.block_outlined,
+                onPressed: () {
+                  _blockedReasonController.clear();
+                  _unblockWhenController.clear();
+                  widget.onUpdateWorkerMetadata(
+                    WorkerMetadataDraft(
+                      issueNumber: _issueController.text,
+                      pullRequestNumber: _pullRequestController.text,
+                      blockedReason: '',
+                      unblockWhen: '',
+                      clearBlocked: true,
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -993,236 +1286,268 @@ class _ThreadSettingsCardState extends State<_ThreadSettingsCard> {
             ),
           ),
     ];
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border(
-          top: BorderSide(color: theme.colorScheme.outline),
-        ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.only(top: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Thread Controls',
-              style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _nameController,
-              enabled: enabled,
-              decoration: const InputDecoration(labelText: 'Agent name'),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                SizedBox(
-                  width: 128,
-                  child: DropdownButtonFormField<String>(
-                    key: ValueKey('role-${widget.selection.threadId}-$_role'),
-                    initialValue: _role,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Role'),
-                    items: const [
-                      DropdownMenuItem(value: 'worker', child: Text('worker')),
-                      DropdownMenuItem(value: 'designer', child: Text('designer')),
-                      DropdownMenuItem(value: 'qa', child: Text('qa')),
-                      DropdownMenuItem(value: 'operator', child: Text('operator')),
-                      DropdownMenuItem(value: 'orchestrator', child: Text('orchestrator')),
-                      DropdownMenuItem(value: 'hidden', child: Text('hidden')),
-                    ],
-                    onChanged: enabled
-                        ? (value) {
-                            if (value == null) return;
-                            setState(() => _role = value);
-                          }
-                        : null,
-                  ),
+    final controlTextStyle = theme.textTheme.bodySmall?.copyWith(
+      fontSize: 11,
+      fontWeight: FontWeight.w500,
+    );
+    return _InspectorSection(
+      title: 'Thread overview',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                flex: 4,
+                child: _OverviewFact(
+                  icon: Icons.group_outlined,
+                  label: 'Agent name',
+                  value: widget.selection.threadName,
                 ),
-                SizedBox(
-                  width: 128,
-                  child: DropdownButtonFormField<String>(
-                    key: ValueKey('approval-${widget.selection.threadId}-$_approvalPolicy'),
-                    initialValue: _approvalPolicy,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Approval'),
-                    items: [
-                      DropdownMenuItem(
-                        value: '',
-                        child: Text(inheritedOrSystem(widget.selection.effectiveApprovalPolicy)),
-                      ),
-                      const DropdownMenuItem(value: 'untrusted', child: Text('untrusted')),
-                      const DropdownMenuItem(value: 'on-failure', child: Text('on-failure')),
-                      const DropdownMenuItem(value: 'on-request', child: Text('on-request')),
-                      const DropdownMenuItem(value: 'never', child: Text('never')),
-                    ],
-                    onChanged: enabled
-                        ? (value) {
-                            if (value == null) return;
-                            setState(() => _approvalPolicy = value);
-                          }
-                        : null,
-                  ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                flex: 3,
+                child: _OverviewFact(
+                  icon: Icons.badge_outlined,
+                  label: 'Role',
+                  value: titleCaseWords(widget.selection.threadRole ?? 'worker'),
                 ),
-                SizedBox(
-                  width: 128,
-                  child: DropdownButtonFormField<String>(
-                    key: ValueKey('sandbox-${widget.selection.threadId}-$_sandboxMode'),
-                    initialValue: _sandboxMode,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Sandbox'),
-                    items: [
-                      DropdownMenuItem(
-                        value: '',
-                        child: Text(inheritedOrSystem(widget.selection.effectiveSandboxMode)),
-                      ),
-                      const DropdownMenuItem(value: 'workspace-write', child: Text('workspace-write')),
-                      const DropdownMenuItem(value: 'danger-full-access', child: Text('danger-full-access')),
-                    ],
-                    onChanged: enabled
-                        ? (value) {
-                            if (value == null) return;
-                            setState(() => _sandboxMode = value);
-                          }
-                        : null,
-                  ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                flex: 3,
+                child: _OverviewFact(
+                  icon: Icons.folder_outlined,
+                  label: 'Project',
+                  value: widget.selection.projectName,
                 ),
-                SizedBox(
-                  width: 128,
-                  child: DropdownButtonFormField<String>(
-                    key: ValueKey('network-${widget.selection.threadId}-$_networkAccessMode'),
-                    initialValue: _networkAccessMode,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Network'),
-                    items: [
-                      DropdownMenuItem(
-                        value: 'default',
-                        child: Text(networkLabel(widget.selection.effectiveNetworkAccess)),
-                      ),
-                      const DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
-                      const DropdownMenuItem(value: 'disabled', child: Text('Disabled')),
-                    ],
-                    onChanged: enabled
-                        ? (value) {
-                            if (value == null) return;
-                            setState(() => _networkAccessMode = value);
-                          }
-                        : null,
-                  ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                flex: 2,
+                child: _OverviewFact(
+                  icon: Icons.circle,
+                  label: 'Status',
+                  value: widget.selection.isRunning ? 'Running' : 'Idle',
+                  statusColor: widget.selection.isRunning ? theme.colorScheme.primary : Colors.greenAccent.shade400,
                 ),
-                SizedBox(
-                  width: 128,
-                  child: DropdownButtonFormField<String>(
-                    key: ValueKey('service-tier-${widget.selection.threadId}-$_serviceTier'),
-                    initialValue: _serviceTier,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Service Tier'),
-                    items: [
-                      DropdownMenuItem(
-                        value: '',
-                        child: Text(serviceTierLabel(widget.selection.effectiveServiceTier)),
-                      ),
-                      const DropdownMenuItem(value: 'fast', child: Text('fast')),
-                      const DropdownMenuItem(value: 'flex', child: Text('flex')),
-                    ],
-                    onChanged: enabled
-                        ? (value) {
-                            if (value == null) return;
-                            setState(() => _serviceTier = value);
-                          }
-                        : null,
-                  ),
-                ),
-                SizedBox(
-                  width: 128,
-                  child: DropdownButtonFormField<String>(
-                    key: ValueKey('model-${widget.selection.threadId}-$_modelId'),
-                    initialValue: modelItems.any((item) => item.value == _modelId) ? _modelId : '',
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Model'),
-                    items: modelItems,
-                    onChanged: enabled
-                        ? (value) {
-                            if (value == null) return;
-                            setState(() => _modelId = value);
-                          }
-                        : null,
-                  ),
-                ),
-                SizedBox(
-                  width: 128,
-                  child: DropdownButtonFormField<String>(
-                    key: ValueKey('reasoning-${widget.selection.threadId}-$_reasoningEffort'),
-                    initialValue: _reasoningEffort,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Reasoning'),
-                    items: [
-                      DropdownMenuItem(
-                        value: '',
-                        child: Text(inheritedOrSystem(widget.selection.effectiveReasoningEffort)),
-                      ),
-                      const DropdownMenuItem(value: 'low', child: Text('low')),
-                      const DropdownMenuItem(value: 'medium', child: Text('medium')),
-                      const DropdownMenuItem(value: 'high', child: Text('high')),
-                    ],
-                    onChanged: enabled
-                        ? (value) {
-                            if (value == null) return;
-                            setState(() => _reasoningEffort = value);
-                          }
-                        : null,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: enabled
-                  ? () => widget.onRunningStateChanged(!widget.selection.isRunning)
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _SettingsRow(
+            icon: Icons.memory_outlined,
+            title: 'Model',
+            subtitle: 'Model used by this agent',
+            control: DropdownButtonFormField<String>(
+              key: ValueKey('model-${widget.selection.threadId}-$_modelId'),
+              initialValue: modelItems.any((item) => item.value == _modelId) ? _modelId : '',
+              isExpanded: true,
+              style: controlTextStyle,
+              decoration: const InputDecoration(),
+              items: modelItems,
+              onChanged: enabled
+                  ? (value) {
+                      if (value == null) return;
+                      setState(() => _modelId = value);
+                    }
                   : null,
-              icon: Icon(widget.selection.isRunning ? Icons.pause_circle : Icons.play_circle),
-              label: Text(widget.selection.isRunning ? 'Mark Idle' : 'Mark Running'),
             ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                OutlinedButton(
-                  onPressed: enabled
-                      ? () {
-                          final trimmed = _nameController.text.trim();
-                          if (trimmed.isNotEmpty &&
-                              trimmed != widget.selection.threadName) {
-                            widget.onRenameThread(trimmed);
-                          }
-                          _emitSettings();
-                        }
-                      : null,
-                  child: const Text('Save Changes'),
+          ),
+          _SettingsRow(
+            icon: Icons.psychology_alt_outlined,
+            title: 'Reasoning',
+            subtitle: 'Default reasoning effort',
+            control: DropdownButtonFormField<String>(
+              key: ValueKey('reasoning-${widget.selection.threadId}-$_reasoningEffort'),
+              initialValue: _reasoningEffort,
+              isExpanded: true,
+              style: controlTextStyle,
+              decoration: const InputDecoration(),
+              items: [
+                DropdownMenuItem(
+                  value: '',
+                  child: Text(inheritedOrSystem(widget.selection.effectiveReasoningEffort)),
                 ),
-                FilledButton.tonal(
-                  onPressed: enabled ? widget.onArchiveThread : null,
-                  child: const Text('Archive'),
+                const DropdownMenuItem(value: 'low', child: Text('Low')),
+                const DropdownMenuItem(value: 'medium', child: Text('Medium')),
+                const DropdownMenuItem(value: 'high', child: Text('High')),
+              ],
+              onChanged: enabled
+                  ? (value) {
+                      if (value == null) return;
+                      setState(() => _reasoningEffort = value);
+                    }
+                  : null,
+            ),
+          ),
+          _SettingsRow(
+            icon: Icons.key_outlined,
+            title: 'Approval',
+            subtitle: 'Tool / action approval policy',
+            control: DropdownButtonFormField<String>(
+              key: ValueKey('approval-${widget.selection.threadId}-$_approvalPolicy'),
+              initialValue: _approvalPolicy,
+              isExpanded: true,
+              style: controlTextStyle,
+              decoration: const InputDecoration(),
+              items: [
+                DropdownMenuItem(
+                  value: '',
+                  child: Text(inheritedOrSystem(widget.selection.effectiveApprovalPolicy)),
                 ),
-                OutlinedButton(
-                  onPressed: enabled
-                      ? () async {
-                          final prompt = await _promptWarmHandoff(context);
-                          if (prompt != null && prompt.trim().isNotEmpty) {
-                            widget.onWarmHandoff(prompt.trim());
-                          }
-                        }
-                      : null,
-                  child: const Text('Warm Handoff'),
+                const DropdownMenuItem(value: 'untrusted', child: Text('Untrusted', maxLines: 1)),
+                const DropdownMenuItem(value: 'on-failure', child: Text('On failure', maxLines: 1)),
+                const DropdownMenuItem(value: 'on-request', child: Text('On request', maxLines: 1)),
+                const DropdownMenuItem(value: 'never', child: Text('Never', maxLines: 1)),
+              ],
+              onChanged: enabled
+                  ? (value) {
+                      if (value == null) return;
+                      setState(() => _approvalPolicy = value);
+                    }
+                  : null,
+            ),
+          ),
+          _SettingsRow(
+            icon: Icons.shield_outlined,
+            title: 'Sandbox',
+            subtitle: 'Filesystem & network access',
+            iconColor: theme.colorScheme.error,
+            control: DropdownButtonFormField<String>(
+              key: ValueKey('sandbox-${widget.selection.threadId}-$_sandboxMode'),
+              initialValue: _sandboxMode,
+              isExpanded: true,
+              style: controlTextStyle,
+              decoration: const InputDecoration(),
+              items: [
+                DropdownMenuItem(
+                  value: '',
+                  child: Text(inheritedOrSystem(widget.selection.effectiveSandboxMode)),
+                ),
+                const DropdownMenuItem(value: 'workspace-write', child: Text('Workspace', maxLines: 1)),
+                const DropdownMenuItem(
+                  value: 'danger-full-access',
+                  child: Text(
+                    'Danger full access',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ],
+              onChanged: enabled
+                  ? (value) {
+                      if (value == null) return;
+                      setState(() => _sandboxMode = value);
+                    }
+                  : null,
             ),
-          ],
-        ),
+          ),
+          _SettingsRow(
+            icon: Icons.public_outlined,
+            title: 'Network',
+            subtitle: 'Allow outbound network',
+            control: DropdownButtonFormField<String>(
+              key: ValueKey('network-${widget.selection.threadId}-$_networkAccessMode'),
+              initialValue: _networkAccessMode,
+              isExpanded: true,
+              style: controlTextStyle,
+              decoration: const InputDecoration(),
+              items: [
+                DropdownMenuItem(
+                  value: 'default',
+                  child: Text(networkLabel(widget.selection.effectiveNetworkAccess)),
+                ),
+                const DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
+                const DropdownMenuItem(value: 'disabled', child: Text('Disabled')),
+              ],
+              onChanged: enabled
+                  ? (value) {
+                      if (value == null) return;
+                      setState(() => _networkAccessMode = value);
+                    }
+                  : null,
+            ),
+          ),
+          _SettingsRow(
+            icon: Icons.layers_outlined,
+            title: 'Service tier',
+            subtitle: 'Service tier for this thread',
+            control: DropdownButtonFormField<String>(
+              key: ValueKey('service-tier-${widget.selection.threadId}-$_serviceTier'),
+              initialValue: _serviceTier,
+              isExpanded: true,
+              style: controlTextStyle,
+              decoration: const InputDecoration(),
+              items: [
+                DropdownMenuItem(
+                  value: '',
+                  child: Text(serviceTierLabel(widget.selection.effectiveServiceTier)),
+                ),
+                const DropdownMenuItem(value: 'fast', child: Text('Fast')),
+                const DropdownMenuItem(value: 'flex', child: Text('Flex')),
+              ],
+              onChanged: enabled
+                  ? (value) {
+                      if (value == null) return;
+                      setState(() => _serviceTier = value);
+                    }
+                  : null,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Thread actions',
+            style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _InspectorActionButton(
+                label: 'Save Changes',
+                icon: Icons.check_rounded,
+                primary: true,
+                onPressed: enabled
+                    ? () {
+                        final trimmed = _nameController.text.trim();
+                        if (trimmed.isNotEmpty && trimmed != widget.selection.threadName) {
+                          widget.onRenameThread(trimmed);
+                        }
+                        _emitSettings();
+                      }
+                    : null,
+              ),
+              _InspectorActionButton(
+                label: widget.selection.isRunning ? 'Mark Idle' : 'Mark Running',
+                icon: widget.selection.isRunning ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                onPressed: enabled
+                    ? () => widget.onRunningStateChanged(!widget.selection.isRunning)
+                    : null,
+              ),
+              _InspectorActionButton(
+                label: 'Warm Handoff',
+                icon: Icons.whatshot_outlined,
+                onPressed: enabled
+                    ? () async {
+                        final prompt = await _promptWarmHandoff(context);
+                        if (prompt != null && prompt.trim().isNotEmpty) {
+                          widget.onWarmHandoff(prompt.trim());
+                        }
+                      }
+                    : null,
+              ),
+              _InspectorActionButton(
+                label: 'Archive',
+                icon: Icons.delete_outline,
+                danger: true,
+                onPressed: enabled ? widget.onArchiveThread : null,
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

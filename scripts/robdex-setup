@@ -1,0 +1,103 @@
+#!/bin/zsh
+set -euo pipefail
+
+show_help() {
+  cat <<'EOF'
+Usage: robdex-setup orchestration --dry-run
+       robdex-setup orchestration --stage-dir PATH
+
+Inspect the opt-in core orchestration setup path without mutating config or
+state, or stage linkable orchestration surfaces into PATH. The command checks
+for the Robdex CLI, orchestrator/operator/worker roles, Requirements,
+request-review, bridge-backed communication/spawning, and safe project
+registration. GUI, device-driver tooling, shell wrappers, and privileged-exec
+policy are optional advanced profiles and intentionally not required.
+EOF
+}
+
+script_path="${0:A}"
+script_dir="${script_path:h}"
+robdex_home="${ROBDEX_HOME:-${script_dir:h}}"
+profile="${1:-}"
+mode="${2:-}"
+stage_dir="${3:-}"
+
+if [[ "$profile" == "-h" || "$profile" == "--help" || -z "$profile" ]]; then
+  show_help
+  exit 0
+fi
+
+if [[ "$profile" != "orchestration" ]]; then
+  show_help >&2
+  exit 2
+fi
+
+case "$mode" in
+  --dry-run)
+    ;;
+  --stage-dir)
+    if [[ -z "$stage_dir" ]]; then
+      echo "robdex-setup: --stage-dir requires a path" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    show_help >&2
+    exit 2
+    ;;
+esac
+
+setup_status=0
+
+check_path() {
+  local label="$1"
+  local path="$2"
+  if [[ -e "$path" ]]; then
+    printf '[ok]   %s - %s\n' "$label" "$path"
+  else
+    printf '[fail] %s - missing: %s\n' "$label" "$path"
+    setup_status=1
+  fi
+}
+
+check_optional_path() {
+  local label="$1"
+  local path="$2"
+  if [[ -e "$path" ]]; then
+    printf '[ok]   %s - %s\n' "$label" "$path"
+  else
+    printf '[warn] %s - optional path not present: %s\n' "$label" "$path"
+  fi
+}
+
+check_path "robdex CLI wrapper" "$robdex_home/skills/robdex-orchestrator/scripts/robdex"
+check_path "orchestrator role" "$robdex_home/roles/orchestrator.md"
+check_path "worker role" "$robdex_home/roles/worker.md"
+check_path "requirements reviewer role" "$robdex_home/roles/requirements-reviewer.md"
+check_path "operator role support" "$robdex_home/skills/robdex-orchestrator/resources/handoff/operator.md"
+check_path "Robdex messaging skill" "$robdex_home/skills/robdex-orchestrator/SKILL.md"
+check_path "request-review skill" "$robdex_home/skills/request-review/SKILL.md"
+check_path "bridge binary workspace" "$robdex_home/backend/crates/codex-robdex-bridge"
+check_path "safe project registration surface" "$robdex_home/backend/crates/codex-robdex-bridge/src/commands.rs"
+check_path "public install docs" "$robdex_home/docs/public-install.md"
+check_path "bootstrap roadmap" "$robdex_home/docs/bootstrap-roadmap.md"
+check_optional_path "project hooks directory" "$robdex_home/hooks"
+
+echo
+if [[ "$mode" == "--stage-dir" && "$setup_status" -eq 0 ]]; then
+  mkdir -p "$stage_dir/bin" "$stage_dir/roles" "$stage_dir/skills" "$stage_dir/docs"
+  ln -sfn "$robdex_home/scripts/robdex" "$stage_dir/bin/robdex"
+  ln -sfn "$robdex_home/roles/orchestrator.md" "$stage_dir/roles/orchestrator.md"
+  ln -sfn "$robdex_home/roles/worker.md" "$stage_dir/roles/worker.md"
+  ln -sfn "$robdex_home/roles/requirements-reviewer.md" "$stage_dir/roles/requirements-reviewer.md"
+  ln -sfn "$robdex_home/skills/robdex-orchestrator" "$stage_dir/skills/robdex-orchestrator"
+  ln -sfn "$robdex_home/skills/request-review" "$stage_dir/skills/request-review"
+  ln -sfn "$robdex_home/docs/public-install.md" "$stage_dir/docs/public-install.md"
+  ln -sfn "$robdex_home/docs/bootstrap-roadmap.md" "$stage_dir/docs/bootstrap-roadmap.md"
+  echo "Staged orchestration links at $stage_dir"
+  echo "No Codex config, hooks, Robdex state, or services were changed."
+else
+  echo "Dry run only. No config, hooks, state, or services were changed."
+fi
+echo "Next manual step: add staged roles/skills/scripts to your Codex config overlay, then run robdex doctor and robdex status."
+exit "$setup_status"

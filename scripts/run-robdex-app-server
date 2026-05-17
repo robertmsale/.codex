@@ -1,10 +1,25 @@
 #!/bin/zsh
 set -euo pipefail
 
-cd /Users/robertsale/Code/robdex
+script_path="${0:A}"
+script_dir="${script_path:h}"
+inferred_robdex_home="${script_dir:h}"
+robdex_home="${ROBDEX_HOME:-$inferred_robdex_home}"
+
+cd "$robdex_home"
 
 listen="${ROBDEX_APP_SERVER_LISTEN:-ws://127.0.0.1:4200}"
+codex_bin="${CODEX_BIN:-}"
 
-codex_bin="/Users/robertsale/.codex/backend/vendor/codex/codex-rs/target/release/codex"
+if [[ -z "$codex_bin" ]]; then
+  if command -v codex >/dev/null 2>&1; then
+    codex_bin="$(command -v codex)"
+  elif [[ -x "$robdex_home/backend/vendor/codex/codex-rs/target/release/codex" ]]; then
+    codex_bin="$robdex_home/backend/vendor/codex/codex-rs/target/release/codex"
+  else
+    echo "run-robdex-app-server: codex binary not found; set CODEX_BIN or put codex on PATH" >&2
+    exit 1
+  fi
+fi
 
 exec "$codex_bin" app-server --listen "$listen"

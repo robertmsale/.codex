@@ -1,6 +1,11 @@
 #!/bin/zsh
 set -euo pipefail
 
+source "$HOME/.codex/scripts/common.sh"
+source "$HOME/.codex/scripts/privileged_exec.sh"
+
+FLUTTERQ_REAL_PATH="$(unshim_current_path)"
+
 show_usage() {
   cat <<'EOF'
 Usage:
@@ -22,7 +27,7 @@ EOF
 }
 
 require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || {
+  PATH="$FLUTTERQ_REAL_PATH" command -v "$1" >/dev/null 2>&1 || {
     echo "flutterq: missing required command: $1" >&2
     exit 1
   }
@@ -30,7 +35,11 @@ require_cmd() {
 
 deny_command() {
   local command_name="$1"
-  echo "flutterq: forbidden command: $command_name" >&2
+  if [[ "$command_name" == "format" ]]; then
+    echo "flutterq: HARD DENY: code formatters are absolutely forbidden on this machine. Do not run flutter format." >&2
+  else
+    echo "flutterq: forbidden command: $command_name" >&2
+  fi
   exit 2
 }
 
@@ -95,7 +104,45 @@ remove_all_args() {
 
 run_build_command() {
   local -a build_cmd=("$@")
-  exec "${build_cmd[@]}"
+  run_passthrough_command "${build_cmd[@]}"
+}
+
+privileged_cleanup_files() {
+  rm -f "${PRIVILEGED_EXEC_STDOUT_FILE:-}" "${PRIVILEGED_EXEC_STDERR_FILE:-}"
+}
+
+run_passthrough_command() {
+  PATH="$FLUTTERQ_REAL_PATH" run_via_privileged_exec_if_allowed "$@"
+  case "$PRIVILEGED_EXEC_OUTCOME" in
+    handled)
+      [[ -f "$PRIVILEGED_EXEC_STDOUT_FILE" ]] && cat "$PRIVILEGED_EXEC_STDOUT_FILE"
+      [[ -f "$PRIVILEGED_EXEC_STDERR_FILE" ]] && cat "$PRIVILEGED_EXEC_STDERR_FILE" >&2
+      local exit_status="$PRIVILEGED_EXEC_STATUS"
+      privileged_cleanup_files
+      exit "$exit_status"
+      ;;
+    reject)
+      exit "$PRIVILEGED_EXEC_STATUS"
+      ;;
+  esac
+  PATH="$FLUTTERQ_REAL_PATH" exec "$@"
+}
+
+capture_command_output() {
+  PATH="$FLUTTERQ_REAL_PATH" run_via_privileged_exec_if_allowed "$@"
+  case "$PRIVILEGED_EXEC_OUTCOME" in
+    handled)
+      [[ -f "$PRIVILEGED_EXEC_STDOUT_FILE" ]] && cat "$PRIVILEGED_EXEC_STDOUT_FILE"
+      [[ -f "$PRIVILEGED_EXEC_STDERR_FILE" ]] && cat "$PRIVILEGED_EXEC_STDERR_FILE"
+      local exit_status="$PRIVILEGED_EXEC_STATUS"
+      privileged_cleanup_files
+      return "$exit_status"
+      ;;
+    reject)
+      return "$PRIVILEGED_EXEC_STATUS"
+      ;;
+  esac
+  PATH="$FLUTTERQ_REAL_PATH" "$@" 2>&1
 }
 
 run_devices_command() {
@@ -103,7 +150,7 @@ run_devices_command() {
   local output
   local cmd_status=0
 
-  output="$("${devices_cmd[@]}" 2>&1)" || cmd_status=$?
+  output="$(capture_command_output "${devices_cmd[@]}")" || cmd_status=$?
 
   if [[ "$cmd_status" -ne 0 ]]; then
     printf '%s\n' "$output"
@@ -143,10 +190,10 @@ run_test_command() {
   local output
   local cmd_status=0
 
-  output="$("${test_cmd[@]}" 2>&1)" || cmd_status=$?
+  output="$(capture_command_output "${test_cmd[@]}")" || cmd_status=$?
   if [[ "$cmd_status" -ne 0 ]] && flutter_test_needs_ephemeral_packages_retry "$output"; then
     if cleanup_flutter_ephemeral_packages; then
-      output="$("${test_cmd[@]}" 2>&1)" || cmd_status=$?
+      output="$(capture_command_output "${test_cmd[@]}")" || cmd_status=$?
     fi
   fi
 
@@ -176,7 +223,7 @@ run_analyze_command() {
   local output
   local cmd_status=0
 
-  output="$("${analyze_cmd[@]}" 2>&1)" || cmd_status=$?
+  output="$(capture_command_output "${analyze_cmd[@]}")" || cmd_status=$?
   printf '%s' "$output" | python3 "$HOME/.codex/scripts/filter_dart_analyze_output.py"
   return "$cmd_status"
 }
@@ -194,7 +241,7 @@ fi
 require_cmd flutter
 
 if [[ "$1" == "help" ]] || contains_arg "--help" "$@" || contains_arg "-h" "$@"; then
-  exec flutter "$@"
+  run_passthrough_command flutter "$@"
 fi
 
 base_args=(
@@ -246,11 +293,11 @@ case "$command" in
     run_test_command flutter "${args[@]}"
     ;;
   emulators)
-    exec flutter "${args[@]}"
+    run_passthrough_command flutter "${args[@]}"
     ;;
   run)
     if [[ "${ROBDEX_DESIGNER_FLUTTER_RUN:-}" == "1" ]]; then
-      exec flutter "${args[@]}"
+      PATH="$FLUTTERQ_REAL_PATH" exec flutter "${args[@]}"
     fi
     deny_command "run"
     ;;
@@ -264,10 +311,10 @@ case "$command" in
     run_devices_command flutter "${args[@]}"
     ;;
   emulators)
-    exec flutter "${args[@]}"
+    run_passthrough_command flutter "${args[@]}"
     ;;
   pub)
-    exec flutter "${args[@]}"
+    run_passthrough_command flutter "${args[@]}"
     ;;
   build)
     if [[ -z "$subcommand" ]]; then
@@ -277,6 +324,6 @@ case "$command" in
     run_build_command flutter "${args[@]}"
     ;;
   *)
-    exec flutter "${args[@]}"
+    run_passthrough_command flutter "${args[@]}"
     ;;
 esac

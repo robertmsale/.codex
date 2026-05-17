@@ -1,0 +1,164 @@
+#!/bin/zsh
+set -euo pipefail
+
+show_help() {
+  cat <<'EOF'
+Usage: robdex-config <diff|apply|backup|restore|uninstall> [options]
+
+Commands:
+  diff --profile NAME [--codex-home PATH]
+  apply --profile NAME [--codex-home PATH] [--dry-run]
+  backup [--codex-home PATH]
+  restore --backup PATH [--codex-home PATH]
+  uninstall [--codex-home PATH] [--dry-run]
+
+Profiles: minimal, orchestration, privileged-exec, gui, robertmsale.reference
+
+The apply command stages overlay files under
+$CODEX_HOME/robdex-config-overlays and never overwrites config.toml.
+EOF
+}
+
+script_path="${0:A}"
+script_dir="${script_path:h}"
+robdex_home="${ROBDEX_HOME:-${script_dir:h}}"
+profiles_dir="$robdex_home/configs/robdex/profiles"
+command_name="${1:-}"
+shift || true
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+profile=""
+backup_path=""
+dry_run=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile)
+      profile="${2:-}"
+      shift 2
+      ;;
+    --codex-home)
+      codex_home="${2:-}"
+      shift 2
+      ;;
+    --backup)
+      backup_path="${2:-}"
+      shift 2
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      echo "robdex-config: unknown argument: $1" >&2
+      show_help >&2
+      exit 2
+      ;;
+  esac
+done
+
+overlay_root="$codex_home/robdex-config-overlays"
+manifest="$overlay_root/manifest.txt"
+
+profile_path() {
+  local name="$1"
+  local path="$profiles_dir/$name.toml"
+  [[ -f "$path" ]] || {
+    echo "robdex-config: unknown profile: $name" >&2
+    exit 2
+  }
+  printf '%s\n' "$path"
+}
+
+render_profile() {
+  local path="$1"
+  /usr/bin/sed \
+    -e "s|\${ROBDEX_HOME}|$robdex_home|g" \
+    -e "s|\${CODEX_HOME}|$codex_home|g" \
+    -e "s|\${ROBDEX_STATE_HOME}|${ROBDEX_STATE_HOME:-$codex_home/robdex}|g" \
+    "$path"
+}
+
+require_profile() {
+  [[ -n "$profile" ]] || {
+    echo "robdex-config: --profile is required" >&2
+    exit 2
+  }
+}
+
+case "$command_name" in
+  -h|--help|"")
+    show_help
+    ;;
+  diff)
+    require_profile
+    temp_file="$(mktemp)"
+    render_profile "$(profile_path "$profile")" >"$temp_file"
+    target="$overlay_root/$profile.toml"
+    if [[ -f "$target" ]]; then
+      /usr/bin/diff -u "$target" "$temp_file" || true
+    else
+      echo "Overlay would be created: $target"
+      /usr/bin/sed 's/^/+ /' "$temp_file"
+    fi
+    /bin/rm -f "$temp_file"
+    ;;
+  apply)
+    require_profile
+    target="$overlay_root/$profile.toml"
+    if [[ "$dry_run" -eq 1 ]]; then
+      echo "Would write overlay: $target"
+      render_profile "$(profile_path "$profile")"
+      exit 0
+    fi
+    /bin/mkdir -p "$overlay_root"
+    render_profile "$(profile_path "$profile")" >"$target"
+    /usr/bin/grep -qxF "$profile" "$manifest" 2>/dev/null || printf '%s\n' "$profile" >>"$manifest"
+    echo "Wrote overlay: $target"
+    echo "Did not modify: $codex_home/config.toml"
+    ;;
+  backup)
+    /bin/mkdir -p "$overlay_root/backups"
+    source_config="$codex_home/config.toml"
+    stamp="$(date +%Y%m%d%H%M%S)"
+    target="$overlay_root/backups/config.toml.$stamp"
+    if [[ -f "$source_config" ]]; then
+      /bin/cp "$source_config" "$target"
+      echo "Backed up config.toml to $target"
+    else
+      : >"$target"
+      echo "No config.toml existed; wrote empty marker backup $target"
+    fi
+    ;;
+  restore)
+    [[ -n "$backup_path" ]] || {
+      echo "robdex-config: restore requires --backup PATH" >&2
+      exit 2
+    }
+    [[ -f "$backup_path" ]] || {
+      echo "robdex-config: backup not found: $backup_path" >&2
+      exit 1
+    }
+    /bin/mkdir -p "$codex_home"
+    /bin/cp "$backup_path" "$codex_home/config.toml"
+    echo "Restored config.toml from $backup_path"
+    ;;
+  uninstall)
+    if [[ "$dry_run" -eq 1 ]]; then
+      echo "Would remove overlay directory: $overlay_root"
+      echo "Would not remove: $codex_home/config.toml"
+      exit 0
+    fi
+    /bin/rm -rf "$overlay_root"
+    echo "Removed overlay directory: $overlay_root"
+    echo "Did not remove: $codex_home/config.toml"
+    ;;
+  *)
+    echo "robdex-config: unknown command: $command_name" >&2
+    show_help >&2
+    exit 2
+    ;;
+esac

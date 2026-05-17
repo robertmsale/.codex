@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../bindings/bindings.dart';
 import '../core/state/workbench_controller.dart';
+import '../ide_host_bridge/ide_host_bridge.dart' as ide_host_bridge;
 import '../terminal/integrated_terminal.dart';
 import '../web/dom_mirror/dom_mirror.dart';
 
@@ -225,7 +226,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   }
 
   void _connectToSameOriginBridge() {
-    final uri = Uri.base;
+    final uri = _configuredWebBridgeBaseUri ?? Uri.base;
     final host = uri.host.isEmpty ? '127.0.0.1' : uri.host;
     final port = uri.hasPort
         ? uri.port
@@ -258,13 +259,20 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
 
   Uri get _bridgeBaseUri {
     if (kIsWeb) {
-      return Uri.base.resolve('/');
+      return _configuredWebBridgeBaseUri ?? Uri.base.resolve('/');
     }
     final host = _hostController.text.trim().isEmpty
         ? '127.0.0.1'
         : _hostController.text.trim();
     final port = int.tryParse(_portController.text.trim()) ?? 42080;
     return Uri.parse('http://$host:$port');
+  }
+
+  Uri? get _configuredWebBridgeBaseUri {
+    if (!kIsWeb) {
+      return null;
+    }
+    return ide_host_bridge.configuredBridgeBaseUri();
   }
 
   Future<List<_HookLogEntry>> _fetchProjectHookLogs(String projectId) async {
@@ -413,6 +421,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             clearBlocked: draft.clearBlocked,
           ),
           bridgeBaseUri: _bridgeBaseUri,
+          onOpenLink: ide_host_bridge.openMentionedFile,
           chatBottomDrawer: IntegratedTerminalDrawer(
             controller: _terminalController,
             host: _bridgeHost,
@@ -2088,6 +2097,25 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                               ),
                             ),
                           ),
+                          const SizedBox(height: 12),
+                          BootstrapEntryPanel(
+                            host: widget.hostController.text.trim().isEmpty
+                                ? '127.0.0.1'
+                                : widget.hostController.text.trim(),
+                            port: widget.portController.text.trim().isEmpty
+                                ? '42080'
+                                : widget.portController.text.trim(),
+                            isBusy: _isBusy,
+                            errorText: _isError ? widget.errorText : null,
+                            onConnectExisting: widget.onConnect,
+                            onBootstrapLocal: () {
+                              showDialog<void>(
+                                context: context,
+                                builder: (context) =>
+                                    const BootstrapHelpDialog(),
+                              );
+                            },
+                          ),
                         ],
                       ),
                     ),
@@ -2123,6 +2151,142 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+@visibleForTesting
+class BootstrapEntryPanel extends StatelessWidget {
+  const BootstrapEntryPanel({
+    required this.host,
+    required this.port,
+    required this.isBusy,
+    this.errorText,
+    required this.onConnectExisting,
+    required this.onBootstrapLocal,
+  });
+
+  final String host;
+  final String port;
+  final bool isBusy;
+  final String? errorText;
+  final VoidCallback onConnectExisting;
+  final VoidCallback onBootstrapLocal;
+
+  String get _platformLabel {
+    if (kIsWeb) {
+      return 'Use the bridge that served this web app.';
+    }
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.macOS:
+        return 'Bootstrap is available on macOS.';
+      case TargetPlatform.linux:
+        return 'Bootstrap is available on Linux.';
+      case TargetPlatform.windows:
+        return 'Windows bootstrap is WSL/future support.';
+      case TargetPlatform.iOS:
+      case TargetPlatform.android:
+      case TargetPlatform.fuchsia:
+        return 'Bootstrap is desktop-only.';
+    }
+  }
+
+  bool get _canBootstrap {
+    if (kIsWeb) {
+      return false;
+    }
+    return defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.linux;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0x55111A26),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0x2636C7FF)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Bridge required',
+              style: theme.textTheme.labelLarge?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Connect to $host:$port or bootstrap a local bridge-backed core setup.',
+              style: theme.textTheme.bodySmall?.copyWith(height: 1.35),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _platformLabel,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: const Color(0xFF8FB6D9),
+                height: 1.35,
+              ),
+            ),
+            if (errorText != null && errorText!.trim().isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Bridge health unavailable. Check the bridge, retry the connection, or bootstrap a local bridge.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFFFFB0A6),
+                  height: 1.35,
+                ),
+              ),
+            ],
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: isBusy ? null : onConnectExisting,
+                  icon: const Icon(Icons.link_rounded, size: 16),
+                  label: const Text('Connect existing'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: !isBusy && _canBootstrap ? onBootstrapLocal : null,
+                  icon: const Icon(Icons.construction_rounded, size: 16),
+                  label: const Text('Bootstrap local'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+@visibleForTesting
+class BootstrapHelpDialog extends StatelessWidget {
+  const BootstrapHelpDialog({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Bootstrap local Robdex'),
+      content: const SelectableText(
+        'Run the public helper outside Flutter:\n\n'
+        'robdex bootstrap doctor\n'
+        'robdex bootstrap plan --profile minimal\n'
+        'robdex bootstrap apply --profile minimal\n\n'
+        'The helper owns filesystem, service, and config operations. The GUI renders the status and connects to the bridge.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+      ],
     );
   }
 }

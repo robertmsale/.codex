@@ -145,6 +145,20 @@ os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
 ' "$real_zsh" "${requested_command[@]:1}"
 }
 
+shim_front_path_value() {
+  local shim_dir="$codex_root/shim"
+  if [[ -d "$shim_dir" ]]; then
+    printf '%s:%s\n' "$shim_dir" "$(strip_shim_path "$PATH")"
+  else
+    printf '%s\n' "$PATH"
+  fi
+}
+
+shim_prefix_child_command_path() {
+  local command="$1"
+  printf 'PATH=%q; export PATH; hash -r 2>/dev/null || true; %s\n' "$(shim_front_path_value)" "$command"
+}
+
 trap 'shim_mark_process_complete_once; cleanup_shim_files' EXIT
 trap 'shim_handle_signal_exit TERM' TERM
 trap 'shim_handle_signal_exit INT' INT
@@ -174,6 +188,9 @@ shift
 
 requested_command=("$real_zsh" "$mode" "$command_text" "$@")
 
+PATH="$(shim_front_path_value)"
+export PATH
+
 if [[ "${CODEX_ZSH_PLAIN_EXEC:-0}" == "1" ]]; then
   exec "$real_zsh" "${requested_command[@]:1}"
 fi
@@ -191,6 +208,9 @@ case "$PRIVILEGED_EXEC_OUTCOME" in
     exit "$PRIVILEGED_EXEC_STATUS"
     ;;
 esac
+
+command_text="$(shim_prefix_child_command_path "$command_text")"
+requested_command=("$real_zsh" "$mode" "$command_text" "$@")
 
 shim_stdout_file="$(mktemp "${TMPDIR:-/tmp}/codex-shim-zsh-stdout.XXXXXX")"
 shim_stderr_file="$(mktemp "${TMPDIR:-/tmp}/codex-shim-zsh-stderr.XXXXXX")"

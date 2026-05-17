@@ -1,0 +1,296 @@
+#!/bin/zsh
+set -euo pipefail
+
+show_help() {
+  cat <<'EOF'
+Usage: robdex-service <doctor|start|status|stop|install-plan> [--foreground|--background]
+
+Public core Robdex service control.
+
+Environment:
+  ROBDEX_HOME                  checkout/install root; inferred from this script
+  CODEX_HOME                   Codex home; defaults to ~/.codex
+  ROBDEX_STATE_HOME            state root; defaults to $CODEX_HOME/robdex
+  ROBDEX_BRIDGE_BASE_URL       HTTP base URL; defaults to http://127.0.0.1:42080
+  ROBDEX_BRIDGE_APP_SERVER_URL bridge websocket URL; defaults to ws://127.0.0.1:4200
+  ROBDEX_SERVICE_MANAGER       supervisor, systemd, launchctl, or none
+  ROBDEX_BRIDGE_PORT           bridge HTTP port; defaults to 42080
+
+Without ROBDEX_SERVICE_MANAGER, start uses a local background fallback by
+default. Use --foreground for a two-process foreground fallback.
+EOF
+}
+
+script_path="${0:A}"
+script_dir="${script_path:h}"
+inferred_robdex_home="${script_dir:h}"
+robdex_home="${ROBDEX_HOME:-$inferred_robdex_home}"
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+state_home="${ROBDEX_STATE_HOME:-$codex_home/robdex}"
+log_dir="$state_home/logs"
+pid_dir="$state_home/pids"
+bridge_base_url="${ROBDEX_BRIDGE_BASE_URL:-http://127.0.0.1:42080}"
+bridge_host="${ROBDEX_BRIDGE_HOST:-127.0.0.1}"
+bridge_port="${ROBDEX_BRIDGE_PORT:-42080}"
+app_server_listen="${ROBDEX_APP_SERVER_LISTEN:-ws://127.0.0.1:4200}"
+app_server_url="${ROBDEX_BRIDGE_APP_SERVER_URL:-$app_server_listen}"
+project_path="${ROBDEX_BRIDGE_PROJECT_PATH:-$robdex_home}"
+bridge_cwd="${ROBDEX_BRIDGE_CWD:-$project_path}"
+bridge_bin="${ROBDEX_BRIDGE_BIN:-$robdex_home/backend/target/release/codex-robdex-bridge}"
+app_server_script="$robdex_home/scripts/run-robdex-app-server"
+app_pid_file="$pid_dir/robdex-app-server.pid"
+bridge_pid_file="$pid_dir/robdex-bridge.pid"
+curl_bin="${CURL_BIN:-}"
+
+if [[ -z "$curl_bin" ]]; then
+  if [[ -x /usr/bin/curl ]]; then
+    curl_bin="/usr/bin/curl"
+  elif command -v curl >/dev/null 2>&1; then
+    curl_bin="$(command -v curl)"
+  fi
+fi
+
+command_name="${1:-}"
+shift || true
+
+mode="background"
+case "${1:-}" in
+  --foreground)
+    mode="foreground"
+    shift
+    ;;
+  --background)
+    mode="background"
+    shift
+    ;;
+esac
+
+if [[ $# -gt 0 ]]; then
+  echo "robdex-service: unexpected argument: $1" >&2
+  show_help >&2
+  exit 2
+fi
+
+pid_running() {
+  local pid_file="$1"
+  [[ -f "$pid_file" ]] || return 1
+  local pid
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" >/dev/null 2>&1
+}
+
+port_available() {
+  local port="$1"
+  if command -v nc >/dev/null 2>&1; then
+    ! nc -z 127.0.0.1 "$port" >/dev/null 2>&1
+  else
+    return 0
+  fi
+}
+
+print_install_plan() {
+  echo "ROBDEX_HOME=$robdex_home"
+  echo "CODEX_HOME=$codex_home"
+  echo "ROBDEX_STATE_HOME=$state_home"
+  echo "bridge_port=$bridge_port"
+  echo "app_server_port=${ROBDEX_APP_SERVER_PORT:-4200}"
+  port_available "$bridge_port" && echo "bridge_port_available=yes" || echo "bridge_port_available=no"
+  port_available "${ROBDEX_APP_SERVER_PORT:-4200}" && echo "app_server_port_available=yes" || echo "app_server_port_available=no"
+  echo "macos_template=robdex service-template --platform macos --out-dir <dir>"
+  echo "linux_template=robdex service-template --platform linux --out-dir <dir>"
+  echo "foreground_fallback=robdex start --foreground"
+}
+
+print_health() {
+  if [[ -n "$curl_bin" ]] && "$curl_bin" -fsS --max-time 1 "$bridge_base_url/healthz"; then
+    printf '\n'
+    return 0
+  fi
+  echo "bridge health unreachable at $bridge_base_url/healthz"
+  return 1
+}
+
+wait_for_health() {
+  local attempts="${1:-10}"
+  local delay="${2:-0.5}"
+  local i
+  for (( i = 1; i <= attempts; i++ )); do
+    if print_health; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+  return 1
+}
+
+require_foreground_inputs() {
+  if [[ ! -x "$bridge_bin" ]]; then
+    echo "robdex-service: bridge binary missing: $bridge_bin" >&2
+    echo "run: (cd $robdex_home/backend && cargo build --release -p codex-robdex-bridge)" >&2
+    exit 1
+  fi
+  if [[ ! -x "$app_server_script" ]]; then
+    echo "robdex-service: app-server runner missing or not executable: $app_server_script" >&2
+    exit 1
+  fi
+  if [[ ! -d "$project_path" ]]; then
+    echo "robdex-service: project path missing: $project_path" >&2
+    exit 1
+  fi
+}
+
+service_manager_action() {
+  local action="$1"
+  local manager="${ROBDEX_SERVICE_MANAGER:-none}"
+  case "$manager" in
+    supervisor)
+      command -v supervisorctl >/dev/null 2>&1 || {
+        echo "robdex-service: supervisorctl not found" >&2
+        exit 1
+      }
+      supervisorctl "$action" "${ROBDEX_APP_SERVER_SERVICE:-robdex-app-server}" "${ROBDEX_BRIDGE_SERVICE:-robdex-bridge-deno}"
+      ;;
+    systemd)
+      command -v systemctl >/dev/null 2>&1 || {
+        echo "robdex-service: systemctl not found" >&2
+        exit 1
+      }
+      systemctl --user "$action" "${ROBDEX_APP_SERVER_UNIT:-robdex-app-server.service}" "${ROBDEX_BRIDGE_UNIT:-robdex-bridge.service}"
+      ;;
+    launchctl)
+      command -v launchctl >/dev/null 2>&1 || {
+        echo "robdex-service: launchctl not found" >&2
+        exit 1
+      }
+      case "$action" in
+        start|restart)
+          launchctl kickstart -k "gui/$UID/${ROBDEX_APP_SERVER_LABEL:-com.robdex.app-server}"
+          launchctl kickstart -k "gui/$UID/${ROBDEX_BRIDGE_LABEL:-com.robdex.bridge}"
+          ;;
+        stop)
+          launchctl bootout "gui/$UID/${ROBDEX_APP_SERVER_LABEL:-com.robdex.app-server}" 2>/dev/null || true
+          launchctl bootout "gui/$UID/${ROBDEX_BRIDGE_LABEL:-com.robdex.bridge}" 2>/dev/null || true
+          ;;
+        status)
+          launchctl print "gui/$UID/${ROBDEX_APP_SERVER_LABEL:-com.robdex.app-server}" || true
+          launchctl print "gui/$UID/${ROBDEX_BRIDGE_LABEL:-com.robdex.bridge}" || true
+          ;;
+      esac
+      ;;
+    none|"")
+      return 1
+      ;;
+    *)
+      echo "robdex-service: unsupported ROBDEX_SERVICE_MANAGER=$manager" >&2
+      exit 2
+      ;;
+  esac
+}
+
+start_foreground() {
+  require_foreground_inputs
+  mkdir -p "$state_home" "$log_dir" "$pid_dir"
+  echo "Starting Robdex foreground stack"
+  echo "ROBDEX_HOME=$robdex_home"
+  echo "ROBDEX_STATE_HOME=$state_home"
+  "$app_server_script" >"$log_dir/app-server.log" 2>&1 &
+  local app_pid=$!
+  printf '%s\n' "$app_pid" >"$app_pid_file"
+  "$bridge_bin" \
+    --host "$bridge_host" \
+    --port "$bridge_port" \
+    --app-server-url "$app_server_url" \
+    --project-path "$project_path" \
+    --cwd "$bridge_cwd" \
+    --state-root "$state_home" &
+  local bridge_pid=$!
+  printf '%s\n' "$bridge_pid" >"$bridge_pid_file"
+  cleanup() {
+    kill "$bridge_pid" "$app_pid" >/dev/null 2>&1 || true
+  }
+  trap cleanup INT TERM EXIT
+  wait "$bridge_pid"
+}
+
+start_background() {
+  require_foreground_inputs
+  mkdir -p "$state_home" "$log_dir" "$pid_dir"
+  if ! pid_running "$app_pid_file"; then
+    "$app_server_script" >"$log_dir/app-server.log" 2>&1 &
+    printf '%s\n' "$!" >"$app_pid_file"
+  fi
+  if ! pid_running "$bridge_pid_file"; then
+    "$bridge_bin" \
+      --host "$bridge_host" \
+      --port "$bridge_port" \
+      --app-server-url "$app_server_url" \
+      --project-path "$project_path" \
+      --cwd "$bridge_cwd" \
+      --state-root "$state_home" >"$log_dir/bridge.log" 2>&1 &
+    printf '%s\n' "$!" >"$bridge_pid_file"
+  fi
+  echo "Robdex background stack requested"
+  echo "logs: $log_dir"
+  wait_for_health 10 0.5 || true
+}
+
+stop_pid_file() {
+  local pid_file="$1"
+  local label="$2"
+  if pid_running "$pid_file"; then
+    local pid
+    pid="$(cat "$pid_file")"
+    kill "$pid" >/dev/null 2>&1 || true
+    echo "stopped $label pid=$pid"
+  else
+    echo "$label not running via pid file"
+  fi
+  rm -f "$pid_file"
+}
+
+case "$command_name" in
+  -h|--help|"")
+    show_help
+    ;;
+  doctor)
+    exec "$robdex_home/scripts/robdex-doctor"
+    ;;
+  start)
+    if service_manager_action start; then
+      print_health || true
+    elif [[ "$mode" == "foreground" ]]; then
+      start_foreground
+    else
+      start_background
+    fi
+    ;;
+  status)
+    if service_manager_action status; then
+      print_health || true
+    else
+      echo "ROBDEX_HOME=$robdex_home"
+      echo "CODEX_HOME=$codex_home"
+      echo "ROBDEX_STATE_HOME=$state_home"
+      pid_running "$app_pid_file" && echo "app-server pid: $(cat "$app_pid_file")" || echo "app-server pid: not running"
+      pid_running "$bridge_pid_file" && echo "bridge pid: $(cat "$bridge_pid_file")" || echo "bridge pid: not running"
+      print_health || exit 1
+    fi
+    ;;
+  install-plan)
+    print_install_plan
+    ;;
+  stop)
+    if service_manager_action stop; then
+      :
+    else
+      stop_pid_file "$bridge_pid_file" "bridge"
+      stop_pid_file "$app_pid_file" "app-server"
+    fi
+    ;;
+  *)
+    echo "robdex-service: unknown command: $command_name" >&2
+    show_help >&2
+    exit 2
+    ;;
+esac

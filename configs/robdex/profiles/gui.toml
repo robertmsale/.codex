@@ -1,0 +1,6 @@
+# Robdex optional GUI profile
+
+[robdex.gui]
+enabled = true
+bridge_base_url = "http://127.0.0.1:42080"
+package_path = "${ROBDEX_HOME}/frontend/robdex_app"

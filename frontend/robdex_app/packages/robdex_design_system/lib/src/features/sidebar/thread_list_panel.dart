@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 
 import '../../core/models/workbench_models.dart';
 
@@ -55,7 +54,6 @@ class ThreadListPanel extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(4, 4, 2, 12),
           child: Row(
             children: [
-              if (kIsWeb) const _MacWindowDots(),
               const Spacer(),
               _SemanticIconButton(
                 id: 'semantic.sidebar.newProject',
@@ -323,41 +321,6 @@ class _SemanticIconButton extends StatelessWidget {
   }
 }
 
-class _MacWindowDots extends StatelessWidget {
-  const _MacWindowDots();
-
-  @override
-  Widget build(BuildContext context) {
-    const colors = [
-      Color(0xFFFF5F57),
-      Color(0xFFFFBD2E),
-      Color(0xFF28C840),
-    ];
-    return Row(
-      children: [
-        for (final color in colors) ...[
-          Container(
-            width: 12,
-            height: 12,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.18),
-                  blurRadius: 3,
-                  offset: const Offset(0, 1),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 7),
-        ],
-      ],
-    );
-  }
-}
-
 class _RequirementReviewBadge extends StatelessWidget {
   const _RequirementReviewBadge({required this.summary});
 
@@ -370,7 +333,7 @@ class _RequirementReviewBadge extends StatelessWidget {
       'passed' => (Colors.green.shade700, Icons.check_rounded),
       'failed' => (theme.colorScheme.error, Icons.close_rounded),
       'blocked' => (Colors.amber.shade800, Icons.warning_amber_rounded),
-      'waiverRequired' => (Colors.deepOrange.shade700, Icons.policy_outlined),
+      'waiverRequired' => (Colors.amber.shade700, Icons.policy_outlined),
       'inReview' => (theme.colorScheme.secondary, Icons.rate_review_outlined),
       _ => (theme.colorScheme.tertiary, Icons.rule_outlined),
     };

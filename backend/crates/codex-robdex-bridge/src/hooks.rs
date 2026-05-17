@@ -11,6 +11,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const HOOKS_CONFIG_RELATIVE_PATH: &str = ".codex/robdex-hooks.json";
+const HOOK_RUNTIME_PATH_SEGMENTS: &[&str] = &[
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
@@ -210,6 +218,7 @@ pub async fn maybe_run_project_hook(
     let join = tokio::task::spawn_blocking(move || -> Result<HookResult> {
         let mut child = Command::new(&script_path)
             .current_dir(&cwd)
+            .env("PATH", hook_runtime_path())
             .env("ROBDEX_HOOK_EVENT", &event_name)
             .env("ROBDEX_PROJECT_ROOT", cwd.display().to_string())
             .stdin(Stdio::piped())
@@ -277,6 +286,21 @@ pub async fn maybe_run_project_hook(
             }),
         },
     }
+}
+
+fn hook_runtime_path() -> String {
+    let mut segments = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    for segment in HOOK_RUNTIME_PATH_SEGMENTS {
+        if !segments.iter().any(|existing| existing == segment) {
+            segments.push((*segment).to_string());
+        }
+    }
+    segments.join(":")
 }
 
 pub fn default_worker_branch_name(agent_name: &str) -> String {
@@ -765,6 +789,18 @@ mod tests {
             result.artifacts.get("branchName"),
             Some(&Value::String("codex/test-worker".to_string()))
         );
+    }
+
+    #[test]
+    fn hook_runtime_path_includes_homebrew_and_system_bins() {
+        let path = hook_runtime_path();
+        let segments = path.split(':').collect::<Vec<_>>();
+        for expected in HOOK_RUNTIME_PATH_SEGMENTS {
+            assert!(
+                segments.contains(expected),
+                "hook PATH should include {expected}; got {path}"
+            );
+        }
     }
 
     #[tokio::test]

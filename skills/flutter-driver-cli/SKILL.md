@@ -1,13 +1,15 @@
 ---
 name: flutter-driver-cli
-description: Use this skill when you need to drive a managed iOS device slot through the shared local wrappers. Use it for device lifecycle, hierarchy inspection, taps, text entry, screenshots, and scripted UI flows. [skill-hash:3e0d6ea]
+description: Legacy compatibility for the old managed Flutter QA driver. Prefer designer-runtime for active QA/designer piloting. [skill-hash:3e0d6ea]
 ---
 
 # Flutter Driver CLI
 
-Use this skill when a project provides a managed iOS QA/runtime device and the sanctioned way to interact with it is through the shared wrappers below.
+This is a legacy compatibility skill. The active Robdex QA/designer piloting
+workflow uses `designer-runtime`: an assigned worktree plus an assigned device
+UDID, launched with `designer-flutter-run` and piloted with `designer-drive`.
 
-Use only these scripts:
+Use this skill only when an existing project still names the old wrappers:
 
 ```sh
 flutter-sim ...
@@ -18,18 +20,21 @@ flutter ...
 What they do:
 
 - `flutter-sim`
-  - lifecycle and device-slot management
+  - deprecated compatibility surface
+  - `devices` delegates to `designer-drive devices`
+  - `reserve`, `reboot`, and `dump-logs` print a deprecation error instead of managing a broker-owned runtime
 - `flutter-drive`
-  - UI inspection and interaction against the managed runtime
-  - runs locally through the sanctioned wrapper and direct `idb` tooling after the device is reserved
+  - UI inspection and interaction through the shared direct `idb` driver
+  - kept as a direct-idb compatibility wrapper
 - `flutter`
   - host-side Flutter commands routed through the sanctioned wrapper
 
 ## Guardrails
 
-- Use the shared wrappers instead of `xcrun`, `simctl`, `osascript`, or ad hoc `idb` invocations.
-- Do not launch the app manually.
-- Do not issue parallel piloting commands against the same device slot.
+- Prefer `designer-runtime` for new QA and design work.
+- Do not use the managed reservation path unless the operator explicitly revives it for a legacy project.
+- Use the shared wrappers instead of ad hoc `idb` invocations.
+- Do not issue parallel piloting commands against the same device.
 - Always wait for one piloting command to finish before sending the next.
 - Run commands plainly and sequentially.
 - Do not combine `flutter-drive` commands with shell operators or wrappers.
@@ -37,31 +42,29 @@ What they do:
 
 ## `flutter-sim`
 
-Use `flutter-sim` when you need the managed device/runtime lifecycle surface.
+`flutter-sim` is deprecated. It no longer reserves or reboots managed runtime
+slots in the active workflow.
 
 Commands:
 
 ```sh
 flutter-sim devices
-flutter-sim reserve --device-id <udid>
-flutter-sim reboot --device-id <udid>
-flutter-sim dump-logs --device-id <udid>
+flutter-sim reserve --device-id <udid>   # deprecated, exits with guidance
+flutter-sim reboot --device-id <udid>    # deprecated, exits with guidance
+flutter-sim dump-logs --device-id <udid> # deprecated, exits with guidance
 ```
 
 What they are for:
 
 - `devices`
-  - lists the currently known managed device slots
-- `reserve`
-  - waits for the selected device slot to be ready and returns the reservation/runtime details
-- `reboot`
-  - rebuilds or restarts the managed runtime for that device slot
-- `dump-logs`
-  - writes broker/runtime/driver artifacts to `/tmp/flutter-driver-screenshots/<udid>/logs`
+  - lists booted simulators visible through the shared direct driver
+- `reserve`, `reboot`, and `dump-logs`
+  - retained only to produce clear deprecation output
 
 ## `flutter-drive`
 
-Use `flutter-drive` when you need to inspect the screen or interact with it.
+Use `flutter-drive` only for compatibility with older instructions. New work
+should use `designer-drive` directly.
 
 Commands:
 
@@ -86,8 +89,8 @@ Common commands:
 Typical sequence:
 
 ```sh
-flutter-sim reserve --device-id <udid>
-flutter-drive hierarchy --device-id <udid>
+designer-flutter-run --session qa-app --device-id <udid> --workdir <worktree_path>
+designer-drive hierarchy --device-id <udid>
 flutter-drive command tapOn --device-id <udid> --input '{"text":"Search"}'
 flutter-drive command inputText --device-id <udid> --input '"query"'
 flutter-drive screenshot --device-id <udid> --out result.png

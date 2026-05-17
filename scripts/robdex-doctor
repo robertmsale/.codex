@@ -1,0 +1,172 @@
+#!/bin/zsh
+set -u
+
+show_help() {
+  cat <<'EOF'
+Usage: robdex-doctor [--help]
+
+Read-only diagnostics for the core Robdex bootstrap path.
+
+Checks OS support, CODEX_HOME/ROBDEX_HOME assumptions, Codex and Rust tooling,
+bridge build/health status, PATH script availability, and service-manager hints.
+It does not mutate config, state, services, or user files.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    show_help
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    echo "robdex-doctor: unknown argument: $1" >&2
+    show_help >&2
+    exit 2
+    ;;
+esac
+
+doctor_status=0
+
+print_check() {
+  local state="$1"
+  local label="$2"
+  local detail="${3:-}"
+  printf '%-6s %s' "[$state]" "$label"
+  if [[ -n "$detail" ]]; then
+    printf ' - %s' "$detail"
+  fi
+  printf '\n'
+}
+
+ok() {
+  print_check "ok" "$1" "${2:-}"
+}
+
+warn() {
+  print_check "warn" "$1" "${2:-}"
+}
+
+fail() {
+  print_check "fail" "$1" "${2:-}"
+  doctor_status=1
+}
+
+script_path="${0:A}"
+script_dir="${script_path:h}"
+inferred_robdex_home="${script_dir:h}"
+robdex_home="${ROBDEX_HOME:-$inferred_robdex_home}"
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+state_home="${ROBDEX_STATE_HOME:-$codex_home/robdex}"
+bridge_url="${ROBDEX_BRIDGE_BASE_URL:-http://127.0.0.1:42080}"
+app_server_url="${ROBDEX_APP_SERVER_HTTP_URL:-http://127.0.0.1:4200}"
+curl_bin="${CURL_BIN:-}"
+
+if [[ -z "$curl_bin" ]]; then
+  if [[ -x /usr/bin/curl ]]; then
+    curl_bin="/usr/bin/curl"
+  elif command -v curl >/dev/null 2>&1; then
+    curl_bin="$(command -v curl)"
+  fi
+fi
+
+case "$(uname -s 2>/dev/null || true)" in
+  Darwin)
+    ok "OS support" "macOS primary target"
+    ;;
+  Linux)
+    ok "OS support" "Linux intended for core bridge/CLI path"
+    ;;
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+    warn "OS support" "Windows is not supported yet"
+    ;;
+  *)
+    warn "OS support" "unknown OS; core path may need manual setup"
+    ;;
+esac
+
+if [[ -d "$robdex_home" ]]; then
+  ok "ROBDEX_HOME" "$robdex_home"
+else
+  fail "ROBDEX_HOME" "$robdex_home does not exist"
+fi
+
+if [[ -d "$codex_home" ]]; then
+  ok "CODEX_HOME" "$codex_home"
+else
+  warn "CODEX_HOME" "$codex_home does not exist yet"
+fi
+
+if [[ -d "$state_home" ]]; then
+  ok "ROBDEX_STATE_HOME" "$state_home"
+else
+  warn "ROBDEX_STATE_HOME" "$state_home does not exist yet"
+fi
+
+if command -v codex >/dev/null 2>&1; then
+  ok "codex binary" "$(command -v codex)"
+else
+  fail "codex binary" "not found on PATH"
+fi
+
+if command -v cargo >/dev/null 2>&1; then
+  ok "cargo" "$(cargo --version 2>/dev/null || command -v cargo)"
+else
+  fail "cargo" "not found on PATH"
+fi
+
+if command -v rustc >/dev/null 2>&1; then
+  ok "rustc" "$(rustc --version 2>/dev/null || command -v rustc)"
+else
+  warn "rustc" "not found on PATH"
+fi
+
+bridge_release="$robdex_home/backend/target/release/codex-robdex-bridge"
+bridge_debug="$robdex_home/backend/target/debug/codex-robdex-bridge"
+if [[ -x "$bridge_release" ]]; then
+  ok "bridge binary" "$bridge_release"
+elif [[ -x "$bridge_debug" ]]; then
+  warn "bridge binary" "debug binary exists at $bridge_debug; release build missing"
+else
+  warn "bridge binary" "not built; run: cargo build --release -p codex-robdex-bridge from $robdex_home/backend"
+fi
+
+if [[ -n "$curl_bin" ]]; then
+  if "$curl_bin" -fsS --max-time 1 "$bridge_url/healthz" >/dev/null 2>&1; then
+    ok "bridge health" "$bridge_url/healthz reachable"
+  else
+    warn "bridge health" "$bridge_url/healthz not reachable"
+  fi
+  if "$curl_bin" -fsS --max-time 1 "$app_server_url/healthz" >/dev/null 2>&1; then
+    ok "app-server health" "$app_server_url/healthz reachable"
+  else
+    warn "app-server health" "$app_server_url/healthz not reachable or not an HTTP health endpoint"
+  fi
+else
+  warn "curl" "not found; skipped health probes"
+fi
+
+for script_name in robdex robdex-doctor; do
+  if [[ -x "$robdex_home/scripts/$script_name" ]]; then
+    ok "public script $script_name" "$robdex_home/scripts/$script_name"
+  elif command -v "$script_name" >/dev/null 2>&1; then
+    ok "PATH script $script_name" "$(command -v "$script_name")"
+  else
+    warn "public script $script_name" "not found at $robdex_home/scripts/$script_name or on PATH"
+  fi
+done
+
+if command -v supervisorctl >/dev/null 2>&1; then
+  ok "service manager" "supervisorctl available"
+elif command -v systemctl >/dev/null 2>&1; then
+  ok "service manager" "systemctl available; use systemd --user where configured"
+elif command -v launchctl >/dev/null 2>&1; then
+  ok "service manager" "launchctl available"
+else
+  warn "service manager" "none detected; foreground start fallback required"
+fi
+
+echo
+echo "Doctor completed with status=$doctor_status"
+exit "$doctor_status"

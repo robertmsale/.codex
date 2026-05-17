@@ -20,7 +20,7 @@ crate = "codex-qa-harness"
 current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-qa-harness"
 current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-qa-harness.ini"
 port = 8775
-status = "planned"
+status = "legacy_deprecated"
 
 [[service]]
 name = "codex-flutter-sim-http"
@@ -28,7 +28,7 @@ crate = "codex-flutter-sim-http"
 current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-flutter-sim-http"
 current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-flutter-sim-http.ini"
 port = 8767
-status = "planned"
+status = "legacy_deprecated"
 
 [[service]]
 name = "codex-flutter-http"

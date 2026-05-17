@@ -1,0 +1,75 @@
+{
+  "name": "robdex-vscode",
+  "displayName": "Robdex",
+  "description": "Open Robdex inside VS Code or VSCodium using bridge-served Flutter assets.",
+  "version": "0.4.4",
+  "publisher": "robdex",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.92.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "files": [
+    "out",
+    "README.md",
+    "package.json"
+  ],
+  "activationEvents": [
+    "onCommand:robdex.open",
+    "onCommand:robdex.refresh",
+    "onView:robdex.view"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "robdex.open",
+        "title": "Robdex: Focus"
+      },
+      {
+        "command": "robdex.refresh",
+        "title": "Robdex: Refresh"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "robdex",
+          "title": "Robdex",
+          "icon": "$(remote-explorer)"
+        }
+      ]
+    },
+    "views": {
+      "robdex": [
+        {
+          "id": "robdex.view",
+          "name": "Robdex",
+          "type": "webview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Robdex",
+      "properties": {
+        "robdex.bridgeBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:42080",
+          "description": "Base URL for the local Robdex bridge that serves the Flutter web app."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.11",
+    "@types/vscode": "^1.92.0",
+    "typescript": "^5.5.4"
+  }
+}

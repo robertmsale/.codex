@@ -8,6 +8,16 @@ It is the runtime home for:
 - Robdex bridge/runtime state
 - backend services that support Codex operations
 
+For public bootstrap/install guidance, start with
+[`docs/public-install.md`](docs/public-install.md). The public model is an
+overlay/tooling install; do not clone this repository over an existing
+`~/.codex`.
+
+QA now follows the simplified direct runtime model: assign a QA agent a normal
+worktree and device UDID, then use `designer-flutter-run`, `designer-drive`, and
+`designer-crop-screenshot` for launch, piloting, and evidence. The older managed
+QA harness / Flutter simulator broker stack is legacy/deprecated.
+
 ## What Lives Here
 
 ### Core config
@@ -62,7 +72,7 @@ Notable pieces:
 
 - Rust Robdex bridge
 - Rust aux HTTP server for `request-review`
-- simulator broker and Flutter helper services
+- legacy simulator broker and Flutter helper services
 
 See [`backend/README.md`](~/.codex/backend/README.md) for the service-level breakdown.
 
@@ -86,7 +96,7 @@ Important files:
 
 ### Command execution
 
-- Agents run through the configured `zsh` wrapper at [`scripts/zsh`](/Users/robertsale/.codex/scripts/zsh).
+- Agents run through the configured `zsh` wrapper at [`scripts/zsh`](scripts/zsh).
 - The wrapper reconstructs `PATH`, applies the dynamic privileged-exec policy, reports live process state, and preserves synchronous command execution.
 - Long-running commands are synchronous. There is no command-execution job/MCP wait path anymore.
 
@@ -107,6 +117,8 @@ Important files:
 - Supervisor-managed support services are part of this environment.
 - Rust and Python services both live under `backend/`.
 - Restart-sensitive changes should be treated like production ops.
+- Public bootstrap uses `robdex doctor`, `robdex start`, `robdex status`, and
+  `robdex stop` through the relocatable service wrapper.
 
 ## Files To Treat Carefully
 

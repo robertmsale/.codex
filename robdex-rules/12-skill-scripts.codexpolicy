@@ -14,6 +14,10 @@ prefix_rule(
     decision = "allow",
 )
 prefix_rule(
+    pattern = ["docker"],
+    decision = "allow",
+)
+prefix_rule(
     pattern = [[
         "designer-crop-screenshot", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-crop-screenshot",
         "designer-drive", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-drive",
@@ -24,6 +28,7 @@ prefix_rule(
         "api_integration_reaper",
         "api_integration_reaper_start",
         "flutter-drive", "/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-drive",
+        # Legacy compatibility only: flutter-sim reserve/reboot emit deprecation guidance.
         "flutter-sim", "/Users/robertsale/.codex/skills/flutter-driver-cli/scripts/flutter-sim",
         "git-commit", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-commit",
         "git-fetch", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-fetch",

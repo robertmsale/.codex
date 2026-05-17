@@ -25,11 +25,13 @@ class ChatTimeline extends StatefulWidget {
     this.selection,
     this.availableModels = const [],
     this.onSettingsChanged,
+    this.onCompactThread,
     this.showComposer = true,
     this.headerControls,
     this.overlay,
     this.leading,
     this.bridgeBaseUri,
+    this.onOpenLink,
     this.onTerminateCommandExecution,
     this.requirementReview,
     this.onOpenThread,
@@ -48,11 +50,13 @@ class ChatTimeline extends StatefulWidget {
   final WorkspaceSelection? selection;
   final List<ModelItem> availableModels;
   final ValueChanged<ThreadSettingsDraft>? onSettingsChanged;
+  final VoidCallback? onCompactThread;
   final bool showComposer;
   final Widget? headerControls;
   final Widget? overlay;
   final Widget? leading;
   final Uri? bridgeBaseUri;
+  final ValueChanged<String>? onOpenLink;
   final ValueChanged<String>? onTerminateCommandExecution;
   final RequirementReviewSummary? requirementReview;
   final ValueChanged<String>? onOpenThread;
@@ -274,6 +278,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
                         onTerminateCommandExecution:
                             widget.onTerminateCommandExecution,
                         bridgeBaseUri: widget.bridgeBaseUri,
+                        onOpenLink: widget.onOpenLink,
                       );
                     },
                   ),
@@ -297,6 +302,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
             selection: widget.selection ?? _emptySelection,
             availableModels: widget.availableModels,
             onSettingsChanged: widget.onSettingsChanged ?? (_) {},
+            onCompactThread: widget.onCompactThread ?? () {},
             bridgeBaseUri: widget.bridgeBaseUri,
             terminalAvailable: widget.terminalAvailable,
             onTerminalPressed: widget.onTerminalPressed,
@@ -339,14 +345,20 @@ class _RequirementsReviewInlineBanner extends StatelessWidget {
     final parentThreadId = summary.parentThreadId;
     final isReviewerThread = selectedThreadRole == 'requirements-reviewer' ||
         selectedThreadRole == 'requirementsReviewer';
+    final isWaiverRequired = summary.status == 'waiverRequired';
     final targetThreadId = isReviewerThread ? parentThreadId : reviewerThreadId;
     final buttonLabel = isReviewerThread ? 'Back to source thread' : 'Open review thread';
     final statusText = isReviewerThread
         ? 'Nested requirements reviewer'
-        : 'Requirements ${summary.displayStatus.toLowerCase()}';
-    final counts = summary.verdicts.isEmpty
+        : isWaiverRequired
+            ? 'Human waiver required'
+            : 'Requirements ${summary.displayStatus.toLowerCase()}';
+    final counts = isWaiverRequired
+        ? 'Waiver needed · ${summary.activeRequirementCount} active'
+        : summary.verdicts.isEmpty
         ? '${summary.activeRequirementCount} active'
         : '${summary.passedCount} passed · ${summary.failedCount} failed · ${summary.blockedCount} blocked';
+    final accentColor = isWaiverRequired ? Colors.amber.shade700 : theme.colorScheme.primary;
 
     return Semantics(
       key: const ValueKey('semantic.requirementsReview.inline'),
@@ -354,9 +366,13 @@ class _RequirementsReviewInlineBanner extends StatelessWidget {
       label: statusText,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFF111923),
+          color: isWaiverRequired ? const Color(0xFF231C09) : const Color(0xFF111923),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: theme.colorScheme.outline.withValues(alpha: 0.72)),
+          border: Border.all(
+            color: isWaiverRequired
+                ? accentColor.withValues(alpha: 0.64)
+                : theme.colorScheme.outline.withValues(alpha: 0.72),
+          ),
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
@@ -365,8 +381,10 @@ class _RequirementsReviewInlineBanner extends StatelessWidget {
               Icon(
                 isReviewerThread
                     ? Icons.rate_review_outlined
-                    : Icons.rule_folder_outlined,
-                color: theme.colorScheme.primary,
+                    : isWaiverRequired
+                        ? Icons.policy_outlined
+                        : Icons.rule_folder_outlined,
+                color: accentColor,
                 size: 16,
               ),
               const SizedBox(width: 10),
@@ -445,6 +463,7 @@ class _ChatBubble extends StatelessWidget {
     required this.onExpandedChanged,
     this.onTerminateCommandExecution,
     this.bridgeBaseUri,
+    this.onOpenLink,
   });
 
   final ChatEntry entry;
@@ -452,6 +471,7 @@ class _ChatBubble extends StatelessWidget {
   final ValueChanged<bool> onExpandedChanged;
   final ValueChanged<String>? onTerminateCommandExecution;
   final Uri? bridgeBaseUri;
+  final ValueChanged<String>? onOpenLink;
 
   @override
   Widget build(BuildContext context) {
@@ -582,6 +602,12 @@ class _ChatBubble extends StatelessWidget {
                 MarkdownBody(
                   data: entry.body,
                   selectable: false,
+                  onTapLink: (text, href, title) {
+                    final target = href ?? text;
+                    if (target.trim().isNotEmpty) {
+                      onOpenLink?.call(target.trim());
+                    }
+                  },
                   styleSheet: _conversationMarkdownStyle(theme, isPending),
                   syntaxHighlighter: _ChatCodeSyntaxHighlighter(theme),
                 ),

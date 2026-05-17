@@ -1,6 +1,6 @@
 ---
 name: robdex-orchestrator
-description: Use Robdex communication via `robdex`. This skill is only for the tool surface and shared usage rules. Role behavior lives in the base instructions. [skill-hash:b4c19a2]
+description: Use Robdex communication via `robdex`, including Requirements workflows that preserve operator-approved scope and fan out large work by complete responsibility boundaries. Role behavior lives in the base instructions. [skill-hash:5d91c8b]
 ---
 
 # Robdex Orchestrator
@@ -47,13 +47,20 @@ Use this skill for Robdex-backed communication.
 
 Use Requirements when task constraints must become an explicit completion contract rather than prompt prose.
 
+Requirements preserve the operator-approved outcome. Worker recommendations are advisory evidence only; do not convert a worker's reduced scope, alternate implementation, documentation-only compromise, or "small first step" into the Requirements contract unless the operator explicitly authorizes that change.
+
 Normal worker flow:
 - Spawn workers without Requirements when the first turn is discovery, triage, planning, or pre-implementation.
-- When the worker stops at pre-implementation, review their plan and convert the accepted implementation contract into Requirements.
+- When the worker stops at pre-implementation, compare their plan against the operator-approved outcome and reject drift before setting Requirements.
+- Convert the operator-approved outcome for the full assigned work package into Requirements. Use the worker plan only to identify implementation steps, dependencies, validation evidence, and missing owner decisions.
 - Attach Requirements while the worker is idle, before sending the execution prompt.
 - Then send the implementation prompt. The next turn will be requirements-gated from the start.
 
 Do not try to attach Requirements to a running turn. Requirements apply to `turn/start`; they cannot change the schema of an already-running turn or a mid-turn steer.
+
+Large work is handled by dependency-ordered fan-out, not micro-slice Requirements. If the operator's requested outcome is too large or cross-cutting for one worker, create complete work packages by responsibility boundary, such as contracts, backend implementation, frontend integration, design/system polish, and QA validation. Each package's Requirements must cover that package's full responsibility and map back to the top-level operator outcome.
+
+Do not create Requirements for only the easiest first step, a partial pattern, or a documentation placeholder unless the operator requested that narrowed outcome. Scope changes require proof of impossibility, internal conflict, unsafe work, or a missing owner decision, followed by explicit operator authorization.
 
 The requirements file is JSON. It may be either an array of requirement objects or an object with a `requirements` array. Use semantic keys, not numbered keys.
 

@@ -3,4 +3,24 @@ set -euo pipefail
 
 export ROBDEX_BRIDGE_HOST="127.0.0.1"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+robdex_home="$(cd "$script_dir/../../.." && pwd)"
+
+case "${1:-}" in
+  doctor|start|status|stop)
+    exec "$robdex_home/scripts/robdex-service" "$@"
+    ;;
+  config)
+    shift
+    exec "$robdex_home/scripts/robdex-config" "$@"
+    ;;
+  service-template)
+    shift
+    exec "$robdex_home/scripts/robdex-service-template" "$@"
+    ;;
+  setup)
+    shift
+    exec "$robdex_home/scripts/robdex-setup" "$@"
+    ;;
+esac
+
 exec /usr/bin/env python3 "$script_dir/robdex.py" "$@"

@@ -1,0 +1,7 @@
+# Robdex privileged-exec profile
+# Review and adapt policy rules for each host before enabling.
+
+[robdex.privileged_exec]
+enabled = true
+rules_path = "${ROBDEX_HOME}/robdex-rules"
+mode = "opt-in"

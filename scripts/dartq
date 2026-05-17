@@ -1,6 +1,11 @@
 #!/bin/zsh
 set -euo pipefail
 
+source "$HOME/.codex/scripts/common.sh"
+source "$HOME/.codex/scripts/privileged_exec.sh"
+
+DARTQ_REAL_PATH="$(unshim_current_path)"
+
 show_usage() {
   cat <<'EOF'
 Usage:
@@ -21,7 +26,7 @@ EOF
 }
 
 require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || {
+  PATH="$DARTQ_REAL_PATH" command -v "$1" >/dev/null 2>&1 || {
     echo "dartq: missing required command: $1" >&2
     exit 1
   }
@@ -29,7 +34,11 @@ require_cmd() {
 
 deny_command() {
   local command_name="$1"
-  echo "dartq: forbidden command: $command_name" >&2
+  if [[ "$command_name" == "format" ]]; then
+    echo "dartq: HARD DENY: code formatters are absolutely forbidden on this machine. Do not run dart format." >&2
+  else
+    echo "dartq: forbidden command: $command_name" >&2
+  fi
   exit 2
 }
 
@@ -74,7 +83,45 @@ remove_all_args() {
 
 run_compile_command() {
   local -a compile_cmd=("$@")
-  exec "${compile_cmd[@]}"
+  run_passthrough_command "${compile_cmd[@]}"
+}
+
+privileged_cleanup_files() {
+  rm -f "${PRIVILEGED_EXEC_STDOUT_FILE:-}" "${PRIVILEGED_EXEC_STDERR_FILE:-}"
+}
+
+run_passthrough_command() {
+  PATH="$DARTQ_REAL_PATH" run_via_privileged_exec_if_allowed "$@"
+  case "$PRIVILEGED_EXEC_OUTCOME" in
+    handled)
+      [[ -f "$PRIVILEGED_EXEC_STDOUT_FILE" ]] && cat "$PRIVILEGED_EXEC_STDOUT_FILE"
+      [[ -f "$PRIVILEGED_EXEC_STDERR_FILE" ]] && cat "$PRIVILEGED_EXEC_STDERR_FILE" >&2
+      local exit_status="$PRIVILEGED_EXEC_STATUS"
+      privileged_cleanup_files
+      exit "$exit_status"
+      ;;
+    reject)
+      exit "$PRIVILEGED_EXEC_STATUS"
+      ;;
+  esac
+  PATH="$DARTQ_REAL_PATH" exec "$@"
+}
+
+capture_command_output() {
+  PATH="$DARTQ_REAL_PATH" run_via_privileged_exec_if_allowed "$@"
+  case "$PRIVILEGED_EXEC_OUTCOME" in
+    handled)
+      [[ -f "$PRIVILEGED_EXEC_STDOUT_FILE" ]] && cat "$PRIVILEGED_EXEC_STDOUT_FILE"
+      [[ -f "$PRIVILEGED_EXEC_STDERR_FILE" ]] && cat "$PRIVILEGED_EXEC_STDERR_FILE"
+      local exit_status="$PRIVILEGED_EXEC_STATUS"
+      privileged_cleanup_files
+      return "$exit_status"
+      ;;
+    reject)
+      return "$PRIVILEGED_EXEC_STATUS"
+      ;;
+  esac
+  PATH="$DARTQ_REAL_PATH" "$@" 2>&1
 }
 
 run_analyze_command() {
@@ -82,7 +129,7 @@ run_analyze_command() {
   local output
   local cmd_status=0
 
-  output="$("${analyze_cmd[@]}" 2>&1)" || cmd_status=$?
+  output="$(capture_command_output "${analyze_cmd[@]}")" || cmd_status=$?
   printf '%s' "$output" | python3 "$HOME/.codex/scripts/filter_dart_analyze_output.py"
   return "$cmd_status"
 }
@@ -100,7 +147,7 @@ fi
 require_cmd dart
 
 if [[ "$1" == "help" ]] || contains_arg "--help" "$@" || contains_arg "-h" "$@"; then
-  exec dart "$@"
+  run_passthrough_command dart "$@"
 fi
 
 base_args=(
@@ -120,7 +167,7 @@ case "$command" in
     deny_command "format"
     ;;
   run)
-    deny_command "run"
+    run_passthrough_command dart "${args[@]}"
     ;;
   analyze)
     remove_all_args "--fatal-infos" args
@@ -130,7 +177,7 @@ case "$command" in
     run_analyze_command dart "${args[@]}"
     ;;
   test)
-    exec dart "${args[@]}"
+    run_passthrough_command dart "${args[@]}"
     ;;
   compile)
     if [[ -n "$subcommand" ]] && ! contains_prefix_arg "--verbosity" "${args[@]}"; then
@@ -144,23 +191,23 @@ case "$command" in
         if ! contains_arg "--json" "${args[@]}"; then
           args+=("--json")
         fi
-        exec dart "${args[@]}"
+        run_passthrough_command dart "${args[@]}"
         ;;
       deps|get|upgrade|workspace|add|remove|bump|unpack)
         if ! contains_arg "--no-color" "${args[@]}" && ! contains_arg "--color" "${args[@]}"; then
           args=("${args[@]:0:2}" "--no-color" "${args[@]:2}")
         fi
-        exec dart "${args[@]}"
+        run_passthrough_command dart "${args[@]}"
         ;;
       *)
-        exec dart "${args[@]}"
+        run_passthrough_command dart "${args[@]}"
         ;;
     esac
     ;;
   info|installed)
-    exec dart "${args[@]}"
+    run_passthrough_command dart "${args[@]}"
     ;;
   *)
-    exec dart "${args[@]}"
+    run_passthrough_command dart "${args[@]}"
     ;;
 esac

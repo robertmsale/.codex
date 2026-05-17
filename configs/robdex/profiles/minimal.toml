@@ -1,0 +1,32 @@
+# Robdex minimal profile
+# Copy or merge intentionally; do not overwrite an existing config.toml.
+
+[robdex]
+enabled = true
+bridge_base_url = "http://127.0.0.1:42080"
+state_home = "${ROBDEX_STATE_HOME}"
+cli = "${ROBDEX_HOME}/scripts/robdex"
+
+[shell_environment]
+ROBDEX_HOME = "${ROBDEX_HOME}"
+CODEX_HOME = "${CODEX_HOME}"
+ROBDEX_STATE_HOME = "${ROBDEX_STATE_HOME}"
+
+[robdex.core]
+communication = true
+spawning = true
+requirements = true
+request_review = true
+safe_project_registration = true
+roles_path = "${ROBDEX_HOME}/roles"
+skills_path = "${ROBDEX_HOME}/skills"
+
+[robdex.core.roles]
+orchestrator = "${ROBDEX_HOME}/roles/orchestrator.md"
+operator = "builtin:operator"
+worker = "${ROBDEX_HOME}/roles/worker.md"
+requirements_reviewer = "${ROBDEX_HOME}/roles/requirements-reviewer.md"
+
+[robdex.core.skills]
+robdex = "${ROBDEX_HOME}/skills/robdex-orchestrator"
+request_review = "${ROBDEX_HOME}/skills/request-review"

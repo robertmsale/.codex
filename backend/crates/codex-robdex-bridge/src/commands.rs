@@ -906,11 +906,7 @@ pub async fn execute_bridge_command(
         }
         "turnInterrupt" => {
             let thread_id = required_string(&payload, "threadId")?;
-            let turn_id = runtime
-                .active_turn_id_for_thread(&thread_id)
-                .await
-                .ok_or_else(|| anyhow::anyhow!("No active turn ID is tracked for thread {thread_id}."))?;
-            app_server_request_json(runtime, "turn/interrupt", json!({"threadId": thread_id, "turnId": turn_id})).await?;
+            app_server_request_json(runtime, "turn/interrupt", json!({"threadId": thread_id, "turnId": ""})).await?;
             Ok(success(json!({"type":"empty"})))
         }
         "mcpRefresh" => {
@@ -1246,7 +1242,70 @@ async fn app_server_request_json(
 }
 
 pub(crate) fn parse_state(value: &Value) -> PersistedState {
-    serde_json::from_value(value.clone()).unwrap_or_default()
+    match serde_json::from_value(value.clone()) {
+        Ok(state) => state,
+        Err(error) => {
+            tracing::warn!("falling back to lossy Robdex state parsing after persisted state error: {error}");
+            parse_state_lossy(value)
+        }
+    }
+}
+
+fn parse_state_lossy(value: &Value) -> PersistedState {
+    let mut state = PersistedState::default();
+    let Some(object) = value.as_object() else {
+        return state;
+    };
+
+    state.global_configs = object.get("globalConfigs").cloned().unwrap_or(Value::Null);
+    state.selected_project_id = object
+        .get("selectedProjectID")
+        .or_else(|| object.get("selectedProjectId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    state.updated_at = object
+        .get("updatedAt")
+        .and_then(|value| serde_json::from_value::<Option<u64>>(value.clone()).ok())
+        .flatten();
+    state.extras = object
+        .iter()
+        .filter(|(key, _)| !matches!(key.as_str(), "globalConfigs" | "projects" | "selectedProjectID" | "selectedProjectId" | "updatedAt"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+
+    if let Some(projects) = object.get("projects").and_then(Value::as_object) {
+        for (key, project_value) in projects {
+            if let Some(project) = parse_project_lossy(project_value) {
+                state.projects.insert(key.clone(), project);
+            }
+        }
+    }
+
+    state
+}
+
+fn parse_project_lossy(value: &Value) -> Option<PersistedProjectState> {
+    let mut project_value = value.clone();
+    let agents_value = project_value
+        .as_object_mut()
+        .and_then(|object| object.remove("agents"));
+    let mut project = serde_json::from_value::<PersistedProjectState>(project_value).ok()?;
+    project.agents.clear();
+
+    if let Some(agents) = agents_value.and_then(|value| value.as_object().cloned()) {
+        for (thread_id, agent_value) in agents {
+            match serde_json::from_value::<PersistedAgentState>(agent_value) {
+                Ok(agent) => {
+                    project.agents.insert(thread_id, agent);
+                }
+                Err(error) => {
+                    tracing::warn!("skipping malformed Robdex agent `{thread_id}` during lossy state parse: {error}");
+                }
+            }
+        }
+    }
+
+    Some(project)
 }
 
 pub(crate) fn tracked_project_identity_for_thread(
@@ -1314,6 +1373,48 @@ pub(crate) async fn persist_state(runtime: &BridgeRuntime, state: &PersistedStat
         })
         .await;
     Ok(())
+}
+
+pub(crate) fn prune_missing_project_roots(state: &mut PersistedState) -> Vec<String> {
+    let mut removed = Vec::new();
+    state.projects.retain(|key, project| {
+        let root = project
+            .project_root
+            .as_deref()
+            .or(project.cwd.as_deref())
+            .map(str::trim)
+            .unwrap_or_default();
+        if root.is_empty() || Path::new(root).is_dir() {
+            return true;
+        }
+
+        let label = project
+            .name
+            .as_deref()
+            .or(project.id.as_deref())
+            .unwrap_or(key.as_str());
+        removed.push(format!("{label} ({root})"));
+        false
+    });
+
+    if removed.is_empty() {
+        return removed;
+    }
+
+    if state
+        .selected_project_id
+        .as_deref()
+        .is_some_and(|selected| {
+            !state
+                .projects
+                .values()
+                .any(|project| project.id.as_deref() == Some(selected))
+        })
+    {
+        state.selected_project_id = state.projects.values().find_map(|project| project.id.clone());
+    }
+    state.updated_at = Some(unix_now());
+    removed
 }
 
 fn save_project_catalog(state: &mut PersistedState, catalog: &Value) -> Result<()> {
@@ -3787,77 +3888,6 @@ async fn maybe_compensate_spawn_hook_resources(
     outcome.telemetry
 }
 
-async fn release_qa_harness_leases_for_thread(
-    runtime: &BridgeRuntime,
-    project_root: &str,
-    thread_id: &str,
-) -> Result<()> {
-    let client = reqwest::Client::new();
-    let base_url = runtime.settings().qa_harness_url.trim_end_matches('/').to_string();
-    let projects: Vec<Value> = client
-        .get(format!("{base_url}/projects"))
-        .send()
-        .await
-        .context("qa harness projects request failed")?
-        .json()
-        .await
-        .context("qa harness projects decode failed")?;
-    let normalized_project_root = normalize_harness_project_root(project_root);
-    let Some(project_id) = projects.into_iter().find_map(|project| {
-        let repo_root = project.get("repo_root")?.as_str()?;
-        (normalize_harness_project_root(repo_root) == normalized_project_root)
-            .then(|| project.get("id")?.as_str().map(str::to_string))
-            .flatten()
-    }) else {
-        return Ok(());
-    };
-
-    let devices: Vec<Value> = client
-        .get(format!("{base_url}/projects/{project_id}/devices"))
-        .send()
-        .await
-        .with_context(|| format!("qa harness devices request failed for project {project_id}"))?
-        .json()
-        .await
-        .with_context(|| format!("qa harness devices decode failed for project {project_id}"))?;
-
-    for device in devices {
-        let lease_owner = device
-            .get("state")
-            .and_then(|value| value.get("lease"))
-            .and_then(|value| value.get("owner"))
-            .and_then(Value::as_str);
-        if lease_owner != Some(thread_id) {
-            continue;
-        }
-        let Some(device_key) = device.get("device_key").and_then(Value::as_str) else {
-            continue;
-        };
-        let response = client
-            .delete(format!("{base_url}/projects/{project_id}/devices/{device_key}/lease"))
-            .send()
-            .await
-            .with_context(|| format!("qa harness release lease request failed for {project_id}/{device_key}"))?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            bail!("qa harness release lease returned {status} for {project_id}/{device_key}; body={body}");
-        }
-    }
-
-    Ok(())
-}
-
-fn normalize_harness_project_root(root: &str) -> String {
-    let path = Path::new(root);
-    if path.file_name().and_then(|name| name.to_str()) == Some(".worktrees") {
-        if let Some(parent) = path.parent() {
-            return parent.to_string_lossy().into_owned();
-        }
-    }
-    root.to_string()
-}
-
 pub(crate) async fn register_live_process(
     runtime: &BridgeRuntime,
     thread_id: &str,
@@ -4427,12 +4457,17 @@ pub async fn orchestrator_pending_approvals(runtime: &BridgeRuntime, sender_thre
     let state = parse_state(&runtime.state_document_value().await);
     let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
     let records = all_agent_records(&state, &running);
-    let scoped = scoped_agent_context(&records, sender_thread_id, true)?;
-    let mut visible = scoped
-        .visible
-        .into_iter()
-        .map(|record| record.thread_id)
-        .collect::<std::collections::BTreeSet<_>>();
+    let mut visible = match scoped_agent_context(&records, sender_thread_id, true) {
+        Ok(scoped) => scoped
+            .visible
+            .into_iter()
+            .map(|record| record.thread_id)
+            .collect::<std::collections::BTreeSet<_>>(),
+        Err(_error) if agent_state_for_thread(&state, sender_thread_id).is_some() => {
+            std::collections::BTreeSet::new()
+        }
+        Err(error) => return Err(error),
+    };
     visible.insert(sender_thread_id.to_string());
     let items = runtime
         .pending_approvals()
@@ -4493,6 +4528,17 @@ pub async fn orchestrator_set_requirements(
     project_path: Option<&str>,
     set_payload: Value,
 ) -> Result<Value> {
+    if set_payload.is_null() {
+        return orchestrator_clear_requirements(
+            runtime,
+            sender_thread_id,
+            recipient_thread_id,
+            recipient_name,
+            project_path,
+        )
+        .await;
+    }
+
     let mut set = parse_requirement_set_payload(set_payload)?;
     validate_requirement_set(&set)?;
 
@@ -4525,6 +4571,48 @@ pub async fn orchestrator_set_requirements(
                 "requirementSetId": set.id,
                 "requirementCount": set.requirements.len(),
                 "enforceOnTurns": set.enforce_on_turns,
+            }));
+        }
+    }
+    bail!("Recipient `{}` is not a tracked agent.", recipient.thread_id)
+}
+
+async fn orchestrator_clear_requirements(
+    runtime: &BridgeRuntime,
+    sender_thread_id: &str,
+    recipient_thread_id: Option<&str>,
+    recipient_name: Option<&str>,
+    project_path: Option<&str>,
+) -> Result<Value> {
+    let _state_guard = runtime.lock_state_mutation().await;
+    let mut state = parse_state(&runtime.state_document_value().await);
+    let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
+    let records = all_agent_records(&state, &running);
+    let scoped = scoped_agent_context(&records, sender_thread_id, true)?;
+    let recipient = if recipient_thread_id.is_none() && recipient_name.is_none() {
+        scoped.sender.clone()
+    } else {
+        resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?
+    };
+
+    for project in state.projects.values_mut() {
+        if let Some(agent) = project.agents.get_mut(&recipient.thread_id) {
+            agent.requirements = None;
+            agent.requirement_review = None;
+            agent.requirement_packets.clear();
+            persist_state(runtime, &state).await?;
+            runtime
+                .push_event(crate::models::BridgeEvent::AppStateSnapshot {
+                    state: runtime.state_document_value().await,
+                })
+                .await;
+            return Ok(json!({
+                "threadId": recipient.thread_id,
+                "displayName": recipient.display_name,
+                "requirementSetId": Value::Null,
+                "requirementCount": 0,
+                "enforceOnTurns": false,
+                "cleared": true,
             }));
         }
     }
@@ -4761,7 +4849,7 @@ fn validate_requirement_set(set: &RequirementSetState) -> Result<()> {
 
 fn requirements_claim_prompt(set: &RequirementSetState) -> String {
     let mut prompt = String::from(
-        "Active Requirements are attached to this task. Structured responses use `summary` plus `requirements`.\n\nUse `requirements: null` only for mid-turn commentary or progress updates. When finishing a turn, `requirements` must be the object containing every requirement claim.\n\nKeep fields non-duplicative:\n- `summary`: one or two concise global outcome sentences only; do not list per-requirement evidence.\n- `evidence`: concrete proof only, such as files, commands, exit statuses, diffs, health checks, or reviewer facts.\n- `justification`: one concise causal sentence explaining why the evidence satisfies the requirement; do not repeat the evidence list.\n- `risk`: residual risk only.\n\nBlocked is not success; use blocked only for a true external dependency with proof.\n\nRequirements:\n",
+        "Active Requirements are attached to this task. Structured responses use `summary` plus `requirements`.\n\nRequirements cover the full assigned unit of work or work package, not only the latest small step. Each claim must map back to the assigned operator-approved outcome. Do not treat Requirements as permission to reduce scope, substitute an alternative implementation, or document a partial pattern unless the operator explicitly authorized that change.\n\nUse `requirements: null` only for mid-turn commentary or progress updates. When finishing a turn, `requirements` must be the object containing every requirement claim.\n\nKeep fields non-duplicative:\n- `summary`: one or two concise global outcome sentences only; do not list per-requirement evidence.\n- `evidence`: concrete proof only, such as files, commands, exit statuses, diffs, health checks, or reviewer facts.\n- `justification`: one concise causal sentence explaining why the evidence satisfies the requirement; do not repeat the evidence list.\n- `risk`: residual risk only.\n\nBlocked is not success; use blocked only for a true external dependency with proof.\n\nRequirements:\n",
     );
     for requirement in &set.requirements {
         prompt.push_str(&format!(
@@ -5147,6 +5235,11 @@ pub async fn orchestrator_spawn_agent(
         Some(authoritative.cwd.as_str()),
     )
     .filter(|value| !value.trim().is_empty());
+    let approval_policy = if target_role == "requirements-reviewer" {
+        Some("never".to_string())
+    } else {
+        authoritative.approval_policy
+    };
     let payload = json!({
         "displayName": name,
         "initialPrompt": prompt,
@@ -5154,7 +5247,7 @@ pub async fn orchestrator_spawn_agent(
         "projectPath": sender.project_path,
         "role": target_role,
         "parentAgentId": sender_thread_id,
-        "approvalPolicy": authoritative.approval_policy,
+        "approvalPolicy": approval_policy,
         "sandboxMode": authoritative.sandbox_mode,
         "networkAccess": authoritative.network_access,
         "modelID": model,
@@ -5498,35 +5591,6 @@ where
                 })
                 .await;
         }
-        if role == "qa" {
-            if let Err(error) = release_qa_harness_leases_for_thread(runtime, &project_root, thread_id).await {
-                let telemetry = HookTelemetry {
-                    event: HookEvent::QaArchive.wire_name().to_string(),
-                    status: "failed".to_string(),
-                    detail: Some(format!("qa harness lease release failed: {error}")),
-                };
-                record_project_hook_telemetry(
-                    &mut state,
-                    &project_root,
-                    Some(thread_id),
-                    &agent_name,
-                    &role,
-                    &telemetry,
-                );
-                runtime
-                    .push_event(crate::models::BridgeEvent::HookFailure {
-                        payload: hook_failure_notice(
-                            &project_id,
-                            &project_name,
-                            Some(thread_id),
-                            &agent_name,
-                            &role,
-                            &telemetry,
-                        ),
-                    })
-                    .await;
-            }
-        }
     }
     let pruned_thread_ids = prune_archived_thread_locally_filtered(&mut state, thread_id, can_archive_role);
     if !pruned_thread_ids.is_empty() {
@@ -5727,12 +5791,18 @@ pub async fn orchestrator_approval_decision(
     let state = parse_state(&runtime.state_document_value().await);
     let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
     let records = all_agent_records(&state, &running);
-    let scoped = scoped_agent_context(&records, sender_thread_id, true)?;
-    let visible = scoped
-        .visible
-        .into_iter()
-        .map(|record| record.thread_id)
-        .collect::<std::collections::BTreeSet<_>>();
+    let mut visible = match scoped_agent_context(&records, sender_thread_id, true) {
+        Ok(scoped) => scoped
+            .visible
+            .into_iter()
+            .map(|record| record.thread_id)
+            .collect::<std::collections::BTreeSet<_>>(),
+        Err(_error) if agent_state_for_thread(&state, sender_thread_id).is_some() => {
+            std::collections::BTreeSet::new()
+        }
+        Err(error) => return Err(error),
+    };
+    visible.insert(sender_thread_id.to_string());
     let approval = runtime
         .pending_approvals()
         .await
@@ -5960,6 +6030,86 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn prune_missing_project_roots_removes_stale_projects_and_repairs_selection() {
+        let temp = TempDir::new().expect("tempdir");
+        let existing_root = temp.path().join("existing");
+        std::fs::create_dir_all(&existing_root).expect("existing root");
+        let missing_root = temp.path().join("deleted");
+
+        let mut state = PersistedState::default();
+        state.selected_project_id = Some("missing-id".to_string());
+        state.projects.insert(
+            "existing".to_string(),
+            PersistedProjectState {
+                id: Some("existing-id".to_string()),
+                name: Some("Existing".to_string()),
+                project_root: Some(existing_root.display().to_string()),
+                cwd: Some(existing_root.display().to_string()),
+                ..Default::default()
+            },
+        );
+        state.projects.insert(
+            "missing".to_string(),
+            PersistedProjectState {
+                id: Some("missing-id".to_string()),
+                name: Some("Missing".to_string()),
+                project_root: Some(missing_root.display().to_string()),
+                cwd: Some(missing_root.display().to_string()),
+                ..Default::default()
+            },
+        );
+
+        let removed = prune_missing_project_roots(&mut state);
+
+        assert_eq!(removed.len(), 1);
+        assert!(removed[0].contains("Missing"));
+        assert!(state.projects.contains_key("existing"));
+        assert!(!state.projects.contains_key("missing"));
+        assert_eq!(state.selected_project_id.as_deref(), Some("existing-id"));
+        assert!(state.updated_at.is_some());
+    }
+
+    #[test]
+    fn parse_state_lossy_keeps_valid_agents_when_one_record_is_malformed() {
+        let state = parse_state(&json!({
+            "globalConfigs": {
+                "approvalPolicy": "never"
+            },
+            "projects": {
+                "alpha": {
+                    "id": "alpha-id",
+                    "name": "Alpha",
+                    "projectRoot": "/alpha",
+                    "cwd": "/alpha",
+                    "agents": {
+                        "good-thread": {
+                            "displayName": "Good",
+                            "role": "orchestrator",
+                            "projectRoot": "/alpha"
+                        },
+                        "bad-thread": {
+                            "displayName": "Bad",
+                            "role": "worker",
+                            "requirementPackets": [
+                                {
+                                    "packetType": "claim",
+                                    "sourceThreadId": "bad-thread",
+                                    "payload": {},
+                                    "createdAt": "not-a-number"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }));
+
+        let project = state.projects.get("alpha").expect("project");
+        assert!(project.agents.contains_key("good-thread"));
+        assert!(!project.agents.contains_key("bad-thread"));
     }
 
     #[test]
@@ -6479,11 +6629,66 @@ mod tests {
                 port: 42080,
             },
             app_server_url,
-            qa_harness_url: "http://127.0.0.1:8775".to_string(),
             project_path: root.path().to_path_buf(),
             cwd: root.path().to_path_buf(),
             paths: BridgePaths::new(PathBuf::from(root.path()).join("state")),
         }
+    }
+
+    #[tokio::test]
+    async fn orchestrator_set_requirements_null_clears_requirement_metadata() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut state = sample_state();
+        let worker = state
+            .projects
+            .get_mut("alpha")
+            .and_then(|project| project.agents.get_mut("worker-a"))
+            .expect("worker");
+        worker.requirements = Some(sample_requirement_set());
+        worker.requirement_review = Some(RequirementReviewBindingState {
+            source_thread_id: "worker-a".to_string(),
+            reviewer_thread_id: "reviewer-a".to_string(),
+            requirement_set_id: Some("requirements-a".to_string()),
+            status: "inReview".to_string(),
+            latest_claim_packet: Some(json!({"summary": "done"})),
+            latest_verdict_packet: None,
+            updated_at: 100,
+        });
+        worker.requirement_packets.push(RequirementPacketState {
+            packet_type: "claim".to_string(),
+            source_thread_id: "worker-a".to_string(),
+            turn_id: Some("turn-a".to_string()),
+            target_thread_id: Some("reviewer-a".to_string()),
+            payload: json!({"summary": "done"}),
+            created_at: 100,
+        });
+        persist_state(&runtime, &state).await.expect("persist state");
+
+        let result = orchestrator_set_requirements(
+            &runtime,
+            "operator-a",
+            Some("worker-a"),
+            None,
+            None,
+            Value::Null,
+        )
+        .await
+        .expect("clear requirements");
+
+        assert_eq!(result["cleared"], true);
+        assert_eq!(result["requirementCount"], 0);
+        let next = parse_state(&runtime.state_document_value().await);
+        let worker = next
+            .projects
+            .get("alpha")
+            .and_then(|project| project.agents.get("worker-a"))
+            .expect("worker");
+        assert!(worker.requirements.is_none());
+        assert!(worker.requirement_review.is_none());
+        assert!(worker.requirement_packets.is_empty());
     }
 
     fn write_executable(path: &std::path::Path, content: &str) {
@@ -7552,6 +7757,140 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn orchestrator_spawn_requirements_reviewer_forces_never_approval_policy() {
+        let temp = TempDir::new().expect("tempdir");
+        let (thread_tx, thread_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            let mut thread_tx = Some(thread_tx);
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    if request.method == "thread/start" {
+                        thread_tx
+                            .take()
+                            .expect("thread sender")
+                            .send(request.clone())
+                            .expect("record thread start request");
+                    }
+                    let result = match request.method.as_str() {
+                        "thread/start" => json!({"thread": {"id": "thread-reviewer-1", "title": "Requirements Reviewer"}}),
+                        "thread/name/set" => json!({}),
+                        "turn/start" => json!({"turn": {"id": "turn-reviewer-1", "status": "inProgress", "items": [], "error": null}}),
+                        _ => json!({}),
+                    };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result,
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "turn/start" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        runtime
+            .persist_state_document(json!({
+                "globalConfigs": {
+                    "approvalPolicy": "on-request",
+                    "sandboxMode": "workspace-write",
+                    "networkAccess": true
+                },
+                "projects": {
+                    "ezra": {
+                        "id": "project-ezra",
+                        "name": "Ezra",
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().join(".worktrees").display().to_string(),
+                        "orchestratorThreadId": "thread-orchestrator",
+                        "agents": {
+                            "thread-orchestrator": {
+                                "displayName": "Ezra Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().join(".worktrees").display().to_string(),
+                                "approvalPolicy": "on-request",
+                                "sandboxMode": "workspace-write",
+                                "networkAccess": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        orchestrator_spawn_agent(
+            &runtime,
+            "thread-orchestrator",
+            "Requirements Reviewer",
+            "Review requirements only.",
+            None,
+            Some("requirements-reviewer"),
+            None,
+            None,
+        )
+        .await
+        .expect("orchestrator spawn");
+
+        let thread_request = thread_rx.await.expect("captured thread start request");
+        let thread_params = thread_request.params.expect("thread params");
+        assert_eq!(thread_params["approvalPolicy"], "never");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent_state = state
+            .projects
+            .values()
+            .find_map(|project| project.agents.get("thread-reviewer-1"))
+            .expect("persisted reviewer state");
+        assert_eq!(agent_state.role.as_deref(), Some("requirements-reviewer"));
+        assert_eq!(agent_state.approval_policy.as_deref(), Some("never"));
+
+        transport.abort();
+    }
+
+    #[tokio::test]
     async fn orchestrator_spawn_agent_rejects_non_subordinate_roles() {
         let temp = TempDir::new().expect("tempdir");
         let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:9".to_string()))
@@ -7601,7 +7940,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("only spawn worker or qa agents")
+                .contains("only spawn worker, qa, or requirements-reviewer agents")
         );
     }
 
@@ -7701,6 +8040,87 @@ mod tests {
         assert_eq!(thread_params["config"]["model_reasoning_effort"], "high");
         assert_eq!(thread_params["developerInstructions"], "hidden developer instructions");
         assert_eq!(thread_params["baseInstructions"], "hidden base instructions");
+
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn turn_interrupt_uses_immediate_thread_interrupt_without_tracked_turn() {
+        let temp = TempDir::new().expect("tempdir");
+        let (request_tx, request_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            let mut request_tx = Some(request_tx);
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                let next = ws.next().await.expect("request").expect("request frame");
+                let text = match next {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected request frame: {other:?}"),
+                };
+                let request =
+                    match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected request message: {other:?}"),
+                    };
+                request_tx
+                    .take()
+                    .expect("request sender")
+                    .send(request.clone())
+                    .expect("record request");
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: request.id,
+                        result: json!({}),
+                    }))
+                    .expect("response")
+                    .into(),
+                ))
+                .await
+                .expect("send response");
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+
+        execute_bridge_command(
+            &runtime,
+            "turnInterrupt",
+            json!({
+                "threadId": "worker-1"
+            }),
+        )
+        .await
+        .expect("turn interrupt");
+
+        let request = request_rx.await.expect("captured request");
+        assert_eq!(request.method, "turn/interrupt");
+        let params = request.params.expect("interrupt params");
+        assert_eq!(params["threadId"], "worker-1");
+        assert_eq!(params["turnId"], "");
 
         transport.abort();
     }
@@ -9395,6 +9815,144 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
         let snapshot = make_app_state_snapshot(&runtime, true).await.expect("snapshot");
         assert!(snapshot.pending_approvals.is_empty());
+
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn approval_decision_allows_hidden_reviewer_to_resolve_own_pending_approval() {
+        let temp = TempDir::new().expect("tempdir");
+        let (response_tx, response_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request = match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                    JSONRPCMessage::Request(request) => request,
+                    other => panic!("unexpected init message: {other:?}"),
+                };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let response = ws.next().await.expect("response").expect("response frame");
+                    let response_text = match response {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected response frame: {other:?}"),
+                    };
+                    let response_message = serde_json::from_str::<JSONRPCMessage>(&response_text).expect("jsonrpc message");
+                    match response_message {
+                        JSONRPCMessage::Request(request) => {
+                            ws.send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                                    id: request.id,
+                                    result: json!({}),
+                                }))
+                                .expect("request response")
+                                .into(),
+                            ))
+                            .await
+                            .expect("send request response");
+                        }
+                        other => {
+                            response_tx.send(other).expect("record response");
+                            break;
+                        }
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let mut state = PersistedState::default();
+        let mut project = PersistedProjectState {
+            project_root: Some(temp.path().display().to_string()),
+            cwd: Some(temp.path().display().to_string()),
+            ..Default::default()
+        };
+        project.agents.insert(
+            "worker-a".to_string(),
+            PersistedAgentState {
+                display_name: Some("Worker A".to_string()),
+                role: Some("worker".to_string()),
+                project_root: Some(temp.path().display().to_string()),
+                ..Default::default()
+            },
+        );
+        project.agents.insert(
+            "reviewer-a".to_string(),
+            PersistedAgentState {
+                display_name: Some("Requirements Reviewer: Worker A".to_string()),
+                role: Some("requirements-reviewer".to_string()),
+                project_root: Some(temp.path().display().to_string()),
+                parent_thread_id: Some("worker-a".to_string()),
+                hidden_from_peer_list: true,
+                approval_policy: Some("never".to_string()),
+                ..Default::default()
+            },
+        );
+        state.projects.insert("alpha".to_string(), project);
+        persist_state(&runtime, &state).await.expect("persist state");
+        runtime
+            .insert_pending_approval_for_test(crate::models::PendingApproval {
+                id: "approval-hidden-reviewer".to_string(),
+                instance_id: runtime.settings().project_path.display().to_string(),
+                request_id: RequestId::Integer(101),
+                thread_id: "reviewer-a".to_string(),
+                turn_id: "turn-reviewer".to_string(),
+                item_id: "item-reviewer".to_string(),
+                kind: crate::models::PendingApprovalKind::CommandExecution,
+                title: "Command approval".to_string(),
+                detail: Some("needs approval".to_string()),
+                approval_reason: Some("needs approval".to_string()),
+                tool_name: None,
+                tool_arguments: None,
+                tool_questions: Vec::new(),
+                auth_refresh_reason: None,
+                command: Some("git fetch origin master".to_string()),
+                command_cwd: Some(temp.path().display().to_string()),
+                file_grant_root: None,
+                file_changes: Vec::new(),
+            })
+            .await;
+        let transport = runtime.spawn_transport();
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let outcome = orchestrator_approval_decision(
+            &runtime,
+            "reviewer-a",
+            "approval-hidden-reviewer",
+            "decline",
+            Some("Requirements reviewers run with approval policy never."),
+        )
+        .await
+        .expect("approval decision");
+        assert_eq!(outcome["decision"], "decline");
+        assert_eq!(outcome["resolved"], true);
+
+        let response = response_rx.await.expect("response");
+        match response {
+            JSONRPCMessage::Response(response) => {
+                assert_eq!(response.id, RequestId::Integer(101));
+                assert_eq!(response.result["decision"], "decline");
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+        assert!(runtime.pending_approvals().await.is_empty());
 
         transport.abort();
     }

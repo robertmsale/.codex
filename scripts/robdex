@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+robdex_home="$(cd "$script_dir/.." && pwd)"
+export ROBDEX_HOME="${ROBDEX_HOME:-$robdex_home}"
+
+case "${1:-}" in
+  bootstrap)
+    shift
+    exec "$ROBDEX_HOME/scripts/robdex-bootstrap" "$@"
+    ;;
+  doctor|start|status|stop|install-plan)
+    exec "$ROBDEX_HOME/scripts/robdex-service" "$@"
+    ;;
+  config)
+    shift
+    exec "$ROBDEX_HOME/scripts/robdex-config" "$@"
+    ;;
+  service-template)
+    shift
+    exec "$ROBDEX_HOME/scripts/robdex-service-template" "$@"
+    ;;
+  setup)
+    shift
+    exec "$ROBDEX_HOME/scripts/robdex-setup" "$@"
+    ;;
+esac
+
+exec "$ROBDEX_HOME/skills/robdex-orchestrator/scripts/robdex" "$@"

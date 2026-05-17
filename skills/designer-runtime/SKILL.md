@@ -5,7 +5,8 @@ description: Use this when a designer needs to pilot an ad-hoc iOS simulator dir
 
 # Designer Runtime
 
-Use this skill for designers working directly from their own worktree and simulator.
+Use this skill for designers and QA agents working directly from an assigned
+worktree and simulator.
 
 Use only these scripts:
 
@@ -32,7 +33,7 @@ designer-hot-reload ...
 
 ## Guardrails
 
-- This skill is for designers, not QA broker flows.
+- This skill is for direct designer/QA piloting, not QA broker flows.
 - Do not use `flutter-sim` or the managed reservation path here.
 - `designer-drive` must not rely on broker reservations, thread identity, mutagen lane setup, or managed runtime metadata.
 - Work from the assigned designer worktree and keep controller/state logic intact unless the task explicitly says otherwise.

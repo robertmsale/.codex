@@ -11,6 +11,7 @@ import '../../core/models/workbench_models.dart';
 import '../inspector/inspector_panel.dart';
 import '../requirements/requirement_set_form.dart';
 import 'screenshot_capture.dart';
+import 'slash_commands.dart';
 
 class ComposerSubmission {
   const ComposerSubmission({
@@ -34,6 +35,7 @@ class ComposerPanel extends StatefulWidget {
     required this.selection,
     required this.availableModels,
     required this.onSettingsChanged,
+    required this.onCompactThread,
     this.bridgeBaseUri,
     this.terminalAvailable = false,
     this.onTerminalPressed,
@@ -46,6 +48,7 @@ class ComposerPanel extends StatefulWidget {
   final WorkspaceSelection selection;
   final List<ModelItem> availableModels;
   final ValueChanged<ThreadSettingsDraft> onSettingsChanged;
+  final VoidCallback onCompactThread;
   final Uri? bridgeBaseUri;
   final bool terminalAvailable;
   final VoidCallback? onTerminalPressed;
@@ -69,6 +72,10 @@ class _ComposerPanelState extends State<ComposerPanel> {
   bool _isShowingSendTransition = false;
   String? _requirementSetJson;
   String? _attachmentError;
+  String? _dismissedSlashText;
+  OverlayEntry? _slashFeedbackOverlay;
+  int _selectedSlashIndex = 0;
+  int _slashFeedbackSerial = 0;
   int _sendTransitionSerial = 0;
 
   @override
@@ -81,6 +88,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
   @override
   void dispose() {
     _controller.removeListener(_handleDraftChanged);
+    _slashFeedbackOverlay?.remove();
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -90,12 +98,23 @@ class _ComposerPanelState extends State<ComposerPanel> {
     final next = _controller.text.trim().isNotEmpty;
     setState(() {
       _hasDraftText = next;
+      if (_dismissedSlashText != _controller.text) {
+        _dismissedSlashText = null;
+      }
+      final suggestions = _slashSuggestionState;
+      if (suggestions == null || _selectedSlashIndex >= suggestions.options.length) {
+        _selectedSlashIndex = 0;
+      }
     });
   }
 
   void _submit() {
-    final text = _controller.text.trim();
+    final rawText = _controller.text;
+    final text = rawText.trim();
     if ((text.isEmpty && _localImagePaths.isEmpty) || !widget.enabled) {
+      return;
+    }
+    if (_tryExecuteSlashCommand(rawText)) {
       return;
     }
     _showSendTransition();
@@ -111,6 +130,199 @@ class _ComposerPanelState extends State<ComposerPanel> {
       _localImagePaths.clear();
       _requirementSetJson = null;
     });
+  }
+
+  SlashCommandSuggestionState? get _slashSuggestionState {
+    final text = _controller.text;
+    if (text == _dismissedSlashText) {
+      return null;
+    }
+    return slashCommandSuggestions(
+      text,
+      selection: widget.selection,
+      availableModels: widget.availableModels,
+    );
+  }
+
+  bool _tryExecuteSlashCommand(String text) {
+    final command = parseCompleteSlashCommand(
+      text,
+      selection: widget.selection,
+      availableModels: widget.availableModels,
+    );
+    if (command == null) {
+      return false;
+    }
+    if (widget.selection.threadId == null || !widget.enabled) {
+      _showSlashFeedback('Select a thread first');
+      return true;
+    }
+    switch (command.kind) {
+      case SlashCommandKind.model:
+        widget.onSettingsChanged(_settingsDraft(modelId: command.argument ?? ''));
+        _finishSlashCommand('Model set to ${command.argument}');
+        return true;
+      case SlashCommandKind.reasoning:
+        widget.onSettingsChanged(_settingsDraft(reasoningEffort: command.argument ?? ''));
+        _finishSlashCommand('Reasoning set to ${command.argument}');
+        return true;
+      case SlashCommandKind.role:
+        widget.onSettingsChanged(_settingsDraft(role: command.argument ?? 'worker'));
+        _finishSlashCommand('Role set to ${command.argument}');
+        return true;
+      case SlashCommandKind.sandbox:
+        widget.onSettingsChanged(_settingsDraft(sandboxMode: command.argument ?? ''));
+        _finishSlashCommand('Sandbox set to ${command.argument}');
+        return true;
+      case SlashCommandKind.approval:
+        widget.onSettingsChanged(_settingsDraft(approvalPolicy: command.argument ?? ''));
+        _finishSlashCommand('Approval set to ${command.argument}');
+        return true;
+      case SlashCommandKind.compact:
+        widget.onCompactThread();
+        _finishSlashCommand('Compaction requested');
+        return true;
+    }
+  }
+
+  void _finishSlashCommand(String message) {
+    _controller.clear();
+    setState(() {
+      _dismissedSlashText = null;
+      _selectedSlashIndex = 0;
+    });
+    _showSlashFeedback(message);
+  }
+
+  void _showSlashFeedback(String message) {
+    final serial = _slashFeedbackSerial + 1;
+    _slashFeedbackSerial = serial;
+    _slashFeedbackOverlay?.remove();
+    _slashFeedbackOverlay = OverlayEntry(
+      builder: (context) => Positioned(
+        left: 24,
+        right: 24,
+        bottom: 130,
+        child: IgnorePointer(
+          child: _SlashFeedbackToast(message: message),
+        ),
+      ),
+    );
+    Overlay.of(context).insert(_slashFeedbackOverlay!);
+    Future<void>.delayed(const Duration(milliseconds: 1600), () {
+      if (!mounted || _slashFeedbackSerial != serial) {
+        return;
+      }
+      _slashFeedbackOverlay?.remove();
+      _slashFeedbackOverlay = null;
+    });
+  }
+
+  ThreadSettingsDraft _settingsDraft({
+    String? role,
+    String? approvalPolicy,
+    String? sandboxMode,
+    String? networkAccessMode,
+    String? modelId,
+    String? reasoningEffort,
+    String? serviceTier,
+  }) {
+    return ThreadSettingsDraft(
+      role: role ?? (widget.selection.threadRole ?? 'worker'),
+      approvalPolicy: approvalPolicy ?? (widget.selection.approvalPolicy ?? ''),
+      sandboxMode: sandboxMode ?? (widget.selection.sandboxMode ?? ''),
+      networkAccessMode: networkAccessMode ??
+          (widget.selection.networkAccess == null
+              ? 'default'
+              : (widget.selection.networkAccess! ? 'enabled' : 'disabled')),
+      modelId: modelId ?? (widget.selection.model ?? ''),
+      reasoningEffort: reasoningEffort ?? (widget.selection.reasoningEffort ?? ''),
+      serviceTier: serviceTier ?? (widget.selection.serviceTier ?? ''),
+    );
+  }
+
+  void _completeSlashSelection(SlashCommandSuggestionState suggestions, int index) {
+    if (suggestions.options.isEmpty) {
+      return;
+    }
+    final option = suggestions.options[index.clamp(0, suggestions.options.length - 1).toInt()];
+    if (suggestions.command == null || !_controller.text.contains(' ')) {
+      final definition = slashCommandDefinitions.firstWhere(
+        (definition) => definition.name == option.value,
+      );
+      _controller.value = TextEditingValue(
+        text: definition.requiresArgument ? '/${option.value} ' : '/${option.value}',
+        selection: TextSelection.collapsed(
+          offset: definition.requiresArgument ? option.value.length + 2 : option.value.length + 1,
+        ),
+      );
+      if (!definition.requiresArgument) {
+        _tryExecuteSlashCommand(_controller.text);
+      }
+      return;
+    }
+    final nextText = '/${suggestions.command!.name} ${option.value}';
+    _controller.value = TextEditingValue(
+      text: nextText,
+      selection: TextSelection.collapsed(offset: nextText.length),
+    );
+  }
+
+  KeyEventResult _handleComposerKey(
+    KeyEvent event, {
+    required bool isDesktopPlatform,
+  }) {
+    if (!isDesktopPlatform || !widget.enabled || event is! KeyDownEvent) {
+      return KeyEventResult.ignored;
+    }
+    final suggestions = _slashSuggestionState;
+    if (suggestions != null) {
+      if (event.logicalKey == LogicalKeyboardKey.escape) {
+        setState(() {
+          _dismissedSlashText = _controller.text;
+          _selectedSlashIndex = 0;
+        });
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowDown && suggestions.options.isNotEmpty) {
+        setState(() {
+          _selectedSlashIndex = (_selectedSlashIndex + 1) % suggestions.options.length;
+        });
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowUp && suggestions.options.isNotEmpty) {
+        setState(() {
+          _selectedSlashIndex =
+              (_selectedSlashIndex - 1 + suggestions.options.length) % suggestions.options.length;
+        });
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.tab) {
+        _completeSlashSelection(suggestions, _selectedSlashIndex);
+        return KeyEventResult.handled;
+      }
+    }
+    final isEnter =
+        event.logicalKey == LogicalKeyboardKey.enter ||
+        event.logicalKey == LogicalKeyboardKey.numpadEnter;
+    if (!isEnter || HardwareKeyboard.instance.isShiftPressed) {
+      return KeyEventResult.ignored;
+    }
+    if (suggestions != null) {
+      if (parseCompleteSlashCommand(
+            _controller.text.trim(),
+            selection: widget.selection,
+            availableModels: widget.availableModels,
+          ) !=
+          null) {
+        _submit();
+      } else {
+        _completeSlashSelection(suggestions, _selectedSlashIndex);
+      }
+      return KeyEventResult.handled;
+    }
+    _submit();
+    return KeyEventResult.handled;
   }
 
   Future<void> _editRequirements() async {
@@ -385,6 +597,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
         : const Color(0xFF08111A);
     const actionButtonSize = 42.0;
 
+    final suggestions = _slashSuggestionState;
     final panel = DecoratedBox(
       decoration: BoxDecoration(
         color: theme.colorScheme.surface.withValues(alpha: 0.38),
@@ -473,26 +686,53 @@ class _ComposerPanelState extends State<ComposerPanel> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Focus(
-                    onKeyEvent: (node, event) {
-                      if (!isDesktopPlatform || !widget.enabled) {
-                        return KeyEventResult.ignored;
+                CallbackShortcuts(
+                  bindings: <ShortcutActivator, VoidCallback>{
+                    const SingleActivator(LogicalKeyboardKey.tab): () {
+                      final current = _slashSuggestionState;
+                      if (current != null) {
+                        _completeSlashSelection(current, _selectedSlashIndex);
                       }
-                      if (event is! KeyDownEvent) {
-                        return KeyEventResult.ignored;
-                      }
-                      final isEnter =
-                          event.logicalKey == LogicalKeyboardKey.enter ||
-                          event.logicalKey == LogicalKeyboardKey.numpadEnter;
-                      if (!isEnter) {
-                        return KeyEventResult.ignored;
-                      }
-                      if (HardwareKeyboard.instance.isShiftPressed) {
-                        return KeyEventResult.ignored;
-                      }
-                      _submit();
-                      return KeyEventResult.handled;
                     },
+                    const SingleActivator(LogicalKeyboardKey.arrowDown): () {
+                      final current = _slashSuggestionState;
+                      if (current != null && current.options.isNotEmpty) {
+                        setState(() {
+                          _selectedSlashIndex =
+                              (_selectedSlashIndex + 1) % current.options.length;
+                        });
+                      }
+                    },
+                    const SingleActivator(LogicalKeyboardKey.arrowUp): () {
+                      final current = _slashSuggestionState;
+                      if (current != null && current.options.isNotEmpty) {
+                        setState(() {
+                          _selectedSlashIndex =
+                              (_selectedSlashIndex - 1 + current.options.length) %
+                                  current.options.length;
+                        });
+                      }
+                    },
+                    const SingleActivator(LogicalKeyboardKey.escape): () {
+                      if (_slashSuggestionState != null) {
+                        setState(() {
+                          _dismissedSlashText = _controller.text;
+                          _selectedSlashIndex = 0;
+                        });
+                      }
+                    },
+                    const SingleActivator(LogicalKeyboardKey.enter): () {
+                      _submit();
+                    },
+                    const SingleActivator(LogicalKeyboardKey.numpadEnter): () {
+                      _submit();
+                    },
+                  },
+                  child: Focus(
+                    onKeyEvent: (node, event) => _handleComposerKey(
+                      event,
+                      isDesktopPlatform: isDesktopPlatform,
+                    ),
                     child: Semantics(
                       key: const ValueKey('semantic.composer.messageInput'),
                       container: true,
@@ -538,6 +778,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
                       ),
                     ),
                   ),
+                ),
                 const SizedBox(height: 8),
                 Row(
                   children: [
@@ -606,16 +847,13 @@ class _ComposerPanelState extends State<ComposerPanel> {
                       ),
                     ),
                     const SizedBox(width: 10),
-                    Expanded(
-                      child: _ComposerSettingsControls(
-                        enabled: widget.enabled && widget.selection.threadId != null,
-                        selection: widget.selection,
-                        availableModels: widget.availableModels,
-                        onSettingsChanged: widget.onSettingsChanged,
-                        terminalAvailable: widget.terminalAvailable,
-                        onTerminalPressed: widget.onTerminalPressed,
-                      ),
-                    ),
+	                    Expanded(
+	                      child: _ComposerSettingsControls(
+	                        enabled: widget.enabled && widget.selection.threadId != null,
+	                        terminalAvailable: widget.terminalAvailable,
+	                        onTerminalPressed: widget.onTerminalPressed,
+	                      ),
+	                    ),
                     Semantics(
                       key: ValueKey(
                         showsInterrupt
@@ -699,9 +937,36 @@ class _ComposerPanelState extends State<ComposerPanel> {
       ),
     );
 
-    if (!isDesktopPlatform || !supportsPathAttachments) {
-      return panel;
-    }
+    final stackedPanel = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (suggestions != null) ...[
+          _SlashCommandMenu(
+            suggestions: suggestions,
+            selectedIndex: _selectedSlashIndex,
+            onSelected: (index) {
+              _completeSlashSelection(suggestions, index);
+              final text = _controller.text;
+              if (parseCompleteSlashCommand(
+                    text,
+                    selection: widget.selection,
+                    availableModels: widget.availableModels,
+                  ) !=
+                  null) {
+                _tryExecuteSlashCommand(text);
+              }
+            },
+          ),
+          const SizedBox(height: 6),
+        ],
+        panel,
+      ],
+    );
+
+	    if (!isDesktopPlatform || !supportsPathAttachments) {
+	      return stackedPanel;
+	    }
 
     return DropTarget(
       onDragEntered: (_) {
@@ -739,139 +1004,29 @@ class _ComposerPanelState extends State<ComposerPanel> {
               : null,
         ),
         padding: _isDesktopDragging ? const EdgeInsets.all(10) : EdgeInsets.zero,
-        child: panel,
-      ),
-    );
-  }
+	        child: stackedPanel,
+	      ),
+	    );
+	  }
 }
 
 class _ComposerSettingsControls extends StatelessWidget {
   const _ComposerSettingsControls({
     required this.enabled,
-    required this.selection,
-    required this.availableModels,
-    required this.onSettingsChanged,
     required this.terminalAvailable,
     required this.onTerminalPressed,
   });
 
   final bool enabled;
-  final WorkspaceSelection selection;
-  final List<ModelItem> availableModels;
-  final ValueChanged<ThreadSettingsDraft> onSettingsChanged;
   final bool terminalAvailable;
   final VoidCallback? onTerminalPressed;
 
   @override
   Widget build(BuildContext context) {
-    final modelItems = <PopupMenuEntry<String>>[
-      PopupMenuItem(
-        value: '',
-        child: Text(_modelLabel(selection.effectiveModel, availableModels)),
-      ),
-      ...availableModels.map(
-        (model) => PopupMenuItem(
-          value: model.id,
-          child: Text((model.name?.isEmpty ?? true) ? model.id : model.name!),
-        ),
-      ),
-    ];
-
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Row(
         children: [
-          _ComposerDropdownControl(
-            enabled: enabled,
-            label: 'Model',
-            value: _shortModelLabel(selection.model ?? selection.effectiveModel),
-            icon: Icons.smart_toy_outlined,
-            maxWidth: 190,
-            items: modelItems,
-            onSelected: (value) => onSettingsChanged(_draft(modelId: value)),
-          ),
-          _ComposerDropdownControl(
-            enabled: enabled,
-            label: 'Reasoning',
-            icon: Icons.signal_cellular_alt_rounded,
-            customIcon: _ReasoningBars(
-              effort: selection.reasoningEffort ??
-                  selection.effectiveReasoningEffort ??
-                  '',
-            ),
-            items: [
-              PopupMenuItem(
-                value: '',
-                child: _ReasoningMenuRow(effort: '', label: 'System'),
-              ),
-              PopupMenuItem(
-                value: 'low',
-                child: _ReasoningMenuRow(effort: 'low', label: 'Low'),
-              ),
-              PopupMenuItem(
-                value: 'medium',
-                child: _ReasoningMenuRow(effort: 'medium', label: 'Medium'),
-              ),
-              PopupMenuItem(
-                value: 'high',
-                child: _ReasoningMenuRow(effort: 'high', label: 'High'),
-              ),
-            ],
-            onSelected: (value) => onSettingsChanged(_draft(reasoningEffort: value)),
-          ),
-          _ComposerDropdownControl(
-            enabled: enabled,
-            label: 'Service tier',
-            icon: Icons.pets_rounded,
-            glyph: '🐢',
-            items: const [
-              PopupMenuItem(value: '', child: Text('(System)')),
-              PopupMenuItem(value: 'fast', child: Text('fast')),
-              PopupMenuItem(value: 'flex', child: Text('flex')),
-            ],
-            onSelected: (value) => onSettingsChanged(_draft(serviceTier: value)),
-          ),
-          _ComposerDropdownControl(
-            enabled: enabled,
-            label: 'Role',
-            icon: Icons.engineering_rounded,
-            glyph: '👷',
-            items: const [
-              PopupMenuItem(value: 'worker', child: Text('worker')),
-              PopupMenuItem(value: 'designer', child: Text('designer')),
-              PopupMenuItem(value: 'qa', child: Text('qa')),
-              PopupMenuItem(value: 'operator', child: Text('operator')),
-              PopupMenuItem(value: 'orchestrator', child: Text('orchestrator')),
-              PopupMenuItem(value: 'hidden', child: Text('hidden')),
-            ],
-            onSelected: (value) => onSettingsChanged(_draft(role: value)),
-          ),
-          _ComposerDropdownControl(
-            enabled: enabled,
-            label: 'Sandbox',
-            icon: Icons.shield_outlined,
-            maxWidth: 52,
-            items: const [
-              PopupMenuItem(value: '', child: Text('(System)')),
-              PopupMenuItem(value: 'workspace-write', child: Text('workspace-write')),
-              PopupMenuItem(value: 'danger-full-access', child: Text('danger-full-access')),
-            ],
-            onSelected: (value) => onSettingsChanged(_draft(sandboxMode: value)),
-          ),
-          _ComposerDropdownControl(
-            key: const ValueKey('semantic.composer.networkDropdown'),
-            enabled: enabled,
-            label: 'Network',
-            icon: (selection.networkAccess ?? selection.effectiveNetworkAccess ?? false)
-                ? Icons.wifi_rounded
-                : Icons.wifi_off_rounded,
-            items: const [
-              PopupMenuItem(value: 'default', child: Text('(System)')),
-              PopupMenuItem(value: 'enabled', child: Text('Enabled')),
-              PopupMenuItem(value: 'disabled', child: Text('Disabled')),
-            ],
-            onSelected: (value) => onSettingsChanged(_draft(networkAccessMode: value)),
-          ),
           if (terminalAvailable)
             Padding(
               padding: const EdgeInsets.only(right: 6),
@@ -920,154 +1075,54 @@ class _ComposerSettingsControls extends StatelessWidget {
       ),
     );
   }
-
-  ThreadSettingsDraft _draft({
-    String? role,
-    String? approvalPolicy,
-    String? sandboxMode,
-    String? networkAccessMode,
-    String? modelId,
-    String? reasoningEffort,
-    String? serviceTier,
-  }) {
-    return ThreadSettingsDraft(
-      role: role ?? (selection.threadRole ?? 'worker'),
-      approvalPolicy: approvalPolicy ?? (selection.approvalPolicy ?? ''),
-      sandboxMode: sandboxMode ?? (selection.sandboxMode ?? ''),
-      networkAccessMode: networkAccessMode ??
-          (selection.networkAccess == null
-              ? 'default'
-              : (selection.networkAccess! ? 'enabled' : 'disabled')),
-      modelId: modelId ?? (selection.model ?? ''),
-      reasoningEffort: reasoningEffort ?? (selection.reasoningEffort ?? ''),
-      serviceTier: serviceTier ?? (selection.serviceTier ?? ''),
-    );
-  }
-
-  String _modelLabel(String? modelId, List<ModelItem> models) {
-    final id = modelId?.trim();
-    if (id == null || id.isEmpty) {
-      return '(System)';
-    }
-    for (final model in models) {
-      if (model.id == id) {
-        return (model.name?.isEmpty ?? true) ? model.id : model.name!;
-      }
-    }
-    return id;
-  }
-
-  String _shortModelLabel(String? modelId) {
-    final id = modelId?.trim();
-    if (id == null || id.isEmpty) {
-      return 'Model';
-    }
-    return id.toUpperCase().replaceFirst('GPT-', 'GPT-');
-  }
 }
 
-class _ComposerDropdownControl extends StatelessWidget {
-  const _ComposerDropdownControl({
-    super.key,
-    required this.enabled,
-    required this.label,
-    required this.icon,
-    required this.items,
+class _SlashCommandMenu extends StatelessWidget {
+  const _SlashCommandMenu({
+    required this.suggestions,
+    required this.selectedIndex,
     required this.onSelected,
-    this.value,
-    this.glyph,
-    this.customIcon,
-    this.maxWidth,
   });
 
-  final bool enabled;
-  final String label;
-  final String? value;
-  final String? glyph;
-  final Widget? customIcon;
-  final IconData icon;
-  final double? maxWidth;
-  final List<PopupMenuEntry<String>> items;
-  final ValueChanged<String> onSelected;
+  final SlashCommandSuggestionState suggestions;
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(right: 6),
-      child: Semantics(
-        container: true,
-        button: true,
-        enabled: enabled,
-        label: label,
-        child: ExcludeSemantics(
-          child: PopupMenuButton<String>(
-            enabled: enabled,
-            tooltip: label,
-            onSelected: onSelected,
-            itemBuilder: (context) => items,
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: maxWidth ?? double.infinity),
-              child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surface.withValues(alpha: 0.26),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: theme.colorScheme.outline.withValues(alpha: 0.34),
-                ),
-              ),
-              child: Padding(
-                padding: EdgeInsets.symmetric(
-                  horizontal: value == null ? 8 : 10,
-                  vertical: 6,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (customIcon != null)
-                      customIcon!
-                    else if (glyph == null)
-                      Icon(
-                        icon,
-                        size: 13,
-                        color: theme.colorScheme.onSurface
-                            .withValues(alpha: enabled ? 0.82 : 0.32),
-                      )
-                    else
-                      Text(
-                        glyph!,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: theme.colorScheme.onSurface
-                              .withValues(alpha: enabled ? 0.86 : 0.32),
-                        ),
-                      ),
-                    if (value != null) ...[
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          value!,
-                          overflow: TextOverflow.ellipsis,
-                          softWrap: false,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            fontWeight: FontWeight.w800,
-                            color: theme.colorScheme.onSurface
-                                .withValues(alpha: enabled ? 0.88 : 0.36),
-                          ),
-                        ),
-                      ),
-                    ],
-                    const SizedBox(width: 6),
-                    Icon(
-                      Icons.keyboard_arrow_down_rounded,
-                      size: 13,
-                      color: theme.colorScheme.onSurface
-                          .withValues(alpha: enabled ? 0.62 : 0.26),
-                    ),
-                  ],
-                ),
-              ),
+    final options = suggestions.options.take(6).toList(growable: false);
+    return Align(
+      alignment: Alignment.bottomLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 360),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface.withValues(alpha: 0.96),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: theme.colorScheme.outline.withValues(alpha: 0.42),
             ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.22),
+                blurRadius: 18,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var index = 0; index < options.length; index++)
+                  _SlashCommandMenuRow(
+                    option: options[index],
+                    selected: index == selectedIndex,
+                    onTap: () => onSelected(index),
+                  ),
+              ],
             ),
           ),
         ),
@@ -1076,69 +1131,98 @@ class _ComposerDropdownControl extends StatelessWidget {
   }
 }
 
-class _ReasoningMenuRow extends StatelessWidget {
-  const _ReasoningMenuRow({required this.effort, required this.label});
+class _SlashCommandMenuRow extends StatelessWidget {
+  const _SlashCommandMenuRow({
+    required this.option,
+    required this.selected,
+    required this.onTap,
+  });
 
-  final String effort;
-  final String label;
+  final SlashCommandOption option;
+  final bool selected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _ReasoningBars(effort: effort),
-        const SizedBox(width: 12),
-        Text(
-          label,
-          style: theme.textTheme.bodyMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        key: ValueKey('slash.option.${option.value}'),
+        color: selected
+            ? theme.colorScheme.primary.withValues(alpha: 0.14)
+            : Colors.transparent,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                option.label,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.9),
+                ),
+              ),
+            ),
+            if (option.current)
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.secondary.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  child: Text(
+                    'CURRENT',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w900,
+                      color: theme.colorScheme.secondary,
+                    ),
+                  ),
+                ),
+              ),
+          ],
         ),
-      ],
+      ),
     );
   }
 }
 
-class _ReasoningBars extends StatelessWidget {
-  const _ReasoningBars({required this.effort});
+class _SlashFeedbackToast extends StatelessWidget {
+  const _SlashFeedbackToast({required this.message});
 
-  final String effort;
+  final String message;
 
   @override
   Widget build(BuildContext context) {
-    final level = switch (effort) {
-      'high' => 3,
-      'medium' => 2,
-      'low' => 1,
-      _ => 0,
-    };
-    final activeColor = level == 0
-        ? const Color(0xFFFFB238)
-        : const Color(0xFF4FC36A);
-    final inactiveColor = activeColor.withValues(alpha: 0.28);
-    return SizedBox(
-      width: 16,
-      height: 14,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: List.generate(3, (index) {
-          final bar = index + 1;
-          return Padding(
-            padding: const EdgeInsets.only(right: 2),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: level == 0 || bar <= level ? activeColor : inactiveColor,
-                borderRadius: BorderRadius.circular(2),
-              ),
-              child: SizedBox(
-                width: 3,
-                height: 5 + (index * 4),
-              ),
+    final theme = Theme.of(context);
+    return Align(
+      alignment: Alignment.bottomLeft,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: theme.colorScheme.inverseSurface.withValues(alpha: 0.94),
+          borderRadius: BorderRadius.circular(999),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.18),
+              blurRadius: 14,
+              offset: const Offset(0, 8),
             ),
-          );
-        }),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          child: Text(
+            message,
+            key: const ValueKey('slash.feedback'),
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onInverseSurface,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
       ),
     );
   }

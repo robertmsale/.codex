@@ -1,0 +1,7 @@
+# Robert Sale reference profile
+# This documents a personal setup shape; it is not a portable default.
+
+[robdex.reference]
+owner = "robertmsale"
+purpose = "reference-only"
+notes = "Use public minimal/orchestration/privileged-exec/gui profiles for installs."

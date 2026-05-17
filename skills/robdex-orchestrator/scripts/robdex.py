@@ -394,17 +394,117 @@ def _cmd_list_pending_approvals(thread_id: str) -> None:
     _print_lines(lines)
 
 
+def _resolve_requirements_status_from_snapshot(args: argparse.Namespace) -> dict[str, Any]:
+    snapshot = _load_snapshot()
+    state = snapshot.get("state")
+    projects = state.get("projects") if isinstance(state, dict) else None
+    if not isinstance(projects, dict):
+        raise SystemExit("robdex: state snapshot does not include projects")
+    target_thread_id = _normalize_text(args.to_thread_id)
+    target_name = _normalize_text(args.name)
+    target_project = _normalize_path(args.project_path)
+    matches: list[tuple[str, dict[str, Any]]] = []
+    for _, project in projects.items():
+        if not isinstance(project, dict) or project.get("detached") is True:
+            continue
+        project_path = _normalize_path(str(project.get("projectRoot") or project.get("cwd") or ""))
+        if target_project and project_path != target_project:
+            continue
+        agents = project.get("agents")
+        if not isinstance(agents, dict):
+            continue
+        for agent_id, agent in agents.items():
+            if not isinstance(agent, dict) or agent.get("archived") is True:
+                continue
+            display_name = _normalize_text(str(agent.get("displayName") or ""))
+            if target_thread_id and str(agent_id) != target_thread_id:
+                continue
+            if target_name and (display_name or "").casefold() != target_name.casefold():
+                continue
+            matches.append((str(agent_id), agent))
+    if not matches:
+        target = target_thread_id or target_name or "(selected thread)"
+        raise SystemExit(f"robdex: no tracked requirements recipient found in snapshot for {target}")
+    if len(matches) > 1:
+        target = target_thread_id or target_name or "(selected thread)"
+        raise SystemExit(f"robdex: multiple requirements recipients found in snapshot for {target}; pass --to-thread-id")
+
+    thread_id, agent = matches[0]
+    requirements = agent.get("requirements") if isinstance(agent.get("requirements"), dict) else {}
+    review = agent.get("requirementReview") if isinstance(agent.get("requirementReview"), dict) else {}
+    requirement_items = requirements.get("requirements") if isinstance(requirements, dict) else []
+    latest_verdict = review.get("latestVerdictPacket") if isinstance(review.get("latestVerdictPacket"), dict) else {}
+    passed = failed = blocked = waiver = waived = pending = 0
+    verdicts: list[dict[str, Any]] = []
+    if isinstance(requirement_items, list):
+        for requirement in requirement_items:
+            if not isinstance(requirement, dict):
+                continue
+            key = _normalize_text(str(requirement.get("key") or ""))
+            item = latest_verdict.get(key) if key and isinstance(latest_verdict, dict) else None
+            item = item if isinstance(item, dict) else {}
+            verdict = _normalize_text(str(item.get("verdict") or ""))
+            if verdict == "pass":
+                passed += 1
+            elif verdict in ("fail", "rejectedBlocked"):
+                failed += 1
+            elif verdict == "acceptedBlocked":
+                blocked += 1
+            elif verdict == "waiverRequired":
+                waiver += 1
+            elif verdict == "waiverAccepted":
+                waived += 1
+            else:
+                pending += 1
+            verdicts.append(
+                {
+                    "key": key,
+                    "verdict": verdict or None,
+                    "reason": item.get("reason"),
+                    "evidenceAssessment": item.get("evidenceAssessment"),
+                    "requiredCorrection": item.get("requiredCorrection"),
+                }
+            )
+
+    summary = {
+        "activeRequirementCount": len(requirement_items) if isinstance(requirement_items, list) and requirements.get("active") is True else 0,
+        "status": review.get("status"),
+        "reviewerThreadId": review.get("reviewerThreadId"),
+        "requirementSetId": review.get("requirementSetId") or requirements.get("id"),
+        "passedCount": passed,
+        "failedCount": failed,
+        "blockedCount": blocked,
+        "waiverRequiredCount": waiver,
+        "waiverAcceptedCount": waived,
+        "unknownCount": pending,
+        "verdicts": verdicts,
+    }
+    return {
+        "threadId": thread_id,
+        "displayName": agent.get("displayName") or thread_id,
+        "requirements": requirements,
+        "requirementReview": review,
+        "summary": summary,
+    }
+
+
 def _cmd_requirements_status(thread_id: str, args: argparse.Namespace) -> None:
-    payload = _request_json(
-        "POST",
-        "/orchestrator/requirements/status",
-        body={
-            "senderThreadId": thread_id,
-            "recipientThreadId": _normalize_text(args.to_thread_id),
-            "recipientName": _normalize_text(args.name),
-            "projectPath": _normalize_path(args.project_path),
-        },
-    )
+    try:
+        payload = _request_json(
+            "POST",
+            "/orchestrator/requirements/status",
+            body={
+                "senderThreadId": thread_id,
+                "recipientThreadId": _normalize_text(args.to_thread_id),
+                "recipientName": _normalize_text(args.name),
+                "projectPath": _normalize_path(args.project_path),
+            },
+        )
+    except SystemExit as exc:
+        message = str(exc)
+        if "is not tracked by the bridge" not in message:
+            raise
+        payload = _resolve_requirements_status_from_snapshot(args)
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     review = payload.get("requirementReview") if isinstance(payload.get("requirementReview"), dict) else {}
     requirements = payload.get("requirements") if isinstance(payload.get("requirements"), dict) else {}

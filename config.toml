@@ -197,6 +197,9 @@ trust_level = "trusted"
 [projects."/private/tmp"]
 trust_level = "trusted"
 
+[projects."/Users/robertsale/Code/rinf"]
+trust_level = "trusted"
+
 [tui]
 status_line = []
 

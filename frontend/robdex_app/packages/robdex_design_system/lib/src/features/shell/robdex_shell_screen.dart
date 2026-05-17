@@ -41,6 +41,7 @@ class RobdexShellScreen extends StatelessWidget {
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
     this.bridgeBaseUri,
+    this.onOpenLink,
     this.chatBottomDrawer,
     this.terminalAvailable = false,
     this.onTerminalPressed,
@@ -75,6 +76,7 @@ class RobdexShellScreen extends StatelessWidget {
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
   final Uri? bridgeBaseUri;
+  final ValueChanged<String>? onOpenLink;
   final Widget? chatBottomDrawer;
   final bool terminalAvailable;
   final VoidCallback? onTerminalPressed;
@@ -93,9 +95,7 @@ class RobdexShellScreen extends StatelessWidget {
               LayoutBuilder(
                 builder: (context, constraints) {
                   final isCompact = constraints.maxWidth < 860;
-                  return Padding(
-                    padding: kIsWeb ? const EdgeInsets.all(12) : EdgeInsets.zero,
-                    child: isCompact
+                  return isCompact
                         ? RepaintBoundary(
                             child: _CompactShell(
                               workbench: workbench,
@@ -124,6 +124,7 @@ class RobdexShellScreen extends StatelessWidget {
                               onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
                               onUpdateWorkerMetadata: onUpdateWorkerMetadata,
                               bridgeBaseUri: bridgeBaseUri,
+                              onOpenLink: onOpenLink,
                               terminalAvailable: terminalAvailable,
                               onTerminalPressed: onTerminalPressed,
                             ),
@@ -156,12 +157,12 @@ class RobdexShellScreen extends StatelessWidget {
                               onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
                               onUpdateWorkerMetadata: onUpdateWorkerMetadata,
                               bridgeBaseUri: bridgeBaseUri,
+                              onOpenLink: onOpenLink,
                               chatBottomDrawer: chatBottomDrawer,
                               terminalAvailable: terminalAvailable,
                               onTerminalPressed: onTerminalPressed,
                             ),
-                          ),
-                  );
+                          );
                 },
               ),
             ],
@@ -200,6 +201,7 @@ class _WideShell extends StatefulWidget {
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
     required this.bridgeBaseUri,
+    required this.onOpenLink,
     required this.chatBottomDrawer,
     required this.terminalAvailable,
     required this.onTerminalPressed,
@@ -232,6 +234,7 @@ class _WideShell extends StatefulWidget {
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
   final Uri? bridgeBaseUri;
+  final ValueChanged<String>? onOpenLink;
   final Widget? chatBottomDrawer;
   final bool terminalAvailable;
   final VoidCallback? onTerminalPressed;
@@ -305,18 +308,19 @@ class _WideShellState extends State<_WideShell> {
                           onTerminateCommandExecution:
                               widget.onTerminateCommandExecution,
                           bridgeBaseUri: widget.bridgeBaseUri,
+                          onOpenLink: widget.onOpenLink,
                           composerEnabled: workbench.selection.threadId != null,
                           isRunning: workbench.selection.isRunning,
                           selection: workbench.selection,
                           availableModels: workbench.availableModels,
                           onSettingsChanged: widget.onSettingsChanged,
+                          onCompactThread: widget.onCompactThread,
                           requirementReview: workbench.requirementReview,
                           onOpenThread: widget.onThreadSelected,
                           terminalAvailable: widget.terminalAvailable,
                           onTerminalPressed: widget.onTerminalPressed,
                           headerControls: _DesktopThreadControls(
                             selection: workbench.selection,
-                            availableModels: workbench.availableModels,
                             liveProcesses: workbench.liveProcesses,
                             pendingApprovalCount:
                                 workbench.pendingApprovals.length,
@@ -324,9 +328,6 @@ class _WideShellState extends State<_WideShell> {
                             onCompactThread: widget.onCompactThread,
                             onTerminateCommandExecution:
                                 widget.onTerminateCommandExecution,
-                            onSettingsChanged: widget.onSettingsChanged,
-                            onRunningStateChanged:
-                                widget.onRunningStateChanged,
                             onMore: () => _showInspectorDialog(
                               context,
                               workbench: workbench,
@@ -371,40 +372,7 @@ class _WideShellState extends State<_WideShell> {
           ),
       ],
     );
-    if (kIsWeb) {
-      return _MacWindowFrame(child: shell);
-    }
     return shell;
-  }
-}
-
-class _MacWindowFrame extends StatelessWidget {
-  const _MacWindowFrame({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: const Color(0xEE1A1D22),
-            border: Border.all(color: const Color(0xFF3A3E45)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.36),
-                blurRadius: 32,
-                offset: const Offset(0, 20),
-              ),
-            ],
-          ),
-          child: child,
-        ),
-      ),
-    );
   }
 }
 
@@ -436,6 +404,7 @@ class _CompactShell extends StatefulWidget {
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
     required this.bridgeBaseUri,
+    required this.onOpenLink,
     required this.terminalAvailable,
     required this.onTerminalPressed,
   });
@@ -467,6 +436,7 @@ class _CompactShell extends StatefulWidget {
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
   final Uri? bridgeBaseUri;
+  final ValueChanged<String>? onOpenLink;
   final bool terminalAvailable;
   final VoidCallback? onTerminalPressed;
 
@@ -675,6 +645,7 @@ class _CompactShellState extends State<_CompactShell> {
       onInterrupt: widget.onInterruptThread,
       onTerminateCommandExecution: widget.onTerminateCommandExecution,
       bridgeBaseUri: widget.bridgeBaseUri,
+      onOpenLink: widget.onOpenLink,
       composerEnabled: true,
       isRunning: widget.workbench.selection.isRunning,
       selection: widget.workbench.selection,
@@ -837,62 +808,25 @@ class _HeaderIconButton extends StatelessWidget {
 class _DesktopThreadControls extends StatelessWidget {
   const _DesktopThreadControls({
     required this.selection,
-    required this.availableModels,
     required this.liveProcesses,
     required this.pendingApprovalCount,
     required this.onOpenHistory,
     required this.onCompactThread,
     required this.onTerminateCommandExecution,
-    required this.onSettingsChanged,
-    required this.onRunningStateChanged,
     required this.onMore,
   });
 
   final WorkspaceSelection selection;
-  final List<ModelItem> availableModels;
   final List<LiveProcessItem> liveProcesses;
   final int pendingApprovalCount;
   final VoidCallback onOpenHistory;
   final VoidCallback onCompactThread;
   final ValueChanged<String> onTerminateCommandExecution;
-  final ValueChanged<ThreadSettingsDraft> onSettingsChanged;
-  final ValueChanged<bool> onRunningStateChanged;
   final VoidCallback onMore;
 
   @override
   Widget build(BuildContext context) {
     final enabled = selection.threadId != null;
-    String titleCaseWords(String value) => value
-        .split(RegExp(r'[\s_-]+'))
-        .where((part) => part.isNotEmpty)
-        .map((part) => part[0].toUpperCase() + part.substring(1))
-        .join(' ');
-    String inheritedLabel(String value) => '(${titleCaseWords(value)})';
-    String inheritedOrSystem(String? value, {String system = 'System'}) =>
-        inheritedLabel((value?.trim().isNotEmpty ?? false) ? value! : system);
-    ThreadSettingsDraft draft({
-      String? role,
-      String? approvalPolicy,
-      String? sandboxMode,
-      String? networkAccessMode,
-      String? modelId,
-      String? reasoningEffort,
-      String? serviceTier,
-    }) {
-      return ThreadSettingsDraft(
-        role: role ?? (selection.threadRole ?? 'worker'),
-        approvalPolicy: approvalPolicy ?? (selection.approvalPolicy ?? ''),
-        sandboxMode: sandboxMode ?? (selection.sandboxMode ?? ''),
-        networkAccessMode: networkAccessMode ??
-            (selection.networkAccess == null
-                ? 'default'
-                : (selection.networkAccess! ? 'enabled' : 'disabled')),
-        modelId: modelId ?? (selection.model ?? ''),
-        reasoningEffort: reasoningEffort ?? (selection.reasoningEffort ?? ''),
-        serviceTier: serviceTier ?? (selection.serviceTier ?? ''),
-      );
-    }
-
     return Wrap(
       spacing: 12,
       runSpacing: 8,
@@ -930,23 +864,6 @@ class _DesktopThreadControls extends StatelessWidget {
               icon: const Icon(Icons.compress_rounded),
             ),
           ),
-        ),
-        _CompactDropdown(
-          width: 220,
-          label: 'Approval',
-          value: selection.approvalPolicy ?? '',
-          enabled: enabled,
-          items: [
-            DropdownMenuItem(
-              value: '',
-              child: Text(inheritedOrSystem(selection.effectiveApprovalPolicy)),
-            ),
-            const DropdownMenuItem(value: 'untrusted', child: Text('untrusted')),
-            const DropdownMenuItem(value: 'on-failure', child: Text('on-failure')),
-            const DropdownMenuItem(value: 'on-request', child: Text('on-request')),
-            const DropdownMenuItem(value: 'never', child: Text('never')),
-          ],
-          onChanged: (value) => onSettingsChanged(draft(approvalPolicy: value)),
         ),
         _HeaderIconButton(
           tooltip: 'Thread settings',
@@ -1079,71 +996,6 @@ Future<void> _showProcessManagerSheet(
       ),
     ),
   );
-}
-
-class _CompactDropdown extends StatelessWidget {
-  const _CompactDropdown({
-    required this.width,
-    required this.label,
-    required this.value,
-    required this.items,
-    required this.enabled,
-    required this.onChanged,
-  });
-
-  final double width;
-  final String label;
-  final String value;
-  final List<DropdownMenuItem<String>> items;
-  final bool enabled;
-  final ValueChanged<String> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final safeValue = items.any((item) => item.value == value) ? value : items.first.value ?? '';
-    return Semantics(
-      key: ValueKey('semantic.thread.${label.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '.')}Dropdown'),
-      container: true,
-      button: true,
-      enabled: enabled,
-      label: label,
-      value: safeValue.isEmpty ? 'system default' : safeValue,
-      child: ExcludeSemantics(
-        child: SizedBox(
-          width: width,
-          child: InputDecorator(
-            decoration: InputDecoration(
-              labelText: label,
-              isDense: true,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            ),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                value: safeValue,
-                isDense: true,
-                isExpanded: true,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color: theme.colorScheme.onSurface,
-                ),
-                menuMaxHeight: 320,
-                items: items,
-                onChanged: enabled
-                    ? (value) {
-                        if (value != null) {
-                          onChanged(value);
-                        }
-                      }
-                    : null,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class _ApprovalOverlay extends StatelessWidget {

@@ -288,7 +288,7 @@ class RequirementReviewSummary {
       'passed' => 'Passed',
       'failed' => 'Failed',
       'blocked' => 'Blocked',
-      'waiverRequired' => 'Waiver required',
+      'waiverRequired' => 'Human waiver required',
       _ => activeRequirementCount > 0 ? 'Requirements active' : 'No review',
     };
   }
