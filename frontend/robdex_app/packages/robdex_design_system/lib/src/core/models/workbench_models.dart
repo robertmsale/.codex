@@ -143,6 +143,8 @@ class ProjectItem {
     required this.qaDefaultReasoningEffort,
     required this.designerDefaultModel,
     required this.designerDefaultReasoningEffort,
+    required this.requirementsReviewerDefaultModel,
+    required this.requirementsReviewerDefaultReasoningEffort,
     required this.orchestratorDeveloperInstructions,
     required this.workerDeveloperInstructions,
     required this.qaDeveloperInstructions,
@@ -167,6 +169,8 @@ class ProjectItem {
   final String? qaDefaultReasoningEffort;
   final String? designerDefaultModel;
   final String? designerDefaultReasoningEffort;
+  final String? requirementsReviewerDefaultModel;
+  final String? requirementsReviewerDefaultReasoningEffort;
   final String? orchestratorDeveloperInstructions;
   final String? workerDeveloperInstructions;
   final String? qaDeveloperInstructions;
@@ -194,6 +198,10 @@ class ProjectItem {
       designerDefaultModel: json['designerDefaultModel'] as String?,
       designerDefaultReasoningEffort:
           json['designerDefaultReasoningEffort'] as String?,
+      requirementsReviewerDefaultModel:
+          json['requirementsReviewerDefaultModel'] as String?,
+      requirementsReviewerDefaultReasoningEffort:
+          json['requirementsReviewerDefaultReasoningEffort'] as String?,
       orchestratorDeveloperInstructions: json['orchestratorDeveloperInstructions'] as String?,
       workerDeveloperInstructions: json['workerDeveloperInstructions'] as String?,
       qaDeveloperInstructions: json['qaDeveloperInstructions'] as String?,

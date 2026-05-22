@@ -626,57 +626,91 @@ impl BridgeRuntime {
                 if let Some((thread_id, turn_id, turn_status)) = turn_completed
                     && turn_status == TurnStatus::Completed
                 {
-                    let handled_requirements_verdict =
-                        self.maybe_record_requirements_verdict(&thread_id, &turn_id).await;
-                    if !handled_requirements_verdict
-                        && !self.maybe_route_requirements_review(&thread_id, &turn_id).await
-                    {
-                        let hook_configured = self.maybe_run_stopped_hook(&thread_id, &turn_id).await?;
-                        if !hook_configured {
-                            self.maybe_auto_route_reply_to_orchestrator(&thread_id, &turn_id)
-                                .await;
+                    let runtime = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = runtime.handle_completed_turn_routes(thread_id, turn_id).await {
+                            tracing::warn!("completed turn routing failed: {error}");
                         }
-                    }
+                    });
                 }
                 if let Some(thread_id) = compaction_completed_thread_id {
-                    let maybe_compaction = {
-                        let _guard = self.lock_state_mutation().await;
-                        let mut state = parse_state(&self.state_document_value().await);
-                        let next = increment_compaction_count(&mut state, &thread_id);
-                        if next.is_some() {
-                            persist_state(self, &state).await?;
+                    let runtime = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = runtime.handle_compaction_completed(thread_id).await {
+                            tracing::warn!("compaction completion hook failed: {error}");
                         }
-                        next
-                    };
-                    if let Some(compaction) = maybe_compaction {
-                        run_compaction_hook_best_effort(self, &thread_id, &compaction).await?;
-                    }
+                    });
                 }
             }
         }
         Ok(())
     }
 
-    async fn handle_server_request(&self, request: ServerRequest) -> Result<()> {
+    async fn handle_completed_turn_routes(&self, thread_id: String, turn_id: String) -> Result<()> {
+        let handled_requirements_verdict =
+            self.maybe_record_requirements_verdict(&thread_id, &turn_id).await;
+        if handled_requirements_verdict {
+            return Ok(());
+        }
+        if self.maybe_route_requirements_review(&thread_id, &turn_id).await {
+            return Ok(());
+        }
+        let hook_configured = self.maybe_run_stopped_hook(&thread_id, &turn_id).await?;
+        if !hook_configured {
+            self.maybe_auto_route_reply_to_orchestrator(&thread_id, &turn_id)
+                .await;
+        }
+        Ok(())
+    }
+
+    async fn handle_compaction_completed(&self, thread_id: String) -> Result<()> {
+        let maybe_compaction = {
+            let _guard = self.lock_state_mutation().await;
+            let mut state = parse_state(&self.state_document_value().await);
+            let next = increment_compaction_count(&mut state, &thread_id);
+            if next.is_some() {
+                persist_state(self, &state).await?;
+            }
+            next
+        };
+        if let Some(compaction) = maybe_compaction {
+            run_compaction_hook_best_effort(self, &thread_id, &compaction).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_pending_approval_routes(&self, approval: PendingApproval) -> Result<()> {
+        let hook_configured = self.maybe_run_approval_requested_hook(&approval).await?;
+        let still_pending = self
+            .pending_approvals
+            .read()
+            .await
+            .contains_key(&approval.id);
+        if still_pending {
+            if !hook_configured {
+                self.maybe_route_approval_to_orchestrator(&approval).await;
+            }
+            let state = self.state_document.read().await.clone();
+            self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_server_request(self: &Arc<Self>, request: ServerRequest) -> Result<()> {
         let pending = self.pending_approval_from_request(request).await;
         if let Some(approval) = pending {
             self.pending_approvals
                 .write()
                 .await
                 .insert(approval.id.clone(), approval.clone());
-            let hook_configured = self.maybe_run_approval_requested_hook(&approval).await?;
-            let still_pending = self
-                .pending_approvals
-                .read()
-                .await
-                .contains_key(&approval.id);
-            if still_pending {
-                if !hook_configured {
-                    self.maybe_route_approval_to_orchestrator(&approval).await;
+            let state = self.state_document.read().await.clone();
+            self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
+            let runtime = self.clone();
+            tokio::spawn(async move {
+                if let Err(error) = runtime.handle_pending_approval_routes(approval).await {
+                    tracing::warn!("pending approval routing failed: {error}");
                 }
-                let state = self.state_document.read().await.clone();
-                self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
-            }
+            });
         }
         Ok(())
     }
@@ -975,7 +1009,27 @@ impl BridgeRuntime {
         };
         let payload = serde_json::from_str(verdict_text.trim())
             .unwrap_or_else(|_| json!({ "raw": verdict_text.trim() }));
-        let _ = mark_requirements_review_verdict(self, &source_thread_id, thread_id, payload.clone()).await;
+        let verdict_payload = match reviewable_requirements_verdict_payload(&payload) {
+            ReviewableRequirementsVerdict::Verdict(value) => value,
+            ReviewableRequirementsVerdict::NullCommentary => {
+                let _ = record_requirement_packet(
+                    self,
+                    &source_thread_id,
+                    RequirementPacketState {
+                        packet_type: "verdictNull".to_string(),
+                        source_thread_id: source_thread_id.clone(),
+                        turn_id: Some(turn_id.to_string()),
+                        target_thread_id: Some(thread_id.to_string()),
+                        payload,
+                        created_at: crate::commands::unix_now(),
+                    },
+                )
+                .await;
+                return true;
+            }
+            ReviewableRequirementsVerdict::Invalid => payload.clone(),
+        };
+        let _ = mark_requirements_review_verdict(self, &source_thread_id, thread_id, verdict_payload.clone()).await;
         let _ = record_requirement_packet(
             self,
             &source_thread_id,
@@ -984,12 +1038,12 @@ impl BridgeRuntime {
                 source_thread_id: source_thread_id.clone(),
                 turn_id: Some(turn_id.to_string()),
                 target_thread_id: Some(thread_id.to_string()),
-                payload: payload.clone(),
+                payload: verdict_payload.clone(),
                 created_at: crate::commands::unix_now(),
             },
         )
         .await;
-        self.maybe_route_requirements_verdict(&source_thread_id, thread_id, turn_id, &payload)
+        self.maybe_route_requirements_verdict(&source_thread_id, thread_id, turn_id, &verdict_payload)
             .await;
         true
     }
@@ -1269,7 +1323,7 @@ impl BridgeRuntime {
         }
         if matches!(
             tracked_role_for_thread(&state, thread_id).as_deref(),
-            Some("hidden") | Some("designer")
+            Some("hidden") | Some("designer") | Some("operator")
         ) {
             return;
         }
@@ -2375,6 +2429,7 @@ fn role_defaults_key_for_thread(state: &Value, thread_id: &str) -> &'static str 
         Some("designer") => "designer",
         Some("qa") => "qa",
         Some("orchestrator") => "orchestrator",
+        Some("requirements-reviewer") | Some("requirementsReviewer") => "requirements-reviewer",
         Some("worker") | Some("hidden") | Some("operator") | _ => "worker",
     }
 }
@@ -2696,6 +2751,12 @@ enum ReviewableRequirementsClaim {
     Invalid,
 }
 
+enum ReviewableRequirementsVerdict {
+    Verdict(Value),
+    NullCommentary,
+    Invalid,
+}
+
 fn reviewable_requirements_claim_payload(payload: &Value) -> ReviewableRequirementsClaim {
     let Some(object) = payload.as_object() else {
         return ReviewableRequirementsClaim::Invalid;
@@ -2705,6 +2766,18 @@ fn reviewable_requirements_claim_payload(payload: &Value) -> ReviewableRequireme
         Some(Value::Object(_)) => ReviewableRequirementsClaim::Claims(payload.clone()),
         Some(_) => ReviewableRequirementsClaim::Invalid,
         None => ReviewableRequirementsClaim::Claims(payload.clone()),
+    }
+}
+
+fn reviewable_requirements_verdict_payload(payload: &Value) -> ReviewableRequirementsVerdict {
+    let Some(object) = payload.as_object() else {
+        return ReviewableRequirementsVerdict::Invalid;
+    };
+    match object.get("requirements") {
+        Some(Value::Null) => ReviewableRequirementsVerdict::NullCommentary,
+        Some(Value::Object(verdict)) => ReviewableRequirementsVerdict::Verdict(Value::Object(verdict.clone())),
+        Some(_) => ReviewableRequirementsVerdict::Invalid,
+        None => ReviewableRequirementsVerdict::Verdict(payload.clone()),
     }
 }
 
@@ -3711,6 +3784,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn requirements_reviewer_null_commentary_is_not_routed_as_failed_verdict() {
+        let temp = TempDir::new().expect("tempdir");
+        let settings = BridgeSettings {
+            http: HttpArgs {
+                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 42080,
+            },
+            app_server_url: "ws://127.0.0.1:9".to_string(),
+            project_path: temp.path().to_path_buf(),
+            cwd: temp.path().to_path_buf(),
+            paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
+        };
+        let runtime = BridgeRuntime::new(settings).await.expect("runtime");
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "orchestratorThreadID": "orch-1",
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "status": "inReview",
+                                    "updatedAt": 1
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "reviewer-1".to_string(),
+                vec![test_chat_message(
+                    "reviewer-1",
+                    "review-turn-null",
+                    "final-null",
+                    Some("final_answer"),
+                    "{\"summary\":\"Still inspecting evidence.\",\"requirements\":null}",
+                )],
+            );
+        }
+
+        assert!(
+            runtime
+                .maybe_record_requirements_verdict("reviewer-1", "review-turn-null")
+                .await
+        );
+        let state = runtime.state_document.read().await.clone();
+        let worker = state["projects"]["alpha"]["agents"]["worker-1"].clone();
+        assert_eq!(worker["requirementReview"]["status"], json!("inReview"));
+        assert!(worker["requirementReview"]["latestVerdictPacket"].is_null());
+        assert_eq!(worker["requirementPackets"][0]["packetType"], json!("verdictNull"));
+    }
+
+    #[tokio::test]
     async fn synthetic_disconnect_after_active_status_clears_running_state() {
         let temp = TempDir::new().expect("tempdir");
         let settings = BridgeSettings {
@@ -3963,6 +4108,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_turn_routing_does_not_block_upstream_worker() {
+        let temp = TempDir::new().expect("tempdir");
+        let settings = BridgeSettings {
+            http: HttpArgs {
+                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 42080,
+            },
+            app_server_url: "ws://127.0.0.1:9".to_string(),
+            project_path: temp.path().to_path_buf(),
+            cwd: temp.path().to_path_buf(),
+            paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
+        };
+
+        let runtime = BridgeRuntime::new(settings).await.expect("runtime");
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "autoRouteReplies": true,
+                        "orchestratorThreadID": "orch-1",
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string()
+                            },
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string()
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "worker-1".to_string(),
+                vec![test_chat_message(
+                    "worker-1",
+                    "turn-1",
+                    "final-1",
+                    Some("final_answer"),
+                    "done",
+                )],
+            );
+        }
+
+        let tx = runtime.upstream_sender();
+        tx.send(UpstreamRuntimeEvent::Notification(ServerNotification::TurnCompleted(
+            TurnCompletedNotification {
+                thread_id: "worker-1".to_string(),
+                turn: sample_turn("turn-1", TurnStatus::Completed),
+            },
+        )))
+        .await
+        .expect("send completed");
+        tx.send(UpstreamRuntimeEvent::Notification(ServerNotification::AgentMessageDelta(
+            AgentMessageDeltaNotification {
+                thread_id: "other-worker".to_string(),
+                turn_id: "turn-2".to_string(),
+                item_id: "item-2".to_string(),
+                delta: "still flowing".to_string(),
+            },
+        )))
+        .await
+        .expect("send delta");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let thread_messages = runtime
+            .thread_messages("other-worker", Some(50))
+            .await
+            .expect("thread_messages")
+            .expect("thread present");
+        assert_eq!(thread_messages.messages.len(), 1);
+        assert_eq!(thread_messages.messages[0].text, "still flowing");
+    }
+
+    #[tokio::test]
     async fn upstream_message_delta_emits_thread_message_event_with_temp_store() {
         let temp = TempDir::new().expect("tempdir");
         let settings = BridgeSettings {
@@ -4186,6 +4416,68 @@ mod tests {
             tracked_developer_instructions_for_thread_value(&state, "designer-1").expect("guidance");
         assert!(guidance.contains("not auto-forwarded for designers"));
         assert!(!guidance.contains("approval requests are forwarded"));
+    }
+
+    #[tokio::test]
+    async fn operator_replies_are_not_auto_routed_to_orchestrator() {
+        let temp = TempDir::new().expect("tempdir");
+        let settings = BridgeSettings {
+            http: HttpArgs {
+                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 42080,
+            },
+            app_server_url: "ws://127.0.0.1:9".to_string(),
+            project_path: temp.path().to_path_buf(),
+            cwd: temp.path().to_path_buf(),
+            paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
+        };
+        let runtime = BridgeRuntime::new(settings).await.expect("runtime");
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "autoRouteReplies": true,
+                        "orchestratorThreadID": "orch-1",
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string()
+                            },
+                            "operator-1": {
+                                "displayName": "Operator One",
+                                "role": "operator",
+                                "projectRoot": temp.path().display().to_string()
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "operator-1".to_string(),
+                vec![test_chat_message(
+                    "operator-1",
+                    "turn-1",
+                    "final-1",
+                    Some("final_answer"),
+                    "operator status",
+                )],
+            );
+        }
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            runtime.maybe_auto_route_reply_to_orchestrator("operator-1", "turn-1"),
+        )
+        .await
+        .expect("operator route check should return without waiting on transport");
+        assert!(runtime.auto_routed_turn_keys.read().await.is_empty());
     }
 
     #[tokio::test]

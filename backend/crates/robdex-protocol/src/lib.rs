@@ -188,6 +188,8 @@ pub struct UiProjectItem {
     pub qa_default_reasoning_effort: Option<String>,
     pub designer_default_model: Option<String>,
     pub designer_default_reasoning_effort: Option<String>,
+    pub requirements_reviewer_default_model: Option<String>,
+    pub requirements_reviewer_default_reasoning_effort: Option<String>,
     pub orchestrator_developer_instructions: Option<String>,
     pub worker_developer_instructions: Option<String>,
     pub qa_developer_instructions: Option<String>,

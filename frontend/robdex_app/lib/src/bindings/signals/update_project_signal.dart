@@ -19,6 +19,8 @@ class UpdateProjectSignal {
     required this.qaReasoningEffort,
     required this.designerModelId,
     required this.designerReasoningEffort,
+    required this.requirementsReviewerModelId,
+    required this.requirementsReviewerReasoningEffort,
     required this.orchestratorDeveloperInstructions,
     required this.workerDeveloperInstructions,
     required this.qaDeveloperInstructions,
@@ -44,6 +46,8 @@ class UpdateProjectSignal {
       qaReasoningEffort: deserializer.deserializeString(),
       designerModelId: deserializer.deserializeString(),
       designerReasoningEffort: deserializer.deserializeString(),
+      requirementsReviewerModelId: deserializer.deserializeString(),
+      requirementsReviewerReasoningEffort: deserializer.deserializeString(),
       orchestratorDeveloperInstructions: deserializer.deserializeString(),
       workerDeveloperInstructions: deserializer.deserializeString(),
       qaDeveloperInstructions: deserializer.deserializeString(),
@@ -78,6 +82,8 @@ class UpdateProjectSignal {
   final String qaReasoningEffort;
   final String designerModelId;
   final String designerReasoningEffort;
+  final String requirementsReviewerModelId;
+  final String requirementsReviewerReasoningEffort;
   final String orchestratorDeveloperInstructions;
   final String workerDeveloperInstructions;
   final String qaDeveloperInstructions;
@@ -100,6 +106,8 @@ class UpdateProjectSignal {
     String? qaReasoningEffort,
     String? designerModelId,
     String? designerReasoningEffort,
+    String? requirementsReviewerModelId,
+    String? requirementsReviewerReasoningEffort,
     String? orchestratorDeveloperInstructions,
     String? workerDeveloperInstructions,
     String? qaDeveloperInstructions,
@@ -122,6 +130,8 @@ class UpdateProjectSignal {
       qaReasoningEffort: qaReasoningEffort ?? this.qaReasoningEffort,
       designerModelId: designerModelId ?? this.designerModelId,
       designerReasoningEffort: designerReasoningEffort ?? this.designerReasoningEffort,
+      requirementsReviewerModelId: requirementsReviewerModelId ?? this.requirementsReviewerModelId,
+      requirementsReviewerReasoningEffort: requirementsReviewerReasoningEffort ?? this.requirementsReviewerReasoningEffort,
       orchestratorDeveloperInstructions: orchestratorDeveloperInstructions ?? this.orchestratorDeveloperInstructions,
       workerDeveloperInstructions: workerDeveloperInstructions ?? this.workerDeveloperInstructions,
       qaDeveloperInstructions: qaDeveloperInstructions ?? this.qaDeveloperInstructions,
@@ -147,6 +157,8 @@ class UpdateProjectSignal {
     serializer.serializeString(qaReasoningEffort);
     serializer.serializeString(designerModelId);
     serializer.serializeString(designerReasoningEffort);
+    serializer.serializeString(requirementsReviewerModelId);
+    serializer.serializeString(requirementsReviewerReasoningEffort);
     serializer.serializeString(orchestratorDeveloperInstructions);
     serializer.serializeString(workerDeveloperInstructions);
     serializer.serializeString(qaDeveloperInstructions);
@@ -182,6 +194,8 @@ class UpdateProjectSignal {
       && qaReasoningEffort == other.qaReasoningEffort
       && designerModelId == other.designerModelId
       && designerReasoningEffort == other.designerReasoningEffort
+      && requirementsReviewerModelId == other.requirementsReviewerModelId
+      && requirementsReviewerReasoningEffort == other.requirementsReviewerReasoningEffort
       && orchestratorDeveloperInstructions == other.orchestratorDeveloperInstructions
       && workerDeveloperInstructions == other.workerDeveloperInstructions
       && qaDeveloperInstructions == other.qaDeveloperInstructions
@@ -191,7 +205,7 @@ class UpdateProjectSignal {
   }
 
   @override
-  int get hashCode => Object.hash(
+  int get hashCode => Object.hashAll([
         projectId,
         name,
         defaultCwd,
@@ -206,13 +220,15 @@ class UpdateProjectSignal {
         qaReasoningEffort,
         designerModelId,
         designerReasoningEffort,
+        requirementsReviewerModelId,
+        requirementsReviewerReasoningEffort,
         orchestratorDeveloperInstructions,
         workerDeveloperInstructions,
         qaDeveloperInstructions,
         designerDeveloperInstructions,
         operatorDeveloperInstructions,
         hiddenDeveloperInstructions,
-      );
+      ]);
 
   @override
   String toString() {
@@ -234,6 +250,8 @@ class UpdateProjectSignal {
         'qaReasoningEffort: $qaReasoningEffort, '
         'designerModelId: $designerModelId, '
         'designerReasoningEffort: $designerReasoningEffort, '
+        'requirementsReviewerModelId: $requirementsReviewerModelId, '
+        'requirementsReviewerReasoningEffort: $requirementsReviewerReasoningEffort, '
         'orchestratorDeveloperInstructions: $orchestratorDeveloperInstructions, '
         'workerDeveloperInstructions: $workerDeveloperInstructions, '
         'qaDeveloperInstructions: $qaDeveloperInstructions, '

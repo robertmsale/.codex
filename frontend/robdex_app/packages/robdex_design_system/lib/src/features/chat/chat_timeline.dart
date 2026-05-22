@@ -1286,11 +1286,15 @@ Map<String, dynamic>? _requirementsVerdictPayloadFromBody(ChatEntry entry) {
     if (decoded is! Map<String, dynamic>) {
       return null;
     }
-    final overall = decoded['overallVerdict'];
-    final route = decoded['route'];
-    if (overall is String && route is Map<String, dynamic>) {
-      return decoded;
-    }
+    final nestedRequirements = decoded['requirements'];
+    final verdictPayload = nestedRequirements is Map<String, dynamic>
+        ? nestedRequirements
+        : decoded;
+    final overall = verdictPayload['overallVerdict'];
+    final route = verdictPayload['route'];
+	    if (overall is String && route is Map<String, dynamic>) {
+	      return verdictPayload;
+	    }
   } catch (_) {
     return null;
   }

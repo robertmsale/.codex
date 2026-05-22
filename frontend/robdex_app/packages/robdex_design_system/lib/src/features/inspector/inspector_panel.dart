@@ -529,6 +529,8 @@ class _RequirementsReviewCard extends StatelessWidget {
       helperText: 'Define active requirements for this thread. Robdex generates and submits the JSON contract.',
       showDeactivate: (summary?.activeRequirementCount ?? 0) > 0,
       bridgeBaseUri: bridgeBaseUri,
+      senderThreadId: sourceId,
+      recipientThreadId: sourceId,
     );
     if (submitted == null) {
       return;

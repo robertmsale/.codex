@@ -13,6 +13,14 @@ import '../requirements/requirement_set_form.dart';
 import 'screenshot_capture.dart';
 import 'slash_commands.dart';
 
+const _handoffPrompt =
+    'Please give yourself a warm handoff for a new agent who may resume this thread. '
+    'Pass along your current identity, role, responsibilities, active objective, '
+    'recent important work, files or systems touched, current state, known blockers, '
+    'validation or review status, live-state cautions, and the next best actions. '
+    'If there is no active work to resume, summarize the recent context and anything '
+    'the next agent should be aware of.';
+
 class ComposerSubmission {
   const ComposerSubmission({
     required this.text,
@@ -182,6 +190,17 @@ class _ComposerPanelState extends State<ComposerPanel> {
         widget.onCompactThread();
         _finishSlashCommand('Compaction requested');
         return true;
+      case SlashCommandKind.handoff:
+        _controller.value = TextEditingValue(
+          text: _handoffPrompt,
+          selection: const TextSelection.collapsed(offset: _handoffPrompt.length),
+        );
+        setState(() {
+          _dismissedSlashText = null;
+          _selectedSlashIndex = 0;
+        });
+        _showSlashFeedback('Handoff prompt inserted');
+        return true;
     }
   }
 
@@ -334,6 +353,9 @@ class _ComposerPanelState extends State<ComposerPanel> {
       helperText:
           'These requirements apply to the next new turn only. They cannot be attached while the thread is running.',
       bridgeBaseUri: widget.bridgeBaseUri,
+      senderThreadId: widget.selection.threadId,
+      recipientThreadId: widget.selection.threadId,
+      projectPath: widget.selection.projectRootPath,
     );
     if (!mounted || result == null) {
       return;

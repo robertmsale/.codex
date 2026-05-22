@@ -1,6 +1,6 @@
 ---
 name: privileged-exec
-description: Ran into a sandbox issue, approval request, or privileged-exec rejection? Use this skill immediately for the sanctioned resolution path. [skill-hash:ace65f3]
+description: Ran into a sandbox issue, approval request, or privileged-exec rejection? Use this skill immediately for the sanctioned resolution path. [skill-hash:b8f4a20]
 ---
 
 # Privileged Exec
@@ -27,6 +27,7 @@ Use this skill when a command hits sandbox friction, triggers an approval reques
 ## What Counts As Sanctioned
 
 - Shared skill scripts under `~/.codex/skills/*/scripts/*` are the default sanctioned privileged entrypoints when the active skill tells you to use them. Your CWD may include `<CWD>/.codex/skills/*/scripts/*` which are (or should be) added to privileged execution.
+- Run `get-sanctioned` to list executable shared skill scripts grouped by skill.
 - Some non-skill tools are sanctioned by the active workflow. If the current skill or role explicitly tells you to use a tool, follow that instruction plainly.
 - `public-dev-tunnel` is the sanctioned public HTTPS tunnel wrapper for local dev callbacks. It uses `cloudflared` and prints only the public base URL on `start`, `url`, and running `status`.
 

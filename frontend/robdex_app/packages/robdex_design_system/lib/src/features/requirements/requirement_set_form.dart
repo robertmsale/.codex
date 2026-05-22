@@ -46,6 +46,11 @@ Future<String?> showRequirementSetFormDialog(
   String helperText = 'Define the requirements. Robdex will generate the JSON contract.',
   bool showDeactivate = false,
   Uri? bridgeBaseUri,
+  String? senderThreadId,
+  String? recipientThreadId,
+  String? projectPath,
+  List<Map<String, dynamic>>? initialComposableItems,
+  http.Client? httpClient,
 }) {
   return showDialog<String?>(
     context: context,
@@ -56,6 +61,11 @@ Future<String?> showRequirementSetFormDialog(
       helperText: helperText,
       showDeactivate: showDeactivate,
       bridgeBaseUri: bridgeBaseUri,
+      senderThreadId: senderThreadId,
+      recipientThreadId: recipientThreadId,
+      projectPath: projectPath,
+      initialComposableItems: initialComposableItems,
+      httpClient: httpClient,
     ),
   );
 }
@@ -68,6 +78,11 @@ class _RequirementSetFormDialog extends StatefulWidget {
     required this.helperText,
     required this.showDeactivate,
     required this.bridgeBaseUri,
+    required this.senderThreadId,
+    required this.recipientThreadId,
+    required this.projectPath,
+    required this.initialComposableItems,
+    required this.httpClient,
   });
 
   final String? initialJson;
@@ -76,6 +91,11 @@ class _RequirementSetFormDialog extends StatefulWidget {
   final String helperText;
   final bool showDeactivate;
   final Uri? bridgeBaseUri;
+  final String? senderThreadId;
+  final String? recipientThreadId;
+  final String? projectPath;
+  final List<Map<String, dynamic>>? initialComposableItems;
+  final http.Client? httpClient;
 
   @override
   State<_RequirementSetFormDialog> createState() => _RequirementSetFormDialogState();
@@ -84,6 +104,9 @@ class _RequirementSetFormDialog extends StatefulWidget {
 class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
   late final TextEditingController _titleController;
   final List<_RequirementDraft> _requirements = <_RequirementDraft>[];
+  final Set<String> _selectedComposableIds = <String>{};
+  List<_RequirementComposable> _composables = const <_RequirementComposable>[];
+  bool _loadingComposables = false;
   String? _error;
 
   @override
@@ -95,6 +118,14 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
     if (_requirements.isEmpty) {
       _requirements.add(_RequirementDraft());
     }
+    final initialComposableItems = widget.initialComposableItems;
+    if (initialComposableItems != null) {
+      _composables = initialComposableItems
+          .map(_RequirementComposable.fromJson)
+          .toList(growable: false);
+      return;
+    }
+    _loadComposables();
   }
 
   @override
@@ -172,6 +203,26 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
   String _generateJson({bool active = true}) {
     final requirements = <Map<String, dynamic>>[];
     final usedKeys = <String>{};
+    for (final composable in _composables) {
+      if (!_selectedComposableIds.contains(composable.id)) {
+        continue;
+      }
+      for (final requirement in composable.requirements) {
+        final key = requirement['key'] as String? ?? '';
+        if (key.isEmpty) {
+          throw StateError('Composable ${composable.id} has a requirement without a key.');
+        }
+        final existing = requirements.where((item) => item['key'] == key).toList(growable: false);
+        if (existing.isNotEmpty) {
+          if (mapEquals(existing.first, requirement)) {
+            continue;
+          }
+          throw StateError('Composable requirement key conflict: $key.');
+        }
+        usedKeys.add(key);
+        requirements.add(Map<String, dynamic>.from(requirement));
+      }
+    }
     for (var index = 0; index < _requirements.length; index += 1) {
       final draft = _requirements[index];
       final statement = _statementWithReferences(draft);
@@ -201,8 +252,57 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
       'title': title,
       'active': active,
       'enforceOnTurns': true,
+      'includeComposables': _selectedComposableIds.toList(growable: false),
       'requirements': requirements,
     });
+  }
+
+  Future<void> _loadComposables() async {
+    final baseUri = widget.bridgeBaseUri;
+    final senderThreadId = widget.senderThreadId;
+    if (baseUri == null || senderThreadId == null || senderThreadId.trim().isEmpty) {
+      return;
+    }
+    setState(() => _loadingComposables = true);
+    try {
+      final client = widget.httpClient;
+      final response = await (client == null ? http.post : client.post)(
+        baseUri.resolve('/orchestrator/requirements/composables'),
+        headers: const {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'senderThreadId': senderThreadId,
+          'recipientThreadId': widget.recipientThreadId,
+          'projectPath': widget.projectPath,
+        }),
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw StateError('Composable requirements failed with ${response.statusCode}.');
+      }
+      final decoded = jsonDecode(response.body);
+      final items = decoded is Map<String, dynamic> ? decoded['items'] as List<dynamic>? : null;
+      final composables = (items ?? const <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .map(_RequirementComposable.fromJson)
+          .toList(growable: false);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _composables = composables;
+        _loadingComposables = false;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _loadingComposables = false;
+        _error = error.toString().replaceFirst('Bad state: ', '');
+      });
+    }
   }
 
   @override
@@ -227,6 +327,45 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
                 ),
               ),
               const SizedBox(height: 16),
+              if (_loadingComposables)
+                const LinearProgressIndicator()
+              else if (_composables.isNotEmpty) ...[
+                Text('Composable requirements', style: theme.textTheme.titleSmall),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final composable in _composables)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          FilterChip(
+                            key: ValueKey('requirements.composable.${composable.id}'),
+                            selected: _selectedComposableIds.contains(composable.id),
+                            label: Text('${composable.id} (${composable.requirements.length})'),
+                            onSelected: (selected) {
+                              setState(() {
+                                if (selected) {
+                                  _selectedComposableIds.add(composable.id);
+                                } else {
+                                  _selectedComposableIds.remove(composable.id);
+                                }
+                              });
+                            },
+                          ),
+                          IconButton(
+                            key: ValueKey('requirements.composable.inspect.${composable.id}'),
+                            tooltip: 'Inspect composable',
+                            icon: const Icon(Icons.info_outline, size: 18),
+                            onPressed: () => _inspectComposable(composable),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+              ],
               for (var i = 0; i < _requirements.length; i += 1) ...[
                 _RequirementDraftCard(
                   index: i,
@@ -303,6 +442,78 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
           child: Text(widget.actionLabel),
         ),
       ],
+    );
+  }
+
+  Future<void> _inspectComposable(_RequirementComposable composable) {
+    return showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(composable.title.isEmpty ? composable.id : composable.title),
+          content: SizedBox(
+            width: 560,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(composable.description.isEmpty ? composable.id : composable.description),
+                  const SizedBox(height: 12),
+                  for (final requirement in composable.requirements) ...[
+                    Text(
+                      requirement['key'] as String? ?? '',
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
+                    Text(requirement['statement'] as String? ?? ''),
+                    const SizedBox(height: 10),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _RequirementComposable {
+  const _RequirementComposable({
+    required this.id,
+    required this.title,
+    required this.description,
+    required this.requirements,
+  });
+
+  final String id;
+  final String title;
+  final String description;
+  final List<Map<String, dynamic>> requirements;
+
+  factory _RequirementComposable.fromJson(Map<String, dynamic> json) {
+    final requirements = (json['requirements'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map((item) {
+          return {
+            'key': item['key'],
+            'statement': item['statement'],
+            'severity': item['severity'],
+            'verificationMethod': item['verificationMethod'],
+          };
+        })
+        .toList(growable: false);
+    return _RequirementComposable(
+      id: json['id'] as String? ?? 'unknown',
+      title: json['title'] as String? ?? '',
+      description: json['description'] as String? ?? '',
+      requirements: requirements,
     );
   }
 }

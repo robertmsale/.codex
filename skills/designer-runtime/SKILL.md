@@ -14,6 +14,7 @@ Use only these scripts:
 designer-drive ...
 designer-crop-screenshot ...
 designer-flutter-run ...
+designer-flutter-stop ...
 designer-hot-reload ...
 ```
 
@@ -28,6 +29,8 @@ designer-hot-reload ...
   - mirrors Flutter output to a log file so immediate tmux exits are diagnosable
 - `designer-hot-reload`
   - sends `r` to the tmux session running Flutter
+- `designer-flutter-stop`
+  - stops a tmux session started by `designer-flutter-run`
 - `designer-crop-screenshot`
   - crops screenshots for pixel-level review using exact boxes, percentage+anchor crops, named presets, or live hierarchy selectors
 
@@ -57,6 +60,9 @@ designer-hot-reload ...
    - `designer-crop-screenshot --input current.png --preset bottom_safe_area --out current-bottomsafe.png`
 3. After code changes, hot reload:
    - `designer-hot-reload --session designer-app`
+4. If the assigned simulator is showing another stale app/session, stop that session and relaunch/focus the app:
+   - `designer-flutter-stop --session designer-app`
+   - `designer-drive command launchApp --device-id <UDID>`
 
 ## `designer-drive`
 
@@ -104,6 +110,8 @@ designer-hot-reload --session designer-app
 
 Useful command names:
 
+- `launchApp`
+- `terminateApp`
 - `tapOn`
 - `longPressOn`
 - `inputText`

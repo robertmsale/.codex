@@ -38,8 +38,70 @@ enum _ProjectSettingsTab {
   worker,
   qa,
   designer,
+  requirementsReviewer,
   hidden,
   operator,
+}
+
+class ProjectRoleModelSettingsPane extends StatelessWidget {
+  const ProjectRoleModelSettingsPane({
+    super.key,
+    required this.roleKey,
+    required this.availableModels,
+    required this.modelId,
+    required this.reasoningEffort,
+    required this.onModelChanged,
+    required this.onReasoningChanged,
+  });
+
+  final String roleKey;
+  final List<ModelItem> availableModels;
+  final String modelId;
+  final String reasoningEffort;
+  final ValueChanged<String> onModelChanged;
+  final ValueChanged<String> onReasoningChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: DropdownButtonFormField<String>(
+            key: ValueKey('project.settings.$roleKey.model'),
+            initialValue: modelId,
+            decoration: const InputDecoration(labelText: 'Model'),
+            items: [
+              const DropdownMenuItem(value: '', child: Text('Default')),
+              ...availableModels.where((model) => !model.hidden).map(
+                    (model) => DropdownMenuItem(
+                      value: model.id,
+                      child: Text(
+                        model.name?.trim().isNotEmpty == true ? model.name! : model.id,
+                      ),
+                    ),
+                  ),
+            ],
+            onChanged: (value) => onModelChanged(value ?? ''),
+          ),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: DropdownButtonFormField<String>(
+            key: ValueKey('project.settings.$roleKey.reasoning'),
+            initialValue: reasoningEffort,
+            decoration: const InputDecoration(labelText: 'Reasoning'),
+            items: const [
+              DropdownMenuItem(value: '', child: Text('Default')),
+              DropdownMenuItem(value: 'low', child: Text('Low')),
+              DropdownMenuItem(value: 'medium', child: Text('Medium')),
+              DropdownMenuItem(value: 'high', child: Text('High')),
+            ],
+            onChanged: (value) => onReasoningChanged(value ?? ''),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class RobdexWorkbench extends StatefulWidget {
@@ -605,6 +667,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                           helperText:
                               'These requirements are attached before the first turn starts.',
                           bridgeBaseUri: _bridgeBaseUri,
+                          senderThreadId: _controller.view?.selection.threadId,
+                          projectPath: project.rootPath,
                         );
                         if (next == null) {
                           return;
@@ -774,6 +838,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     String qaReasoningEffort = project.qaDefaultReasoningEffort ?? '';
     String designerModelId = project.designerDefaultModel ?? '';
     String designerReasoningEffort = project.designerDefaultReasoningEffort ?? '';
+    String requirementsReviewerModelId = project.requirementsReviewerDefaultModel ?? '';
+    String requirementsReviewerReasoningEffort =
+        project.requirementsReviewerDefaultReasoningEffort ?? '';
     final orchestratorDeveloperInstructionsController = TextEditingController(
       text: project.orchestratorDeveloperInstructions ?? '',
     );
@@ -797,45 +864,6 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       context: context,
       builder: (context) {
         final theme = Theme.of(context);
-
-        Widget modelDropdown(
-          String current,
-          ValueChanged<String> onChanged,
-        ) {
-          return DropdownButtonFormField<String>(
-            initialValue: current,
-            decoration: const InputDecoration(labelText: 'Model'),
-            items: [
-              const DropdownMenuItem(value: '', child: Text('Default')),
-              ...availableModels
-                  .where((model) => !model.hidden)
-                  .map(
-                    (model) => DropdownMenuItem(
-                      value: model.id,
-                      child: Text(model.name?.trim().isNotEmpty == true ? model.name! : model.id),
-                    ),
-                  ),
-            ],
-            onChanged: (value) => onChanged(value ?? ''),
-          );
-        }
-
-        Widget reasoningDropdown(
-          String current,
-          ValueChanged<String> onChanged,
-        ) {
-          return DropdownButtonFormField<String>(
-            initialValue: current,
-            decoration: const InputDecoration(labelText: 'Reasoning'),
-            items: const [
-              DropdownMenuItem(value: '', child: Text('Default')),
-              DropdownMenuItem(value: 'low', child: Text('Low')),
-              DropdownMenuItem(value: 'medium', child: Text('Medium')),
-              DropdownMenuItem(value: 'high', child: Text('High')),
-            ],
-            onChanged: (value) => onChanged(value ?? ''),
-          );
-        }
 
         Widget developerInstructionsField(TextEditingController controller) {
           return TextField(
@@ -875,6 +903,11 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 icon: Icons.palette_outlined,
                 tooltip: 'Designer',
                 color: Colors.amber.shade700,
+              ),
+            _ProjectSettingsTab.requirementsReviewer => (
+                icon: Icons.rule_folder_outlined,
+                tooltip: 'Requirements Reviewer',
+                color: theme.colorScheme.error,
               ),
             _ProjectSettingsTab.hidden => (
                 icon: Icons.visibility_off_outlined,
@@ -1076,12 +1109,14 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
 
         Widget rolePane({
           required _ProjectSettingsTab tab,
+          required String roleKey,
           required String? modelId,
           required ValueChanged<String> onModelChanged,
           required String? reasoningEffort,
           required ValueChanged<String> onReasoningChanged,
-          required TextEditingController instructionsController,
+          required TextEditingController? instructionsController,
           required bool supportsModelSettings,
+          bool supportsDeveloperInstructions = true,
           required void Function(VoidCallback fn) setDialogState,
         }) {
           final accent = tabVisuals(tab).color;
@@ -1089,26 +1124,19 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             accent: accent,
             children: [
               if (supportsModelSettings) ...[
-                Row(
-                  children: [
-                    Expanded(
-                      child: modelDropdown(
-                        modelId ?? '',
-                        (value) => setDialogState(() => onModelChanged(value)),
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: reasoningDropdown(
-                        reasoningEffort ?? '',
-                        (value) => setDialogState(() => onReasoningChanged(value)),
-                      ),
-                    ),
-                  ],
+                ProjectRoleModelSettingsPane(
+                  roleKey: roleKey,
+                  availableModels: availableModels,
+                  modelId: modelId ?? '',
+                  reasoningEffort: reasoningEffort ?? '',
+                  onModelChanged: (value) => setDialogState(() => onModelChanged(value)),
+                  onReasoningChanged: (value) =>
+                      setDialogState(() => onReasoningChanged(value)),
                 ),
                 const SizedBox(height: 16),
               ],
-              developerInstructionsField(instructionsController),
+              if (supportsDeveloperInstructions && instructionsController != null)
+                developerInstructionsField(instructionsController),
             ],
           );
         }
@@ -1121,6 +1149,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
               _ProjectSettingsTab.project => projectPane(setDialogState),
               _ProjectSettingsTab.orchestrator => rolePane(
                   tab: activeTab,
+                  roleKey: 'orchestrator',
                   modelId: orchestratorModelId,
                   onModelChanged: (value) => orchestratorModelId = value,
                   reasoningEffort: orchestratorReasoningEffort,
@@ -1131,6 +1160,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 ),
               _ProjectSettingsTab.worker => rolePane(
                   tab: activeTab,
+                  roleKey: 'worker',
                   modelId: workerModelId,
                   onModelChanged: (value) => workerModelId = value,
                   reasoningEffort: workerReasoningEffort,
@@ -1141,6 +1171,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 ),
               _ProjectSettingsTab.qa => rolePane(
                   tab: activeTab,
+                  roleKey: 'qa',
                   modelId: qaModelId,
                   onModelChanged: (value) => qaModelId = value,
                   reasoningEffort: qaReasoningEffort,
@@ -1151,6 +1182,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 ),
               _ProjectSettingsTab.designer => rolePane(
                   tab: activeTab,
+                  roleKey: 'designer',
                   modelId: designerModelId,
                   onModelChanged: (value) => designerModelId = value,
                   reasoningEffort: designerReasoningEffort,
@@ -1159,8 +1191,22 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                   supportsModelSettings: true,
                   setDialogState: setDialogState,
                 ),
+              _ProjectSettingsTab.requirementsReviewer => rolePane(
+                  tab: activeTab,
+                  roleKey: 'requirements-reviewer',
+                  modelId: requirementsReviewerModelId,
+                  onModelChanged: (value) => requirementsReviewerModelId = value,
+                  reasoningEffort: requirementsReviewerReasoningEffort,
+                  onReasoningChanged: (value) =>
+                      requirementsReviewerReasoningEffort = value,
+                  instructionsController: null,
+                  supportsModelSettings: true,
+                  supportsDeveloperInstructions: false,
+                  setDialogState: setDialogState,
+                ),
               _ProjectSettingsTab.hidden => rolePane(
                   tab: activeTab,
+                  roleKey: 'hidden',
                   modelId: null,
                   onModelChanged: (_) {},
                   reasoningEffort: null,
@@ -1171,6 +1217,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 ),
               _ProjectSettingsTab.operator => rolePane(
                   tab: activeTab,
+                  roleKey: 'operator',
                   modelId: null,
                   onModelChanged: (_) {},
                   reasoningEffort: null,
@@ -1282,6 +1329,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       qaReasoningEffort: qaReasoningEffort,
       designerModelId: designerModelId,
       designerReasoningEffort: designerReasoningEffort,
+      requirementsReviewerModelId: requirementsReviewerModelId,
+      requirementsReviewerReasoningEffort: requirementsReviewerReasoningEffort,
       orchestratorDeveloperInstructions:
           orchestratorDeveloperInstructionsController.text.trim(),
       workerDeveloperInstructions:
@@ -1512,6 +1561,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                           helperText:
                               'These requirements are attached before the spawned agent starts its first turn.',
                           bridgeBaseUri: _bridgeBaseUri,
+                          senderThreadId: _controller.view?.selection.threadId,
+                          projectPath: _controller.view?.selection.projectRootPath,
                         );
                         if (next == null) {
                           return;

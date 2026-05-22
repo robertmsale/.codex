@@ -75,7 +75,7 @@ _maybe_clear_stale_index_lock() {
   local lock_path=""
 
   combined="$(cat "$stderr_file" "$stdout_file" 2>/dev/null || true)"
-  [[ "$combined" == *"index.lock"* ]] || return 1
+  [[ "$combined" == *"index.lock"* || "$combined" == *"could not write index"* ]] || return 1
 
   lock_path="$(python3 -c "import pathlib, re, sys; text = ''.join(pathlib.Path(path).read_text(encoding='utf-8', errors='replace') for path in sys.argv[1:]); match = re.search(r'''['\\\"]([^'\\\"]*index\\.lock)['\\\"]''', text); print(match.group(1) if match else '')" "$stderr_file" "$stdout_file")"
 
@@ -91,6 +91,47 @@ _maybe_clear_stale_index_lock() {
 
   rm -f "$lock_path" || return 1
   return 0
+}
+
+clear_inactive_index_lock() {
+  local repo_path="$1"
+  local lock_path=""
+  lock_path="$(env PATH="$(git_subprocess_path)" git -C "$repo_path" rev-parse --path-format=absolute --git-path index.lock 2>/dev/null || true)"
+  [[ -n "$lock_path" && -e "$lock_path" ]] || return 0
+  if [[ -x /usr/sbin/lsof ]] && [[ -n "$(/usr/sbin/lsof "$lock_path" 2>/dev/null)" ]]; then
+    echo "Refusing to clear active git index lock: $lock_path" >&2
+    return 1
+  fi
+  rm -f "$lock_path"
+}
+
+_safe_move_path() {
+  local path="$1"
+  local base dest name stamp
+  [[ -e "$path" ]] || return 0
+  base="/tmp/safe-delete"
+  mkdir -p "$base"
+  name="$(basename "$path")"
+  stamp="$(date +%Y%m%d%H%M%S)"
+  dest="$base/${name}-${stamp}-$$"
+  mv "$path" "$dest"
+  printf 'moved %s -> %s\n' "$path" "$dest" >&2
+}
+
+clean_known_qa_generated_artifacts() {
+  local repo_path="$1"
+  local pathspec="clients/packages/design_system/lib/src/copy/generated"
+  local status line code path
+  status="$(env PATH="$(git_subprocess_path)" git -C "$repo_path" status --porcelain=v1 -- "$pathspec" 2>/dev/null || true)"
+  [[ -n "$status" ]] || return 0
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    code="${line:0:2}"
+    path="${line:3}"
+    if [[ "$code" == "??" && "$path" == "$pathspec"* ]]; then
+      _safe_move_path "$repo_path/$path"
+    fi
+  done <<<"$status"
 }
 
 run_checked() {
@@ -584,6 +625,8 @@ qa_fastforward_cmd() {
 
   require_managed_worktree_path "$checkout_root"
   stash_name=""
+  clear_inactive_index_lock "$REQUIRED_WORKTREE_ROOT"
+  clean_known_qa_generated_artifacts "$REQUIRED_WORKTREE_ROOT"
   if [[ -n "$(run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" status --short | tr -d '\r')" ]]; then
     stash_name="qa-fastforward-${branch}-$(date +%s)"
     run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" stash push -u -m "$stash_name" >/dev/null

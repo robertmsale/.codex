@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -6,7 +7,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:robdex_app/src/app/robdex_app.dart';
+import 'package:robdex_app/src/bindings/signals/signals.dart';
 import 'package:robdex_app/src/terminal/integrated_terminal.dart';
 import 'package:robdex_design_system/robdex_design_system.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -173,6 +177,115 @@ void main() {
 
     expect(find.text('Codex Control Plane'), findsAtLeastNWidgets(1));
     expect(find.text('Config Operator'), findsAtLeastNWidgets(1));
+  });
+
+  test('project item parses requirements reviewer defaults', () {
+    final project = ProjectItem.fromJson(const {
+      'id': 'project-codex',
+      'name': 'Codex',
+      'rootPath': '/Users/robertsale/.codex',
+      'defaultCwd': '/Users/robertsale/.codex',
+      'requirementsReviewerDefaultModel': 'gpt-5.5',
+      'requirementsReviewerDefaultReasoningEffort': 'high',
+      'autoRouteReplies': false,
+      'routeApprovalRequests': true,
+      'isSelected': true,
+    });
+
+    expect(project.requirementsReviewerDefaultModel, 'gpt-5.5');
+    expect(project.requirementsReviewerDefaultReasoningEffort, 'high');
+  });
+
+  test('update project signal submits requirements reviewer defaults', () {
+    const signal = UpdateProjectSignal(
+      projectId: 'project-codex',
+      name: 'Codex',
+      defaultCwd: '/Users/robertsale/.codex',
+      autoRouteReplies: false,
+      routeApprovalRequests: true,
+      preferredModelProvider: 'openai',
+      orchestratorModelId: 'gpt-5',
+      orchestratorReasoningEffort: 'high',
+      workerModelId: 'gpt-5.4-mini',
+      workerReasoningEffort: 'medium',
+      qaModelId: 'gpt-5.4-mini',
+      qaReasoningEffort: 'medium',
+      designerModelId: 'gpt-5.4-mini',
+      designerReasoningEffort: 'high',
+      requirementsReviewerModelId: 'gpt-5.5',
+      requirementsReviewerReasoningEffort: 'high',
+      orchestratorDeveloperInstructions: '',
+      workerDeveloperInstructions: '',
+      qaDeveloperInstructions: '',
+      designerDeveloperInstructions: '',
+      operatorDeveloperInstructions: '',
+      hiddenDeveloperInstructions: '',
+    );
+
+    final decoded = UpdateProjectSignal.bincodeDeserialize(signal.bincodeSerialize());
+    expect(decoded.requirementsReviewerModelId, 'gpt-5.5');
+    expect(decoded.requirementsReviewerReasoningEffort, 'high');
+  });
+
+  testWidgets('requirements reviewer project settings controls render and update only reviewer fields', (
+    WidgetTester tester,
+  ) async {
+    var reviewerModel = 'gpt-5.5';
+    var reviewerReasoning = 'high';
+    var workerModel = 'gpt-5.4-mini';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) {
+              return ProjectRoleModelSettingsPane(
+                roleKey: 'requirements-reviewer',
+                availableModels: const [
+                  ModelItem(id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', hidden: false),
+                  ModelItem(id: 'gpt-5.5', name: 'GPT-5.5', hidden: false),
+                  ModelItem(id: 'hidden-model', name: 'Hidden', hidden: true),
+                ],
+                modelId: reviewerModel,
+                reasoningEffort: reviewerReasoning,
+                onModelChanged: (value) => setState(() => reviewerModel = value),
+                onReasoningChanged: (value) =>
+                    setState(() => reviewerReasoning = value),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(
+      find.byKey(const ValueKey('project.settings.requirements-reviewer.model')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('project.settings.requirements-reviewer.reasoning')),
+      findsOneWidget,
+    );
+    expect(find.text('GPT-5.5'), findsOneWidget);
+    expect(find.text('High'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey('project.settings.requirements-reviewer.model')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('GPT-5.4 Mini').last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey('project.settings.requirements-reviewer.reasoning')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Medium').last);
+    await tester.pumpAndSettle();
+
+    expect(reviewerModel, 'gpt-5.4-mini');
+    expect(reviewerReasoning, 'medium');
+    expect(workerModel, 'gpt-5.4-mini');
   });
 
   testWidgets('plan updates render as checklist rows', (WidgetTester tester) async {
@@ -406,6 +519,46 @@ void main() {
     await tester.pump();
     expect(compactCount, 1);
     expect(find.text('Compaction requested'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 1600));
+  });
+
+  testWidgets('handoff slash command inserts a warm handoff prompt', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 980,
+            height: 420,
+            child: ChatTimeline(
+              threadId: 'config-operator',
+              entries: const [],
+              title: 'Config Operator',
+              contextWindowRemainingPercent: 92,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: true,
+              isRunning: false,
+              showComposer: true,
+              selection: mockWorkbenchData.selection,
+              availableModels: mockWorkbenchData.availableModels,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField).last, '/handoff');
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    final text = tester.widget<TextField>(find.byType(TextField).last).controller?.text ?? '';
+    expect(text, contains('warm handoff'));
+    expect(text, contains('new agent'));
+    expect(text, contains('next best actions'));
+    expect(find.text('Handoff prompt inserted'), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 1600));
   });
 
@@ -910,6 +1063,69 @@ void main() {
     expect(find.byTooltip('Requirements: Requirements active'), findsOneWidget);
   });
 
+  testWidgets('thread list long press copies thread name', (
+    WidgetTester tester,
+  ) async {
+    String? copiedText;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copiedText = (call.arguments as Map<Object?, Object?>)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: ScaffoldMessenger(
+          child: Scaffold(
+            body: ThreadListPanel(
+              selection: mockWorkbenchData.selection,
+              projects: mockWorkbenchData.projects,
+              threads: [
+                ThreadItem(
+                  id: 'worker-copy',
+                  title: 'Worker Copy Target',
+                  role: 'worker',
+                  projectName: mockWorkbenchData.projects.first.name,
+                  preview: 'Copy me.',
+                  isRunning: false,
+                  unreadCount: 0,
+                  requirementReview: null,
+                ),
+              ],
+              pendingApprovals: const [],
+              onDisconnect: () {},
+              onThreadSelected: (_) {},
+              onCreateProject: () {},
+              onProjectSettings: (_) {},
+              onCreateThread: (_) {},
+              onSpawnAgent: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.longPress(find.text('Worker Copy Target'));
+    await tester.pumpAndSettle();
+    expect(find.text('Copy name'), findsOneWidget);
+
+    await tester.tap(find.text('Copy name'));
+    await tester.pump();
+
+    expect(copiedText, 'Worker Copy Target');
+    expect(find.text('Copied "Worker Copy Target"'), findsOneWidget);
+  });
+
   testWidgets('nested requirements claim packet renders claim rows without raw json', (
     WidgetTester tester,
   ) async {
@@ -952,6 +1168,125 @@ void main() {
     expect(find.text('chatRendersClaimObject'), findsOneWidget);
     expect(find.textContaining('Widget test covers nested claim rows.'), findsOneWidget);
     expect(find.textContaining('"requirements"'), findsNothing);
+  });
+
+  testWidgets('requirements form can select composable packs', (
+    WidgetTester tester,
+  ) async {
+    String? submitted;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () async {
+              submitted = await showRequirementSetFormDialog(
+                context,
+                title: 'Requirements',
+                actionLabel: 'Set',
+                initialComposableItems: const [
+                  {
+                    'id': 'review-evidence',
+                    'title': 'Review Evidence',
+                    'scope': 'global',
+                    'requirements': [
+                      {
+                        'key': 'reviewableArtifacts',
+                        'statement': 'Completion proof must include exact evidence.',
+                        'severity': 'high',
+                        'verificationMethod': 'manualEvidence',
+                      },
+                    ],
+                  },
+                ],
+              );
+            },
+            child: const Text('Open'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('requirements.composable.review-evidence')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('requirements.composable.review-evidence')));
+    await tester.enterText(find.widgetWithText(TextField, 'Title'), 'Task requirements');
+    await tester.enterText(find.widgetWithText(TextField, 'Statement'), 'Task-specific statement.');
+    await tester.tap(find.text('Set'));
+    await tester.pumpAndSettle();
+
+    final payload = jsonDecode(submitted!) as Map<String, dynamic>;
+    final requirements = payload['requirements'] as List<dynamic>;
+    expect(payload['includeComposables'], contains('review-evidence'));
+    expect(requirements.map((item) => item['key']), contains('reviewableArtifacts'));
+  });
+
+  testWidgets('requirements form fetches and inspects composable details', (
+    WidgetTester tester,
+  ) async {
+    final requests = <http.Request>[];
+    final client = MockClient((request) async {
+      requests.add(request);
+      expect(request.url.path, '/orchestrator/requirements/composables');
+      final body = jsonDecode(request.body) as Map<String, dynamic>;
+      expect(body['senderThreadId'], 'orch-1');
+      expect(body['recipientThreadId'], 'worker-1');
+      expect(body['projectPath'], '/tmp/project');
+      return http.Response(
+        jsonEncode({
+          'items': [
+            {
+              'id': 'review-evidence',
+              'title': 'Review Evidence',
+              'description': 'Concrete review evidence.',
+              'scope': 'global',
+              'requirements': [
+                {
+                  'key': 'reviewableArtifacts',
+                  'statement': 'Completion proof must include exact evidence.',
+                  'severity': 'high',
+                  'verificationMethod': 'manualEvidence',
+                },
+              ],
+            },
+          ],
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () {
+              showRequirementSetFormDialog(
+                context,
+                title: 'Requirements',
+                actionLabel: 'Set',
+                bridgeBaseUri: Uri.parse('http://bridge.local'),
+                senderThreadId: 'orch-1',
+                recipientThreadId: 'worker-1',
+                projectPath: '/tmp/project',
+                httpClient: client,
+              );
+            },
+            child: const Text('Open'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+    expect(requests, hasLength(1));
+    expect(find.byKey(const ValueKey('requirements.composable.review-evidence')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('requirements.composable.inspect.review-evidence')));
+    await tester.pumpAndSettle();
+    expect(find.text('Concrete review evidence.'), findsOneWidget);
+    expect(find.text('reviewableArtifacts'), findsOneWidget);
+    expect(find.text('Completion proof must include exact evidence.'), findsOneWidget);
   });
 
   testWidgets('chat timeline preserves scroll position when new entries arrive away from bottom', (

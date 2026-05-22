@@ -2185,6 +2185,50 @@ class FlutterSimManager:
                 metadata={"device_id": reservation.device_id, "keycode": ESCAPE_KEYCODE},
             )
             return {"ok": True, "message": "hideKeyboard"}
+        if command_name == "launchApp":
+            app_id = str(payload).strip() if isinstance(payload, str) and payload.strip() else reservation.app_id or EZRA_IOS_APP_ID
+            result = subprocess.run(
+                ["xcrun", "simctl", "launch", reservation.device_id, app_id],
+                cwd=Path(reservation.launch_path),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+            self._write_driver_result(
+                run_dir=step_run_dir,
+                kind="launchApp",
+                returncode=result.returncode,
+                stdout=result.stdout or "",
+                stderr=result.stderr or "",
+                metadata={"device_id": reservation.device_id, "app_id": app_id},
+            )
+            if result.returncode != 0:
+                raise BridgeError((result.stderr or result.stdout or "simctl launch failed").strip())
+            return {"ok": True, "message": f"launchApp {app_id}"}
+        if command_name == "terminateApp":
+            app_id = str(payload).strip() if isinstance(payload, str) and payload.strip() else reservation.app_id or EZRA_IOS_APP_ID
+            result = subprocess.run(
+                ["xcrun", "simctl", "terminate", reservation.device_id, app_id],
+                cwd=Path(reservation.launch_path),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+            self._write_driver_result(
+                run_dir=step_run_dir,
+                kind="terminateApp",
+                returncode=result.returncode,
+                stdout=result.stdout or "",
+                stderr=result.stderr or "",
+                metadata={"device_id": reservation.device_id, "app_id": app_id},
+            )
+            if result.returncode != 0 and "not running" not in (result.stderr or "").lower():
+                raise BridgeError((result.stderr or result.stdout or "simctl terminate failed").strip())
+            return {"ok": True, "message": f"terminateApp {app_id}"}
         raise BridgeError(f"Unsupported idb flow command: {command_name}")
 
     def driver_apps(self, *, device_id: str) -> dict[str, Any]:

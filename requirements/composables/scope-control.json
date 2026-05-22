@@ -1,0 +1,20 @@
+{
+  "id": "scope-control",
+  "title": "Scope Control",
+  "description": "Use when scope drift is likely. Covers no unapproved workarounds and no silent narrowing/substitution when requirements appear difficult.",
+  "appliesTo": ["code", "UI", "API", "tooling", "QA", "deploy"],
+  "requirements": [
+    {
+      "key": "noUnapprovedWorkarounds",
+      "statement": "Do not satisfy the task by adding fake data, disabling checks, bypassing official workflows, or documenting a manual workaround unless the operator explicitly authorizes that scope change.",
+      "severity": "blocker",
+      "verificationMethod": "sourceInspection"
+    },
+    {
+      "key": "requirementsScopeNoDrift",
+      "statement": "If a requirement appears impossible or unsafe, stop with proof and ask for an owner decision; do not silently narrow the task, substitute a different goal, or implement only the easiest subset.",
+      "severity": "blocker",
+      "verificationMethod": "manualEvidence"
+    }
+  ]
+}

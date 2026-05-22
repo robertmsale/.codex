@@ -1,0 +1,26 @@
+{
+  "id": "workflow-discipline",
+  "title": "Workflow Discipline",
+  "description": "Use for setup, codegen, migrations, deploys, containers, or test infrastructure. Covers no hidden manual pre-steps, rerunnable workflows, and cleanup/resource discipline.",
+  "appliesTo": ["tooling", "QA", "deploy", "generated-artifacts"],
+  "requirements": [
+    {
+      "key": "noManualOperatorStep",
+      "statement": "The completed solution must not require a human to run an undocumented/manual pre-step for normal use; required setup must be part of the sanctioned workflow or clearly documented as an operator-approved procedure.",
+      "severity": "high",
+      "verificationMethod": "commandEvidence"
+    },
+    {
+      "key": "idempotentSanctionedWorkflow",
+      "statement": "Any sanctioned setup/seed/migration/retry workflow touched by this task must be safely rerunnable on preserved state without manual cleanup.",
+      "severity": "high",
+      "verificationMethod": "commandEvidence"
+    },
+    {
+      "key": "cleanupAndResourceDiscipline",
+      "statement": "Any temporary services, containers, worktrees, test data, or scratch infrastructure created by the task must be cleaned up or explicitly documented as intentionally still active.",
+      "severity": "medium",
+      "verificationMethod": "manualEvidence"
+    }
+  ]
+}

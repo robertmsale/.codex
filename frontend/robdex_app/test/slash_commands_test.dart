@@ -77,6 +77,7 @@ void main() {
     );
     expect(topLevel?.options.map((option) => option.value), contains('reasoning'));
     expect(topLevel?.options.map((option) => option.value), contains('compact'));
+    expect(topLevel?.options.map((option) => option.value), contains('handoff'));
 
     final reasoning = slashCommandSuggestions(
       '/reasoning ',
@@ -86,5 +87,23 @@ void main() {
     expect(reasoning?.command?.kind, SlashCommandKind.reasoning);
     expect(reasoning?.options.map((option) => option.value), ['low', 'medium', 'high']);
     expect(reasoning?.options.singleWhere((option) => option.value == 'medium').current, true);
+  });
+
+  test('parses handoff as no-argument command', () {
+    final parsed = parseCompleteSlashCommand(
+      '/handoff',
+      selection: selection,
+      availableModels: models,
+    );
+    expect(parsed?.kind, SlashCommandKind.handoff);
+    expect(parsed?.argument, isNull);
+    expect(
+      parseCompleteSlashCommand(
+        '/handoff now',
+        selection: selection,
+        availableModels: models,
+      ),
+      isNull,
+    );
   });
 }

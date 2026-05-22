@@ -510,6 +510,46 @@ def command_clear_field(*, device_id: str, cwd: Path, payload: Any) -> dict[str,
     }
 
 
+def command_launch_app(*, device_id: str, cwd: Path, app_id: str, payload: Any) -> dict[str, Any]:
+    resolved_app_id = payload.strip() if isinstance(payload, str) and payload.strip() else app_id
+    xcrun = xcrun_executable()
+    if not xcrun:
+        raise DriverError("xcrun is required for launchApp.")
+    result = subprocess.run(
+        [xcrun, "simctl", "launch", device_id, resolved_app_id],
+        cwd=cwd,
+        env=launch_env(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise DriverError((result.stderr or result.stdout or "simctl launch failed").strip())
+    return {"ok": True, "message": f"launchApp {resolved_app_id}", "stdout": result.stdout.strip()}
+
+
+def command_terminate_app(*, device_id: str, cwd: Path, app_id: str, payload: Any) -> dict[str, Any]:
+    resolved_app_id = payload.strip() if isinstance(payload, str) and payload.strip() else app_id
+    xcrun = xcrun_executable()
+    if not xcrun:
+        raise DriverError("xcrun is required for terminateApp.")
+    result = subprocess.run(
+        [xcrun, "simctl", "terminate", device_id, resolved_app_id],
+        cwd=cwd,
+        env=launch_env(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0 and "not running" not in (result.stderr or "").lower():
+        raise DriverError((result.stderr or result.stdout or "simctl terminate failed").strip())
+    return {"ok": True, "message": f"terminateApp {resolved_app_id}", "stdout": result.stdout.strip()}
+
+
 def perform_command(
     *,
     command_name: str,
@@ -548,6 +588,10 @@ def perform_command(
         return command_hide_keyboard(device_id=device_id)
     if command_name == "swipe":
         return command_swipe(device_id=device_id, cwd=cwd, payload=input_payload)
+    if command_name == "launchApp":
+        return command_launch_app(device_id=device_id, cwd=cwd, app_id=app_id, payload=input_payload)
+    if command_name == "terminateApp":
+        return command_terminate_app(device_id=device_id, cwd=cwd, app_id=app_id, payload=input_payload)
     if command_name == "apps":
         return {"ok": True, "apps": [{"name": "Runner", "appId": app_id}]}
     raise DriverError(f"Unsupported command `{command_name}`.")

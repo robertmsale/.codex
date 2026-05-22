@@ -7,6 +7,7 @@ enum SlashCommandKind {
   sandbox,
   approval,
   compact,
+  handoff,
 }
 
 class SlashCommandDefinition {
@@ -96,6 +97,12 @@ const slashCommandDefinitions = <SlashCommandDefinition>[
     kind: SlashCommandKind.compact,
     name: 'compact',
     description: 'Compact thread',
+    requiresArgument: false,
+  ),
+  SlashCommandDefinition(
+    kind: SlashCommandKind.handoff,
+    name: 'handoff',
+    description: 'Draft handoff',
     requiresArgument: false,
   ),
 ];
@@ -274,6 +281,8 @@ List<SlashCommandOption> slashCommandArgumentOptions(
           )
           .toList(growable: false);
     case SlashCommandKind.compact:
+      return const [];
+    case SlashCommandKind.handoff:
       return const [];
   }
 }

@@ -1,0 +1,20 @@
+{
+  "id": "source-of-truth",
+  "title": "Source of Truth",
+  "description": "Use for domain, contract, state, or generated-artifact work. Covers preserving the intended source of truth and preventing stale generated outputs.",
+  "appliesTo": ["code", "UI", "API", "generated-artifacts"],
+  "requirements": [
+    {
+      "key": "sourceOfTruthPreserved",
+      "statement": "Use and preserve the intended source of truth for the domain; do not introduce parallel state, duplicate contracts, or frontend-only truth unless explicitly assigned.",
+      "severity": "blocker",
+      "verificationMethod": "sourceInspection"
+    },
+    {
+      "key": "noStaleGeneratedArtifacts",
+      "statement": "Generated/build artifacts must either be generated automatically by the sanctioned workflow or deliberately version-controlled by project policy; do not leave stale generated outputs that can drift from source.",
+      "severity": "high",
+      "verificationMethod": "diffReview"
+    }
+  ]
+}

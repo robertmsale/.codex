@@ -22,6 +22,7 @@ use crate::upstream::UpstreamRuntimeEvent;
 
 pub const DEFAULT_RECONNECT_DELAY_MS: u64 = 5_000;
 const APP_SERVER_MAX_WEBSOCKET_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
+const APP_SERVER_JSON_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 pub enum TransportControlMessage {
@@ -385,8 +386,23 @@ async fn request_json_over_connection(
         .await
         .map_err(AppServerRequestError::Transport)?;
 
+    let deadline = tokio::time::Instant::now() + APP_SERVER_JSON_REQUEST_TIMEOUT;
     loop {
-        match connection.read_message().await.map_err(AppServerRequestError::Transport)? {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(AppServerRequestError::Transport(anyhow::anyhow!(
+                "app-server request timed out waiting for response"
+            )));
+        }
+        let message = tokio::time::timeout(deadline - now, connection.read_message())
+            .await
+            .map_err(|_| {
+                AppServerRequestError::Transport(anyhow::anyhow!(
+                    "app-server request timed out waiting for response"
+                ))
+            })?
+            .map_err(AppServerRequestError::Transport)?;
+        match message {
             JSONRPCMessage::Response(response) if response.id == request_id => return Ok(response.result),
             JSONRPCMessage::Error(error) if error.id == request_id => {
                 return Err(AppServerRequestError::Request(anyhow::anyhow!(

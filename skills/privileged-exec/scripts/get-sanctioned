@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+skills_dir="$codex_home/skills"
+
+if [[ ! -d "$skills_dir" ]]; then
+  echo "No skills directory found: $skills_dir" >&2
+  exit 1
+fi
+
+shopt -s nullglob
+
+printed_any=0
+for skill_dir in "$skills_dir"/*; do
+  [[ -d "$skill_dir/scripts" ]] || continue
+  skill_name="$(basename "$skill_dir")"
+  entries=()
+  for script_path in "$skill_dir/scripts"/*; do
+    [[ -f "$script_path" && -x "$script_path" ]] || continue
+    entries+=("$(basename "$script_path")")
+  done
+  [[ "${#entries[@]}" -gt 0 ]] || continue
+
+  if [[ "$printed_any" -eq 1 ]]; then
+    echo
+  fi
+  printed_any=1
+  echo "$skill_name"
+  printf '%s\n' "${entries[@]}" | sort | sed 's/^/  /'
+done
+
+if [[ "$printed_any" -eq 0 ]]; then
+  echo "No executable skill scripts found under $skills_dir"
+fi

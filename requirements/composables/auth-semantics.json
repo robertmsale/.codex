@@ -1,0 +1,14 @@
+{
+  "id": "auth-semantics",
+  "title": "Auth Semantics",
+  "description": "Use for auth, session, permission, or access-control changes. Covers distinguishing unauthenticated, unauthorized, unavailable, and invalid-session states without broadening privileges.",
+  "appliesTo": ["auth", "API", "UI"],
+  "requirements": [
+    {
+      "key": "permissionAndAuthSemanticsPreserved",
+      "statement": "Fixes involving access/auth must distinguish unauthenticated, unauthorized, unavailable, and invalid-session states correctly; do not broaden privileges or force logout on mere permission denial unless that is the intended contract.",
+      "severity": "blocker",
+      "verificationMethod": "sourceInspection"
+    }
+  ]
+}

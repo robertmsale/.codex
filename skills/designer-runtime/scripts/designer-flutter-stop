@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+session=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  designer-flutter-stop --session <tmux-session>
+
+Stops a tmux session started by designer-flutter-run.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --session)
+      session="${2:-}"
+      shift 2
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+[[ -n "$session" ]] || { echo "--session is required" >&2; exit 2; }
+
+if tmux has-session -t "$session" 2>/dev/null; then
+  tmux kill-session -t "$session"
+  printf 'stopped tmux session %s\n' "$session"
+else
+  printf 'tmux session already stopped: %s\n' "$session"
+fi

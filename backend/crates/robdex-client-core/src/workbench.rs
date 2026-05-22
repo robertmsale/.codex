@@ -127,6 +127,8 @@ impl WorkbenchClient {
         qa_reasoning_effort: Option<String>,
         designer_model_id: Option<String>,
         designer_reasoning_effort: Option<String>,
+        requirements_reviewer_model_id: Option<String>,
+        requirements_reviewer_reasoning_effort: Option<String>,
         orchestrator_developer_instructions: Option<String>,
         worker_developer_instructions: Option<String>,
         qa_developer_instructions: Option<String>,
@@ -156,6 +158,10 @@ impl WorkbenchClient {
                     "designer": {
                         "modelID": designer_model_id,
                         "reasoningEffort": designer_reasoning_effort,
+                    },
+                    "requirements-reviewer": {
+                        "modelID": requirements_reviewer_model_id,
+                        "reasoningEffort": requirements_reviewer_reasoning_effort,
                     }
                 },
                 "roleDeveloperInstructionsDefaults": {
@@ -685,6 +691,10 @@ pub async fn build_workbench_with_models(
             qa_default_reasoning_effort: record.qa_default_reasoning_effort.clone(),
             designer_default_model: record.designer_default_model.clone(),
             designer_default_reasoning_effort: record.designer_default_reasoning_effort.clone(),
+            requirements_reviewer_default_model: record.requirements_reviewer_default_model.clone(),
+            requirements_reviewer_default_reasoning_effort: record
+                .requirements_reviewer_default_reasoning_effort
+                .clone(),
             orchestrator_developer_instructions: record.orchestrator_developer_instructions.clone(),
             worker_developer_instructions: record.worker_developer_instructions.clone(),
             qa_developer_instructions: record.qa_developer_instructions.clone(),
@@ -1135,6 +1145,8 @@ struct ProjectRecord {
     qa_default_reasoning_effort: Option<String>,
     designer_default_model: Option<String>,
     designer_default_reasoning_effort: Option<String>,
+    requirements_reviewer_default_model: Option<String>,
+    requirements_reviewer_default_reasoning_effort: Option<String>,
     orchestrator_developer_instructions: Option<String>,
     worker_developer_instructions: Option<String>,
     qa_developer_instructions: Option<String>,
@@ -1556,6 +1568,16 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
                 .and_then(|value| value.get("reasoningEffort"))
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            requirements_reviewer_default_model: role_defaults
+                .get("requirements-reviewer")
+                .and_then(|value| value.get("modelID"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            requirements_reviewer_default_reasoning_effort: role_defaults
+                .get("requirements-reviewer")
+                .and_then(|value| value.get("reasoningEffort"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
             orchestrator_developer_instructions: developer_defaults
                 .get("orchestrator")
                 .and_then(Value::as_str)
@@ -1618,6 +1640,9 @@ fn role_default_model(project: Option<&ProjectRecord>, role: Option<&str>) -> Op
         }
         Some("designer") => project.and_then(|value| value.designer_default_model.clone()),
         Some("qa") => project.and_then(|value| value.qa_default_model.clone()),
+        Some("requirements-reviewer") | Some("requirementsReviewer") => {
+            project.and_then(|value| value.requirements_reviewer_default_model.clone())
+        }
         _ => None,
     }
 }
@@ -1635,6 +1660,9 @@ fn role_default_reasoning_effort(
         }
         Some("designer") => project.and_then(|value| value.designer_default_reasoning_effort.clone()),
         Some("qa") => project.and_then(|value| value.qa_default_reasoning_effort.clone()),
+        Some("requirements-reviewer") | Some("requirementsReviewer") => {
+            project.and_then(|value| value.requirements_reviewer_default_reasoning_effort.clone())
+        }
         _ => None,
     }
 }
@@ -1820,6 +1848,42 @@ mod tests {
                 .and_then(|record| record.requirement_review.as_ref())
                 .and_then(|summary| summary.parent_thread_id.as_deref()),
             Some("source")
+        );
+    }
+
+    #[test]
+    fn project_records_include_requirements_reviewer_defaults() {
+        let snapshot = json!({
+            "state": {
+                "projects": {
+                    "p1": {
+                        "id": "p1",
+                        "name": "Project",
+                        "projectRoot": "/tmp/project",
+                        "configs": {
+                            "roleModelReasoningDefaults": {
+                                "requirements-reviewer": {
+                                    "modelID": "gpt-reviewer",
+                                    "reasoningEffort": "high"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let records = extract_project_records(&snapshot);
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].requirements_reviewer_default_model.as_deref(),
+            Some("gpt-reviewer")
+        );
+        assert_eq!(
+            records[0]
+                .requirements_reviewer_default_reasoning_effort
+                .as_deref(),
+            Some("high")
         );
     }
 

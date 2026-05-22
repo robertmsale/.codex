@@ -1,0 +1,14 @@
+{
+  "id": "review-evidence",
+  "title": "Review Evidence",
+  "description": "Use when completion evidence must be easy to review. Covers exact changed files, commands, relevant output, and persistent artifact/log paths.",
+  "appliesTo": ["code", "UI", "API", "tooling", "QA", "deploy"],
+  "requirements": [
+    {
+      "key": "reviewableArtifacts",
+      "statement": "Completion proof must include exact files changed, exact commands run, exact relevant output, and persistent artifacts/log paths where applicable; vague claims like \"passed\" are insufficient.",
+      "severity": "high",
+      "verificationMethod": "manualEvidence"
+    }
+  ]
+}

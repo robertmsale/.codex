@@ -59,6 +59,8 @@ pub struct UpdateProjectSignal {
     pub qa_reasoning_effort: String,
     pub designer_model_id: String,
     pub designer_reasoning_effort: String,
+    pub requirements_reviewer_model_id: String,
+    pub requirements_reviewer_reasoning_effort: String,
     pub orchestrator_developer_instructions: String,
     pub worker_developer_instructions: String,
     pub qa_developer_instructions: String,

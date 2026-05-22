@@ -1,4 +1,4 @@
-use std::{collections::{BTreeMap, BTreeSet}, env, path::{Path, PathBuf}, time::{Duration, Instant}};
+use std::{collections::{BTreeMap, BTreeSet}, env, fs, path::{Path, PathBuf}, time::{Duration, Instant}};
 
 use anyhow::{Context, Result, bail};
 use codex_app_server_adapter::app_server_protocol::RequestId;
@@ -153,6 +153,26 @@ pub(crate) struct RequirementState {
     pub verdict_schema_description: Option<String>,
     #[serde(default = "default_verification_method")]
     pub verification_method: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequirementComposableState {
+    pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub applies_to: Vec<String>,
+    #[serde(default)]
+    pub conflicts_with: Vec<String>,
+    #[serde(default)]
+    pub requirements: Vec<RequirementState>,
+    #[serde(skip)]
+    pub scope: String,
+    #[serde(skip)]
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2427,13 +2447,7 @@ fn effective_network_access_for_sandbox(
 ) -> Option<bool> {
     match sandbox_mode {
         Some("workspace-write") | Some("external-sandbox") => {
-            if explicit_network_access == Some(true) || default_network_access == Some(true) {
-                Some(true)
-            } else if explicit_network_access == Some(false) || default_network_access == Some(false) {
-                Some(false)
-            } else {
-                Some(true)
-            }
+            explicit_network_access.or(default_network_access).or(Some(true))
         }
         _ => None,
     }
@@ -2447,13 +2461,18 @@ fn sandbox_policy_for_spawn(
     simple_sandbox_policy(sandbox_mode, network_access, cwd)
 }
 
-fn role_default_model(state: &PersistedState, project_path: Option<&str>, role: Option<&str>) -> Option<String> {
-    let key = match role {
+fn role_model_reasoning_default_key(role: Option<&str>) -> &'static str {
+    match role {
         Some("designer") => "designer",
         Some("qa") => "qa",
         Some("orchestrator") => "orchestrator",
+        Some("requirements-reviewer") | Some("requirementsReviewer") => "requirements-reviewer",
         Some("worker") | Some("hidden") | Some("operator") | _ => "worker",
-    };
+    }
+}
+
+fn role_default_model(state: &PersistedState, project_path: Option<&str>, role: Option<&str>) -> Option<String> {
+    let key = role_model_reasoning_default_key(role);
     let target_path = normalize_path(project_path?.to_string());
     let project = state.projects.values().find(|project| {
         project
@@ -2476,12 +2495,7 @@ fn role_default_reasoning_effort(
     project_path: Option<&str>,
     role: Option<&str>,
 ) -> Option<String> {
-    let key = match role {
-        Some("designer") => "designer",
-        Some("qa") => "qa",
-        Some("orchestrator") => "orchestrator",
-        Some("worker") | Some("hidden") | Some("operator") | _ => "worker",
-    };
+    let key = role_model_reasoning_default_key(role);
     let target_path = normalize_path(project_path?.to_string());
     let project = state.projects.values().find(|project| {
         project
@@ -2525,7 +2539,7 @@ fn developer_instructions_for_role(
     if let Some(configured) = configured {
         segments.push(configured);
     }
-    if role != "orchestrator" && project.orchestrator_thread_id.is_some() {
+    if !matches!(role, "orchestrator" | "operator") && project.orchestrator_thread_id.is_some() {
         if role == "designer" {
             segments.push("Use the same communication rules as workers, but final assistant replies are not auto-forwarded for designers. If the administrator needs your final status, send it explicitly through the sanctioned Robdex path.".to_string());
         } else if project.auto_route_replies.unwrap_or(false) {
@@ -2910,6 +2924,28 @@ pub(crate) fn requirements_claim_schema(set: &RequirementSetState) -> Value {
 }
 
 pub(crate) fn requirements_verdict_schema(set: &RequirementSetState) -> Value {
+    let (properties, required) = requirements_verdict_properties(set);
+    json!({
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "Concise reviewer progress note or final verdict summary. Do not duplicate every per-requirement verdict."
+            },
+            "requirements": {
+                "type": ["object", "null"],
+                "description": "Use null for reviewer commentary/progress. Use the object only for a final Requirements review verdict packet.",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": false
+            }
+        },
+        "required": ["summary", "requirements"],
+        "additionalProperties": false
+    })
+}
+
+fn requirements_verdict_properties(set: &RequirementSetState) -> (serde_json::Map<String, Value>, Vec<String>) {
     let mut properties = serde_json::Map::new();
     let mut required = Vec::new();
     for requirement in &set.requirements {
@@ -2957,12 +2993,7 @@ pub(crate) fn requirements_verdict_schema(set: &RequirementSetState) -> Value {
             "additionalProperties": false
         }),
     );
-    json!({
-        "type": "object",
-        "properties": properties,
-        "required": required,
-        "additionalProperties": false
-    })
+    (properties, required)
 }
 
 fn claim_property_schema(description: &str) -> Value {
@@ -4539,9 +4570,6 @@ pub async fn orchestrator_set_requirements(
         .await;
     }
 
-    let mut set = parse_requirement_set_payload(set_payload)?;
-    validate_requirement_set(&set)?;
-
     let _state_guard = runtime.lock_state_mutation().await;
     let mut state = parse_state(&runtime.state_document_value().await);
     let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
@@ -4552,6 +4580,8 @@ pub async fn orchestrator_set_requirements(
     } else {
         resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?
     };
+    let mut set = compose_requirement_set_payload(runtime, &state, &recipient.thread_id, set_payload)?;
+    validate_requirement_set(&set)?;
     if set.id.as_deref().map(str::trim).unwrap_or_default().is_empty() {
         set.id = Some(format!("requirements-{}", unix_now()));
     }
@@ -4575,6 +4605,46 @@ pub async fn orchestrator_set_requirements(
         }
     }
     bail!("Recipient `{}` is not a tracked agent.", recipient.thread_id)
+}
+
+pub async fn orchestrator_requirement_composables(
+    runtime: &BridgeRuntime,
+    sender_thread_id: &str,
+    recipient_thread_id: Option<&str>,
+    recipient_name: Option<&str>,
+    project_path: Option<&str>,
+) -> Result<Value> {
+    let state = parse_state(&runtime.state_document_value().await);
+    let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
+    let records = all_agent_records(&state, &running);
+    let scoped = scoped_agent_context(&records, sender_thread_id, true)?;
+    let recipient = if recipient_thread_id.is_none() && recipient_name.is_none() {
+        scoped.sender.clone()
+    } else {
+        resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?
+    };
+    let composables = discover_requirement_composables(runtime, &state, &recipient.thread_id)?;
+    let items = composables
+        .into_values()
+        .map(|composable| {
+            json!({
+                "id": composable.id,
+                "title": composable.title,
+                "description": composable.description,
+                "appliesTo": composable.applies_to,
+                "conflictsWith": composable.conflicts_with,
+                "scope": composable.scope,
+                "path": composable.path.display().to_string(),
+                "requirementCount": composable.requirements.len(),
+                "requirements": composable.requirements,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "threadId": recipient.thread_id,
+        "displayName": recipient.display_name,
+        "items": items,
+    }))
 }
 
 async fn orchestrator_clear_requirements(
@@ -4777,6 +4847,186 @@ fn parse_requirement_set_payload(payload: Value) -> Result<RequirementSetState> 
     }
 }
 
+fn compose_requirement_set_payload(
+    runtime: &BridgeRuntime,
+    state: &PersistedState,
+    recipient_thread_id: &str,
+    payload: Value,
+) -> Result<RequirementSetState> {
+    let selected = selected_composable_ids(&payload)?;
+    let mut set = parse_requirement_set_payload(strip_composable_selection(payload))?;
+    if selected.is_empty() {
+        return Ok(set);
+    }
+    let available = discover_requirement_composables(runtime, state, recipient_thread_id)?;
+    let selected_set: BTreeSet<String> = selected.iter().cloned().collect();
+    for id in &selected_set {
+        let Some(composable) = available.get(id) else {
+            bail!("unknown requirements composable `{id}`");
+        };
+        for conflict in &composable.conflicts_with {
+            if selected_set.contains(conflict) {
+                bail!("requirements composable `{id}` conflicts with `{conflict}`");
+            }
+        }
+    }
+
+    let mut merged = Vec::<RequirementState>::new();
+    for id in selected {
+        let composable = available
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("unknown requirements composable `{id}`"))?;
+        merge_requirement_items(&mut merged, &composable.requirements)?;
+    }
+    merge_requirement_items(&mut merged, &set.requirements)?;
+    set.requirements = merged;
+    Ok(set)
+}
+
+fn selected_composable_ids(payload: &Value) -> Result<Vec<String>> {
+    let Some(value) = payload
+        .get("includeComposables")
+        .or_else(|| payload.get("composables"))
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = value.as_array() else {
+        bail!("includeComposables must be an array of composable ids");
+    };
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+    for item in items {
+        let Some(id) = item.as_str().map(str::trim).filter(|id| !id.is_empty()) else {
+            bail!("includeComposables entries must be non-empty strings");
+        };
+        if seen.insert(id.to_string()) {
+            selected.push(id.to_string());
+        }
+    }
+    Ok(selected)
+}
+
+fn strip_composable_selection(mut payload: Value) -> Value {
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("includeComposables");
+        object.remove("composables");
+    }
+    payload
+}
+
+fn merge_requirement_items(target: &mut Vec<RequirementState>, incoming: &[RequirementState]) -> Result<()> {
+    for requirement in incoming {
+        if let Some(existing) = target.iter().find(|item| item.key == requirement.key) {
+            if existing != requirement {
+                bail!("conflicting requirement key `{}` while composing requirements", requirement.key);
+            }
+            continue;
+        }
+        target.push(requirement.clone());
+    }
+    Ok(())
+}
+
+fn discover_requirement_composables(
+    runtime: &BridgeRuntime,
+    state: &PersistedState,
+    recipient_thread_id: &str,
+) -> Result<BTreeMap<String, RequirementComposableState>> {
+    let mut composables = BTreeMap::new();
+    load_requirement_composables_from_dir(
+        &global_requirement_composables_dir(runtime),
+        "global",
+        &mut composables,
+    )?;
+    if let Some(project_root) = project_root_for_thread(state, recipient_thread_id) {
+        load_requirement_composables_from_dir(
+            &project_root.join(".codex").join("requirements").join("composables"),
+            "project",
+            &mut composables,
+        )?;
+    }
+    Ok(composables)
+}
+
+fn global_requirement_composables_dir(runtime: &BridgeRuntime) -> PathBuf {
+    if let Some(home) = env::var_os("CODEX_HOME") {
+        return PathBuf::from(home).join("requirements").join("composables");
+    }
+    runtime
+        .settings()
+        .paths
+        .state_root
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| runtime.settings().project_path.clone())
+        .join("requirements")
+        .join("composables")
+}
+
+fn project_root_for_thread(state: &PersistedState, thread_id: &str) -> Option<PathBuf> {
+    state.projects.values().find_map(|project| {
+        let agent = project.agents.get(thread_id)?;
+        agent
+            .project_root
+            .as_deref()
+            .or(project.project_root.as_deref())
+            .or(project.cwd.as_deref())
+            .map(PathBuf::from)
+    })
+}
+
+fn load_requirement_composables_from_dir(
+    dir: &Path,
+    scope: &str,
+    out: &mut BTreeMap<String, RequirementComposableState>,
+) -> Result<()> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry.with_context(|| format!("failed to read {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read requirements composable {}", path.display()))?;
+        let mut composable: RequirementComposableState = serde_json::from_str(&text)
+            .with_context(|| format!("invalid requirements composable {}", path.display()))?;
+        if composable.id.trim().is_empty() {
+            composable.id = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("composable")
+                .to_string();
+        }
+        validate_requirement_composable(&composable, &path)?;
+        composable.scope = scope.to_string();
+        composable.path = path;
+        out.insert(composable.id.clone(), composable);
+    }
+    Ok(())
+}
+
+fn validate_requirement_composable(composable: &RequirementComposableState, path: &Path) -> Result<()> {
+    if !composable
+        .id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        bail!(
+            "requirements composable id `{}` in {} must contain only letters, numbers, hyphen, or underscore",
+            composable.id,
+            path.display()
+        );
+    }
+    validate_requirement_set(&RequirementSetState {
+        requirements: composable.requirements.clone(),
+        ..Default::default()
+    })
+    .with_context(|| format!("invalid requirements composable {}", path.display()))
+}
+
 fn parse_optional_requirement_set_payload(payload: &Value) -> Result<Option<RequirementSetState>> {
     let Some(requirement_set_payload) = payload
         .get("requirementSet")
@@ -4942,6 +5192,21 @@ pub(crate) async fn ensure_requirements_reviewer_for_thread(
             .or_else(|| project.cwd.clone())
             .or_else(|| project.project_root.clone())
             .unwrap_or_else(|| runtime.settings().cwd.display().to_string());
+        let reviewer_model =
+            role_default_model(&state, Some(project_path.as_str()), Some("requirements-reviewer"));
+        let reviewer_reasoning_effort = role_default_reasoning_effort(
+            &state,
+            Some(project_path.as_str()),
+            Some("requirements-reviewer"),
+        );
+        let has_reviewer_model_defaults =
+            reviewer_model.is_some() || reviewer_reasoning_effort.is_some();
+        let reviewer_model_provider = if has_reviewer_model_defaults {
+            preferred_model_provider_for_project(&state, Some(project_path.as_str()))
+                .or_else(|| source.model_provider.clone())
+        } else {
+            source.model_provider.clone()
+        };
         let base_instructions = resolve_role_instructions_for(Some("requirements-reviewer"))
             .ok()
             .flatten();
@@ -4954,9 +5219,9 @@ pub(crate) async fn ensure_requirements_reviewer_for_thread(
             "approvalPolicy": "never",
             "sandboxMode": "workspace-write",
             "networkAccess": false,
-            "modelID": source.model.clone(),
-            "modelProvider": source.model_provider.clone(),
-            "reasoningEffort": source.reasoning_effort.clone(),
+            "modelID": reviewer_model.or_else(|| source.model.clone()),
+            "modelProvider": reviewer_model_provider,
+            "reasoningEffort": reviewer_reasoning_effort.or_else(|| source.reasoning_effort.clone()),
             "serviceTier": source.service_tier.clone(),
             "approvalsReviewer": source.approvals_reviewer.clone(),
             "personality": source.personality.clone(),
@@ -4982,7 +5247,7 @@ pub(crate) fn requirements_review_prompt(
     claim_text: &str,
 ) -> String {
     let mut prompt = format!(
-        "Perform an adversarial Requirements Review.\n\nReview subject: {source_label}\n\nRules:\n- Compare each requirement against the actual work and available evidence.\n- Fail missing, weak, circular, or unverifiable evidence.\n- Reject fake blockers.\n- Accept true external blockers only with concrete proof.\n- Never implement fixes and never relax requirements.\n- Shell/chrome or scope exclusions cannot erase core in-scope requirements.\n\nRequirements:\n"
+        "Perform an adversarial Requirements Review.\n\nReview subject: {source_label}\n\nStructured responses use `summary` plus `requirements`.\n- Use `requirements: null` only for reviewer progress/commentary.\n- When finishing review, `requirements` must be the object containing every requirement verdict plus `overallVerdict` and `route`.\n\nRules:\n- Compare each requirement against the actual work and available evidence.\n- Fail missing, weak, circular, or unverifiable evidence.\n- Reject fake blockers.\n- Accept true external blockers only with concrete proof.\n- Never implement fixes and never relax requirements.\n- Shell/chrome or scope exclusions cannot erase core in-scope requirements.\n\nRequirements:\n"
     );
     for requirement in &set.requirements {
         prompt.push_str(&format!(
@@ -6141,10 +6406,96 @@ mod tests {
             .get("required")
             .and_then(Value::as_array)
             .expect("required array");
-        assert!(required.iter().any(|value| value.as_str() == Some("nativeGuiIsSourceOfTruth")));
-        assert!(required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
-        assert!(required.iter().any(|value| value.as_str() == Some("overallVerdict")));
-        assert!(required.iter().any(|value| value.as_str() == Some("route")));
+        assert_eq!(required, &vec![json!("summary"), json!("requirements")]);
+        let requirements_schema = &schema["properties"]["requirements"];
+        assert_eq!(requirements_schema["type"], json!(["object", "null"]));
+        let verdict_required = requirements_schema
+            .get("required")
+            .and_then(Value::as_array)
+            .expect("verdict required array");
+        assert!(verdict_required.iter().any(|value| value.as_str() == Some("nativeGuiIsSourceOfTruth")));
+        assert!(verdict_required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
+        assert!(verdict_required.iter().any(|value| value.as_str() == Some("overallVerdict")));
+        assert!(verdict_required.iter().any(|value| value.as_str() == Some("route")));
+    }
+
+    #[tokio::test]
+    async fn requirements_composables_use_recipient_project_override() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let global_dir = temp.path().join("requirements").join("composables");
+        std::fs::create_dir_all(&global_dir).expect("global composables dir");
+        std::fs::write(
+            global_dir.join("shared.json"),
+            r#"{"id":"shared","title":"Global","requirements":[{"key":"globalRequirement","statement":"Global statement.","severity":"high","verificationMethod":"manualEvidence"}]}"#,
+        )
+        .expect("write global composable");
+        let project_root = temp.path().join("project");
+        let project_dir = project_root.join(".codex").join("requirements").join("composables");
+        std::fs::create_dir_all(&project_dir).expect("project composables dir");
+        std::fs::write(
+            project_dir.join("shared.json"),
+            r#"{"id":"shared","title":"Project","requirements":[{"key":"projectRequirement","statement":"Project statement.","severity":"blocker","verificationMethod":"sourceInspection"}]}"#,
+        )
+        .expect("write project composable");
+
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": project_root.display().to_string(),
+                        "cwd": project_root.display().to_string(),
+                        "orchestratorThreadID": "orch-1",
+                        "agents": {
+                            "orch-1": {"displayName": "Orch", "role": "orchestrator", "projectRoot": project_root.display().to_string()},
+                            "worker-1": {"displayName": "Worker", "role": "worker", "projectRoot": project_root.display().to_string()}
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let payload = orchestrator_requirement_composables(
+            &runtime,
+            "orch-1",
+            Some("worker-1"),
+            None,
+            None,
+        )
+        .await
+        .expect("list composables");
+        let items = payload["items"].as_array().expect("items");
+        let shared = items
+            .iter()
+            .find(|item| item["id"] == json!("shared"))
+            .expect("shared composable");
+        assert_eq!(shared["scope"], json!("project"));
+        assert_eq!(shared["requirements"][0]["key"], json!("projectRequirement"));
+    }
+
+    #[test]
+    fn requirements_composable_merge_rejects_conflicting_keys() {
+        let mut merged = vec![RequirementState {
+            key: "sameKey".to_string(),
+            statement: "Original statement.".to_string(),
+            severity: "high".to_string(),
+            claim_schema_description: None,
+            verdict_schema_description: None,
+            verification_method: "manualEvidence".to_string(),
+        }];
+        let incoming = vec![RequirementState {
+            key: "sameKey".to_string(),
+            statement: "Different statement.".to_string(),
+            severity: "high".to_string(),
+            claim_schema_description: None,
+            verdict_schema_description: None,
+            verification_method: "manualEvidence".to_string(),
+        }];
+        let error = merge_requirement_items(&mut merged, &incoming).expect_err("conflict");
+        assert!(error.to_string().contains("conflicting requirement key `sameKey`"));
     }
 
     #[tokio::test]
@@ -7844,6 +8195,12 @@ mod tests {
                         "projectRoot": temp.path().display().to_string(),
                         "cwd": temp.path().join(".worktrees").display().to_string(),
                         "orchestratorThreadId": "thread-orchestrator",
+                        "configs": {
+                            "roleModelReasoningDefaults": {
+                                "worker": { "modelID": "gpt-worker-default", "reasoningEffort": "low" },
+                                "requirements-reviewer": { "modelID": "gpt-reviewer-default", "reasoningEffort": "high" }
+                            }
+                        },
                         "agents": {
                             "thread-orchestrator": {
                                 "displayName": "Ezra Orchestrator",
@@ -7877,6 +8234,8 @@ mod tests {
         let thread_request = thread_rx.await.expect("captured thread start request");
         let thread_params = thread_request.params.expect("thread params");
         assert_eq!(thread_params["approvalPolicy"], "never");
+        assert_eq!(thread_params["model"], "gpt-reviewer-default");
+        assert_eq!(thread_params["config"]["model_reasoning_effort"], "high");
 
         let state = parse_state(&runtime.state_document_value().await);
         let agent_state = state
@@ -7886,6 +8245,278 @@ mod tests {
             .expect("persisted reviewer state");
         assert_eq!(agent_state.role.as_deref(), Some("requirements-reviewer"));
         assert_eq!(agent_state.approval_policy.as_deref(), Some("never"));
+        assert_eq!(agent_state.model.as_deref(), Some("gpt-reviewer-default"));
+        assert_eq!(agent_state.reasoning_effort.as_deref(), Some("high"));
+
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn auto_requirements_reviewer_inherits_source_model_settings_without_role_defaults() {
+        let temp = TempDir::new().expect("tempdir");
+        let (thread_tx, thread_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            let mut thread_tx = Some(thread_tx);
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    if request.method == "thread/start" {
+                        thread_tx
+                            .take()
+                            .expect("thread sender")
+                            .send(request.clone())
+                            .expect("record thread start request");
+                    }
+                    let result = match request.method.as_str() {
+                        "thread/start" => json!({"thread": {"id": "thread-reviewer-auto-1", "title": "Requirements Reviewer"}}),
+                        "thread/name/set" => json!({}),
+                        _ => json!({}),
+                    };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result,
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "thread/name/set" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "ezra": {
+                        "id": "project-ezra",
+                        "name": "Ezra",
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "autoRouteReplies": true,
+                        "routeApprovalRequests": true,
+                        "agents": {
+                            "thread-worker": {
+                                "displayName": "Worker",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "model": "gpt-source",
+                                "modelProvider": "source-provider",
+                                "reasoningEffort": "medium",
+                                "serviceTier": {"type": "priority"},
+                                "approvalPolicy": "on-request"
+                            }
+                        }
+                    }
+                },
+                "globalConfigs": {
+                    "networkAccess": true,
+                    "sandboxMode": "workspace-write"
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let reviewer_id = ensure_requirements_reviewer_for_thread(&runtime, "thread-worker")
+            .await
+            .expect("reviewer")
+            .expect("reviewer id");
+        assert_eq!(reviewer_id, "thread-reviewer-auto-1");
+
+        let thread_request = thread_rx.await.expect("captured thread start request");
+        let thread_params = thread_request.params.expect("thread params");
+        assert_eq!(thread_params["model"], "gpt-source");
+        assert_eq!(thread_params["modelProvider"], "source-provider");
+        assert_eq!(thread_params["config"]["model_reasoning_effort"], "medium");
+        assert_eq!(thread_params["serviceTier"]["type"], "priority");
+        assert_eq!(thread_params["approvalPolicy"], "never");
+        assert_eq!(thread_params["sandbox"], "workspace-write");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let reviewer_state = state
+            .projects
+            .values()
+            .find_map(|project| project.agents.get("thread-reviewer-auto-1"))
+            .expect("persisted reviewer");
+        assert_eq!(reviewer_state.model.as_deref(), Some("gpt-source"));
+        assert_eq!(reviewer_state.model_provider.as_deref(), Some("source-provider"));
+        assert_eq!(reviewer_state.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(reviewer_state.approval_policy.as_deref(), Some("never"));
+        assert_eq!(reviewer_state.sandbox_mode.as_deref(), Some("workspace-write"));
+        assert_eq!(reviewer_state.network_access, Some(false));
+
+        transport.abort();
+    }
+
+    #[tokio::test]
+    async fn auto_requirements_reviewer_uses_project_role_defaults_when_configured() {
+        let temp = TempDir::new().expect("tempdir");
+        let (thread_tx, thread_rx) = oneshot::channel();
+        let addr = spawn_ws_server(move |mut ws| {
+            let mut thread_tx = Some(thread_tx);
+            Box::pin(async move {
+                let init = ws.next().await.expect("init").expect("init frame");
+                let init_text = match init {
+                    Message::Text(text) => text,
+                    other => panic!("unexpected init frame: {other:?}"),
+                };
+                let init_request =
+                    match serde_json::from_str::<JSONRPCMessage>(&init_text).expect("jsonrpc init") {
+                        JSONRPCMessage::Request(request) => request,
+                        other => panic!("unexpected init message: {other:?}"),
+                    };
+                ws.send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: init_request.id,
+                        result: json!({}),
+                    }))
+                    .expect("init response")
+                    .into(),
+                ))
+                .await
+                .expect("send init response");
+
+                loop {
+                    let next = ws.next().await.expect("request").expect("request frame");
+                    let text = match next {
+                        Message::Text(text) => text,
+                        other => panic!("unexpected request frame: {other:?}"),
+                    };
+                    let request =
+                        match serde_json::from_str::<JSONRPCMessage>(&text).expect("jsonrpc request") {
+                            JSONRPCMessage::Request(request) => request,
+                            other => panic!("unexpected request message: {other:?}"),
+                        };
+                    if request.method == "thread/start" {
+                        thread_tx
+                            .take()
+                            .expect("thread sender")
+                            .send(request.clone())
+                            .expect("record thread start request");
+                    }
+                    let result = match request.method.as_str() {
+                        "thread/start" => json!({"thread": {"id": "thread-reviewer-auto-2", "title": "Requirements Reviewer"}}),
+                        "thread/name/set" => json!({}),
+                        _ => json!({}),
+                    };
+                    ws.send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request.id,
+                            result,
+                        }))
+                        .expect("response")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send response");
+                    if request.method == "thread/name/set" {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+
+        let runtime = BridgeRuntime::new(sample_settings(&temp, format!("ws://{addr}")))
+            .await
+            .expect("runtime");
+        let transport = runtime.spawn_transport();
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "ezra": {
+                        "id": "project-ezra",
+                        "name": "Ezra",
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "preferredModelProvider": "reviewer-provider",
+                        "configs": {
+                            "roleModelReasoningDefaults": {
+                                "worker": { "modelID": "gpt-worker-default", "reasoningEffort": "low" },
+                                "requirements-reviewer": { "modelID": "gpt-reviewer", "reasoningEffort": "high" }
+                            }
+                        },
+                        "agents": {
+                            "thread-worker": {
+                                "displayName": "Worker",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "model": "gpt-source",
+                                "modelProvider": "source-provider",
+                                "reasoningEffort": "medium",
+                                "serviceTier": {"type": "priority"}
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        ensure_requirements_reviewer_for_thread(&runtime, "thread-worker")
+            .await
+            .expect("reviewer")
+            .expect("reviewer id");
+
+        let thread_request = thread_rx.await.expect("captured thread start request");
+        let thread_params = thread_request.params.expect("thread params");
+        assert_eq!(thread_params["model"], "gpt-reviewer");
+        assert_eq!(thread_params["modelProvider"], "reviewer-provider");
+        assert_eq!(thread_params["config"]["model_reasoning_effort"], "high");
+        assert_eq!(thread_params["serviceTier"]["type"], "priority");
+        assert_eq!(thread_params["approvalPolicy"], "never");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let reviewer_state = state
+            .projects
+            .values()
+            .find_map(|project| project.agents.get("thread-reviewer-auto-2"))
+            .expect("persisted reviewer");
+        assert_eq!(reviewer_state.model.as_deref(), Some("gpt-reviewer"));
+        assert_eq!(reviewer_state.model_provider.as_deref(), Some("reviewer-provider"));
+        assert_eq!(reviewer_state.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(reviewer_state.service_tier.as_ref().and_then(|value| value.get("type")).and_then(Value::as_str), Some("priority"));
 
         transport.abort();
     }
@@ -8135,6 +8766,7 @@ mod tests {
                     "configs": {
                         "roleModelReasoningDefaults": {
                             "designer": { "modelID": "gpt-5.4-mini", "reasoningEffort": "high" },
+                            "requirements-reviewer": { "modelID": "gpt-5.5", "reasoningEffort": "high" },
                             "worker": { "modelID": "gpt-5.4-nano", "reasoningEffort": "low" }
                         }
                     }
@@ -8150,6 +8782,68 @@ mod tests {
             role_default_reasoning_effort(&state, Some(&temp.path().display().to_string()), Some("designer"))
                 .as_deref(),
             Some("high")
+        );
+        assert_eq!(
+            role_default_model(
+                &state,
+                Some(&temp.path().display().to_string()),
+                Some("requirements-reviewer"),
+            )
+            .as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            role_default_reasoning_effort(
+                &state,
+                Some(&temp.path().display().to_string()),
+                Some("requirementsReviewer"),
+            )
+            .as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            role_default_model(&state, Some(&temp.path().display().to_string()), Some("worker")).as_deref(),
+            Some("gpt-5.4-nano")
+        );
+    }
+
+    #[test]
+    fn project_update_round_trips_requirements_reviewer_role_defaults() {
+        let mut state = parse_state(&json!({
+            "projects": {
+                "codex": {
+                    "id": "project-codex",
+                    "name": "Codex",
+                    "projectRoot": "/tmp/codex",
+                    "cwd": "/tmp/codex"
+                }
+            }
+        }));
+
+        update_project(
+            &mut state,
+            &json!({
+                "projectId": "project-codex",
+                "name": "Codex",
+                "defaultCWD": "/tmp/codex",
+                "roleModelReasoningDefaults": {
+                    "worker": { "modelID": "gpt-worker", "reasoningEffort": "medium" },
+                    "requirements-reviewer": { "modelID": "gpt-reviewer", "reasoningEffort": "high" }
+                }
+            }),
+        )
+        .expect("update project");
+
+        let project = state.projects.get("codex").expect("project");
+        assert_eq!(
+            project.configs["roleModelReasoningDefaults"]["requirements-reviewer"]["modelID"],
+            "gpt-reviewer"
+        );
+        let payload = bridge_state_payload(&state);
+        assert_eq!(
+            payload["projectRoleModelReasoningDefaultsByProjectPath"]["/tmp/codex"]
+                ["requirements-reviewer"]["reasoningEffort"],
+            "high"
         );
     }
 
@@ -8179,6 +8873,32 @@ mod tests {
 
         assert!(guidance.contains("not auto-forwarded for designers"));
         assert!(!guidance.contains("approval requests are forwarded"));
+    }
+
+    #[test]
+    fn operator_developer_instructions_do_not_claim_auto_route() {
+        let temp = TempDir::new().expect("tempdir");
+        let state = parse_state(&json!({
+            "projects": {
+                "ops": {
+                    "projectRoot": temp.path().display().to_string(),
+                    "cwd": temp.path().display().to_string(),
+                    "autoRouteReplies": true,
+                    "routeApprovalRequests": true,
+                    "orchestratorThreadId": "thread-orchestrator",
+                    "configs": {}
+                }
+            }
+        }));
+
+        let guidance = developer_instructions_for_role(
+            &state,
+            Some("operator"),
+            Some(&temp.path().display().to_string()),
+            Some(&temp.path().display().to_string()),
+        );
+
+        assert!(guidance.is_none());
     }
 
     #[tokio::test]

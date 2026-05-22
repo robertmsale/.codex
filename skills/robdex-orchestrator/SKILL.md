@@ -20,7 +20,21 @@ Use this skill for Robdex-backed communication.
   - `robdex send-message --name "<agent name>" --text "<message>"`
   - `robdex send-message --to-thread-id "<thread id>" --text "<message>"`
   - `robdex send-message --name "<agent name>" --text-file <path>`
-  - `robdex send-message --to-thread-id "<thread id>" --text-stdin`
+  - For multi-line text, pipe stdin with a heredoc:
+
+    ```bash
+    robdex send-message --to-thread-id "<thread id>" --text-stdin <<'EOF'
+    Message text goes here.
+    EOF
+    ```
+
+    ```bash
+    robdex send-message --name "<agent name>" --text-stdin <<'EOF'
+    Message text goes here.
+    EOF
+    ```
+
+  - Never run `robdex send-message ... --text-stdin` without a heredoc, pipe, or redirected file attached. Bare `--text-stdin` waits for interactive stdin and can leave the agent stuck in the terminal.
 - Thread groups:
   - `robdex list-thread-groups`
   - `robdex create-thread-group ...`
@@ -38,8 +52,25 @@ Use this skill for Robdex-backed communication.
   - `robdex set-worker-metadata ...`
   - `robdex handoff --help`
 - Requirements:
-  - `robdex requirements-from-prose --title "<title>" --text-stdin`
-  - `robdex requirements-from-prose --title "<title>" --text-stdin --attach --name "<agent name>"`
+  - For prose input, pipe stdin with a heredoc:
+
+    ```bash
+    robdex requirements-from-prose --title "<title>" --text-stdin <<'EOF'
+    Requirement prose goes here.
+    EOF
+    ```
+
+    ```bash
+    robdex requirements-from-prose --title "<title>" --text-stdin --attach --name "<agent name>" <<'EOF'
+    Requirement prose goes here.
+    EOF
+    ```
+
+  - Never run `robdex requirements-from-prose ... --text-stdin` without a heredoc, pipe, or redirected file attached.
+  - `robdex requirements-composables list --name "<agent name>"`
+  - `robdex requirements-composables show review-evidence --name "<agent name>"`
+  - `robdex requirements-compose --title "<title>" --include-composable review-evidence --requirements-file /absolute/path/to/task-requirements.json`
+  - `robdex requirements-compose --title "<title>" --include-composable review-evidence --requirements-file /absolute/path/to/task-requirements.json --attach --name "<agent name>"`
   - `robdex set-requirements --name "<agent name>" --requirements-file /absolute/path/to/requirements.json`
   - `robdex request-requirements-review --name "<agent name>" [--note "<checkpoint context>"]`
 
@@ -61,6 +92,14 @@ Do not try to attach Requirements to a running turn. Requirements apply to `turn
 Large work is handled by dependency-ordered fan-out, not micro-slice Requirements. If the operator's requested outcome is too large or cross-cutting for one worker, create complete work packages by responsibility boundary, such as contracts, backend implementation, frontend integration, design/system polish, and QA validation. Each package's Requirements must cover that package's full responsibility and map back to the top-level operator outcome.
 
 Do not create Requirements for only the easiest first step, a partial pattern, or a documentation placeholder unless the operator requested that narrowed outcome. Scope changes require proof of impossibility, internal conflict, unsafe work, or a missing owner decision, followed by explicit operator authorization.
+
+Composable Requirements:
+- Use `robdex requirements-composables list` to discover reusable global and recipient-project composables before drafting Requirements.
+- Use `robdex requirements-composables show <id>` to inspect exact requirement text before selecting a composable.
+- Project-specific composables are resolved from the recipient agent's tracked project, not the sender's project.
+- Select composables only when they are relevant to the assigned work package.
+- Composables supplement task-specific Requirements; they must not replace, narrow, or drift from the operator-approved outcome.
+- Use `robdex requirements-compose` or `set-requirements --include-composable <id>` to attach a composed set through the sanctioned Requirements route.
 
 The requirements file is JSON. It may be either an array of requirement objects or an object with a `requirements` array. Use semantic keys, not numbered keys.
 
@@ -94,7 +133,7 @@ Review lifecycle:
 
 - Use the public `robdex` script surface.
 - Bridge-owned authorization decides who can list, message, archive, decline, or mutate bookkeeping state.
-- Prefer `--text-file` or `--text-stdin` for shell-sensitive message text.
+- Prefer `--text-file` or heredoc-fed `--text-stdin` for shell-sensitive message text. Bare `--text-stdin` is invalid operationally because it waits for interactive input.
 - Before using warm handoff, run `robdex handoff --help` and follow the role-specific handoff guidance it prints.
 - Use warm handoff only when the user explicitly asks for it.
 - If an approval request appears, do not approve it.

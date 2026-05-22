@@ -36,6 +36,7 @@ def main() -> int:
     tests = {}
     prints = {}
     failures = []
+    global_errors = []
 
     for event in events:
         event_type = event.get("type")
@@ -46,8 +47,11 @@ def main() -> int:
             test_id = event.get("testID")
             if test_id is not None:
                 prints.setdefault(test_id, []).append(event.get("message", ""))
-        elif event_type == "error" and event.get("testID") is not None:
-            failures.append(event)
+        elif event_type == "error":
+            if event.get("testID") is not None:
+                failures.append(event)
+            else:
+                global_errors.append(event)
 
     if status == 0:
         print("tests passed")
@@ -94,7 +98,48 @@ def main() -> int:
             for line in tail:
                 print(f"    {line}")
 
-    print(f"{len(failures)} failure event(s)")
+    for error_event in global_errors:
+        error = (error_event.get("error") or "").rstrip()
+        stack = (error_event.get("stackTrace") or "").splitlines()
+        print("ERROR: flutter test")
+        if error:
+            for line in error.splitlines()[:12]:
+                print(f"  {line}")
+        if stack:
+            print(f"  stack: {stack[0]}")
+            if len(stack) > 1:
+                print(f"  at: {stack[1]}")
+
+    if not failures and not global_errors:
+        print("flutter test exited nonzero without structured failure events.")
+        print(f"tests started: {len(tests)}")
+        event_tail = events[-8:]
+        if event_tail:
+            print("machine event tail:")
+            for event in event_tail:
+                summary = {"type": event.get("type")}
+                for key in ("success", "skipped", "hidden", "testID", "suiteID", "count", "time"):
+                    if key in event:
+                        summary[key] = event.get(key)
+                test = event.get("test")
+                if isinstance(test, dict):
+                    summary["test"] = test.get("name")
+                print(f"  {json.dumps(summary, separators=(',', ':'))}")
+        if non_json:
+            printed_non_json = min(len(non_json), 12)
+            tail = non_json[printed_non_json:][-20:]
+            if tail:
+                print("raw output tail:")
+                for line in tail:
+                    print(f"  {line}")
+        else:
+            raw_tail = lines[-24:]
+            if raw_tail:
+                print("raw output tail:")
+                for line in raw_tail:
+                    print(f"  {line}")
+
+    print(f"{len(failures)} test failure event(s), {len(global_errors)} global error event(s)")
     return status
 
 

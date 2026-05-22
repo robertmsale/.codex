@@ -153,6 +153,68 @@ def _requirements_from_prose(title: str, text: str) -> dict[str, Any]:
     }
 
 
+def _selected_composables(args: argparse.Namespace) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for value in getattr(args, "include_composable", None) or []:
+        for raw in str(value).split(","):
+            item = raw.strip()
+            if item and item not in seen:
+                selected.append(item)
+                seen.add(item)
+    return selected
+
+
+def _requirement_list(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        requirements = payload.get("requirements")
+        if isinstance(requirements, list):
+            return [item for item in requirements if isinstance(item, dict)]
+    raise SystemExit("robdex: requirements payload must be an array or an object with requirements")
+
+
+def _merge_requirement_lists(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    by_key: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        for item in group:
+            key = _normalize_text(str(item.get("key") or ""))
+            if not key:
+                raise SystemExit("robdex: requirement key must be non-empty")
+            existing = by_key.get(key)
+            if existing is not None:
+                if existing != item:
+                    raise SystemExit(f"robdex: conflicting requirement key {key!r} while composing requirements")
+                continue
+            by_key[key] = item
+            merged.append(item)
+    return merged
+
+
+def _compose_requirements_payload(
+    *,
+    title: str,
+    base_payload: Any,
+    composables: list[dict[str, Any]],
+) -> dict[str, Any]:
+    base_requirements = _requirement_list(base_payload)
+    composed_requirements = _merge_requirement_lists(
+        *[_requirement_list(item) for item in composables],
+        base_requirements,
+    )
+    base_object = base_payload if isinstance(base_payload, dict) else {}
+    return {
+        "id": base_object.get("id") or _camel_case_key(title, "requirements"),
+        "title": base_object.get("title") or title,
+        "active": base_object.get("active", True),
+        "enforceOnTurns": base_object.get("enforceOnTurns", True),
+        "includeComposables": [str(item.get("id") or "") for item in composables],
+        "requirements": composed_requirements,
+    }
+
+
 def _whoami(thread_id: str) -> dict[str, Any]:
     return _request_json("GET", "/orchestrator/whoami", query={"senderThreadId": thread_id})
 
@@ -596,6 +658,96 @@ def _cmd_requirements_from_prose(
     )
 
 
+def _requirements_composables_payload(thread_id: str, args: argparse.Namespace) -> dict[str, Any]:
+    return _request_json(
+        "POST",
+        "/orchestrator/requirements/composables",
+        body={
+            "senderThreadId": thread_id,
+            "recipientThreadId": _normalize_text(getattr(args, "to_thread_id", None)),
+            "recipientName": _normalize_text(getattr(args, "name", None)),
+            "projectPath": _normalize_path(getattr(args, "project_path", None)),
+        },
+    )
+
+
+def _cmd_requirements_composables_list(thread_id: str, args: argparse.Namespace) -> None:
+    payload = _requirements_composables_payload(thread_id, args)
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return
+    lines: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        composable_id = _normalize_text(str(item.get("id") or "")) or "unknown"
+        title = _normalize_text(str(item.get("title") or "")) or composable_id
+        scope = _normalize_text(str(item.get("scope") or "")) or "unknown"
+        count = item.get("requirementCount")
+        description = _normalize_text(str(item.get("description") or ""))
+        line = f"{composable_id} | {scope} | count={count} | {title}"
+        if description:
+            line += f" | {description}"
+        lines.append(line)
+    _print_lines(lines)
+
+
+def _cmd_requirements_composables_show(thread_id: str, args: argparse.Namespace) -> None:
+    payload = _requirements_composables_payload(thread_id, args)
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise SystemExit("robdex: composables response missing items")
+    wanted = args.composable_id
+    for item in items:
+        if isinstance(item, dict) and item.get("id") == wanted:
+            print(json.dumps(item, indent=2, sort_keys=True))
+            return
+    raise SystemExit(f"robdex: unknown requirements composable {wanted!r}")
+
+
+def _cmd_requirements_compose(thread_id: str, args: argparse.Namespace) -> None:
+    base_payload = _read_json_file(args.requirements_file, "requirements")
+    selected = _selected_composables(args)
+    if selected:
+        payload = _requirements_composables_payload(thread_id, args)
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise SystemExit("robdex: composables response missing items")
+        by_id = {str(item.get("id") or ""): item for item in items if isinstance(item, dict)}
+        composables = []
+        for composable_id in selected:
+            item = by_id.get(composable_id)
+            if item is None:
+                raise SystemExit(f"robdex: unknown requirements composable {composable_id!r}")
+            composables.append(item)
+        requirement_set = _compose_requirements_payload(
+            title=args.title,
+            base_payload=base_payload,
+            composables=composables,
+        )
+    else:
+        requirement_set = base_payload
+    if not args.attach:
+        print(json.dumps(requirement_set, indent=2, sort_keys=True))
+        return
+    payload = _request_json(
+        "POST",
+        "/orchestrator/requirements/set",
+        body={
+            "senderThreadId": thread_id,
+            "recipientThreadId": _normalize_text(args.to_thread_id),
+            "recipientName": _normalize_text(args.name),
+            "projectPath": _normalize_path(args.project_path),
+            "requirementSet": requirement_set,
+        },
+    )
+    print(
+        "Set requirements for "
+        f"{_quoted(str(payload.get('displayName') or payload.get('threadId') or 'unknown'))} "
+        f"| count={payload.get('requirementCount')} enforceOnTurns={payload.get('enforceOnTurns')}"
+    )
+
+
 def _cmd_list_thread_groups(thread_id: str, project_path: str | None) -> None:
     query = {"senderThreadId": thread_id}
     normalized_project = _normalize_path(project_path)
@@ -932,6 +1084,12 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     p_req_set.add_argument("--name")
     p_req_set.add_argument("--project-path")
     p_req_set.add_argument("--requirements-file", required=True)
+    p_req_set.add_argument(
+        "--include-composable",
+        action="append",
+        default=[],
+        help="Composable requirement id to merge before task-specific requirements. May be repeated or comma-separated.",
+    )
 
     p_req_status = sub.add_parser(
         "requirements-status",
@@ -959,6 +1117,28 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     p_req_from_prose.add_argument("--to-thread-id")
     p_req_from_prose.add_argument("--name")
     p_req_from_prose.add_argument("--project-path")
+
+    p_req_composables = sub.add_parser(
+        "requirements-composables",
+        help="List or inspect composable Requirements available to the selected recipient.",
+    )
+    p_req_composables.add_argument("action", choices=["list", "show"])
+    p_req_composables.add_argument("composable_id", nargs="?")
+    p_req_composables.add_argument("--to-thread-id")
+    p_req_composables.add_argument("--name")
+    p_req_composables.add_argument("--project-path")
+
+    p_req_compose = sub.add_parser(
+        "requirements-compose",
+        help="Compose selected composables with a task-specific RequirementSet JSON.",
+    )
+    p_req_compose.add_argument("--title", required=True)
+    p_req_compose.add_argument("--requirements-file", required=True)
+    p_req_compose.add_argument("--include-composable", action="append", default=[])
+    p_req_compose.add_argument("--attach", action="store_true")
+    p_req_compose.add_argument("--to-thread-id")
+    p_req_compose.add_argument("--name")
+    p_req_compose.add_argument("--project-path")
 
     p_req_review = sub.add_parser(
         "request-requirements-review",
@@ -1082,6 +1262,12 @@ def main() -> int:
         _cmd_set_worker_metadata(thread_id, args)
     elif args.cmd == "set-requirements":
         requirements_payload = _read_json_file(args.requirements_file, "requirements")
+        include_composables = _selected_composables(args)
+        if include_composables and isinstance(requirements_payload, dict):
+            requirements_payload = dict(requirements_payload)
+            requirements_payload["includeComposables"] = include_composables
+        elif include_composables:
+            parser.error("--include-composable requires an object requirements file, not a raw array")
         payload = _request_json(
             "POST",
             "/orchestrator/requirements/set",
@@ -1102,6 +1288,15 @@ def main() -> int:
         _cmd_requirements_status(thread_id, args)
     elif args.cmd == "requirements-from-prose":
         _cmd_requirements_from_prose(thread_id, args, parser)
+    elif args.cmd == "requirements-composables":
+        if args.action == "show" and not args.composable_id:
+            parser.error("requirements-composables show requires composable_id")
+        if args.action == "list":
+            _cmd_requirements_composables_list(thread_id, args)
+        else:
+            _cmd_requirements_composables_show(thread_id, args)
+    elif args.cmd == "requirements-compose":
+        _cmd_requirements_compose(thread_id, args)
     elif args.cmd == "request-requirements-review":
         payload = _request_json(
             "POST",

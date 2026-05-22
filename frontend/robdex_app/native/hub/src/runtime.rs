@@ -55,6 +55,8 @@ enum Action {
         qa_reasoning_effort: Option<String>,
         designer_model_id: Option<String>,
         designer_reasoning_effort: Option<String>,
+        requirements_reviewer_model_id: Option<String>,
+        requirements_reviewer_reasoning_effort: Option<String>,
         orchestrator_developer_instructions: Option<String>,
         worker_developer_instructions: Option<String>,
         qa_developer_instructions: Option<String>,
@@ -419,6 +421,16 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
         } else {
             Some(signal.message.designer_reasoning_effort)
         },
+        requirements_reviewer_model_id: if signal.message.requirements_reviewer_model_id.is_empty() {
+            None
+        } else {
+            Some(signal.message.requirements_reviewer_model_id)
+        },
+        requirements_reviewer_reasoning_effort: if signal.message.requirements_reviewer_reasoning_effort.is_empty() {
+            None
+        } else {
+            Some(signal.message.requirements_reviewer_reasoning_effort)
+        },
         orchestrator_developer_instructions: if signal.message.orchestrator_developer_instructions.is_empty() {
             None
         } else {
@@ -761,6 +773,8 @@ async fn handle_action(
             qa_reasoning_effort,
             designer_model_id,
             designer_reasoning_effort,
+            requirements_reviewer_model_id,
+            requirements_reviewer_reasoning_effort,
             orchestrator_developer_instructions,
             worker_developer_instructions,
             qa_developer_instructions,
@@ -784,6 +798,8 @@ async fn handle_action(
                     qa_reasoning_effort,
                     designer_model_id,
                     designer_reasoning_effort,
+                    requirements_reviewer_model_id,
+                    requirements_reviewer_reasoning_effort,
                     orchestrator_developer_instructions,
                     worker_developer_instructions,
                     qa_developer_instructions,

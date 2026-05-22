@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/models/workbench_models.dart';
 
@@ -220,68 +221,123 @@ class _ThreadTile extends StatelessWidget {
       alpha: isSelected ? 0.94 : 0.82,
     );
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(8),
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 2),
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(7),
-            color: isSelected
-                ? Colors.white.withValues(alpha: 0.06)
-                : Colors.transparent,
-            border: Border.all(
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onSecondaryTapUp: (details) => _showThreadContextMenu(
+        context,
+        thread,
+        details.globalPosition,
+      ),
+      onLongPressStart: (details) => _showThreadContextMenu(
+        context,
+        thread,
+        details.globalPosition,
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(7),
               color: isSelected
-                  ? Colors.white.withValues(alpha: 0.035)
+                  ? Colors.white.withValues(alpha: 0.06)
                   : Colors.transparent,
+              border: Border.all(
+                color: isSelected
+                    ? Colors.white.withValues(alpha: 0.035)
+                    : Colors.transparent,
+              ),
             ),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  thread.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                    color: foreground,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    thread.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                      color: foreground,
+                    ),
                   ),
                 ),
-              ),
-              if (thread.isRunning)
-                ...[
+                if (thread.isRunning) ...[
                   _RunningBadge(isSelected: isSelected),
                   const SizedBox(width: 6),
                 ],
-              if (hasPendingApproval) ...[
-                const _PendingApprovalBadge(),
-                const SizedBox(width: 6),
-              ],
-              if ((thread.requirementReview?.activeRequirementCount ?? 0) > 0) ...[
-                _RequirementReviewBadge(summary: thread.requirementReview!),
-                const SizedBox(width: 6),
-              ],
-              _RoleBadge(role: thread.role),
-              if (thread.unreadCount > 0) ...[
-                const SizedBox(width: 6),
-                Text(
-                  '${thread.unreadCount}',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                if (hasPendingApproval) ...[
+                  const _PendingApprovalBadge(),
+                  const SizedBox(width: 6),
+                ],
+                if ((thread.requirementReview?.activeRequirementCount ?? 0) > 0) ...[
+                  _RequirementReviewBadge(summary: thread.requirementReview!),
+                  const SizedBox(width: 6),
+                ],
+                _RoleBadge(role: thread.role),
+                if (thread.unreadCount > 0) ...[
+                  const SizedBox(width: 6),
+                  Text(
+                    '${thread.unreadCount}',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                    ),
                   ),
-                ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
     );
   }
+}
+
+Future<void> _showThreadContextMenu(
+  BuildContext context,
+  ThreadItem thread,
+  Offset globalPosition,
+) async {
+  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+  final selected = await showMenu<String>(
+    context: context,
+    position: RelativeRect.fromLTRB(
+      globalPosition.dx,
+      globalPosition.dy,
+      overlay.size.width - globalPosition.dx,
+      overlay.size.height - globalPosition.dy,
+    ),
+    items: const [
+      PopupMenuItem(
+        value: 'copyName',
+        child: Row(
+          children: [
+            Icon(Icons.content_copy_rounded, size: 16),
+            SizedBox(width: 8),
+            Text('Copy name'),
+          ],
+        ),
+      ),
+    ],
+  );
+  if (selected != 'copyName' || !context.mounted) {
+    return;
+  }
+  await Clipboard.setData(ClipboardData(text: thread.title));
+  if (!context.mounted) {
+    return;
+  }
+  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Copied "${thread.title}"'),
+      duration: const Duration(milliseconds: 1400),
+    ),
+  );
 }
 
 class _SemanticIconButton extends StatelessWidget {
