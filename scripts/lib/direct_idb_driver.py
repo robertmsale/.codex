@@ -545,9 +545,45 @@ def command_terminate_app(*, device_id: str, cwd: Path, app_id: str, payload: An
         timeout=30,
         check=False,
     )
-    if result.returncode != 0 and "not running" not in (result.stderr or "").lower():
+    result_text = (result.stderr or result.stdout or "").lower()
+    if result.returncode != 0 and "not running" not in result_text and "found nothing to terminate" not in result_text:
         raise DriverError((result.stderr or result.stdout or "simctl terminate failed").strip())
     return {"ok": True, "message": f"terminateApp {resolved_app_id}", "stdout": result.stdout.strip()}
+
+
+def command_reset_app(*, device_id: str, cwd: Path, app_id: str, payload: Any) -> dict[str, Any]:
+    resolved_app_id = payload.strip() if isinstance(payload, str) and payload.strip() else app_id
+    xcrun = xcrun_executable()
+    if not xcrun:
+        raise DriverError("xcrun is required for resetApp.")
+    terminate = subprocess.run(
+        [xcrun, "simctl", "terminate", device_id, resolved_app_id],
+        cwd=cwd,
+        env=launch_env(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    terminate_text = (terminate.stderr or terminate.stdout or "").lower()
+    if terminate.returncode != 0 and "not running" not in terminate_text and "found nothing to terminate" not in terminate_text:
+        raise DriverError((terminate.stderr or terminate.stdout or "simctl terminate failed").strip())
+    uninstall = subprocess.run(
+        [xcrun, "simctl", "uninstall", device_id, resolved_app_id],
+        cwd=cwd,
+        env=launch_env(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+        check=False,
+    )
+    uninstall_text = (uninstall.stderr or uninstall.stdout or "").strip()
+    already_absent = "no such app" in uninstall_text.lower() or "not installed" in uninstall_text.lower()
+    if uninstall.returncode != 0 and not already_absent:
+        raise DriverError(uninstall_text or "simctl uninstall failed")
+    return {"ok": True, "message": f"resetApp {resolved_app_id}", "stdout": uninstall.stdout.strip()}
 
 
 def perform_command(
@@ -592,6 +628,8 @@ def perform_command(
         return command_launch_app(device_id=device_id, cwd=cwd, app_id=app_id, payload=input_payload)
     if command_name == "terminateApp":
         return command_terminate_app(device_id=device_id, cwd=cwd, app_id=app_id, payload=input_payload)
+    if command_name == "resetApp":
+        return command_reset_app(device_id=device_id, cwd=cwd, app_id=app_id, payload=input_payload)
     if command_name == "apps":
         return {"ok": True, "apps": [{"name": "Runner", "appId": app_id}]}
     raise DriverError(f"Unsupported command `{command_name}`.")

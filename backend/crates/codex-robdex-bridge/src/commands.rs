@@ -4689,45 +4689,6 @@ async fn orchestrator_clear_requirements(
     bail!("Recipient `{}` is not a tracked agent.", recipient.thread_id)
 }
 
-pub async fn orchestrator_request_requirements_review(
-    runtime: &BridgeRuntime,
-    sender_thread_id: &str,
-    recipient_thread_id: Option<&str>,
-    recipient_name: Option<&str>,
-    project_path: Option<&str>,
-    note: Option<&str>,
-) -> Result<Value> {
-    let state = parse_state(&runtime.state_document_value().await);
-    let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
-    let records = all_agent_records(&state, &running);
-    let scoped = scoped_agent_context(&records, sender_thread_id, true)?;
-    let recipient =
-        resolve_scoped_recipient(&scoped.visible, recipient_thread_id, recipient_name, project_path)?;
-    let set = active_requirements_for_thread(&state, &recipient.thread_id)
-        .ok_or_else(|| anyhow::anyhow!("Recipient `{}` has no active requirements.", recipient.thread_id))?;
-    let mut prompt = requirements_claim_prompt(&set);
-    if let Some(note) = note.map(str::trim).filter(|value| !value.is_empty()) {
-        prompt.push_str("\n\nOperator/orchestrator note:\n");
-        prompt.push_str(note);
-    }
-    let result = send_thread_input(
-        runtime,
-        &state,
-        &recipient.thread_id,
-        Some(&prompt),
-        &[],
-        None,
-        None,
-    )
-    .await?;
-    Ok(json!({
-        "threadId": recipient.thread_id,
-        "displayName": recipient.display_name,
-        "turn": result,
-        "requirementSetId": set.id,
-    }))
-}
-
 pub async fn orchestrator_requirements_status(
     runtime: &BridgeRuntime,
     sender_thread_id: &str,
@@ -5095,19 +5056,6 @@ fn validate_requirement_set(set: &RequirementSetState) -> Result<()> {
         bail!("at least one requirement is required");
     }
     Ok(())
-}
-
-fn requirements_claim_prompt(set: &RequirementSetState) -> String {
-    let mut prompt = String::from(
-        "Active Requirements are attached to this task. Structured responses use `summary` plus `requirements`.\n\nRequirements cover the full assigned unit of work or work package, not only the latest small step. Each claim must map back to the assigned operator-approved outcome. Do not treat Requirements as permission to reduce scope, substitute an alternative implementation, or document a partial pattern unless the operator explicitly authorized that change.\n\nUse `requirements: null` only for mid-turn commentary or progress updates. When finishing a turn, `requirements` must be the object containing every requirement claim.\n\nKeep fields non-duplicative:\n- `summary`: one or two concise global outcome sentences only; do not list per-requirement evidence.\n- `evidence`: concrete proof only, such as files, commands, exit statuses, diffs, health checks, or reviewer facts.\n- `justification`: one concise causal sentence explaining why the evidence satisfies the requirement; do not repeat the evidence list.\n- `risk`: residual risk only.\n\nBlocked is not success; use blocked only for a true external dependency with proof.\n\nRequirements:\n",
-    );
-    for requirement in &set.requirements {
-        prompt.push_str(&format!(
-            "- `{}` [{}; verification={}]: {}\n",
-            requirement.key, requirement.severity, requirement.verification_method, requirement.statement
-        ));
-    }
-    prompt
 }
 
 pub(crate) fn requirements_review_target_for_thread(

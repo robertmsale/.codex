@@ -72,7 +72,6 @@ Use this skill for Robdex-backed communication.
   - `robdex requirements-compose --title "<title>" --include-composable review-evidence --requirements-file /absolute/path/to/task-requirements.json`
   - `robdex requirements-compose --title "<title>" --include-composable review-evidence --requirements-file /absolute/path/to/task-requirements.json --attach --name "<agent name>"`
   - `robdex set-requirements --name "<agent name>" --requirements-file /absolute/path/to/requirements.json`
-  - `robdex request-requirements-review --name "<agent name>" [--note "<checkpoint context>"]`
 
 ## Requirements
 
@@ -125,6 +124,7 @@ The requirements file is JSON. It may be either an array of requirement objects 
 When active, Robdex injects a structured output schema into the source agent's turns. Each requirement becomes a required top-level JSON property. A completed claim is routed to a requirements reviewer when one is configured or available in the same project.
 
 Review lifecycle:
+- Requirements reviews are system-managed. Do not ask workers, QA, designers, operators, or orchestrators to manually request a Requirements review.
 - A failed review routes the failed requirements back to the source agent.
 - An accepted true blocker routes to the owner/orchestrator.
 - A passing review clears the active Requirements and detaches/archives the reviewer so future Requirements get a fresh reviewer.

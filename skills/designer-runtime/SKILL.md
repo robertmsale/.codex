@@ -63,6 +63,10 @@ designer-hot-reload ...
 4. If the assigned simulator is showing another stale app/session, stop that session and relaunch/focus the app:
    - `designer-flutter-stop --session designer-app`
    - `designer-drive command launchApp --device-id <UDID>`
+5. If the assigned simulator has stale app-local data, such as a native SQLite migration mismatch, reset only that app on that simulator:
+   - `designer-flutter-stop --session designer-app`
+   - `designer-drive command resetApp --device-id <UDID>`
+   - `designer-flutter-run --session designer-app --device-id <UDID> --workdir <worktree_path> -- <dart defines>`
 
 ## `designer-drive`
 
@@ -112,6 +116,7 @@ Useful command names:
 
 - `launchApp`
 - `terminateApp`
+- `resetApp`
 - `tapOn`
 - `longPressOn`
 - `inputText`

@@ -440,14 +440,6 @@ class _RequirementsReviewCard extends StatelessWidget {
                     icon: Icons.rate_review_outlined,
                     onPressed: () => onOpenThread(reviewerThreadId),
                   ),
-                if (hasActiveRequirements)
-                  _InspectorActionButton(
-                    label: 'Request Review',
-                    icon: Icons.outgoing_mail,
-                    onPressed: sourceThreadId == null || bridgeBaseUri == null
-                        ? null
-                        : () => _requestReview(context),
-                  ),
               ],
             ),
             if (summary != null) ...[
@@ -586,45 +578,6 @@ class _RequirementsReviewCard extends StatelessWidget {
     }
   }
 
-  Future<void> _requestReview(BuildContext context) async {
-    final sourceId = sourceThreadId;
-    final baseUri = bridgeBaseUri;
-    if (sourceId == null || baseUri == null) {
-      return;
-    }
-    try {
-      final response = await http.post(
-        baseUri.resolve('/orchestrator/requirements/request-review'),
-        headers: const {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'senderThreadId': sourceId,
-          'recipientThreadId': sourceId,
-        }),
-      );
-      if (!context.mounted) {
-        return;
-      }
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Requirements review requested.')),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Review request failed: ${response.body}')),
-        );
-      }
-    } catch (error) {
-      if (!context.mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Review request failed: $error')),
-      );
-    }
-  }
 }
 
 class _ReviewFact extends StatelessWidget {

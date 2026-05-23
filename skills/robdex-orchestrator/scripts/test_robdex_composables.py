@@ -35,6 +35,14 @@ COMPOSABLES_RESPONSE = {
 
 
 class RobdexComposableRequirementsTests(unittest.TestCase):
+    def test_manual_requirements_review_command_is_not_registered(self) -> None:
+        parser, _handoff_parser, _spawn_parser = robdex.build_parser()
+        help_text = parser.format_help()
+        removed_command = "request-" + "requirements-review"
+        self.assertNotIn(removed_command, help_text)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args([removed_command, "--name", "Worker"])
+
     def test_list_composables_prints_available_items(self) -> None:
         args = argparse.Namespace(to_thread_id="worker-1", name=None, project_path=None)
         output = io.StringIO()

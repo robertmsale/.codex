@@ -105,6 +105,20 @@ clear_inactive_index_lock() {
   rm -f "$lock_path"
 }
 
+clear_git_metadata_restrictions() {
+  local repo_path="$1"
+  local git_dir path
+  git_dir="$(env PATH="$(git_subprocess_path)" git -C "$repo_path" rev-parse --path-format=absolute --git-dir 2>/dev/null || true)"
+  [[ -n "$git_dir" && -d "$git_dir" ]] || return 0
+  command -v xattr >/dev/null 2>&1 || return 0
+
+  for path in "$git_dir" "$git_dir"/FETCH_HEAD "$git_dir"/HEAD "$git_dir"/ORIG_HEAD "$git_dir"/index "$git_dir"/commondir "$git_dir"/gitdir; do
+    [[ -e "$path" ]] || continue
+    xattr -d com.apple.provenance "$path" 2>/dev/null || true
+    xattr -d com.apple.quarantine "$path" 2>/dev/null || true
+  done
+}
+
 _safe_move_path() {
   local path="$1"
   local base dest name stamp
@@ -149,6 +163,13 @@ run_checked() {
     fi
   fi
   if [[ "$rc" -ne 0 ]]; then
+    if [[ "${1:-}" == "git" ]] && cat "$stderr_file" "$stdout_file" 2>/dev/null | grep -Eq "Operation not permitted|cannot open '.*/\\.git/worktrees/.*/FETCH_HEAD'"; then
+      clear_git_metadata_restrictions "$cwd"
+      rc=0
+      env PATH="$(git_subprocess_path)" "$@" >"$stdout_file" 2>"$stderr_file" || rc=$?
+    fi
+  fi
+  if [[ "$rc" -ne 0 ]]; then
     local detail
     detail="$(python3 -c 'import pathlib, sys; stderr = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace").strip(); stdout = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace").strip(); print(stderr or stdout or "command failed")' "$stderr_file" "$stdout_file")"
     rm -f "$stdout_file" "$stderr_file"
@@ -170,6 +191,13 @@ run_checked_with_env() {
   env PATH="$(git_subprocess_path)" $env_prefix "$@" >"$stdout_file" 2>"$stderr_file" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     if [[ "${1:-}" == "git" ]] && _maybe_clear_stale_index_lock "$cwd" "$stderr_file" "$stdout_file"; then
+      rc=0
+      env PATH="$(git_subprocess_path)" $env_prefix "$@" >"$stdout_file" 2>"$stderr_file" || rc=$?
+    fi
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    if [[ "${1:-}" == "git" ]] && cat "$stderr_file" "$stdout_file" 2>/dev/null | grep -Eq "Operation not permitted|cannot open '.*/\\.git/worktrees/.*/FETCH_HEAD'"; then
+      clear_git_metadata_restrictions "$cwd"
       rc=0
       env PATH="$(git_subprocess_path)" $env_prefix "$@" >"$stdout_file" 2>"$stderr_file" || rc=$?
     fi
@@ -625,6 +653,7 @@ qa_fastforward_cmd() {
 
   require_managed_worktree_path "$checkout_root"
   stash_name=""
+  clear_git_metadata_restrictions "$REQUIRED_WORKTREE_ROOT"
   clear_inactive_index_lock "$REQUIRED_WORKTREE_ROOT"
   clean_known_qa_generated_artifacts "$REQUIRED_WORKTREE_ROOT"
   if [[ -n "$(run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" status --short | tr -d '\r')" ]]; then

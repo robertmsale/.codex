@@ -1,0 +1,75 @@
+flowchart TD
+    owner["Operator / Owner<br/>Defines desired outcome"]
+    orchestrator["Project Orchestrator<br/>Preserves operator-approved scope"]
+    composables["Requirement Composables<br/>Global + project-scoped reusable constraints"]
+    reqset["Active RequirementSet<br/>Full assigned work package contract"]
+    worker["Worker / QA / Designer<br/>Executes assigned package"]
+    commentary["Progress / Commentary Turn<br/>requirements: null"]
+    finalPacket["Final Claim Packet<br/>summary + per-requirement claims"]
+    bridge["Robdex Bridge<br/>Schema enforcement + routing"]
+    reviewerSpawn{"Reviewer bound<br/>to source thread?"}
+    reviewer["Requirements Reviewer<br/>Adversarial non-implementing review"]
+    verdict["Review Verdict Packet<br/>summary + per-requirement verdicts"]
+    pass{"Overall verdict"}
+    orchestratorMerge["Orchestrator<br/>Receives pass / pre-merge signal"]
+    corrections["Worker Correction Loop<br/>Fix exact failed requirements"]
+    waiver["Human Waiver / Override<br/>Explicit owner decision"]
+    clear["Clear Requirements<br/>Remove active contract + schema"]
+
+    owner -->|"Task / expected outcome"| orchestrator
+    orchestrator -->|"Select relevant packs"| composables
+    composables -->|"Merged deterministically"| reqset
+    orchestrator -->|"Adds task-specific requirements"| reqset
+    reqset -->|"Attached to source agent"| worker
+
+    worker -->|"Intermediate update"| commentary
+    commentary --> bridge
+    bridge -->|"No review; keep running state"| worker
+
+    worker -->|"Claims completion"| finalPacket
+    finalPacket --> bridge
+    bridge --> reviewerSpawn
+    reviewerSpawn -->|"No"| reviewer
+    reviewerSpawn -->|"Yes"| reviewer
+    bridge -->|"Prompt includes claims, requirements, evidence"| reviewer
+    reviewer --> verdict
+    verdict --> bridge
+    bridge --> pass
+
+    pass -->|"pass"| orchestratorMerge
+    pass -->|"fail"| corrections
+    pass -->|"waiver requested"| waiver
+    waiver -->|"accepted by owner"| orchestratorMerge
+    waiver -->|"rejected / needs fix"| corrections
+    corrections --> worker
+    owner -->|"explicit clear"| clear
+    clear --> bridge
+    bridge -->|"requirements removed"| worker
+
+    subgraph Solves["Problems Requirements Are Designed To Prevent"]
+        partial["Partial completion claimed as done"]
+        drift["Worker-led scope drift or micro-slicing"]
+        forgotten["Agents forget the original goal"]
+        overload["Orchestrator overloaded by adversarial review"]
+        vague["Vague proof like 'passed' without evidence"]
+        fake["Fake UI, workaround, or stub satisfying only a narrow test"]
+    end
+
+    reqset -.-> partial
+    reqset -.-> drift
+    reqset -.-> forgotten
+    reviewer -.-> overload
+    finalPacket -.-> vague
+    verdict -.-> fake
+
+    classDef actor fill:#eef6ff,stroke:#4c7db8,color:#0d2338
+    classDef contract fill:#fff7df,stroke:#bc8b22,color:#332200
+    classDef packet fill:#edf7ed,stroke:#4d8a4d,color:#173317
+    classDef decision fill:#f7edf7,stroke:#9a5a9a,color:#351f35
+    classDef problem fill:#fff0f0,stroke:#b85757,color:#3b1111
+
+    class owner,orchestrator,worker,reviewer actor
+    class composables,reqset contract
+    class commentary,finalPacket,verdict packet
+    class reviewerSpawn,pass decision
+    class partial,drift,forgotten,overload,vague,fake problem

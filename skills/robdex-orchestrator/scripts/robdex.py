@@ -1140,16 +1140,6 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     p_req_compose.add_argument("--name")
     p_req_compose.add_argument("--project-path")
 
-    p_req_review = sub.add_parser(
-        "request-requirements-review",
-        help="Ask a source agent to produce its structured requirements claim packet.",
-        epilog='Example: robdex request-requirements-review --name "Ezra Worker 1A" --note "Review current implementation against the active requirements."',
-    )
-    p_req_review.add_argument("--to-thread-id")
-    p_req_review.add_argument("--name")
-    p_req_review.add_argument("--project-path")
-    p_req_review.add_argument("--note")
-
     p_handoff = _add_handoff_parser(sub)
 
     p_approve = sub.add_parser("approve-approval", help="disabled: approval-based command execution is not allowed")
@@ -1297,22 +1287,6 @@ def main() -> int:
             _cmd_requirements_composables_show(thread_id, args)
     elif args.cmd == "requirements-compose":
         _cmd_requirements_compose(thread_id, args)
-    elif args.cmd == "request-requirements-review":
-        payload = _request_json(
-            "POST",
-            "/orchestrator/requirements/request-review",
-            body={
-                "senderThreadId": thread_id,
-                "recipientThreadId": _normalize_text(args.to_thread_id),
-                "recipientName": _normalize_text(args.name),
-                "projectPath": _normalize_path(args.project_path),
-                "note": _normalize_text(args.note),
-            },
-        )
-        print(
-            "Requested requirements review from "
-            f"{_quoted(str(payload.get('displayName') or payload.get('threadId') or 'unknown'))}"
-        )
     elif args.cmd == "handoff":
         _cmd_handoff(thread_id, args, parser)
     elif args.cmd == "approve-approval":
