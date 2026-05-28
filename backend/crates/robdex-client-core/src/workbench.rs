@@ -1936,6 +1936,78 @@ mod tests {
     }
 
     #[test]
+    fn assistant_streaming_delivery_state_maps_to_streaming_chat_entry() {
+        let payload = json!({
+            "threadID": "thread-1",
+            "messages": [{
+                "id": "assistant-delta",
+                "threadID": "thread-1",
+                "role": "assistant",
+                "text": "Streaming `code",
+                "deliveryState": "streaming",
+                "createdAt": 1
+            }]
+        });
+
+        let entries = chat_entries_from_thread_payload(&payload);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_streaming);
+        assert_eq!(entries[0].body, "Streaming `code");
+    }
+
+    #[test]
+    fn thread_payload_preserves_multiple_commentary_and_final_messages() {
+        let payload = json!({
+            "threadID": "thread-1",
+            "messages": [
+                {
+                    "id": "commentary-1",
+                    "threadID": "thread-1",
+                    "role": "assistant",
+                    "text": "First commentary.",
+                    "phase": "commentary",
+                    "deliveryState": "confirmed",
+                    "createdAt": 1
+                },
+                {
+                    "id": "commentary-2",
+                    "threadID": "thread-1",
+                    "role": "assistant",
+                    "text": "Second commentary.",
+                    "phase": "commentary",
+                    "deliveryState": "confirmed",
+                    "createdAt": 2
+                },
+                {
+                    "id": "final-1",
+                    "threadID": "thread-1",
+                    "role": "assistant",
+                    "text": "Final answer.",
+                    "phase": "final_answer",
+                    "deliveryState": "confirmed",
+                    "createdAt": 3
+                }
+            ]
+        });
+
+        let entries = chat_entries_from_thread_payload(&payload);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["commentary-1", "commentary-2", "final-1"]
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.body.as_str())
+                .collect::<Vec<_>>(),
+            vec!["First commentary.", "Second commentary.", "Final answer."]
+        );
+    }
+
+    #[test]
     fn requirement_review_summary_counts_latest_verdict_packet() {
         let agent = json!({
             "requirements": {
@@ -2014,6 +2086,12 @@ fn parse_timestamp(value: Option<&Value>) -> Option<u64> {
 }
 
 fn is_streaming(message: &serde_json::Map<String, Value>) -> bool {
+    if matches!(
+        message.get("deliveryState").and_then(Value::as_str),
+        Some("streaming" | "inProgress" | "in_progress")
+    ) {
+        return true;
+    }
     let tool_metadata = message.get("toolMetadata").and_then(Value::as_object);
     let kind = tool_metadata
         .and_then(|tool| tool.get("kind"))

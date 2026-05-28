@@ -9,9 +9,9 @@ Usage: robdex-setup orchestration --dry-run
 Inspect the opt-in core orchestration setup path without mutating config or
 state, or stage linkable orchestration surfaces into PATH. The command checks
 for the Robdex CLI, orchestrator/operator/worker roles, Requirements,
-request-review, bridge-backed communication/spawning, and safe project
-registration. GUI, device-driver tooling, shell wrappers, and privileged-exec
-policy are optional advanced profiles and intentionally not required.
+bridge-backed communication/spawning, and safe project registration. GUI,
+device-driver tooling, shell wrappers, and privileged-exec policy are optional
+advanced profiles and intentionally not required.
 EOF
 }
 
@@ -76,7 +76,6 @@ check_path "worker role" "$robdex_home/roles/worker.md"
 check_path "requirements reviewer role" "$robdex_home/roles/requirements-reviewer.md"
 check_path "operator role support" "$robdex_home/skills/robdex-orchestrator/resources/handoff/operator.md"
 check_path "Robdex messaging skill" "$robdex_home/skills/robdex-orchestrator/SKILL.md"
-check_path "request-review skill" "$robdex_home/skills/request-review/SKILL.md"
 check_path "bridge binary workspace" "$robdex_home/backend/crates/codex-robdex-bridge"
 check_path "safe project registration surface" "$robdex_home/backend/crates/codex-robdex-bridge/src/commands.rs"
 check_path "public install docs" "$robdex_home/docs/public-install.md"
@@ -91,7 +90,6 @@ if [[ "$mode" == "--stage-dir" && "$setup_status" -eq 0 ]]; then
   ln -sfn "$robdex_home/roles/worker.md" "$stage_dir/roles/worker.md"
   ln -sfn "$robdex_home/roles/requirements-reviewer.md" "$stage_dir/roles/requirements-reviewer.md"
   ln -sfn "$robdex_home/skills/robdex-orchestrator" "$stage_dir/skills/robdex-orchestrator"
-  ln -sfn "$robdex_home/skills/request-review" "$stage_dir/skills/request-review"
   ln -sfn "$robdex_home/docs/public-install.md" "$stage_dir/docs/public-install.md"
   ln -sfn "$robdex_home/docs/bootstrap-roadmap.md" "$stage_dir/docs/bootstrap-roadmap.md"
   echo "Staged orchestration links at $stage_dir"

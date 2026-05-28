@@ -1,12 +1,4 @@
 [[service]]
-name = "codex-aux-http"
-crate = "codex-aux-http"
-current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-aux-http"
-current_supervisor = "/Users/robertsale/.codex/backend/supervisor/templates/codex-aux-http.ini"
-port = 0
-status = "planned"
-
-[[service]]
 name = "codex-privileged-exec-http"
 crate = "codex-privileged-exec-http"
 current_runner = "/Users/robertsale/.codex/backend/bin/run-codex-privileged-exec-http"

@@ -352,7 +352,7 @@ impl RunningStateReducer {
         changed_thread_ids: &mut BTreeSet<String>,
     ) -> bool {
         let existing = find_message(thread_cache, &payload.thread_id, &payload.item_id);
-        let message = make_message_with_context(
+        let mut message = make_message_with_context(
             payload.item_id.clone(),
             payload.thread_id.clone(),
             Some(payload.turn_id.clone()),
@@ -363,6 +363,7 @@ impl RunningStateReducer {
             existing.and_then(|message| message.tool_metadata.clone()),
             existing.map(|message| message.created_at),
         );
+        message.delivery_state = "streaming".to_string();
         upsert_message(
             thread_cache,
             &payload.thread_id,
@@ -850,6 +851,11 @@ fn remove_superseded_agent_fragments(
         if message.role != "assistant" || message.turn_id.as_deref() != Some(turn_id) {
             return true;
         }
+        if incoming.phase.as_deref() == Some("commentary")
+            && message.phase.as_deref() == Some("commentary")
+        {
+            return true;
+        }
         !(message.phase.is_none() || message.phase == incoming.phase)
     });
     messages.len() != before
@@ -979,17 +985,23 @@ fn message_from_item(
         }
         ThreadItem::AgentMessage {
             id, text, phase, ..
-        } => Some(make_message_with_context(
-            id.clone(),
-            thread_id.to_string(),
-            turn_id.map(str::to_string),
-            "assistant",
-            text.clone(),
-            agent_phase_label(phase.as_ref(), mode),
-            None,
-            None,
-            None,
-        )),
+        } => {
+            let mut message = make_message_with_context(
+                id.clone(),
+                thread_id.to_string(),
+                turn_id.map(str::to_string),
+                "assistant",
+                text.clone(),
+                agent_phase_label(phase.as_ref(), mode),
+                None,
+                None,
+                None,
+            );
+            if mode == UpsertMode::Merge {
+                message.delivery_state = "streaming".to_string();
+            }
+            Some(message)
+        }
         ThreadItem::Plan { id, text } => Some(make_message(
             id.clone(),
             thread_id.to_string(),
@@ -1818,6 +1830,63 @@ mod tests {
         assert_eq!(
             cache.message_cache_by_thread_id["thread-1"][0].text,
             "hello world"
+        );
+        assert_eq!(
+            cache.message_cache_by_thread_id["thread-1"][0].delivery_state,
+            "streaming"
+        );
+    }
+
+    #[test]
+    fn multiple_commentary_messages_in_one_turn_remain_distinct() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        reducer.apply_notification(
+            &ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::AgentMessage {
+                    id: "commentary-1".to_string(),
+                    text: "First commentary.".to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                    memory_citation: None,
+                },
+            }),
+            &mut cache,
+        );
+        reducer.apply_notification(
+            &ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::AgentMessage {
+                    id: "commentary-2".to_string(),
+                    text: "Second commentary.".to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                    memory_citation: None,
+                },
+            }),
+            &mut cache,
+        );
+        reducer.apply_notification(
+            &ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::AgentMessage {
+                    id: "final-1".to_string(),
+                    text: "Final answer.".to_string(),
+                    phase: Some(MessagePhase::FinalAnswer),
+                    memory_citation: None,
+                },
+            }),
+            &mut cache,
+        );
+
+        let messages = &cache.message_cache_by_thread_id["thread-1"];
+        assert_eq!(messages.len(), 3);
+        assert_eq!(
+            messages.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(),
+            vec!["commentary-1", "commentary-2", "final-1"]
         );
     }
 

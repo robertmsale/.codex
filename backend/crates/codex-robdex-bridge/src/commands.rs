@@ -2749,6 +2749,12 @@ fn tracked_cwd_for_thread(state: &PersistedState, thread_id: &str) -> Option<Str
 fn tracked_approval_policy_for_thread(state: &PersistedState, thread_id: &str) -> Option<String> {
     for project in state.projects.values() {
         if let Some(agent) = project.agents.get(thread_id) {
+            if matches!(
+                agent.role.as_deref(),
+                Some("requirements-reviewer") | Some("requirementsReviewer")
+            ) {
+                return Some("never".to_string());
+            }
             return agent
                 .approval_policy
                 .clone()

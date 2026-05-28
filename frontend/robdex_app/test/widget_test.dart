@@ -272,16 +272,16 @@ void main() {
     await tester.tap(
       find.byKey(const ValueKey('project.settings.requirements-reviewer.model')),
     );
-    await tester.pumpAndSettle();
+    await tester.pump();
     await tester.tap(find.text('GPT-5.4 Mini').last);
-    await tester.pumpAndSettle();
+    await tester.pump();
 
     await tester.tap(
       find.byKey(const ValueKey('project.settings.requirements-reviewer.reasoning')),
     );
-    await tester.pumpAndSettle();
+    await tester.pump();
     await tester.tap(find.text('Medium').last);
-    await tester.pumpAndSettle();
+    await tester.pump();
 
     expect(reviewerModel, 'gpt-5.4-mini');
     expect(reviewerReasoning, 'medium');
@@ -306,6 +306,8 @@ void main() {
         ),
       ),
     );
+    await tester.pump();
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, 1000));
     await tester.pump();
 
     expect(find.text('Plan'), findsOneWidget);
@@ -364,7 +366,7 @@ void main() {
         ),
       ),
     );
-    await tester.pumpAndSettle();
+    await tester.pump();
 
     expect(find.text('Requirements Review Passed'), findsOneWidget);
     expect(find.text('workerDoesNotHaveToDoAnything'), findsOneWidget);
@@ -1612,7 +1614,10 @@ void main() {
     await tester.pump();
 
     final scrollable = find.byType(Scrollable);
-    await tester.drag(scrollable, const Offset(0, -900));
+    final initial = tester.state<ScrollableState>(scrollable).position;
+    initial.jumpTo(initial.maxScrollExtent);
+    await tester.pump();
+    await tester.drag(scrollable, const Offset(0, 900));
     await tester.pumpAndSettle();
 
     final before = tester.state<ScrollableState>(scrollable).position.pixels;
@@ -1641,6 +1646,145 @@ void main() {
 
     final after = tester.state<ScrollableState>(scrollable).position.pixels;
     expect(after, moreOrLessEquals(before, epsilon: 1.0));
+  });
+
+  testWidgets('streaming assistant messages bypass markdown renderer', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 420,
+            child: ChatTimeline(
+              threadId: 'thread-a',
+              entries: const [
+                ChatEntry(
+                  id: 'streaming-assistant',
+                  author: 'Assistant',
+                  displayLabel: 'Assistant',
+                  timestamp: null,
+                  body: 'Streaming ```dart\nvoid main() {}\n```',
+                  isStreaming: true,
+                ),
+              ],
+              title: 'Thread A',
+              contextWindowRemainingPercent: 80,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: false,
+              isRunning: true,
+              showComposer: false,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('chat.streamingPlainText.streaming-assistant')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('chat.markdownBody.streaming-assistant')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('completed assistant messages keep markdown renderer', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 420,
+            child: ChatTimeline(
+              threadId: 'thread-a',
+              entries: const [
+                ChatEntry(
+                  id: 'completed-assistant',
+                  author: 'Assistant',
+                  displayLabel: 'Assistant',
+                  timestamp: null,
+                  body: 'Completed **markdown**',
+                ),
+              ],
+              title: 'Thread A',
+              contextWindowRemainingPercent: 80,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: false,
+              isRunning: false,
+              showComposer: false,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('chat.markdownBody.completed-assistant')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('chat.streamingPlainText.completed-assistant')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('multiple assistant commentary entries remain visible with final message', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 420,
+            child: ChatTimeline(
+              threadId: 'thread-a',
+              entries: const [
+                ChatEntry(
+                  id: 'commentary-1',
+                  author: 'assistant',
+                  displayLabel: 'Assistant',
+                  timestamp: null,
+                  body: 'First commentary.',
+                ),
+                ChatEntry(
+                  id: 'commentary-2',
+                  author: 'assistant',
+                  displayLabel: 'Assistant',
+                  timestamp: null,
+                  body: 'Second commentary.',
+                ),
+                ChatEntry(
+                  id: 'final-1',
+                  author: 'assistant',
+                  displayLabel: 'Assistant',
+                  timestamp: null,
+                  body: 'Final response.',
+                ),
+              ],
+              title: 'Thread A',
+              contextWindowRemainingPercent: 80,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: false,
+              isRunning: false,
+              showComposer: false,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('First commentary.'), findsOneWidget);
+    expect(find.text('Second commentary.'), findsOneWidget);
+    expect(find.text('Final response.'), findsOneWidget);
   });
 
   testWidgets('chat timeline sticks to bottom when new entries arrive near bottom', (
@@ -1675,7 +1819,7 @@ void main() {
 
     final scrollable = find.byType(Scrollable);
     final position = tester.state<ScrollableState>(scrollable).position;
-    position.jumpTo(position.maxScrollExtent);
+    position.jumpTo((position.maxScrollExtent - 40).clamp(0.0, position.maxScrollExtent));
     await tester.pump();
 
     await tester.pumpWidget(

@@ -680,6 +680,12 @@ impl BridgeRuntime {
     }
 
     async fn handle_pending_approval_routes(&self, approval: PendingApproval) -> Result<()> {
+        if self
+            .maybe_decline_requirements_reviewer_approval(&approval)
+            .await?
+        {
+            return Ok(());
+        }
         let hook_configured = self.maybe_run_approval_requested_hook(&approval).await?;
         let still_pending = self
             .pending_approvals
@@ -694,6 +700,28 @@ impl BridgeRuntime {
             self.push_event(BridgeEvent::AppStateSnapshot { state }).await;
         }
         Ok(())
+    }
+
+    async fn maybe_decline_requirements_reviewer_approval(&self, approval: &PendingApproval) -> Result<bool> {
+        let state = self.state_document.read().await.clone();
+        if !is_requirements_reviewer_thread_value(&state, &approval.thread_id) {
+            return Ok(false);
+        }
+        let message = "Stop running unsanctioned commands. Requirements reviewers must review the provided claim packet using the existing transcript and available context only. Do not request elevated access, sandbox escapes, file changes, network access, or other approvals. This approval request was automatically declined.";
+        if let Err(error) = send_follow_up_message(self, approval, message).await {
+            tracing::warn!(
+                thread_id = %approval.thread_id,
+                approval_id = %approval.id,
+                "failed to steer requirements reviewer before auto-declining approval: {error}"
+            );
+        }
+        self.send_server_response(
+            approval.request_id.clone(),
+            approval_response_payload(approval, "decline"),
+        )
+        .await?;
+        self.clear_pending_approval(&approval.id).await;
+        Ok(true)
     }
 
     async fn handle_server_request(self: &Arc<Self>, request: ServerRequest) -> Result<()> {
@@ -2398,6 +2426,9 @@ fn tracked_cwd_for_thread_value(state: &Value, thread_id: &str) -> Option<String
 }
 
 fn tracked_approval_policy_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    if is_requirements_reviewer_thread_value(state, thread_id) {
+        return Some("never".to_string());
+    }
     tracked_agent_value(state, thread_id)
         .and_then(|agent| agent.get("approvalPolicy"))
         .and_then(Value::as_str)
@@ -2409,6 +2440,13 @@ fn tracked_approval_policy_for_thread_value(state: &Value, thread_id: &str) -> O
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
+}
+
+fn is_requirements_reviewer_thread_value(state: &Value, thread_id: &str) -> bool {
+    matches!(
+        tracked_role_for_thread(state, thread_id).as_deref(),
+        Some("requirements-reviewer") | Some("requirementsReviewer")
+    )
 }
 
 fn tracked_model_provider_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
@@ -2880,8 +2918,8 @@ mod tests {
     use crate::config::BridgePaths;
     use crate::upstream::UpstreamRuntimeEvent;
     use codex_app_server_adapter::app_server_protocol::{
-        AgentMessageDeltaNotification, RequestId, ServerNotification, ThreadClosedNotification,
-        ThreadStatus, ThreadStatusChangedNotification, ThreadTokenUsage,
+        AgentMessageDeltaNotification, CommandExecutionRequestApprovalParams, RequestId,
+        ServerNotification, ThreadClosedNotification, ThreadStatus, ThreadStatusChangedNotification, ThreadTokenUsage,
         ThreadTokenUsageUpdatedNotification, TokenUsageBreakdown, ToolRequestUserInputParams,
         ToolRequestUserInputQuestion, Turn, TurnCompletedNotification, TurnStartedNotification, TurnStatus,
     };
@@ -4539,5 +4577,81 @@ mod tests {
             .await;
 
         assert!(runtime.auto_routed_approval_keys.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn requirements_reviewer_approval_requests_are_steered_and_declined() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "routeApprovalRequests": true,
+                        "orchestratorThreadID": "orch-a",
+                        "agents": {
+                            "reviewer-1": {
+                                "role": "requirements-reviewer",
+                                "displayName": "Requirements Reviewer",
+                                "approvalPolicy": "on-request"
+                            },
+                            "orch-a": {
+                                "role": "orchestrator",
+                                "displayName": "Orchestrator"
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        runtime
+            .handle_server_request(ServerRequest::CommandExecutionRequestApproval {
+                request_id: RequestId::Integer(42),
+                params: CommandExecutionRequestApprovalParams {
+                    thread_id: "reviewer-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "item-1".to_string(),
+                    approval_id: None,
+                    command: Some("cat /etc/hosts".to_string()),
+                    cwd: None,
+                    reason: Some("needs sandbox access".to_string()),
+                    network_approval_context: None,
+                    command_actions: None,
+                    additional_permissions: None,
+                    proposed_execpolicy_amendment: None,
+                    proposed_network_policy_amendments: None,
+                    available_decisions: None,
+                },
+            })
+            .await
+            .expect("handle server request");
+
+        let steer = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("steer timeout")
+            .expect("steer request");
+        assert_eq!(steer["method"], "turn/steer");
+        assert_eq!(steer["params"]["threadId"], "reviewer-1");
+        let steer_text = steer["params"]["input"][0]["text"].as_str().unwrap_or_default();
+        assert!(steer_text.contains("Stop running unsanctioned commands"));
+        assert!(steer_text.contains("automatically declined"));
+
+        let response = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("response timeout")
+            .expect("approval response");
+        assert_eq!(response["id"], 42);
+        assert_eq!(response["result"]["decision"], "decline");
+        assert!(runtime.pending_approvals().await.is_empty());
+        assert!(runtime.auto_routed_approval_keys.read().await.is_empty());
+
+        transport.abort();
+        server.abort();
     }
 }

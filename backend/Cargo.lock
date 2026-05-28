@@ -572,22 +572,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-aux-http"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "codex-backend-core",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tower-http",
- "tracing",
-]
-
-[[package]]
 name = "codex-backend-core"
 version = "0.1.0"
 dependencies = [

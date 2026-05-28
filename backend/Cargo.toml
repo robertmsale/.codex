@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "crates/codex-backend-core",
-  "crates/codex-aux-http",
   "crates/codex-app-server-adapter",
   "crates/codex-privileged-exec-http",
   "crates/codex-qa-harness",

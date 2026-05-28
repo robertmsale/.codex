@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -68,20 +70,18 @@ class ChatTimeline extends StatefulWidget {
 }
 
 class _ChatTimelineState extends State<ChatTimeline> {
-  late final ScrollController _scrollController;
+  late final _TimelineAutoScrollController _autoScrollController;
   final Set<String> _expandedEntryKeys = <String>{};
-  bool _stickToBottom = true;
-  bool _userScrollActive = false;
 
   @override
   void initState() {
     super.initState();
-    _scrollController = ScrollController();
+    _autoScrollController = _TimelineAutoScrollController();
   }
 
   @override
   void dispose() {
-    _scrollController.dispose();
+    _autoScrollController.dispose();
     super.dispose();
   }
 
@@ -102,82 +102,13 @@ class _ChatTimelineState extends State<ChatTimeline> {
       return;
     }
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.hasClients) {
-        return;
-      }
-      final position = _scrollController.position;
-      if (threadChanged) {
-        final target = position.maxScrollExtent.clamp(
-          position.minScrollExtent,
-          position.maxScrollExtent,
-        );
-        if ((position.pixels - target).abs() > 1) {
-          _scrollController.jumpTo(target);
+    if (threadChanged) {
+      WidgetsBinding.instance.scheduleFrameCallback((_) {
+        if (mounted) {
+          _autoScrollController.jumpToAnchor();
         }
-        _stickToBottom = true;
-        _userScrollActive = false;
-        return;
-      }
-      if (_stickToBottom && !_userScrollActive) {
-        final target = position.maxScrollExtent.clamp(
-          position.minScrollExtent,
-          position.maxScrollExtent,
-        );
-        if ((position.pixels - target).abs() > 1) {
-          _scrollController.jumpTo(target);
-        }
-        return;
-      }
-    });
-  }
-
-  bool _isNearBottom() {
-    if (!_scrollController.hasClients) {
-      return true;
-    }
-    final position = _scrollController.position;
-    return position.maxScrollExtent - position.pixels < 36;
-  }
-
-  bool _handleScrollNotification(ScrollNotification notification) {
-    if (!_scrollController.hasClients) {
-      return false;
-    }
-    if (notification is ScrollStartNotification &&
-        notification.dragDetails != null) {
-      _userScrollActive = true;
-      _stickToBottom = false;
-      return false;
-    }
-    if (notification is ScrollUpdateNotification &&
-        notification.dragDetails != null) {
-      if (!_userScrollActive || _stickToBottom) {
-        setState(() {
-          _userScrollActive = true;
-          _stickToBottom = false;
-        });
-      }
-      return false;
-    }
-    if (notification is ScrollEndNotification && _userScrollActive) {
-      final shouldStick = _isNearBottom();
-      setState(() {
-        _userScrollActive = false;
-        _stickToBottom = shouldStick;
-      });
-      return false;
-    }
-    if (notification is UserScrollNotification &&
-        notification.direction == ScrollDirection.idle &&
-        _userScrollActive) {
-      final shouldStick = _isNearBottom();
-      setState(() {
-        _userScrollActive = false;
-        _stickToBottom = shouldStick;
       });
     }
-    return false;
   }
 
   @override
@@ -251,38 +182,42 @@ class _ChatTimelineState extends State<ChatTimeline> {
         Expanded(
           child: Stack(
             children: [
-              NotificationListener<ScrollNotification>(
-                onNotification: _handleScrollNotification,
-                child: SelectionArea(
-                  child: ListView.separated(
-                    key: PageStorageKey<String>('chat-timeline-${widget.threadId ?? 'none'}'),
-                    controller: _scrollController,
-                    itemCount: widget.entries.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 6),
-                    itemBuilder: (context, index) {
-                      final entry = widget.entries[index];
-                      final entryKey = _entryStorageKey(entry);
-                      return _ChatBubble(
-                        key: ValueKey(entryKey),
-                        entry: entry,
-                        expanded: _expandedEntryKeys.contains(entryKey),
-                        onExpandedChanged: (expanded) {
-                          setState(() {
-                            if (expanded) {
-                              _expandedEntryKeys.add(entryKey);
-                            } else {
-                              _expandedEntryKeys.remove(entryKey);
-                            }
-                          });
-                        },
-                        onTerminateCommandExecution:
-                            widget.onTerminateCommandExecution,
-                        bridgeBaseUri: widget.bridgeBaseUri,
-                        onOpenLink: widget.onOpenLink,
-                      );
-                    },
-                  ),
-                ),
+              _TimelineAutoScroller<String>(
+                controller: _autoScrollController,
+                lengthIdentifier: _timelineLengthIdentifier(widget.entries),
+                anchorThreshold: 50,
+                builder: (context, scrollController) {
+                  return SelectionArea(
+                    child: ListView.separated(
+                      key: PageStorageKey<String>('chat-timeline-${widget.threadId ?? 'none'}'),
+                      controller: scrollController,
+                      itemCount: widget.entries.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 6),
+                      itemBuilder: (context, index) {
+                        final entry = widget.entries[index];
+                        final entryKey = _entryStorageKey(entry);
+                        return _ChatBubble(
+                          key: ValueKey(entryKey),
+                          entry: entry,
+                          expanded: _expandedEntryKeys.contains(entryKey),
+                          onExpandedChanged: (expanded) {
+                            setState(() {
+                              if (expanded) {
+                                _expandedEntryKeys.add(entryKey);
+                              } else {
+                                _expandedEntryKeys.remove(entryKey);
+                              }
+                            });
+                          },
+                          onTerminateCommandExecution:
+                              widget.onTerminateCommandExecution,
+                          bridgeBaseUri: widget.bridgeBaseUri,
+                          onOpenLink: widget.onOpenLink,
+                        );
+                      },
+                    ),
+                  );
+                },
               ),
               if (widget.overlay != null)
                 Positioned(
@@ -327,6 +262,149 @@ const WorkspaceSelection _emptySelection = WorkspaceSelection(
   threadName: 'No Thread Selected',
   connectionLabel: 'Bridge Unknown',
 );
+
+typedef _TimelineScrollWidgetBuilder = Widget Function(
+  BuildContext context,
+  ScrollController scrollController,
+);
+
+class _TimelineAutoScrollController extends ChangeNotifier
+    implements ValueListenable<bool> {
+  _TimelineAutoScrollController({
+    ScrollController? scrollController,
+  })  : scrollController = scrollController ?? ScrollController(),
+        _ownsScrollController = scrollController == null;
+
+  final bool _ownsScrollController;
+  final ScrollController scrollController;
+  bool _anchored = false;
+
+  bool get anchored => _anchored;
+
+  @override
+  bool get value => anchored;
+
+  set anchored(bool value) {
+    if (_anchored == value) {
+      return;
+    }
+    _anchored = value;
+    notifyListeners();
+  }
+
+  void updateAnchoredFromMetrics(ScrollMetrics metrics, double threshold) {
+    anchored = metrics.maxScrollExtent - metrics.pixels <= threshold;
+  }
+
+  Future<void> jumpToAnchor() => _goToLazyAnchor(scrollController.position.jumpTo);
+
+  Future<void> _goToLazyAnchor(
+    FutureOr<void> Function(double position) move,
+  ) async {
+    anchored = true;
+    while (true) {
+      if (!scrollController.hasClients) {
+        return;
+      }
+      final targetPosition = scrollController.position.maxScrollExtent;
+      await move(targetPosition);
+      await WidgetsBinding.instance.endOfFrame;
+      if (!scrollController.hasClients) {
+        return;
+      }
+      final position = scrollController.position;
+      if (position.pixels == position.maxScrollExtent ||
+          position.pixels != targetPosition) {
+        break;
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_ownsScrollController) {
+      scrollController.dispose();
+    }
+    super.dispose();
+  }
+}
+
+class _TimelineAutoScroller<T> extends StatefulWidget {
+  const _TimelineAutoScroller({
+    required this.controller,
+    required this.lengthIdentifier,
+    required this.anchorThreshold,
+    required this.builder,
+  });
+
+  final _TimelineAutoScrollController controller;
+  final T lengthIdentifier;
+  final double anchorThreshold;
+  final _TimelineScrollWidgetBuilder builder;
+
+  @override
+  State<_TimelineAutoScroller<T>> createState() => _TimelineAutoScrollerState<T>();
+}
+
+class _TimelineAutoScrollerState<T> extends State<_TimelineAutoScroller<T>> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.scheduleFrameCallback((_) {
+      if (mounted) {
+        widget.controller.jumpToAnchor();
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _TimelineAutoScroller<T> oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.lengthIdentifier != oldWidget.lengthIdentifier &&
+        widget.controller.anchored) {
+      WidgetsBinding.instance.scheduleFrameCallback((_) {
+        if (mounted) {
+          widget.controller.jumpToAnchor();
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return NotificationListener<SizeChangedLayoutNotification>(
+      onNotification: (_) {
+        if (widget.controller.anchored) {
+          WidgetsBinding.instance.scheduleFrameCallback((_) {
+            if (mounted) {
+              widget.controller.jumpToAnchor();
+            }
+          });
+        }
+        return false;
+      },
+      child: NotificationListener<ScrollNotification>(
+        onNotification: (notification) {
+          if (notification.depth != 0) {
+            return false;
+          }
+          if (notification is ScrollEndNotification ||
+              notification is UserScrollNotification &&
+                  notification.direction == ScrollDirection.idle) {
+            widget.controller.updateAnchoredFromMetrics(
+              notification.metrics,
+              widget.anchorThreshold,
+            );
+          }
+          return false;
+        },
+        child: SizeChangedLayoutNotifier(
+          child: widget.builder(context, widget.controller.scrollController),
+        ),
+      ),
+    );
+  }
+}
 
 class _RequirementsReviewInlineBanner extends StatelessWidget {
   const _RequirementsReviewInlineBanner({
@@ -454,6 +532,21 @@ String _entryStorageKey(ChatEntry entry) {
       ? entry.id.trim()
       : '${entry.kind}|${entry.timestamp ?? 0}|${entry.processId ?? ''}|${entry.command ?? entry.body}';
   return stableId;
+}
+
+String _timelineLengthIdentifier(List<ChatEntry> entries) {
+  if (entries.isEmpty) {
+    return 'empty';
+  }
+  final last = entries.last;
+  return [
+    entries.length,
+    _entryStorageKey(last),
+    last.body.length,
+    last.output?.length ?? 0,
+    last.status ?? '',
+    last.isStreaming,
+  ].join('|');
 }
 
 class _ChatBubble extends StatelessWidget {
@@ -600,18 +693,29 @@ class _ChatBubble extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
-                MarkdownBody(
-                  data: entry.body,
-                  selectable: false,
-                  onTapLink: (text, href, title) {
-                    final target = href ?? text;
-                    if (target.trim().isNotEmpty) {
-                      onOpenLink?.call(target.trim());
-                    }
-                  },
-                  styleSheet: _conversationMarkdownStyle(theme, isPending),
-                  syntaxHighlighter: _ChatCodeSyntaxHighlighter(theme),
-                ),
+                if (entry.author == 'Assistant' && entry.isStreaming)
+                  Text(
+                    key: ValueKey('chat.streamingPlainText.${entry.id}'),
+                    entry.body,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.9),
+                      height: 1.4,
+                    ),
+                  )
+                else
+                  MarkdownBody(
+                    key: ValueKey('chat.markdownBody.${entry.id}'),
+                    data: entry.body,
+                    selectable: false,
+                    onTapLink: (text, href, title) {
+                      final target = href ?? text;
+                      if (target.trim().isNotEmpty) {
+                        onOpenLink?.call(target.trim());
+                      }
+                    },
+                    styleSheet: _conversationMarkdownStyle(theme, isPending),
+                    syntaxHighlighter: _ChatCodeSyntaxHighlighter(theme),
+                  ),
               ],
             ),
           ),
