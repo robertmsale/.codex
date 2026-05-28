@@ -4707,11 +4707,19 @@ pub async fn orchestrator_requirements_status(
             continue;
         };
         let requirements = agent.requirements.clone();
-        let active_requirements = requirements
+        let stored_requirements = requirements
             .as_ref()
-            .filter(|set| set.active)
             .map(|set| set.requirements.clone())
             .unwrap_or_default();
+        let requirement_set_active = requirements
+            .as_ref()
+            .map(|set| set.active && !set.requirements.is_empty())
+            .unwrap_or(false);
+        let active_requirements = if requirement_set_active {
+            stored_requirements.clone()
+        } else {
+            Vec::new()
+        };
         let review = agent.requirement_review.clone();
         let latest_verdict_packet = review
             .as_ref()
@@ -4775,6 +4783,8 @@ pub async fn orchestrator_requirements_status(
             "requirementPackets": agent.requirement_packets,
             "summary": {
                 "activeRequirementCount": active_requirements.len(),
+                "storedRequirementCount": stored_requirements.len(),
+                "requirementSetActive": requirement_set_active,
                 "status": review.as_ref().map(|binding| binding.status.clone()),
                 "reviewerThreadId": review.as_ref().map(|binding| binding.reviewer_thread_id.clone()),
                 "requirementSetId": review
@@ -4788,6 +4798,7 @@ pub async fn orchestrator_requirements_status(
                 "waiverRequiredCount": waiver_required_count,
                 "waiverAcceptedCount": waiver_accepted_count,
                 "unknownCount": unknown_count,
+                "requirements": stored_requirements,
                 "verdicts": verdicts,
             }
         }));
@@ -8793,6 +8804,42 @@ mod tests {
                 ["requirements-reviewer"]["reasoningEffort"],
             "high"
         );
+    }
+
+    #[test]
+    fn inactive_requirements_do_not_enforce_schema_but_remain_stored() {
+        let state = parse_state(&json!({
+            "projects": {
+                "alpha": {
+                    "projectRoot": "/tmp/alpha",
+                    "agents": {
+                        "worker-1": {
+                            "role": "worker",
+                            "requirements": {
+                                "id": "requirements-alpha",
+                                "active": false,
+                                "enforceOnTurns": false,
+                                "requirements": [{
+                                    "key": "storedRequirement",
+                                    "statement": "Stored inactive requirement.",
+                                    "severity": "major",
+                                    "verificationMethod": "manualEvidence"
+                                }]
+                            }
+                        }
+                    }
+                }
+            }
+        }));
+
+        let worker = state
+            .projects
+            .values()
+            .find_map(|project| project.agents.get("worker-1"))
+            .expect("worker");
+        assert_eq!(worker.requirements.as_ref().map(|set| set.requirements.len()), Some(1));
+        assert!(active_requirements_for_thread(&state, "worker-1").is_none());
+        assert!(active_requirements_claim_schema_for_thread(&state, "worker-1").is_none());
     }
 
     #[test]

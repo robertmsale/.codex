@@ -255,6 +255,8 @@ class ThreadItem {
 class RequirementReviewSummary {
   const RequirementReviewSummary({
     required this.activeRequirementCount,
+    required this.storedRequirementCount,
+    required this.requirementSetActive,
     required this.status,
     required this.reviewerThreadId,
     required this.parentThreadId,
@@ -272,6 +274,8 @@ class RequirementReviewSummary {
   });
 
   final int activeRequirementCount;
+  final int storedRequirementCount;
+  final bool requirementSetActive;
   final String? status;
   final String? reviewerThreadId;
   final String? parentThreadId;
@@ -304,6 +308,11 @@ class RequirementReviewSummary {
   factory RequirementReviewSummary.fromJson(Map<String, dynamic> json) {
     return RequirementReviewSummary(
       activeRequirementCount: json['activeRequirementCount'] as int? ?? 0,
+      storedRequirementCount: (json['storedRequirementCount'] as int?) ??
+          (json['activeRequirementCount'] as int?) ??
+          0,
+      requirementSetActive: (json['requirementSetActive'] as bool?) ??
+          ((json['activeRequirementCount'] as int? ?? 0) > 0),
       status: json['status'] as String?,
       reviewerThreadId: json['reviewerThreadId'] as String?,
       parentThreadId: json['parentThreadId'] as String?,

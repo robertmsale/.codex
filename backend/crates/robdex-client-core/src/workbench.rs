@@ -1307,8 +1307,7 @@ fn requirement_review_summary(agent: &serde_json::Map<String, Value>) -> Option<
         .and_then(|set| set.get("active"))
         .and_then(Value::as_bool)
         .unwrap_or(true);
-    let active_requirements = requirements_set
-        .filter(|_| requirements_active)
+    let stored_requirements = requirements_set
         .and_then(|set| set.get("requirements"))
         .and_then(Value::as_array)
         .map(|items| {
@@ -1339,12 +1338,17 @@ fn requirement_review_summary(agent: &serde_json::Map<String, Value>) -> Option<
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let active_requirements = if requirements_active {
+        stored_requirements.clone()
+    } else {
+        Vec::new()
+    };
     let review = agent.get("requirementReview").and_then(Value::as_object);
     let parent_thread_id = agent
         .get("parentThreadId")
         .and_then(Value::as_str)
         .map(str::to_string);
-    if active_requirements.is_empty() && review.is_none() && parent_thread_id.is_none() {
+    if stored_requirements.is_empty() && review.is_none() && parent_thread_id.is_none() {
         return None;
     }
 
@@ -1398,6 +1402,8 @@ fn requirement_review_summary(agent: &serde_json::Map<String, Value>) -> Option<
 
     Some(UiRequirementReviewSummary {
         active_requirement_count: active_requirements.len(),
+        stored_requirement_count: stored_requirements.len(),
+        requirement_set_active: requirements_active && !stored_requirements.is_empty(),
         status: review
             .and_then(|review| review.get("status"))
             .and_then(Value::as_str)
@@ -1427,7 +1433,7 @@ fn requirement_review_summary(agent: &serde_json::Map<String, Value>) -> Option<
         updated_at: review
             .and_then(|review| review.get("updatedAt"))
             .and_then(Value::as_u64),
-        requirements: active_requirements,
+        requirements: stored_requirements,
         verdicts,
     })
 }
@@ -1885,6 +1891,48 @@ mod tests {
                 .as_deref(),
             Some("high")
         );
+    }
+
+    #[test]
+    fn inactive_stored_requirements_remain_visible_for_reactivation() {
+        let snapshot = json!({
+            "state": {
+                "projects": {
+                    "p1": {
+                        "id": "p1",
+                        "name": "Project",
+                        "projectRoot": "/tmp/project",
+                        "agents": {
+                            "source": {
+                                "displayName": "Source",
+                                "role": "worker",
+                                "cwd": "/tmp/project/source",
+                                "requirements": {
+                                    "id": "requirements-source",
+                                    "active": false,
+                                    "requirements": [{
+                                        "key": "storedButInactive",
+                                        "statement": "Stored requirements can be reactivated.",
+                                        "severity": "major",
+                                        "verificationMethod": "manualEvidence"
+                                    }]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let source = extract_thread_records(&snapshot)
+            .into_iter()
+            .find(|record| record.id == "source")
+            .expect("source record");
+        let review = source.requirement_review.expect("requirements summary");
+        assert_eq!(review.active_requirement_count, 0);
+        assert_eq!(review.stored_requirement_count, 1);
+        assert!(!review.requirement_set_active);
+        assert_eq!(review.requirements[0].key, "storedButInactive");
     }
 
     #[test]

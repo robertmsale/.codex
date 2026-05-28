@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -215,6 +216,24 @@ def _compose_requirements_payload(
     }
 
 
+def _selected_composable_items(thread_id: str, args: argparse.Namespace) -> list[dict[str, Any]]:
+    selected = _selected_composables(args)
+    if not selected:
+        return []
+    payload = _requirements_composables_payload(thread_id, args)
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise SystemExit("robdex: composables response missing items")
+    by_id = {str(item.get("id") or ""): item for item in items if isinstance(item, dict)}
+    composables = []
+    for composable_id in selected:
+        item = by_id.get(composable_id)
+        if item is None:
+            raise SystemExit(f"robdex: unknown requirements composable {composable_id!r}")
+        composables.append(item)
+    return composables
+
+
 def _whoami(thread_id: str) -> dict[str, Any]:
     return _request_json("GET", "/orchestrator/whoami", query={"senderThreadId": thread_id})
 
@@ -282,6 +301,42 @@ def _resolve_recipient_for_project_filter(
             raise SystemExit(f"robdex: multiple visible threads named {_quoted(recipient_name)} in project {_quoted(normalized_project or project_path)}")
         return str(matches[0].get("id") or "").strip(), None
     raise SystemExit("robdex: provide to_thread_id or name")
+
+
+def _resolve_recipient_thread_id(
+    *,
+    thread_id: str,
+    recipient_thread_id: str | None,
+    recipient_name: str | None,
+    project_path: str | None,
+) -> str:
+    if project_path:
+        resolved_thread_id, _ = _resolve_recipient_for_project_filter(
+            thread_id=thread_id,
+            recipient_thread_id=recipient_thread_id,
+            recipient_name=recipient_name,
+            project_path=project_path,
+        )
+        if resolved_thread_id:
+            return resolved_thread_id
+    if recipient_thread_id:
+        return recipient_thread_id
+    if recipient_name:
+        agents = _list_visible_agents(thread_id)
+        lowered = recipient_name.casefold()
+        matches = []
+        for item in agents:
+            display_name = _normalize_text(str(item.get("displayName") or ""))
+            if display_name and display_name.casefold() == lowered:
+                matches.append(item)
+        if not matches:
+            raise SystemExit(f"robdex: no visible thread named {_quoted(recipient_name)}")
+        if len(matches) > 1:
+            raise SystemExit(f"robdex: multiple visible threads named {_quoted(recipient_name)}; use --to-thread-id")
+        resolved = _normalize_text(str(matches[0].get("id") or ""))
+        if resolved:
+            return resolved
+    raise SystemExit("robdex: provide --name or --to-thread-id, or use --to-self")
 
 
 def _print_lines(lines: list[str]) -> None:
@@ -637,24 +692,22 @@ def _cmd_requirements_from_prose(
         label="requirements prose",
     )
     requirement_set = _requirements_from_prose(args.title, text)
-    if not args.attach:
+    composables = _selected_composable_items(thread_id, args)
+    if composables:
+        requirement_set = _compose_requirements_payload(
+            title=args.title,
+            base_payload=requirement_set,
+            composables=composables,
+        )
+    if not (args.attach or args.interrupt or args.to_self):
         print(json.dumps(requirement_set, indent=2, sort_keys=True))
         return
-    payload = _request_json(
-        "POST",
-        "/orchestrator/requirements/set",
-        body={
-            "senderThreadId": thread_id,
-            "recipientThreadId": _normalize_text(args.to_thread_id),
-            "recipientName": _normalize_text(args.name),
-            "projectPath": _normalize_path(args.project_path),
-            "requirementSet": requirement_set,
-        },
-    )
-    print(
-        "Set requirements for "
-        f"{_quoted(str(payload.get('displayName') or payload.get('threadId') or 'unknown'))} "
-        f"| count={payload.get('requirementCount')} enforceOnTurns={payload.get('enforceOnTurns')}"
+    _apply_requirements_set(
+        thread_id,
+        args,
+        parser,
+        requirement_set,
+        command_name="requirements-from-prose",
     )
 
 
@@ -707,19 +760,8 @@ def _cmd_requirements_composables_show(thread_id: str, args: argparse.Namespace)
 
 def _cmd_requirements_compose(thread_id: str, args: argparse.Namespace) -> None:
     base_payload = _read_json_file(args.requirements_file, "requirements")
-    selected = _selected_composables(args)
-    if selected:
-        payload = _requirements_composables_payload(thread_id, args)
-        items = payload.get("items")
-        if not isinstance(items, list):
-            raise SystemExit("robdex: composables response missing items")
-        by_id = {str(item.get("id") or ""): item for item in items if isinstance(item, dict)}
-        composables = []
-        for composable_id in selected:
-            item = by_id.get(composable_id)
-            if item is None:
-                raise SystemExit(f"robdex: unknown requirements composable {composable_id!r}")
-            composables.append(item)
+    composables = _selected_composable_items(thread_id, args)
+    if composables:
         requirement_set = _compose_requirements_payload(
             title=args.title,
             base_payload=base_payload,
@@ -895,6 +937,128 @@ def _cmd_send_message(thread_id: str, args: argparse.Namespace, parser: argparse
     target_id = _normalize_text(str(payload.get("recipientThreadId") or "")) or recipient_thread_id or "unknown-thread-id"
     display_name = _normalize_text(str(payload.get("recipientDisplayName") or "")) or recipient_name or target_id
     print(f"Sent to {_quoted(display_name)} ({target_id})")
+
+
+def _interrupt_thread(thread_id: str) -> None:
+    encoded_thread_id = urllib.parse.quote(thread_id, safe="")
+    _request_json("POST", f"/threads/{encoded_thread_id}/interrupt")
+
+
+def _send_message_to_thread(sender_thread_id: str, recipient_thread_id: str, text: str) -> None:
+    _request_json(
+        "POST",
+        "/orchestrator/agent-message",
+        body={
+            "senderThreadId": sender_thread_id,
+            "recipientThreadId": recipient_thread_id,
+            "recipientName": None,
+            "text": text,
+        },
+    )
+
+
+def _set_requirements_payload(
+    *,
+    sender_thread_id: str,
+    recipient_thread_id: str | None,
+    recipient_name: str | None,
+    project_path: str | None,
+    requirement_set: Any,
+) -> dict[str, Any]:
+    return _request_json(
+        "POST",
+        "/orchestrator/requirements/set",
+        body={
+            "senderThreadId": sender_thread_id,
+            "recipientThreadId": recipient_thread_id,
+            "recipientName": recipient_name,
+            "projectPath": project_path,
+            "requirementSet": requirement_set,
+        },
+    )
+
+
+def _print_set_requirements_summary(payload: dict[str, Any]) -> None:
+    print(
+        "Set requirements for "
+        f"{_quoted(str(payload.get('displayName') or payload.get('threadId') or 'unknown'))} "
+        f"| count={payload.get('requirementCount')} enforceOnTurns={payload.get('enforceOnTurns')}"
+    )
+
+
+def _apply_requirements_set(
+    thread_id: str,
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    requirement_set: Any,
+    *,
+    command_name: str,
+) -> None:
+    if args.to_self and (args.to_thread_id or args.name or args.project_path):
+        parser.error("--to-self cannot be combined with --name, --to-thread-id, or --project-path")
+    if not args.to_self and not (args.to_thread_id or args.name):
+        parser.error(f"{command_name} requires --name or --to-thread-id unless --to-self is provided")
+
+    if args.to_self:
+        payload = _set_requirements_payload(
+            sender_thread_id=thread_id,
+            recipient_thread_id=thread_id,
+            recipient_name=None,
+            project_path=None,
+            requirement_set=requirement_set,
+        )
+        time.sleep(0.25)
+        _interrupt_thread(thread_id)
+        _send_message_to_thread(thread_id, thread_id, "Begin")
+        _print_set_requirements_summary(payload)
+        print(f"Interrupted {_quoted(thread_id)} and sent {_quoted('Begin')}")
+        return
+
+    project_path = _normalize_path(args.project_path)
+    recipient_thread_id = _normalize_text(args.to_thread_id)
+    recipient_name = _normalize_text(args.name)
+    if args.interrupt:
+        recipient_thread_id = _resolve_recipient_thread_id(
+            thread_id=thread_id,
+            recipient_thread_id=recipient_thread_id,
+            recipient_name=recipient_name,
+            project_path=project_path,
+        )
+        if recipient_thread_id == thread_id:
+            parser.error("--interrupt cannot target the current thread; use --to-self")
+        recipient_name = None
+        _interrupt_thread(recipient_thread_id)
+
+    payload = _set_requirements_payload(
+        sender_thread_id=thread_id,
+        recipient_thread_id=recipient_thread_id,
+        recipient_name=recipient_name,
+        project_path=project_path,
+        requirement_set=requirement_set,
+    )
+    if args.interrupt:
+        _send_message_to_thread(thread_id, recipient_thread_id or "", "Requirements updated")
+    _print_set_requirements_summary(payload)
+    if args.interrupt:
+        print(f"Interrupted {_quoted(recipient_thread_id or 'unknown')} and sent {_quoted('Requirements updated')}")
+
+
+def _cmd_set_requirements(thread_id: str, args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    requirements_payload = _read_json_file(args.requirements_file, "requirements")
+    include_composables = _selected_composables(args)
+    if include_composables and isinstance(requirements_payload, dict):
+        requirements_payload = dict(requirements_payload)
+        requirements_payload["includeComposables"] = include_composables
+    elif include_composables:
+        parser.error("--include-composable requires an object requirements file, not a raw array")
+
+    _apply_requirements_set(
+        thread_id,
+        args,
+        parser,
+        requirements_payload,
+        command_name="set-requirements",
+    )
 
 
 def _cmd_set_worker_metadata(thread_id: str, args: argparse.Namespace) -> None:
@@ -1084,6 +1248,17 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     p_req_set.add_argument("--name")
     p_req_set.add_argument("--project-path")
     p_req_set.add_argument("--requirements-file", required=True)
+    target_mode = p_req_set.add_mutually_exclusive_group()
+    target_mode.add_argument(
+        "--interrupt",
+        action="store_true",
+        help="Interrupt the target thread, set requirements, then send 'Requirements updated'.",
+    )
+    target_mode.add_argument(
+        "--to-self",
+        action="store_true",
+        help="Set requirements on this thread, briefly delay, interrupt this thread, then send 'Begin'.",
+    )
     p_req_set.add_argument(
         "--include-composable",
         action="append",
@@ -1113,10 +1288,27 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     prose_input.add_argument("--text")
     prose_input.add_argument("--text-file")
     prose_input.add_argument("--text-stdin", action="store_true")
-    p_req_from_prose.add_argument("--attach", action="store_true")
+    prose_apply_mode = p_req_from_prose.add_mutually_exclusive_group()
+    prose_apply_mode.add_argument("--attach", action="store_true")
+    prose_apply_mode.add_argument(
+        "--interrupt",
+        action="store_true",
+        help="Interrupt the target thread, set generated requirements, then send 'Requirements updated'.",
+    )
+    prose_apply_mode.add_argument(
+        "--to-self",
+        action="store_true",
+        help="Set generated requirements on this thread, briefly delay, interrupt this thread, then send 'Begin'.",
+    )
     p_req_from_prose.add_argument("--to-thread-id")
     p_req_from_prose.add_argument("--name")
     p_req_from_prose.add_argument("--project-path")
+    p_req_from_prose.add_argument(
+        "--include-composable",
+        action="append",
+        default=[],
+        help="Composable requirement id to merge before generated prose requirements. May be repeated or comma-separated.",
+    )
 
     p_req_composables = sub.add_parser(
         "requirements-composables",
@@ -1251,29 +1443,7 @@ def main() -> int:
     elif args.cmd == "set-worker-metadata":
         _cmd_set_worker_metadata(thread_id, args)
     elif args.cmd == "set-requirements":
-        requirements_payload = _read_json_file(args.requirements_file, "requirements")
-        include_composables = _selected_composables(args)
-        if include_composables and isinstance(requirements_payload, dict):
-            requirements_payload = dict(requirements_payload)
-            requirements_payload["includeComposables"] = include_composables
-        elif include_composables:
-            parser.error("--include-composable requires an object requirements file, not a raw array")
-        payload = _request_json(
-            "POST",
-            "/orchestrator/requirements/set",
-            body={
-                "senderThreadId": thread_id,
-                "recipientThreadId": _normalize_text(args.to_thread_id),
-                "recipientName": _normalize_text(args.name),
-                "projectPath": _normalize_path(args.project_path),
-                "requirementSet": requirements_payload,
-            },
-        )
-        print(
-            "Set requirements for "
-            f"{_quoted(str(payload.get('displayName') or payload.get('threadId') or 'unknown'))} "
-            f"| count={payload.get('requirementCount')} enforceOnTurns={payload.get('enforceOnTurns')}"
-        )
+        _cmd_set_requirements(thread_id, args, parser)
     elif args.cmd == "requirements-status":
         _cmd_requirements_status(thread_id, args)
     elif args.cmd == "requirements-from-prose":

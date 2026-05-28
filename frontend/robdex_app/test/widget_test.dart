@@ -1126,6 +1126,298 @@ void main() {
     expect(find.text('Copied "Worker Copy Target"'), findsOneWidget);
   });
 
+  testWidgets('composer sets requirements on the thread without sending a message', (
+    WidgetTester tester,
+  ) async {
+    Map<String, dynamic>? setRequestBody;
+    var sendCount = 0;
+    final client = MockClient((request) async {
+      if (request.url.path == '/orchestrator/requirements/composables') {
+        return http.Response(jsonEncode({'items': []}), 200);
+      }
+      if (request.url.path == '/orchestrator/requirements/set') {
+        setRequestBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(jsonEncode({'ok': true}), 200);
+      }
+      return http.Response('unexpected ${request.url.path}', 404);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: ScaffoldMessenger(
+          child: Scaffold(
+            body: ComposerPanel(
+              enabled: true,
+              isRunning: false,
+              selection: mockWorkbenchData.selection,
+              availableModels: mockWorkbenchData.availableModels,
+              requirementReview: null,
+              bridgeBaseUri: Uri.parse('http://bridge.test'),
+              httpClient: client,
+              onSettingsChanged: (_) {},
+              onCompactThread: () {},
+              onSend: (_) => sendCount += 1,
+              onInterrupt: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Add'));
+    await tester.pumpAndSettle();
+    expect(find.text('Add requirements'), findsOneWidget);
+
+    await tester.tap(find.text('Add requirements'));
+    await tester.pumpAndSettle();
+    expect(find.text('Set Requirements'), findsOneWidget);
+    expect(find.text('Activate'), findsNothing);
+    expect(find.text('Deactivate'), findsNothing);
+
+    await tester.enterText(find.widgetWithText(TextField, 'Title'), 'Composer Set');
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Statement'),
+      'The composer must set stored active Requirements without sending a chat message.',
+    );
+    await tester.tap(find.text('Set'));
+    await tester.pumpAndSettle();
+
+    expect(sendCount, 0);
+    expect(setRequestBody?['senderThreadId'], mockWorkbenchData.selection.threadId);
+    expect(setRequestBody?['recipientThreadId'], mockWorkbenchData.selection.threadId);
+    final requirementSet = setRequestBody?['requirementSet'] as Map<String, dynamic>?;
+    expect(requirementSet?['active'], isTrue);
+    expect(requirementSet?['enforceOnTurns'], isTrue);
+    expect(requirementSet?['requirements'], isNotEmpty);
+    expect(find.text('Requirements set.'), findsOneWidget);
+  });
+
+  testWidgets('composer replaces, clears, and deactivates stored requirements', (
+    WidgetTester tester,
+  ) async {
+    final requestBodies = <Map<String, dynamic>>[];
+    final client = MockClient((request) async {
+      if (request.url.path == '/orchestrator/requirements/composables') {
+        return http.Response(jsonEncode({'items': []}), 200);
+      }
+      if (request.url.path == '/orchestrator/requirements/set') {
+        requestBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+        return http.Response(jsonEncode({'ok': true}), 200);
+      }
+      return http.Response('unexpected ${request.url.path}', 404);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: ScaffoldMessenger(
+          child: Scaffold(
+            body: ComposerPanel(
+              enabled: true,
+              isRunning: false,
+              selection: mockWorkbenchData.selection,
+              availableModels: mockWorkbenchData.availableModels,
+              requirementReview: _reviewSummary(status: 'inReview'),
+              bridgeBaseUri: Uri.parse('http://bridge.test'),
+              httpClient: client,
+              onSettingsChanged: (_) {},
+              onCompactThread: () {},
+              onSend: (_) {},
+              onInterrupt: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Add'));
+    await tester.pumpAndSettle();
+    expect(find.text('Replace Requirements'), findsOneWidget);
+
+    await tester.tap(find.text('Replace Requirements'));
+    await tester.pumpAndSettle();
+    expect(find.text('Replace Requirements'), findsOneWidget);
+    expect(find.text('Owner decision required.'), findsOneWidget);
+    expect(find.text('Deactivate'), findsOneWidget);
+
+    await tester.tap(find.text('Clear'));
+    await tester.pumpAndSettle();
+
+    expect(requestBodies.last['senderThreadId'], mockWorkbenchData.selection.threadId);
+    expect(requestBodies.last['recipientThreadId'], mockWorkbenchData.selection.threadId);
+    expect(requestBodies.last['requirementSet'], isNull);
+    expect(find.text('Requirements cleared.'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Add'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Replace Requirements'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Deactivate'));
+    await tester.pumpAndSettle();
+
+    final deactivated = requestBodies.last['requirementSet'] as Map<String, dynamic>?;
+    expect(deactivated?['active'], isFalse);
+    expect(deactivated?['enforceOnTurns'], isFalse);
+    expect(deactivated?['requirements'], isNotEmpty);
+  });
+
+  testWidgets('composer activates inactive stored requirements from modal', (
+    WidgetTester tester,
+  ) async {
+    Map<String, dynamic>? requestBody;
+    final client = MockClient((request) async {
+      if (request.url.path == '/orchestrator/requirements/composables') {
+        return http.Response(jsonEncode({'items': []}), 200);
+      }
+      if (request.url.path == '/orchestrator/requirements/set') {
+        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(jsonEncode({'ok': true}), 200);
+      }
+      return http.Response('unexpected ${request.url.path}', 404);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: ScaffoldMessenger(
+          child: Scaffold(
+            body: ComposerPanel(
+              enabled: true,
+              isRunning: false,
+              selection: mockWorkbenchData.selection,
+              availableModels: mockWorkbenchData.availableModels,
+              requirementReview: _reviewSummary(
+                status: null,
+                activeRequirementCount: 0,
+                storedRequirementCount: 1,
+                requirementSetActive: false,
+              ),
+              bridgeBaseUri: Uri.parse('http://bridge.test'),
+              httpClient: client,
+              onSettingsChanged: (_) {},
+              onCompactThread: () {},
+              onSend: (_) {},
+              onInterrupt: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Add'));
+    await tester.pumpAndSettle();
+    expect(find.text('Replace Requirements'), findsOneWidget);
+    await tester.tap(find.text('Replace Requirements'));
+    await tester.pumpAndSettle();
+    expect(find.text('Activate'), findsOneWidget);
+    expect(find.text('Deactivate'), findsNothing);
+
+    await tester.tap(find.text('Activate'));
+    await tester.pumpAndSettle();
+
+    final requirementSet = requestBody?['requirementSet'] as Map<String, dynamic>?;
+    expect(requirementSet?['active'], isTrue);
+    expect(requirementSet?['enforceOnTurns'], isTrue);
+    expect(requirementSet?['requirements'], isNotEmpty);
+  });
+
+  testWidgets('composer primary Replace submits active stored requirements without sending', (
+    WidgetTester tester,
+  ) async {
+    Map<String, dynamic>? requestBody;
+    var sendCount = 0;
+    final client = MockClient((request) async {
+      if (request.url.path == '/orchestrator/requirements/composables') {
+        return http.Response(jsonEncode({'items': []}), 200);
+      }
+      if (request.url.path == '/orchestrator/requirements/set') {
+        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(jsonEncode({'ok': true}), 200);
+      }
+      return http.Response('unexpected ${request.url.path}', 404);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: ScaffoldMessenger(
+          child: Scaffold(
+            body: ComposerPanel(
+              enabled: true,
+              isRunning: false,
+              selection: mockWorkbenchData.selection,
+              availableModels: mockWorkbenchData.availableModels,
+              requirementReview: _reviewSummary(status: 'inReview'),
+              bridgeBaseUri: Uri.parse('http://bridge.test'),
+              httpClient: client,
+              onSettingsChanged: (_) {},
+              onCompactThread: () {},
+              onSend: (_) => sendCount += 1,
+              onInterrupt: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Add'));
+    await tester.pumpAndSettle();
+    expect(find.text('Replace Requirements'), findsOneWidget);
+    await tester.tap(find.text('Replace Requirements'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Replace Requirements'), findsOneWidget);
+    expect(find.text('Owner decision required.'), findsOneWidget);
+    await tester.tap(find.text('Replace'));
+    await tester.pumpAndSettle();
+
+    expect(sendCount, 0);
+    expect(requestBody?['senderThreadId'], mockWorkbenchData.selection.threadId);
+    expect(requestBody?['recipientThreadId'], mockWorkbenchData.selection.threadId);
+    final requirementSet = requestBody?['requirementSet'] as Map<String, dynamic>?;
+    expect(requirementSet?['active'], isTrue);
+    expect(requirementSet?['enforceOnTurns'], isTrue);
+    expect(requirementSet?['requirements'], isNotEmpty);
+    expect(find.text('Requirements set.'), findsOneWidget);
+  });
+
+  test('shared requirements submit helper posts the thread state payload', () async {
+    Map<String, dynamic>? requestBody;
+    final client = MockClient((request) async {
+      expect(request.url.toString(), 'http://bridge.test/orchestrator/requirements/set');
+      expect(request.headers['Content-Type'], 'application/json');
+      requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+      return http.Response(jsonEncode({'ok': true}), 200);
+    });
+
+    final response = await submitThreadRequirementSet(
+      baseUri: Uri.parse('http://bridge.test'),
+      senderThreadId: 'source-thread',
+      recipientThreadId: 'target-thread',
+      projectPath: '/tmp/project',
+      requirementSet: {
+        'id': 'requirements',
+        'active': false,
+        'enforceOnTurns': false,
+        'requirements': [
+          {'key': 'stored', 'statement': 'Stored but inactive.'},
+        ],
+      },
+      httpClient: client,
+    );
+
+    expect(response.statusCode, 200);
+    expect(requestBody?['senderThreadId'], 'source-thread');
+    expect(requestBody?['recipientThreadId'], 'target-thread');
+    expect(requestBody?['projectPath'], '/tmp/project');
+    expect((requestBody?['requirementSet'] as Map<String, dynamic>)['active'], isFalse);
+  });
+
   testWidgets('nested requirements claim packet renders claim rows without raw json', (
     WidgetTester tester,
   ) async {
@@ -1441,11 +1733,16 @@ RequirementReviewSummary _waiverRequiredReviewSummary() {
 
 RequirementReviewSummary _reviewSummary({
   required String? status,
+  int activeRequirementCount = 1,
+  int storedRequirementCount = 1,
+  bool requirementSetActive = true,
   int waiverRequiredCount = 0,
   List<RequirementVerdictSummary> verdicts = const [],
 }) {
   return RequirementReviewSummary(
-    activeRequirementCount: 1,
+    activeRequirementCount: activeRequirementCount,
+    storedRequirementCount: storedRequirementCount,
+    requirementSetActive: requirementSetActive,
     status: status,
     reviewerThreadId: 'reviewer',
     parentThreadId: 'worker',

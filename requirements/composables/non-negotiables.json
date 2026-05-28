@@ -1,0 +1,33 @@
+{
+  "id": "non-negotiables",
+  "title": "Non-Negotiables",
+  "description": "Use for broad engineering tasks where the operator wants a compact baseline quality guard. Covers relevant docs, shared logic, source-of-truth preservation, sanctioned workflows, and stale generated artifact prevention.",
+  "appliesTo": [
+    "code",
+    "UI",
+    "API",
+    "tooling",
+    "deploy",
+    "generated-artifacts"
+  ],
+  "requirements": [
+    {
+      "key": "updateDocsWhenBehaviorChanges",
+      "statement": "Code, CLI, config, workflow, or user-visible behavior changes must update relevant docs, role/skill guidance, examples, or help text when those artifacts discuss the changed behavior.",
+      "severity": "high",
+      "verificationMethod": "diffReview"
+    },
+    {
+      "key": "sourceOfTruthAndSanctionedWorkflowPreserved",
+      "statement": "Use the intended source of truth and sanctioned workflow for the domain. Do not introduce parallel state, duplicate contracts, frontend-only truth, fake data, disabled checks, bypasses, manual workarounds, or stale generated/build artifacts unless the operator explicitly authorizes that scope change.",
+      "severity": "blocker",
+      "verificationMethod": "sourceInspection"
+    },
+    {
+      "key": "sharedLogicOverDuplication",
+      "statement": "When behavior is used in more than one place, prefer a shared helper, component, schema, or established project abstraction over copying equivalent logic. Do not add abstraction for a single use unless it clearly matches an existing pattern or prevents near-term duplication.",
+      "severity": "high",
+      "verificationMethod": "diffReview"
+    }
+  ]
+}

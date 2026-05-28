@@ -303,6 +303,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
             availableModels: widget.availableModels,
             onSettingsChanged: widget.onSettingsChanged ?? (_) {},
             onCompactThread: widget.onCompactThread ?? () {},
+            requirementReview: widget.requirementReview,
             bridgeBaseUri: widget.bridgeBaseUri,
             terminalAvailable: widget.terminalAvailable,
             onTerminalPressed: widget.onTerminalPressed,

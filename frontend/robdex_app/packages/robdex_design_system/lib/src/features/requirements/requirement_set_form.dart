@@ -19,7 +19,7 @@ const _verificationOptions = [
 
 String requirementSetJsonFromReviewSummary(
   RequirementReviewSummary summary, {
-  bool active = true,
+  bool? active,
 }) {
   final requirements = summary.requirements.map<Map<String, dynamic>>((requirement) {
     return {
@@ -32,10 +32,39 @@ String requirementSetJsonFromReviewSummary(
   return const JsonEncoder.withIndent('  ').convert({
     'id': summary.requirementSetId ?? '',
     'title': summary.requirementSetId ?? '',
-    'active': active,
-    'enforceOnTurns': true,
+    'active': active ?? summary.requirementSetActive,
+    'enforceOnTurns': active ?? summary.requirementSetActive,
     'requirements': requirements,
   });
+}
+
+Future<http.Response> submitThreadRequirementSet({
+  required Uri baseUri,
+  required String senderThreadId,
+  required String recipientThreadId,
+  required Object? requirementSet,
+  String? projectPath,
+  http.Client? httpClient,
+}) {
+  final body = <String, Object?>{
+    'senderThreadId': senderThreadId,
+    'recipientThreadId': recipientThreadId,
+    'requirementSet': requirementSet,
+  };
+  if (projectPath != null && projectPath.trim().isNotEmpty) {
+    body['projectPath'] = projectPath.trim();
+  }
+  final uri = baseUri.resolve('/orchestrator/requirements/set');
+  final headers = const {
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+  };
+  final requestBody = jsonEncode(body);
+  final client = httpClient;
+  if (client == null) {
+    return http.post(uri, headers: headers, body: requestBody);
+  }
+  return client.post(uri, headers: headers, body: requestBody);
 }
 
 Future<String?> showRequirementSetFormDialog(
@@ -44,7 +73,8 @@ Future<String?> showRequirementSetFormDialog(
   String title = 'Requirements',
   String actionLabel = 'Save',
   String helperText = 'Define the requirements. Robdex will generate the JSON contract.',
-  bool showDeactivate = false,
+  bool showActivationToggle = false,
+  bool requirementsActive = false,
   Uri? bridgeBaseUri,
   String? senderThreadId,
   String? recipientThreadId,
@@ -59,7 +89,8 @@ Future<String?> showRequirementSetFormDialog(
       title: title,
       actionLabel: actionLabel,
       helperText: helperText,
-      showDeactivate: showDeactivate,
+      showActivationToggle: showActivationToggle,
+      requirementsActive: requirementsActive,
       bridgeBaseUri: bridgeBaseUri,
       senderThreadId: senderThreadId,
       recipientThreadId: recipientThreadId,
@@ -76,7 +107,8 @@ class _RequirementSetFormDialog extends StatefulWidget {
     required this.title,
     required this.actionLabel,
     required this.helperText,
-    required this.showDeactivate,
+    required this.showActivationToggle,
+    required this.requirementsActive,
     required this.bridgeBaseUri,
     required this.senderThreadId,
     required this.recipientThreadId,
@@ -89,7 +121,8 @@ class _RequirementSetFormDialog extends StatefulWidget {
   final String title;
   final String actionLabel;
   final String helperText;
-  final bool showDeactivate;
+  final bool showActivationToggle;
+  final bool requirementsActive;
   final Uri? bridgeBaseUri;
   final String? senderThreadId;
   final String? recipientThreadId;
@@ -251,7 +284,7 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
       'id': _slugFromTitle(title),
       'title': title,
       'active': active,
-      'enforceOnTurns': true,
+      'enforceOnTurns': active,
       'includeComposables': _selectedComposableIds.toList(growable: false),
       'requirements': requirements,
     });
@@ -416,18 +449,18 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
           onPressed: () => Navigator.of(context).pop(''),
           child: const Text('Clear'),
         ),
-        if (widget.showDeactivate)
+        if (widget.showActivationToggle)
           TextButton(
             onPressed: () {
               try {
-                Navigator.of(context).pop(_generateJson(active: false));
+                Navigator.of(context).pop(_generateJson(active: !widget.requirementsActive));
               } catch (error) {
                 setState(() {
                   _error = error.toString().replaceFirst('Bad state: ', '');
                 });
               }
             },
-            child: const Text('Deactivate'),
+            child: Text(widget.requirementsActive ? 'Deactivate' : 'Activate'),
           ),
         FilledButton(
           onPressed: () {

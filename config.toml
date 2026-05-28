@@ -91,7 +91,7 @@ model_reasoning_effort = "high"
 # model = "gpt-5.4-mini"
 # model_reasoning_effort = "low"
 model = "gpt-5.5"
-model_reasoning_effort = "low"
+model_reasoning_effort = "medium"
 model_instructions_file = "/Users/robertsale/.codex/roles/design-review.md"
 
 [profiles.fast]

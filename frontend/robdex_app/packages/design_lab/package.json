@@ -1,0 +1,12 @@
+{
+  "name": "robdex-design-lab",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Bun WebView screenshot harness for Robdex Design Lab build artifacts.",
+  "scripts": {
+    "bun:shot": "node tools/design_lab_bun_shot.mjs"
+  },
+  "devDependencies": {
+    "bun": "^1.3.14"
+  }
+}

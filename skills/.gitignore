@@ -1,3 +1,11 @@
 openai-docs/
 impeccable-ui/
 command-parser/scripts/db_test.sh
+agents-sdk/
+cloudflare/
+cloudflare-email-service/
+durable-objects/
+sandbox-sdk/
+web-perf/
+workers-best-practices/
+wrangler/

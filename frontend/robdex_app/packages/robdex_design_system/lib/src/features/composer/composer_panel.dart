@@ -44,7 +44,9 @@ class ComposerPanel extends StatefulWidget {
     required this.availableModels,
     required this.onSettingsChanged,
     required this.onCompactThread,
+    this.requirementReview,
     this.bridgeBaseUri,
+    this.httpClient,
     this.terminalAvailable = false,
     this.onTerminalPressed,
   });
@@ -57,7 +59,9 @@ class ComposerPanel extends StatefulWidget {
   final List<ModelItem> availableModels;
   final ValueChanged<ThreadSettingsDraft> onSettingsChanged;
   final VoidCallback onCompactThread;
+  final RequirementReviewSummary? requirementReview;
   final Uri? bridgeBaseUri;
+  final http.Client? httpClient;
   final bool terminalAvailable;
   final VoidCallback? onTerminalPressed;
 
@@ -78,7 +82,6 @@ class _ComposerPanelState extends State<ComposerPanel> {
   bool _isPickingImages = false;
   bool _isCapturingScreenshot = false;
   bool _isShowingSendTransition = false;
-  String? _requirementSetJson;
   String? _attachmentError;
   String? _dismissedSlashText;
   OverlayEntry? _slashFeedbackOverlay;
@@ -130,13 +133,12 @@ class _ComposerPanelState extends State<ComposerPanel> {
       ComposerSubmission(
         text: text,
         localImagePaths: List<String>.unmodifiable(_localImagePaths),
-        requirementSetJson: _requirementSetJson,
+        requirementSetJson: null,
       ),
     );
     _controller.clear();
     setState(() {
       _localImagePaths.clear();
-      _requirementSetJson = null;
     });
   }
 
@@ -345,24 +347,95 @@ class _ComposerPanelState extends State<ComposerPanel> {
   }
 
   Future<void> _editRequirements() async {
+    final storedRequirements = widget.requirementReview?.storedRequirementCount ?? 0;
+    final hasStoredRequirements = storedRequirements > 0;
+    final requirementsActive = widget.requirementReview?.requirementSetActive ?? false;
+    final initialJson = hasStoredRequirements && widget.requirementReview != null
+        ? requirementSetJsonFromReviewSummary(widget.requirementReview!)
+        : null;
     final result = await showRequirementSetFormDialog(
       context,
-      initialJson: _requirementSetJson,
-      title: 'Attach Requirements',
-      actionLabel: 'Attach',
-      helperText:
-          'These requirements apply to the next new turn only. They cannot be attached while the thread is running.',
+      initialJson: initialJson,
+      title: hasStoredRequirements ? 'Replace Requirements' : 'Set Requirements',
+      actionLabel: hasStoredRequirements ? 'Replace' : 'Set',
+      helperText: hasStoredRequirements
+          ? 'Replace, activate, deactivate, or clear the stored Requirements for this thread.'
+          : 'Set active Requirements for this thread without sending a message.',
+      showActivationToggle: hasStoredRequirements,
+      requirementsActive: requirementsActive,
       bridgeBaseUri: widget.bridgeBaseUri,
       senderThreadId: widget.selection.threadId,
       recipientThreadId: widget.selection.threadId,
       projectPath: widget.selection.projectRootPath,
+      httpClient: widget.httpClient,
     );
     if (!mounted || result == null) {
       return;
     }
-    setState(() {
-      _requirementSetJson = result.trim().isEmpty ? null : result.trim();
-    });
+    await _setThreadRequirements(result.trim());
+  }
+
+  Future<void> _setThreadRequirements(String requirementSetJson) async {
+    final sourceId = widget.selection.threadId;
+    final baseUri = widget.bridgeBaseUri;
+    if (sourceId == null || baseUri == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a bridge-backed thread first.')),
+      );
+      return;
+    }
+    Object? decoded;
+    if (requirementSetJson.isEmpty) {
+      decoded = null;
+    } else {
+      try {
+        decoded = jsonDecode(requirementSetJson);
+      } catch (error) {
+        if (!mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Invalid requirements JSON: $error')),
+        );
+        return;
+      }
+    }
+    try {
+      final response = await submitThreadRequirementSet(
+        baseUri: baseUri,
+        senderThreadId: sourceId,
+        recipientThreadId: sourceId,
+        requirementSet: decoded,
+        projectPath: widget.selection.projectRootPath,
+        httpClient: widget.httpClient,
+      );
+      if (!mounted) {
+        return;
+      }
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final isInactive = decoded is Map && decoded['active'] == false;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              decoded == null
+                  ? 'Requirements cleared.'
+                  : (isInactive ? 'Requirements deactivated.' : 'Requirements set.'),
+            ),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Set requirements failed: ${response.body}')),
+        );
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Set requirements failed: $error')),
+      );
+    }
   }
 
   void _showSendTransition() {
@@ -852,14 +925,14 @@ class _ComposerPanelState extends State<ComposerPanel> {
                               enabled: !widget.isRunning,
                               child: ListTile(
                                 leading: Icon(
-                                  _requirementSetJson == null
+                                  (widget.requirementReview?.storedRequirementCount ?? 0) == 0
                                       ? Icons.rule_outlined
                                       : Icons.rule_rounded,
                                 ),
                                 title: Text(
-                                  _requirementSetJson == null
+                                  (widget.requirementReview?.storedRequirementCount ?? 0) == 0
                                       ? 'Add requirements'
-                                      : 'Edit requirements',
+                                      : 'Replace Requirements',
                                 ),
                                 dense: true,
                               ),

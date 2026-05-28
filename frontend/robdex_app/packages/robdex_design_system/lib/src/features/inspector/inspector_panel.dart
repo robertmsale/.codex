@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
 import '../../core/models/workbench_models.dart';
 import '../requirements/requirement_set_form.dart';
@@ -374,7 +373,7 @@ class _RequirementsReviewCard extends StatelessWidget {
     final theme = Theme.of(context);
     final summary = this.summary;
     final reviewerThreadId = summary?.reviewerThreadId;
-    final hasActiveRequirements = (summary?.activeRequirementCount ?? 0) > 0;
+    final hasStoredRequirements = (summary?.storedRequirementCount ?? 0) > 0;
     return _InspectorSection(
       title: 'Requirements',
       child: Padding(
@@ -428,7 +427,7 @@ class _RequirementsReviewCard extends StatelessWidget {
               runSpacing: 8,
               children: [
                 _InspectorActionButton(
-                  label: hasActiveRequirements ? 'Replace Requirements' : 'Attach Requirements',
+                  label: hasStoredRequirements ? 'Replace Requirements' : 'Attach Requirements',
                   icon: Icons.rule_folder_outlined,
                   onPressed: sourceThreadId == null || bridgeBaseUri == null
                       ? null
@@ -510,16 +509,20 @@ class _RequirementsReviewCard extends StatelessWidget {
     if (sourceId == null || baseUri == null) {
       return;
     }
+    final storedRequirements = summary?.storedRequirementCount ?? 0;
+    final hasStoredRequirements = storedRequirements > 0;
+    final requirementsActive = summary?.requirementSetActive ?? false;
     final initialJson = summary == null
         ? null
         : requirementSetJsonFromReviewSummary(summary!);
     final submitted = await showRequirementSetFormDialog(
       context,
       initialJson: initialJson,
-      title: 'Set Requirements',
-      actionLabel: 'Set',
+      title: hasStoredRequirements ? 'Replace Requirements' : 'Set Requirements',
+      actionLabel: hasStoredRequirements ? 'Replace' : 'Set',
       helperText: 'Define active requirements for this thread. Robdex generates and submits the JSON contract.',
-      showDeactivate: (summary?.activeRequirementCount ?? 0) > 0,
+      showActivationToggle: hasStoredRequirements,
+      requirementsActive: requirementsActive,
       bridgeBaseUri: bridgeBaseUri,
       senderThreadId: sourceId,
       recipientThreadId: sourceId,
@@ -544,24 +547,25 @@ class _RequirementsReviewCard extends StatelessWidget {
       }
     }
     try {
-      final response = await http.post(
-        baseUri.resolve('/orchestrator/requirements/set'),
-        headers: const {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'senderThreadId': sourceId,
-          'recipientThreadId': sourceId,
-          'requirementSet': decoded,
-        }),
+      final response = await submitThreadRequirementSet(
+        baseUri: baseUri,
+        senderThreadId: sourceId,
+        recipientThreadId: sourceId,
+        requirementSet: decoded,
       );
       if (!context.mounted) {
         return;
       }
       if (response.statusCode >= 200 && response.statusCode < 300) {
+        final isInactive = decoded is Map && decoded['active'] == false;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(decoded == null ? 'Requirements cleared.' : 'Requirements set.')),
+          SnackBar(
+            content: Text(
+              decoded == null
+                  ? 'Requirements cleared.'
+                  : (isInactive ? 'Requirements deactivated.' : 'Requirements set.'),
+            ),
+          ),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(

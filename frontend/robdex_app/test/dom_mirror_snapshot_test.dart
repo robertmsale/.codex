@@ -108,6 +108,8 @@ void main() {
       mockWorkbenchData.copyWith(
         requirementReview: const RequirementReviewSummary(
           activeRequirementCount: 3,
+          storedRequirementCount: 3,
+          requirementSetActive: true,
           status: 'failed',
           reviewerThreadId: 'reviewer',
           parentThreadId: 'source',
@@ -161,6 +163,8 @@ void main() {
             unreadCount: 0,
             requirementReview: const RequirementReviewSummary(
               activeRequirementCount: 2,
+              storedRequirementCount: 2,
+              requirementSetActive: true,
               status: null,
               reviewerThreadId: null,
               parentThreadId: null,
@@ -285,6 +289,8 @@ void main() {
       mockWorkbenchData.copyWith(
         requirementReview: const RequirementReviewSummary(
           activeRequirementCount: 1,
+          storedRequirementCount: 1,
+          requirementSetActive: true,
           status: 'failed',
           reviewerThreadId: 'review-thread',
           parentThreadId: 'source-thread',

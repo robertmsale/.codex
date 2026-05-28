@@ -108,6 +108,8 @@ const mockWorkbenchData = WorkbenchViewData(
       unreadCount: 0,
       requirementReview: RequirementReviewSummary(
         activeRequirementCount: 3,
+        storedRequirementCount: 3,
+        requirementSetActive: true,
         status: 'failed',
         reviewerThreadId: 'ezra-wave-b-requirements-review',
         parentThreadId: 'ezra-wave-b',

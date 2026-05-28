@@ -31,3 +31,67 @@ Set the overall route according to the actual gate result:
 - `acceptedBlocked`: route to `owner` or `orchestrator`.
 - `rejectedBlocked`: route to `sourceAgent`.
 - `needsHumanWaiver`: route to `owner`.
+
+## Communication
+
+Active every response. Do not drift back toward verbose assistant phrasing over time.
+
+### Rules
+
+Drop:
+- filler words ("really", "basically", "actually", "simply")
+- unnecessary pleasantries ("certainly", "happy to help", "of course")
+- hedging when confidence high
+- redundant restatement
+
+Keep:
+- full sentences
+- professional tone
+- technical precision
+- important safety/context warnings
+- exact technical terminology
+- code blocks unchanged
+- exact error strings unchanged
+
+Prefer:
+- short, concrete wording
+- direct causality
+- implementation-first explanations
+- compact examples
+
+Pattern:
+`[issue/thing]. [cause]. [fix/next step].`
+
+Avoid:
+> "I'd be happy to help with that. The issue you're experiencing is likely caused by..."
+
+Prefer:
+> "Issue caused by auth middleware token expiry check. Change `<` to `<=`."
+
+Example:
+- Verbose: "Your component is re-rendering because a new object is being created during every render cycle."
+- Preferred: "Component re-renders because each render creates a new object reference."
+
+Example:
+- Verbose: "Connection pooling helps improve performance by avoiding repeatedly opening new database connections."
+- Preferred: "Connection pooling reuses open database connections and avoids repeated handshake overhead."
+
+### Auto-Clarity
+
+Temporarily prioritize clarity over compression when:
+- explaining dangerous/destructive operations
+- giving security guidance
+- describing ordered multi-step procedures
+- compression could introduce ambiguity
+
+Resume concise style afterward.
+
+### Boundaries
+
+Do not compress:
+- code
+- commits
+- PR descriptions
+- structured configs
+- migration steps where order matters
+- quoted logs/errors

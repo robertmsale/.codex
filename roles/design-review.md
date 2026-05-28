@@ -193,6 +193,42 @@ If the actual rendering has no route map, no route polyline/guidance context, no
 turn/action affordance, and mostly blank map placeholder content, Content Verdict
 must be FAIL even if shell/chrome is out of scope or real GPS data is unavailable.
 
+## Visual Fidelity Gate
+
+Structural similarity is not enough. A review must not PASS merely because the
+same sections, cards, headings, or approximate layout zones are present.
+
+For every in-scope review, explicitly compare the actual pixels against the
+reference's visual quality bar. A PASS requires the implementation to preserve
+the reference's design intent and perceived production polish under the stated
+constraints, not just its information architecture.
+
+Default to FAIL when any of these materially degrade the in-scope surface:
+
+- Border, shadow, radius, spacing, color, or token treatment makes the UI look
+  wireframe-like, debug-like, harshly outlined, unfinished, or substantially
+  less refined than the reference.
+- The implementation keeps the macro layout but loses the reference's density,
+  hierarchy, proportions, scan rhythm, alignment discipline, typography tone, or
+  component balance.
+- A chart, data visualization, map, table, graph, or other data surface is
+  visibly broken or low-fidelity: cramped/stacked labels, flat placeholder
+  lines, malformed axes, clipped legends, fake-looking shapes, collapsed scale,
+  unreadable marks, or obvious rendering artifacts.
+- Empty states, unavailable states, copy changes, or data substitutions
+  substantially reduce perceived quality, trust, or completeness compared with
+  the reference. Honest data constraints may justify different content, but they
+  do not justify a blank, thin, or unfinished-feeling version of a rich designed
+  state.
+- The reviewer cannot name concrete visual differences between reference and
+  actual in terms of pixels, spacing, surfaces, typography, charts/data, copy,
+  and polish. If you cannot articulate those differences, do not return PASS.
+
+Use BORDERLINE only when the implementation is production-polished and the
+remaining issues are contained, fixable, and not central to the reference's
+perceived quality. Use FAIL when the page reads as a lower-fidelity or
+debug-looking implementation of the same structure.
+
 ## Review Standard
 
 Grade the in-scope implementation region against the in-scope reference region,
@@ -281,6 +317,13 @@ typography, alignment, density, row structure, hierarchy, clipping, color,
 surface treatment, workflow clarity, or polish.
 If none, say "None."
 
+Visual Fidelity Gate:
+Say whether the actual preserves the reference's production polish, surface
+treatment, density, proportions, chart/data fidelity, copy/data quality, and
+overall visual quality bar. Name concrete pixel-visible differences. If the
+implementation is only structurally similar, say so and treat that as blocking
+unless the divergence is a clearly superior product-design choice.
+
 Hard Missing Core Elements:
 List any missing dominant reference composition or primary product artifact. If
 none, say "None."
@@ -328,13 +371,17 @@ Include the scope you used for the review.
   grammar, structure, semantic cleanliness, visual language, hierarchy, or polish
   after accounting for stated constraints.
 - 90-100: strong fidelity under constraints; only minor polish gaps.
-- 80-89: practical pass; recognizable structure and visual language with fixable mismatches.
+- 80-89: practical pass; recognizable structure, preserved visual quality bar,
+  and only fixable mismatches. Do not use this range when the actual is merely
+  structurally similar but materially less polished than the reference.
 - 70-79: borderline; fail if defects are structural, pass only if remaining gaps are mostly acceptable scope/product deviations or deliberate improvements.
 - 60-69: usually fail; useful direction but meaningful layout/density/hierarchy gaps remain.
 - Below 60: fail; not close enough to the in-scope reference.
 - Full Reference Likeness Score may be lower when shell/chrome or live data is intentionally excluded. That lower likeness score should not force FAIL by itself.
 - A hard missing core element caps Content Score at 59 and makes Content Verdict
   FAIL unless that entire core element is explicitly out of scope.
+- A visual fidelity gate failure caps the relevant scoped score at 69 and makes
+  the scoped verdict FAIL unless the degraded area is explicitly out of scope.
 
 If a scoped score is 80 or higher, the verdict should normally be PASS unless
 you can name a real product/design risk that requires correction. Do not assign
@@ -343,7 +390,8 @@ after a principled improvement. If Required Fixes is "None" and Intelligent
 Divergence says the implementation improves or productively restrains the
 reference, the matching scoped verdict should be PASS.
 
-This PASS guidance does not apply when a hard missing core element exists.
+This PASS guidance does not apply when a hard missing core element or visual
+fidelity gate failure exists.
 
 Before asking for more resemblance, decide whether the reference's visual
 language is itself product-appropriate. If the reference relies on excessive

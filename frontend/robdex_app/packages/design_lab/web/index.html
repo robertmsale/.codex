@@ -20,6 +20,22 @@
     </style>
   </head>
   <body>
+    <script>
+      (function () {
+        function markReadyWhenFlutterPaints() {
+          var hasFlutterSurface = document.querySelector('flutter-view, flt-glass-pane, canvas');
+          if (hasFlutterSurface) {
+            window.__designLabReady = {
+              ready: true,
+              surface: new URLSearchParams(window.location.search).get('surface') || 'shell'
+            };
+            return;
+          }
+          window.requestAnimationFrame(markReadyWhenFlutterPaints);
+        }
+        window.requestAnimationFrame(markReadyWhenFlutterPaints);
+      })();
+    </script>
     <script src="flutter_bootstrap.js" async></script>
   </body>
 </html>

@@ -41,7 +41,8 @@ Requirements turn task constraints into a completion contract. A typical flow:
 
 1. Worker does discovery or planning without Requirements.
 2. Orchestrator converts the accepted plan into Requirements while the worker is
-   idle.
+   idle, using `robdex set-requirements --name "<agent name>"
+   --requirements-file <file>`.
 3. The next worker turn starts with the Requirements schema.
 4. Final claim packets use concise `summary` plus nested `requirements`.
 5. Reviewer verdicts route failures back to the source, passes beyond the
@@ -50,6 +51,58 @@ Requirements turn task constraints into a completion contract. A typical flow:
 
 Use Requirements for implementation gates, risky migrations, public bootstrap
 changes, and review-sensitive claims.
+
+Composable Requirements let an orchestrator merge reusable global or
+project-specific constraints into task-specific Requirements. Inspect available
+options before attaching them:
+
+```bash
+robdex requirements-composables list --name "<agent name>"
+robdex requirements-composables show no-legacy --name "<agent name>"
+```
+
+For prose-generated Requirements, include composables directly in the generation
+command so preview and attachment use the same contract:
+
+```bash
+robdex requirements-from-prose --title "<title>" --include-composable non-negotiables --include-composable no-legacy --text-stdin <<'EOF'
+Task-specific requirement prose.
+EOF
+```
+
+Add `--attach --name "<agent name>"` to attach the composed RequirementSet
+atomically. If the operator has made a composable mandatory for the current work
+stream, such as `no-legacy` for clean-slate work, do not attach Requirements
+without it unless the operator explicitly changes that direction.
+
+Both `requirements-from-prose` and `set-requirements` have explicit sequencing
+flags for non-idle cases:
+
+- Use `--interrupt` when the target worker is already running and the
+  orchestrator must replace Requirements immediately. The CLI interrupts the
+  target, sets Requirements on that same target, then sends `Requirements
+  updated`.
+- Use `--to-self` only when setting Requirements on the current orchestrator or
+  operator thread. The CLI sets Requirements on self, waits briefly, interrupts
+  self, then sends `Begin` so the next turn starts under the new contract.
+- Without `--to-self`, attaching Requirements requires an explicit target such
+  as `--name` or `--to-thread-id`.
+- On `requirements-from-prose`, `--attach`, `--interrupt`, and `--to-self` are
+  mutually exclusive apply modes. With none of those flags, the command previews
+  JSON only.
+- On `set-requirements`, `--interrupt` and `--to-self` are mutually exclusive.
+
+Examples:
+
+```bash
+robdex requirements-from-prose --title "<title>" --include-composable no-legacy --text-stdin --interrupt --name "<agent name>" <<'EOF'
+Task-specific requirement prose.
+EOF
+
+robdex requirements-from-prose --title "<title>" --include-composable no-legacy --text-stdin --to-self <<'EOF'
+Task-specific requirement prose.
+EOF
+```
 
 ## Request Review
 

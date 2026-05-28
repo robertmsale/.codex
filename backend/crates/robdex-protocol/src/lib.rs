@@ -216,6 +216,8 @@ pub struct UiThreadItem {
 #[serde(rename_all = "camelCase")]
 pub struct UiRequirementReviewSummary {
     pub active_requirement_count: usize,
+    pub stored_requirement_count: usize,
+    pub requirement_set_active: bool,
     pub status: Option<String>,
     pub reviewer_thread_id: Option<String>,
     pub parent_thread_id: Option<String>,
