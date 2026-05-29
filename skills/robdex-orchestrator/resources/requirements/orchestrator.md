@@ -96,6 +96,6 @@ The requirements file is JSON. It may be either an array of requirement objects 
 - Requirements reviews are system-managed. Do not ask workers, QA, designers, operators, or orchestrators to manually request a Requirements review.
 - A failed review routes the failed requirements back to the source agent.
 - After a partial failure, the source agent's next claim schema may include only currently unresolved requirements. Previously passed requirements remain binding and reviewers still check the full canonical set.
-- Reviewers should keep evidence brief for unrelated requirements or requirements that are repeatedly passing because nothing relevant changed.
+- Reviewers should keep evidence brief for unrelated requirements or requirements that are repeatedly passing because nothing relevant changed. When the reviewer schema offers `{"verdict":"stillPassing"}`, reviewers may use it only after checking that a previously passed requirement still passes for the same reason.
 - An accepted true blocker routes to the owner/orchestrator.
 - A passing review clears the active Requirements and detaches or archives the reviewer so future Requirements get a fresh reviewer.

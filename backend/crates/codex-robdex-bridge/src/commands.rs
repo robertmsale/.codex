@@ -2995,6 +2995,7 @@ fn requirements_verdict_properties(set: &RequirementSetState) -> (serde_json::Ma
                     .verdict_schema_description
                     .as_deref()
                     .unwrap_or(default_description.as_str()),
+                requirement_review_previously_passed(set, key),
             ),
         );
     }
@@ -3053,8 +3054,8 @@ fn claim_property_schema(description: &str) -> Value {
     })
 }
 
-fn verdict_property_schema(description: &str) -> Value {
-    json!({
+fn verdict_property_schema(description: &str, allow_still_passing: bool) -> Value {
+    let full_verdict = json!({
         "type": "object",
         "description": description,
         "properties": {
@@ -3068,7 +3069,34 @@ fn verdict_property_schema(description: &str) -> Value {
         },
         "required": ["verdict", "reason", "evidenceAssessment", "requiredCorrection"],
         "additionalProperties": false
+    });
+    if !allow_still_passing {
+        return full_verdict;
+    }
+    json!({
+        "description": format!("{description} Previously passed requirements may use {{\"verdict\":\"stillPassing\"}} only after rechecking that the same pass remains valid."),
+        "anyOf": [
+            full_verdict,
+            {
+                "type": "object",
+                "properties": {
+                    "verdict": {
+                        "type": "string",
+                        "enum": ["stillPassing"]
+                    }
+                },
+                "required": ["verdict"],
+                "additionalProperties": false
+            }
+        ]
     })
+}
+
+fn requirement_review_previously_passed(set: &RequirementSetState, key: &str) -> bool {
+    set.review_progress
+        .get(key)
+        .map(|progress| progress.status == "passed")
+        .unwrap_or(false)
 }
 
 fn tracked_personality_for_thread(state: &PersistedState, thread_id: &str) -> Option<Value> {
@@ -5239,7 +5267,7 @@ pub(crate) fn requirements_review_prompt(
     claim_text: &str,
 ) -> String {
     let mut prompt = format!(
-        "Perform an adversarial Requirements Review.\n\nReview subject: {source_label}\n\nStructured responses use `summary` plus `requirements`.\n- Use `requirements: null` only for reviewer progress/commentary.\n- When finishing review, `requirements` must be the object containing every requirement verdict plus `overallVerdict` and `route`.\n\nRules:\n- Compare every canonical requirement against the actual work and available evidence, even if the source claim packet only contains currently unresolved requirements.\n- Previously passed requirements remain binding. Re-fail any previously passed requirement if later work regresses it.\n- For unrelated requirements or requirements that are repeatedly passing because nothing relevant changed, keep `reason` and `evidenceAssessment` brief.\n- Fail missing, weak, circular, or unverifiable evidence.\n- Reject fake blockers.\n- Accept true external blockers only with concrete proof.\n- Never implement fixes and never relax requirements.\n- Shell/chrome or scope exclusions cannot erase core in-scope requirements.\n\nRequirements:\n"
+        "Perform an adversarial Requirements Review.\n\nReview subject: {source_label}\n\nStructured responses use `summary` plus `requirements`.\n- Use `requirements: null` only for reviewer progress/commentary.\n- When finishing review, `requirements` must be the object containing every requirement verdict plus `overallVerdict` and `route`.\n\nRules:\n- Compare every canonical requirement against the actual work and available evidence, even if the source claim packet only contains currently unresolved requirements.\n- Previously passed requirements remain binding. Re-fail any previously passed requirement if later work regresses it.\n- If the schema offers `{{\"verdict\":\"stillPassing\"}}`, use it only after checking that a previously passed requirement still passes for the same reason.\n- Do not use `stillPassing` when a requirement is new, failed, blocked, waived, changed by the latest work, or lacks enough evidence to confirm it still passes.\n- For unrelated requirements or requirements that are repeatedly passing because nothing relevant changed, keep `reason` and `evidenceAssessment` brief, or use `stillPassing` when the schema allows it.\n- Fail missing, weak, circular, or unverifiable evidence.\n- Reject fake blockers.\n- Accept true external blockers only with concrete proof.\n- Never implement fixes and never relax requirements.\n- Shell/chrome or scope exclusions cannot erase core in-scope requirements.\n\nRequirements:\n"
     );
     for requirement in &set.requirements {
         prompt.push_str(&format!(
@@ -5371,7 +5399,16 @@ pub(crate) async fn mark_requirements_review_verdict(
         let Some(source) = project.agents.get_mut(source_thread_id) else {
             continue;
         };
-        let status = requirement_status_from_verdict(&verdict_payload);
+        let invalid_still_passing = source
+            .requirements
+            .as_ref()
+            .map(|requirements| verdict_has_invalid_still_passing(requirements, &verdict_payload))
+            .unwrap_or(false);
+        let status = if invalid_still_passing {
+            "failed".to_string()
+        } else {
+            requirement_status_from_verdict(&verdict_payload)
+        };
         if let Some(requirements) = source.requirements.as_mut() {
             update_requirement_review_progress(requirements, &verdict_payload);
         }
@@ -5449,6 +5486,8 @@ fn update_requirement_review_progress(set: &mut RequirementSetState, verdict_pay
         };
         let status = match verdict {
             "pass" => "passed",
+            "stillPassing" if requirement_review_previously_passed(set, requirement.key.as_str()) => "passed",
+            "stillPassing" => "failed",
             "fail" | "rejectedBlocked" => "failed",
             "acceptedBlocked" | "waiverRequired" => "blocked",
             "waiverAccepted" => "waived",
@@ -5462,6 +5501,20 @@ fn update_requirement_review_progress(set: &mut RequirementSetState, verdict_pay
             },
         );
     }
+}
+
+fn verdict_has_invalid_still_passing(set: &RequirementSetState, verdict_payload: &Value) -> bool {
+    let Some(verdict_object) = verdict_payload.as_object() else {
+        return false;
+    };
+    set.requirements.iter().any(|requirement| {
+        verdict_object
+            .get(requirement.key.as_str())
+            .and_then(|value| value.get("verdict"))
+            .and_then(Value::as_str)
+            == Some("stillPassing")
+            && !requirement_review_previously_passed(set, requirement.key.as_str())
+    })
 }
 
 fn requirement_status_from_verdict(verdict_payload: &Value) -> String {
@@ -6489,6 +6542,46 @@ mod tests {
     }
 
     #[test]
+    fn reviewer_verdict_schema_offers_still_passing_only_for_previously_passed_requirements() {
+        let mut set = sample_requirement_set();
+        set.review_progress.insert(
+            "nativeGuiIsSourceOfTruth".to_string(),
+            RequirementReviewProgressState {
+                status: "passed".to_string(),
+                updated_at: Some(100),
+            },
+        );
+        set.review_progress.insert(
+            "noInventedWebsocketEventShapes".to_string(),
+            RequirementReviewProgressState {
+                status: "failed".to_string(),
+                updated_at: Some(100),
+            },
+        );
+
+        let schema = requirements_verdict_schema(&set);
+        let requirements = &schema["properties"]["requirements"]["properties"];
+        let passed_schema = &requirements["nativeGuiIsSourceOfTruth"];
+        let failed_schema = &requirements["noInventedWebsocketEventShapes"];
+        let any_of = passed_schema["anyOf"].as_array().expect("passed requirement anyOf");
+        assert_eq!(any_of.len(), 2);
+        assert_eq!(any_of[0]["required"], json!(["verdict", "reason", "evidenceAssessment", "requiredCorrection"]));
+        assert_eq!(any_of[1]["properties"]["verdict"]["enum"], json!(["stillPassing"]));
+        assert_eq!(any_of[1]["required"], json!(["verdict"]));
+        assert!(failed_schema.get("anyOf").is_none());
+        assert_eq!(
+            failed_schema["required"],
+            json!(["verdict", "reason", "evidenceAssessment", "requiredCorrection"])
+        );
+
+        let reviewer_required = schema["properties"]["requirements"]["required"]
+            .as_array()
+            .expect("reviewer required");
+        assert!(reviewer_required.iter().any(|value| value.as_str() == Some("nativeGuiIsSourceOfTruth")));
+        assert!(reviewer_required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
+    }
+
+    #[test]
     fn reviewer_prompt_preserves_full_set_and_mentions_regression_review() {
         let mut set = sample_requirement_set();
         set.review_progress.insert(
@@ -6506,6 +6599,10 @@ mod tests {
             "turn-1",
             r#"{"summary":"fixed one item","requirements":{"noInventedWebsocketEventShapes":{"claim":"satisfied","evidence":["test"],"justification":"fixed","risk":"low"}}}"#,
         );
+        assert!(prompt.contains("Compare every canonical requirement"));
+        assert!(prompt.contains("Re-fail any previously passed requirement"));
+        assert!(prompt.contains(r#"{"verdict":"stillPassing"}"#));
+        assert!(prompt.contains("only after checking that a previously passed requirement still passes for the same reason"));
 
         assert!(prompt.contains("`nativeGuiIsSourceOfTruth`"));
         assert!(prompt.contains("`noInventedWebsocketEventShapes`"));
@@ -6814,6 +6911,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn still_passing_keeps_previous_pass_but_cannot_mask_ineligible_requirements() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut requirements = sample_requirement_set();
+        requirements.review_progress.insert(
+            "nativeGuiIsSourceOfTruth".to_string(),
+            RequirementReviewProgressState {
+                status: "passed".to_string(),
+                updated_at: Some(100),
+            },
+        );
+        requirements.review_progress.insert(
+            "noInventedWebsocketEventShapes".to_string(),
+            RequirementReviewProgressState {
+                status: "failed".to_string(),
+                updated_at: Some(100),
+            },
+        );
+        let mut state = PersistedState::default();
+        let mut project = PersistedProjectState {
+            project_root: Some(temp.path().display().to_string()),
+            cwd: Some(temp.path().display().to_string()),
+            updated_at: Some(100),
+            ..Default::default()
+        };
+        project.agents.insert(
+            "source-thread".to_string(),
+            PersistedAgentState {
+                display_name: Some("Source".to_string()),
+                role: Some("worker".to_string()),
+                requirements: Some(requirements),
+                requirement_review: Some(RequirementReviewBindingState {
+                    source_thread_id: "source-thread".to_string(),
+                    reviewer_thread_id: "reviewer-thread".to_string(),
+                    requirement_set_id: Some("web-gui-contract".to_string()),
+                    status: "inReview".to_string(),
+                    latest_claim_packet: Some(json!({"summary": "claimed"})),
+                    latest_verdict_packet: None,
+                    updated_at: 100,
+                }),
+                ..Default::default()
+            },
+        );
+        project.agents.insert(
+            "reviewer-thread".to_string(),
+            PersistedAgentState {
+                display_name: Some("Requirements Reviewer".to_string()),
+                role: Some("requirements-reviewer".to_string()),
+                parent_thread_id: Some("source-thread".to_string()),
+                hidden_from_peer_list: true,
+                ..Default::default()
+            },
+        );
+        state.projects.insert("project".to_string(), project);
+        persist_state(&runtime, &state).await.expect("persist state");
+
+        mark_requirements_review_verdict(
+            &runtime,
+            "source-thread",
+            "reviewer-thread",
+            json!({
+                "overallVerdict": "pass",
+                "nativeGuiIsSourceOfTruth": {
+                    "verdict": "stillPassing"
+                },
+                "noInventedWebsocketEventShapes": {
+                    "verdict": "stillPassing"
+                },
+                "route": {
+                    "destination": "orchestrator",
+                    "message": "Invalid shorthand cannot pass."
+                }
+            }),
+        )
+        .await
+        .expect("mark verdict");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent = agent_state_for_thread(&state, "source-thread").expect("source agent");
+        let requirements = agent.requirements.as_ref().expect("requirements");
+        assert_eq!(requirements.active, true);
+        assert_eq!(
+            requirements.review_progress["nativeGuiIsSourceOfTruth"].status,
+            "passed"
+        );
+        assert_eq!(
+            requirements.review_progress["noInventedWebsocketEventShapes"].status,
+            "failed"
+        );
+        assert_eq!(
+            agent.requirement_review.as_ref().map(|review| review.status.as_str()),
+            Some("failed")
+        );
+    }
+
+    #[tokio::test]
     async fn accepted_waiver_is_terminal_and_deactivates_requirement_set() {
         let temp = TempDir::new().expect("tempdir");
         let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
@@ -7023,6 +7218,61 @@ mod tests {
             serde_json::to_string_pretty(&requirements_verdict_schema(&set)).expect("serialize verdict schema"),
         )
         .expect("write verdict schema fixture");
+    }
+
+    #[test]
+    #[ignore = "live Codex/OpenAI schema validation; requires auth/network and costs tokens"]
+    fn live_codex_accepts_still_passing_verdict_schema() {
+        let fixture_dir = std::path::PathBuf::from("/tmp/robdex-requirements-schema-validation");
+        std::fs::create_dir_all(&fixture_dir).expect("create requirements schema fixture dir");
+        let mut set = sample_requirement_set();
+        set.review_progress.insert(
+            "nativeGuiIsSourceOfTruth".to_string(),
+            RequirementReviewProgressState {
+                status: "passed".to_string(),
+                updated_at: Some(100),
+            },
+        );
+        let schema_path = fixture_dir.join("verdict-still-passing.schema.json");
+        let output_path = fixture_dir.join("verdict-still-passing.output.json");
+        let _ = std::fs::remove_file(&output_path);
+        std::fs::write(
+            &schema_path,
+            serde_json::to_string_pretty(&requirements_verdict_schema(&set))
+                .expect("serialize stillPassing verdict schema"),
+        )
+        .expect("write stillPassing verdict schema fixture");
+
+        let status = std::process::Command::new("codex")
+            .arg("exec")
+            .arg("--ephemeral")
+            .arg("--skip-git-repo-check")
+            .arg("--sandbox")
+            .arg("read-only")
+            .arg("--output-schema")
+            .arg(&schema_path)
+            .arg("--output-last-message")
+            .arg(&output_path)
+            .arg(
+                "Return a minimal valid Requirements review verdict. Use stillPassing for nativeGuiIsSourceOfTruth. Use a full pass verdict for noInventedWebsocketEventShapes. Route to none.",
+            )
+            .status()
+            .expect("run codex exec");
+        assert!(
+            status.success(),
+            "codex exec rejected or failed the generated stillPassing verdict schema: {status}"
+        );
+
+        let output = std::fs::read_to_string(&output_path).expect("read codex output");
+        let payload: Value = serde_json::from_str(output.trim()).expect("codex output should be JSON");
+        assert_eq!(
+            payload["requirements"]["nativeGuiIsSourceOfTruth"]["verdict"],
+            json!("stillPassing")
+        );
+        assert_eq!(
+            payload["requirements"]["noInventedWebsocketEventShapes"]["verdict"],
+            json!("pass")
+        );
     }
 
     fn scoped_ids(scoped: &ScopedContext) -> Vec<&str> {

@@ -213,6 +213,9 @@ trust_level = "trusted"
 [projects."/Users/robertsale/Code/diamond-system-builder"]
 trust_level = "trusted"
 
+[projects."/Users/robertsale/optiq"]
+trust_level = "trusted"
+
 [tui]
 status_line = []
 
