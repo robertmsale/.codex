@@ -213,6 +213,27 @@ run_checked_with_env() {
   rm -f "$stdout_file" "$stderr_file"
 }
 
+run_git_quiet_may_fail() {
+  local cwd="$1"
+  shift
+  local stdout_file stderr_file rc
+  stdout_file="$(mktemp)"
+  stderr_file="$(mktemp)"
+  rc=0
+  env PATH="$(git_subprocess_path)" "$@" >"$stdout_file" 2>"$stderr_file" || rc=$?
+  if [[ "$rc" -ne 0 ]] && _maybe_clear_stale_index_lock "$cwd" "$stderr_file" "$stdout_file"; then
+    rc=0
+    env PATH="$(git_subprocess_path)" "$@" >"$stdout_file" 2>"$stderr_file" || rc=$?
+  fi
+  if [[ "$rc" -ne 0 ]] && cat "$stderr_file" "$stdout_file" 2>/dev/null | grep -Eq "Operation not permitted|cannot open '.*/\\.git/worktrees/.*/FETCH_HEAD'"; then
+    clear_git_metadata_restrictions "$cwd"
+    rc=0
+    env PATH="$(git_subprocess_path)" "$@" >"$stdout_file" 2>"$stderr_file" || rc=$?
+  fi
+  rm -f "$stdout_file" "$stderr_file"
+  return "$rc"
+}
+
 require_local_git_repo() {
   local repo_path
   repo_path="$(absolute_path "$1")"
@@ -430,6 +451,38 @@ git_worktree_root() {
   printf '%s\n' "$repo_path/.worktrees"
 }
 
+registered_worktree_branch() {
+  local repo_root="$1"
+  local worktree_path="$2"
+  env PATH="$(git_subprocess_path)" git -C "$repo_root" worktree list --porcelain 2>/dev/null | python3 -c '
+from pathlib import Path
+import sys
+
+target = str(Path(sys.argv[1]).resolve())
+records = sys.stdin.read().split("\n\n")
+for record in records:
+    worktree = None
+    branch = None
+    for line in record.splitlines():
+        if line.startswith("worktree "):
+            worktree = str(Path(line[len("worktree "):]).resolve())
+        elif line.startswith("branch refs/heads/"):
+            branch = line[len("branch refs/heads/"):]
+        elif line.startswith("/"):
+            fields = line.split()
+            if fields:
+                worktree = str(Path(fields[0]).resolve())
+            for field in fields[2:]:
+                if field.startswith("[") and field.endswith("]"):
+                    branch = field[1:-1]
+                    break
+    if worktree == target:
+        print(branch or "")
+        raise SystemExit(0)
+raise SystemExit(1)
+' "$worktree_path"
+}
+
 git_worktree_create_cmd() {
   local repo_path base_branch branch_name worktree_name worktree_root worktree_path
   local stdout_file stderr_file rc detail
@@ -510,10 +563,37 @@ git_worktree_refresh_branch_cmd() {
 }
 
 git_worktree_cleanup_cmd() {
-  local worktree_path branch checked_out_elsewhere attempt remove_rc
+  local worktree_path branch checked_out_elsewhere attempt remove_rc repo_root managed_root
   worktree_path="$(absolute_path "$1")"
   if [[ ! -e "$worktree_path" ]]; then
-    printf 'all clear: worktree path is already missing\n'
+    repo_root="$(python3 -c 'from pathlib import Path; import sys; path = Path(sys.argv[1]).resolve(); parts = path.parts; marker = ".worktrees"; print(Path(*parts[:parts.index(marker)])) if marker in parts else ""' "$worktree_path")"
+    if [[ -z "$repo_root" || ! -d "$repo_root/.git" ]]; then
+      printf 'all clear: worktree path is already missing\n'
+      return 0
+    fi
+    managed_root="$(python3 -c 'from pathlib import Path; import sys; print((Path(sys.argv[1]).resolve() / ".worktrees").resolve())' "$repo_root")"
+    if ! python3 -c 'from pathlib import Path; import sys; managed = Path(sys.argv[1]).resolve(); worktree = Path(sys.argv[2]).resolve(); raise SystemExit(0 if managed in worktree.parents else 1)' "$managed_root" "$worktree_path"
+    then
+      echo "Refusing unmanaged missing worktree path $worktree_path. Use a dedicated worktree under $managed_root." >&2
+      return 1
+    fi
+    branch="$(registered_worktree_branch "$repo_root" "$worktree_path" || true)"
+    if [[ -z "$branch" ]]; then
+      run_checked "$repo_root" git -C "$repo_root" worktree prune --expire now >/dev/null
+      printf 'all clear: worktree path is already missing\n'
+      return 0
+    fi
+    clear_git_metadata_restrictions "$repo_root"
+    run_checked "$repo_root" git -C "$repo_root" worktree prune --expire now >/dev/null
+    if registered_worktree_branch "$repo_root" "$worktree_path" >/dev/null 2>&1; then
+      run_checked "$repo_root" git -C "$repo_root" worktree remove --force "$worktree_path" >/dev/null
+      run_checked "$repo_root" git -C "$repo_root" worktree prune --expire now >/dev/null
+    fi
+    checked_out_elsewhere="$(env PATH="$(git_subprocess_path)" git -C "$repo_root" worktree list --porcelain 2>/dev/null || true)"
+    if [[ "$checked_out_elsewhere" != *"branch refs/heads/$branch"* ]]; then
+      env PATH="$(git_subprocess_path)" git -C "$repo_root" branch -D "$branch" >/dev/null 2>&1 || true
+    fi
+    printf 'removed stale worktree registration %s and pruned metadata\n' "$worktree_path"
     return 0
   fi
   require_managed_worktree_path "$worktree_path"
@@ -574,28 +654,51 @@ fastforward_local_integration_branch_cmd() {
 }
 
 git_sync_worktree_cmd() {
-  local worktree_path upstream branch stash_name restore_message
+  local worktree_path upstream branch dirty_status
   worktree_path="$(absolute_path "$1")"
   upstream="$2"
   [[ -n "$upstream" ]] || { echo "upstream is required" >&2; return 1; }
   require_managed_worktree_path "$worktree_path"
   branch="$(current_branch "$REQUIRED_WORKTREE_ROOT")"
-  stash_name="$(maybe_stash "$REQUIRED_WORKTREE_ROOT" "git-sync-$branch")"
+  dirty_status="$(run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" status --short | tr -d '\r')"
+  if [[ -n "$dirty_status" ]]; then
+    cat >&2 <<EOF
+Refusing to sync a dirty worktree: $REQUIRED_WORKTREE_ROOT
+This command only rebases clean managed worktrees onto the requested upstream.
+If the dirty state is unexpected or polluted, stop and report it to the orchestrator.
+For idle/pre-implementation workers, prefer clean recreate/archive handling instead of preserving this state.
+EOF
+    return 1
+  fi
   run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" fetch -q origin --prune >/dev/null
   run_checked_with_env "$REQUIRED_WORKTREE_ROOT" "GIT_EDITOR=true EDITOR=true VISUAL=true" git -C "$REQUIRED_WORKTREE_ROOT" rebase "$upstream" >/dev/null
-  if [[ -n "$stash_name" ]]; then
-    restore_message="$(restore_stash "$REQUIRED_WORKTREE_ROOT" "$stash_name")"
-    printf 'rebased %s onto %s; %s\n' "$branch" "$upstream" "$restore_message"
-  else
-    printf 'rebased %s onto %s\n' "$branch" "$upstream"
-  fi
+  printf 'rebased clean worktree %s onto %s\n' "$branch" "$upstream"
 }
 
 git_recover_published_worktree_cmd() {
-  local worktree_path integration_branch
+  local worktree_path integration_branch branch dirty_status
   worktree_path="$(absolute_path "$1")"
   integration_branch="${2:-}"
   integration_branch="$(resolve_integration_branch "$worktree_path" "$integration_branch")"
+  require_managed_worktree_path "$worktree_path"
+  branch="$(current_branch "$REQUIRED_WORKTREE_ROOT")"
+  dirty_status="$(run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" status --short | tr -d '\r')"
+  if [[ -n "$dirty_status" ]]; then
+    cat >&2 <<EOF
+Refusing published PR recovery on a dirty worktree: $REQUIRED_WORKTREE_ROOT
+This recovery path is only for clean already-published PR branches that need to rebase onto origin/$integration_branch.
+Do not stash/apply broad dirty state during recovery. Stop and report the dirty worktree to the orchestrator.
+EOF
+    return 1
+  fi
+  if ! env PATH="$(git_subprocess_path)" gh pr view "$branch" --json number >/dev/null 2>&1; then
+    cat >&2 <<EOF
+Refusing published PR recovery because no PR was found for branch: $branch
+Use git-sync-worktree for a clean unpublished stale branch.
+For idle/pre-implementation or polluted worktrees, ask the orchestrator for clean recreate/archive handling instead.
+EOF
+    return 1
+  fi
 
   if git_sync_worktree_cmd "$worktree_path" "origin/$integration_branch"; then
     printf 'recovered published worktree %s in place on its existing PR branch. rerun proof, then publish with git-publish-worktree %s %s\n' \
@@ -711,7 +814,6 @@ git_publish_worktree_cmd() {
   worktree_path="$(absolute_path "$1")"
   integration_branch="${2:-}"
   [[ -d "$worktree_path" ]] || { echo "Worktree path does not exist: $worktree_path" >&2; return 1; }
-  [[ -f "$worktree_path/review.log" ]] || { echo "Publish blocked: review.log not found in worktree root. Request review first." >&2; return 1; }
   require_managed_worktree_path "$worktree_path"
   integration_branch="$(resolve_integration_branch "$REQUIRED_REPO_ROOT" "$integration_branch")"
   branch="$(ensure_branch_allows_destructive_mutation "$REQUIRED_WORKTREE_ROOT")"
@@ -720,7 +822,7 @@ git_publish_worktree_cmd() {
     return 1
   }
 
-  if ! env PATH="$(git_subprocess_path)" git -C "$REQUIRED_WORKTREE_ROOT" push -q --set-upstream origin "$branch" >/dev/null 2>&1; then
+  if ! run_git_quiet_may_fail "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" push -q --set-upstream origin "$branch"; then
     run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" push -q --force-with-lease --set-upstream origin "$branch" >/dev/null
   fi
 

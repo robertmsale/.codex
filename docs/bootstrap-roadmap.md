@@ -82,8 +82,8 @@ Profiles should live as templates, not applied live by default:
 
 - `minimal`: core bridge/CLI basics.
 - `orchestration`: bridge-backed communication/spawning,
-  orchestrator/operator/worker roles, Requirements, request-review, and safe
-  project registration.
+  orchestrator/operator/worker roles, Requirements, and safe project
+  registration.
 - `privileged-exec`: sanctioned privileged execution policy; advanced opt-in.
 - `gui`: optional Flutter UI integration.
 - `robertmsale.reference`: personal reference profile only.

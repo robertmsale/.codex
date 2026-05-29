@@ -17,12 +17,6 @@ planning and implementation review.
 
 ## Service tracks
 
-### codex-aux-http
-
-- keep the Rust request-review HTTP route healthy
-- remove retired command-parser routes instead of preserving parity for them
-- compare active request-review behavior against the previous service contract
-
 ### flutter services
 
 - isolate simulator/device/process management into library modules

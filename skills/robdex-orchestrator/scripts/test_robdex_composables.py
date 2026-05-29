@@ -199,6 +199,18 @@ class RobdexComposableRequirementsTests(unittest.TestCase):
 
         self.assertEqual(robdex._selected_composables(args), ["review-evidence", "no-legacy"])
 
+    def test_requirements_from_prose_help_documents_formatting(self) -> None:
+        parser, _handoff_parser, _spawn_parser = robdex.build_parser()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+            parser.parse_args(["requirements-from-prose", "--help"])
+
+        help_text = output.getvalue()
+        self.assertIn("The parser turns each non-empty bullet", help_text)
+        self.assertIn("Put one complete requirement per line", help_text)
+        self.assertIn("Preview example:", help_text)
+        self.assertIn("Never run --text-stdin without a heredoc", help_text)
+
     def test_requirements_from_prose_merges_composables_for_preview(self) -> None:
         args = argparse.Namespace(
             title="Task",

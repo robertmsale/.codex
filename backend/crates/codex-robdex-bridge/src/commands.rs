@@ -138,6 +138,8 @@ pub(crate) struct RequirementSetState {
     pub reviewer_thread_id: Option<String>,
     #[serde(default)]
     pub requirements: Vec<RequirementState>,
+    #[serde(default)]
+    pub review_progress: BTreeMap<String, RequirementReviewProgressState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -153,6 +155,14 @@ pub(crate) struct RequirementState {
     pub verdict_schema_description: Option<String>,
     #[serde(default = "default_verification_method")]
     pub verification_method: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequirementReviewProgressState {
+    pub status: String,
+    #[serde(default)]
+    pub updated_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2880,13 +2890,30 @@ pub(crate) fn active_requirements_claim_schema_for_thread(
     thread_id: &str,
 ) -> Option<Value> {
     let set = active_requirements_for_thread(state, thread_id)?;
-    set.enforce_on_turns.then(|| requirements_claim_schema(&set))
+    set.enforce_on_turns.then(|| requirements_worker_claim_schema(&set))
 }
 
-pub(crate) fn requirements_claim_schema(set: &RequirementSetState) -> Value {
+pub(crate) fn requirements_worker_claim_schema(set: &RequirementSetState) -> Value {
+    requirements_claim_schema_for_requirements(
+        set.requirements
+            .iter()
+            .filter(|requirement| requirement_is_unresolved(set, requirement.key.as_str())),
+    )
+}
+
+fn requirement_is_unresolved(set: &RequirementSetState, key: &str) -> bool {
+    !matches!(
+        set.review_progress.get(key).map(|progress| progress.status.as_str()),
+        Some("passed") | Some("blocked") | Some("waived")
+    )
+}
+
+fn requirements_claim_schema_for_requirements<'a>(
+    requirements: impl Iterator<Item = &'a RequirementState>,
+) -> Value {
     let mut requirement_properties = serde_json::Map::new();
     let mut requirement_required = Vec::new();
-    for requirement in &set.requirements {
+    for requirement in requirements {
         let key = requirement.key.trim();
         if key.is_empty() {
             continue;
@@ -5212,7 +5239,7 @@ pub(crate) fn requirements_review_prompt(
     claim_text: &str,
 ) -> String {
     let mut prompt = format!(
-        "Perform an adversarial Requirements Review.\n\nReview subject: {source_label}\n\nStructured responses use `summary` plus `requirements`.\n- Use `requirements: null` only for reviewer progress/commentary.\n- When finishing review, `requirements` must be the object containing every requirement verdict plus `overallVerdict` and `route`.\n\nRules:\n- Compare each requirement against the actual work and available evidence.\n- Fail missing, weak, circular, or unverifiable evidence.\n- Reject fake blockers.\n- Accept true external blockers only with concrete proof.\n- Never implement fixes and never relax requirements.\n- Shell/chrome or scope exclusions cannot erase core in-scope requirements.\n\nRequirements:\n"
+        "Perform an adversarial Requirements Review.\n\nReview subject: {source_label}\n\nStructured responses use `summary` plus `requirements`.\n- Use `requirements: null` only for reviewer progress/commentary.\n- When finishing review, `requirements` must be the object containing every requirement verdict plus `overallVerdict` and `route`.\n\nRules:\n- Compare every canonical requirement against the actual work and available evidence, even if the source claim packet only contains currently unresolved requirements.\n- Previously passed requirements remain binding. Re-fail any previously passed requirement if later work regresses it.\n- For unrelated requirements or requirements that are repeatedly passing because nothing relevant changed, keep `reason` and `evidenceAssessment` brief.\n- Fail missing, weak, circular, or unverifiable evidence.\n- Reject fake blockers.\n- Accept true external blockers only with concrete proof.\n- Never implement fixes and never relax requirements.\n- Shell/chrome or scope exclusions cannot erase core in-scope requirements.\n\nRequirements:\n"
     );
     for requirement in &set.requirements {
         prompt.push_str(&format!(
@@ -5345,6 +5372,9 @@ pub(crate) async fn mark_requirements_review_verdict(
             continue;
         };
         let status = requirement_status_from_verdict(&verdict_payload);
+        if let Some(requirements) = source.requirements.as_mut() {
+            update_requirement_review_progress(requirements, &verdict_payload);
+        }
         let is_terminal = matches!(status.as_str(), "passed" | "waiverAccepted");
         if is_terminal
             && let Some(requirements) = source.requirements.as_mut()
@@ -5402,6 +5432,36 @@ pub(crate) async fn mark_requirements_review_verdict(
         return Ok(());
     }
     Ok(())
+}
+
+fn update_requirement_review_progress(set: &mut RequirementSetState, verdict_payload: &Value) {
+    let now = unix_now();
+    let Some(verdict_object) = verdict_payload.as_object() else {
+        return;
+    };
+    for requirement in &set.requirements {
+        let Some(verdict) = verdict_object
+            .get(requirement.key.as_str())
+            .and_then(|value| value.get("verdict"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let status = match verdict {
+            "pass" => "passed",
+            "fail" | "rejectedBlocked" => "failed",
+            "acceptedBlocked" | "waiverRequired" => "blocked",
+            "waiverAccepted" => "waived",
+            _ => "unresolved",
+        };
+        set.review_progress.insert(
+            requirement.key.clone(),
+            RequirementReviewProgressState {
+                status: status.to_string(),
+                updated_at: Some(now),
+            },
+        );
+    }
 }
 
 fn requirement_status_from_verdict(verdict_payload: &Value) -> String {
@@ -6240,6 +6300,8 @@ mod tests {
 
     fn sample_requirement_set() -> RequirementSetState {
         RequirementSetState {
+            active: true,
+            enforce_on_turns: true,
             requirements: vec![
                 RequirementState {
                     key: "nativeGuiIsSourceOfTruth".to_string(),
@@ -6344,7 +6406,7 @@ mod tests {
 
     #[test]
     fn requirements_claim_schema_uses_summary_and_nullable_requirements_object() {
-        let schema = requirements_claim_schema(&sample_requirement_set());
+        let schema = requirements_worker_claim_schema(&sample_requirement_set());
         let required = schema
             .get("required")
             .and_then(Value::as_array)
@@ -6382,6 +6444,73 @@ mod tests {
         assert!(verdict_required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
         assert!(verdict_required.iter().any(|value| value.as_str() == Some("overallVerdict")));
         assert!(verdict_required.iter().any(|value| value.as_str() == Some("route")));
+    }
+
+    #[test]
+    fn worker_claim_schema_is_full_before_review_progress_exists() {
+        let schema = requirements_worker_claim_schema(&sample_requirement_set());
+        let requirements_schema = &schema["properties"]["requirements"];
+        assert_eq!(
+            requirements_schema["required"],
+            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
+        );
+    }
+
+    #[test]
+    fn worker_claim_schema_only_includes_unresolved_requirements_after_partial_review() {
+        let mut set = sample_requirement_set();
+        set.review_progress.insert(
+            "nativeGuiIsSourceOfTruth".to_string(),
+            RequirementReviewProgressState {
+                status: "passed".to_string(),
+                updated_at: Some(100),
+            },
+        );
+        set.review_progress.insert(
+            "noInventedWebsocketEventShapes".to_string(),
+            RequirementReviewProgressState {
+                status: "failed".to_string(),
+                updated_at: Some(100),
+            },
+        );
+
+        let worker_schema = requirements_worker_claim_schema(&set);
+        let worker_requirements = &worker_schema["properties"]["requirements"];
+        assert_eq!(worker_requirements["required"], json!(["noInventedWebsocketEventShapes"]));
+        assert!(worker_requirements["properties"].get("nativeGuiIsSourceOfTruth").is_none());
+        assert!(worker_requirements["properties"].get("noInventedWebsocketEventShapes").is_some());
+
+        let reviewer_schema = requirements_verdict_schema(&set);
+        let reviewer_required = reviewer_schema["properties"]["requirements"]["required"]
+            .as_array()
+            .expect("reviewer required");
+        assert!(reviewer_required.iter().any(|value| value.as_str() == Some("nativeGuiIsSourceOfTruth")));
+        assert!(reviewer_required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
+    }
+
+    #[test]
+    fn reviewer_prompt_preserves_full_set_and_mentions_regression_review() {
+        let mut set = sample_requirement_set();
+        set.review_progress.insert(
+            "nativeGuiIsSourceOfTruth".to_string(),
+            RequirementReviewProgressState {
+                status: "passed".to_string(),
+                updated_at: Some(100),
+            },
+        );
+
+        let prompt = requirements_review_prompt(
+            &set,
+            "Worker",
+            "worker-1",
+            "turn-1",
+            r#"{"summary":"fixed one item","requirements":{"noInventedWebsocketEventShapes":{"claim":"satisfied","evidence":["test"],"justification":"fixed","risk":"low"}}}"#,
+        );
+
+        assert!(prompt.contains("`nativeGuiIsSourceOfTruth`"));
+        assert!(prompt.contains("`noInventedWebsocketEventShapes`"));
+        assert!(prompt.contains("Previously passed requirements remain binding"));
+        assert!(prompt.contains("keep `reason` and `evidenceAssessment` brief"));
     }
 
     #[tokio::test]
@@ -6544,6 +6673,143 @@ mod tests {
         assert_eq!(
             requirements_review_target_for_thread(&state, "source-thread", &sample_requirement_set()),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_review_reduces_worker_schema_and_reactivates_regressed_requirement() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut state = PersistedState::default();
+        let mut project = PersistedProjectState {
+            project_root: Some(temp.path().display().to_string()),
+            cwd: Some(temp.path().display().to_string()),
+            updated_at: Some(100),
+            ..Default::default()
+        };
+        project.agents.insert(
+            "source-thread".to_string(),
+            PersistedAgentState {
+                display_name: Some("Source".to_string()),
+                role: Some("worker".to_string()),
+                requirements: Some(sample_requirement_set()),
+                requirement_review: Some(RequirementReviewBindingState {
+                    source_thread_id: "source-thread".to_string(),
+                    reviewer_thread_id: "reviewer-thread".to_string(),
+                    requirement_set_id: Some("web-gui-contract".to_string()),
+                    status: "inReview".to_string(),
+                    latest_claim_packet: Some(json!({"summary": "claimed"})),
+                    latest_verdict_packet: None,
+                    updated_at: 100,
+                }),
+                ..Default::default()
+            },
+        );
+        project.agents.insert(
+            "reviewer-thread".to_string(),
+            PersistedAgentState {
+                display_name: Some("Requirements Reviewer".to_string()),
+                role: Some("requirements-reviewer".to_string()),
+                parent_thread_id: Some("source-thread".to_string()),
+                hidden_from_peer_list: true,
+                ..Default::default()
+            },
+        );
+        state.projects.insert("project".to_string(), project);
+        persist_state(&runtime, &state).await.expect("persist state");
+
+        mark_requirements_review_verdict(
+            &runtime,
+            "source-thread",
+            "reviewer-thread",
+            json!({
+                "overallVerdict": "fail",
+                "nativeGuiIsSourceOfTruth": {
+                    "verdict": "pass",
+                    "reason": "Still preserved.",
+                    "evidenceAssessment": "Brief pass.",
+                    "requiredCorrection": ""
+                },
+                "noInventedWebsocketEventShapes": {
+                    "verdict": "fail",
+                    "reason": "A shape was invented.",
+                    "evidenceAssessment": "Needs correction.",
+                    "requiredCorrection": "Use the existing protocol."
+                },
+                "route": {
+                    "destination": "sourceAgent",
+                    "message": "Fix protocol drift."
+                }
+            }),
+        )
+        .await
+        .expect("mark first verdict");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent = agent_state_for_thread(&state, "source-thread").expect("source agent");
+        let requirements = agent.requirements.as_ref().expect("requirements");
+        assert_eq!(requirements.requirements.len(), 2);
+        assert_eq!(
+            requirements.review_progress["nativeGuiIsSourceOfTruth"].status,
+            "passed"
+        );
+        assert_eq!(
+            requirements.review_progress["noInventedWebsocketEventShapes"].status,
+            "failed"
+        );
+        let reduced_schema = active_requirements_claim_schema_for_thread(&state, "source-thread")
+            .expect("reduced schema");
+        assert_eq!(
+            reduced_schema["properties"]["requirements"]["required"],
+            json!(["noInventedWebsocketEventShapes"])
+        );
+
+        mark_requirements_review_verdict(
+            &runtime,
+            "source-thread",
+            "reviewer-thread",
+            json!({
+                "overallVerdict": "fail",
+                "nativeGuiIsSourceOfTruth": {
+                    "verdict": "fail",
+                    "reason": "The correction regressed native fidelity.",
+                    "evidenceAssessment": "Regression found.",
+                    "requiredCorrection": "Restore native fidelity."
+                },
+                "noInventedWebsocketEventShapes": {
+                    "verdict": "pass",
+                    "reason": "Protocol drift fixed.",
+                    "evidenceAssessment": "Brief pass.",
+                    "requiredCorrection": ""
+                },
+                "route": {
+                    "destination": "sourceAgent",
+                    "message": "Fix the regression."
+                }
+            }),
+        )
+        .await
+        .expect("mark second verdict");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent = agent_state_for_thread(&state, "source-thread").expect("source agent");
+        let requirements = agent.requirements.as_ref().expect("requirements");
+        assert_eq!(requirements.requirements.len(), 2);
+        assert_eq!(
+            requirements.review_progress["nativeGuiIsSourceOfTruth"].status,
+            "failed"
+        );
+        assert_eq!(
+            requirements.review_progress["noInventedWebsocketEventShapes"].status,
+            "passed"
+        );
+        let regressed_schema = active_requirements_claim_schema_for_thread(&state, "source-thread")
+            .expect("regressed schema");
+        assert_eq!(
+            regressed_schema["properties"]["requirements"]["required"],
+            json!(["nativeGuiIsSourceOfTruth"])
         );
     }
 
@@ -6716,7 +6982,7 @@ mod tests {
 
     #[test]
     fn requirements_schemas_are_strict_openai_shapes() {
-        assert_strict_object_schema(&requirements_claim_schema(&sample_requirement_set()));
+        assert_strict_object_schema(&requirements_worker_claim_schema(&sample_requirement_set()));
         assert_strict_object_schema(&requirements_verdict_schema(&sample_requirement_set()));
     }
 
@@ -6749,7 +7015,7 @@ mod tests {
         let set = sample_requirement_set();
         std::fs::write(
             fixture_dir.join("claim.schema.json"),
-            serde_json::to_string_pretty(&requirements_claim_schema(&set)).expect("serialize claim schema"),
+            serde_json::to_string_pretty(&requirements_worker_claim_schema(&set)).expect("serialize claim schema"),
         )
         .expect("write claim schema fixture");
         std::fs::write(

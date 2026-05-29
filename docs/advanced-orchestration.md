@@ -28,7 +28,6 @@ Skills package reusable local workflows. Public bootstrap should expose only the
 skills needed for the selected profile:
 
 - `robdex-orchestrator`: Robdex communication and lifecycle commands.
-- `request-review`: review-gated development workflow.
 - `privileged-exec`: sanctioned handling for approval or sandbox issues.
 - optional project skills, such as design or GitHub workflow helpers.
 
@@ -103,12 +102,6 @@ robdex requirements-from-prose --title "<title>" --include-composable no-legacy 
 Task-specific requirement prose.
 EOF
 ```
-
-## Request Review
-
-Use request-review when a task needs an independent review but not a full
-Requirements contract. Run role-specific review instructions first, keep review
-scope explicit, and provide exact validation evidence.
 
 ## Simplified QA Runtime
 

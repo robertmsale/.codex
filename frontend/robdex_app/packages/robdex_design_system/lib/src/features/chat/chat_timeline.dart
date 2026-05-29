@@ -1499,7 +1499,18 @@ MarkdownStyleSheet _conversationMarkdownStyle(ThemeData theme, bool isPending) {
     ),
     blockquote: theme.textTheme.bodySmall?.copyWith(
       height: 1.35,
-      color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
+      color: theme.colorScheme.onSurface.withValues(alpha: isPending ? 0.78 : 0.9),
+    ),
+    blockquotePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+    blockquoteDecoration: BoxDecoration(
+      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+      borderRadius: BorderRadius.circular(6),
+      border: Border(
+        left: BorderSide(
+          color: theme.colorScheme.primary.withValues(alpha: 0.55),
+          width: 3,
+        ),
+      ),
     ),
     listBullet: theme.textTheme.bodySmall?.copyWith(
       height: 1.35,

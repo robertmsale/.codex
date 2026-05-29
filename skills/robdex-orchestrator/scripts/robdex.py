@@ -1278,9 +1278,29 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     p_req_from_prose = sub.add_parser(
         "requirements-from-prose",
         help="Convert requirement-like prose into a RequirementSet JSON, optionally attaching it.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            'Example: printf "%s\\n" "Match the reference image" | '
-            'robdex requirements-from-prose --title "Design gate" --text-stdin --attach --name "Codex Config Operator"'
+            "Formatting:\n"
+            "  The parser turns each non-empty bullet, numbered item, or line into one requirement.\n"
+            "  Put one complete requirement per line. Do not pack multiple requirements into one paragraph.\n"
+            "\n"
+            "Good stdin format:\n"
+            "  - Preserve existing behavior around the changed area unless explicitly assigned otherwise.\n"
+            "  - Add targeted tests proving the new command behavior.\n"
+            "  - Update active docs that discuss the changed command.\n"
+            "\n"
+            "Preview example:\n"
+            "  robdex requirements-from-prose --title \"Design gate\" --text-stdin <<'EOF'\n"
+            "  - Match the approved reference image without fake UI or dead controls.\n"
+            "  - Provide Design Lab screenshot evidence from the sanctioned capture path.\n"
+            "  EOF\n"
+            "\n"
+            "Attach with composables:\n"
+            "  robdex requirements-from-prose --title \"Design gate\" --include-composable design-non-negotiables --text-stdin --attach --name \"Worker\" <<'EOF'\n"
+            "  - Match the approved reference image without fake UI or dead controls.\n"
+            "  EOF\n"
+            "\n"
+            "Never run --text-stdin without a heredoc, pipe, or redirected file attached."
         ),
     )
     p_req_from_prose.add_argument("--title", required=True)

@@ -351,9 +351,10 @@ impl RunningStateReducer {
         thread_cache: &mut ThreadCachePayload,
         changed_thread_ids: &mut BTreeSet<String>,
     ) -> bool {
-        let existing = find_message(thread_cache, &payload.thread_id, &payload.item_id);
+        let message_id = assistant_message_id(&payload.item_id, &payload.turn_id);
+        let existing = find_message(thread_cache, &payload.thread_id, &message_id);
         let mut message = make_message_with_context(
-            payload.item_id.clone(),
+            message_id,
             payload.thread_id.clone(),
             Some(payload.turn_id.clone()),
             "assistant",
@@ -987,7 +988,7 @@ fn message_from_item(
             id, text, phase, ..
         } => {
             let mut message = make_message_with_context(
-                id.clone(),
+                assistant_message_id(id, turn_id.unwrap_or("")),
                 thread_id.to_string(),
                 turn_id.map(str::to_string),
                 "assistant",
@@ -1212,7 +1213,10 @@ fn message_from_raw_response_item(
                 return None;
             }
             Some(make_message_with_context(
-                id.clone().unwrap_or_else(|| format!("raw-agent-message-{turn_id}")),
+                assistant_message_id(
+                    &id.clone().unwrap_or_else(|| format!("raw-agent-message-{turn_id}")),
+                    turn_id,
+                ),
                 thread_id.to_string(),
                 Some(turn_id.to_string()),
                 "assistant",
@@ -1333,6 +1337,13 @@ fn make_message(
         tool_metadata,
         created_at,
     )
+}
+
+fn assistant_message_id(item_id: &str, turn_id: &str) -> String {
+    if turn_id.trim().is_empty() {
+        return item_id.to_string();
+    }
+    format!("{turn_id}:{item_id}")
 }
 
 fn make_message_with_context(
@@ -1886,7 +1897,60 @@ mod tests {
         assert_eq!(messages.len(), 3);
         assert_eq!(
             messages.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(),
-            vec!["commentary-1", "commentary-2", "final-1"]
+            vec!["turn-1:commentary-1", "turn-1:commentary-2", "turn-1:final-1"]
+        );
+    }
+
+    #[test]
+    fn reused_agent_item_ids_across_turns_remain_distinct() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+
+        reducer.apply_notification(
+            &ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::AgentMessage {
+                    id: "item-1".to_string(),
+                    text: "First assistant response.".to_string(),
+                    phase: Some(MessagePhase::FinalAnswer),
+                    memory_citation: None,
+                },
+            }),
+            &mut cache,
+        );
+        reducer.apply_notification(
+            &ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-2".to_string(),
+                item_id: "item-1".to_string(),
+                delta: "Second assistant".to_string(),
+            }),
+            &mut cache,
+        );
+        reducer.apply_notification(
+            &ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-2".to_string(),
+                item: ThreadItem::AgentMessage {
+                    id: "item-1".to_string(),
+                    text: "Second assistant response.".to_string(),
+                    phase: Some(MessagePhase::FinalAnswer),
+                    memory_citation: None,
+                },
+            }),
+            &mut cache,
+        );
+
+        let messages = &cache.message_cache_by_thread_id["thread-1"];
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(),
+            vec!["turn-1:item-1", "turn-2:item-1"]
+        );
+        assert_eq!(
+            messages.iter().map(|message| message.text.as_str()).collect::<Vec<_>>(),
+            vec!["First assistant response.", "Second assistant response."]
         );
     }
 
@@ -1921,7 +1985,7 @@ mod tests {
         assert!(changed.thread_cache_changed);
         let messages = &cache.message_cache_by_thread_id["thread-1"];
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].id, "completed-agent-1");
+        assert_eq!(messages[0].id, "turn-1:completed-agent-1");
         assert_eq!(messages[0].text, "Full prefix only");
         assert_eq!(messages[0].phase.as_deref(), Some("final_answer"));
     }
@@ -1960,7 +2024,7 @@ mod tests {
         assert!(changed.thread_cache_changed);
         let messages = &cache.message_cache_by_thread_id["thread-1"];
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].id, "response-agent-1");
+        assert_eq!(messages[0].id, "turn-1:response-agent-1");
         assert_eq!(messages[0].text, "Full suffix-only final");
         assert_eq!(messages[0].phase.as_deref(), Some("final_answer"));
     }

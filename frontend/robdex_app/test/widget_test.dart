@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:robdex_app/src/app/robdex_app.dart';
@@ -1733,6 +1734,52 @@ void main() {
       find.byKey(const ValueKey('chat.streamingPlainText.completed-assistant')),
       findsNothing,
     );
+  });
+
+  testWidgets('assistant markdown blockquotes use readable themed styling', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: Scaffold(
+          body: SizedBox(
+            height: 420,
+            child: ChatTimeline(
+              threadId: 'thread-a',
+              entries: const [
+                ChatEntry(
+                  id: 'quoted-assistant',
+                  author: 'Assistant',
+                  displayLabel: 'Assistant',
+                  timestamp: null,
+                  body: '> requirements-from-prose converts prose lines.',
+                ),
+              ],
+              title: 'Thread A',
+              contextWindowRemainingPercent: 80,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: false,
+              isRunning: false,
+              showComposer: false,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final markdown = tester.widget<MarkdownBody>(
+      find.byKey(const ValueKey('chat.markdownBody.quoted-assistant')),
+    );
+    final blockquoteDecoration =
+        markdown.styleSheet!.blockquoteDecoration as BoxDecoration;
+    final blockquoteBorder = blockquoteDecoration.border as Border;
+
+    expect(markdown.styleSheet!.blockquote!.color, isNotNull);
+    expect(blockquoteDecoration.color, isNotNull);
+    expect(blockquoteBorder.left.width, 3);
   });
 
   testWidgets('multiple assistant commentary entries remain visible with final message', (

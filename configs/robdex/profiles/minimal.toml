@@ -16,7 +16,6 @@ ROBDEX_STATE_HOME = "${ROBDEX_STATE_HOME}"
 communication = true
 spawning = true
 requirements = true
-request_review = true
 safe_project_registration = true
 roles_path = "${ROBDEX_HOME}/roles"
 skills_path = "${ROBDEX_HOME}/skills"
@@ -29,4 +28,3 @@ requirements_reviewer = "${ROBDEX_HOME}/roles/requirements-reviewer.md"
 
 [robdex.core.skills]
 robdex = "${ROBDEX_HOME}/skills/robdex-orchestrator"
-request_review = "${ROBDEX_HOME}/skills/request-review"

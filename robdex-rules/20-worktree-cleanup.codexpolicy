@@ -36,8 +36,6 @@ prefix_rule(
         "git-worktree-cleanup","~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup",
         "git-worktree-create","~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-create", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-worktree-create",
         "qa-fastforward","~/.codex/skills/gh-version-control-workflow/scripts/qa-fastforward", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/qa-fastforward",
-        "request-review","~/.codex/skills/request-review/scripts/request-review", "/Users/robertsale/.codex/skills/request-review/scripts/request-review",
-        "request-review-role-instructions","~/.codex/skills/request-review/scripts/request-review-role-instructions", "/Users/robertsale/.codex/skills/request-review/scripts/request-review-role-instructions",
         "safe-delete", "~/.codex/skills/safe-delete/scripts/safe-delete", "/Users/robertsale/.codex/skills/safe-delete/scripts/safe-delete",
         "static-code-validation",
         "db_test.sh",

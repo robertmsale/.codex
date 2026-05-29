@@ -38,9 +38,6 @@ QA harness / Flutter simulator broker stack is legacy/deprecated.
 
 Important skills in active use:
 
-- `request-review`
-  Review wrapper for code changes.
-
 - `robdex-orchestrator`
   Robdex messaging and worker orchestration surface.
 
@@ -71,7 +68,6 @@ Current layout:
 Notable pieces:
 
 - Rust Robdex bridge
-- Rust aux HTTP server for `request-review`
 - legacy simulator broker and Flutter helper services
 
 See [`backend/README.md`](~/.codex/backend/README.md) for the service-level breakdown.

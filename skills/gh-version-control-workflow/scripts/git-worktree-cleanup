@@ -2,6 +2,90 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ $# -eq 1 && ( "$1" == "--help" || "$1" == "-h" ) ]]; then
+  cat >&2 <<'EOF'
+Usage:
+  git-worktree-cleanup <worktree_path> [integration_branch]
+EOF
+  exit 0
+fi
+
+git_cleanup_privileged_reexec() {
+  local base_url="${CODEX_PRIVILEGED_EXEC_BASE_URL:-http://127.0.0.1:8776}"
+  local payload check_response run_response stdout_file stderr_file meta status exit_code timed_out
+  command -v /usr/bin/curl >/dev/null 2>&1 || return 1
+  command -v /usr/bin/python3 >/dev/null 2>&1 || return 1
+  payload="$(/usr/bin/python3 - "$PWD" "$script_dir/git-worktree-cleanup" "$@" <<'PY'
+import json
+import os
+import sys
+
+cwd = sys.argv[1]
+command = sys.argv[2:]
+env = dict(os.environ)
+env["CODEX_GIT_CLEANUP_PRIVILEGED_REEXEC"] = "1"
+payload = {
+    "command": command,
+    "cwd": cwd,
+    "callerEnv": env,
+    "envOverrides": {"CODEX_GIT_CLEANUP_PRIVILEGED_REEXEC": "1"},
+}
+print(json.dumps(payload, separators=(",", ":")))
+PY
+)"
+  check_response="$(/usr/bin/curl -fsS -H 'Content-Type: application/json' -X POST "${base_url%/}/policy/check" --data-binary "$payload" 2>/dev/null || true)"
+  [[ -n "$check_response" ]] || return 1
+  if ! /usr/bin/python3 -c 'import json, sys; data=json.loads(sys.stdin.read()); raise SystemExit(0 if data.get("eligible") and data.get("decision") == "allow" else 1)' <<<"$check_response"; then
+    return 1
+  fi
+
+  run_response="$(/usr/bin/curl -fsS -H 'Content-Type: application/json' -X POST "${base_url%/}/exec/run" --data-binary "$payload" 2>/dev/null || true)"
+  [[ -n "$run_response" ]] || return 1
+  stdout_file="$(mktemp /tmp/git-cleanup-privileged-stdout.XXXXXX)"
+  stderr_file="$(mktemp /tmp/git-cleanup-privileged-stderr.XXXXXX)"
+  meta="$(/usr/bin/python3 - "$stdout_file" "$stderr_file" "$run_response" <<'PY'
+import json
+import sys
+
+stdout_path, stderr_path, raw = sys.argv[1:4]
+data = json.loads(raw)
+open(stdout_path, "w", encoding="utf-8").write(data.get("stdout") or "")
+open(stderr_path, "w", encoding="utf-8").write(data.get("stderr") or "")
+print(f"status={data.get('status') or ''}")
+print(f"exit_code={'' if data.get('exitCode') is None else data.get('exitCode')}")
+print(f"timed_out={'1' if data.get('timedOut') else '0'}")
+PY
+)"
+  status=""
+  exit_code=""
+  timed_out="0"
+  while IFS='=' read -r key value; do
+    case "$key" in
+      status) status="$value" ;;
+      exit_code) exit_code="$value" ;;
+      timed_out) timed_out="$value" ;;
+    esac
+  done <<<"$meta"
+  if [[ "$status" != "completed" ]]; then
+    cat "$stderr_file" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
+  cat "$stdout_file"
+  cat "$stderr_file" >&2
+  rm -f "$stdout_file" "$stderr_file"
+  if [[ "$timed_out" == "1" ]]; then
+    exit 124
+  fi
+  exit "${exit_code:-1}"
+}
+
+if [[ "${CODEX_GIT_CLEANUP_PRIVILEGED_REEXEC:-0}" != "1" ]]; then
+  export CODEX_GIT_CLEANUP_PRIVILEGED_REEXEC=1
+  git_cleanup_privileged_reexec "$@" || true
+fi
+
 # shellcheck source=./_worktree_lib.sh
 source "$script_dir/_worktree_lib.sh"
 
@@ -15,12 +99,18 @@ fi
 
 worktree_path="$(normalize_mirrored_path "$1")"
 integration_branch_arg="${2:-}"
+fastforward_output=""
 
-if [[ ! -e "$worktree_path" ]]; then
-  echo "all clear: worktree path is already missing"
-  exit 0
+repo_root="$(python3 -c 'from pathlib import Path; import sys; path = Path(sys.argv[1]).resolve(); parts = path.parts; marker = ".worktrees"; print(Path(*parts[:parts.index(marker)])) if marker in parts else ""' "$worktree_path")"
+if [[ -n "$repo_root" && -d "$repo_root/.git" ]]; then
+  integration_branch_arg="$(resolve_integration_branch "$repo_root" "$integration_branch_arg")"
+  fastforward_local_integration_branch_cmd "$repo_root" "$integration_branch_arg" >/dev/null
+  fastforward_output="fast-forwarded local $integration_branch_arg to origin/$integration_branch_arg"
 fi
 
 cleanup_output="$(git_worktree_cleanup_cmd "$worktree_path" "${integration_branch_arg:-}")"
 remove_shadow_worktree_path "$worktree_path"
+if [[ -n "$fastforward_output" ]]; then
+  printf '%s. ' "$fastforward_output"
+fi
 printf '%s\n' "$cleanup_output"

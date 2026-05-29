@@ -74,8 +74,8 @@ only after `robdex doctor` and `robdex status` are healthy:
 
 - `robdex` CLI on `PATH`;
 - role files under `roles/`;
-- skills needed for Robdex messaging, request-review, Requirements,
-  communication/spawning, and safe project registration;
+- skills needed for Robdex messaging, Requirements, communication/spawning, and
+  safe project registration;
 - optional hooks for project lifecycle events;
 
 Flutter, simulators, design lab tooling, and device-driver services are not
@@ -128,7 +128,7 @@ Profiles:
 
 - `minimal`: bridge and CLI basics;
 - `orchestration`: bridge-backed communication/spawning, orchestrator/operator/
-  worker roles, Requirements, request-review, and safe project registration;
+  worker roles, Requirements, and safe project registration;
 - `privileged-exec`: sanctioned privileged execution policy;
 - `gui`: optional Flutter UI integration;
 - `robertmsale.reference`: Robert's personal setup as reference only.

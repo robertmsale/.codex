@@ -47,8 +47,6 @@ prefix_rule(
         "impeccable-ui-dispatch", "/Users/robertsale/.codex/skills/impeccable-ui/scripts/impeccable-ui-dispatch",
         "manual-deploy",
         "public-dev-tunnel", "/Users/robertsale/.codex/skills/privileged-exec/scripts/public-dev-tunnel",
-        "request-review", "/Users/robertsale/.codex/skills/request-review/scripts/request-review",
-        "request-review-role-instructions", "/Users/robertsale/.codex/skills/request-review/scripts/request-review-role-instructions",
         "release-blocker-report",
         "robdex", "/Users/robertsale/.codex/skills/robdex-orchestrator/scripts/robdex",
         "safe-delete", "/Users/robertsale/.codex/skills/safe-delete/scripts/safe-delete",

@@ -35,8 +35,6 @@ one canonical home and may be referenced from other surfaces when needed.
 - Robdex CLI usage: `skills/robdex-orchestrator/SKILL.md`
   - Owns the public `robdex` script surface and shared Robdex usage rules.
   - Role behavior stays in role files.
-- Request review usage: `skills/request-review/SKILL.md`
-  - Owns the public request-review script path and role-instruction loading.
 - Project-specific rules: project `AGENTS.md` files and project-local skills.
   - Own repo-specific workflow details outside this control-plane repo.
 

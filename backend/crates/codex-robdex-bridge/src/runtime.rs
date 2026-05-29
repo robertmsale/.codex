@@ -2820,11 +2820,11 @@ fn reviewable_requirements_verdict_payload(payload: &Value) -> ReviewableRequire
 }
 
 fn requirements_null_claim_prompt() -> String {
-    "[Requirements] Active Requirements are still attached. Your last response used `requirements: null`, which is only allowed for mid-turn commentary. Please provide the full final Requirements claim packet with `requirements` set to the object containing every requirement claim. Keep `summary` global and concise; do not duplicate evidence between summary, evidence, and justification.".to_string()
+    "[Requirements] Active Requirements are still attached. Your last response used `requirements: null`, which is only allowed for mid-turn commentary. Please provide the final Requirements claim packet with `requirements` set to the object containing every currently required requirement claim. Previously passed requirements remain binding even when omitted from the reduced claim schema. Keep `summary` global and concise; do not duplicate evidence between summary, evidence, and justification.".to_string()
 }
 
 fn requirements_invalid_claim_prompt() -> String {
-    "[Requirements] Active Requirements are still attached, but the final structured packet did not contain a valid `requirements` object. Please provide the full Requirements claim packet with `summary` and `requirements` containing every requirement claim.".to_string()
+    "[Requirements] Active Requirements are still attached, but the final structured packet did not contain a valid `requirements` object. Please provide the Requirements claim packet with `summary` and `requirements` containing every currently required requirement claim. Previously passed requirements remain binding even when omitted from the reduced claim schema.".to_string()
 }
 
 fn compose_auto_routed_approval_request(

@@ -7,9 +7,8 @@ under `~/.codex/backend`.
 
 In scope for this workspace:
 
-1. `codex-aux-http`
-2. `codex-flutter-sim-http`
-4. `codex-flutter-http`
+1. `codex-flutter-sim-http`
+2. `codex-flutter-http`
 
 Out of scope for the first pass:
 
@@ -18,7 +17,6 @@ Out of scope for the first pass:
 
 ## Current Source Locations
 
-- `~/.codex/backend/crates/codex-aux-http`
 - `~/.codex/backend/python/codex-services/src/codex_services_http/flutter_sim_server.py`
 - `~/.codex/backend/python/codex-services/src/codex_services_http/flutter_exec_server.py`
 - `~/.codex/backend/python/codex-services/supervisor/*.ini`
@@ -26,13 +24,10 @@ Out of scope for the first pass:
 
 ## Likely Migration Order
 
-1. `codex-aux-http`
-2. `codex-flutter-http`
-3. `codex-flutter-sim-http`
+1. `codex-flutter-http`
+2. `codex-flutter-sim-http`
 Rationale:
 
-- `codex-aux-http` is now narrowed to request-review support and remains the
-  smallest service pattern-setter.
 - `flutter-http` looks narrower than the sim broker.
 - `flutter-sim-http` has the most subprocess and device-management complexity.
 

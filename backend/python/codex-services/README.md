@@ -30,14 +30,12 @@ Supervisor units:
 
 - [robdex-app-server.ini](/Users/robertsale/.codex/backend/python/codex-services/supervisor/robdex-app-server.ini)
 - [robdex-bridge.ini](/Users/robertsale/.codex/backend/supervisor/templates/robdex-bridge.ini)
-- [codex-aux-http.ini](/Users/robertsale/.codex/backend/supervisor/templates/codex-aux-http.ini)
 - [codex-flutter-sim-http.ini](/Users/robertsale/.codex/backend/python/codex-services/supervisor/codex-flutter-sim-http.ini)
 
 Launchers:
 
 - [run-robdex-app-server](/Users/robertsale/.codex/backend/python/codex-services/scripts/run-robdex-app-server)
 - [run-codex-robdex-bridge](/Users/robertsale/.codex/backend/bin/run-codex-robdex-bridge)
-- [run-codex-aux-http](/Users/robertsale/.codex/backend/bin/run-codex-aux-http)
 - [run-codex-flutter-sim-http](/Users/robertsale/.codex/backend/python/codex-services/scripts/run-codex-flutter-sim-http)
 
 Robdex host-local transport:
@@ -56,23 +54,6 @@ The host-global Codex hooks file is:
 
 Current hook wiring points at an external host-global launcher under `/Users/robertsale/Code/parallels-sync/scripts/`.
 There is no in-repo turn-lifecycle hook launcher here anymore.
-
-## Codex Aux HTTP
-
-Host-side helper service for sandbox-safe review execution.
-
-Bind:
-
-- `http://127.0.0.1:8871`
-
-Endpoints:
-
-- `GET /healthz`
-- `POST /v1/request-review/run`
-
-Used by:
-
-- `~/.codex/skills/request-review/scripts/request-review`
 
 ## Flutter Simulator HTTP Bridge
 

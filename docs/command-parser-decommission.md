@@ -15,12 +15,12 @@ accounting changed it now adds unnecessary overhead.
   routed large command output through `/v1/command-parser/parse`
 - Config profiles: `[profiles.command-parser-spark]` and
   `[profiles.command-parser]` in `config.toml`
-- Backend Rust crates: `backend/crates/codex-aux-http` hosted the parser route;
-  `backend/crates/codex-command-parser-client` called that route
+- Backend Rust crate: `backend/crates/codex-command-parser-client` called the
+  parser route
 - Backend Python/Deno-era service code:
   `backend/python/codex-services/src/codex_aux_http.ts`
-- Supervisor/support service: `codex-aux-http` also serves
-  `/v1/request-review/run`, so the service itself must remain
+- Supervisor/support service: no active support service remains for the parser
+  route
 - Rules/policies: `robdex-rules/12-skill-scripts.codexpolicy` allowed parser
   skill wrappers; `robdex-rules/30-noisy-command-parser.codexpolicy` duplicated
   noisy-command policy naming
@@ -32,8 +32,8 @@ accounting changed it now adds unnecessary overhead.
 
 1. Docs and ownership map: add this inventory and
    `docs/instruction-ownership.md`.
-2. Backend decoupling: keep `request-review`, remove command-parser routes and
-   client workspace membership.
+2. Backend decoupling: remove command-parser routes and client workspace
+   membership.
 3. Shell wrapper decoupling: remove automatic command-parser postprocessing from
    normal shell execution while preserving PATH, privileged-exec, live-process
    registration, synchronous execution, and exit-code behavior.
@@ -42,8 +42,7 @@ accounting changed it now adds unnecessary overhead.
 5. Config cleanup: remove command-parser profiles once no active path needs
    them.
 6. Validation/restart: rebuild and restart only affected support services, then
-   verify shell, privileged-exec, Robdex CLI, Requirements, and request-review
-   behavior.
+   verify shell, privileged-exec, Robdex CLI, and Requirements behavior.
 
 ## Shell Recovery Bypass
 

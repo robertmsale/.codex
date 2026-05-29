@@ -4,6 +4,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 skill_dir="$(cd "$script_dir/.." && pwd)"
 lib_script="$skill_dir/scripts/_worktree_lib.sh"
+sync_script="$skill_dir/scripts/git-sync-worktree"
 
 tmp_root="$(mktemp -d)"
 trap 'rm -rf "$tmp_root"' EXIT
@@ -19,18 +20,11 @@ worktree_path="$repo_dir/.worktrees/feature"
 fake_bin="$tmp_root/bin"
 
 mkdir -p "$fake_bin"
-
 cat >"$fake_bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
-  if [[ "$3" == "feature/demo" && "$4" == "--json" && "$5" == "number" && "$6" == "--jq" && "$7" == ".number" ]]; then
-    printf '42\n'
-    exit 0
-  fi
-fi
-if [[ "$1" == "pr" && "$2" == "merge" && "$3" == "42" && "$4" == "--squash" ]]; then
-  exit 0
+  exit 1
 fi
 echo "unexpected gh invocation: $*" >&2
 exit 1
@@ -50,28 +44,30 @@ git -C "$repo_dir" push -u origin master >/dev/null
 
 mkdir -p "$repo_dir/.worktrees"
 git -C "$repo_dir" worktree add -b feature/demo "$worktree_path" master >/dev/null
-printf 'feature\n' >"$worktree_path/feature.txt"
-git -C "$worktree_path" add feature.txt
-git -C "$worktree_path" commit -m "add feature file" >/dev/null
-git -C "$worktree_path" push -u origin feature/demo >/dev/null
+printf 'dirty\n' >"$worktree_path/dirty.txt"
 
-printf 'remote advance\n' >>"$repo_dir/file.txt"
-git -C "$repo_dir" add file.txt
-git -C "$repo_dir" commit -m "advance master" >/dev/null
-git -C "$repo_dir" push origin master >/dev/null
-git -C "$repo_dir" reset --hard HEAD~1 >/dev/null
+sync_error="$tmp_root/sync.err"
+if "$sync_script" "$worktree_path" master >"$tmp_root/sync.out" 2>"$sync_error"; then
+  fail "expected dirty git-sync-worktree to be refused"
+fi
+[[ "$(cat "$sync_error")" == *"Refusing to sync a dirty worktree"* ]] || fail "expected dirty sync refusal, got: $(cat "$sync_error")"
+[[ "$(git -C "$repo_dir" stash list)" != *"stash@"* ]] || fail "expected dirty sync refusal not to create a stash"
+[[ -e "$worktree_path/dirty.txt" ]] || fail "expected dirty file to remain in place"
 
-output="$(FAKE_BIN="$fake_bin" LIB_SCRIPT="$lib_script" bash -lc '
+git -C "$worktree_path" add dirty.txt
+git -C "$worktree_path" commit -m "add dirty file as feature work" >/dev/null
+
+recover_error="$tmp_root/recover.err"
+if FAKE_BIN="$fake_bin" LIB_SCRIPT="$lib_script" WORKTREE_PATH="$worktree_path" bash -lc '
   set -euo pipefail
   source "$LIB_SCRIPT"
   git_subprocess_path() {
     printf "%s\n" "$FAKE_BIN:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
   }
-  git_merge_worktree_cmd "'"$worktree_path"'" master
-')"
+  git_recover_published_worktree_cmd "$WORKTREE_PATH" master
+' >"$tmp_root/recover.out" 2>"$recover_error"; then
+  fail "expected unpublished recovery to be refused"
+fi
+[[ "$(cat "$recover_error")" == *"Refusing published PR recovery because no PR was found"* ]] || fail "expected unpublished recovery refusal, got: $(cat "$recover_error")"
 
-[[ "$output" == *"fast-forwarded local master to origin/master"* ]] || fail "expected merge output to mention fast-forwarded local master, got: $output"
-[[ "$(git -C "$repo_dir" log -1 --pretty=%s)" == "advance master" ]] || fail "expected local master to fast-forward to origin/master"
-[[ ! -e "$worktree_path" ]] || fail "expected worktree path to be removed"
-
-echo "PASS: git-merge-worktree fast-forwards local integration branch and removes the worktree path"
+echo "PASS: git sync/recovery guards refuse dirty or unpublished stale worktrees"

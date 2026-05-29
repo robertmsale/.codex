@@ -14,19 +14,17 @@ Current goal:
 
 Live service inventory at scaffold time:
 
-- `codex-aux-http`
 - `codex-flutter-sim-http`
 - `codex-flutter-http`
 - `robdex-app-server`
 - `robdex-bridge-deno`
 
-Only the first five are in scope for this workspace right now. Robdex services
+Only the support services are in scope for this workspace right now. Robdex services
 remain external until you decide to migrate them.
 
 ## Workspace Layout
 
 - `crates/codex-backend-core`: shared runtime/config helpers
-- `crates/codex-aux-http`: request-review support HTTP service
 - `crates/codex-flutter-sim-http`: project-scoped Flutter simulator broker/reservation service
 - `crates/codex-flutter-http`: generic Flutter execution service
 - `crates/codex-supervisor`: supervisor config inventory and future management tooling
@@ -37,10 +35,9 @@ remain external until you decide to migrate them.
 
 ## Migration Note
 
-The Rust `codex-aux-http` service owns the request-review support surface. The
-backend-local Python services own the remaining Flutter broker lanes.
-Historical references to the old
-`~/Code/parallels-sync` home remain only for provenance.
+The backend-local Python services own the remaining Flutter broker lanes.
+Historical references to the old `~/Code/parallels-sync` home remain only for
+provenance.
 
 ## Next Step
 
