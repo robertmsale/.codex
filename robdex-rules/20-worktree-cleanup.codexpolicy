@@ -21,7 +21,7 @@ prefix_rule(
 prefix_rule(
     pattern = [[
         "git-branch-list","~/.codex/skills/gh-version-control-workflow/scripts/git-branch-list", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-branch-list",
-        "git-commit","~/.codex/skills/gh-version-control-workflow/scripts/git-commit", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-commit",
+        
         "git-diff","~/.codex/skills/gh-version-control-workflow/scripts/git-diff", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-diff",
         "git-merge-base","~/.codex/skills/gh-version-control-workflow/scripts/git-merge-base", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-merge-base",
         "git-merge-worktree","~/.codex/skills/gh-version-control-workflow/scripts/git-merge-worktree", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-merge-worktree",

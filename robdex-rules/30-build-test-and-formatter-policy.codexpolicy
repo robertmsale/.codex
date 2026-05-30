@@ -23,12 +23,6 @@ prefix_rule(
     decision = "allow",
 )
 
-# Flutter commands are allowed because the PATH wrapper and broker apply the
-# sanctioned low-noise handling.
-prefix_rule(
-    pattern = ["flutter", ["analyze"]],
-    decision = "allow",
-)
 # Hard ban for formatters.
 prefix_rule(
     pattern = [

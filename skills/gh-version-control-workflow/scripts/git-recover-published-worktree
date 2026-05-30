@@ -2,6 +2,9 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+codex_root="$(cd "$script_dir/../../.." && pwd)"
+
+source "$codex_root/scripts/privileged_exec_bypass.sh"
 # shellcheck source=./_worktree_lib.sh
 source "$script_dir/_worktree_lib.sh"
 
@@ -20,6 +23,8 @@ Usage:
 EOF
   exit 2
 fi
+
+run_via_privileged_exec_bypass_script "$script_dir/git-recover-published-worktree" "$@"
 
 worktree_path="$(normalize_mirrored_path "$1")"
 integration_branch="${2:-${GITOPS_INTEGRATION_BRANCH:-master}}"

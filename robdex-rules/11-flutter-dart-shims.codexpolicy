@@ -10,10 +10,3 @@ prefix_rule(
     justification = "Never use code formatters on this machine."
 )
 
-prefix_rule(
-    pattern = [[
-        "flutter", "/Users/robertsale/.codex/shim/flutter", "/Users/robertsale/.codex/scripts/flutterq",
-        "dart", "/Users/robertsale/.codex/shim/dart", "/Users/robertsale/.codex/scripts/dartq",
-    ]],
-    decision = "allow",
-)

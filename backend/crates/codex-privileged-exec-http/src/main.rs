@@ -94,6 +94,8 @@ struct ExecRequest {
     #[serde(default)]
     env_overrides: BTreeMap<String, String>,
     #[serde(default)]
+    bypass_policy: bool,
+    #[serde(default)]
     // Accepted for backward compatibility but intentionally ignored.
     timeout_sec: Option<u64>,
 }
@@ -284,7 +286,15 @@ async fn exec_run(
     validate_request(&request).map_err(into_http_error)?;
 
     let normalized = normalize_command(&request.command);
-    let evaluation = evaluate_normalized(&app, &normalized).await;
+    let mut evaluation = EvaluationResult {
+        matched_rules: Vec::new(),
+        decision: None,
+    };
+
+    if !request.bypass_policy {
+        evaluation = evaluate_normalized(&app, &normalized).await;
+    }
+
     let normalized_argvs = normalized_command_argvs(&normalized);
     if normalized.plan.is_none() {
         return Ok(Json(RunResponse {
@@ -305,28 +315,30 @@ async fn exec_run(
         }));
     }
 
-    match evaluation.decision {
-        Some(Decision::Allow) => {}
-        Some(Decision::Prompt) => {
-            return Ok(Json(rejected_run_response(
-                normalized,
-                evaluation,
-                Some("policy decision is prompt; privileged path requires explicit allow".to_string()),
-            )));
-        }
-        Some(Decision::Forbidden) => {
-            return Ok(Json(rejected_run_response(
-                normalized,
-                evaluation,
-                None,
-            )));
-        }
-        None => {
-            return Ok(Json(rejected_run_response(
-                normalized,
-                evaluation,
-                Some("no privileged execpolicy rule matched; fall back to local sandboxed execution".to_string()),
-            )));
+    if !request.bypass_policy {
+        match evaluation.decision {
+            Some(Decision::Allow) => {}
+            Some(Decision::Prompt) => {
+                return Ok(Json(rejected_run_response(
+                    normalized,
+                    evaluation,
+                    Some("policy decision is prompt; privileged path requires explicit allow".to_string()),
+                )));
+            }
+            Some(Decision::Forbidden) => {
+                return Ok(Json(rejected_run_response(
+                    normalized,
+                    evaluation,
+                    None,
+                )));
+            }
+            None => {
+                return Ok(Json(rejected_run_response(
+                    normalized,
+                    evaluation,
+                    Some("no privileged execpolicy rule matched; fall back to local sandboxed execution".to_string()),
+                )));
+            }
         }
     }
 

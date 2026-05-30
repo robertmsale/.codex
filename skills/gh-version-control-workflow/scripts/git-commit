@@ -2,8 +2,11 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+codex_root="$(cd "$script_dir/../../.." && pwd)"
+
 # shellcheck source=./_worktree_lib.sh
 source "$script_dir/_worktree_lib.sh"
+source "$codex_root/scripts/privileged_exec_bypass.sh"
 
 if [[ $# -lt 2 ]]; then
   cat >&2 <<'EOF'
@@ -12,6 +15,8 @@ Usage:
 EOF
   exit 2
 fi
+
+run_via_privileged_exec_bypass_script "$script_dir/git-commit" "$@"
 
 worktree_path="$(normalize_mirrored_path "$1")"
 message="$2"

@@ -2,12 +2,16 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+codex_root="$(cd "$script_dir/../../.." && pwd)"
+source "$codex_root/scripts/privileged_exec_bypass.sh"
 source "$script_dir/_worktree_lib.sh"
 
 if [[ $# -ne 1 ]]; then
   echo "Usage: git-rebase-continue <repo_or_worktree_path>" >&2
   exit 2
 fi
+
+run_via_privileged_exec_bypass_script "$script_dir/git-rebase-continue" "$@"
 
 path="$(normalize_mirrored_path "$1")"
 git_rebase_continue_cmd "$path"
