@@ -96,8 +96,8 @@ run_via_privileged_exec_if_allowed() {
   local run_status=""
   local exit_code=""
   local timed_out="0"
-  stdout_file="$(mktemp /tmp/codex-privileged-stdout.XXXXXX)"
-  stderr_file="$(mktemp /tmp/codex-privileged-stderr.XXXXXX)"
+  stdout_file="$(mktemp /tmp/tmp.XXXXXX)"
+  stderr_file="$(mktemp /tmp/tmp.XXXXXX)"
 
   run_response="$(privileged_exec_curl -fsS \
     -H 'Content-Type: application/json' \

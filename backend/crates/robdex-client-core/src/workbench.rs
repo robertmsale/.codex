@@ -1,6 +1,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use anyhow::anyhow;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use robdex_protocol::{
@@ -23,6 +24,74 @@ pub struct WorkbenchClient {
     client: HttpClient,
     selected_thread_id: Option<String>,
     available_models: Option<Vec<UiModelItem>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadStatsResponse {
+    pub thread_id: String,
+    pub session_path: String,
+    pub generated_at_ms: u64,
+    pub totals: TokenTotals,
+    pub estimates: TokenEstimates,
+    pub compaction_count: u64,
+    pub timeline: Vec<TokenTimelinePoint>,
+    pub categories: Vec<TokenCategoryBreakdown>,
+    pub top_items: Vec<TokenTopItem>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenTotals {
+    pub input_tokens: u64,
+    pub uncached_input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub reasoning_output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenEstimates {
+    pub user_message_input_tokens: u64,
+    pub tool_output_input_tokens: u64,
+    pub tool_call_output_tokens: u64,
+    pub skill_instruction_input_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenTimelinePoint {
+    pub index: u64,
+    pub line: u64,
+    pub input_tokens: u64,
+    pub uncached_input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub reasoning_output_tokens: u64,
+    pub total_tokens: u64,
+    pub delta_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenCategoryBreakdown {
+    pub key: String,
+    pub label: String,
+    pub tokens: u64,
+    pub estimated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenTopItem {
+    pub label: String,
+    pub kind: String,
+    pub line: u64,
+    pub tokens: u64,
+    pub estimated: bool,
 }
 
 impl WorkbenchClient {
@@ -75,6 +144,17 @@ impl WorkbenchClient {
 
     pub async fn fetch_thread_history(&self, thread_id: &str) -> Result<Vec<UiChatEntry>> {
         fetch_thread_messages(&self.endpoint, thread_id, None).await
+    }
+
+    pub async fn fetch_thread_stats(&self, thread_id: &str) -> Result<ThreadStatsResponse> {
+        let payload = get_json(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join(&format!("/threads/{thread_id}/stats"))?,
+        )
+        .await?;
+        Ok(serde_json::from_value(payload)?)
     }
 
     pub async fn create_project(
@@ -2117,5 +2197,60 @@ fn capitalize(value: &str) -> String {
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod thread_stats_tests {
+    use super::*;
+
+    #[test]
+    fn thread_stats_dto_parses_bridge_payload() {
+        let payload = json!({
+            "threadId": "thread-a",
+            "sessionPath": "/tmp/thread-a.jsonl",
+            "generatedAtMs": 42,
+            "totals": {
+                "inputTokens": 100,
+                "uncachedInputTokens": 40,
+                "outputTokens": 20,
+                "cachedInputTokens": 60,
+                "reasoningOutputTokens": 5,
+                "totalTokens": 120
+            },
+            "estimates": {
+                "userMessageInputTokens": 12,
+                "toolOutputInputTokens": 30,
+                "toolCallOutputTokens": 9,
+                "skillInstructionInputTokens": 4
+            },
+            "compactionCount": 2,
+            "timeline": [
+                {
+                    "index": 1,
+                    "line": 10,
+                    "inputTokens": 100,
+                    "uncachedInputTokens": 40,
+                    "outputTokens": 20,
+                    "cachedInputTokens": 60,
+                    "reasoningOutputTokens": 5,
+                    "totalTokens": 65,
+                    "deltaTokens": 65
+                }
+            ],
+            "categories": [
+                {"key": "input", "label": "Input tokens", "tokens": 100, "estimated": false}
+            ],
+            "topItems": [
+                {"label": "Tool output", "kind": "tool_output", "line": 7, "tokens": 30, "estimated": true}
+            ],
+            "warnings": ["estimate only"]
+        });
+        let stats: ThreadStatsResponse = serde_json::from_value(payload).expect("stats payload");
+        assert_eq!(stats.thread_id, "thread-a");
+        assert_eq!(stats.totals.input_tokens, 100);
+        assert_eq!(stats.estimates.tool_output_input_tokens, 30);
+        assert_eq!(stats.timeline[0].delta_tokens, 65);
+        assert_eq!(stats.categories[0].key, "input");
     }
 }

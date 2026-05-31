@@ -64,6 +64,7 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/threads/{thread_id}/name", post(thread_name_set_http))
         .route("/threads/{thread_id}/metadata", post(thread_metadata_update_http))
         .route("/threads/{thread_id}/compact", post(thread_compact_http))
+        .route("/threads/{thread_id}/stats", get(thread_stats_http))
         .route("/threads/{thread_id}/commands/terminate", post(thread_command_terminate_http))
         .route("/threads/{thread_id}/qa/devices", get(legacy_qa_harness_http))
         .route("/threads/{thread_id}/qa/devices/{device_key}/reserve", post(legacy_qa_harness_http))
@@ -561,6 +562,21 @@ async fn thread_compact_http(
     .await
     {
         Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn thread_stats_http(
+    Path(thread_id): Path<String>,
+    State(runtime): State<Arc<BridgeRuntime>>,
+) -> impl IntoResponse {
+    let thread_id = thread_id.trim();
+    if thread_id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "thread id is required").into_response();
+    }
+    match runtime.thread_stats(thread_id).await {
+        Ok(Some(stats)) => (StatusCode::OK, Json(stats)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "thread stats not found").into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
     }
 }

@@ -20,7 +20,7 @@ use codex_app_server_adapter::{
 use codex_shell_command::parse_command::{extract_shell_command, shlex_join};
 use serde_json::{Value, json};
 use tokio::{
-    sync::{Mutex, RwLock, broadcast, mpsc, oneshot},
+    sync::{Mutex, RwLock, Semaphore, broadcast, mpsc, oneshot},
     task::JoinHandle,
 };
 
@@ -49,6 +49,7 @@ use crate::{
     store::RobdexBridgeStore,
     transport::{DEFAULT_RECONNECT_DELAY_MS, TransportControlMessage, run_transport_loop},
     transforms::resolve_role_instructions,
+    thread_stats::{self, ThreadStatsJob, ThreadStatsResponse},
     upstream::{RunningStateReducer, UpstreamRuntimeEvent, transport_messages},
 };
 
@@ -80,6 +81,7 @@ pub struct BridgeRuntime {
     thread_cache_flush_delay: Duration,
     thread_cache_flush_task: Mutex<Option<JoinHandle<()>>>,
     state_mutation_lock: Mutex<()>,
+    thread_stats_jobs: Semaphore,
     next_transport_request_id: AtomicU64,
     cached_models: RwLock<Option<Value>>,
 }
@@ -130,6 +132,7 @@ impl BridgeRuntime {
             thread_cache_flush_delay: Duration::from_millis(THREAD_CACHE_FLUSH_DEBOUNCE_MS),
             thread_cache_flush_task: Mutex::new(None),
             state_mutation_lock: Mutex::new(()),
+            thread_stats_jobs: Semaphore::new(2),
             next_transport_request_id: AtomicU64::new(10_000),
             cached_models: RwLock::new(None),
         });
@@ -221,6 +224,30 @@ impl BridgeRuntime {
             context_window_status: snapshot.context_window_status_by_thread_id.get(thread_id).cloned(),
             generated_at: snapshot.updated_at.unwrap_or(0),
         }))
+    }
+
+    pub async fn thread_stats(&self, thread_id: &str) -> Result<Option<ThreadStatsResponse>> {
+        let state = self.state_document.read().await.clone();
+        if !tracked_thread_ids_from_state(&state).iter().any(|id| id == thread_id) {
+            return Ok(None);
+        }
+        drop(state);
+
+        let permit = self
+            .thread_stats_jobs
+            .acquire()
+            .await
+            .context("thread stats worker semaphore closed")?;
+        let codex_home = thread_stats::codex_home_from_state_root(&self.settings.paths.state_root)?;
+        let job = ThreadStatsJob {
+            codex_home,
+            thread_id: thread_id.to_string(),
+        };
+        let result = tokio::task::spawn_blocking(move || thread_stats::compute_thread_stats(job))
+            .await
+            .context("thread stats worker panicked")?;
+        drop(permit);
+        result
     }
 
     pub async fn append_local_user_message(

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -1465,6 +1466,131 @@ void main() {
     expect(find.textContaining('"requirements"'), findsNothing);
   });
 
+  test('thread stats model parses bridge DTO payload', () {
+    final stats = ThreadStatsData.fromJson({
+      'threadId': 'thread-a',
+      'sessionPath': '/tmp/thread-a.jsonl',
+      'generatedAtMs': 42,
+      'totals': {
+        'inputTokens': 100,
+        'uncachedInputTokens': 40,
+        'outputTokens': 20,
+        'cachedInputTokens': 60,
+        'reasoningOutputTokens': 5,
+        'totalTokens': 120,
+      },
+      'estimates': {
+        'userMessageInputTokens': 12,
+        'toolOutputInputTokens': 30,
+        'toolCallOutputTokens': 9,
+        'skillInstructionInputTokens': 4,
+      },
+      'compactionCount': 2,
+      'timeline': [
+        {
+          'index': 1,
+          'line': 10,
+          'inputTokens': 100,
+          'uncachedInputTokens': 40,
+          'outputTokens': 20,
+          'cachedInputTokens': 60,
+          'reasoningOutputTokens': 5,
+          'totalTokens': 125,
+          'deltaTokens': 125,
+        },
+      ],
+      'categories': [
+        {'key': 'tool_output', 'label': 'Tool outputs', 'tokens': 30, 'estimated': true},
+        {'key': 'tool_call', 'label': 'Tool call inputs', 'tokens': 9, 'estimated': true},
+      ],
+      'topItems': [
+        {'label': 'Tool output', 'kind': 'tool_output', 'line': 7, 'tokens': 30, 'estimated': true},
+      ],
+      'warnings': ['estimate only'],
+    });
+    expect(stats.threadId, 'thread-a');
+    expect(stats.totals.inputTokens, 100);
+    expect(stats.estimates.toolOutputInputTokens, 30);
+    expect(stats.timeline.single.deltaTokens, 125);
+  });
+
+  testWidgets('thread stats modal waits for processing before opening rich charts', (
+    WidgetTester tester,
+  ) async {
+    final completer = Completer<ThreadStatsData>();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => showThreadStatsModal(
+                context: context,
+                threadId: 'thread-a',
+                bridgeBaseUri: null,
+                loadStats: (_) => completer.future,
+              ),
+              child: const Text('Open stats'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open stats'));
+    await tester.pump();
+    expect(find.text('Processing thread statistics...'), findsOneWidget);
+    expect(find.text('Thread Statistics'), findsNothing);
+
+    completer.complete(_widgetStats);
+    await tester.pumpAndSettle();
+    expect(find.text('Thread Statistics'), findsOneWidget);
+    expect(find.text('Prompt Input'), findsOneWidget);
+    expect(find.text('Uncached Input'), findsOneWidget);
+    expect(find.text('Output Tokens'), findsOneWidget);
+    expect(find.text('Cached Tokens'), findsOneWidget);
+    expect(find.text('Reasoning Tokens'), findsOneWidget);
+    expect(find.text('Compactions'), findsOneWidget);
+    expect(find.text('Token Timeline'), findsOneWidget);
+    expect(find.text('Cumulative Usage'), findsOneWidget);
+    expect(find.text('Attribution Breakdown'), findsOneWidget);
+    expect(find.text('Top Expensive Items'), findsOneWidget);
+  });
+
+  testWidgets('thread stats modal reports loading failures without opening stats', (
+    WidgetTester tester,
+  ) async {
+    final completer = Completer<ThreadStatsData>();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => showThreadStatsModal(
+                    context: context,
+                    threadId: 'thread-a',
+                    bridgeBaseUri: null,
+                    loadStats: (_) => completer.future,
+                  ),
+                  child: const Text('Open stats'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open stats'));
+    await tester.pump();
+    expect(find.text('Processing thread statistics...'), findsOneWidget);
+    completer.completeError(StateError('boom'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Unable to load thread statistics'), findsOneWidget);
+    expect(find.text('Thread Statistics'), findsNothing);
+  });
+
   testWidgets('requirements form can select composable packs', (
     WidgetTester tester,
   ) async {
@@ -1957,3 +2083,38 @@ RequirementReviewSummary _reviewSummary({
     verdicts: verdicts,
   );
 }
+
+const _widgetStats = ThreadStatsData(
+  threadId: 'thread-a',
+  sessionPath: '/tmp/thread-a.jsonl',
+  generatedAtMs: 42,
+  totals: TokenTotals(
+    inputTokens: 1200,
+    uncachedInputTokens: 700,
+    outputTokens: 300,
+    cachedInputTokens: 500,
+    reasoningOutputTokens: 90,
+    totalTokens: 1500,
+  ),
+  estimates: TokenEstimates(
+    userMessageInputTokens: 120,
+    toolOutputInputTokens: 220,
+    toolCallOutputTokens: 80,
+    skillInstructionInputTokens: 60,
+  ),
+  compactionCount: 1,
+  timeline: [
+    TokenTimelinePoint(index: 1, line: 10, inputTokens: 100, uncachedInputTokens: 100, outputTokens: 20, cachedInputTokens: 0, reasoningOutputTokens: 5, totalTokens: 125, deltaTokens: 125),
+    TokenTimelinePoint(index: 2, line: 20, inputTokens: 1200, uncachedInputTokens: 700, outputTokens: 300, cachedInputTokens: 500, reasoningOutputTokens: 90, totalTokens: 1215, deltaTokens: 1090),
+  ],
+  categories: [
+    TokenCategoryBreakdown(key: 'tool_output', label: 'Tool outputs', tokens: 220, estimated: true),
+    TokenCategoryBreakdown(key: 'tool_call', label: 'Tool call inputs', tokens: 80, estimated: true),
+    TokenCategoryBreakdown(key: 'user_message', label: 'User messages', tokens: 120, estimated: true),
+  ],
+  topItems: [
+    TokenTopItem(label: 'Tool output', kind: 'tool_output', line: 7, tokens: 220, estimated: true),
+    TokenTopItem(label: 'User message', kind: 'user_message', line: 3, tokens: 120, estimated: true),
+  ],
+  warnings: ['estimate only'],
+);

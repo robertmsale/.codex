@@ -18,28 +18,4 @@ prefix_rule(
     pattern = ["git", "status"],
     decision = "allow",
 )
-prefix_rule(
-    pattern = [[
-        "git-branch-list","~/.codex/skills/gh-version-control-workflow/scripts/git-branch-list", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-branch-list",
-        
-        "git-diff","~/.codex/skills/gh-version-control-workflow/scripts/git-diff", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-diff",
-        "git-merge-base","~/.codex/skills/gh-version-control-workflow/scripts/git-merge-base", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-merge-base",
-        "git-merge-worktree","~/.codex/skills/gh-version-control-workflow/scripts/git-merge-worktree", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-merge-worktree",
-        "git-publish-worktree","~/.codex/skills/gh-version-control-workflow/scripts/git-publish-worktree", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-publish-worktree",
-        "git-rebase-abort","~/.codex/skills/gh-version-control-workflow/scripts/git-rebase-abort", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-rebase-abort",
-        "git-rev-parse","~/.codex/skills/gh-version-control-workflow/scripts/git-rev-parse", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-rev-parse",
-        "git-show","~/.codex/skills/gh-version-control-workflow/scripts/git-show", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-show",
-        "git-stage-paths","~/.codex/skills/gh-version-control-workflow/scripts/git-stage-paths", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-stage-paths",
-        "git-status","~/.codex/skills/gh-version-control-workflow/scripts/git-status", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-status",
-        "git-sync-worktree","~/.codex/skills/gh-version-control-workflow/scripts/git-sync-worktree", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-sync-worktree",
-        "git-unstage-paths","~/.codex/skills/gh-version-control-workflow/scripts/git-unstage-paths", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-unstage-paths",
-        "git-worktree-cleanup","~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-worktree-cleanup",
-        "git-worktree-create","~/.codex/skills/gh-version-control-workflow/scripts/git-worktree-create", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/git-worktree-create",
-        "qa-fastforward","~/.codex/skills/gh-version-control-workflow/scripts/qa-fastforward", "/Users/robertsale/.codex/skills/gh-version-control-workflow/scripts/qa-fastforward",
-        "safe-delete", "~/.codex/skills/safe-delete/scripts/safe-delete", "/Users/robertsale/.codex/skills/safe-delete/scripts/safe-delete",
-        "static-code-validation",
-        "db_test.sh",
-        "api-integration-harness",
-    ]],
-    decision = "allow"
-)
+

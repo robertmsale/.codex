@@ -5,6 +5,55 @@ PRIVILEGED_EXEC_STATUS=0
 PRIVILEGED_EXEC_STDOUT_FILE=""
 PRIVILEGED_EXEC_STDERR_FILE=""
 
+if ! typeset -f codex_emit_privileged_exec_output >/dev/null 2>&1; then
+  codex_emit_privileged_exec_output() {
+    local stdout_file="${1:?stdout file required}"
+    local stderr_file="${2:?stderr file required}"
+    local exit_code="${3:?exit code required}"
+    local output_token_limit=10000
+    local stdout_size=0
+    local stderr_size=0
+    local total_bytes=0
+    local total_tokens=0
+
+    if [[ -f "$stdout_file" ]]; then
+      stdout_size="$(/usr/bin/wc -c < "$stdout_file" 2>/dev/null | tr -d '[:space:]')"
+    else
+      stdout_size=0
+    fi
+
+    if [[ -f "$stderr_file" ]]; then
+      stderr_size="$(/usr/bin/wc -c < "$stderr_file" 2>/dev/null | tr -d '[:space:]')"
+    else
+      stderr_size=0
+    fi
+
+    total_bytes="$((stdout_size + stderr_size))"
+    total_tokens="$(((total_bytes + 3) / 4))"
+
+    if (( total_tokens > output_token_limit )); then
+      {
+        printf 'Command output token limit exceed.\n'
+        if [[ -n "$stdout_file" ]]; then
+          printf 'stdout: %s\n' "$stdout_file"
+        fi
+        if [[ -n "$stderr_file" ]]; then
+          printf 'stderr: %s\n' "$stderr_file"
+        fi
+      } >&2
+    else
+      if [[ -f "$stdout_file" ]]; then
+        cat "$stdout_file"
+      fi
+      if [[ -f "$stderr_file" ]]; then
+        cat "$stderr_file" >&2
+      fi
+    fi
+
+    return "$exit_code"
+  }
+fi
+
 privileged_exec_bypass_curl() {
   /usr/bin/curl "$@"
 }
@@ -59,8 +108,8 @@ run_via_privileged_exec_bypass() {
   command -v /usr/bin/python3 >/dev/null 2>&1 || return 0
 
   request_payload="$(privileged_exec_bypass_build_request "$PWD" "$@")"
-  PRIVILEGED_EXEC_STDOUT_FILE="$(mktemp /tmp/codex-privileged-stdout.XXXXXX)"
-  PRIVILEGED_EXEC_STDERR_FILE="$(mktemp /tmp/codex-privileged-stderr.XXXXXX)"
+  PRIVILEGED_EXEC_STDOUT_FILE="$(mktemp /tmp/tmp.XXXXXX)"
+  PRIVILEGED_EXEC_STDERR_FILE="$(mktemp /tmp/tmp.XXXXXX)"
 
   run_response="$(privileged_exec_bypass_curl -fsS \
     -H 'Content-Type: application/json' \
@@ -118,14 +167,12 @@ run_via_privileged_exec_bypass_script() {
   run_via_privileged_exec_bypass "$script_path" "$@"
 
   if [[ "$PRIVILEGED_EXEC_OUTCOME" == "handled" || "$PRIVILEGED_EXEC_OUTCOME" == "reject" ]]; then
-    if [[ -n "$PRIVILEGED_EXEC_STDOUT_FILE" ]]; then
-      cat "$PRIVILEGED_EXEC_STDOUT_FILE"
-      rm -f "$PRIVILEGED_EXEC_STDOUT_FILE"
-    fi
-    if [[ -n "$PRIVILEGED_EXEC_STDERR_FILE" ]]; then
-      cat "$PRIVILEGED_EXEC_STDERR_FILE" >&2
-      rm -f "$PRIVILEGED_EXEC_STDERR_FILE"
-    fi
+    codex_emit_privileged_exec_output \
+      "$PRIVILEGED_EXEC_STDOUT_FILE" \
+      "$PRIVILEGED_EXEC_STDERR_FILE" \
+      "$PRIVILEGED_EXEC_STATUS"
+
+    rm -f "$PRIVILEGED_EXEC_STDOUT_FILE" "$PRIVILEGED_EXEC_STDERR_FILE"
     exit "$PRIVILEGED_EXEC_STATUS"
   fi
 }

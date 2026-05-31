@@ -9,6 +9,7 @@ import '../chat/chat_timeline.dart';
 import '../composer/composer_panel.dart';
 import '../inspector/inspector_panel.dart';
 import '../sidebar/thread_list_panel.dart';
+import '../stats/thread_stats_modal.dart';
 
 class RobdexShellScreen extends StatelessWidget {
   const RobdexShellScreen({
@@ -325,6 +326,7 @@ class _WideShellState extends State<_WideShell> {
                             pendingApprovalCount:
                                 workbench.pendingApprovals.length,
                             onOpenHistory: widget.onOpenHistory,
+                            bridgeBaseUri: widget.bridgeBaseUri,
                             onCompactThread: widget.onCompactThread,
                             onTerminateCommandExecution:
                                 widget.onTerminateCommandExecution,
@@ -686,6 +688,25 @@ class _CompactShellState extends State<_CompactShell> {
               onTerminateCommandExecution: widget.onTerminateCommandExecution,
             ),
             Semantics(
+              key: const ValueKey('semantic.thread.stats'),
+              container: true,
+              button: true,
+              label: 'Open thread statistics',
+              child: ExcludeSemantics(
+                child: IconButton(
+                  onPressed: widget.workbench.selection.threadId == null
+                      ? null
+                      : () => showThreadStatsModal(
+                            context: context,
+                            threadId: widget.workbench.selection.threadId!,
+                            bridgeBaseUri: widget.bridgeBaseUri,
+                          ),
+                  tooltip: 'Thread statistics',
+                  icon: const Icon(Icons.query_stats_rounded),
+                ),
+              ),
+            ),
+            Semantics(
               key: const ValueKey('semantic.thread.history'),
               container: true,
               button: true,
@@ -811,6 +832,7 @@ class _DesktopThreadControls extends StatelessWidget {
     required this.liveProcesses,
     required this.pendingApprovalCount,
     required this.onOpenHistory,
+    required this.bridgeBaseUri,
     required this.onCompactThread,
     required this.onTerminateCommandExecution,
     required this.onMore,
@@ -820,6 +842,7 @@ class _DesktopThreadControls extends StatelessWidget {
   final List<LiveProcessItem> liveProcesses;
   final int pendingApprovalCount;
   final VoidCallback onOpenHistory;
+  final Uri? bridgeBaseUri;
   final VoidCallback onCompactThread;
   final ValueChanged<String> onTerminateCommandExecution;
   final VoidCallback onMore;
@@ -843,6 +866,26 @@ class _DesktopThreadControls extends StatelessWidget {
               onPressed: enabled ? onOpenHistory : null,
               tooltip: 'History',
               icon: const Icon(Icons.history),
+            ),
+          ),
+        ),
+        Semantics(
+          key: const ValueKey('semantic.thread.stats'),
+          container: true,
+          button: true,
+          enabled: enabled,
+          label: 'Open thread statistics',
+          child: ExcludeSemantics(
+            child: IconButton(
+              onPressed: enabled
+                  ? () => showThreadStatsModal(
+                        context: context,
+                        threadId: selection.threadId!,
+                        bridgeBaseUri: bridgeBaseUri,
+                      )
+                  : null,
+              tooltip: 'Thread statistics',
+              icon: const Icon(Icons.query_stats_rounded),
             ),
           ),
         ),

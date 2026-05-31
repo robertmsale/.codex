@@ -198,7 +198,7 @@ fi
 run_via_privileged_exec_if_allowed "${requested_command[@]}"
 case "$PRIVILEGED_EXEC_OUTCOME" in
   handled)
-    shim_emit_captured_output \
+    codex_emit_privileged_exec_output \
       "$PRIVILEGED_EXEC_STDOUT_FILE" \
       "$PRIVILEGED_EXEC_STDERR_FILE" \
       "$PRIVILEGED_EXEC_STATUS"
