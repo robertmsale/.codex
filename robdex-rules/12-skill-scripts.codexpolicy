@@ -21,6 +21,7 @@ prefix_rule(
         "designer-hot-reload", "/Users/robertsale/.codex/skills/designer-runtime/scripts/designer-hot-reload",
         "design-lab-capture",
         "design-review", "/Users/robertsale/.codex/skills/design-worker/scripts/design-review",
+        "fly-mpg-query",
         "api-integration-harness",
         "api_integration_reaper",
         "api_integration_reaper_start",

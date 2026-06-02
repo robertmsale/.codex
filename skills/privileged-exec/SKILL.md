@@ -41,6 +41,12 @@ Use this skill when a command hits sandbox friction, triggers an approval reques
 - For Ezra QBO dev router OAuth, set `QBO_OAUTH_CALLBACK_DEV_FORWARD_BASE_URL` to the URL printed by `public-dev-tunnel`.
 - If `cloudflared` is missing, stop and report that setup is required: `brew install cloudflared`.
 
+## Fly MPG Read-Only Queries
+
+- Use `fly-mpg-query --cluster <cluster-id> --sql "<read-only SQL>"` for sanctioned read-only Fly Managed Postgres inspection.
+- Do not pipe SQL into `flyctl mpg connect`; piped shell commands are not eligible for privileged execution.
+- `fly-mpg-query` accepts only read-only statement shapes and rejects obvious write/admin SQL before connecting.
+
 ## What Not To Assume
 
 - Do not assume an arbitrary shell command should be approved just because it seems necessary.

@@ -1,0 +1,73 @@
+#!/bin/zsh
+set -euo pipefail
+
+codex_root="${CODEX_HOME:-$HOME/.codex}"
+source "$codex_root/scripts/privileged_exec_bypass.sh"
+run_via_privileged_exec_bypass_script "$0" "$@"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  fly-mpg-query --cluster <cluster-id> --sql <read-only-sql>
+
+Examples:
+  fly-mpg-query --cluster 1zqyxr7e2px0wp8m --sql "select 1;"
+  fly-mpg-query --cluster 1zqyxr7e2px0wp8m --sql "select id, name from tenants limit 5;"
+
+This wrapper is intentionally read-only. It accepts SELECT, WITH, SHOW, and
+EXPLAIN statements and rejects obvious write/admin SQL.
+EOF
+}
+
+fail() {
+  echo "fly-mpg-query: $*" >&2
+  exit 1
+}
+
+cluster=""
+sql=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cluster)
+      [[ $# -ge 2 ]] || fail "--cluster requires a value"
+      cluster="$2"
+      shift 2
+      ;;
+    --sql)
+      [[ $# -ge 2 ]] || fail "--sql requires a value"
+      sql="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      fail "unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n "$cluster" ]] || fail "missing --cluster"
+[[ "$cluster" =~ '^[A-Za-z0-9._:-]+$' ]] || fail "invalid cluster id"
+[[ -n "$sql" ]] || fail "missing --sql"
+
+normalized_sql="$(printf '%s' "$sql" \
+  | tr '\n\r\t' '   ' \
+  | sed -E 's/--[^[:cntrl:]]*//g; s/\/\*[^*]*\*\///g; s/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]+/ /g' \
+  | tr '[:upper:]' '[:lower:]')"
+
+[[ -n "$normalized_sql" ]] || fail "SQL is empty after normalization"
+if [[ ! "$normalized_sql" =~ '^(select|with|show|explain)([[:space:];]|$)' ]]; then
+  fail "only read-only SELECT, WITH, SHOW, and EXPLAIN statements are allowed"
+fi
+
+if printf '%s\n' "$normalized_sql" \
+  | /usr/bin/grep -Eq '(^|[[:space:];])(insert|update|delete|drop|create|alter|truncate|merge|grant|revoke|vacuum|analyze|copy|call|do|reindex|refresh)([[:space:];]|$)'; then
+  fail "SQL contains a blocked write/admin keyword"
+fi
+
+command -v flyctl >/dev/null 2>&1 || fail "flyctl is not installed or not on PATH"
+
+printf '%s\n' "$sql" | flyctl mpg connect --cluster "$cluster"

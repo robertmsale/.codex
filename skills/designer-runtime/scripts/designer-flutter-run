@@ -90,9 +90,48 @@ if [[ ${#extra_args[@]} -gt 0 ]]; then
   cmd+=("${extra_args[@]}")
 fi
 
-escaped_workdir="$(printf '%q' "$workdir")"
+run_root="/tmp/designer-flutter-run"
+mkdir -p "$run_root"
+runner="$run_root/${session}.sh"
 escaped_cmd="$(printf '%q ' "${cmd[@]}")"
-escaped_log_file="$(printf '%q' "$log_file")"
-tmux new-session -d -s "$session" "cd $escaped_workdir && (ROBDEX_DESIGNER_FLUTTER_RUN=1 ${escaped_cmd% } 2>&1; printf '\n[designer-flutter-run] flutter exited with status %s\n' \"\$?\") | tee $escaped_log_file"
+cat >"$runner" <<EOF
+#!/bin/bash
+set -o pipefail
+cd "$(printf '%q' "$workdir")" || exit 1
+{
+  printf '[designer-flutter-run] session: %s\n' "$(printf '%q' "$session")"
+  printf '[designer-flutter-run] workdir: %s\n' "$(printf '%q' "$workdir")"
+  printf '[designer-flutter-run] device: %s\n' "$(printf '%q' "$device_id")"
+  printf '[designer-flutter-run] command: %s\n' "$(printf '%q' "${cmd[0]}") ${escaped_cmd#* }"
+  printf '[designer-flutter-run] flutter path: '
+  command -v flutter || true
+  printf '[designer-flutter-run] started at: %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  ROBDEX_DESIGNER_FLUTTER_RUN=1 ${escaped_cmd% }
+  status=\$?
+  printf '\n[designer-flutter-run] flutter exited with status %s\n' "\$status"
+  exit "\$status"
+} 2>&1 | tee "$(printf '%q' "$log_file")"
+exit "\${PIPESTATUS[0]}"
+EOF
+chmod +x "$runner"
+
+tmux new-session -d -s "$session" -c "$workdir"
+tmux send-keys -t "$session" "$runner" C-m
+
+for _ in {1..20}; do
+  if [[ -s "$log_file" ]]; then
+    break
+  fi
+  sleep 0.1
+done
+
+if [[ ! -s "$log_file" ]]; then
+  {
+    printf '[designer-flutter-run] tmux session started but log stayed empty.\n'
+    printf '[designer-flutter-run] runner: %s\n' "$runner"
+    printf '[designer-flutter-run] pane:\n'
+    tmux capture-pane -p -t "$session" -S -80 2>/dev/null || true
+  } >"$log_file"
+fi
 printf 'started tmux session %s in %s\n' "$session" "$workdir"
 printf 'log file: %s\n' "$log_file"
