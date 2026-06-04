@@ -196,6 +196,7 @@ pub struct UiProjectItem {
     pub designer_developer_instructions: Option<String>,
     pub operator_developer_instructions: Option<String>,
     pub hidden_developer_instructions: Option<String>,
+    pub permanent_requirement_composables: Vec<String>,
     pub is_selected: bool,
 }
 

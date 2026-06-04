@@ -19,6 +19,8 @@ COMPOSABLES_RESPONSE = {
             "id": "review-evidence",
             "title": "Review Evidence",
             "scope": "global",
+            "permanent": True,
+            "permanentSource": "project",
             "requirementCount": 1,
             "description": "Concrete review evidence.",
             "requirements": [
@@ -71,6 +73,7 @@ class RobdexComposableRequirementsTests(unittest.TestCase):
             robdex._cmd_requirements_composables_list("orch-1", args)
 
         self.assertIn("review-evidence | global | count=1", output.getvalue())
+        self.assertIn("permanent", output.getvalue())
 
     def test_show_composable_prints_details(self) -> None:
         args = argparse.Namespace(
@@ -85,6 +88,8 @@ class RobdexComposableRequirementsTests(unittest.TestCase):
 
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["id"], "review-evidence")
+        self.assertTrue(payload["permanent"])
+        self.assertEqual(payload["permanentSource"], "project")
         self.assertEqual(payload["requirements"][0]["key"], "reviewableArtifacts")
 
     def test_compose_merges_composables_with_task_requirements(self) -> None:

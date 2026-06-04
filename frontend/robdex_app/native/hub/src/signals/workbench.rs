@@ -67,6 +67,7 @@ pub struct UpdateProjectSignal {
     pub designer_developer_instructions: String,
     pub operator_developer_instructions: String,
     pub hidden_developer_instructions: String,
+    pub permanent_requirement_composables: Vec<String>,
 }
 
 #[derive(Deserialize, DartSignal)]

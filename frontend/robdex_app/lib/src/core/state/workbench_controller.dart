@@ -241,6 +241,7 @@ class WorkbenchController extends ChangeNotifier {
     required String designerDeveloperInstructions,
     required String operatorDeveloperInstructions,
     required String hiddenDeveloperInstructions,
+    required List<String> permanentRequirementComposables,
   }) {
     UpdateProjectSignal(
       projectId: projectId,
@@ -265,6 +266,7 @@ class WorkbenchController extends ChangeNotifier {
       designerDeveloperInstructions: designerDeveloperInstructions,
       operatorDeveloperInstructions: operatorDeveloperInstructions,
       hiddenDeveloperInstructions: hiddenDeveloperInstructions,
+      permanentRequirementComposables: permanentRequirementComposables,
     ).sendSignalToRust();
   }
 

@@ -738,7 +738,8 @@ def _cmd_requirements_composables_list(thread_id: str, args: argparse.Namespace)
         scope = _normalize_text(str(item.get("scope") or "")) or "unknown"
         count = item.get("requirementCount")
         description = _normalize_text(str(item.get("description") or ""))
-        line = f"{composable_id} | {scope} | count={count} | {title}"
+        permanent = " | permanent" if bool(item.get("permanent")) else ""
+        line = f"{composable_id} | {scope} | count={count}{permanent} | {title}"
         if description:
             line += f" | {description}"
         lines.append(line)

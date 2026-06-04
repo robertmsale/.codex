@@ -104,6 +104,157 @@ class ProjectRoleModelSettingsPane extends StatelessWidget {
   }
 }
 
+class ProjectRequirementComposable {
+  const ProjectRequirementComposable({
+    required this.id,
+    required this.title,
+    required this.description,
+    required this.scope,
+    required this.requirementCount,
+    required this.requirements,
+  });
+
+  final String id;
+  final String title;
+  final String description;
+  final String scope;
+  final int requirementCount;
+  final List<Map<String, dynamic>> requirements;
+
+  factory ProjectRequirementComposable.fromJson(Map<String, dynamic> json) {
+    final requirements = (json['requirements'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList(growable: false);
+    return ProjectRequirementComposable(
+      id: json['id'] as String? ?? '',
+      title: json['title'] as String? ?? '',
+      description: json['description'] as String? ?? '',
+      scope: json['scope'] as String? ?? '',
+      requirementCount: json['requirementCount'] as int? ?? requirements.length,
+      requirements: requirements,
+    );
+  }
+}
+
+class ProjectPermanentComposablesPane extends StatelessWidget {
+  const ProjectPermanentComposablesPane({
+    super.key,
+    required this.composables,
+    required this.selectedIds,
+    required this.onChanged,
+    this.error,
+  });
+
+  final List<ProjectRequirementComposable> composables;
+  final List<String> selectedIds;
+  final ValueChanged<List<String>> onChanged;
+  final String? error;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final selected = selectedIds.toSet();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('Permanent composables', style: theme.textTheme.titleSmall),
+        const SizedBox(height: 6),
+        Text(
+          'Server-enforced Requirements composables that are always merged for this project.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+          ),
+        ),
+        if (error != null && error!.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            error!,
+            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
+          ),
+        ] else if (composables.isEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            'No composables detected for this project context.',
+            style: theme.textTheme.bodySmall,
+          ),
+        ] else ...[
+          const SizedBox(height: 8),
+          for (final composable in composables)
+            SwitchListTile(
+              key: ValueKey('project.permanentComposable.${composable.id}'),
+              contentPadding: EdgeInsets.zero,
+              value: selected.contains(composable.id),
+              title: Text(composable.title.isEmpty ? composable.id : composable.title),
+              subtitle: Text(
+                '${composable.id} | ${composable.scope.isEmpty ? 'unknown' : composable.scope} | ${composable.requirementCount} requirements'
+                '${composable.description.isEmpty ? '' : '\n${composable.description}'}',
+              ),
+              secondary: Tooltip(
+                message: 'Inspect composable',
+                child: IconButton(
+                  key: ValueKey('project.permanentComposable.inspect.${composable.id}'),
+                  icon: const Icon(Icons.info_outline),
+                  onPressed: () => _showProjectComposableDetails(context, composable),
+                ),
+              ),
+              onChanged: (enabled) {
+                final next = selectedIds.toList(growable: true);
+                if (enabled) {
+                  if (!next.contains(composable.id)) {
+                    next.add(composable.id);
+                  }
+                } else {
+                  next.removeWhere((id) => id == composable.id);
+                }
+                onChanged(List.unmodifiable(next));
+              },
+            ),
+        ],
+      ],
+    );
+  }
+
+  void _showProjectComposableDetails(
+    BuildContext context,
+    ProjectRequirementComposable composable,
+  ) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(composable.title.isEmpty ? composable.id : composable.title),
+        content: SizedBox(
+          width: 560,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(composable.description.isEmpty ? composable.id : composable.description),
+                const SizedBox(height: 12),
+                for (final requirement in composable.requirements) ...[
+                  Text(
+                    requirement['key'] as String? ?? '',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  Text(requirement['statement'] as String? ?? ''),
+                  const SizedBox(height: 10),
+                ],
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class RobdexWorkbench extends StatefulWidget {
   const RobdexWorkbench({super.key});
 
@@ -131,6 +282,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   late final FocusNode _hostFocusNode;
   late final FocusNode _portFocusNode;
   bool _graphicsEnabled = !kIsWeb;
+  String? _lastShownControllerError;
 
   @override
   void initState() {
@@ -148,6 +300,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     _portController = TextEditingController(text: '42080');
     _hostFocusNode = FocusNode();
     _portFocusNode = FocusNode();
+    _controller.addListener(_showControllerErrorIfNeeded);
     if (kIsWeb) {
       _connectToSameOriginBridge();
     } else {
@@ -194,12 +347,31 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     _domMirrorController.dispose();
     _terminalController.dispose();
     _hookToastSubscription?.cancel();
+    _controller.removeListener(_showControllerErrorIfNeeded);
     _hostFocusNode.dispose();
     _portFocusNode.dispose();
     _hostController.dispose();
     _portController.dispose();
     _controller.dispose();
     super.dispose();
+  }
+
+  void _showControllerErrorIfNeeded() {
+    final error = _controller.error?.toString().trim();
+    if (error == null || error.isEmpty || error == _lastShownControllerError) {
+      return;
+    }
+    _lastShownControllerError = error;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(content: Text(error)),
+      );
+    });
   }
 
   Future<void> _restoreBridgeSettings() async {
@@ -824,6 +996,20 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
 
   Future<void> _showProjectSettingsDialog(ProjectItem project) async {
     final availableModels = _controller.view?.availableModels ?? const <ModelItem>[];
+    var permanentRequirementComposables =
+        project.permanentRequirementComposables.toList(growable: true);
+    List<ProjectRequirementComposable> projectRequirementComposables =
+        const <ProjectRequirementComposable>[];
+    String? projectRequirementComposablesError;
+    try {
+      projectRequirementComposables = await _fetchProjectRequirementComposables(project);
+    } catch (error) {
+      projectRequirementComposablesError =
+          error.toString().replaceFirst('Bad state: ', '');
+    }
+    if (!mounted) {
+      return;
+    }
     final nameController = TextEditingController(text: project.name);
     final cwdController = TextEditingController(text: project.defaultCwd);
     _ProjectSettingsTab activeTab = _ProjectSettingsTab.project;
@@ -1103,6 +1289,15 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 title: const Text('Route approvals'),
                 contentPadding: EdgeInsets.zero,
               ),
+              const SizedBox(height: 16),
+              ProjectPermanentComposablesPane(
+                composables: projectRequirementComposables,
+                selectedIds: permanentRequirementComposables,
+                error: projectRequirementComposablesError,
+                onChanged: (next) => setDialogState(
+                  () => permanentRequirementComposables = next.toList(growable: true),
+                ),
+              ),
             ],
           );
         }
@@ -1342,7 +1537,37 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           operatorDeveloperInstructionsController.text.trim(),
       hiddenDeveloperInstructions:
           hiddenDeveloperInstructionsController.text.trim(),
+      permanentRequirementComposables: permanentRequirementComposables,
     );
+  }
+
+  Future<List<ProjectRequirementComposable>> _fetchProjectRequirementComposables(
+    ProjectItem project,
+  ) async {
+    final senderThreadId = _controller.view?.selection.threadId;
+    if (senderThreadId == null || senderThreadId.trim().isEmpty) {
+      return const <ProjectRequirementComposable>[];
+    }
+    final response = await http.post(
+      _bridgeBaseUri.resolve('/orchestrator/requirements/composables'),
+      headers: const {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'senderThreadId': senderThreadId,
+        'projectPath': project.rootPath,
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw StateError('Composable requirements failed with ${response.statusCode}.');
+    }
+    final decoded = jsonDecode(response.body);
+    final items = decoded is Map<String, dynamic> ? decoded['items'] as List<dynamic>? : null;
+    return (items ?? const <dynamic>[])
+        .whereType<Map<String, dynamic>>()
+        .map(ProjectRequirementComposable.fromJson)
+        .toList(growable: false);
   }
 
   Future<void> _showProjectHookLogsSheet(ProjectItem project) async {

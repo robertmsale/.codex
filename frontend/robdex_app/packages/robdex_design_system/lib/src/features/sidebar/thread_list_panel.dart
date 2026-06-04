@@ -396,25 +396,110 @@ class _RequirementReviewBadge extends StatelessWidget {
     return Semantics(
       key: ValueKey('semantic.thread.requirements.${summary.status ?? 'active'}'),
       container: true,
+      button: true,
       label: 'Requirements review ${summary.displayStatus}',
       child: ExcludeSemantics(
         child: Tooltip(
           message: 'Requirements: ${summary.displayStatus}',
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: color.withValues(alpha: 0.38)),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(4),
-              child: Icon(icon, size: 12, color: color),
+          child: IconButton(
+            onPressed: () => _showRequirementsReadOnlyDialog(context, summary),
+            icon: Icon(icon, size: 13, color: color),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints.tightFor(width: 24, height: 24),
+            visualDensity: VisualDensity.compact,
+            style: IconButton.styleFrom(
+              backgroundColor: color.withValues(alpha: 0.12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(4),
+                side: BorderSide(color: color.withValues(alpha: 0.38)),
+              ),
             ),
           ),
         ),
       ),
     );
   }
+}
+
+Future<void> _showRequirementsReadOnlyDialog(
+  BuildContext context,
+  RequirementReviewSummary summary,
+) {
+  final theme = Theme.of(context);
+  final requirements = summary.requirements;
+  return showDialog<void>(
+    context: context,
+    builder: (context) {
+      return Dialog(
+        insetPadding: const EdgeInsets.all(24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.sizeOf(context).width - 48,
+            maxHeight: MediaQuery.sizeOf(context).height - 48,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 18, 16, 18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Requirements',
+                        style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      tooltip: 'Close',
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: requirements.isEmpty
+                      ? Text(
+                          'No requirements.',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                          ),
+                        )
+                      : Scrollbar(
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.only(right: 12, bottom: 8),
+                            child: SelectableText(
+                              _plainRequirementsText(requirements),
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                height: 1.45,
+                                fontFamily: 'monospace',
+                                color: theme.colorScheme.onSurface.withValues(alpha: 0.9),
+                              ),
+                            ),
+                          ),
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
+String _plainRequirementsText(List<RequirementReviewRequirement> requirements) {
+  return requirements.asMap().entries.map((entry) {
+    final index = entry.key + 1;
+    final requirement = entry.value;
+    return [
+      'Requirement $index: ${requirement.statement}',
+      '  - Risk: ${requirement.severity}',
+      '  - Verification Method: ${requirement.verificationMethod}',
+    ].join('\n');
+  }).join('\n\n');
 }
 
 class _PendingApprovalBadge extends StatelessWidget {

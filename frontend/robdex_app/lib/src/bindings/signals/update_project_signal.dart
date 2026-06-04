@@ -27,6 +27,7 @@ class UpdateProjectSignal {
     required this.designerDeveloperInstructions,
     required this.operatorDeveloperInstructions,
     required this.hiddenDeveloperInstructions,
+    required this.permanentRequirementComposables,
   });
 
   static UpdateProjectSignal deserialize(BinaryDeserializer deserializer) {
@@ -54,6 +55,7 @@ class UpdateProjectSignal {
       designerDeveloperInstructions: deserializer.deserializeString(),
       operatorDeveloperInstructions: deserializer.deserializeString(),
       hiddenDeveloperInstructions: deserializer.deserializeString(),
+      permanentRequirementComposables: TraitHelpers.deserializeVectorStr(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -90,6 +92,7 @@ class UpdateProjectSignal {
   final String designerDeveloperInstructions;
   final String operatorDeveloperInstructions;
   final String hiddenDeveloperInstructions;
+  final List<String> permanentRequirementComposables;
 
   UpdateProjectSignal copyWith({
     String? projectId,
@@ -114,6 +117,7 @@ class UpdateProjectSignal {
     String? designerDeveloperInstructions,
     String? operatorDeveloperInstructions,
     String? hiddenDeveloperInstructions,
+    List<String>? permanentRequirementComposables,
   }) {
     return UpdateProjectSignal(
       projectId: projectId ?? this.projectId,
@@ -138,6 +142,7 @@ class UpdateProjectSignal {
       designerDeveloperInstructions: designerDeveloperInstructions ?? this.designerDeveloperInstructions,
       operatorDeveloperInstructions: operatorDeveloperInstructions ?? this.operatorDeveloperInstructions,
       hiddenDeveloperInstructions: hiddenDeveloperInstructions ?? this.hiddenDeveloperInstructions,
+      permanentRequirementComposables: permanentRequirementComposables ?? this.permanentRequirementComposables,
     );
   }
 
@@ -165,6 +170,7 @@ class UpdateProjectSignal {
     serializer.serializeString(designerDeveloperInstructions);
     serializer.serializeString(operatorDeveloperInstructions);
     serializer.serializeString(hiddenDeveloperInstructions);
+    TraitHelpers.serializeVectorStr(permanentRequirementComposables, serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -201,7 +207,12 @@ class UpdateProjectSignal {
       && qaDeveloperInstructions == other.qaDeveloperInstructions
       && designerDeveloperInstructions == other.designerDeveloperInstructions
       && operatorDeveloperInstructions == other.operatorDeveloperInstructions
-      && hiddenDeveloperInstructions == other.hiddenDeveloperInstructions;
+      && hiddenDeveloperInstructions == other.hiddenDeveloperInstructions
+      && permanentRequirementComposables.length == other.permanentRequirementComposables.length
+      && permanentRequirementComposables
+          .asMap()
+          .entries
+          .every((entry) => other.permanentRequirementComposables[entry.key] == entry.value);
   }
 
   @override
@@ -228,6 +239,7 @@ class UpdateProjectSignal {
         designerDeveloperInstructions,
         operatorDeveloperInstructions,
         hiddenDeveloperInstructions,
+        Object.hashAll(permanentRequirementComposables),
       ]);
 
   @override
@@ -257,7 +269,8 @@ class UpdateProjectSignal {
         'qaDeveloperInstructions: $qaDeveloperInstructions, '
         'designerDeveloperInstructions: $designerDeveloperInstructions, '
         'operatorDeveloperInstructions: $operatorDeveloperInstructions, '
-        'hiddenDeveloperInstructions: $hiddenDeveloperInstructions'
+        'hiddenDeveloperInstructions: $hiddenDeveloperInstructions, '
+        'permanentRequirementComposables: $permanentRequirementComposables'
         ')';
       return true;
     }());

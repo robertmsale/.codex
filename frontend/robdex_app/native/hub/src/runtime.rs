@@ -63,6 +63,7 @@ enum Action {
         designer_developer_instructions: Option<String>,
         operator_developer_instructions: Option<String>,
         hidden_developer_instructions: Option<String>,
+        permanent_requirement_composables: Vec<String>,
     },
     CreateThread {
         project_id: String,
@@ -461,6 +462,7 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
         } else {
             Some(signal.message.hidden_developer_instructions)
         },
+        permanent_requirement_composables: signal.message.permanent_requirement_composables,
     });
     spawn_map::<CreateThreadSignal, _>(tx.clone(), |signal| Action::CreateThread {
         project_id: signal.message.project_id,
@@ -781,6 +783,7 @@ async fn handle_action(
             designer_developer_instructions,
             operator_developer_instructions,
             hidden_developer_instructions,
+            permanent_requirement_composables,
         } => {
             client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
                 .update_project(
@@ -806,6 +809,7 @@ async fn handle_action(
                     designer_developer_instructions,
                     operator_developer_instructions,
                     hidden_developer_instructions,
+                    permanent_requirement_composables,
                 )
                 .await?;
             current_view_clone(current_view)

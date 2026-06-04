@@ -189,6 +189,7 @@ void main() {
       'defaultCwd': '/Users/robertsale/.codex',
       'requirementsReviewerDefaultModel': 'gpt-5.5',
       'requirementsReviewerDefaultReasoningEffort': 'high',
+      'permanentRequirementComposables': ['no-legacy', 'non-negotiables'],
       'autoRouteReplies': false,
       'routeApprovalRequests': true,
       'isSelected': true,
@@ -196,6 +197,41 @@ void main() {
 
     expect(project.requirementsReviewerDefaultModel, 'gpt-5.5');
     expect(project.requirementsReviewerDefaultReasoningEffort, 'high');
+    expect(project.permanentRequirementComposables, [
+      'no-legacy',
+      'non-negotiables',
+    ]);
+  });
+
+  test('workbench view parses project permanent composables from native payload', () {
+    final view = WorkbenchViewData.fromJson(const {
+      'projects': [
+        {
+          'id': 'project-codex',
+          'name': 'Codex',
+          'rootPath': '/Users/robertsale/.codex',
+          'defaultCwd': '/Users/robertsale/.codex',
+          'requirementsReviewerDefaultModel': 'gpt-5.5',
+          'requirementsReviewerDefaultReasoningEffort': 'high',
+          'permanentRequirementComposables': ['no-legacy'],
+          'autoRouteReplies': false,
+          'routeApprovalRequests': true,
+          'isSelected': true,
+        },
+      ],
+      'selection': <String, dynamic>{},
+      'threads': <dynamic>[],
+      'availableModels': <dynamic>[],
+      'threadGroups': <dynamic>[],
+      'liveProcesses': <dynamic>[],
+      'chatEntries': <dynamic>[],
+      'workspaceFiles': <dynamic>[],
+      'inspectorFacts': <dynamic>[],
+      'pendingApprovals': <dynamic>[],
+    });
+
+    expect(view.projects, hasLength(1));
+    expect(view.projects.single.permanentRequirementComposables, ['no-legacy']);
   });
 
   test('update project signal submits requirements reviewer defaults', () {
@@ -222,11 +258,94 @@ void main() {
       designerDeveloperInstructions: '',
       operatorDeveloperInstructions: '',
       hiddenDeveloperInstructions: '',
+      permanentRequirementComposables: ['no-legacy'],
     );
 
     final decoded = UpdateProjectSignal.bincodeDeserialize(signal.bincodeSerialize());
     expect(decoded.requirementsReviewerModelId, 'gpt-5.5');
     expect(decoded.requirementsReviewerReasoningEffort, 'high');
+    expect(decoded.permanentRequirementComposables, ['no-legacy']);
+  });
+
+  testWidgets('project settings permanent composables render details and update selection only', (
+    WidgetTester tester,
+  ) async {
+    var selectedIds = <String>['no-legacy'];
+    var reviewerModel = 'gpt-5.5';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) {
+              return Column(
+                children: [
+                  ProjectPermanentComposablesPane(
+                    composables: const [
+                      ProjectRequirementComposable(
+                        id: 'no-legacy',
+                        title: 'No Legacy',
+                        description: 'Do not leave legacy behavior behind.',
+                        scope: 'global',
+                        requirementCount: 1,
+                        requirements: [
+                          {
+                            'key': 'noLegacyLeftBehind',
+                            'statement': 'Remove obsolete behavior and docs.',
+                            'severity': 'blocker',
+                            'verificationMethod': 'diffReview',
+                          },
+                        ],
+                      ),
+                      ProjectRequirementComposable(
+                        id: 'non-negotiables',
+                        title: 'Non-negotiables',
+                        description: 'Always-on engineering constraints.',
+                        scope: 'global',
+                        requirementCount: 3,
+                        requirements: [],
+                      ),
+                    ],
+                    selectedIds: selectedIds,
+                    onChanged: (next) => setState(() => selectedIds = next),
+                  ),
+                  DropdownButton<String>(
+                    key: const ValueKey('unrelated.reviewer.model'),
+                    value: reviewerModel,
+                    items: const [
+                      DropdownMenuItem(value: 'gpt-5.5', child: Text('GPT-5.5')),
+                      DropdownMenuItem(value: 'gpt-5.4-mini', child: Text('GPT-5.4 Mini')),
+                    ],
+                    onChanged: (value) => setState(() => reviewerModel = value ?? ''),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Permanent composables'), findsOneWidget);
+    expect(find.textContaining('no-legacy | global | 1 requirements'), findsOneWidget);
+    expect(find.textContaining('non-negotiables | global | 3 requirements'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey('project.permanentComposable.inspect.no-legacy')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('noLegacyLeftBehind'), findsOneWidget);
+    expect(find.text('Remove obsolete behavior and docs.'), findsOneWidget);
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey('project.permanentComposable.non-negotiables')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(selectedIds, ['no-legacy', 'non-negotiables']);
+    expect(reviewerModel, 'gpt-5.5');
   });
 
   testWidgets('requirements reviewer project settings controls render and update only reviewer fields', (
@@ -1708,6 +1827,59 @@ void main() {
     expect(find.text('Concrete review evidence.'), findsOneWidget);
     expect(find.text('reviewableArtifacts'), findsOneWidget);
     expect(find.text('Completion proof must include exact evidence.'), findsOneWidget);
+  });
+
+  testWidgets('requirements form marks permanent composables as locked and included', (
+    WidgetTester tester,
+  ) async {
+    String? submitted;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () async {
+              submitted = await showRequirementSetFormDialog(
+                context,
+                title: 'Requirements',
+                actionLabel: 'Set',
+                initialComposableItems: const [
+                  {
+                    'id': 'no-legacy',
+                    'title': 'No Legacy',
+                    'description': 'Clean slate enforcement.',
+                    'scope': 'global',
+                    'permanent': true,
+                    'permanentSource': 'project',
+                    'requirements': [
+                      {
+                        'key': 'noLegacyLeftBehind',
+                        'statement': 'Do not leave legacy behavior behind.',
+                        'severity': 'blocker',
+                        'verificationMethod': 'diffReview',
+                      },
+                    ],
+                  },
+                ],
+              );
+            },
+            child: const Text('Open'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('no-legacy (1) | permanent'), findsOneWidget);
+    await tester.enterText(find.widgetWithText(TextField, 'Title'), 'Task requirements');
+    await tester.enterText(find.widgetWithText(TextField, 'Statement'), 'Task-specific statement.');
+    await tester.tap(find.text('Set'));
+    await tester.pumpAndSettle();
+
+    final payload = jsonDecode(submitted!) as Map<String, dynamic>;
+    final requirements = payload['requirements'] as List<dynamic>;
+    expect(payload['includeComposables'], contains('no-legacy'));
+    expect(requirements.map((item) => item['key']), contains('noLegacyLeftBehind'));
   });
 
   testWidgets('chat timeline preserves scroll position when new entries arrive away from bottom', (

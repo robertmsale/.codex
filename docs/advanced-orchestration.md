@@ -70,9 +70,15 @@ EOF
 ```
 
 Add `--attach --name "<agent name>"` to attach the composed RequirementSet
-atomically. If the operator has made a composable mandatory for the current work
-stream, such as `no-legacy` for clean-slate work, do not attach Requirements
-without it unless the operator explicitly changes that direction.
+atomically.
+
+Project settings can mark composables as permanent. Permanent composables are
+server-enforced for the recipient project: the bridge merges them into every
+Requirements set/update for agents in that project even when the GUI, CLI, or
+orchestrator omits them. Composable list/show output marks these as permanent so
+operators and orchestrators can distinguish project policy from optional packs.
+For optional composables that are not permanent, include them explicitly with
+`--include-composable`.
 
 Both `requirements-from-prose` and `set-requirements` have explicit sequencing
 flags for non-idle cases:

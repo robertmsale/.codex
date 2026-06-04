@@ -151,6 +151,7 @@ class ProjectItem {
     required this.designerDeveloperInstructions,
     required this.operatorDeveloperInstructions,
     required this.hiddenDeveloperInstructions,
+    required this.permanentRequirementComposables,
     required this.isSelected,
   });
 
@@ -177,6 +178,7 @@ class ProjectItem {
   final String? designerDeveloperInstructions;
   final String? operatorDeveloperInstructions;
   final String? hiddenDeveloperInstructions;
+  final List<String> permanentRequirementComposables;
   final bool isSelected;
 
   factory ProjectItem.fromJson(Map<String, dynamic> json) {
@@ -208,6 +210,10 @@ class ProjectItem {
       designerDeveloperInstructions: json['designerDeveloperInstructions'] as String?,
       operatorDeveloperInstructions: json['operatorDeveloperInstructions'] as String?,
       hiddenDeveloperInstructions: json['hiddenDeveloperInstructions'] as String?,
+      permanentRequirementComposables:
+          (json['permanentRequirementComposables'] as List<dynamic>? ?? const [])
+              .whereType<String>()
+              .toList(growable: false),
       isSelected: json['isSelected'] as bool? ?? false,
     );
   }

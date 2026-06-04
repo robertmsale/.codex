@@ -156,6 +156,7 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
       _composables = initialComposableItems
           .map(_RequirementComposable.fromJson)
           .toList(growable: false);
+      _selectPermanentComposables(_composables);
       return;
     }
     _loadComposables();
@@ -290,6 +291,14 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
     });
   }
 
+  void _selectPermanentComposables(Iterable<_RequirementComposable> composables) {
+    for (final composable in composables) {
+      if (composable.permanent) {
+        _selectedComposableIds.add(composable.id);
+      }
+    }
+  }
+
   Future<void> _loadComposables() async {
     final baseUri = widget.bridgeBaseUri;
     final senderThreadId = widget.senderThreadId;
@@ -325,6 +334,7 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
       }
       setState(() {
         _composables = composables;
+        _selectPermanentComposables(composables);
         _loadingComposables = false;
       });
     } catch (error) {
@@ -376,8 +386,11 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
                           FilterChip(
                             key: ValueKey('requirements.composable.${composable.id}'),
                             selected: _selectedComposableIds.contains(composable.id),
-                            label: Text('${composable.id} (${composable.requirements.length})'),
-                            onSelected: (selected) {
+                            label: Text(
+                              '${composable.id} (${composable.requirements.length})'
+                              '${composable.permanent ? ' | permanent' : ''}',
+                            ),
+                            onSelected: composable.permanent ? null : (selected) {
                               setState(() {
                                 if (selected) {
                                   _selectedComposableIds.add(composable.id);
@@ -523,12 +536,16 @@ class _RequirementComposable {
     required this.title,
     required this.description,
     required this.requirements,
+    required this.permanent,
+    required this.permanentSource,
   });
 
   final String id;
   final String title;
   final String description;
   final List<Map<String, dynamic>> requirements;
+  final bool permanent;
+  final String permanentSource;
 
   factory _RequirementComposable.fromJson(Map<String, dynamic> json) {
     final requirements = (json['requirements'] as List<dynamic>? ?? const [])
@@ -547,6 +564,8 @@ class _RequirementComposable {
       title: json['title'] as String? ?? '',
       description: json['description'] as String? ?? '',
       requirements: requirements,
+      permanent: json['permanent'] == true,
+      permanentSource: json['permanentSource'] as String? ?? '',
     );
   }
 }

@@ -27,6 +27,7 @@ const mockWorkbenchData = WorkbenchViewData(
       designerDeveloperInstructions: 'Remove AI slop and push interface quality up.',
       operatorDeveloperInstructions: 'Coordinate local tooling and configuration.',
       hiddenDeveloperInstructions: 'Operate quietly and only when explicitly routed.',
+      permanentRequirementComposables: ['non-negotiables'],
       isSelected: true,
     ),
     ProjectItem(
@@ -53,6 +54,7 @@ const mockWorkbenchData = WorkbenchViewData(
       designerDeveloperInstructions: 'Keep Ezra interfaces deliberate and specific.',
       operatorDeveloperInstructions: 'Handle coordination and environment issues.',
       hiddenDeveloperInstructions: 'Remain available for narrow support work.',
+      permanentRequirementComposables: ['no-legacy'],
       isSelected: false,
     ),
   ],

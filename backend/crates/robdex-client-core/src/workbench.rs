@@ -215,6 +215,7 @@ impl WorkbenchClient {
         designer_developer_instructions: Option<String>,
         operator_developer_instructions: Option<String>,
         hidden_developer_instructions: Option<String>,
+        permanent_requirement_composables: Vec<String>,
     ) -> Result<()> {
         post_json(&self.client, self.endpoint.http_base.join(&format!("/projects/{project_id}"))?, json!({
                 "name": name,
@@ -251,7 +252,8 @@ impl WorkbenchClient {
                     "designer": designer_developer_instructions,
                     "operator": operator_developer_instructions,
                     "hidden": hidden_developer_instructions,
-                }
+                },
+                "requirementsPermanentComposables": permanent_requirement_composables
             }))
             .await?;
         Ok(())
@@ -781,6 +783,7 @@ pub async fn build_workbench_with_models(
             designer_developer_instructions: record.designer_developer_instructions.clone(),
             operator_developer_instructions: record.operator_developer_instructions.clone(),
             hidden_developer_instructions: record.hidden_developer_instructions.clone(),
+            permanent_requirement_composables: record.permanent_requirement_composables.clone(),
             is_selected: Some(record.id.as_str()) == selected_project_id.as_deref(),
         })
         .collect::<Vec<_>>();
@@ -1233,6 +1236,7 @@ struct ProjectRecord {
     designer_developer_instructions: Option<String>,
     operator_developer_instructions: Option<String>,
     hidden_developer_instructions: Option<String>,
+    permanent_requirement_composables: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -1586,6 +1590,20 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
             .and_then(|value| value.get("roleDeveloperInstructionsDefaults"))
             .cloned()
             .unwrap_or(Value::Null);
+        let permanent_requirement_composables = project
+            .get("configs")
+            .and_then(|value| value.get("requirementsPermanentComposables"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         records.push(ProjectRecord {
             id: project
                 .get("id")
@@ -1688,6 +1706,7 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
                 .get("hidden")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            permanent_requirement_composables,
             root_path,
             orchestrator_thread_id: project
                 .get("orchestratorThreadID")
@@ -1970,6 +1989,88 @@ mod tests {
                 .requirements_reviewer_default_reasoning_effort
                 .as_deref(),
             Some("high")
+        );
+    }
+
+    #[test]
+    fn project_records_include_permanent_requirement_composables() {
+        let snapshot = json!({
+            "state": {
+                "projects": {
+                    "p1": {
+                        "id": "p1",
+                        "name": "Project",
+                        "projectRoot": "/tmp/project",
+                        "configs": {
+                            "requirementsPermanentComposables": [
+                                "no-legacy",
+                                "",
+                                7,
+                                "non-negotiables"
+                            ]
+                        }
+                    }
+                }
+            }
+        });
+
+        let records = extract_project_records(&snapshot);
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].permanent_requirement_composables,
+            vec!["no-legacy".to_string(), "non-negotiables".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn workbench_view_emits_project_permanent_requirement_composables() {
+        let snapshot = json!({
+            "connectionStatus": "connected",
+            "state": {
+                "selectedProjectId": "p1",
+                "projects": {
+                    "p1": {
+                        "id": "p1",
+                        "name": "Project",
+                        "projectRoot": "/tmp/project",
+                        "cwd": "/tmp/project",
+                        "configs": {
+                            "requirementsPermanentComposables": ["no-legacy"]
+                        },
+                        "agents": {
+                            "orch": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": "/tmp/project"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let view = build_workbench_with_models(
+            snapshot,
+            Some("orch"),
+            None,
+            &BridgeEndpoint::new("127.0.0.1", 1),
+            Some(vec![UiModelItem {
+                id: "test-model".to_string(),
+                name: None,
+                hidden: false,
+            }]),
+        )
+        .await
+        .expect("workbench view");
+
+        assert_eq!(view.projects.len(), 1);
+        assert_eq!(
+            view.projects[0].permanent_requirement_composables,
+            vec!["no-legacy".to_string()]
+        );
+        let encoded = serde_json::to_value(&view).expect("serialize view");
+        assert_eq!(
+            encoded["projects"][0]["permanentRequirementComposables"],
+            json!(["no-legacy"])
         );
     }
 
