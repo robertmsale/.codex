@@ -216,6 +216,9 @@ trust_level = "trusted"
 [projects."/Users/robertsale/optiq"]
 trust_level = "trusted"
 
+[projects."/Users/robertsale/Code/st-bs"]
+trust_level = "trusted"
+
 [tui]
 status_line = []
 

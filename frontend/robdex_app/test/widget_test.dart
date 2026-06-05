@@ -267,6 +267,14 @@ void main() {
     expect(decoded.permanentRequirementComposables, ['no-legacy']);
   });
 
+  test('delete project signal serializes project id', () {
+    const signal = DeleteProjectSignal(projectId: 'project-123');
+
+    final decoded = DeleteProjectSignal.bincodeDeserialize(signal.bincodeSerialize());
+
+    expect(decoded.projectId, 'project-123');
+  });
+
   testWidgets('project settings permanent composables render details and update selection only', (
     WidgetTester tester,
   ) async {
@@ -1308,7 +1316,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(sendCount, 0);
-    expect(setRequestBody?['senderThreadId'], mockWorkbenchData.selection.threadId);
+    expect(setRequestBody?.containsKey('senderThreadId'), isFalse);
     expect(setRequestBody?['recipientThreadId'], mockWorkbenchData.selection.threadId);
     final requirementSet = setRequestBody?['requirementSet'] as Map<String, dynamic>?;
     expect(requirementSet?['active'], isTrue);
@@ -1369,7 +1377,7 @@ void main() {
     await tester.tap(find.text('Clear'));
     await tester.pumpAndSettle();
 
-    expect(requestBodies.last['senderThreadId'], mockWorkbenchData.selection.threadId);
+    expect(requestBodies.last.containsKey('senderThreadId'), isFalse);
     expect(requestBodies.last['recipientThreadId'], mockWorkbenchData.selection.threadId);
     expect(requestBodies.last['requirementSet'], isNull);
     expect(find.text('Requirements cleared.'), findsOneWidget);
@@ -1500,7 +1508,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(sendCount, 0);
-    expect(requestBody?['senderThreadId'], mockWorkbenchData.selection.threadId);
+    expect(requestBody?.containsKey('senderThreadId'), isFalse);
     expect(requestBody?['recipientThreadId'], mockWorkbenchData.selection.threadId);
     final requirementSet = requestBody?['requirementSet'] as Map<String, dynamic>?;
     expect(requirementSet?['active'], isTrue);
@@ -1520,7 +1528,6 @@ void main() {
 
     final response = await submitThreadRequirementSet(
       baseUri: Uri.parse('http://bridge.test'),
-      senderThreadId: 'source-thread',
       recipientThreadId: 'target-thread',
       projectPath: '/tmp/project',
       requirementSet: {
@@ -1535,7 +1542,7 @@ void main() {
     );
 
     expect(response.statusCode, 200);
-    expect(requestBody?['senderThreadId'], 'source-thread');
+    expect(requestBody?.containsKey('senderThreadId'), isFalse);
     expect(requestBody?['recipientThreadId'], 'target-thread');
     expect(requestBody?['projectPath'], '/tmp/project');
     expect((requestBody?['requirementSet'] as Map<String, dynamic>)['active'], isFalse);

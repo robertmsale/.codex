@@ -3826,27 +3826,6 @@ fn ensure_requirements_mutation_allowed(
     )
 }
 
-fn resolve_visible_project_representative(
-    visible: &[crate::models::ScopedAgentRecord],
-    project_path: &str,
-) -> Result<crate::models::ScopedAgentRecord> {
-    let normalized_project = normalize_path(project_path.to_string());
-    let mut matches = visible
-        .iter()
-        .filter(|record| normalize_path(record.project_path.clone()) == normalized_project)
-        .cloned()
-        .collect::<Vec<_>>();
-    matches.sort_by(|lhs, rhs| {
-        rhs.is_orchestrator
-            .cmp(&lhs.is_orchestrator)
-            .then_with(|| lhs.thread_id.cmp(&rhs.thread_id))
-    });
-    matches
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("No visible threads in project `{normalized_project}`."))
-}
-
 fn normalize_path(value: String) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -4810,6 +4789,52 @@ pub async fn orchestrator_set_requirements(
     bail!("Recipient `{}` is not a tracked agent.", recipient.thread_id)
 }
 
+pub async fn direct_set_requirements(
+    runtime: &BridgeRuntime,
+    recipient_thread_id: Option<&str>,
+    _project_path: Option<&str>,
+    set_payload: Value,
+) -> Result<Value> {
+    let recipient_thread_id = recipient_thread_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("recipientThreadId is required for direct Requirements updates."))?;
+    if set_payload.is_null() {
+        return direct_clear_requirements(runtime, recipient_thread_id).await;
+    }
+
+    let _state_guard = runtime.lock_state_mutation().await;
+    let mut state = parse_state(&runtime.state_document_value().await);
+    let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
+    let recipient = tracked_agent_record_for_thread(&state, &running, recipient_thread_id)
+        .ok_or_else(|| anyhow::anyhow!("Thread `{recipient_thread_id}` is not tracked by the bridge."))?;
+    let mut set = compose_requirement_set_payload(runtime, &state, &recipient.thread_id, set_payload)?;
+    validate_requirement_set(&set)?;
+    if set.id.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+        set.id = Some(format!("requirements-{}", unix_now()));
+    }
+    for project in state.projects.values_mut() {
+        if let Some(agent) = project.agents.get_mut(&recipient.thread_id) {
+            agent.requirements = Some(set.clone());
+            agent.requirement_review = None;
+            persist_state(runtime, &state).await?;
+            runtime
+                .push_event(crate::models::BridgeEvent::AppStateSnapshot {
+                    state: runtime.state_document_value().await,
+                })
+                .await;
+            return Ok(json!({
+                "threadId": recipient.thread_id,
+                "displayName": recipient.display_name,
+                "requirementSetId": set.id,
+                "requirementCount": set.requirements.len(),
+                "enforceOnTurns": set.enforce_on_turns,
+            }));
+        }
+    }
+    bail!("Recipient `{}` is not a tracked agent.", recipient.thread_id)
+}
+
 pub async fn orchestrator_requirement_composables(
     runtime: &BridgeRuntime,
     sender_thread_id: &str,
@@ -4825,13 +4850,8 @@ pub async fn orchestrator_requirement_composables(
         && recipient_name.is_none()
         && project_path.map(str::trim).filter(|value| !value.is_empty()).is_some()
     {
-        if sender.role != "operator" && !sender.is_orchestrator {
-            bail!("Only orchestrator and operator threads can list composables by project path.");
-        }
         let project_path = project_path.expect("checked project path");
-        let records = all_agent_records(&state, &running);
-        let scoped = scoped_agent_context(&records, sender_thread_id, true)?;
-        resolve_visible_project_representative(&scoped.visible, project_path)?
+        return requirement_composables_for_project_path(runtime, &state, project_path);
     } else {
         resolve_requirements_recipient(&state, &running, &sender, recipient_thread_id, recipient_name, project_path)?
     };
@@ -4840,7 +4860,92 @@ pub async fn orchestrator_requirement_composables(
     let permanent_ids: BTreeSet<String> = permanent_requirement_composable_ids_for_thread(&state, &recipient.thread_id)
         .into_iter()
         .collect();
-    let items = composables
+    let items = requirement_composable_items(composables, &permanent_ids);
+    Ok(json!({
+        "threadId": recipient.thread_id,
+        "displayName": recipient.display_name,
+        "items": items,
+    }))
+}
+
+pub async fn direct_requirement_composables(
+    runtime: &BridgeRuntime,
+    recipient_thread_id: Option<&str>,
+    project_path: Option<&str>,
+) -> Result<Value> {
+    let state = parse_state(&runtime.state_document_value().await);
+    if recipient_thread_id.map(str::trim).filter(|value| !value.is_empty()).is_none() {
+        let project_path = project_path
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("recipientThreadId or projectPath is required."))?;
+        return requirement_composables_for_project_path(runtime, &state, project_path);
+    }
+    let recipient_thread_id = recipient_thread_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .expect("checked recipient thread");
+    let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
+    let recipient = tracked_agent_record_for_thread(&state, &running, recipient_thread_id)
+        .ok_or_else(|| anyhow::anyhow!("Thread `{recipient_thread_id}` is not tracked by the bridge."))?;
+    let composables = discover_requirement_composables(runtime, &state, &recipient.thread_id)?;
+    let permanent_ids: BTreeSet<String> = permanent_requirement_composable_ids_for_thread(&state, &recipient.thread_id)
+        .into_iter()
+        .collect();
+    Ok(json!({
+        "threadId": recipient.thread_id,
+        "displayName": recipient.display_name,
+        "items": requirement_composable_items(composables, &permanent_ids),
+    }))
+}
+
+fn requirement_composables_for_project_path(
+    runtime: &BridgeRuntime,
+    state: &PersistedState,
+    project_path: &str,
+) -> Result<Value> {
+    let normalized_project = normalize_path(project_path.to_string());
+    let project = state
+        .projects
+        .values()
+        .find(|project| normalize_path(project.project_root.clone().unwrap_or_default()) == normalized_project)
+        .ok_or_else(|| anyhow::anyhow!("Unknown project `{normalized_project}`."))?;
+    let mut composables = BTreeMap::new();
+    load_requirement_composables_from_dir(
+        &global_requirement_composables_dir(runtime),
+        "global",
+        &mut composables,
+    )?;
+    load_requirement_composables_from_dir(
+        &PathBuf::from(&normalized_project).join(".codex").join("requirements").join("composables"),
+        "project",
+        &mut composables,
+    )?;
+    let permanent_ids = permanent_requirement_composable_ids(project)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let representative_thread_id = project
+        .orchestrator_thread_id
+        .clone()
+        .or_else(|| project.agents.keys().next().cloned());
+    let representative_display_name = representative_thread_id
+        .as_deref()
+        .and_then(|thread_id| project.agents.get(thread_id))
+        .and_then(|agent| agent.display_name.clone())
+        .or_else(|| project.name.clone());
+    Ok(json!({
+        "threadId": representative_thread_id,
+        "displayName": representative_display_name,
+        "projectPath": normalized_project,
+        "items": requirement_composable_items(composables, &permanent_ids),
+    }))
+}
+
+fn requirement_composable_items(
+    composables: BTreeMap<String, RequirementComposableState>,
+    permanent_ids: &BTreeSet<String>,
+) -> Vec<Value> {
+    composables
         .into_values()
         .map(|composable| {
             let permanent = permanent_ids.contains(&composable.id);
@@ -4858,12 +4963,7 @@ pub async fn orchestrator_requirement_composables(
                 "requirements": composable.requirements,
             })
         })
-        .collect::<Vec<_>>();
-    Ok(json!({
-        "threadId": recipient.thread_id,
-        "displayName": recipient.display_name,
-        "items": items,
-    }))
+        .collect()
 }
 
 async fn orchestrator_clear_requirements(
@@ -4881,6 +4981,40 @@ async fn orchestrator_clear_requirements(
     let recipient =
         resolve_requirements_recipient(&state, &running, &sender, recipient_thread_id, recipient_name, project_path)?;
     ensure_requirements_mutation_allowed(&sender, &recipient)?;
+
+    for project in state.projects.values_mut() {
+        if let Some(agent) = project.agents.get_mut(&recipient.thread_id) {
+            agent.requirements = None;
+            agent.requirement_review = None;
+            agent.requirement_packets.clear();
+            persist_state(runtime, &state).await?;
+            runtime
+                .push_event(crate::models::BridgeEvent::AppStateSnapshot {
+                    state: runtime.state_document_value().await,
+                })
+                .await;
+            return Ok(json!({
+                "threadId": recipient.thread_id,
+                "displayName": recipient.display_name,
+                "requirementSetId": Value::Null,
+                "requirementCount": 0,
+                "enforceOnTurns": false,
+                "cleared": true,
+            }));
+        }
+    }
+    bail!("Recipient `{}` is not a tracked agent.", recipient.thread_id)
+}
+
+async fn direct_clear_requirements(
+    runtime: &BridgeRuntime,
+    recipient_thread_id: &str,
+) -> Result<Value> {
+    let _state_guard = runtime.lock_state_mutation().await;
+    let mut state = parse_state(&runtime.state_document_value().await);
+    let running = runtime.snapshot().await?.thread_cache.running_thread_ids;
+    let recipient = tracked_agent_record_for_thread(&state, &running, recipient_thread_id)
+        .ok_or_else(|| anyhow::anyhow!("Thread `{recipient_thread_id}` is not tracked by the bridge."))?;
 
     for project in state.projects.values_mut() {
         if let Some(agent) = project.agents.get_mut(&recipient.thread_id) {
@@ -5252,13 +5386,12 @@ fn load_requirement_composables_from_dir(
     for entry in entries {
         let entry = entry.with_context(|| format!("failed to read {}", dir.display()))?;
         let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+        let Some(format) = requirement_composable_file_format(&path) else {
             continue;
-        }
+        };
         let text = fs::read_to_string(&path)
             .with_context(|| format!("failed to read requirements composable {}", path.display()))?;
-        let mut composable: RequirementComposableState = serde_json::from_str(&text)
-            .with_context(|| format!("invalid requirements composable {}", path.display()))?;
+        let mut composable = parse_requirement_composable_text(&text, format, &path)?;
         if composable.id.trim().is_empty() {
             composable.id = path
                 .file_stem()
@@ -5272,6 +5405,28 @@ fn load_requirement_composables_from_dir(
         out.insert(composable.id.clone(), composable);
     }
     Ok(())
+}
+
+fn requirement_composable_file_format(path: &Path) -> Option<&'static str> {
+    match path.extension().and_then(|value| value.to_str()) {
+        Some("json") => Some("json"),
+        Some("yaml" | "yml") => Some("yaml"),
+        _ => None,
+    }
+}
+
+fn parse_requirement_composable_text(
+    text: &str,
+    format: &str,
+    path: &Path,
+) -> Result<RequirementComposableState> {
+    match format {
+        "json" => serde_json::from_str(text)
+            .with_context(|| format!("invalid requirements composable {}", path.display())),
+        "yaml" => serde_yaml::from_str(text)
+            .with_context(|| format!("invalid requirements composable {}", path.display())),
+        _ => bail!("unsupported requirements composable format `{format}`"),
+    }
 }
 
 fn validate_requirement_composable(composable: &RequirementComposableState, path: &Path) -> Result<()> {
@@ -6912,6 +7067,146 @@ mod tests {
         assert_eq!(shared["requirements"][0]["key"], json!("projectRequirement"));
     }
 
+    #[tokio::test]
+    async fn requirements_composables_load_yaml_and_yml_files() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let project_root = temp.path().join("project");
+        let project_dir = project_root.join(".codex").join("requirements").join("composables");
+        std::fs::create_dir_all(&project_dir).expect("project composables dir");
+        std::fs::write(
+            project_dir.join("yaml-composable.yaml"),
+            r#"
+id: yaml-composable
+title: YAML Composable
+description: Loaded from YAML.
+appliesTo:
+  - code
+requirements:
+  - key: yamlRequirement
+    statement: YAML statement.
+    severity: blocker
+    verificationMethod: commandEvidence
+"#,
+        )
+        .expect("write yaml composable");
+        std::fs::write(
+            project_dir.join("yml-composable.yml"),
+            r#"
+id: yml-composable
+title: YML Composable
+requirements:
+  - key: ymlRequirement
+    statement: YML statement.
+    severity: high
+    verificationMethod: sourceInspection
+"#,
+        )
+        .expect("write yml composable");
+
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": project_root.display().to_string(),
+                        "cwd": project_root.display().to_string(),
+                        "orchestratorThreadID": "orch-1",
+                        "agents": {
+                            "orch-1": {"displayName": "Orch", "role": "orchestrator", "projectRoot": project_root.display().to_string()},
+                            "worker-1": {"displayName": "Worker", "role": "worker", "projectRoot": project_root.display().to_string()}
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let payload = orchestrator_requirement_composables(
+            &runtime,
+            "orch-1",
+            Some("worker-1"),
+            None,
+            None,
+        )
+        .await
+        .expect("list composables");
+        let items = payload["items"].as_array().expect("items");
+        let yaml = items
+            .iter()
+            .find(|item| item["id"] == "yaml-composable")
+            .expect("yaml composable");
+        let yml = items
+            .iter()
+            .find(|item| item["id"] == "yml-composable")
+            .expect("yml composable");
+        assert_eq!(yaml["description"], json!("Loaded from YAML."));
+        assert_eq!(yaml["requirements"][0]["key"], json!("yamlRequirement"));
+        assert_eq!(yml["requirements"][0]["verificationMethod"], json!("sourceInspection"));
+    }
+
+    #[tokio::test]
+    async fn project_path_composable_listing_uses_global_when_project_has_no_composable_dir() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let global_dir = temp.path().join("requirements").join("composables");
+        std::fs::create_dir_all(&global_dir).expect("global composables dir");
+        std::fs::write(
+            global_dir.join("global-only.yaml"),
+            r#"
+id: global-only
+title: Global Only
+requirements:
+  - key: globalOnlyRequirement
+    statement: Global-only statement.
+    severity: high
+    verificationMethod: manualEvidence
+"#,
+        )
+        .expect("write global composable");
+        let project_root = temp.path().join("project-without-codex-requirements");
+        std::fs::create_dir_all(&project_root).expect("project root");
+
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "name": "Alpha",
+                        "projectRoot": project_root.display().to_string(),
+                        "cwd": project_root.display().to_string(),
+                        "orchestratorThreadID": "orch-1",
+                        "agents": {
+                            "orch-1": {"displayName": "Orch", "role": "orchestrator", "projectRoot": project_root.display().to_string()},
+                            "worker-1": {"displayName": "Worker", "role": "worker", "projectRoot": project_root.display().to_string()}
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let payload = orchestrator_requirement_composables(
+            &runtime,
+            "worker-1",
+            None,
+            None,
+            Some(project_root.to_str().expect("project path")),
+        )
+        .await
+        .expect("list composables by project path");
+        assert_eq!(payload["projectPath"], json!(normalize_path(project_root.display().to_string())));
+        let items = payload["items"].as_array().expect("items");
+        let global = items
+            .iter()
+            .find(|item| item["id"] == "global-only")
+            .expect("global composable");
+        assert_eq!(global["scope"], json!("global"));
+        assert_eq!(global["requirements"][0]["key"], json!("globalOnlyRequirement"));
+    }
+
     fn write_project_composable(project_root: &Path, id: &str, key: &str) {
         let project_dir = project_root.join(".codex").join("requirements").join("composables");
         std::fs::create_dir_all(&project_dir).expect("project composables dir");
@@ -8255,6 +8550,89 @@ mod tests {
         .await
         .expect_err("orchestrator hidden requirements should fail");
         assert!(hidden_error.to_string().contains("Orchestrators may only set Requirements on workers"));
+    }
+
+    #[tokio::test]
+    async fn direct_requirements_update_targets_exact_thread_without_sender_identity() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut state = sample_state();
+        state
+            .projects
+            .get_mut("alpha")
+            .and_then(|project| project.agents.get_mut("hidden-a"))
+            .expect("hidden")
+            .hidden_from_peer_list = true;
+        persist_state(&runtime, &state).await.expect("persist state");
+
+        let payload = serde_json::to_value(sample_requirement_set()).expect("requirements json");
+        let set_result = direct_set_requirements(&runtime, Some("hidden-a"), None, payload)
+            .await
+            .expect("direct hidden requirements set");
+        assert_eq!(set_result["threadId"], "hidden-a");
+        assert_eq!(set_result["requirementCount"], 2);
+
+        let clear_result = direct_set_requirements(&runtime, Some("hidden-a"), None, Value::Null)
+            .await
+            .expect("direct hidden requirements clear");
+        assert_eq!(clear_result["threadId"], "hidden-a");
+        assert_eq!(clear_result["cleared"], true);
+    }
+
+    #[tokio::test]
+    async fn direct_requirement_composables_can_load_for_recipient_without_sender_identity() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let state = sample_state();
+        persist_state(&runtime, &state).await.expect("persist state");
+        let global_dir = temp.path().join("requirements").join("composables");
+        std::fs::create_dir_all(&global_dir).expect("global composables dir");
+        std::fs::write(
+            global_dir.join("global-proof.yaml"),
+            r#"
+id: global-proof
+title: Global Proof
+description: Direct GUI discovery can load global composables without pretending to be the selected agent.
+requirements:
+  - key: globalProof
+    statement: Global composable appears.
+    severity: medium
+    verificationMethod: manualEvidence
+"#,
+        )
+        .expect("write global composable");
+
+        let payload = direct_requirement_composables(&runtime, Some("worker-a"), None)
+            .await
+            .expect("direct composables");
+        assert_eq!(payload["threadId"], "worker-a");
+        let items = payload["items"].as_array().expect("items");
+        assert!(items.iter().any(|item| item["id"] == "global-proof"));
+    }
+
+    #[test]
+    fn delete_project_removes_project_tracking_and_repicks_selection() {
+        let mut state = sample_state();
+        state.projects.get_mut("alpha").expect("alpha").id = Some("project-alpha".to_string());
+        state.projects.get_mut("beta").expect("beta").id = Some("project-beta".to_string());
+        let project_id = "project-alpha".to_string();
+        state.selected_project_id = Some(project_id.clone());
+
+        delete_project(&mut state, Some(&project_id)).expect("delete project");
+
+        assert!(!state
+            .projects
+            .values()
+            .any(|project| project.id.as_deref() == Some(project_id.as_str())));
+        assert_ne!(state.selected_project_id.as_deref(), Some(project_id.as_str()));
+        assert_eq!(
+            state.selected_project_id,
+            state.projects.values().find_map(|project| project.id.clone())
+        );
     }
 
     fn write_executable(path: &std::path::Path, content: &str) {

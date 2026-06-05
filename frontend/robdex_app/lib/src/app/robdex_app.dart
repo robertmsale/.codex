@@ -43,6 +43,12 @@ enum _ProjectSettingsTab {
   operator,
 }
 
+enum _ProjectSettingsResult {
+  cancel,
+  save,
+  delete,
+}
+
 class ProjectRoleModelSettingsPane extends StatelessWidget {
   const ProjectRoleModelSettingsPane({
     super.key,
@@ -839,7 +845,6 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                           helperText:
                               'These requirements are attached before the first turn starts.',
                           bridgeBaseUri: _bridgeBaseUri,
-                          senderThreadId: _controller.view?.selection.threadId,
                           projectPath: project.rootPath,
                         );
                         if (next == null) {
@@ -1046,7 +1051,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       text: project.hiddenDeveloperInstructions ?? '',
     );
 
-    final result = await showDialog<bool>(
+    final result = await showDialog<_ProjectSettingsResult>(
       context: context,
       builder: (context) {
         final theme = Theme.of(context);
@@ -1481,12 +1486,20 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 ),
               ),
               actions: [
+                TextButton.icon(
+                  onPressed: () => Navigator.of(context).pop(_ProjectSettingsResult.delete),
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Delete Project'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: theme.colorScheme.error,
+                  ),
+                ),
                 TextButton(
-                  onPressed: () => Navigator.of(context).pop(false),
+                  onPressed: () => Navigator.of(context).pop(_ProjectSettingsResult.cancel),
                   child: const Text('Cancel'),
                 ),
                 FilledButton(
-                  onPressed: () => Navigator.of(context).pop(true),
+                  onPressed: () => Navigator.of(context).pop(_ProjectSettingsResult.save),
                   child: const Text('Save'),
                 ),
               ],
@@ -1505,7 +1518,12 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     operatorDeveloperInstructionsController.dispose();
     hiddenDeveloperInstructionsController.dispose();
 
-    if (result != true) {
+    if (result == _ProjectSettingsResult.delete) {
+      await _confirmAndDeleteProject(project);
+      return;
+    }
+
+    if (result != _ProjectSettingsResult.save) {
       return;
     }
 
@@ -1541,13 +1559,48 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     );
   }
 
+  Future<void> _confirmAndDeleteProject(ProjectItem project) async {
+    if (!mounted) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Project'),
+        content: SizedBox(
+          width: 460,
+          child: Text(
+            'Remove "${project.name}" from Robdex tracking? This deletes the project record, thread tracking, role settings, groups, and hook logs from Robdex state. Files on disk are not deleted.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            child: const Text('Delete Project'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    _controller.deleteProject(project.id);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Deleted project "${project.name}" from Robdex tracking.')),
+    );
+  }
+
   Future<List<ProjectRequirementComposable>> _fetchProjectRequirementComposables(
     ProjectItem project,
   ) async {
-    final senderThreadId = _controller.view?.selection.threadId;
-    if (senderThreadId == null || senderThreadId.trim().isEmpty) {
-      return const <ProjectRequirementComposable>[];
-    }
     final response = await http.post(
       _bridgeBaseUri.resolve('/orchestrator/requirements/composables'),
       headers: const {
@@ -1555,7 +1608,6 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
         'Content-Type': 'application/json',
       },
       body: jsonEncode({
-        'senderThreadId': senderThreadId,
         'projectPath': project.rootPath,
       }),
     );
@@ -1786,7 +1838,6 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                           helperText:
                               'These requirements are attached before the spawned agent starts its first turn.',
                           bridgeBaseUri: _bridgeBaseUri,
-                          senderThreadId: _controller.view?.selection.threadId,
                           projectPath: _controller.view?.selection.projectRootPath,
                         );
                         if (next == null) {

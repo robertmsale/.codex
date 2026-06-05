@@ -364,7 +364,6 @@ class _ComposerPanelState extends State<ComposerPanel> {
       showActivationToggle: hasStoredRequirements,
       requirementsActive: requirementsActive,
       bridgeBaseUri: widget.bridgeBaseUri,
-      senderThreadId: widget.selection.threadId,
       recipientThreadId: widget.selection.threadId,
       projectPath: widget.selection.projectRootPath,
       httpClient: widget.httpClient,
@@ -403,7 +402,6 @@ class _ComposerPanelState extends State<ComposerPanel> {
     try {
       final response = await submitThreadRequirementSet(
         baseUri: baseUri,
-        senderThreadId: sourceId,
         recipientThreadId: sourceId,
         requirementSet: decoded,
         projectPath: widget.selection.projectRootPath,

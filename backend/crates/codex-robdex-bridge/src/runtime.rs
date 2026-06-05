@@ -1296,6 +1296,33 @@ impl BridgeRuntime {
                 return true;
             }
         };
+        if requirements_claims_are_all_not_satisfied(&reviewable_claim_payload) {
+            let text = requirements_all_not_satisfied_claim_prompt();
+            let _ = send_thread_input(
+                self,
+                &parsed_state,
+                thread_id,
+                Some(&text),
+                &[],
+                None,
+                None,
+            )
+            .await;
+            let _ = record_requirement_packet(
+                self,
+                thread_id,
+                RequirementPacketState {
+                    packet_type: "claimContinuation".to_string(),
+                    source_thread_id: thread_id.to_string(),
+                    turn_id: Some(turn_id.to_string()),
+                    target_thread_id: None,
+                    payload: reviewable_claim_payload,
+                    created_at: crate::commands::unix_now(),
+                },
+            )
+            .await;
+            return true;
+        }
         let reviewer_thread_id =
             match requirements_review_target_for_thread(&parsed_state, thread_id, &set)
                 .filter(|reviewer_thread_id| reviewer_thread_id != thread_id)
@@ -2834,6 +2861,33 @@ fn reviewable_requirements_claim_payload(payload: &Value) -> ReviewableRequireme
     }
 }
 
+fn requirements_claims_are_all_not_satisfied(payload: &Value) -> bool {
+    let Some(object) = payload.as_object() else {
+        return false;
+    };
+    let claims_object = object
+        .get("requirements")
+        .and_then(Value::as_object)
+        .unwrap_or(object);
+    let mut saw_claim = false;
+    for (key, value) in claims_object {
+        if matches!(key.as_str(), "summary" | "requirements") {
+            continue;
+        }
+        let Some(claim) = value.as_object() else {
+            continue;
+        };
+        let Some(status) = claim.get("claim").and_then(Value::as_str) else {
+            return false;
+        };
+        saw_claim = true;
+        if status != "notSatisfied" {
+            return false;
+        }
+    }
+    saw_claim
+}
+
 fn reviewable_requirements_verdict_payload(payload: &Value) -> ReviewableRequirementsVerdict {
     let Some(object) = payload.as_object() else {
         return ReviewableRequirementsVerdict::Invalid;
@@ -2852,6 +2906,10 @@ fn requirements_null_claim_prompt() -> String {
 
 fn requirements_invalid_claim_prompt() -> String {
     "[Requirements] Active Requirements are still attached, but the final structured packet did not contain a valid `requirements` object. Please provide the Requirements claim packet with `summary` and `requirements` containing every currently required requirement claim. Previously passed requirements remain binding even when omitted from the reduced claim schema.".to_string()
+}
+
+fn requirements_all_not_satisfied_claim_prompt() -> String {
+    "[Requirements] Your final claim packet marked every currently required claim as `notSatisfied`, so Robdex did not request Requirements Review. Continue working until at least one currently required requirement can be claimed `satisfied`, `blocked`, or `notApplicable`, then provide an updated final Requirements claim packet. An all-`notSatisfied` packet is never terminal. If you are blocked, use the `blocked` claim on the specific blocked requirement and provide concrete blocker evidence.".to_string()
 }
 
 fn compose_auto_routed_approval_request(
@@ -3441,6 +3499,104 @@ mod tests {
         assert!(prompt.contains("cargo test passed"));
         assert!(prompt.contains("`mustProvideClaims`: claim=satisfied; risk=low"));
         assert!(!prompt.contains("\"requirements\""));
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn all_not_satisfied_requirements_claim_prompts_source_without_review() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirements": [
+                                        {
+                                            "key": "mustImplementFeature",
+                                            "statement": "Implement the feature.",
+                                            "severity": "blocker",
+                                            "verificationMethod": "manualEvidence"
+                                        },
+                                        {
+                                            "key": "mustValidateFeature",
+                                            "statement": "Validate the feature.",
+                                            "severity": "blocker",
+                                            "verificationMethod": "commandEvidence"
+                                        }
+                                    ]
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "worker-1".to_string(),
+                vec![test_chat_message(
+                    "worker-1",
+                    "turn-not-satisfied",
+                    "final-not-satisfied",
+                    Some("final_answer"),
+                    r#"{"summary":"not done","requirements":{"mustImplementFeature":{"claim":"notSatisfied","evidence":[],"justification":"Not implemented yet.","risk":"high"},"mustValidateFeature":{"claim":"notSatisfied","evidence":[],"justification":"No validation yet.","risk":"high"}}}"#,
+                )],
+            );
+        }
+
+        assert!(
+            runtime
+                .maybe_route_requirements_review("worker-1", "turn-not-satisfied")
+                .await
+        );
+
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "worker-1");
+        let text = request["params"]["input"][0]["text"].as_str().unwrap_or_default();
+        assert!(text.contains("marked every currently required claim as `notSatisfied`"));
+        assert!(text.contains("Robdex did not request Requirements Review"));
+        match tokio::time::timeout(std::time::Duration::from_millis(100), requests.recv()).await {
+            Ok(Some(extra)) => panic!("unexpected reviewer request: {extra}"),
+            Ok(None) | Err(_) => {}
+        }
+        let state = runtime.state_document_value().await;
+        let source = state
+            .get("projects")
+            .and_then(|projects| projects.get("alpha"))
+            .and_then(|project| project.get("agents"))
+            .and_then(|agents| agents.get("worker-1"))
+            .expect("source");
+        assert!(source.get("requirementReview").is_none_or(Value::is_null));
+        assert_eq!(source["requirements"]["active"], true);
+        assert_eq!(source["requirementPackets"][0]["packetType"], "claimContinuation");
         transport.abort();
         server.abort();
     }

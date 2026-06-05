@@ -187,35 +187,33 @@ class _ChatTimelineState extends State<ChatTimeline> {
                 lengthIdentifier: _timelineLengthIdentifier(widget.entries),
                 anchorThreshold: 50,
                 builder: (context, scrollController) {
-                  return SelectionArea(
-                    child: ListView.separated(
-                      key: PageStorageKey<String>('chat-timeline-${widget.threadId ?? 'none'}'),
-                      controller: scrollController,
-                      itemCount: widget.entries.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 6),
-                      itemBuilder: (context, index) {
-                        final entry = widget.entries[index];
-                        final entryKey = _entryStorageKey(entry);
-                        return _ChatBubble(
-                          key: ValueKey(entryKey),
-                          entry: entry,
-                          expanded: _expandedEntryKeys.contains(entryKey),
-                          onExpandedChanged: (expanded) {
-                            setState(() {
-                              if (expanded) {
-                                _expandedEntryKeys.add(entryKey);
-                              } else {
-                                _expandedEntryKeys.remove(entryKey);
-                              }
-                            });
-                          },
-                          onTerminateCommandExecution:
-                              widget.onTerminateCommandExecution,
-                          bridgeBaseUri: widget.bridgeBaseUri,
-                          onOpenLink: widget.onOpenLink,
-                        );
-                      },
-                    ),
+                  return ListView.separated(
+                    key: PageStorageKey<String>('chat-timeline-${widget.threadId ?? 'none'}'),
+                    controller: scrollController,
+                    itemCount: widget.entries.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 6),
+                    itemBuilder: (context, index) {
+                      final entry = widget.entries[index];
+                      final entryKey = _entryStorageKey(entry);
+                      return _ChatBubble(
+                        key: ValueKey(entryKey),
+                        entry: entry,
+                        expanded: _expandedEntryKeys.contains(entryKey),
+                        onExpandedChanged: (expanded) {
+                          setState(() {
+                            if (expanded) {
+                              _expandedEntryKeys.add(entryKey);
+                            } else {
+                              _expandedEntryKeys.remove(entryKey);
+                            }
+                          });
+                        },
+                        onTerminateCommandExecution:
+                            widget.onTerminateCommandExecution,
+                        bridgeBaseUri: widget.bridgeBaseUri,
+                        onOpenLink: widget.onOpenLink,
+                      );
+                    },
                   );
                 },
               ),

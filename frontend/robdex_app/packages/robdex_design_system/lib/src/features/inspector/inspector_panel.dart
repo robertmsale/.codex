@@ -524,7 +524,6 @@ class _RequirementsReviewCard extends StatelessWidget {
       showActivationToggle: hasStoredRequirements,
       requirementsActive: requirementsActive,
       bridgeBaseUri: bridgeBaseUri,
-      senderThreadId: sourceId,
       recipientThreadId: sourceId,
     );
     if (submitted == null) {
@@ -549,7 +548,6 @@ class _RequirementsReviewCard extends StatelessWidget {
     try {
       final response = await submitThreadRequirementSet(
         baseUri: baseUri,
-        senderThreadId: sourceId,
         recipientThreadId: sourceId,
         requirementSet: decoded,
       );

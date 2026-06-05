@@ -1,0 +1,16 @@
+id: no-legacy
+title: No Legacy
+description: Manual opt-in for clean-slate apps or non-production systems where legacy compatibility is not required. Requires removing obsolete code, docs, config, tests, flags, and behaviors instead of preserving old paths.
+appliesTo:
+  - code
+  - UI
+  - API
+  - tooling
+  - docs
+  - config
+  - generated-artifacts
+requirements:
+  - key: noLegacyLeftBehind
+    statement: "Treat the assigned area as clean slate. Do not leave obsolete code paths, fallback behavior, aliases, flags, docs, comments, tests, generated artifacts, config, migration shims, or UI affordances that preserve or describe legacy behavior after the replacement is complete. (EXCEPTION: SQL migrations for obvious reasons)"
+    severity: blocker
+    verificationMethod: diffReview

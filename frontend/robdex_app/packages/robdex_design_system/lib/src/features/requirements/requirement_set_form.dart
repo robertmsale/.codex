@@ -40,17 +40,19 @@ String requirementSetJsonFromReviewSummary(
 
 Future<http.Response> submitThreadRequirementSet({
   required Uri baseUri,
-  required String senderThreadId,
   required String recipientThreadId,
   required Object? requirementSet,
+  String? senderThreadId,
   String? projectPath,
   http.Client? httpClient,
 }) {
   final body = <String, Object?>{
-    'senderThreadId': senderThreadId,
     'recipientThreadId': recipientThreadId,
     'requirementSet': requirementSet,
   };
+  if (senderThreadId != null && senderThreadId.trim().isNotEmpty) {
+    body['senderThreadId'] = senderThreadId.trim();
+  }
   if (projectPath != null && projectPath.trim().isNotEmpty) {
     body['projectPath'] = projectPath.trim();
   }
@@ -302,7 +304,11 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
   Future<void> _loadComposables() async {
     final baseUri = widget.bridgeBaseUri;
     final senderThreadId = widget.senderThreadId;
-    if (baseUri == null || senderThreadId == null || senderThreadId.trim().isEmpty) {
+    final recipientThreadId = widget.recipientThreadId;
+    final projectPath = widget.projectPath;
+    if (baseUri == null ||
+        ((recipientThreadId == null || recipientThreadId.trim().isEmpty) &&
+            (projectPath == null || projectPath.trim().isEmpty))) {
       return;
     }
     setState(() => _loadingComposables = true);
@@ -315,9 +321,12 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
           'Content-Type': 'application/json',
         },
         body: jsonEncode({
-          'senderThreadId': senderThreadId,
-          'recipientThreadId': widget.recipientThreadId,
-          'projectPath': widget.projectPath,
+          if (senderThreadId != null && senderThreadId.trim().isNotEmpty)
+            'senderThreadId': senderThreadId.trim(),
+          if (recipientThreadId != null && recipientThreadId.trim().isNotEmpty)
+            'recipientThreadId': recipientThreadId.trim(),
+          if (projectPath != null && projectPath.trim().isNotEmpty)
+            'projectPath': projectPath.trim(),
         }),
       );
       if (response.statusCode < 200 || response.statusCode >= 300) {

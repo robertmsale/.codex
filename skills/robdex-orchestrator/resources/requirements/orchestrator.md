@@ -68,6 +68,7 @@ Never run `robdex requirements-from-prose ... --text-stdin` without a heredoc, p
 - Use `robdex requirements-composables list` to discover reusable global and recipient-project composables before drafting Requirements.
 - Use `robdex requirements-composables show <id>` to inspect exact requirement text before selecting a composable.
 - Project-specific composables are resolved from the recipient agent's tracked project, not the sender's project.
+- Authored composable files may use `.json`, `.yaml`, or `.yml` in `requirements/composables`.
 - Select composables only when they are relevant to the assigned work package.
 - Permanent project composables are server-enforced and marked in composable listing output.
 - Composables supplement task-specific Requirements; they must not replace, narrow, or drift from the operator-approved outcome.
