@@ -4,10 +4,14 @@ Use Requirements when task constraints must become an explicit completion contra
 
 Requirements preserve the operator-approved outcome. Worker recommendations are advisory evidence only; do not convert a worker's reduced scope, alternate implementation, documentation-only compromise, or "small first step" into the Requirements contract unless the operator explicitly authorizes that change.
 
+Before authoring Requirements, read `authoring.md`. It defines the source-of-truth hierarchy, fan-out-before-Requirements rule, blocked discipline, and clobber audit.
+
 ## Normal Worker Flow
 
 - Spawn workers without Requirements when the first turn is discovery, triage, planning, or pre-implementation.
 - When the worker stops at pre-implementation, compare their plan against the operator-approved outcome and reject drift before setting Requirements.
+- If intent is ambiguous, contradictory, unsafe, or missing an owner decision, ask the operator for clarification before setting Requirements. Do not resolve ambiguity by adding fallback alternatives, scope reduction, legacy preservation, or documentation-only compromises.
+- Decide one-shot versus fan-out before setting Requirements. If the operator wants one-shot execution, preserve that package. If fan-out is needed, create dependency-ordered complete responsibility packages before attaching Requirements to any worker.
 - Convert the operator-approved outcome for the full assigned work package into Requirements. Use the worker plan only to identify implementation steps, dependencies, validation evidence, and missing owner decisions.
 - Attach Requirements while the worker is idle with `robdex set-requirements --name "<agent name>" --requirements-file <file>`, before sending the execution prompt.
 - Then send the implementation prompt. The next turn will be requirements-gated from the start.
@@ -16,9 +20,20 @@ Do not try to attach Requirements to a running turn. Requirements apply to `turn
 
 If a target worker is already running and you must replace its Requirements, use `--interrupt`. For prose-generated Requirements, use `robdex requirements-from-prose --title "<title>" --text-stdin --interrupt --name "<agent name>"`. For an existing file, use `robdex set-requirements --name "<agent name>" --requirements-file <file> --interrupt`. This interrupts the target, sets the new Requirements, and sends `Requirements updated` so the target resumes under the new contract.
 
-Large work is handled by dependency-ordered fan-out, not micro-slice Requirements. If the operator's requested outcome is too large or cross-cutting for one worker, create complete work packages by responsibility boundary, such as contracts, backend implementation, frontend integration, design/system polish, and QA validation. Each package's Requirements must cover that package's full responsibility and map back to the top-level operator outcome.
+Large work is handled by dependency-ordered fan-out before Requirements are set, not micro-slice Requirements. If the operator's requested outcome is too large or cross-cutting for one worker, ask whether the operator wants one-shot execution or a fan-out strategy. If fan-out is selected or clearly required, create complete work packages by responsibility boundary, such as contracts, backend implementation, frontend integration, design/system polish, and QA validation. Each package's Requirements must cover that package's full responsibility and map back to the top-level operator outcome.
 
 Do not create Requirements for only the easiest first step, a partial pattern, or a documentation placeholder unless the operator requested that narrowed outcome. Scope changes require proof of impossibility, internal conflict, unsafe work, or a missing owner decision, followed by explicit operator authorization.
+
+## Authoring Discipline
+
+Requirements are completion contracts, not planning notes or worker safety valves.
+
+- Select and inspect relevant composables before drafting task-specific Requirements.
+- Preserve permanent composables as higher-authority policy.
+- Draft one main obligation per Requirement.
+- Run the clobber audit from `authoring.md` before attaching.
+- Do not use "if possible", "best effort", "if too large", "fallback", "temporary", "for now", "MVP", "first slice", "partial", "stub", "mock", "document a workaround", "leave the old path", or "keep both paths" unless the operator explicitly requested that narrowed outcome.
+- Do not require impossible proof of historical non-events. Express negative constraints as final-state constraints, artifact constraints, or review of available logs/transcripts.
 
 ## From Prose
 

@@ -53,6 +53,7 @@ Use this skill for Robdex-backed communication.
   - `robdex handoff --help`
 - Requirements:
   - Orchestrators setting Requirements on workers must read `resources/requirements/orchestrator.md`.
+  - Orchestrators authoring Requirements must also read `resources/requirements/authoring.md`.
   - Workers and QA with active Requirements must read `resources/requirements/worker.md`.
   - Non-orchestrator agents asked to set Requirements on themselves must read `resources/requirements/self-setting.md`.
   - For command syntax and formatting examples, run `robdex requirements-from-prose --help`.
@@ -62,6 +63,7 @@ Use this skill for Robdex-backed communication.
 Requirements instructions are role-scoped resources. Load only the resource that matches your current role and task:
 
 - `resources/requirements/orchestrator.md`: orchestrators creating or replacing Requirements on workers.
+- `resources/requirements/authoring.md`: orchestrators compiling owner intent into Requirements.
 - `resources/requirements/worker.md`: workers and QA operating under active Requirements.
 - `resources/requirements/self-setting.md`: operators or other non-orchestrator agents explicitly asked to set Requirements on themselves.
 

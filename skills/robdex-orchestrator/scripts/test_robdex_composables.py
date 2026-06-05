@@ -213,7 +213,11 @@ class RobdexComposableRequirementsTests(unittest.TestCase):
         help_text = output.getvalue()
         self.assertIn("The parser turns each non-empty bullet", help_text)
         self.assertIn("Put one complete requirement per line", help_text)
+        self.assertIn("headings become accidental requirements", help_text)
+        self.assertIn("paragraph blobs", help_text)
         self.assertIn("Preview example:", help_text)
+        self.assertIn("No-legacy cleanup example:", help_text)
+        self.assertIn("--include-composable no-legacy", help_text)
         self.assertIn("Never run --text-stdin without a heredoc", help_text)
 
     def test_requirements_from_prose_merges_composables_for_preview(self) -> None:
