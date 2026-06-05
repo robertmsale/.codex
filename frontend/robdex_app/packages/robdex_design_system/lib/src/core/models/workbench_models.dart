@@ -135,6 +135,11 @@ class ProjectItem {
     required this.autoRouteReplies,
     required this.routeApprovalRequests,
     required this.preferredModelProvider,
+    this.defaultModel,
+    this.defaultReasoningEffort,
+    this.defaultSandboxMode,
+    this.defaultApprovalPolicy,
+    this.defaultNetworkAccess,
     required this.orchestratorDefaultModel,
     required this.orchestratorDefaultReasoningEffort,
     required this.workerDefaultModel,
@@ -143,6 +148,8 @@ class ProjectItem {
     required this.qaDefaultReasoningEffort,
     required this.designerDefaultModel,
     required this.designerDefaultReasoningEffort,
+    this.plannerDefaultModel,
+    this.plannerDefaultReasoningEffort,
     required this.requirementsReviewerDefaultModel,
     required this.requirementsReviewerDefaultReasoningEffort,
     required this.orchestratorDeveloperInstructions,
@@ -162,6 +169,11 @@ class ProjectItem {
   final bool autoRouteReplies;
   final bool routeApprovalRequests;
   final String? preferredModelProvider;
+  final String? defaultModel;
+  final String? defaultReasoningEffort;
+  final String? defaultSandboxMode;
+  final String? defaultApprovalPolicy;
+  final bool? defaultNetworkAccess;
   final String? orchestratorDefaultModel;
   final String? orchestratorDefaultReasoningEffort;
   final String? workerDefaultModel;
@@ -170,6 +182,8 @@ class ProjectItem {
   final String? qaDefaultReasoningEffort;
   final String? designerDefaultModel;
   final String? designerDefaultReasoningEffort;
+  final String? plannerDefaultModel;
+  final String? plannerDefaultReasoningEffort;
   final String? requirementsReviewerDefaultModel;
   final String? requirementsReviewerDefaultReasoningEffort;
   final String? orchestratorDeveloperInstructions;
@@ -190,6 +204,11 @@ class ProjectItem {
       autoRouteReplies: json['autoRouteReplies'] as bool? ?? false,
       routeApprovalRequests: json['routeApprovalRequests'] as bool? ?? false,
       preferredModelProvider: json['preferredModelProvider'] as String?,
+      defaultModel: json['defaultModel'] as String?,
+      defaultReasoningEffort: json['defaultReasoningEffort'] as String?,
+      defaultSandboxMode: json['defaultSandboxMode'] as String?,
+      defaultApprovalPolicy: json['defaultApprovalPolicy'] as String?,
+      defaultNetworkAccess: json['defaultNetworkAccess'] as bool?,
       orchestratorDefaultModel: json['orchestratorDefaultModel'] as String?,
       orchestratorDefaultReasoningEffort:
           json['orchestratorDefaultReasoningEffort'] as String?,
@@ -200,6 +219,9 @@ class ProjectItem {
       designerDefaultModel: json['designerDefaultModel'] as String?,
       designerDefaultReasoningEffort:
           json['designerDefaultReasoningEffort'] as String?,
+      plannerDefaultModel: json['plannerDefaultModel'] as String?,
+      plannerDefaultReasoningEffort:
+          json['plannerDefaultReasoningEffort'] as String?,
       requirementsReviewerDefaultModel:
           json['requirementsReviewerDefaultModel'] as String?,
       requirementsReviewerDefaultReasoningEffort:

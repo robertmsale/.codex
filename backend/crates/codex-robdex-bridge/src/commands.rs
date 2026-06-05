@@ -451,6 +451,11 @@ fn bridge_state_payload(state: &PersistedState) -> Value {
             "autoRouteReplies": project.auto_route_replies.unwrap_or(false),
             "routeApprovalRequests": project.route_approval_requests.unwrap_or(false),
             "preferredModelProvider": project.preferred_model_provider,
+            "defaultModel": project.configs.get("modelID").cloned().unwrap_or(Value::Null),
+            "defaultReasoningEffort": project.configs.get("reasoningEffort").cloned().unwrap_or(Value::Null),
+            "defaultSandboxMode": project.configs.get("sandboxMode").cloned().unwrap_or(Value::Null),
+            "defaultApprovalPolicy": project.configs.get("approvalPolicy").cloned().unwrap_or(Value::Null),
+            "defaultNetworkAccess": project.configs.get("networkAccess").cloned().unwrap_or(Value::Null),
             "permanentRequirementComposables": permanent_requirement_composable_ids(project),
             "worktrees": worktrees,
         }));
@@ -1633,6 +1638,32 @@ fn update_project(state: &mut PersistedState, payload: &Value) -> Result<()> {
             .filter(|value| !value.is_empty())
             .map(str::to_string);
     }
+    for key in [
+        "modelID",
+        "reasoningEffort",
+        "approvalPolicy",
+        "sandboxMode",
+        "networkAccess",
+    ] {
+        if payload.get(key).is_some() {
+            let mut configs = project.configs.as_object().cloned().unwrap_or_default();
+            match payload.get(key).cloned().filter(|value| {
+                if let Some(value) = value.as_str() {
+                    !value.trim().is_empty()
+                } else {
+                    !value.is_null()
+                }
+            }) {
+                Some(value) => {
+                    configs.insert(key.to_string(), value);
+                }
+                None => {
+                    configs.remove(key);
+                }
+            }
+            project.configs = Value::Object(configs);
+        }
+    }
     if let Some(role_defaults) = payload
         .get("roleModelReasoningDefaults")
         .cloned()
@@ -2068,6 +2099,36 @@ fn preferred_model_provider_for_project(
     })
 }
 
+fn project_config_string(state: &PersistedState, project_path: &str, key: &str) -> Option<String> {
+    let target_path = normalize_path(project_path.to_string());
+    state.projects.values().find_map(|project| {
+        let matches_project = project
+            .project_root
+            .as_ref()
+            .map(|value| normalize_path(value.clone()) == target_path)
+            .unwrap_or(false);
+        matches_project.then(|| {
+            project
+                .configs
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })?
+    })
+}
+
+fn project_config_bool(state: &PersistedState, project_path: &str, key: &str) -> Option<bool> {
+    let target_path = normalize_path(project_path.to_string());
+    state.projects.values().find_map(|project| {
+        let matches_project = project
+            .project_root
+            .as_ref()
+            .map(|value| normalize_path(value.clone()) == target_path)
+            .unwrap_or(false);
+        matches_project.then(|| project.configs.get(key).and_then(Value::as_bool))?
+    })
+}
+
 fn explicit_thread_settings_for_new_thread(
     state: &PersistedState,
     payload: &Value,
@@ -2329,7 +2390,7 @@ fn scoped_agent_context(
 }
 
 fn has_cross_project_communication_scope(record: &crate::models::ScopedAgentRecord) -> bool {
-    record.is_orchestrator || record.role == "operator"
+    record.is_orchestrator || matches!(record.role.as_str(), "operator" | "planner")
 }
 
 fn can_view_scoped_agent(
@@ -2422,17 +2483,31 @@ fn authoritative_spawn_defaults_for_project(
             .or_else(|| project.project_root.clone())
             .unwrap_or_default(),
     );
-    let approval_policy = state
+    let approval_policy = project
+        .configs
+        .get("approvalPolicy")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| state
         .global_configs
         .get("approvalPolicy")
         .and_then(Value::as_str)
-        .map(str::to_string);
-    let sandbox_mode = state
+        .map(str::to_string));
+    let sandbox_mode = project
+        .configs
+        .get("sandboxMode")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| state
         .global_configs
         .get("sandboxMode")
         .and_then(Value::as_str)
-        .map(str::to_string);
-    let default_network_access = state.global_configs.get("networkAccess").and_then(Value::as_bool);
+        .map(str::to_string));
+    let default_network_access = project
+        .configs
+        .get("networkAccess")
+        .and_then(Value::as_bool)
+        .or_else(|| state.global_configs.get("networkAccess").and_then(Value::as_bool));
     let network_access = effective_network_access_for_sandbox(
         sandbox_mode.as_deref(),
         None,
@@ -2444,9 +2519,17 @@ fn authoritative_spawn_defaults_for_project(
         approval_policy,
         sandbox_mode,
         network_access,
-        model: None,
+        model: project
+            .configs
+            .get("modelID")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         model_provider: project.preferred_model_provider.clone(),
-        reasoning_effort: None,
+        reasoning_effort: project
+            .configs
+            .get("reasoningEffort")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         service_tier: None,
         approvals_reviewer: None,
         personality: None,
@@ -2484,6 +2567,7 @@ fn sandbox_policy_for_spawn(
 fn role_model_reasoning_default_key(role: Option<&str>) -> &'static str {
     match role {
         Some("designer") => "designer",
+        Some("planner") => "planner",
         Some("qa") => "qa",
         Some("orchestrator") => "orchestrator",
         Some("requirements-reviewer") | Some("requirementsReviewer") => "requirements-reviewer",
@@ -2508,6 +2592,13 @@ fn role_default_model(state: &PersistedState, project_path: Option<&str>, role: 
         .and_then(|value| value.get("modelID"))
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| {
+            project
+                .configs
+                .get("modelID")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
 }
 
 fn role_default_reasoning_effort(
@@ -2531,6 +2622,13 @@ fn role_default_reasoning_effort(
         .and_then(|value| value.get("reasoningEffort"))
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| {
+            project
+                .configs
+                .get("reasoningEffort")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
 }
 
 fn developer_instructions_for_role(
@@ -2559,7 +2657,7 @@ fn developer_instructions_for_role(
     if let Some(configured) = configured {
         segments.push(configured);
     }
-    if !matches!(role, "orchestrator" | "operator") && project.orchestrator_thread_id.is_some() {
+    if !matches!(role, "orchestrator" | "operator" | "planner") && project.orchestrator_thread_id.is_some() {
         if role == "designer" {
             segments.push("Use the same communication rules as workers, but final assistant replies are not auto-forwarded for designers. If the administrator needs your final status, send it explicitly through the sanctioned Robdex path.".to_string());
         } else if project.auto_route_replies.unwrap_or(false) {
@@ -2904,7 +3002,70 @@ pub(crate) fn active_requirements_claim_schema_for_thread(
 }
 
 fn output_schema_for_thread_turn(state: &PersistedState, thread_id: &str) -> Option<Value> {
-    Some(active_requirements_claim_schema_for_thread(state, thread_id).unwrap_or(Value::Null))
+    if let Some(schema) = active_requirements_claim_schema_for_thread(state, thread_id) {
+        return Some(schema);
+    }
+    if effective_role_for_thread(state, thread_id, None).as_deref() == Some("planner") {
+        return Some(planner_turn_output_schema());
+    }
+    Some(Value::Null)
+}
+
+fn planner_turn_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["response", "clarification", "currentPlan"],
+        "properties": {
+            "response": {
+                "type": "string",
+                "description": "Plaintext response to the owner."
+            },
+            "clarification": {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["question", "options"],
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "Clarifying question for the owner."
+                            },
+                            "options": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 4,
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": ["label", "description"],
+                                    "properties": {
+                                        "label": {
+                                            "type": "string",
+                                            "description": "Short button label."
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "One-sentence impact or tradeoff."
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    { "type": "null" }
+                ]
+            },
+            "currentPlan": {
+                "anyOf": [
+                    { "type": "string" },
+                    { "type": "null" }
+                ],
+                "description": "Short current plan title, or null when no planning topic is active."
+            }
+        }
+    })
 }
 
 pub(crate) fn requirements_worker_claim_schema(set: &RequirementSetState) -> Value {
@@ -3259,6 +3420,7 @@ pub(crate) async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Res
         .get("approvalPolicy")
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| project_config_string(&state, &project_path, "approvalPolicy"))
         .or_else(|| {
             state
                 .global_configs
@@ -3270,6 +3432,7 @@ pub(crate) async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Res
         .get("sandboxMode")
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| project_config_string(&state, &project_path, "sandboxMode"))
         .or_else(|| {
             state
                 .global_configs
@@ -3277,7 +3440,8 @@ pub(crate) async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Res
                 .and_then(Value::as_str)
                 .map(str::to_string)
         });
-    let default_network_access = state.global_configs.get("networkAccess").and_then(Value::as_bool);
+    let default_network_access = project_config_bool(&state, &project_path, "networkAccess")
+        .or_else(|| state.global_configs.get("networkAccess").and_then(Value::as_bool));
     let network_access = effective_network_access_for_sandbox(
         sandbox_mode.as_deref(),
         payload.get("networkAccess").and_then(Value::as_bool),
@@ -3784,7 +3948,7 @@ fn resolve_requirements_recipient(
 }
 
 fn requirements_self_setting_allowed(role: &str) -> bool {
-    !matches!(role, "worker" | "qa")
+    !matches!(role, "worker" | "qa" | "planner")
 }
 
 fn ensure_requirements_view_allowed(
@@ -10401,6 +10565,114 @@ requirements:
     }
 
     #[test]
+    fn planner_role_defaults_use_planner_key_and_project_defaults() {
+        let temp = TempDir::new().expect("tempdir");
+        let project_root = temp.path().display().to_string();
+        let state = parse_state(&json!({
+            "projects": {
+                "codex": {
+                    "projectRoot": project_root,
+                    "configs": {
+                        "modelID": "gpt-project",
+                        "reasoningEffort": "medium",
+                        "roleModelReasoningDefaults": {
+                            "planner": { "modelID": "gpt-planner", "reasoningEffort": "high" }
+                        }
+                    }
+                }
+            }
+        }));
+
+        assert_eq!(
+            role_default_model(&state, Some(&project_root), Some("planner")).as_deref(),
+            Some("gpt-planner")
+        );
+        assert_eq!(
+            role_default_reasoning_effort(&state, Some(&project_root), Some("planner")).as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            role_default_model(&state, Some(&project_root), Some("worker")).as_deref(),
+            Some("gpt-project")
+        );
+        assert_eq!(
+            role_default_reasoning_effort(&state, Some(&project_root), Some("worker")).as_deref(),
+            Some("medium")
+        );
+    }
+
+    #[test]
+    fn planner_turns_use_planner_schema_without_requirements() {
+        let state = parse_state(&json!({
+            "projects": {
+                "codex": {
+                    "projectRoot": "/tmp/codex",
+                    "cwd": "/tmp/codex",
+                    "agents": {
+                        "planner-1": {
+                            "displayName": "Planner",
+                            "role": "planner",
+                            "projectRoot": "/tmp/codex",
+                            "cwd": "/tmp/codex"
+                        },
+                        "worker-1": {
+                            "displayName": "Worker",
+                            "role": "worker",
+                            "projectRoot": "/tmp/codex",
+                            "cwd": "/tmp/codex"
+                        }
+                    }
+                }
+            }
+        }));
+
+        let planner_schema = output_schema_for_thread_turn(&state, "planner-1").expect("schema");
+        assert_eq!(planner_schema["required"], json!(["response", "clarification", "currentPlan"]));
+        assert_eq!(planner_schema["properties"]["clarification"]["anyOf"][0]["required"], json!(["question", "options"]));
+        assert_eq!(output_schema_for_thread_turn(&state, "worker-1"), Some(Value::Null));
+    }
+
+    #[test]
+    fn project_update_persists_project_and_planner_defaults() {
+        let mut state = parse_state(&json!({
+            "projects": {
+                "codex": {
+                    "id": "project-codex",
+                    "name": "Codex",
+                    "projectRoot": "/tmp/codex",
+                    "cwd": "/tmp/codex"
+                }
+            }
+        }));
+
+        update_project(
+            &mut state,
+            &json!({
+                "projectId": "project-codex",
+                "name": "Codex",
+                "defaultCWD": "/tmp/codex",
+                "modelID": "gpt-project",
+                "reasoningEffort": "medium",
+                "approvalPolicy": "on-request",
+                "sandboxMode": "workspace-write",
+                "networkAccess": true,
+                "roleModelReasoningDefaults": {
+                    "planner": { "modelID": "gpt-planner", "reasoningEffort": "high" }
+                }
+            }),
+        )
+        .expect("update project");
+
+        let project = state.projects.get("codex").expect("project");
+        assert_eq!(project.configs["modelID"], "gpt-project");
+        assert_eq!(project.configs["reasoningEffort"], "medium");
+        assert_eq!(project.configs["approvalPolicy"], "on-request");
+        assert_eq!(project.configs["sandboxMode"], "workspace-write");
+        assert_eq!(project.configs["networkAccess"], true);
+        assert_eq!(project.configs["roleModelReasoningDefaults"]["planner"]["modelID"], "gpt-planner");
+    }
+
+    #[test]
     fn project_update_round_trips_requirements_reviewer_role_defaults() {
         let mut state = parse_state(&json!({
             "projects": {
@@ -11931,8 +12203,117 @@ requirements:
         assert!(!orchestrator_can_archive_agent_role("designer"));
         assert!(!orchestrator_can_archive_agent_role("orchestrator"));
         assert!(!orchestrator_can_archive_agent_role("operator"));
+        assert!(!orchestrator_can_archive_agent_role("planner"));
         assert!(!orchestrator_can_archive_agent_role("hidden"));
         assert!(!orchestrator_can_archive_agent_role("requirements-reviewer"));
+    }
+
+    #[tokio::test]
+    async fn owner_archive_thread_can_archive_planner() {
+        let temp = TempDir::new().expect("tempdir");
+        let project_root = normalize_path(temp.path().display().to_string());
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:9".to_string()))
+            .await
+            .expect("runtime");
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "id": "project-alpha",
+                        "name": "Alpha",
+                        "projectRoot": project_root,
+                        "cwd": project_root,
+                        "orchestratorThreadId": "orch-1",
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": project_root,
+                                "cwd": project_root
+                            },
+                            "planner-1": {
+                                "displayName": "Planner One",
+                                "role": "planner",
+                                "projectRoot": project_root,
+                                "cwd": project_root
+                            }
+                        },
+                        "threadGroups": [{
+                            "id": "group-1",
+                            "name": "Planning",
+                            "threadIds": ["planner-1"]
+                        }]
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        archive_thread(&runtime, "planner-1").await.expect("archive planner");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        assert!(agent_state_for_thread(&state, "planner-1").is_none());
+        assert!(state
+            .projects
+            .values()
+            .all(|project| !project.agents.contains_key("planner-1")));
+    }
+
+    #[tokio::test]
+    async fn orchestrator_archive_agent_rejects_planner() {
+        let temp = TempDir::new().expect("tempdir");
+        let project_root = normalize_path(temp.path().display().to_string());
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:9".to_string()))
+            .await
+            .expect("runtime");
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "id": "project-alpha",
+                        "name": "Alpha",
+                        "projectRoot": project_root,
+                        "cwd": project_root,
+                        "orchestratorThreadId": "orch-1",
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": project_root,
+                                "cwd": project_root
+                            },
+                            "planner-1": {
+                                "displayName": "Planner One",
+                                "role": "planner",
+                                "projectRoot": project_root,
+                                "cwd": project_root
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let error = orchestrator_archive_agent(&runtime, "orch-1", Some("planner-1"), None, None)
+            .await
+            .expect_err("planner archive should be rejected for orchestrator");
+        assert!(
+            error
+                .to_string()
+                .contains("Orchestrators may only archive worker and qa agents")
+        );
+        let state = parse_state(&runtime.state_document_value().await);
+        assert!(agent_state_for_thread(&state, "planner-1").is_some());
+    }
+
+    #[test]
+    fn planner_cannot_set_requirements_on_self() {
+        assert!(!requirements_self_setting_allowed("planner"));
+        assert!(!requirements_self_setting_allowed("worker"));
+        assert!(!requirements_self_setting_allowed("qa"));
+        assert!(requirements_self_setting_allowed("operator"));
+        assert!(requirements_self_setting_allowed("hidden"));
     }
 
     #[tokio::test]

@@ -249,7 +249,7 @@ List<SlashCommandOption> slashCommandArgumentOptions(
           )
           .toList(growable: false);
     case SlashCommandKind.role:
-      return const ['worker', 'orchestrator', 'operator', 'designer', 'qa', 'hidden']
+      return const ['worker', 'orchestrator', 'operator', 'designer', 'planner', 'qa', 'hidden']
           .map(
             (value) => SlashCommandOption(
               value: value,

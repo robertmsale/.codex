@@ -11,6 +11,11 @@ class UpdateProjectSignal {
     required this.autoRouteReplies,
     required this.routeApprovalRequests,
     required this.preferredModelProvider,
+    required this.defaultModelId,
+    required this.defaultReasoningEffort,
+    required this.defaultSandboxMode,
+    required this.defaultApprovalPolicy,
+    required this.defaultNetworkAccessMode,
     required this.orchestratorModelId,
     required this.orchestratorReasoningEffort,
     required this.workerModelId,
@@ -19,6 +24,8 @@ class UpdateProjectSignal {
     required this.qaReasoningEffort,
     required this.designerModelId,
     required this.designerReasoningEffort,
+    required this.plannerModelId,
+    required this.plannerReasoningEffort,
     required this.requirementsReviewerModelId,
     required this.requirementsReviewerReasoningEffort,
     required this.orchestratorDeveloperInstructions,
@@ -39,6 +46,11 @@ class UpdateProjectSignal {
       autoRouteReplies: deserializer.deserializeBool(),
       routeApprovalRequests: deserializer.deserializeBool(),
       preferredModelProvider: deserializer.deserializeString(),
+      defaultModelId: deserializer.deserializeString(),
+      defaultReasoningEffort: deserializer.deserializeString(),
+      defaultSandboxMode: deserializer.deserializeString(),
+      defaultApprovalPolicy: deserializer.deserializeString(),
+      defaultNetworkAccessMode: deserializer.deserializeString(),
       orchestratorModelId: deserializer.deserializeString(),
       orchestratorReasoningEffort: deserializer.deserializeString(),
       workerModelId: deserializer.deserializeString(),
@@ -47,6 +59,8 @@ class UpdateProjectSignal {
       qaReasoningEffort: deserializer.deserializeString(),
       designerModelId: deserializer.deserializeString(),
       designerReasoningEffort: deserializer.deserializeString(),
+      plannerModelId: deserializer.deserializeString(),
+      plannerReasoningEffort: deserializer.deserializeString(),
       requirementsReviewerModelId: deserializer.deserializeString(),
       requirementsReviewerReasoningEffort: deserializer.deserializeString(),
       orchestratorDeveloperInstructions: deserializer.deserializeString(),
@@ -76,6 +90,11 @@ class UpdateProjectSignal {
   final bool autoRouteReplies;
   final bool routeApprovalRequests;
   final String preferredModelProvider;
+  final String defaultModelId;
+  final String defaultReasoningEffort;
+  final String defaultSandboxMode;
+  final String defaultApprovalPolicy;
+  final String defaultNetworkAccessMode;
   final String orchestratorModelId;
   final String orchestratorReasoningEffort;
   final String workerModelId;
@@ -84,6 +103,8 @@ class UpdateProjectSignal {
   final String qaReasoningEffort;
   final String designerModelId;
   final String designerReasoningEffort;
+  final String plannerModelId;
+  final String plannerReasoningEffort;
   final String requirementsReviewerModelId;
   final String requirementsReviewerReasoningEffort;
   final String orchestratorDeveloperInstructions;
@@ -101,6 +122,11 @@ class UpdateProjectSignal {
     bool? autoRouteReplies,
     bool? routeApprovalRequests,
     String? preferredModelProvider,
+    String? defaultModelId,
+    String? defaultReasoningEffort,
+    String? defaultSandboxMode,
+    String? defaultApprovalPolicy,
+    String? defaultNetworkAccessMode,
     String? orchestratorModelId,
     String? orchestratorReasoningEffort,
     String? workerModelId,
@@ -109,6 +135,8 @@ class UpdateProjectSignal {
     String? qaReasoningEffort,
     String? designerModelId,
     String? designerReasoningEffort,
+    String? plannerModelId,
+    String? plannerReasoningEffort,
     String? requirementsReviewerModelId,
     String? requirementsReviewerReasoningEffort,
     String? orchestratorDeveloperInstructions,
@@ -126,6 +154,11 @@ class UpdateProjectSignal {
       autoRouteReplies: autoRouteReplies ?? this.autoRouteReplies,
       routeApprovalRequests: routeApprovalRequests ?? this.routeApprovalRequests,
       preferredModelProvider: preferredModelProvider ?? this.preferredModelProvider,
+      defaultModelId: defaultModelId ?? this.defaultModelId,
+      defaultReasoningEffort: defaultReasoningEffort ?? this.defaultReasoningEffort,
+      defaultSandboxMode: defaultSandboxMode ?? this.defaultSandboxMode,
+      defaultApprovalPolicy: defaultApprovalPolicy ?? this.defaultApprovalPolicy,
+      defaultNetworkAccessMode: defaultNetworkAccessMode ?? this.defaultNetworkAccessMode,
       orchestratorModelId: orchestratorModelId ?? this.orchestratorModelId,
       orchestratorReasoningEffort: orchestratorReasoningEffort ?? this.orchestratorReasoningEffort,
       workerModelId: workerModelId ?? this.workerModelId,
@@ -134,6 +167,8 @@ class UpdateProjectSignal {
       qaReasoningEffort: qaReasoningEffort ?? this.qaReasoningEffort,
       designerModelId: designerModelId ?? this.designerModelId,
       designerReasoningEffort: designerReasoningEffort ?? this.designerReasoningEffort,
+      plannerModelId: plannerModelId ?? this.plannerModelId,
+      plannerReasoningEffort: plannerReasoningEffort ?? this.plannerReasoningEffort,
       requirementsReviewerModelId: requirementsReviewerModelId ?? this.requirementsReviewerModelId,
       requirementsReviewerReasoningEffort: requirementsReviewerReasoningEffort ?? this.requirementsReviewerReasoningEffort,
       orchestratorDeveloperInstructions: orchestratorDeveloperInstructions ?? this.orchestratorDeveloperInstructions,
@@ -154,6 +189,11 @@ class UpdateProjectSignal {
     serializer.serializeBool(autoRouteReplies);
     serializer.serializeBool(routeApprovalRequests);
     serializer.serializeString(preferredModelProvider);
+    serializer.serializeString(defaultModelId);
+    serializer.serializeString(defaultReasoningEffort);
+    serializer.serializeString(defaultSandboxMode);
+    serializer.serializeString(defaultApprovalPolicy);
+    serializer.serializeString(defaultNetworkAccessMode);
     serializer.serializeString(orchestratorModelId);
     serializer.serializeString(orchestratorReasoningEffort);
     serializer.serializeString(workerModelId);
@@ -162,6 +202,8 @@ class UpdateProjectSignal {
     serializer.serializeString(qaReasoningEffort);
     serializer.serializeString(designerModelId);
     serializer.serializeString(designerReasoningEffort);
+    serializer.serializeString(plannerModelId);
+    serializer.serializeString(plannerReasoningEffort);
     serializer.serializeString(requirementsReviewerModelId);
     serializer.serializeString(requirementsReviewerReasoningEffort);
     serializer.serializeString(orchestratorDeveloperInstructions);
@@ -192,6 +234,11 @@ class UpdateProjectSignal {
       && autoRouteReplies == other.autoRouteReplies
       && routeApprovalRequests == other.routeApprovalRequests
       && preferredModelProvider == other.preferredModelProvider
+      && defaultModelId == other.defaultModelId
+      && defaultReasoningEffort == other.defaultReasoningEffort
+      && defaultSandboxMode == other.defaultSandboxMode
+      && defaultApprovalPolicy == other.defaultApprovalPolicy
+      && defaultNetworkAccessMode == other.defaultNetworkAccessMode
       && orchestratorModelId == other.orchestratorModelId
       && orchestratorReasoningEffort == other.orchestratorReasoningEffort
       && workerModelId == other.workerModelId
@@ -200,6 +247,8 @@ class UpdateProjectSignal {
       && qaReasoningEffort == other.qaReasoningEffort
       && designerModelId == other.designerModelId
       && designerReasoningEffort == other.designerReasoningEffort
+      && plannerModelId == other.plannerModelId
+      && plannerReasoningEffort == other.plannerReasoningEffort
       && requirementsReviewerModelId == other.requirementsReviewerModelId
       && requirementsReviewerReasoningEffort == other.requirementsReviewerReasoningEffort
       && orchestratorDeveloperInstructions == other.orchestratorDeveloperInstructions
@@ -223,6 +272,11 @@ class UpdateProjectSignal {
         autoRouteReplies,
         routeApprovalRequests,
         preferredModelProvider,
+        defaultModelId,
+        defaultReasoningEffort,
+        defaultSandboxMode,
+        defaultApprovalPolicy,
+        defaultNetworkAccessMode,
         orchestratorModelId,
         orchestratorReasoningEffort,
         workerModelId,
@@ -231,6 +285,8 @@ class UpdateProjectSignal {
         qaReasoningEffort,
         designerModelId,
         designerReasoningEffort,
+        plannerModelId,
+        plannerReasoningEffort,
         requirementsReviewerModelId,
         requirementsReviewerReasoningEffort,
         orchestratorDeveloperInstructions,
@@ -254,6 +310,11 @@ class UpdateProjectSignal {
         'autoRouteReplies: $autoRouteReplies, '
         'routeApprovalRequests: $routeApprovalRequests, '
         'preferredModelProvider: $preferredModelProvider, '
+        'defaultModelId: $defaultModelId, '
+        'defaultReasoningEffort: $defaultReasoningEffort, '
+        'defaultSandboxMode: $defaultSandboxMode, '
+        'defaultApprovalPolicy: $defaultApprovalPolicy, '
+        'defaultNetworkAccessMode: $defaultNetworkAccessMode, '
         'orchestratorModelId: $orchestratorModelId, '
         'orchestratorReasoningEffort: $orchestratorReasoningEffort, '
         'workerModelId: $workerModelId, '
@@ -262,6 +323,8 @@ class UpdateProjectSignal {
         'qaReasoningEffort: $qaReasoningEffort, '
         'designerModelId: $designerModelId, '
         'designerReasoningEffort: $designerReasoningEffort, '
+        'plannerModelId: $plannerModelId, '
+        'plannerReasoningEffort: $plannerReasoningEffort, '
         'requirementsReviewerModelId: $requirementsReviewerModelId, '
         'requirementsReviewerReasoningEffort: $requirementsReviewerReasoningEffort, '
         'orchestratorDeveloperInstructions: $orchestratorDeveloperInstructions, '

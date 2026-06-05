@@ -47,6 +47,11 @@ enum Action {
         auto_route_replies: bool,
         route_approval_requests: bool,
         preferred_model_provider: Option<String>,
+        default_model_id: Option<String>,
+        default_reasoning_effort: Option<String>,
+        default_sandbox_mode: Option<String>,
+        default_approval_policy: Option<String>,
+        default_network_access: Option<bool>,
         orchestrator_model_id: Option<String>,
         orchestrator_reasoning_effort: Option<String>,
         worker_model_id: Option<String>,
@@ -55,6 +60,8 @@ enum Action {
         qa_reasoning_effort: Option<String>,
         designer_model_id: Option<String>,
         designer_reasoning_effort: Option<String>,
+        planner_model_id: Option<String>,
+        planner_reasoning_effort: Option<String>,
         requirements_reviewer_model_id: Option<String>,
         requirements_reviewer_reasoning_effort: Option<String>,
         orchestrator_developer_instructions: Option<String>,
@@ -382,6 +389,31 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
         } else {
             Some(signal.message.preferred_model_provider)
         },
+        default_model_id: if signal.message.default_model_id.is_empty() {
+            None
+        } else {
+            Some(signal.message.default_model_id)
+        },
+        default_reasoning_effort: if signal.message.default_reasoning_effort.is_empty() {
+            None
+        } else {
+            Some(signal.message.default_reasoning_effort)
+        },
+        default_sandbox_mode: if signal.message.default_sandbox_mode.is_empty() {
+            None
+        } else {
+            Some(signal.message.default_sandbox_mode)
+        },
+        default_approval_policy: if signal.message.default_approval_policy.is_empty() {
+            None
+        } else {
+            Some(signal.message.default_approval_policy)
+        },
+        default_network_access: match signal.message.default_network_access_mode.as_str() {
+            "enabled" => Some(true),
+            "disabled" => Some(false),
+            _ => None,
+        },
         orchestrator_model_id: if signal.message.orchestrator_model_id.is_empty() {
             None
         } else {
@@ -421,6 +453,16 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
             None
         } else {
             Some(signal.message.designer_reasoning_effort)
+        },
+        planner_model_id: if signal.message.planner_model_id.is_empty() {
+            None
+        } else {
+            Some(signal.message.planner_model_id)
+        },
+        planner_reasoning_effort: if signal.message.planner_reasoning_effort.is_empty() {
+            None
+        } else {
+            Some(signal.message.planner_reasoning_effort)
         },
         requirements_reviewer_model_id: if signal.message.requirements_reviewer_model_id.is_empty() {
             None
@@ -767,6 +809,11 @@ async fn handle_action(
             auto_route_replies,
             route_approval_requests,
             preferred_model_provider,
+            default_model_id,
+            default_reasoning_effort,
+            default_sandbox_mode,
+            default_approval_policy,
+            default_network_access,
             orchestrator_model_id,
             orchestrator_reasoning_effort,
             worker_model_id,
@@ -775,6 +822,8 @@ async fn handle_action(
             qa_reasoning_effort,
             designer_model_id,
             designer_reasoning_effort,
+            planner_model_id,
+            planner_reasoning_effort,
             requirements_reviewer_model_id,
             requirements_reviewer_reasoning_effort,
             orchestrator_developer_instructions,
@@ -793,6 +842,11 @@ async fn handle_action(
                     auto_route_replies,
                     route_approval_requests,
                     preferred_model_provider,
+                    default_model_id,
+                    default_reasoning_effort,
+                    default_sandbox_mode,
+                    default_approval_policy,
+                    default_network_access,
                     orchestrator_model_id,
                     orchestrator_reasoning_effort,
                     worker_model_id,
@@ -801,6 +855,8 @@ async fn handle_action(
                     qa_reasoning_effort,
                     designer_model_id,
                     designer_reasoning_effort,
+                    planner_model_id,
+                    planner_reasoning_effort,
                     requirements_reviewer_model_id,
                     requirements_reviewer_reasoning_effort,
                     orchestrator_developer_instructions,

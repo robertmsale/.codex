@@ -87,6 +87,14 @@ void main() {
     expect(reasoning?.command?.kind, SlashCommandKind.reasoning);
     expect(reasoning?.options.map((option) => option.value), ['low', 'medium', 'high']);
     expect(reasoning?.options.singleWhere((option) => option.value == 'medium').current, true);
+
+    final role = slashCommandSuggestions(
+      '/role ',
+      selection: selection,
+      availableModels: models,
+    );
+    expect(role?.command?.kind, SlashCommandKind.role);
+    expect(role?.options.map((option) => option.value), contains('planner'));
   });
 
   test('parses handoff as no-argument command', () {

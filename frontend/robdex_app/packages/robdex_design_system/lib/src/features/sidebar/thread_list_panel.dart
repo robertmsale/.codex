@@ -597,6 +597,12 @@ class _RoleBadge extends StatelessWidget {
           Icons.palette_outlined,
           'Designer',
         ),
+      'planner' => (
+          theme.colorScheme.primaryContainer.withValues(alpha: 0.72),
+          theme.colorScheme.onPrimaryContainer,
+          Icons.psychology_alt_outlined,
+          'Planner',
+        ),
       'hidden' => (
           theme.colorScheme.outline.withValues(alpha: 0.14),
           theme.colorScheme.outline,

@@ -187,6 +187,13 @@ void main() {
       'name': 'Codex',
       'rootPath': '/Users/robertsale/.codex',
       'defaultCwd': '/Users/robertsale/.codex',
+      'defaultModel': 'gpt-project',
+      'defaultReasoningEffort': 'medium',
+      'defaultSandboxMode': 'workspace-write',
+      'defaultApprovalPolicy': 'on-request',
+      'defaultNetworkAccess': true,
+      'plannerDefaultModel': 'gpt-planner',
+      'plannerDefaultReasoningEffort': 'high',
       'requirementsReviewerDefaultModel': 'gpt-5.5',
       'requirementsReviewerDefaultReasoningEffort': 'high',
       'permanentRequirementComposables': ['no-legacy', 'non-negotiables'],
@@ -195,6 +202,13 @@ void main() {
       'isSelected': true,
     });
 
+    expect(project.defaultModel, 'gpt-project');
+    expect(project.defaultReasoningEffort, 'medium');
+    expect(project.defaultSandboxMode, 'workspace-write');
+    expect(project.defaultApprovalPolicy, 'on-request');
+    expect(project.defaultNetworkAccess, isTrue);
+    expect(project.plannerDefaultModel, 'gpt-planner');
+    expect(project.plannerDefaultReasoningEffort, 'high');
     expect(project.requirementsReviewerDefaultModel, 'gpt-5.5');
     expect(project.requirementsReviewerDefaultReasoningEffort, 'high');
     expect(project.permanentRequirementComposables, [
@@ -242,6 +256,11 @@ void main() {
       autoRouteReplies: false,
       routeApprovalRequests: true,
       preferredModelProvider: 'openai',
+      defaultModelId: 'gpt-project',
+      defaultReasoningEffort: 'medium',
+      defaultSandboxMode: 'workspace-write',
+      defaultApprovalPolicy: 'on-request',
+      defaultNetworkAccessMode: 'enabled',
       orchestratorModelId: 'gpt-5',
       orchestratorReasoningEffort: 'high',
       workerModelId: 'gpt-5.4-mini',
@@ -250,6 +269,8 @@ void main() {
       qaReasoningEffort: 'medium',
       designerModelId: 'gpt-5.4-mini',
       designerReasoningEffort: 'high',
+      plannerModelId: 'gpt-5.5',
+      plannerReasoningEffort: 'high',
       requirementsReviewerModelId: 'gpt-5.5',
       requirementsReviewerReasoningEffort: 'high',
       orchestratorDeveloperInstructions: '',
@@ -262,6 +283,12 @@ void main() {
     );
 
     final decoded = UpdateProjectSignal.bincodeDeserialize(signal.bincodeSerialize());
+    expect(decoded.defaultModelId, 'gpt-project');
+    expect(decoded.defaultSandboxMode, 'workspace-write');
+    expect(decoded.defaultApprovalPolicy, 'on-request');
+    expect(decoded.defaultNetworkAccessMode, 'enabled');
+    expect(decoded.plannerModelId, 'gpt-5.5');
+    expect(decoded.plannerReasoningEffort, 'high');
     expect(decoded.requirementsReviewerModelId, 'gpt-5.5');
     expect(decoded.requirementsReviewerReasoningEffort, 'high');
     expect(decoded.permanentRequirementComposables, ['no-legacy']);
@@ -273,6 +300,21 @@ void main() {
     final decoded = DeleteProjectSignal.bincodeDeserialize(signal.bincodeSerialize());
 
     expect(decoded.projectId, 'project-123');
+  });
+
+  test('spawn agent signal serializes planner role', () {
+    const signal = SpawnAgentSignal(
+      name: 'Research Planner',
+      role: 'planner',
+      prompt: 'Plan the migration.',
+      requirementSetJson: '',
+    );
+
+    final decoded = SpawnAgentSignal.bincodeDeserialize(signal.bincodeSerialize());
+
+    expect(decoded.name, 'Research Planner');
+    expect(decoded.role, 'planner');
+    expect(decoded.prompt, 'Plan the migration.');
   });
 
   testWidgets('project settings permanent composables render details and update selection only', (
@@ -417,6 +459,130 @@ void main() {
     expect(workerModel, 'gpt-5.4-mini');
   });
 
+  testWidgets('planner project settings controls render model and reasoning fields only', (
+    WidgetTester tester,
+  ) async {
+    var plannerModel = 'gpt-planner';
+    var plannerReasoning = 'high';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) {
+              return ProjectRoleModelSettingsPane(
+                roleKey: 'planner',
+                availableModels: const [
+                  ModelItem(id: 'gpt-planner', name: 'GPT Planner', hidden: false),
+                  ModelItem(id: 'gpt-other', name: 'GPT Other', hidden: false),
+                ],
+                modelId: plannerModel,
+                reasoningEffort: plannerReasoning,
+                onModelChanged: (value) => setState(() => plannerModel = value),
+                onReasoningChanged: (value) =>
+                    setState(() => plannerReasoning = value),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('project.settings.planner.model')), findsOneWidget);
+    expect(find.byKey(const ValueKey('project.settings.planner.reasoning')), findsOneWidget);
+    expect(find.text('GPT Planner'), findsOneWidget);
+    expect(find.text('High'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('project.settings.planner.model')));
+    await tester.pump();
+    await tester.tap(find.text('GPT Other').last);
+    await tester.pump();
+
+    expect(plannerModel, 'gpt-other');
+    expect(plannerReasoning, 'high');
+  });
+
+  testWidgets('project settings project tab controls capture runtime defaults', (
+    WidgetTester tester,
+  ) async {
+    var model = 'gpt-project';
+    var reasoning = 'medium';
+    var sandbox = 'workspace-write';
+    var approval = 'on-request';
+    var network = 'enabled';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) {
+              return Column(
+                children: [
+                  ProjectRoleModelSettingsPane(
+                    roleKey: 'project',
+                    availableModels: const [
+                      ModelItem(id: 'gpt-project', name: 'GPT Project', hidden: false),
+                      ModelItem(id: 'gpt-other', name: 'GPT Other', hidden: false),
+                    ],
+                    modelId: model,
+                    reasoningEffort: reasoning,
+                    onModelChanged: (value) => setState(() => model = value),
+                    onReasoningChanged: (value) => setState(() => reasoning = value),
+                  ),
+                  ProjectDefaultRuntimeSettingsPane(
+                    sandboxMode: sandbox,
+                    approvalPolicy: approval,
+                    networkAccessMode: network,
+                    onSandboxModeChanged: (value) => setState(() => sandbox = value),
+                    onApprovalPolicyChanged: (value) => setState(() => approval = value),
+                    onNetworkAccessModeChanged: (value) => setState(() => network = value),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('project.settings.project.model')), findsOneWidget);
+    expect(find.byKey(const ValueKey('project.settings.project.reasoning')), findsOneWidget);
+    expect(find.byKey(const ValueKey('project.settings.project.sandbox')), findsOneWidget);
+    expect(find.byKey(const ValueKey('project.settings.project.approval')), findsOneWidget);
+    expect(find.byKey(const ValueKey('project.settings.project.network')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('project.settings.project.model')));
+    await tester.pump();
+    await tester.tap(find.text('GPT Other').last);
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('project.settings.project.reasoning')));
+    await tester.pump();
+    await tester.tap(find.text('High').last);
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('project.settings.project.sandbox')));
+    await tester.pump();
+    await tester.tap(find.text('Danger').last);
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('project.settings.project.approval')));
+    await tester.pump();
+    await tester.tap(find.text('never').last);
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('project.settings.project.network')));
+    await tester.pump();
+    await tester.tap(find.text('Disabled').last);
+    await tester.pump();
+
+    expect(model, 'gpt-other');
+    expect(reasoning, 'high');
+    expect(sandbox, 'danger-full-access');
+    expect(approval, 'never');
+    expect(network, 'disabled');
+  });
+
   testWidgets('plan updates render as checklist rows', (WidgetTester tester) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -556,6 +722,66 @@ void main() {
     await tester.tap(find.byTooltip('Open terminal'));
     await tester.pump();
     expect(pressed, 1);
+  });
+
+  testWidgets('planner structured output renders card and clarification buttons send pick', (
+    WidgetTester tester,
+  ) async {
+    ComposerSubmission? submitted;
+    const plannerJson = '''
+{"response":"We should inspect the API boundary first.","clarification":{"question":"Which planning direction should I use?","options":[{"label":"Contract first","description":"Map DTOs before implementation."},{"label":"UI first","description":"Start from visible workflow."}]},"currentPlan":"Stripe planning"}
+''';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: Scaffold(
+          body: SizedBox(
+            width: 900,
+            height: 620,
+            child: ChatTimeline(
+              threadId: 'planner-1',
+              entries: const [
+                ChatEntry(
+                  id: 'planner-response-1',
+                  author: 'Assistant',
+                  displayLabel: 'Assistant',
+                  timestamp: null,
+                  body: plannerJson,
+                ),
+              ],
+              title: 'Planner',
+              contextWindowRemainingPercent: 90,
+              onSend: (submission) => submitted = submission,
+              onInterrupt: () {},
+              composerEnabled: true,
+              isRunning: false,
+              showComposer: false,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Stripe planning'), findsOneWidget);
+    expect(find.text('We should inspect the API boundary first.'), findsOneWidget);
+    final plannerResponseText = tester.widget<SelectableText>(
+      find.widgetWithText(
+        SelectableText,
+        'We should inspect the API boundary first.',
+      ),
+    );
+    expect(plannerResponseText.scrollPhysics, isA<NeverScrollableScrollPhysics>());
+    expect(find.text('Which planning direction should I use?'), findsOneWidget);
+    expect(find.text('Contract first'), findsOneWidget);
+    expect(find.text('UI first'), findsOneWidget);
+
+    await tester.tap(find.text('Contract first'));
+    await tester.pump();
+
+    expect(submitted?.text, 'I pick: Contract first');
+    expect(submitted?.localImagePaths, isEmpty);
+    expect(submitted?.requirementSetJson, isNull);
   });
 
   testWidgets('slash command autocomplete sets reasoning with compact feedback', (
@@ -1192,6 +1418,48 @@ void main() {
     expect(find.byTooltip('Requirements: Failed'), findsOneWidget);
     expect(find.byTooltip('Requirements: Blocked'), findsOneWidget);
     expect(find.byTooltip('Requirements: Requirements active'), findsOneWidget);
+  });
+
+  testWidgets('thread list shows planner threads with planner role badge', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: Scaffold(
+          body: ThreadListPanel(
+            selection: mockWorkbenchData.selection,
+            projects: mockWorkbenchData.projects,
+            threads: [
+              ThreadItem(
+                id: 'planner-visible',
+                title: 'App Planner',
+                role: 'planner',
+                projectName: mockWorkbenchData.projects.first.name,
+                preview: 'Planning product scope.',
+                isRunning: false,
+                unreadCount: 0,
+                requirementReview: null,
+              ),
+            ],
+            pendingApprovals: const [],
+            onDisconnect: () {},
+            onThreadSelected: (_) {},
+            onCreateProject: () {},
+            onProjectSettings: (_) {},
+            onCreateThread: (_) {},
+            onSpawnAgent: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('App Planner'), findsOneWidget);
+    expect(find.byKey(const ValueKey('semantic.thread.roleBadge.planner')), findsOneWidget);
+    expect(find.byTooltip('Planner'), findsOneWidget);
+    expect(find.byIcon(Icons.psychology_alt_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.build_circle_outlined), findsNothing);
   });
 
   testWidgets('thread list long press copies thread name', (

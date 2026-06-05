@@ -8,15 +8,11 @@ appliesTo:
   - product
 requirements:
   - key: designLabVisualProofAndProductionWiring
-    statement: Visual proof for Design Lab work must use the project's Design Lab Bun/WebView screenshot path, not Flutter tester pixels. Mock controllers and fixture data are allowed in Design Lab only; production client code must use the intended product wiring and source of truth.
+    statement: The design system describes the widgets, from atoms, molecules, and layout all the way to the full page & shell. The design lab is a read-only presentation for capturing a single construction of the design system, while the client application is a fully functional presentation. Both the design lab and the client application must pull from the same design system. Do not implement pages separately on the client and design lab. They must pull from the same design system and present the same.
     severity: blocker
-    verificationMethod: screenshotReview
-  - key: designSystemAndShellOwnership
-    statement: Preserve the existing app shell unless shell work is explicitly assigned, and keep static UI copy/prose in the design system or established shared UI source when the project uses one.
-    severity: high
-    verificationMethod: diffReview
+    verificationMethod: manualReview
   - key: truthfulFunctionalUI
-    statement: Do not implement fake, decorative, placeholder, or non-functional UI for assigned product behavior. Controls, inputs, navigation, filters, toggles, copy, loading, empty, error, permission, unavailable, saved, and selected states must be functional through the intended product path or truthfully marked unavailable with actionable context.
+    statement: Do not implement fake, decorative, placeholder, or non-functional UI for assigned product behavior. Controls, inputs, navigation, filters, toggles, copy, loading, empty, error, permission, unavailable, saved, and selected states must be functional through the intended product path or truthfully marked unavailable with actionable context. Mock data can only be used in the design lab.
     severity: blocker
     verificationMethod: sourceInspection
   - key: professionalWorkflowUI

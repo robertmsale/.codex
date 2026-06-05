@@ -1,6 +1,6 @@
 id: no-version-control
 title: No Version Control
-description: Manual opt-in for tasks where the assigned work happens entirely in ignored, untracked, generated, runtime, or otherwise non-version-controlled files. Requires manual evidence because git diff/status cannot prove completion.
+description: Manual opt-in for tasks where the assigned work happens in ignored, untracked, generated, runtime, or otherwise non-version-controlled files. Requires manual evidence because git diff/status cannot prove completion.
 appliesTo:
   - tooling
   - docs
@@ -8,6 +8,6 @@ appliesTo:
   - generated-artifacts
 requirements:
   - key: manualEvidenceForNonVersionControlledWork
-    statement: The assigned task must be completed entirely through ignored, untracked, generated, runtime, or otherwise non-version-controlled files. Do not rely on git diff, git status, commits, or pull request evidence as proof of completion. Provide manual evidence instead, including exact files or paths touched, exact commands run, relevant command output, and any generated artifact or runtime state needed to verify the result.
+    statement: Some or all of the work in this work package exist outside of version control. They may be hidden or gitignored files, or the working directory is not under version control at all. File changes outside of version control must be manually inspected and not penalized for being outside of VCS.
     severity: high
     verificationMethod: manualEvidence

@@ -212,6 +212,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
                             widget.onTerminateCommandExecution,
                         bridgeBaseUri: widget.bridgeBaseUri,
                         onOpenLink: widget.onOpenLink,
+                        onSend: widget.onSend,
                       );
                     },
                   );
@@ -556,6 +557,7 @@ class _ChatBubble extends StatelessWidget {
     this.onTerminateCommandExecution,
     this.bridgeBaseUri,
     this.onOpenLink,
+    this.onSend,
   });
 
   final ChatEntry entry;
@@ -564,6 +566,7 @@ class _ChatBubble extends StatelessWidget {
   final ValueChanged<String>? onTerminateCommandExecution;
   final Uri? bridgeBaseUri;
   final ValueChanged<String>? onOpenLink;
+  final ValueChanged<ComposerSubmission>? onSend;
 
   @override
   Widget build(BuildContext context) {
@@ -603,6 +606,23 @@ class _ChatBubble extends StatelessWidget {
       return _RequirementsClaimCard(
         entry: entry,
         payload: requirementsPayload,
+      );
+    }
+
+    final plannerPayload = _plannerPayloadFromBody(entry);
+    if (plannerPayload != null) {
+      return _PlannerResponseCard(
+        entry: entry,
+        payload: plannerPayload,
+        onPick: (label) {
+          onSend?.call(
+            ComposerSubmission(
+              text: 'I pick: $label',
+              localImagePaths: const [],
+              requirementSetJson: null,
+            ),
+          );
+        },
       );
     }
 
@@ -1402,6 +1422,169 @@ Map<String, dynamic>? _requirementsVerdictPayloadFromBody(ChatEntry entry) {
     return null;
   }
   return null;
+}
+
+Map<String, dynamic>? _plannerPayloadFromBody(ChatEntry entry) {
+  if (entry.isStreaming || entry.author != 'Assistant') {
+    return null;
+  }
+  final text = entry.body.trim();
+  if (!text.startsWith('{') || !text.endsWith('}')) {
+    return null;
+  }
+  try {
+    final decoded = jsonDecode(text);
+    if (decoded is! Map<String, dynamic>) {
+      return null;
+    }
+    if (decoded['response'] is! String || !decoded.containsKey('currentPlan')) {
+      return null;
+    }
+    final clarification = decoded['clarification'];
+    if (clarification != null) {
+      if (clarification is! Map<String, dynamic> ||
+          clarification['question'] is! String ||
+          clarification['options'] is! List<dynamic>) {
+        return null;
+      }
+    }
+    return decoded;
+  } catch (_) {
+    return null;
+  }
+}
+
+class _PlannerResponseCard extends StatelessWidget {
+  const _PlannerResponseCard({
+    required this.entry,
+    required this.payload,
+    required this.onPick,
+  });
+
+  final ChatEntry entry;
+  final Map<String, dynamic> payload;
+  final ValueChanged<String> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final currentPlan = payload['currentPlan'] as String?;
+    final response = payload['response'] as String? ?? '';
+    final clarification = payload['clarification'];
+    final options = clarification is Map<String, dynamic>
+        ? (clarification['options'] as List<dynamic>? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .toList(growable: false)
+        : const <Map<String, dynamic>>[];
+    final question = clarification is Map<String, dynamic>
+        ? clarification['question'] as String?
+        : null;
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface.withValues(alpha: 0.82),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: theme.colorScheme.primary.withValues(alpha: 0.32),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.psychology_alt_outlined,
+                      size: 16,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        currentPlan?.trim().isNotEmpty == true
+                            ? currentPlan!.trim()
+                            : 'Planner',
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      formatLocalTimeLabel(entry.timestamp),
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.52),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                SelectableText(
+                  response,
+                  scrollPhysics: const NeverScrollableScrollPhysics(),
+                  style: theme.textTheme.bodyMedium?.copyWith(height: 1.4),
+                ),
+                if (question != null && question.trim().isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    question.trim(),
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final option in options)
+                        _PlannerClarificationButton(
+                          label: option['label'] as String? ?? '',
+                          description: option['description'] as String? ?? '',
+                          onPick: onPick,
+                        ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PlannerClarificationButton extends StatelessWidget {
+  const _PlannerClarificationButton({
+    required this.label,
+    required this.description,
+    required this.onPick,
+  });
+
+  final String label;
+  final String description;
+  final ValueChanged<String> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final trimmed = label.trim();
+    if (trimmed.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Tooltip(
+      message: description.trim().isEmpty ? trimmed : description.trim(),
+      child: OutlinedButton(
+        onPressed: () => onPick(trimmed),
+        child: Text(trimmed),
+      ),
+    );
+  }
 }
 
 IconData _requirementsDispositionIcon(String disposition) {

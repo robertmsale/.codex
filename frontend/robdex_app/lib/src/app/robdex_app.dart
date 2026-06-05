@@ -38,6 +38,7 @@ enum _ProjectSettingsTab {
   worker,
   qa,
   designer,
+  planner,
   requirementsReviewer,
   hidden,
   operator,
@@ -103,6 +104,81 @@ class ProjectRoleModelSettingsPane extends StatelessWidget {
               DropdownMenuItem(value: 'high', child: Text('High')),
             ],
             onChanged: (value) => onReasoningChanged(value ?? ''),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class ProjectDefaultRuntimeSettingsPane extends StatelessWidget {
+  const ProjectDefaultRuntimeSettingsPane({
+    super.key,
+    required this.sandboxMode,
+    required this.approvalPolicy,
+    required this.networkAccessMode,
+    required this.onSandboxModeChanged,
+    required this.onApprovalPolicyChanged,
+    required this.onNetworkAccessModeChanged,
+  });
+
+  final String sandboxMode;
+  final String approvalPolicy;
+  final String networkAccessMode;
+  final ValueChanged<String> onSandboxModeChanged;
+  final ValueChanged<String> onApprovalPolicyChanged;
+  final ValueChanged<String> onNetworkAccessModeChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 12,
+      runSpacing: 12,
+      children: [
+        SizedBox(
+          width: 270,
+          child: DropdownButtonFormField<String>(
+            key: const ValueKey('project.settings.project.sandbox'),
+            initialValue: sandboxMode,
+            decoration: const InputDecoration(labelText: 'Default sandbox'),
+            items: const [
+              DropdownMenuItem(value: '', child: Text('Global default')),
+              DropdownMenuItem(value: 'read-only', child: Text('Read-only')),
+              DropdownMenuItem(value: 'workspace-write', child: Text('Workspace')),
+              DropdownMenuItem(value: 'danger-full-access', child: Text('Danger')),
+              DropdownMenuItem(value: 'external-sandbox', child: Text('External')),
+            ],
+            onChanged: (value) => onSandboxModeChanged(value ?? ''),
+          ),
+        ),
+        SizedBox(
+          width: 270,
+          child: DropdownButtonFormField<String>(
+            key: const ValueKey('project.settings.project.approval'),
+            initialValue: approvalPolicy,
+            decoration: const InputDecoration(labelText: 'Default approval'),
+            items: const [
+              DropdownMenuItem(value: '', child: Text('Global default')),
+              DropdownMenuItem(value: 'untrusted', child: Text('untrusted')),
+              DropdownMenuItem(value: 'on-failure', child: Text('on-failure')),
+              DropdownMenuItem(value: 'on-request', child: Text('on-request')),
+              DropdownMenuItem(value: 'never', child: Text('never')),
+            ],
+            onChanged: (value) => onApprovalPolicyChanged(value ?? ''),
+          ),
+        ),
+        SizedBox(
+          width: 270,
+          child: DropdownButtonFormField<String>(
+            key: const ValueKey('project.settings.project.network'),
+            initialValue: networkAccessMode,
+            decoration: const InputDecoration(labelText: 'Default network'),
+            items: const [
+              DropdownMenuItem(value: 'default', child: Text('Global default')),
+              DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
+              DropdownMenuItem(value: 'disabled', child: Text('Disabled')),
+            ],
+            onChanged: (value) => onNetworkAccessModeChanged(value ?? 'default'),
           ),
         ),
       ],
@@ -817,6 +893,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                       items: const [
                         DropdownMenuItem(value: 'worker', child: Text('Worker')),
                         DropdownMenuItem(value: 'designer', child: Text('Designer')),
+                        DropdownMenuItem(value: 'planner', child: Text('Planner')),
                         DropdownMenuItem(value: 'qa', child: Text('QA')),
                         DropdownMenuItem(value: 'operator', child: Text('Operator')),
                         DropdownMenuItem(value: 'orchestrator', child: Text('Orchestrator')),
@@ -1021,6 +1098,13 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     bool autoRouteReplies = project.autoRouteReplies;
     bool routeApprovalRequests = project.routeApprovalRequests;
     String preferredModelProvider = project.preferredModelProvider ?? '';
+    String defaultModelId = project.defaultModel ?? '';
+    String defaultReasoningEffort = project.defaultReasoningEffort ?? '';
+    String defaultSandboxMode = project.defaultSandboxMode ?? '';
+    String defaultApprovalPolicy = project.defaultApprovalPolicy ?? '';
+    String defaultNetworkAccessMode = project.defaultNetworkAccess == null
+        ? 'default'
+        : (project.defaultNetworkAccess! ? 'enabled' : 'disabled');
     String orchestratorModelId = project.orchestratorDefaultModel ?? '';
     String orchestratorReasoningEffort = project.orchestratorDefaultReasoningEffort ?? '';
     String workerModelId = project.workerDefaultModel ?? '';
@@ -1029,6 +1113,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     String qaReasoningEffort = project.qaDefaultReasoningEffort ?? '';
     String designerModelId = project.designerDefaultModel ?? '';
     String designerReasoningEffort = project.designerDefaultReasoningEffort ?? '';
+    String plannerModelId = project.plannerDefaultModel ?? '';
+    String plannerReasoningEffort = project.plannerDefaultReasoningEffort ?? '';
     String requirementsReviewerModelId = project.requirementsReviewerDefaultModel ?? '';
     String requirementsReviewerReasoningEffort =
         project.requirementsReviewerDefaultReasoningEffort ?? '';
@@ -1094,6 +1180,11 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 icon: Icons.palette_outlined,
                 tooltip: 'Designer',
                 color: Colors.amber.shade700,
+              ),
+            _ProjectSettingsTab.planner => (
+                icon: Icons.psychology_alt_outlined,
+                tooltip: 'Planner',
+                color: theme.colorScheme.primary,
               ),
             _ProjectSettingsTab.requirementsReviewer => (
                 icon: Icons.rule_folder_outlined,
@@ -1282,6 +1373,28 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 ],
               ),
               const SizedBox(height: 16),
+              ProjectRoleModelSettingsPane(
+                roleKey: 'project',
+                availableModels: availableModels,
+                modelId: defaultModelId,
+                reasoningEffort: defaultReasoningEffort,
+                onModelChanged: (value) => setDialogState(() => defaultModelId = value),
+                onReasoningChanged: (value) =>
+                    setDialogState(() => defaultReasoningEffort = value),
+              ),
+              const SizedBox(height: 14),
+              ProjectDefaultRuntimeSettingsPane(
+                sandboxMode: defaultSandboxMode,
+                approvalPolicy: defaultApprovalPolicy,
+                networkAccessMode: defaultNetworkAccessMode,
+                onSandboxModeChanged: (value) =>
+                    setDialogState(() => defaultSandboxMode = value),
+                onApprovalPolicyChanged: (value) =>
+                    setDialogState(() => defaultApprovalPolicy = value),
+                onNetworkAccessModeChanged: (value) =>
+                    setDialogState(() => defaultNetworkAccessMode = value),
+              ),
+              const SizedBox(height: 16),
               SwitchListTile(
                 value: autoRouteReplies,
                 onChanged: (value) => setDialogState(() => autoRouteReplies = value),
@@ -1389,6 +1502,18 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                   onReasoningChanged: (value) => designerReasoningEffort = value,
                   instructionsController: designerDeveloperInstructionsController,
                   supportsModelSettings: true,
+                  setDialogState: setDialogState,
+                ),
+              _ProjectSettingsTab.planner => rolePane(
+                  tab: activeTab,
+                  roleKey: 'planner',
+                  modelId: plannerModelId,
+                  onModelChanged: (value) => plannerModelId = value,
+                  reasoningEffort: plannerReasoningEffort,
+                  onReasoningChanged: (value) => plannerReasoningEffort = value,
+                  instructionsController: null,
+                  supportsModelSettings: true,
+                  supportsDeveloperInstructions: false,
                   setDialogState: setDialogState,
                 ),
               _ProjectSettingsTab.requirementsReviewer => rolePane(
@@ -1534,6 +1659,11 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       autoRouteReplies: autoRouteReplies,
       routeApprovalRequests: routeApprovalRequests,
       preferredModelProvider: preferredModelProvider,
+      defaultModelId: defaultModelId,
+      defaultReasoningEffort: defaultReasoningEffort,
+      defaultSandboxMode: defaultSandboxMode,
+      defaultApprovalPolicy: defaultApprovalPolicy,
+      defaultNetworkAccessMode: defaultNetworkAccessMode,
       orchestratorModelId: orchestratorModelId,
       orchestratorReasoningEffort: orchestratorReasoningEffort,
       workerModelId: workerModelId,
@@ -1542,6 +1672,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       qaReasoningEffort: qaReasoningEffort,
       designerModelId: designerModelId,
       designerReasoningEffort: designerReasoningEffort,
+      plannerModelId: plannerModelId,
+      plannerReasoningEffort: plannerReasoningEffort,
       requirementsReviewerModelId: requirementsReviewerModelId,
       requirementsReviewerReasoningEffort: requirementsReviewerReasoningEffort,
       orchestratorDeveloperInstructions:
@@ -1812,6 +1944,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                         DropdownMenuItem(value: 'worker', child: Text('Worker')),
                         DropdownMenuItem(value: 'qa', child: Text('QA')),
                         DropdownMenuItem(value: 'operator', child: Text('Operator')),
+                        DropdownMenuItem(value: 'planner', child: Text('Planner')),
                       ],
                       onChanged: (value) {
                         if (value == null) return;

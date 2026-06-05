@@ -199,6 +199,11 @@ impl WorkbenchClient {
         auto_route_replies: bool,
         route_approval_requests: bool,
         preferred_model_provider: Option<String>,
+        default_model: Option<String>,
+        default_reasoning_effort: Option<String>,
+        default_sandbox_mode: Option<String>,
+        default_approval_policy: Option<String>,
+        default_network_access: Option<bool>,
         orchestrator_model_id: Option<String>,
         orchestrator_reasoning_effort: Option<String>,
         worker_model_id: Option<String>,
@@ -207,6 +212,8 @@ impl WorkbenchClient {
         qa_reasoning_effort: Option<String>,
         designer_model_id: Option<String>,
         designer_reasoning_effort: Option<String>,
+        planner_model_id: Option<String>,
+        planner_reasoning_effort: Option<String>,
         requirements_reviewer_model_id: Option<String>,
         requirements_reviewer_reasoning_effort: Option<String>,
         orchestrator_developer_instructions: Option<String>,
@@ -223,6 +230,11 @@ impl WorkbenchClient {
                 "autoRouteReplies": auto_route_replies,
                 "routeApprovalRequests": route_approval_requests,
                 "preferredModelProvider": preferred_model_provider,
+                "modelID": default_model,
+                "reasoningEffort": default_reasoning_effort,
+                "sandboxMode": default_sandbox_mode,
+                "approvalPolicy": default_approval_policy,
+                "networkAccess": default_network_access,
                 "roleModelReasoningDefaults": {
                     "orchestrator": {
                         "modelID": orchestrator_model_id,
@@ -239,6 +251,10 @@ impl WorkbenchClient {
                     "designer": {
                         "modelID": designer_model_id,
                         "reasoningEffort": designer_reasoning_effort,
+                    },
+                    "planner": {
+                        "modelID": planner_model_id,
+                        "reasoningEffort": planner_reasoning_effort,
                     },
                     "requirements-reviewer": {
                         "modelID": requirements_reviewer_model_id,
@@ -765,6 +781,11 @@ pub async fn build_workbench_with_models(
             auto_route_replies: record.auto_route_replies,
             route_approval_requests: record.route_approval_requests,
             preferred_model_provider: record.preferred_model_provider.clone(),
+            default_model: record.default_model.clone(),
+            default_reasoning_effort: record.default_reasoning_effort.clone(),
+            default_sandbox_mode: record.default_sandbox_mode.clone(),
+            default_approval_policy: record.default_approval_policy.clone(),
+            default_network_access: record.default_network_access,
             orchestrator_default_model: record.orchestrator_default_model.clone(),
             orchestrator_default_reasoning_effort: record.orchestrator_default_reasoning_effort.clone(),
             worker_default_model: record.worker_default_model.clone(),
@@ -773,6 +794,8 @@ pub async fn build_workbench_with_models(
             qa_default_reasoning_effort: record.qa_default_reasoning_effort.clone(),
             designer_default_model: record.designer_default_model.clone(),
             designer_default_reasoning_effort: record.designer_default_reasoning_effort.clone(),
+            planner_default_model: record.planner_default_model.clone(),
+            planner_default_reasoning_effort: record.planner_default_reasoning_effort.clone(),
             requirements_reviewer_default_model: record.requirements_reviewer_default_model.clone(),
             requirements_reviewer_default_reasoning_effort: record
                 .requirements_reviewer_default_reasoning_effort
@@ -1219,7 +1242,12 @@ struct ProjectRecord {
     orchestrator_thread_id: Option<String>,
     auto_route_replies: bool,
     route_approval_requests: bool,
-    preferred_model_provider: Option<String>,
+        preferred_model_provider: Option<String>,
+    default_model: Option<String>,
+    default_reasoning_effort: Option<String>,
+    default_sandbox_mode: Option<String>,
+    default_approval_policy: Option<String>,
+    default_network_access: Option<bool>,
     orchestrator_default_model: Option<String>,
     orchestrator_default_reasoning_effort: Option<String>,
     worker_default_model: Option<String>,
@@ -1228,6 +1256,8 @@ struct ProjectRecord {
     qa_default_reasoning_effort: Option<String>,
     designer_default_model: Option<String>,
     designer_default_reasoning_effort: Option<String>,
+    planner_default_model: Option<String>,
+    planner_default_reasoning_effort: Option<String>,
     requirements_reviewer_default_model: Option<String>,
     requirements_reviewer_default_reasoning_effort: Option<String>,
     orchestrator_developer_instructions: Option<String>,
@@ -1552,9 +1582,10 @@ fn role_sort_key(role: &str) -> (u8, &str) {
         "orchestrator" => (1, role),
         "worker" => (2, role),
         "designer" => (3, role),
-        "qa" => (4, role),
+        "planner" => (4, role),
+        "qa" => (5, role),
         "hidden" => (9, role),
-        _ => (5, role),
+        _ => (6, role),
     }
 }
 
@@ -1632,6 +1663,25 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
                 .get("preferredModelProvider")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            default_model: project
+                .get("defaultModel")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            default_reasoning_effort: project
+                .get("defaultReasoningEffort")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            default_sandbox_mode: project
+                .get("defaultSandboxMode")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            default_approval_policy: project
+                .get("defaultApprovalPolicy")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            default_network_access: project
+                .get("defaultNetworkAccess")
+                .and_then(Value::as_bool),
             orchestrator_default_model: role_defaults
                 .get("orchestrator")
                 .and_then(|value| value.get("modelID"))
@@ -1669,6 +1719,16 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
                 .map(str::to_string),
             designer_default_reasoning_effort: role_defaults
                 .get("designer")
+                .and_then(|value| value.get("reasoningEffort"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            planner_default_model: role_defaults
+                .get("planner")
+                .and_then(|value| value.get("modelID"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            planner_default_reasoning_effort: role_defaults
+                .get("planner")
                 .and_then(|value| value.get("reasoningEffort"))
                 .and_then(Value::as_str)
                 .map(str::to_string),
@@ -1744,6 +1804,7 @@ fn role_default_model(project: Option<&ProjectRecord>, role: Option<&str>) -> Op
             project.and_then(|value| value.worker_default_model.clone())
         }
         Some("designer") => project.and_then(|value| value.designer_default_model.clone()),
+        Some("planner") => project.and_then(|value| value.planner_default_model.clone()),
         Some("qa") => project.and_then(|value| value.qa_default_model.clone()),
         Some("requirements-reviewer") | Some("requirementsReviewer") => {
             project.and_then(|value| value.requirements_reviewer_default_model.clone())
@@ -1764,6 +1825,7 @@ fn role_default_reasoning_effort(
             project.and_then(|value| value.worker_default_reasoning_effort.clone())
         }
         Some("designer") => project.and_then(|value| value.designer_default_reasoning_effort.clone()),
+        Some("planner") => project.and_then(|value| value.planner_default_reasoning_effort.clone()),
         Some("qa") => project.and_then(|value| value.qa_default_reasoning_effort.clone()),
         Some("requirements-reviewer") | Some("requirementsReviewer") => {
             project.and_then(|value| value.requirements_reviewer_default_reasoning_effort.clone())
@@ -1953,6 +2015,47 @@ mod tests {
                 .and_then(|record| record.requirement_review.as_ref())
                 .and_then(|summary| summary.parent_thread_id.as_deref()),
             Some("source")
+        );
+    }
+
+    #[test]
+    fn planner_threads_are_visible_and_sorted_as_first_class_role() {
+        let snapshot = json!({
+            "state": {
+                "projects": {
+                    "p1": {
+                        "id": "p1",
+                        "name": "Project",
+                        "projectRoot": "/tmp/project",
+                        "agents": {
+                            "worker": {
+                                "displayName": "Worker",
+                                "role": "worker",
+                                "cwd": "/tmp/project/worker"
+                            },
+                            "planner": {
+                                "displayName": "Planner",
+                                "role": "planner",
+                                "cwd": "/tmp/project/planner",
+                                "hiddenFromPeerList": false,
+                                "archived": false
+                            },
+                            "qa": {
+                                "displayName": "QA",
+                                "role": "qa",
+                                "cwd": "/tmp/project/qa"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let visible = extract_thread_records(&snapshot);
+        assert!(visible.iter().any(|record| record.id == "planner"));
+        assert_eq!(
+            visible.iter().map(|record| record.role.as_str()).collect::<Vec<_>>(),
+            vec!["worker", "planner", "qa"]
         );
     }
 

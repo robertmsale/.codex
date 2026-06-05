@@ -788,36 +788,7 @@ impl BridgeRuntime {
                 .into_iter()
                 .filter(|thread_id| !quarantined.contains(thread_id))
                 .map(|thread_id| {
-                    let cwd = tracked_cwd_for_thread_value(&state, &thread_id);
-                    let approval_policy =
-                        tracked_approval_policy_for_thread_value(&state, &thread_id);
-                    let model = tracked_model_for_thread_value(&state, &thread_id);
-                    let model_provider = tracked_model_provider_for_thread_value(&state, &thread_id);
-                    let effort = tracked_reasoning_for_thread_value(&state, &thread_id);
-                    let sandbox_mode = tracked_sandbox_mode_for_thread_value(&state, &thread_id);
-                    let base_instructions =
-                        tracked_base_instructions_for_thread_value(&state, &thread_id);
-                    let developer_instructions =
-                        tracked_developer_instructions_for_thread_value(&state, &thread_id);
-                    let params = AppServerThreadOverrides {
-                        cwd,
-                        approval_policy: approval_policy.map(Value::String),
-                        sandbox: sandbox_mode,
-                        model,
-                        model_provider,
-                        reasoning_effort: effort,
-                        service_tier: tracked_service_tier_for_thread_value(&state, &thread_id),
-                        approvals_reviewer: tracked_approvals_reviewer_for_thread_value(&state, &thread_id),
-                        personality: tracked_personality_for_thread_value(&state, &thread_id),
-                        config: tracked_config_for_thread_value(&state, &thread_id),
-                        base_instructions,
-                        developer_instructions,
-                        persist_extended_history: tracked_persist_extended_history_for_thread_value(&state, &thread_id)
-                            .or(Some(true)),
-                        exclude_turns: Some(true),
-                        ..Default::default()
-                    }
-                    .thread_resume_params(thread_id.clone(), None, None);
+                    let params = tracked_thread_resume_params_for_thread(&state, &thread_id);
                     (thread_id, params)
                 })
                 .collect::<Vec<_>>()
@@ -1405,7 +1376,7 @@ impl BridgeRuntime {
         }
         if matches!(
             tracked_role_for_thread(&state, thread_id).as_deref(),
-            Some("hidden") | Some("designer") | Some("operator")
+            Some("hidden") | Some("designer") | Some("operator") | Some("planner")
         ) {
             return;
         }
@@ -1471,7 +1442,7 @@ impl BridgeRuntime {
         }
         if matches!(
             tracked_role_for_thread(&state, &approval.thread_id).as_deref(),
-            Some("hidden") | Some("designer")
+            Some("hidden") | Some("designer") | Some("planner")
         ) {
             return;
         }
@@ -2373,6 +2344,7 @@ struct RoutedProjectState {
     auto_route_replies: bool,
     route_approval_requests: bool,
     orchestrator_thread_id: Option<String>,
+    configs: Value,
     role_defaults: Value,
 }
 
@@ -2407,6 +2379,7 @@ fn tracked_project_for_thread(state: &Value, thread_id: &str) -> Option<RoutedPr
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 orchestrator_thread_id: orchestrator,
+                configs: project_object.get("configs").cloned().unwrap_or(Value::Null),
                 role_defaults: project_object
                     .get("configs")
                     .and_then(|value| value.get("roleModelReasoningDefaults"))
@@ -2479,6 +2452,28 @@ fn tracked_cwd_for_thread_value(state: &Value, thread_id: &str) -> Option<String
         .or_else(|| tracked_project_for_thread(state, thread_id).and_then(|project| project.cwd.or(project.project_root)))
 }
 
+fn tracked_thread_resume_params_for_thread(state: &Value, thread_id: &str) -> Value {
+    AppServerThreadOverrides {
+        cwd: tracked_cwd_for_thread_value(state, thread_id),
+        approval_policy: tracked_approval_policy_for_thread_value(state, thread_id).map(Value::String),
+        sandbox: tracked_sandbox_mode_for_thread_value(state, thread_id),
+        model: tracked_model_for_thread_value(state, thread_id),
+        model_provider: tracked_model_provider_for_thread_value(state, thread_id),
+        reasoning_effort: tracked_reasoning_for_thread_value(state, thread_id),
+        service_tier: tracked_service_tier_for_thread_value(state, thread_id),
+        approvals_reviewer: tracked_approvals_reviewer_for_thread_value(state, thread_id),
+        personality: tracked_personality_for_thread_value(state, thread_id),
+        config: tracked_config_for_thread_value(state, thread_id),
+        base_instructions: tracked_base_instructions_for_thread_value(state, thread_id),
+        developer_instructions: tracked_developer_instructions_for_thread_value(state, thread_id),
+        persist_extended_history: tracked_persist_extended_history_for_thread_value(state, thread_id)
+            .or(Some(true)),
+        exclude_turns: Some(true),
+        ..Default::default()
+    }
+    .thread_resume_params(thread_id.to_string(), None, None)
+}
+
 fn tracked_approval_policy_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
     if is_requirements_reviewer_thread_value(state, thread_id) {
         return Some("never".to_string());
@@ -2487,6 +2482,10 @@ fn tracked_approval_policy_for_thread_value(state: &Value, thread_id: &str) -> O
         .and_then(|agent| agent.get("approvalPolicy"))
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| {
+            tracked_project_for_thread(state, thread_id)
+                .and_then(|project| project.configs.get("approvalPolicy").and_then(Value::as_str).map(str::to_string))
+        })
         .or_else(|| {
             state
                 .get("globalConfigs")
@@ -2521,6 +2520,7 @@ fn role_defaults_key_for_thread(state: &Value, thread_id: &str) -> &'static str 
         Some("designer") => "designer",
         Some("qa") => "qa",
         Some("orchestrator") => "orchestrator",
+        Some("planner") => "planner",
         Some("requirements-reviewer") | Some("requirementsReviewer") => "requirements-reviewer",
         Some("worker") | Some("hidden") | Some("operator") | _ => "worker",
     }
@@ -2529,17 +2529,29 @@ fn role_defaults_key_for_thread(state: &Value, thread_id: &str) -> &'static str 
 fn role_default_model_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
     let key = role_defaults_key_for_thread(state, thread_id);
     tracked_project_for_thread(state, thread_id)
-        .and_then(|project| project.role_defaults.get(key).cloned())
-        .and_then(|value| value.get("modelID").cloned())
-        .and_then(|value| value.as_str().map(str::to_string))
+        .and_then(|project| {
+            project
+                .role_defaults
+                .get(key)
+                .and_then(|value| value.get("modelID"))
+                .or_else(|| project.configs.get("modelID"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
 }
 
 fn role_default_reasoning_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
     let key = role_defaults_key_for_thread(state, thread_id);
     tracked_project_for_thread(state, thread_id)
-        .and_then(|project| project.role_defaults.get(key).cloned())
-        .and_then(|value| value.get("reasoningEffort").cloned())
-        .and_then(|value| value.as_str().map(str::to_string))
+        .and_then(|project| {
+            project
+                .role_defaults
+                .get(key)
+                .and_then(|value| value.get("reasoningEffort"))
+                .or_else(|| project.configs.get("reasoningEffort"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
 }
 
 fn tracked_sandbox_mode_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
@@ -2547,6 +2559,10 @@ fn tracked_sandbox_mode_for_thread_value(state: &Value, thread_id: &str) -> Opti
         .and_then(|agent| agent.get("sandboxMode"))
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| {
+            tracked_project_for_thread(state, thread_id)
+                .and_then(|project| project.configs.get("sandboxMode").and_then(Value::as_str).map(str::to_string))
+        })
         .or_else(|| {
             state
                 .get("globalConfigs")
@@ -2577,10 +2593,14 @@ fn effective_network_access_for_sandbox_value(
 
 fn tracked_network_access_for_thread_value(state: &Value, thread_id: &str) -> Option<bool> {
     let sandbox_mode = tracked_sandbox_mode_for_thread_value(state, thread_id);
-    let default_network_access = state
-        .get("globalConfigs")
-        .and_then(|value| value.get("networkAccess"))
-        .and_then(Value::as_bool);
+    let default_network_access = tracked_project_for_thread(state, thread_id)
+        .and_then(|project| project.configs.get("networkAccess").and_then(Value::as_bool))
+        .or_else(|| {
+            state
+                .get("globalConfigs")
+                .and_then(|value| value.get("networkAccess"))
+                .and_then(Value::as_bool)
+        });
     effective_network_access_for_sandbox_value(
         sandbox_mode.as_deref(),
         tracked_agent_value(state, thread_id)
@@ -2614,7 +2634,7 @@ fn tracked_developer_instructions_for_thread_value(state: &Value, thread_id: &st
         return Some(value);
     }
     let role = tracked_role_for_thread(state, thread_id)?;
-    if matches!(role.as_str(), "hidden" | "orchestrator" | "operator") {
+    if matches!(role.as_str(), "hidden" | "orchestrator" | "operator" | "planner") {
         return None;
     }
     let project = tracked_project_for_thread(state, thread_id)?;
@@ -4639,6 +4659,132 @@ mod tests {
         assert!(!guidance.contains("approval requests are forwarded"));
     }
 
+    #[test]
+    fn planner_runtime_defaults_use_planner_key_and_exclude_worker_guidance() {
+        let state = json!({
+            "projects": {
+                "alpha": {
+                    "projectRoot": "/alpha",
+                    "cwd": "/alpha/.worktrees/planner",
+                    "autoRouteReplies": true,
+                    "routeApprovalRequests": true,
+                    "orchestratorThreadID": "orch-a",
+                    "configs": {
+                        "modelID": "gpt-project",
+                        "reasoningEffort": "medium",
+                        "sandboxMode": "workspace-write",
+                        "approvalPolicy": "on-request",
+                        "networkAccess": false,
+                        "roleModelReasoningDefaults": {
+                            "worker": { "modelID": "gpt-worker", "reasoningEffort": "low" },
+                            "planner": { "modelID": "gpt-planner", "reasoningEffort": "high" }
+                        }
+                    },
+                    "agents": {
+                        "planner-1": {
+                            "role": "planner",
+                            "displayName": "Planner One"
+                        }
+                    }
+                }
+            },
+            "globalConfigs": {
+                "modelID": "gpt-global",
+                "reasoningEffort": "low",
+                "sandboxMode": "danger-full-access",
+                "approvalPolicy": "never",
+                "networkAccess": true
+            }
+        });
+
+        assert_eq!(
+            role_defaults_key_for_thread(&state, "planner-1"),
+            "planner"
+        );
+        assert_eq!(
+            tracked_model_for_thread_value(&state, "planner-1").as_deref(),
+            Some("gpt-planner")
+        );
+        assert_eq!(
+            tracked_reasoning_for_thread_value(&state, "planner-1").as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            tracked_approval_policy_for_thread_value(&state, "planner-1").as_deref(),
+            Some("on-request")
+        );
+        assert_eq!(
+            tracked_sandbox_mode_for_thread_value(&state, "planner-1").as_deref(),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            tracked_network_access_for_thread_value(&state, "planner-1"),
+            Some(false)
+        );
+        assert!(tracked_developer_instructions_for_thread_value(&state, "planner-1").is_none());
+    }
+
+    #[test]
+    fn planner_runtime_defaults_fall_back_to_project_defaults_not_worker_defaults() {
+        let state = json!({
+            "projects": {
+                "alpha": {
+                    "projectRoot": "/alpha",
+                    "cwd": "/alpha",
+                    "orchestratorThreadID": "orch-a",
+                    "configs": {
+                        "modelID": "gpt-project",
+                        "reasoningEffort": "medium",
+                        "roleModelReasoningDefaults": {
+                            "worker": { "modelID": "gpt-worker", "reasoningEffort": "low" }
+                        }
+                    },
+                    "agents": {
+                        "planner-1": { "role": "planner" }
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            tracked_model_for_thread_value(&state, "planner-1").as_deref(),
+            Some("gpt-project")
+        );
+        assert_eq!(
+            tracked_reasoning_for_thread_value(&state, "planner-1").as_deref(),
+            Some("medium")
+        );
+    }
+
+    #[test]
+    fn planner_resume_params_use_planner_runtime_defaults_without_developer_guidance() {
+        let state = json!({
+            "projects": {
+                "alpha": {
+                    "projectRoot": "/alpha",
+                    "cwd": "/alpha",
+                    "orchestratorThreadID": "orch-a",
+                    "configs": {
+                        "roleModelReasoningDefaults": {
+                            "planner": { "modelID": "gpt-planner", "reasoningEffort": "high" },
+                            "worker": { "modelID": "gpt-worker", "reasoningEffort": "low" }
+                        }
+                    },
+                    "agents": {
+                        "planner-1": { "role": "planner", "displayName": "Planner One" }
+                    }
+                }
+            }
+        });
+
+        let params = tracked_thread_resume_params_for_thread(&state, "planner-1");
+        assert_eq!(params["threadId"], "planner-1");
+        assert_eq!(params["model"], "gpt-planner");
+        assert_eq!(params["config"]["model_reasoning_effort"], "high");
+        assert!(params.get("developerInstructions").is_none()
+            || params["developerInstructions"].is_null());
+    }
+
     #[tokio::test]
     async fn operator_replies_are_not_auto_routed_to_orchestrator() {
         let temp = TempDir::new().expect("tempdir");
@@ -4702,6 +4848,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn planner_replies_are_not_auto_routed_to_orchestrator() {
+        let temp = TempDir::new().expect("tempdir");
+        let settings = BridgeSettings {
+            http: HttpArgs {
+                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 42080,
+            },
+            app_server_url: "ws://127.0.0.1:9".to_string(),
+            project_path: temp.path().to_path_buf(),
+            cwd: temp.path().to_path_buf(),
+            paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
+        };
+        let runtime = BridgeRuntime::new(settings).await.expect("runtime");
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "autoRouteReplies": true,
+                        "orchestratorThreadID": "orch-1",
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string()
+                            },
+                            "planner-1": {
+                                "displayName": "Planner One",
+                                "role": "planner",
+                                "projectRoot": temp.path().display().to_string()
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "planner-1".to_string(),
+                vec![test_chat_message(
+                    "planner-1",
+                    "turn-1",
+                    "final-1",
+                    Some("final_answer"),
+                    "{\"response\":\"planner status\",\"clarification\":null,\"currentPlan\":\"Plan\"}",
+                )],
+            );
+        }
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            runtime.maybe_auto_route_reply_to_orchestrator("planner-1", "turn-1"),
+        )
+        .await
+        .expect("planner route check should return without waiting on transport");
+        assert!(runtime.auto_routed_turn_keys.read().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn designer_approvals_are_not_auto_routed_to_orchestrator() {
         let temp = TempDir::new().expect("tempdir");
         let settings = BridgeSettings {
@@ -4742,6 +4950,67 @@ mod tests {
                 instance_id: "instance-1".to_string(),
                 request_id: RequestId::Integer(1),
                 thread_id: "designer-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-1".to_string(),
+                kind: PendingApprovalKind::CommandExecution,
+                title: "Command approval".to_string(),
+                detail: None,
+                approval_reason: Some("needs approval".to_string()),
+                tool_name: None,
+                tool_arguments: None,
+                tool_questions: Vec::new(),
+                auth_refresh_reason: None,
+                command: Some("git status".to_string()),
+                command_cwd: None,
+                file_grant_root: None,
+                file_changes: Vec::new(),
+            })
+            .await;
+
+        assert!(runtime.auto_routed_approval_keys.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn planner_approvals_are_not_auto_routed_to_orchestrator() {
+        let temp = TempDir::new().expect("tempdir");
+        let settings = BridgeSettings {
+            http: HttpArgs {
+                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 42080,
+            },
+            app_server_url: "ws://127.0.0.1:9".to_string(),
+            project_path: temp.path().to_path_buf(),
+            cwd: temp.path().to_path_buf(),
+            paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
+        };
+        let runtime = BridgeRuntime::new(settings).await.expect("runtime");
+        *runtime.state_document.write().await = json!({
+            "projects": {
+                "alpha": {
+                    "projectRoot": temp.path().display().to_string(),
+                    "cwd": temp.path().join(".worktrees/planner").display().to_string(),
+                    "routeApprovalRequests": true,
+                    "orchestratorThreadID": "orch-a",
+                    "agents": {
+                        "planner-1": {
+                            "role": "planner",
+                            "displayName": "Planner One"
+                        },
+                        "orch-a": {
+                            "role": "orchestrator",
+                            "displayName": "Orchestrator"
+                        }
+                    }
+                }
+            }
+        });
+
+        runtime
+            .maybe_route_approval_to_orchestrator(&PendingApproval {
+                id: "approval-1".to_string(),
+                instance_id: "instance-1".to_string(),
+                request_id: RequestId::Integer(1),
+                thread_id: "planner-1".to_string(),
                 turn_id: "turn-1".to_string(),
                 item_id: "item-1".to_string(),
                 kind: PendingApprovalKind::CommandExecution,
