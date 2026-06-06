@@ -25,8 +25,11 @@ one canonical home and may be referenced from other surfaces when needed.
   - Owns user-story piloting, bug classification, retry discipline, and
     non-implementation boundaries.
 - Designer behavior: `roles/designer.md`
-  - Owns product-design judgment, hierarchy, visual reduction, and runtime
-    verification expectations for design tasks.
+  - Owns product-design judgment, hierarchy, visual reduction, screenshot
+    discipline, and anti-slop review expectations for design tasks.
+- Design proof requirements: `requirements/composables/design-non-negotiables.yaml`
+  - Owns the Requirements-native design gate, screenshot evidence contract,
+    scope contract, and non-text-only visual proof requirements.
 - Requirements reviewer behavior: `roles/requirements-reviewer.md`
   - Owns adversarial comparison of structured claims against evidence.
 - Skill usage: `skills/*/SKILL.md`
@@ -56,6 +59,7 @@ one canonical home and may be referenced from other surfaces when needed.
 - Requirements workflow appears in `roles/orchestrator.md` and
   `skills/robdex-orchestrator/SKILL.md`. Keep behavior and timing in the role;
   keep command syntax in the skill.
+- Design workflow duplication belongs in `requirements/composables/design-non-negotiables.yaml` and `skills/design-worker`; role files may require screenshot discipline but must not define a separate design gate.
 - Privileged-exec command-shape rules belong in `skills/privileged-exec/SKILL.md`.
   Role files may say to use the skill, but should not duplicate every shell
   restriction.

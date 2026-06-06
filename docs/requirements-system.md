@@ -607,13 +607,17 @@ If Requirements are inactive or absent, Robdex explicitly sends a null output sc
 
 This is why changing Requirements during an already-running turn cannot alter that turn. The schema is already attached. A replacement needs an interrupt and a new turn.
 
+
+## Design Proof Requirements
+
+Design work must use Requirements-native proof. Attach `design-non-negotiables` to design tasks. Final design claims must include sanctioned screenshot evidence paths, capture method, viewport or device, reference image path when applicable, scope contract, primary job statement, and anti-slop self-review assertions. Text-only visual review is not acceptable. If reviewer image routing cannot inspect pixels directly, the claim must provide owner-visible screenshot artifacts and identify owner visual approval as the explicit non-text-only review mechanism.
+
 ## What Requirements Do Not Do
 
 Requirements do not:
 
 - prove code correctness by themselves;
 - replace testing;
-- replace design review;
 - replace human judgment;
 - magically know whether evidence is true;
 - let workers negotiate scope;

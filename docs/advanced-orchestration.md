@@ -109,6 +109,13 @@ Task-specific requirement prose.
 EOF
 ```
 
+
+## Design Work
+
+Design work is gated through Requirements-native proof. Orchestrators attach `design-non-negotiables` to design workers and require final claims with screenshot evidence paths, capture method, viewport/device, scope contract, reference image path when applicable, primary job statement, and anti-slop self-review. Requirements reviewer verdicts are the design gate. Text-only visual review is rejected. If reviewer image routing cannot inspect pixels directly, the worker must provide owner-visible screenshot artifacts and request owner visual approval as the explicit non-text-only review mechanism.
+
+Use `design-lab-capture` for Design Lab screenshots and simulator/runtime capture only when the assignment requires device proof.
+
 ## Simplified QA Runtime
 
 The active QA model is intentionally lightweight:

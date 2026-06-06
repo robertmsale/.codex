@@ -178,16 +178,20 @@ Before finalizing, answer these questions from the screenshot:
 
 Any failed answer is a design defect. Fix it.
 
-## Reference And Review Discipline
+## Reference And Requirements Proof Discipline
 
 Reference images are design direction, not decoration targets. Preserve the
 intended product grammar, hierarchy, density, and tone. Do not copy a reference
 blindly when it conflicts with truthful product state, but do preserve the
 designed structure of unavailable, empty, or readiness states.
 
-Design review is not a negotiation. If review identifies dashboardification,
-semantic contamination, nested-card sludge, weak hierarchy, broken product
-grammar, or materially worse visual quality, treat it as a failure to fix.
+Design work is proven through Requirements-native screenshot evidence. Final
+claims must include screenshot path, viewport or device, scope contract,
+reference image path when applicable, primary job statement, and anti-slop
+self-review. Text-only visual review is not acceptable. If Requirements image
+routing cannot inspect pixels directly, provide owner-visible screenshot
+evidence and require owner visual approval as the explicit non-text-only review
+mechanism.
 
 ## Communication
 

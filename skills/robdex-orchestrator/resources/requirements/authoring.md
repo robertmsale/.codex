@@ -71,7 +71,7 @@ robdex requirements-composables list --name "<agent name>"
 robdex requirements-composables show <id> --name "<agent name>"
 ```
 
-Permanent composables are higher-authority policy. Do not write task-specific Requirements that weaken them. If a permanent composable appears incompatible with the task, ask the owner for an explicit waiver before setting Requirements.
+Permanent composables are higher-authority policy. Do not write task-specific Requirements that weaken them. When a permanent composable appears incompatible with the task, stop before setting Requirements and ask the owner for an explicit waiver.
 
 Composables should be reusable policy. Task-specific behavior belongs in task-specific Requirements.
 
@@ -111,11 +111,30 @@ reject
 fail
 ```
 
-Avoid vague adjectives unless anchored to visible or inspectable criteria.
+Use vague adjectives only when they are anchored to visible or inspectable criteria.
+
+## Requirements Contradiction Review
+
+Before attaching Requirements, compare every task-specific line against every
+selected and permanent composable.
+
+A task-specific Requirement contradicts a composable when it gives the worker an
+alternate completion path that weakens the composable. Contradictory Requirements
+are invalid. Rewrite them before attaching.
+
+For no-legacy work, deletion is the final state. Do not offer alternatives such
+as hard-disable, hard-error stub, compatibility entrypoint, deprecated wrapper,
+tombstone file, retained alias, or documentation-only removal. A file, script,
+route, command, test, or doc that preserves the old name or describes the old
+workflow is still legacy.
+
+Owner waivers are separate owner decisions. Do not embed waiver paths inside the
+Requirement text.
 
 ## Red-Flag Wording
 
-Avoid these phrases unless the owner explicitly asked for that narrowed outcome:
+These phrases are prohibited in worker-facing Requirements. When the owner wants
+a narrower outcome, write the exact final state without escape-hatch wording:
 
 ```text
 if possible
@@ -140,6 +159,13 @@ document a workaround
 leave the old path
 keep both paths
 manual step
+remove or hard-disable
+hard-error stub
+compatibility entrypoint
+deprecated but available
+kept for compatibility
+tombstone
+legacy wrapper
 ```
 
 Rewrite soft language into final-state obligations.
@@ -179,13 +205,14 @@ Run this audit before attaching Requirements.
 | Scope shrink | Converts full job into a partial job. | Require the full assigned outcome or fan out before Requirements. |
 | Escape hatch | Allows alternate implementation. | Require the approved path; if impossible, require a blocked claim with evidence and owner decision. |
 | Legacy leash | Lets old tests preserve old code. | Update stale tests; preserve documented non-legacy behavior. |
+| Legacy tombstone | Leaves disabled scripts, wrappers, aliases, comments, docs, or hard-error entrypoints with the old name. | Delete obsolete artifacts and prove old names are absent from active workflow surfaces. |
 | Evidence inversion | Requires proof of a historical non-event. | Require final-state evidence and available log/transcript review. |
 | Policy override | Weakens permanent composable. | Ask for explicit owner waiver. |
 | Ambiguous softness | Uses "try", "best effort", or "where possible". | Define exact final state and evidence. |
 | Reviewer expansion | Lets reviewer invent new standards. | Specify concrete review criteria. |
 | Test ossification | Treats current tests as sacred even when stale. | Preserve behavior contract, not stale implementation assumptions. |
-| Manual workaround | Allows human-only completion. | Require product/code/tool behavior unless docs are the deliverable. |
-| Fake implementation | Allows demo-only artifacts. | Require real paths and controls unless explicitly scoped. |
+| Manual workaround | Allows human-only completion. | Require product/code/tool behavior. For documentation deliverables, docs are the product. |
+| Fake implementation | Allows demo-only artifacts. | Require real paths and controls. For demo/prototype deliverables, state that product boundary directly. |
 
 Audit question:
 
@@ -230,7 +257,19 @@ statement: Replace the old implementation, but do not remove it if existing test
 Good:
 
 ```yaml
-statement: Replace the old implementation and remove obsolete code paths, tests, docs, flags, config, and references. If existing tests fail because they encode obsolete behavior, update or remove those tests with rationale. Preserve documented non-legacy behavior only.
+statement: Replace the old implementation and delete obsolete code paths, tests, docs, flags, config, scripts, aliases, wrappers, hard-error stubs, tombstone files, deprecated entrypoints, and references. Update or remove tests that encode obsolete behavior. Provide final-state evidence listing deleted artifacts and search proof that active workflow surfaces no longer mention the old path.
+```
+
+Bad:
+
+```yaml
+statement: Remove the old command or hard-disable it with a message that points users to the new workflow.
+```
+
+Good:
+
+```yaml
+statement: Delete the old command, its evaluator, docs, examples, tests, aliases, wrappers, hard-error stubs, and active references. Provide exact removed-file evidence and search proof that active workflow surfaces no longer expose the old command name.
 ```
 
 Bad:
@@ -254,7 +293,8 @@ Before attaching Requirements, confirm:
 - Fan-out, if needed, happened before Requirements.
 - No Requirement contains fallback alternatives or blocked-if-large language.
 - No Requirement lets stale tests preserve obsolete behavior.
+- No no-legacy Requirement offers hard-disable, compatibility entrypoint, tombstone, wrapper, alias, or deprecated-but-available alternatives.
 - Negative constraints are reviewable without impossible proof of historical non-events.
-- Fake/manual/documentation-only completion is forbidden unless explicitly assigned.
+- Fake/manual/documentation-only completion is forbidden for product implementation work.
 - Every Requirement can be passed or failed using available evidence.
 - Nice-to-haves are not accidental blockers.

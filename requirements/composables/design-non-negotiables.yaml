@@ -1,21 +1,46 @@
 id: design-non-negotiables
-title: Design Non-Negotiables
-description: Use for frontend, product UI, design-system, or UX work. Compactly covers Design Lab visual proof, design-system ownership, truthful functional UI, professional fit-and-finish, accessibility, and responsive workflow quality.
+title: Requirements-Native Design Proof Gate
+description: Authoritative Requirements pack for frontend, product UI, design-system, and UX work. It makes screenshot-backed Requirements claims and Requirements reviewer verdicts the only design gate.
 appliesTo:
   - UI
   - code
   - frontend
   - product
+  - design
 requirements:
-  - key: designLabVisualProofAndProductionWiring
-    statement: The design system describes the widgets, from atoms, molecules, and layout all the way to the full page & shell. The design lab is a read-only presentation for capturing a single construction of the design system, while the client application is a fully functional presentation. Both the design lab and the client application must pull from the same design system. Do not implement pages separately on the client and design lab. They must pull from the same design system and present the same.
+  - key: requirementsNativeScreenshotProof
+    statement: Final design completion claims must provide Requirements-native visual proof, not a text-only assertion. Evidence must include sanctioned screenshot path(s), the exact capture method, viewport or device, and the reviewed screen/component/flow. Use design-lab-capture for Design Lab surfaces. Use simulator/runtime capture only when the task requires runtime/device proof. If reviewer image routing cannot inspect pixels directly, the claim must require owner-visible screenshot evidence or owner visual approval as the explicit non-text-only review mechanism.
     severity: blocker
-    verificationMethod: manualReview
-  - key: truthfulFunctionalUI
-    statement: Do not implement fake, decorative, placeholder, or non-functional UI for assigned product behavior. Controls, inputs, navigation, filters, toggles, copy, loading, empty, error, permission, unavailable, saved, and selected states must be functional through the intended product path or truthfully marked unavailable with actionable context. Mock data can only be used in the design lab.
+    verificationMethod: screenshotReview
+  - key: scopeContractAndReferenceEvidence
+    statement: Final design claims must state the scope contract screen/component/flow, content-vs-shell boundaries, fake-data policy, target viewport/device, primary job statement, and the reference image path when a reference exists. If no reference exists, the claim must say that explicitly and identify the approved design direction or owner instruction used instead.
+    severity: blocker
+    verificationMethod: manualEvidence
+  - key: sharedDesignSystemSource
+    statement: Design Lab and the client application must share the same design-system/source components where applicable. Do not implement separate page bodies for Design Lab and the product client. Design Lab is a screenshot proof surface, not a forked UI implementation.
     severity: blocker
     verificationMethod: sourceInspection
-  - key: professionalWorkflowUI
-    statement: UI must feel production-ready for the target user. clear hierarchy, restrained grouping, purposeful actions, human-friendly copy, legible text, accessible semantics/focus/labels, responsive layouts, and no UUID/dev-note leakage, repeated content, vague dashboard slop, nested cards, one-note color wash, decorative metrics, unclear workflow, overcrowding, incoherent spacing, overlap, clipping, unreadable contrast, accidental overflow, dead empty states, or visually unfinished components. Use `~/.codex/skills/design-worker/assets/good-example.png` and `~/.codex/skills/design-worker/assets/bad-example.png` as calibration references when useful, without trying to match them literally.
+  - key: truthfulFunctionalUI
+    statement: Do not implement fake, decorative, placeholder, or non-functional UI for assigned product behavior. Controls, inputs, navigation, filters, toggles, copy, loading, empty, error, permission, unavailable, saved, and selected states must be functional through the intended product path or truthfully marked unavailable with actionable context. Mock data is allowed only in Design Lab/reference fixtures or when the task explicitly authorizes design proof with safe mocked data.
+    severity: blocker
+    verificationMethod: sourceInspection
+  - key: antiSlopSelfReviewEvidence
+    statement: Final design claims must include anti-slop self-review evidence from the screenshot. The claim must explicitly address primary job clarity, visual hierarchy, container budget, copy budget, nested-card risk, dashboardification risk, developer-copy leakage, fake decorative metrics, clipping/overflow/contrast, and unfinished components. Failed items must be fixed before claiming completion.
+    severity: high
+    verificationMethod: manualEvidence
+  - key: noNestedCardsOrDashboardification
+    statement: The main surface must not use nested cards, cards-inside-cards, bordered boxes as hierarchy substitutes, or dashboardification of workflow pages. Do not add KPI strips, fake metrics, analytics panels, charts, badges, progress tiles, health panels, or decorative data surfaces unless the product task truly requires metrics for the user's primary job.
+    severity: high
+    verificationMethod: screenshotReview
+  - key: noDeveloperCopyLeakage
+    statement: User-facing UI must not leak developer/internal copy, including UUIDs, API paths, database terms, enum values, debug text, fixture names, fake IDs, raw booleans, architecture copy, stack traces, endpoint names, or implementation notes. Translate system facts into human product language or hide them.
+    severity: high
+    verificationMethod: screenshotReview
+  - key: noCopySludgeOrFanFiction
+    statement: UI copy must not contain sludge, marketing filler, repeated explanatory prose, obvious helper text, or control-plane fan fiction in ordinary workflows. Every visible sentence must help the user decide, act, recover, or understand a non-obvious state.
+    severity: high
+    verificationMethod: screenshotReview
+  - key: visualFinishAndAccessibility
+    statement: The rendered UI must have production-grade fit and finish for the target viewport/device, with no obvious clipping, overlap, accidental overflow, unreadable contrast, dead empty states, broken focus/labels/semantics, visually unfinished components, harsh wireframe-like borders, incoherent spacing, or one-note AI visual defaults.
     severity: high
     verificationMethod: screenshotReview
