@@ -75,6 +75,26 @@ class WorkspaceSelection {
   }
 }
 
+class GlobalSettings {
+  const GlobalSettings({
+    this.approvalPolicy,
+    this.sandboxMode,
+    this.networkAccess,
+  });
+
+  final String? approvalPolicy;
+  final String? sandboxMode;
+  final bool? networkAccess;
+
+  factory GlobalSettings.fromJson(Map<String, dynamic> json) {
+    return GlobalSettings(
+      approvalPolicy: json['approvalPolicy'] as String?,
+      sandboxMode: json['sandboxMode'] as String?,
+      networkAccess: json['networkAccess'] as bool?,
+    );
+  }
+}
+
 class ThreadGroupItem {
   const ThreadGroupItem({
     required this.id,
@@ -140,6 +160,10 @@ class ProjectItem {
     this.defaultSandboxMode,
     this.defaultApprovalPolicy,
     this.defaultNetworkAccess,
+    this.globalDefaultSandboxMode,
+    this.globalDefaultApprovalPolicy,
+    this.globalDefaultNetworkAccess,
+    required this.roleRuntimeDefaults,
     required this.orchestratorDefaultModel,
     required this.orchestratorDefaultReasoningEffort,
     required this.workerDefaultModel,
@@ -175,6 +199,10 @@ class ProjectItem {
   final String? defaultSandboxMode;
   final String? defaultApprovalPolicy;
   final bool? defaultNetworkAccess;
+  final String? globalDefaultSandboxMode;
+  final String? globalDefaultApprovalPolicy;
+  final bool? globalDefaultNetworkAccess;
+  final Map<String, RoleRuntimeDefaults> roleRuntimeDefaults;
   final String? orchestratorDefaultModel;
   final String? orchestratorDefaultReasoningEffort;
   final String? workerDefaultModel;
@@ -211,6 +239,10 @@ class ProjectItem {
       defaultSandboxMode: json['defaultSandboxMode'] as String?,
       defaultApprovalPolicy: json['defaultApprovalPolicy'] as String?,
       defaultNetworkAccess: json['defaultNetworkAccess'] as bool?,
+      globalDefaultSandboxMode: json['globalDefaultSandboxMode'] as String?,
+      globalDefaultApprovalPolicy: json['globalDefaultApprovalPolicy'] as String?,
+      globalDefaultNetworkAccess: json['globalDefaultNetworkAccess'] as bool?,
+      roleRuntimeDefaults: _roleRuntimeDefaultsFromJson(json['roleRuntimeDefaults']),
       orchestratorDefaultModel: json['orchestratorDefaultModel'] as String?,
       orchestratorDefaultReasoningEffort:
           json['orchestratorDefaultReasoningEffort'] as String?,
@@ -245,6 +277,44 @@ class ProjectItem {
       isSelected: json['isSelected'] as bool? ?? false,
     );
   }
+}
+
+Map<String, RoleRuntimeDefaults> _roleRuntimeDefaultsFromJson(Object? value) {
+  if (value is! Map<String, dynamic>) {
+    return const <String, RoleRuntimeDefaults>{};
+  }
+  return value.map((key, raw) {
+    final defaults = raw is Map<String, dynamic>
+        ? RoleRuntimeDefaults.fromJson(raw)
+        : const RoleRuntimeDefaults();
+    return MapEntry(key, defaults);
+  });
+}
+
+class RoleRuntimeDefaults {
+  const RoleRuntimeDefaults({
+    this.approvalPolicy,
+    this.sandboxMode,
+    this.networkAccess,
+  });
+
+  final String? approvalPolicy;
+  final String? sandboxMode;
+  final bool? networkAccess;
+
+  factory RoleRuntimeDefaults.fromJson(Map<String, dynamic> json) {
+    return RoleRuntimeDefaults(
+      approvalPolicy: json['approvalPolicy'] as String?,
+      sandboxMode: json['sandboxMode'] as String?,
+      networkAccess: json['networkAccess'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        if (approvalPolicy != null) 'approvalPolicy': approvalPolicy,
+        if (sandboxMode != null) 'sandboxMode': sandboxMode,
+        if (networkAccess != null) 'networkAccess': networkAccess,
+      };
 }
 
 class ManifestRunSummary {

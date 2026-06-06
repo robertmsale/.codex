@@ -45,6 +45,7 @@ part 'terminal_resize_signal.dart';
 part 'terminate_command_execution_signal.dart';
 part 'thread_compact_signal.dart';
 part 'thread_history_state_signal.dart';
+part 'update_global_settings_signal.dart';
 part 'update_project_signal.dart';
 part 'update_thread_settings_signal.dart';
 part 'update_worker_metadata_signal.dart';

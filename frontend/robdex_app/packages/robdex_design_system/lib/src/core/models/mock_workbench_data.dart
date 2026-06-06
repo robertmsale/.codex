@@ -2,6 +2,11 @@ import 'workbench_models.dart';
 import 'workbench_view_data.dart';
 
 const mockWorkbenchData = WorkbenchViewData(
+  globalSettings: GlobalSettings(
+    approvalPolicy: 'on-request',
+    sandboxMode: 'workspace-write',
+    networkAccess: true,
+  ),
   projects: [
     ProjectItem(
       id: 'project-codex-home',
@@ -11,6 +16,7 @@ const mockWorkbenchData = WorkbenchViewData(
       autoRouteReplies: false,
       routeApprovalRequests: true,
       preferredModelProvider: null,
+      roleRuntimeDefaults: {},
       orchestratorDefaultModel: 'gpt-5',
       orchestratorDefaultReasoningEffort: 'high',
       workerDefaultModel: 'gpt-5.4-mini',
@@ -39,6 +45,12 @@ const mockWorkbenchData = WorkbenchViewData(
       autoRouteReplies: true,
       routeApprovalRequests: true,
       preferredModelProvider: null,
+      roleRuntimeDefaults: {
+        'worker': RoleRuntimeDefaults(
+          sandboxMode: 'workspace-write',
+          networkAccess: true,
+        ),
+      },
       orchestratorDefaultModel: 'gpt-5',
       orchestratorDefaultReasoningEffort: 'high',
       workerDefaultModel: 'gpt-5.4-mini',

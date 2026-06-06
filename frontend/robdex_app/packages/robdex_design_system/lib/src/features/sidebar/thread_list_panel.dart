@@ -11,6 +11,7 @@ class ThreadListPanel extends StatelessWidget {
     required this.threads,
     required this.pendingApprovals,
     required this.onDisconnect,
+    required this.onGlobalSettings,
     required this.onThreadSelected,
     required this.onCreateProject,
     required this.onProjectSettings,
@@ -23,6 +24,7 @@ class ThreadListPanel extends StatelessWidget {
   final List<ThreadItem> threads;
   final List<PendingApprovalItem> pendingApprovals;
   final VoidCallback onDisconnect;
+  final VoidCallback onGlobalSettings;
   final ValueChanged<String> onThreadSelected;
   final VoidCallback onCreateProject;
   final ValueChanged<ProjectItem> onProjectSettings;
@@ -64,6 +66,13 @@ class ThreadListPanel extends StatelessWidget {
           child: Row(
             children: [
               const Spacer(),
+              _SemanticIconButton(
+                id: 'semantic.sidebar.globalSettings',
+                label: 'Open global settings',
+                onPressed: onGlobalSettings,
+                tooltip: 'Global settings',
+                icon: const Icon(Icons.tune_outlined, size: 17),
+              ),
               _SemanticIconButton(
                 id: 'semantic.sidebar.newProject',
                 label: 'Create new project',

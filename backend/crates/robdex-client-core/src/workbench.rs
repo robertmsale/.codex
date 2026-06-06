@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use robdex_protocol::{
-    UiChatEntry, UiInspectorFact, UiLiveProcessItem, UiModelItem, UiPendingApprovalItem,
+    UiChatEntry, UiGlobalSettings, UiInspectorFact, UiLiveProcessItem, UiModelItem, UiPendingApprovalItem,
     UiManifestPhaseSummary, UiManifestRunSummary, UiProjectItem, UiRequirementReviewRequirement, UiRequirementReviewSummary,
     UiRequirementVerdictSummary, UiThreadGroupItem, UiThreadItem, UiWorkerMetadata,
     UiWorkspaceFile, UiWorkspaceSelection, WorkbenchViewData,
@@ -191,6 +191,21 @@ impl WorkbenchClient {
         Ok(())
     }
 
+    pub async fn update_global_settings(
+        &mut self,
+        approval_policy: Option<String>,
+        sandbox_mode: Option<String>,
+        network_access: Option<bool>,
+    ) -> Result<()> {
+        post_json(&self.client, self.endpoint.http_base.join("/global-settings")?, json!({
+            "approvalPolicy": approval_policy,
+            "sandboxMode": sandbox_mode,
+            "networkAccess": network_access,
+        }))
+        .await?;
+        Ok(())
+    }
+
     pub async fn update_project(
         &mut self,
         project_id: String,
@@ -204,6 +219,7 @@ impl WorkbenchClient {
         default_sandbox_mode: Option<String>,
         default_approval_policy: Option<String>,
         default_network_access: Option<bool>,
+        role_runtime_defaults: Value,
         orchestrator_model_id: Option<String>,
         orchestrator_reasoning_effort: Option<String>,
         worker_model_id: Option<String>,
@@ -235,6 +251,7 @@ impl WorkbenchClient {
                 "sandboxMode": default_sandbox_mode,
                 "approvalPolicy": default_approval_policy,
                 "networkAccess": default_network_access,
+                "roleRuntimeDefaults": role_runtime_defaults,
                 "roleModelReasoningDefaults": {
                     "orchestrator": {
                         "modelID": orchestrator_model_id,
@@ -787,6 +804,10 @@ pub async fn build_workbench_with_models(
             default_sandbox_mode: record.default_sandbox_mode.clone(),
             default_approval_policy: record.default_approval_policy.clone(),
             default_network_access: record.default_network_access,
+            global_default_sandbox_mode: global_defaults.sandbox_mode.clone(),
+            global_default_approval_policy: global_defaults.approval_policy.clone(),
+            global_default_network_access: global_defaults.network_access,
+            role_runtime_defaults: record.role_runtime_defaults.clone(),
             orchestrator_default_model: record.orchestrator_default_model.clone(),
             orchestrator_default_reasoning_effort: record.orchestrator_default_reasoning_effort.clone(),
             worker_default_model: record.worker_default_model.clone(),
@@ -1034,6 +1055,11 @@ pub async fn build_workbench_with_models(
         .unwrap_or_default();
 
     Ok(WorkbenchViewData {
+        global_settings: UiGlobalSettings {
+            approval_policy: global_defaults.approval_policy.clone(),
+            sandbox_mode: global_defaults.sandbox_mode.clone(),
+            network_access: global_defaults.network_access,
+        },
         projects,
         selection,
         threads,
@@ -1282,6 +1308,7 @@ struct ProjectRecord {
     default_sandbox_mode: Option<String>,
     default_approval_policy: Option<String>,
     default_network_access: Option<bool>,
+    role_runtime_defaults: Value,
     orchestrator_default_model: Option<String>,
     orchestrator_default_reasoning_effort: Option<String>,
     worker_default_model: Option<String>,
@@ -1751,6 +1778,12 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
             .and_then(|value| value.get("roleDeveloperInstructionsDefaults"))
             .cloned()
             .unwrap_or(Value::Null);
+        let role_runtime_defaults = project
+            .get("configs")
+            .and_then(|value| value.get("roleRuntimeDefaults"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let project_configs = project.get("configs").unwrap_or(&Value::Null);
         let permanent_requirement_composables = project
             .get("configs")
             .and_then(|value| value.get("requirementsPermanentComposables"))
@@ -1795,23 +1828,29 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
                 .map(str::to_string),
             default_model: project
                 .get("defaultModel")
+                .or_else(|| project_configs.get("modelID"))
                 .and_then(Value::as_str)
                 .map(str::to_string),
             default_reasoning_effort: project
                 .get("defaultReasoningEffort")
+                .or_else(|| project_configs.get("reasoningEffort"))
                 .and_then(Value::as_str)
                 .map(str::to_string),
             default_sandbox_mode: project
                 .get("defaultSandboxMode")
+                .or_else(|| project_configs.get("sandboxMode"))
                 .and_then(Value::as_str)
                 .map(str::to_string),
             default_approval_policy: project
                 .get("defaultApprovalPolicy")
+                .or_else(|| project_configs.get("approvalPolicy"))
                 .and_then(Value::as_str)
                 .map(str::to_string),
             default_network_access: project
                 .get("defaultNetworkAccess")
+                .or_else(|| project_configs.get("networkAccess"))
                 .and_then(Value::as_bool),
+            role_runtime_defaults,
             orchestrator_default_model: role_defaults
                 .get("orchestrator")
                 .and_then(|value| value.get("modelID"))

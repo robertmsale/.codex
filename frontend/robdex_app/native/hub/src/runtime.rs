@@ -20,7 +20,7 @@ use crate::signals::{
     SendThreadMessageSignal, SetProjectOrchestratorSignal, SetThreadRunningStateSignal,
     SpawnAgentSignal, TerminalCloseAllSignal, TerminalCloseSignal, TerminalInputSignal,
     TerminalEventSignal, TerminalOpenSignal, TerminalResizeSignal, TerminateCommandExecutionSignal,
-    ThreadCompactSignal, UpdateProjectSignal, UpdateThreadSettingsSignal,
+    ThreadCompactSignal, UpdateGlobalSettingsSignal, UpdateProjectSignal, UpdateThreadSettingsSignal,
     UpdateWorkerMetadataSignal, InterruptThreadSignal, ThreadHistoryStateSignal, HookToastSignal,
     WarmHandoffSignal, WorkbenchStateSignal,
 };
@@ -40,6 +40,11 @@ enum Action {
     },
     SelectProject(Option<String>),
     DeleteProject(String),
+    UpdateGlobalSettings {
+        approval_policy: Option<String>,
+        sandbox_mode: Option<String>,
+        network_access: Option<bool>,
+    },
     UpdateProject {
         project_id: String,
         name: String,
@@ -52,6 +57,7 @@ enum Action {
         default_sandbox_mode: Option<String>,
         default_approval_policy: Option<String>,
         default_network_access: Option<bool>,
+        role_runtime_defaults: serde_json::Value,
         orchestrator_model_id: Option<String>,
         orchestrator_reasoning_effort: Option<String>,
         worker_model_id: Option<String>,
@@ -452,6 +458,25 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
     spawn_map::<DeleteProjectSignal, _>(tx.clone(), |signal| {
         Action::DeleteProject(signal.message.project_id)
     });
+    spawn_map::<UpdateGlobalSettingsSignal, _>(tx.clone(), |signal| {
+        Action::UpdateGlobalSettings {
+            approval_policy: if signal.message.approval_policy.is_empty() {
+                None
+            } else {
+                Some(signal.message.approval_policy)
+            },
+            sandbox_mode: if signal.message.sandbox_mode.is_empty() {
+                None
+            } else {
+                Some(signal.message.sandbox_mode)
+            },
+            network_access: match signal.message.network_access_mode.as_str() {
+                "enabled" => Some(true),
+                "disabled" => Some(false),
+                _ => None,
+            },
+        }
+    });
     spawn_map::<UpdateProjectSignal, _>(tx.clone(), |signal| Action::UpdateProject {
         project_id: signal.message.project_id,
         name: signal.message.name,
@@ -488,6 +513,8 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
             "disabled" => Some(false),
             _ => None,
         },
+        role_runtime_defaults: serde_json::from_str(&signal.message.role_runtime_defaults_json)
+            .unwrap_or(serde_json::Value::Null),
         orchestrator_model_id: if signal.message.orchestrator_model_id.is_empty() {
             None
         } else {
@@ -883,6 +910,16 @@ async fn handle_action(
                 .await?;
             current_view_clone(current_view)
         }
+        Action::UpdateGlobalSettings {
+            approval_policy,
+            sandbox_mode,
+            network_access,
+        } => {
+            client.as_mut().ok_or_else(|| anyhow!("Not connected"))?
+                .update_global_settings(approval_policy, sandbox_mode, network_access)
+                .await?;
+            current_view_clone(current_view)
+        }
         Action::UpdateProject {
             project_id,
             name,
@@ -895,6 +932,7 @@ async fn handle_action(
             default_sandbox_mode,
             default_approval_policy,
             default_network_access,
+            role_runtime_defaults,
             orchestrator_model_id,
             orchestrator_reasoning_effort,
             worker_model_id,
@@ -928,6 +966,7 @@ async fn handle_action(
                     default_sandbox_mode,
                     default_approval_policy,
                     default_network_access,
+                    role_runtime_defaults,
                     orchestrator_model_id,
                     orchestrator_reasoning_effort,
                     worker_model_id,

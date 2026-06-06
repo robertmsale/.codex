@@ -185,6 +185,11 @@ pub struct UiProjectItem {
     pub default_sandbox_mode: Option<String>,
     pub default_approval_policy: Option<String>,
     pub default_network_access: Option<bool>,
+    pub global_default_sandbox_mode: Option<String>,
+    pub global_default_approval_policy: Option<String>,
+    pub global_default_network_access: Option<bool>,
+    #[serde(default)]
+    pub role_runtime_defaults: Value,
     pub orchestrator_default_model: Option<String>,
     pub orchestrator_default_reasoning_effort: Option<String>,
     pub worker_default_model: Option<String>,
@@ -206,6 +211,14 @@ pub struct UiProjectItem {
     pub permanent_requirement_composables: Vec<String>,
     pub manifest_runs: Vec<UiManifestRunSummary>,
     pub is_selected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiGlobalSettings {
+    pub approval_policy: Option<String>,
+    pub sandbox_mode: Option<String>,
+    pub network_access: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -393,6 +406,7 @@ pub struct UiLiveProcessItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchViewData {
+    pub global_settings: UiGlobalSettings,
     pub projects: Vec<UiProjectItem>,
     pub selection: UiWorkspaceSelection,
     pub threads: Vec<UiThreadItem>,

@@ -44,6 +44,13 @@ pub struct DeleteProjectSignal {
 }
 
 #[derive(Deserialize, DartSignal)]
+pub struct UpdateGlobalSettingsSignal {
+    pub approval_policy: String,
+    pub sandbox_mode: String,
+    pub network_access_mode: String,
+}
+
+#[derive(Deserialize, DartSignal)]
 pub struct UpdateProjectSignal {
     pub project_id: String,
     pub name: String,
@@ -56,6 +63,7 @@ pub struct UpdateProjectSignal {
     pub default_sandbox_mode: String,
     pub default_approval_policy: String,
     pub default_network_access_mode: String,
+    pub role_runtime_defaults_json: String,
     pub orchestrator_model_id: String,
     pub orchestrator_reasoning_effort: String,
     pub worker_model_id: String,

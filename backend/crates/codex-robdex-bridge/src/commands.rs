@@ -457,6 +457,7 @@ fn bridge_state_payload(state: &PersistedState) -> Value {
             "defaultSandboxMode": project.configs.get("sandboxMode").cloned().unwrap_or(Value::Null),
             "defaultApprovalPolicy": project.configs.get("approvalPolicy").cloned().unwrap_or(Value::Null),
             "defaultNetworkAccess": project.configs.get("networkAccess").cloned().unwrap_or(Value::Null),
+            "roleRuntimeDefaults": project.configs.get("roleRuntimeDefaults").cloned().unwrap_or(Value::Null),
             "permanentRequirementComposables": permanent_requirement_composable_ids(project),
             "manifestRuns": manifest_runs_payload(state, normalized_root.as_str()),
             "worktrees": worktrees,
@@ -605,6 +606,12 @@ pub async fn execute_bridge_command(
         "projectCreate" => {
             let mut state = parse_state(&runtime.state_document_value().await);
             create_project(&mut state, &payload)?;
+            persist_state(runtime, &state).await?;
+            Ok(success(json!({"type":"empty"})))
+        }
+        "globalSettingsUpdate" => {
+            let mut state = parse_state(&runtime.state_document_value().await);
+            update_global_settings(&mut state, &payload);
             persist_state(runtime, &state).await?;
             Ok(success(json!({"type":"empty"})))
         }
@@ -1690,6 +1697,15 @@ fn update_project(state: &mut PersistedState, payload: &Value) -> Result<()> {
         configs.insert("roleDeveloperInstructionsDefaults".to_string(), role_defaults);
         project.configs = Value::Object(configs);
     }
+    if let Some(role_defaults) = payload
+        .get("roleRuntimeDefaults")
+        .cloned()
+        .filter(|value| value.is_object())
+    {
+        let mut configs = project.configs.as_object().cloned().unwrap_or_default();
+        configs.insert("roleRuntimeDefaults".to_string(), role_defaults);
+        project.configs = Value::Object(configs);
+    }
     if let Some(permanent_composables) = payload.get(PROJECT_PERMANENT_REQUIREMENT_COMPOSABLES_KEY) {
         let mut configs = project.configs.as_object().cloned().unwrap_or_default();
         configs.insert(
@@ -1701,6 +1717,29 @@ fn update_project(state: &mut PersistedState, payload: &Value) -> Result<()> {
     project.updated_at = Some(unix_now());
     state.updated_at = Some(unix_now());
     Ok(())
+}
+
+fn update_global_settings(state: &mut PersistedState, payload: &Value) {
+    let mut configs = state.global_configs.as_object().cloned().unwrap_or_default();
+    for key in ["approvalPolicy", "sandboxMode", "networkAccess"] {
+        if payload.get(key).is_some() {
+            match payload.get(key).cloned().filter(|value| {
+                if let Some(value) = value.as_str() {
+                    !value.trim().is_empty()
+                } else {
+                    !value.is_null()
+                }
+            }) {
+                Some(value) => {
+                    configs.insert(key.to_string(), value);
+                }
+                None => {
+                    configs.remove(key);
+                }
+            }
+        }
+    }
+    state.global_configs = Value::Object(configs);
 }
 
 fn delete_project(state: &mut PersistedState, project_id: Option<&str>) -> Result<()> {
@@ -2473,6 +2512,7 @@ fn tracked_project_path_for_thread(state: &PersistedState, thread_id: &str) -> O
 fn authoritative_spawn_defaults_for_project(
     state: &PersistedState,
     project_path: &str,
+    role: Option<&str>,
 ) -> Option<ExplicitThreadSettings> {
     let target_path = normalize_path(project_path.to_string());
     let project = state.projects.values().find(|project| {
@@ -2492,9 +2532,16 @@ fn authoritative_spawn_defaults_for_project(
     );
     let approval_policy = project
         .configs
-        .get("approvalPolicy")
+        .get("roleRuntimeDefaults")
+        .and_then(|value| value.get(role_runtime_default_key(role)))
+        .and_then(|value| value.get("approvalPolicy"))
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| project
+        .configs
+        .get("approvalPolicy")
+        .and_then(Value::as_str)
+        .map(str::to_string))
         .or_else(|| state
         .global_configs
         .get("approvalPolicy")
@@ -2502,9 +2549,16 @@ fn authoritative_spawn_defaults_for_project(
         .map(str::to_string));
     let sandbox_mode = project
         .configs
-        .get("sandboxMode")
+        .get("roleRuntimeDefaults")
+        .and_then(|value| value.get(role_runtime_default_key(role)))
+        .and_then(|value| value.get("sandboxMode"))
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| project
+        .configs
+        .get("sandboxMode")
+        .and_then(Value::as_str)
+        .map(str::to_string))
         .or_else(|| state
         .global_configs
         .get("sandboxMode")
@@ -2512,8 +2566,15 @@ fn authoritative_spawn_defaults_for_project(
         .map(str::to_string));
     let default_network_access = project
         .configs
+        .get("roleRuntimeDefaults")
+        .and_then(|value| value.get(role_runtime_default_key(role)))
+        .and_then(|value| value.get("networkAccess"))
+        .and_then(Value::as_bool)
+        .or_else(|| project
+        .configs
         .get("networkAccess")
         .and_then(Value::as_bool)
+        )
         .or_else(|| state.global_configs.get("networkAccess").and_then(Value::as_bool));
     let network_access = effective_network_access_for_sandbox(
         sandbox_mode.as_deref(),
@@ -2580,6 +2641,68 @@ fn role_model_reasoning_default_key(role: Option<&str>) -> &'static str {
         Some("requirements-reviewer") | Some("requirementsReviewer") => "requirements-reviewer",
         Some("worker") | Some("hidden") | Some("operator") | _ => "worker",
     }
+}
+
+fn role_runtime_default_key(role: Option<&str>) -> &'static str {
+    match role {
+        Some("designer") => "designer",
+        Some("planner") => "planner",
+        Some("qa") => "qa",
+        Some("orchestrator") => "orchestrator",
+        Some("operator") => "operator",
+        Some("hidden") => "hidden",
+        Some("requirements-reviewer") | Some("requirementsReviewer") => "requirements-reviewer",
+        Some("worker") | _ => "worker",
+    }
+}
+
+fn role_runtime_default_string(
+    state: &PersistedState,
+    project_path: Option<&str>,
+    role: Option<&str>,
+    setting: &str,
+) -> Option<String> {
+    let key = role_runtime_default_key(role);
+    let target_path = normalize_path(project_path?.to_string());
+    let project = state.projects.values().find(|project| {
+        project
+            .project_root
+            .as_ref()
+            .map(|value| normalize_path(value.clone()) == target_path)
+            .unwrap_or(false)
+    })?;
+    project
+        .configs
+        .get("roleRuntimeDefaults")
+        .and_then(|value| value.get(key))
+        .and_then(|value| value.get(setting))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn role_runtime_default_bool(
+    state: &PersistedState,
+    project_path: Option<&str>,
+    role: Option<&str>,
+    setting: &str,
+) -> Option<bool> {
+    let key = role_runtime_default_key(role);
+    let target_path = normalize_path(project_path?.to_string());
+    let project = state.projects.values().find(|project| {
+        project
+            .project_root
+            .as_ref()
+            .map(|value| normalize_path(value.clone()) == target_path)
+            .unwrap_or(false)
+    })?;
+    project
+        .configs
+        .get("roleRuntimeDefaults")
+        .and_then(|value| value.get(key))
+        .and_then(|value| value.get(setting))
+        .and_then(Value::as_bool)
 }
 
 fn role_default_model(state: &PersistedState, project_path: Option<&str>, role: Option<&str>) -> Option<String> {
@@ -2889,6 +3012,26 @@ fn tracked_approval_policy_for_thread(state: &PersistedState, thread_id: &str) -
                 .approval_policy
                 .clone()
                 .or_else(|| {
+                    project
+                        .project_root
+                        .as_deref()
+                        .and_then(|project_path| {
+                            role_runtime_default_string(
+                                state,
+                                Some(project_path),
+                                agent.role.as_deref(),
+                                "approvalPolicy",
+                            )
+                        })
+                })
+                .or_else(|| {
+                    project
+                        .configs
+                        .get("approvalPolicy")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .or_else(|| {
                     state
                         .global_configs
                         .get("approvalPolicy")
@@ -2908,7 +3051,30 @@ fn tracked_sandbox_mode_for_thread(state: &PersistedState, thread_id: &str) -> O
         .map(str::to_string);
     for project in state.projects.values() {
         if let Some(agent) = project.agents.get(thread_id) {
-            return agent.sandbox_mode.clone().or_else(|| default_sandbox_mode.clone());
+            return agent
+                .sandbox_mode
+                .clone()
+                .or_else(|| {
+                    project
+                        .project_root
+                        .as_deref()
+                        .and_then(|project_path| {
+                            role_runtime_default_string(
+                                state,
+                                Some(project_path),
+                                agent.role.as_deref(),
+                                "sandboxMode",
+                            )
+                        })
+                })
+                .or_else(|| {
+                    project
+                        .configs
+                        .get("sandboxMode")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .or_else(|| default_sandbox_mode.clone());
         }
     }
     default_sandbox_mode
@@ -2927,7 +3093,40 @@ fn tracked_network_access_for_thread(state: &PersistedState, thread_id: &str) ->
             let sandbox_mode = agent
                 .sandbox_mode
                 .clone()
+                .or_else(|| {
+                    project
+                        .project_root
+                        .as_deref()
+                        .and_then(|project_path| {
+                            role_runtime_default_string(
+                                state,
+                                Some(project_path),
+                                agent.role.as_deref(),
+                                "sandboxMode",
+                            )
+                        })
+                })
+                .or_else(|| {
+                    project
+                        .configs
+                        .get("sandboxMode")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
                 .or_else(|| default_sandbox_mode.clone());
+            let default_network_access = project
+                .project_root
+                .as_deref()
+                .and_then(|project_path| {
+                    role_runtime_default_bool(
+                        state,
+                        Some(project_path),
+                        agent.role.as_deref(),
+                        "networkAccess",
+                    )
+                })
+                .or_else(|| project.configs.get("networkAccess").and_then(Value::as_bool))
+                .or(default_network_access);
             return effective_network_access_for_sandbox(
                 sandbox_mode.as_deref(),
                 agent.network_access,
@@ -3370,7 +3569,40 @@ fn tracked_sandbox_policy_for_thread(state: &PersistedState, thread_id: &str) ->
             let sandbox_mode = agent
                 .sandbox_mode
                 .clone()
+                .or_else(|| {
+                    project
+                        .project_root
+                        .as_deref()
+                        .and_then(|project_path| {
+                            role_runtime_default_string(
+                                state,
+                                Some(project_path),
+                                agent.role.as_deref(),
+                                "sandboxMode",
+                            )
+                        })
+                })
+                .or_else(|| {
+                    project
+                        .configs
+                        .get("sandboxMode")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
                 .or_else(|| default_sandbox_mode.clone());
+            let default_network_access = project
+                .project_root
+                .as_deref()
+                .and_then(|project_path| {
+                    role_runtime_default_bool(
+                        state,
+                        Some(project_path),
+                        agent.role.as_deref(),
+                        "networkAccess",
+                    )
+                })
+                .or_else(|| project.configs.get("networkAccess").and_then(Value::as_bool))
+                .or(default_network_access);
             let network_access = effective_network_access_for_sandbox(
                 sandbox_mode.as_deref(),
                 agent.network_access,
@@ -3437,6 +3669,7 @@ pub(crate) async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Res
         .get("approvalPolicy")
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| role_runtime_default_string(&state, Some(&project_path), role, "approvalPolicy"))
         .or_else(|| project_config_string(&state, &project_path, "approvalPolicy"))
         .or_else(|| {
             state
@@ -3449,6 +3682,7 @@ pub(crate) async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Res
         .get("sandboxMode")
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| role_runtime_default_string(&state, Some(&project_path), role, "sandboxMode"))
         .or_else(|| project_config_string(&state, &project_path, "sandboxMode"))
         .or_else(|| {
             state
@@ -3457,7 +3691,8 @@ pub(crate) async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Res
                 .and_then(Value::as_str)
                 .map(str::to_string)
         });
-    let default_network_access = project_config_bool(&state, &project_path, "networkAccess")
+    let default_network_access = role_runtime_default_bool(&state, Some(&project_path), role, "networkAccess")
+        .or_else(|| project_config_bool(&state, &project_path, "networkAccess"))
         .or_else(|| state.global_configs.get("networkAccess").and_then(Value::as_bool));
     let network_access = effective_network_access_for_sandbox(
         sandbox_mode.as_deref(),
@@ -6262,7 +6497,7 @@ pub async fn orchestrator_spawn_agent(
         other => bail!("Orchestrators may only spawn worker, qa, or requirements-reviewer agents, not `{other}`."),
     };
     let authoritative =
-        authoritative_spawn_defaults_for_project(&state, sender.project_path.as_str()).ok_or_else(
+        authoritative_spawn_defaults_for_project(&state, sender.project_path.as_str(), Some(target_role)).ok_or_else(
             || anyhow::anyhow!("Project `{}` has no authoritative spawn defaults.", sender.project_path),
         )?;
     let model =
@@ -10044,6 +10279,16 @@ requirements:
                         "cwd": temp.path().join(".worktrees").display().to_string(),
                         "orchestratorThreadId": "thread-orchestrator",
                         "configs": {
+                            "approvalPolicy": "on-request",
+                            "sandboxMode": "danger-full-access",
+                            "networkAccess": false,
+                            "roleRuntimeDefaults": {
+                                "worker": {
+                                    "approvalPolicy": "on-failure",
+                                    "sandboxMode": "workspace-write",
+                                    "networkAccess": true
+                                }
+                            },
                             "roleModelReasoningDefaults": {
                                 "worker": { "modelID": "gpt-5.4-mini", "reasoningEffort": "medium" }
                             }
@@ -10085,7 +10330,7 @@ requirements:
             thread_params["cwd"],
             temp.path().join(".worktrees").display().to_string()
         );
-        assert_eq!(thread_params["approvalPolicy"], "on-request");
+        assert_eq!(thread_params["approvalPolicy"], "on-failure");
         assert_eq!(thread_params["sandbox"], "workspace-write");
 
         let state = parse_state(&runtime.state_document_value().await);
@@ -10098,7 +10343,7 @@ requirements:
             agent_state.cwd.as_deref(),
             Some(temp.path().join(".worktrees").to_string_lossy().as_ref())
         );
-        assert_eq!(agent_state.approval_policy.as_deref(), Some("on-request"));
+        assert_eq!(agent_state.approval_policy.as_deref(), Some("on-failure"));
         assert_eq!(agent_state.sandbox_mode.as_deref(), Some("workspace-write"));
         assert_eq!(agent_state.network_access, Some(true));
 

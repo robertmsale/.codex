@@ -149,6 +149,7 @@ void main() {
           onThreadSelected: (_) {},
           onProjectSelected: (_) {},
           onDisconnect: () {},
+          onGlobalSettings: () {},
           onCreateProject: () {},
           onProjectSettings: (_) {},
           onCreateThread: (_) {},
@@ -192,6 +193,16 @@ void main() {
       'defaultSandboxMode': 'workspace-write',
       'defaultApprovalPolicy': 'on-request',
       'defaultNetworkAccess': true,
+      'globalDefaultSandboxMode': 'workspace-write',
+      'globalDefaultApprovalPolicy': 'on-request',
+      'globalDefaultNetworkAccess': true,
+      'roleRuntimeDefaults': {
+        'worker': {
+          'sandboxMode': 'workspace-write',
+          'networkAccess': true,
+          'approvalPolicy': 'on-failure',
+        },
+      },
       'plannerDefaultModel': 'gpt-planner',
       'plannerDefaultReasoningEffort': 'high',
       'requirementsReviewerDefaultModel': 'gpt-5.5',
@@ -231,6 +242,12 @@ void main() {
     expect(project.defaultSandboxMode, 'workspace-write');
     expect(project.defaultApprovalPolicy, 'on-request');
     expect(project.defaultNetworkAccess, isTrue);
+    expect(project.globalDefaultSandboxMode, 'workspace-write');
+    expect(project.globalDefaultApprovalPolicy, 'on-request');
+    expect(project.globalDefaultNetworkAccess, isTrue);
+    expect(project.roleRuntimeDefaults['worker']?.sandboxMode, 'workspace-write');
+    expect(project.roleRuntimeDefaults['worker']?.networkAccess, isTrue);
+    expect(project.roleRuntimeDefaults['worker']?.approvalPolicy, 'on-failure');
     expect(project.plannerDefaultModel, 'gpt-planner');
     expect(project.plannerDefaultReasoningEffort, 'high');
     expect(project.requirementsReviewerDefaultModel, 'gpt-5.5');
@@ -343,6 +360,7 @@ void main() {
       defaultSandboxMode: 'workspace-write',
       defaultApprovalPolicy: 'on-request',
       defaultNetworkAccessMode: 'enabled',
+      roleRuntimeDefaultsJson: '{"worker":{"sandboxMode":"workspace-write","networkAccess":true}}',
       orchestratorModelId: 'gpt-5',
       orchestratorReasoningEffort: 'high',
       workerModelId: 'gpt-5.4-mini',
@@ -369,6 +387,7 @@ void main() {
     expect(decoded.defaultSandboxMode, 'workspace-write');
     expect(decoded.defaultApprovalPolicy, 'on-request');
     expect(decoded.defaultNetworkAccessMode, 'enabled');
+    expect(decoded.roleRuntimeDefaultsJson, contains('"worker"'));
     expect(decoded.plannerModelId, 'gpt-5.5');
     expect(decoded.plannerReasoningEffort, 'high');
     expect(decoded.requirementsReviewerModelId, 'gpt-5.5');
@@ -615,6 +634,9 @@ void main() {
                     sandboxMode: sandbox,
                     approvalPolicy: approval,
                     networkAccessMode: network,
+                    inheritedSandboxMode: 'workspace-write',
+                    inheritedApprovalPolicy: 'on-request',
+                    inheritedNetworkAccess: true,
                     onSandboxModeChanged: (value) => setState(() => sandbox = value),
                     onApprovalPolicyChanged: (value) => setState(() => approval = value),
                     onNetworkAccessModeChanged: (value) => setState(() => network = value),
@@ -645,16 +667,19 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('project.settings.project.sandbox')));
     await tester.pump();
+    expect(find.text('Default (workspace-write)'), findsOneWidget);
     await tester.tap(find.text('Danger').last);
     await tester.pump();
 
     await tester.tap(find.byKey(const ValueKey('project.settings.project.approval')));
     await tester.pump();
+    expect(find.text('Default (on-request)'), findsOneWidget);
     await tester.tap(find.text('never').last);
     await tester.pump();
 
     await tester.tap(find.byKey(const ValueKey('project.settings.project.network')));
     await tester.pump();
+    expect(find.text('Default (enabled)'), findsOneWidget);
     await tester.tap(find.text('Disabled').last);
     await tester.pump();
 
@@ -1477,6 +1502,7 @@ void main() {
             ],
             pendingApprovals: const [],
             onDisconnect: () {},
+            onGlobalSettings: () {},
             onThreadSelected: (_) {},
             onCreateProject: () {},
             onProjectSettings: (_) {},
@@ -1528,6 +1554,7 @@ void main() {
             ],
             pendingApprovals: const [],
             onDisconnect: () {},
+            onGlobalSettings: () {},
             onThreadSelected: (_) {},
             onCreateProject: () {},
             onProjectSettings: (_) {},
@@ -1586,6 +1613,7 @@ void main() {
               ],
               pendingApprovals: const [],
               onDisconnect: () {},
+              onGlobalSettings: () {},
               onThreadSelected: (_) {},
               onCreateProject: () {},
               onProjectSettings: (_) {},

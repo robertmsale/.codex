@@ -19,6 +19,7 @@ class RobdexShellScreen extends StatelessWidget {
     required this.onThreadSelected,
     required this.onProjectSelected,
     required this.onDisconnect,
+    required this.onGlobalSettings,
     required this.onCreateProject,
     required this.onProjectSettings,
     required this.onCreateThread,
@@ -53,6 +54,7 @@ class RobdexShellScreen extends StatelessWidget {
   final ValueChanged<String> onThreadSelected;
   final ValueChanged<String> onProjectSelected;
   final VoidCallback onDisconnect;
+  final VoidCallback onGlobalSettings;
   final VoidCallback onCreateProject;
   final ValueChanged<ProjectItem> onProjectSettings;
   final ValueChanged<ProjectItem> onCreateThread;
@@ -102,6 +104,7 @@ class RobdexShellScreen extends StatelessWidget {
                               workbench: workbench,
                               onThreadSelected: onThreadSelected,
                               onDisconnect: onDisconnect,
+                              onGlobalSettings: onGlobalSettings,
                               onCreateProject: onCreateProject,
                               onProjectSettings: onProjectSettings,
                               onCreateThread: onCreateThread,
@@ -135,6 +138,7 @@ class RobdexShellScreen extends StatelessWidget {
                               workbench: workbench,
                               onThreadSelected: onThreadSelected,
                               onDisconnect: onDisconnect,
+                              onGlobalSettings: onGlobalSettings,
                               onCreateProject: onCreateProject,
                               onProjectSettings: onProjectSettings,
                               onCreateThread: onCreateThread,
@@ -179,6 +183,7 @@ class _WideShell extends StatefulWidget {
     required this.workbench,
     required this.onThreadSelected,
     required this.onDisconnect,
+    required this.onGlobalSettings,
     required this.onCreateProject,
     required this.onProjectSettings,
     required this.onCreateThread,
@@ -211,6 +216,7 @@ class _WideShell extends StatefulWidget {
   final WorkbenchViewData workbench;
   final ValueChanged<String> onThreadSelected;
   final VoidCallback onDisconnect;
+  final VoidCallback onGlobalSettings;
   final VoidCallback onCreateProject;
   final ValueChanged<ProjectItem> onProjectSettings;
   final ValueChanged<ProjectItem> onCreateThread;
@@ -278,6 +284,7 @@ class _WideShellState extends State<_WideShell> {
                     threads: workbench.threads,
                     pendingApprovals: workbench.pendingApprovals,
                     onDisconnect: widget.onDisconnect,
+                    onGlobalSettings: widget.onGlobalSettings,
                     onThreadSelected: widget.onThreadSelected,
                     onCreateProject: widget.onCreateProject,
                     onProjectSettings: widget.onProjectSettings,
@@ -383,6 +390,7 @@ class _CompactShell extends StatefulWidget {
     required this.workbench,
     required this.onThreadSelected,
     required this.onDisconnect,
+    required this.onGlobalSettings,
     required this.onCreateProject,
     required this.onProjectSettings,
     required this.onCreateThread,
@@ -414,6 +422,7 @@ class _CompactShell extends StatefulWidget {
   final WorkbenchViewData workbench;
   final ValueChanged<String> onThreadSelected;
   final VoidCallback onDisconnect;
+  final VoidCallback onGlobalSettings;
   final VoidCallback onCreateProject;
   final ValueChanged<ProjectItem> onProjectSettings;
   final ValueChanged<ProjectItem> onCreateThread;
@@ -624,6 +633,7 @@ class _CompactShellState extends State<_CompactShell> {
           threads: widget.workbench.threads,
           pendingApprovals: widget.workbench.pendingApprovals,
           onDisconnect: widget.onDisconnect,
+          onGlobalSettings: widget.onGlobalSettings,
           onThreadSelected: (threadId) {
             widget.onThreadSelected(threadId);
             setState(() {

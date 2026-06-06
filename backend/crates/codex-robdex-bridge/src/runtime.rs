@@ -2346,6 +2346,7 @@ struct RoutedProjectState {
     orchestrator_thread_id: Option<String>,
     configs: Value,
     role_defaults: Value,
+    role_runtime_defaults: Value,
 }
 
 fn tracked_project_for_thread(state: &Value, thread_id: &str) -> Option<RoutedProjectState> {
@@ -2383,6 +2384,11 @@ fn tracked_project_for_thread(state: &Value, thread_id: &str) -> Option<RoutedPr
                 role_defaults: project_object
                     .get("configs")
                     .and_then(|value| value.get("roleModelReasoningDefaults"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                role_runtime_defaults: project_object
+                    .get("configs")
+                    .and_then(|value| value.get("roleRuntimeDefaults"))
                     .cloned()
                     .unwrap_or(Value::Null),
             });
@@ -2484,7 +2490,15 @@ fn tracked_approval_policy_for_thread_value(state: &Value, thread_id: &str) -> O
         .map(str::to_string)
         .or_else(|| {
             tracked_project_for_thread(state, thread_id)
-                .and_then(|project| project.configs.get("approvalPolicy").and_then(Value::as_str).map(str::to_string))
+                .and_then(|project| {
+                    project
+                        .role_runtime_defaults
+                        .get(role_runtime_defaults_key_for_thread(state, thread_id))
+                        .and_then(|value| value.get("approvalPolicy"))
+                        .or_else(|| project.configs.get("approvalPolicy"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
         })
         .or_else(|| {
             state
@@ -2526,6 +2540,19 @@ fn role_defaults_key_for_thread(state: &Value, thread_id: &str) -> &'static str 
     }
 }
 
+fn role_runtime_defaults_key_for_thread(state: &Value, thread_id: &str) -> &'static str {
+    match tracked_role_for_thread(state, thread_id).as_deref() {
+        Some("designer") => "designer",
+        Some("qa") => "qa",
+        Some("orchestrator") => "orchestrator",
+        Some("planner") => "planner",
+        Some("operator") => "operator",
+        Some("hidden") => "hidden",
+        Some("requirements-reviewer") | Some("requirementsReviewer") => "requirements-reviewer",
+        Some("worker") | _ => "worker",
+    }
+}
+
 fn role_default_model_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
     let key = role_defaults_key_for_thread(state, thread_id);
     tracked_project_for_thread(state, thread_id)
@@ -2561,7 +2588,15 @@ fn tracked_sandbox_mode_for_thread_value(state: &Value, thread_id: &str) -> Opti
         .map(str::to_string)
         .or_else(|| {
             tracked_project_for_thread(state, thread_id)
-                .and_then(|project| project.configs.get("sandboxMode").and_then(Value::as_str).map(str::to_string))
+                .and_then(|project| {
+                    project
+                        .role_runtime_defaults
+                        .get(role_runtime_defaults_key_for_thread(state, thread_id))
+                        .and_then(|value| value.get("sandboxMode"))
+                        .or_else(|| project.configs.get("sandboxMode"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
         })
         .or_else(|| {
             state
@@ -2594,7 +2629,14 @@ fn effective_network_access_for_sandbox_value(
 fn tracked_network_access_for_thread_value(state: &Value, thread_id: &str) -> Option<bool> {
     let sandbox_mode = tracked_sandbox_mode_for_thread_value(state, thread_id);
     let default_network_access = tracked_project_for_thread(state, thread_id)
-        .and_then(|project| project.configs.get("networkAccess").and_then(Value::as_bool))
+        .and_then(|project| {
+            project
+                .role_runtime_defaults
+                .get(role_runtime_defaults_key_for_thread(state, thread_id))
+                .and_then(|value| value.get("networkAccess"))
+                .or_else(|| project.configs.get("networkAccess"))
+                .and_then(Value::as_bool)
+        })
         .or_else(|| {
             state
                 .get("globalConfigs")

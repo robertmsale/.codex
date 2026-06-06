@@ -56,6 +56,7 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/workbench/bootstrap", get(workbench_bootstrap))
         .route("/services/qa-harness/summary", get(legacy_qa_harness_http))
         .route("/state/project-catalog", post(save_project_catalog_http))
+        .route("/global-settings", post(global_settings_update_http))
         .route("/projects", post(project_create_http))
         .route("/projects/select", post(project_select_http))
         .route("/projects/{project_id}", post(project_update_http).delete(project_delete_http))
@@ -504,6 +505,26 @@ async fn thread_archive_http(
     State(runtime): State<Arc<BridgeRuntime>>,
 ) -> impl IntoResponse {
     match execute_bridge_command(&runtime, "threadArchive", json!({ "threadId": thread_id })).await {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn global_settings_update_http(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    match execute_bridge_command(
+        &runtime,
+        "globalSettingsUpdate",
+        json!({
+            "approvalPolicy": payload.get("approvalPolicy").cloned().unwrap_or(Value::Null),
+            "sandboxMode": payload.get("sandboxMode").cloned().unwrap_or(Value::Null),
+            "networkAccess": payload.get("networkAccess").cloned().unwrap_or(Value::Null),
+        }),
+    )
+    .await
+    {
         Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
     }

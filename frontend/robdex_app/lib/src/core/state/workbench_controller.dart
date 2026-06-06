@@ -218,6 +218,18 @@ class WorkbenchController extends ChangeNotifier {
     DeleteProjectSignal(projectId: projectId).sendSignalToRust();
   }
 
+  void updateGlobalSettings({
+    required String approvalPolicy,
+    required String sandboxMode,
+    required String networkAccessMode,
+  }) {
+    UpdateGlobalSettingsSignal(
+      approvalPolicy: approvalPolicy,
+      sandboxMode: sandboxMode,
+      networkAccessMode: networkAccessMode,
+    ).sendSignalToRust();
+  }
+
   void updateProject({
     required String projectId,
     required String name,
@@ -230,6 +242,7 @@ class WorkbenchController extends ChangeNotifier {
     required String defaultSandboxMode,
     required String defaultApprovalPolicy,
     required String defaultNetworkAccessMode,
+    required String roleRuntimeDefaultsJson,
     required String orchestratorModelId,
     required String orchestratorReasoningEffort,
     required String workerModelId,
@@ -262,6 +275,7 @@ class WorkbenchController extends ChangeNotifier {
       defaultSandboxMode: defaultSandboxMode,
       defaultApprovalPolicy: defaultApprovalPolicy,
       defaultNetworkAccessMode: defaultNetworkAccessMode,
+      roleRuntimeDefaultsJson: roleRuntimeDefaultsJson,
       orchestratorModelId: orchestratorModelId,
       orchestratorReasoningEffort: orchestratorReasoningEffort,
       workerModelId: workerModelId,

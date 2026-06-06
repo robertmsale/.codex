@@ -16,6 +16,7 @@ class UpdateProjectSignal {
     required this.defaultSandboxMode,
     required this.defaultApprovalPolicy,
     required this.defaultNetworkAccessMode,
+    required this.roleRuntimeDefaultsJson,
     required this.orchestratorModelId,
     required this.orchestratorReasoningEffort,
     required this.workerModelId,
@@ -51,6 +52,7 @@ class UpdateProjectSignal {
       defaultSandboxMode: deserializer.deserializeString(),
       defaultApprovalPolicy: deserializer.deserializeString(),
       defaultNetworkAccessMode: deserializer.deserializeString(),
+      roleRuntimeDefaultsJson: deserializer.deserializeString(),
       orchestratorModelId: deserializer.deserializeString(),
       orchestratorReasoningEffort: deserializer.deserializeString(),
       workerModelId: deserializer.deserializeString(),
@@ -95,6 +97,7 @@ class UpdateProjectSignal {
   final String defaultSandboxMode;
   final String defaultApprovalPolicy;
   final String defaultNetworkAccessMode;
+  final String roleRuntimeDefaultsJson;
   final String orchestratorModelId;
   final String orchestratorReasoningEffort;
   final String workerModelId;
@@ -127,6 +130,7 @@ class UpdateProjectSignal {
     String? defaultSandboxMode,
     String? defaultApprovalPolicy,
     String? defaultNetworkAccessMode,
+    String? roleRuntimeDefaultsJson,
     String? orchestratorModelId,
     String? orchestratorReasoningEffort,
     String? workerModelId,
@@ -159,6 +163,7 @@ class UpdateProjectSignal {
       defaultSandboxMode: defaultSandboxMode ?? this.defaultSandboxMode,
       defaultApprovalPolicy: defaultApprovalPolicy ?? this.defaultApprovalPolicy,
       defaultNetworkAccessMode: defaultNetworkAccessMode ?? this.defaultNetworkAccessMode,
+      roleRuntimeDefaultsJson: roleRuntimeDefaultsJson ?? this.roleRuntimeDefaultsJson,
       orchestratorModelId: orchestratorModelId ?? this.orchestratorModelId,
       orchestratorReasoningEffort: orchestratorReasoningEffort ?? this.orchestratorReasoningEffort,
       workerModelId: workerModelId ?? this.workerModelId,
@@ -194,6 +199,7 @@ class UpdateProjectSignal {
     serializer.serializeString(defaultSandboxMode);
     serializer.serializeString(defaultApprovalPolicy);
     serializer.serializeString(defaultNetworkAccessMode);
+    serializer.serializeString(roleRuntimeDefaultsJson);
     serializer.serializeString(orchestratorModelId);
     serializer.serializeString(orchestratorReasoningEffort);
     serializer.serializeString(workerModelId);
@@ -239,6 +245,7 @@ class UpdateProjectSignal {
       && defaultSandboxMode == other.defaultSandboxMode
       && defaultApprovalPolicy == other.defaultApprovalPolicy
       && defaultNetworkAccessMode == other.defaultNetworkAccessMode
+      && roleRuntimeDefaultsJson == other.roleRuntimeDefaultsJson
       && orchestratorModelId == other.orchestratorModelId
       && orchestratorReasoningEffort == other.orchestratorReasoningEffort
       && workerModelId == other.workerModelId
@@ -277,6 +284,7 @@ class UpdateProjectSignal {
         defaultSandboxMode,
         defaultApprovalPolicy,
         defaultNetworkAccessMode,
+        roleRuntimeDefaultsJson,
         orchestratorModelId,
         orchestratorReasoningEffort,
         workerModelId,
@@ -315,6 +323,7 @@ class UpdateProjectSignal {
         'defaultSandboxMode: $defaultSandboxMode, '
         'defaultApprovalPolicy: $defaultApprovalPolicy, '
         'defaultNetworkAccessMode: $defaultNetworkAccessMode, '
+        'roleRuntimeDefaultsJson: $roleRuntimeDefaultsJson, '
         'orchestratorModelId: $orchestratorModelId, '
         'orchestratorReasoningEffort: $orchestratorReasoningEffort, '
         'workerModelId: $workerModelId, '

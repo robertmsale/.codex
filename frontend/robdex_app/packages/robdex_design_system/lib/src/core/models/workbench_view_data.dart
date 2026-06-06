@@ -2,6 +2,7 @@ import 'workbench_models.dart';
 
 class WorkbenchViewData {
   const WorkbenchViewData({
+    required this.globalSettings,
     required this.projects,
     required this.selection,
     required this.threads,
@@ -20,6 +21,7 @@ class WorkbenchViewData {
     required this.composerHint,
   });
 
+  final GlobalSettings globalSettings;
   final List<ProjectItem> projects;
   final WorkspaceSelection selection;
   final List<ThreadItem> threads;
@@ -49,6 +51,9 @@ class WorkbenchViewData {
     }
 
     return WorkbenchViewData(
+      globalSettings: GlobalSettings.fromJson(
+        (json['globalSettings'] as Map<String, dynamic>? ?? const {}),
+      ),
       projects: decodeList('projects', ProjectItem.fromJson),
       selection: WorkspaceSelection.fromJson(
         (json['selection'] as Map<String, dynamic>? ?? const {}),
@@ -81,6 +86,7 @@ class WorkbenchViewData {
 
   WorkbenchViewData copyWith({
     List<ProjectItem>? projects,
+    GlobalSettings? globalSettings,
     WorkspaceSelection? selection,
     List<ThreadItem>? threads,
     List<ModelItem>? availableModels,
@@ -99,6 +105,7 @@ class WorkbenchViewData {
   }) {
     return WorkbenchViewData(
       projects: projects ?? this.projects,
+      globalSettings: globalSettings ?? this.globalSettings,
       selection: selection ?? this.selection,
       threads: threads ?? this.threads,
       availableModels: availableModels ?? this.availableModels,

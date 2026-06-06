@@ -97,7 +97,7 @@ class ProjectRoleModelSettingsPane extends StatelessWidget {
             key: ValueKey('project.settings.$roleKey.reasoning'),
             initialValue: reasoningEffort,
             decoration: const InputDecoration(labelText: 'Reasoning'),
-            items: const [
+            items: [
               DropdownMenuItem(value: '', child: Text('Default')),
               DropdownMenuItem(value: 'low', child: Text('Low')),
               DropdownMenuItem(value: 'medium', child: Text('Medium')),
@@ -117,6 +117,10 @@ class ProjectDefaultRuntimeSettingsPane extends StatelessWidget {
     required this.sandboxMode,
     required this.approvalPolicy,
     required this.networkAccessMode,
+    this.settingsKeyPrefix = 'project',
+    this.inheritedSandboxMode,
+    this.inheritedApprovalPolicy,
+    this.inheritedNetworkAccess,
     required this.onSandboxModeChanged,
     required this.onApprovalPolicyChanged,
     required this.onNetworkAccessModeChanged,
@@ -125,6 +129,10 @@ class ProjectDefaultRuntimeSettingsPane extends StatelessWidget {
   final String sandboxMode;
   final String approvalPolicy;
   final String networkAccessMode;
+  final String settingsKeyPrefix;
+  final String? inheritedSandboxMode;
+  final String? inheritedApprovalPolicy;
+  final bool? inheritedNetworkAccess;
   final ValueChanged<String> onSandboxModeChanged;
   final ValueChanged<String> onApprovalPolicyChanged;
   final ValueChanged<String> onNetworkAccessModeChanged;
@@ -138,11 +146,15 @@ class ProjectDefaultRuntimeSettingsPane extends StatelessWidget {
         SizedBox(
           width: 270,
           child: DropdownButtonFormField<String>(
-            key: const ValueKey('project.settings.project.sandbox'),
+            key: ValueKey('project.settings.$settingsKeyPrefix.sandbox'),
+            isExpanded: true,
             initialValue: sandboxMode,
             decoration: const InputDecoration(labelText: 'Default sandbox'),
-            items: const [
-              DropdownMenuItem(value: '', child: Text('Global default')),
+            items: [
+              DropdownMenuItem(
+                value: '',
+                child: Text(_inheritedLabel('Default', inheritedSandboxMode)),
+              ),
               DropdownMenuItem(value: 'read-only', child: Text('Read-only')),
               DropdownMenuItem(value: 'workspace-write', child: Text('Workspace')),
               DropdownMenuItem(value: 'danger-full-access', child: Text('Danger')),
@@ -154,11 +166,15 @@ class ProjectDefaultRuntimeSettingsPane extends StatelessWidget {
         SizedBox(
           width: 270,
           child: DropdownButtonFormField<String>(
-            key: const ValueKey('project.settings.project.approval'),
+            key: ValueKey('project.settings.$settingsKeyPrefix.approval'),
+            isExpanded: true,
             initialValue: approvalPolicy,
             decoration: const InputDecoration(labelText: 'Default approval'),
-            items: const [
-              DropdownMenuItem(value: '', child: Text('Global default')),
+            items: [
+              DropdownMenuItem(
+                value: '',
+                child: Text(_inheritedLabel('Default', inheritedApprovalPolicy)),
+              ),
               DropdownMenuItem(value: 'untrusted', child: Text('untrusted')),
               DropdownMenuItem(value: 'on-failure', child: Text('on-failure')),
               DropdownMenuItem(value: 'on-request', child: Text('on-request')),
@@ -170,11 +186,15 @@ class ProjectDefaultRuntimeSettingsPane extends StatelessWidget {
         SizedBox(
           width: 270,
           child: DropdownButtonFormField<String>(
-            key: const ValueKey('project.settings.project.network'),
+            key: ValueKey('project.settings.$settingsKeyPrefix.network'),
+            isExpanded: true,
             initialValue: networkAccessMode,
             decoration: const InputDecoration(labelText: 'Default network'),
-            items: const [
-              DropdownMenuItem(value: 'default', child: Text('Global default')),
+            items: [
+              DropdownMenuItem(
+                value: 'default',
+                child: Text(_inheritedLabel('Default', _networkAccessLabel(inheritedNetworkAccess))),
+              ),
               DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
               DropdownMenuItem(value: 'disabled', child: Text('Disabled')),
             ],
@@ -184,6 +204,18 @@ class ProjectDefaultRuntimeSettingsPane extends StatelessWidget {
       ],
     );
   }
+}
+
+String _inheritedLabel(String fallback, String? inherited) {
+  final value = inherited?.trim();
+  if (value == null || value.isEmpty) {
+    return fallback;
+  }
+  return '$fallback ($value)';
+}
+
+String? _networkAccessLabel(bool? value) {
+  return value == null ? null : (value ? 'enabled' : 'disabled');
 }
 
 class ProjectRequirementComposable {
@@ -755,6 +787,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           onDisconnect: () {
             _returnToLogin();
           },
+          onGlobalSettings: _showGlobalSettingsDialog,
           onCreateProject: _showCreateProjectDialog,
           onProjectSettings: _showProjectSettingsDialog,
           onCreateThread: _showCreateThreadDialog,
@@ -1160,6 +1193,71 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     );
   }
 
+  Future<void> _showGlobalSettingsDialog() async {
+    final settings = _controller.view?.globalSettings;
+    String approvalPolicy = settings?.approvalPolicy ?? '';
+    String sandboxMode = settings?.sandboxMode ?? '';
+    String networkAccessMode = settings?.networkAccess == null
+        ? 'default'
+        : (settings!.networkAccess! ? 'enabled' : 'disabled');
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Global Settings'),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'These defaults apply when a project or role does not override them.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 16),
+                    ProjectDefaultRuntimeSettingsPane(
+                      settingsKeyPrefix: 'global',
+                      sandboxMode: sandboxMode,
+                      approvalPolicy: approvalPolicy,
+                      networkAccessMode: networkAccessMode,
+                      onSandboxModeChanged: (value) =>
+                          setDialogState(() => sandboxMode = value),
+                      onApprovalPolicyChanged: (value) =>
+                          setDialogState(() => approvalPolicy = value),
+                      onNetworkAccessModeChanged: (value) =>
+                          setDialogState(() => networkAccessMode = value),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (result != true) {
+      return;
+    }
+    _controller.updateGlobalSettings(
+      approvalPolicy: approvalPolicy,
+      sandboxMode: sandboxMode,
+      networkAccessMode: networkAccessMode,
+    );
+  }
+
   Future<void> _showProjectSettingsDialog(ProjectItem project) async {
     final availableModels = _controller.view?.availableModels ?? const <ModelItem>[];
     var permanentRequirementComposables =
@@ -1189,6 +1287,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     String defaultNetworkAccessMode = project.defaultNetworkAccess == null
         ? 'default'
         : (project.defaultNetworkAccess! ? 'enabled' : 'disabled');
+    final roleRuntimeDefaults =
+        Map<String, RoleRuntimeDefaults>.from(project.roleRuntimeDefaults);
     String orchestratorModelId = project.orchestratorDefaultModel ?? '';
     String orchestratorReasoningEffort = project.orchestratorDefaultReasoningEffort ?? '';
     String workerModelId = project.workerDefaultModel ?? '';
@@ -1468,9 +1568,13 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
               ),
               const SizedBox(height: 14),
               ProjectDefaultRuntimeSettingsPane(
+                settingsKeyPrefix: 'project',
                 sandboxMode: defaultSandboxMode,
                 approvalPolicy: defaultApprovalPolicy,
                 networkAccessMode: defaultNetworkAccessMode,
+                inheritedSandboxMode: project.globalDefaultSandboxMode,
+                inheritedApprovalPolicy: project.globalDefaultApprovalPolicy,
+                inheritedNetworkAccess: project.globalDefaultNetworkAccess,
                 onSandboxModeChanged: (value) =>
                     setDialogState(() => defaultSandboxMode = value),
                 onApprovalPolicyChanged: (value) =>
@@ -1516,9 +1620,41 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           required TextEditingController? instructionsController,
           required bool supportsModelSettings,
           bool supportsDeveloperInstructions = true,
+          bool supportsRuntimeSettings = true,
           required void Function(VoidCallback fn) setDialogState,
         }) {
           final accent = tabVisuals(tab).color;
+          final runtimeDefaults =
+              roleRuntimeDefaults[roleKey] ?? const RoleRuntimeDefaults();
+          final networkAccessMode = runtimeDefaults.networkAccess == null
+              ? 'default'
+              : (runtimeDefaults.networkAccess! ? 'enabled' : 'disabled');
+          void updateRuntimeDefaults({
+            String? approvalPolicy,
+            String? sandboxMode,
+            String? networkAccessMode,
+          }) {
+            final nextApproval = approvalPolicy ?? runtimeDefaults.approvalPolicy ?? '';
+            final nextSandbox = sandboxMode ?? runtimeDefaults.sandboxMode ?? '';
+            final nextNetworkMode = networkAccessMode ??
+                (runtimeDefaults.networkAccess == null
+                    ? 'default'
+                    : (runtimeDefaults.networkAccess! ? 'enabled' : 'disabled'));
+            final nextNetwork = switch (nextNetworkMode) {
+              'enabled' => true,
+              'disabled' => false,
+              _ => null,
+            };
+            if (nextApproval.isEmpty && nextSandbox.isEmpty && nextNetwork == null) {
+              roleRuntimeDefaults.remove(roleKey);
+            } else {
+              roleRuntimeDefaults[roleKey] = RoleRuntimeDefaults(
+                approvalPolicy: nextApproval.isEmpty ? null : nextApproval,
+                sandboxMode: nextSandbox.isEmpty ? null : nextSandbox,
+                networkAccess: nextNetwork,
+              );
+            }
+          }
           return paneShell(
             accent: accent,
             children: [
@@ -1531,6 +1667,35 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                   onModelChanged: (value) => setDialogState(() => onModelChanged(value)),
                   onReasoningChanged: (value) =>
                       setDialogState(() => onReasoningChanged(value)),
+                ),
+                const SizedBox(height: 16),
+              ],
+              if (supportsRuntimeSettings) ...[
+                ProjectDefaultRuntimeSettingsPane(
+                  settingsKeyPrefix: roleKey,
+                  sandboxMode: runtimeDefaults.sandboxMode ?? '',
+                  approvalPolicy: runtimeDefaults.approvalPolicy ?? '',
+                  networkAccessMode: networkAccessMode,
+                  inheritedSandboxMode: defaultSandboxMode.trim().isNotEmpty
+                      ? defaultSandboxMode
+                      : project.globalDefaultSandboxMode,
+                  inheritedApprovalPolicy: defaultApprovalPolicy.trim().isNotEmpty
+                      ? defaultApprovalPolicy
+                      : project.globalDefaultApprovalPolicy,
+                  inheritedNetworkAccess: defaultNetworkAccessMode == 'enabled'
+                      ? true
+                      : defaultNetworkAccessMode == 'disabled'
+                          ? false
+                          : project.globalDefaultNetworkAccess,
+                  onSandboxModeChanged: (value) => setDialogState(
+                    () => updateRuntimeDefaults(sandboxMode: value),
+                  ),
+                  onApprovalPolicyChanged: (value) => setDialogState(
+                    () => updateRuntimeDefaults(approvalPolicy: value),
+                  ),
+                  onNetworkAccessModeChanged: (value) => setDialogState(
+                    () => updateRuntimeDefaults(networkAccessMode: value),
+                  ),
                 ),
                 const SizedBox(height: 16),
               ],
@@ -1750,6 +1915,11 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       defaultSandboxMode: defaultSandboxMode,
       defaultApprovalPolicy: defaultApprovalPolicy,
       defaultNetworkAccessMode: defaultNetworkAccessMode,
+      roleRuntimeDefaultsJson: jsonEncode(
+        roleRuntimeDefaults.map(
+          (key, value) => MapEntry(key, value.toJson()),
+        ),
+      ),
       orchestratorModelId: orchestratorModelId,
       orchestratorReasoningEffort: orchestratorReasoningEffort,
       workerModelId: workerModelId,
