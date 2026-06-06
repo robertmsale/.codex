@@ -156,9 +156,11 @@ void main() {
           ThreadItem(
             id: 'active-thread',
             title: 'Active Requirements',
-            role: 'worker',
-            projectName: 'Codex Control Plane',
-            preview: 'Has active requirements',
+              role: 'worker',
+              projectId: mockWorkbenchData.projects.first.id,
+              projectRootPath: mockWorkbenchData.projects.first.rootPath,
+              projectName: 'stale-display-name',
+              preview: 'Has active requirements',
             isRunning: false,
             unreadCount: 0,
             requirementReview: const RequirementReviewSummary(

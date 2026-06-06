@@ -2656,6 +2656,15 @@ fn tracked_developer_instructions_for_thread_value(state: &Value, thread_id: &st
 }
 
 fn tracked_base_instructions_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
+    let home = env::var_os("HOME").map(PathBuf::from);
+    tracked_base_instructions_for_thread_value_with_home(state, thread_id, home)
+}
+
+fn tracked_base_instructions_for_thread_value_with_home(
+    state: &Value,
+    thread_id: &str,
+    home: Option<PathBuf>,
+) -> Option<String> {
     if let Some(value) = tracked_agent_value(state, thread_id)
         .and_then(|agent| agent.get("baseInstructions"))
         .and_then(Value::as_str)
@@ -2664,10 +2673,6 @@ fn tracked_base_instructions_for_thread_value(state: &Value, thread_id: &str) ->
         return Some(value);
     }
     let role = tracked_role_for_thread(state, thread_id)?;
-    if role == "operator" {
-        return None;
-    }
-    let home = env::var_os("HOME").map(PathBuf::from);
     resolve_role_instructions(home, Some(role.as_str())).ok().flatten()
 }
 
@@ -2929,7 +2934,7 @@ fn requirements_invalid_claim_prompt() -> String {
 }
 
 fn requirements_all_not_satisfied_claim_prompt() -> String {
-    "[Requirements] Your final claim packet marked every currently required claim as `notSatisfied`, so Robdex did not request Requirements Review. Continue working until at least one currently required requirement can be claimed `satisfied`, `blocked`, or `notApplicable`, then provide an updated final Requirements claim packet. An all-`notSatisfied` packet is never terminal. If you are blocked, use the `blocked` claim on the specific blocked requirement and provide concrete blocker evidence.".to_string()
+    "This is the owner. Your final claim packet marked every currently required claim as `notSatisfied`, so Robdex did not request Requirements Review. Continue working until at least one currently required requirement can be claimed `satisfied`, `blocked`, or `notApplicable`, then provide an updated final Requirements claim packet. An all-`notSatisfied` packet is absolutely unacceptable. If you are blocked, use the `blocked` claim on the specific blocked requirement and provide concrete blocker evidence. If you submit another final message with all claims as `notSatisfied` then you will be terminated.".to_string()
 }
 
 fn compose_auto_routed_approval_request(
@@ -4783,6 +4788,35 @@ mod tests {
         assert_eq!(params["config"]["model_reasoning_effort"], "high");
         assert!(params.get("developerInstructions").is_none()
             || params["developerInstructions"].is_null());
+    }
+
+    #[test]
+    fn operator_resume_params_use_operator_role_file_when_not_overridden() {
+        let temp = TempDir::new().expect("tempdir");
+        let roles = temp.path().join(".codex/roles");
+        std::fs::create_dir_all(&roles).expect("roles dir");
+        std::fs::write(roles.join("operator.md"), "operator role instructions\n")
+            .expect("operator role write");
+        let state = json!({
+            "projects": {
+                "alpha": {
+                    "projectRoot": "/alpha",
+                    "cwd": "/alpha",
+                    "orchestratorThreadID": "orch-a",
+                    "agents": {
+                        "operator-1": { "role": "operator", "displayName": "Operator One" }
+                    }
+                }
+            }
+        });
+
+        let instructions = tracked_base_instructions_for_thread_value_with_home(
+            &state,
+            "operator-1",
+            Some(temp.path().to_path_buf()),
+        );
+
+        assert_eq!(instructions.as_deref(), Some("operator role instructions"));
     }
 
     #[tokio::test]

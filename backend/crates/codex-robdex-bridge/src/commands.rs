@@ -14,6 +14,7 @@ use crate::{
         compaction_payload, maybe_run_project_hook, qa_archive_payload, qa_create_payload, worker_archive_payload,
         worker_create_payload,
     },
+    manifest::{manifest_archive_denial_for_agent, manifest_runs_payload},
     models::{
         BridgeAgentSummary, BridgeAppStateSnapshot, BridgeInstanceSummary, LiveProcessRecord, PendingApproval,
         PendingApprovalKind, ThreadCachePayload,
@@ -46,85 +47,85 @@ pub struct CommandOutcome {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PersistedState {
     #[serde(default)]
-    global_configs: Value,
+    pub(crate) global_configs: Value,
     #[serde(default)]
-    projects: BTreeMap<String, PersistedProjectState>,
+    pub(crate) projects: BTreeMap<String, PersistedProjectState>,
     #[serde(rename = "selectedProjectID", alias = "selectedProjectId")]
-    selected_project_id: Option<String>,
+    pub(crate) selected_project_id: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
-    updated_at: Option<u64>,
+    pub(crate) updated_at: Option<u64>,
     #[serde(flatten, default)]
-    extras: BTreeMap<String, Value>,
+    pub(crate) extras: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PersistedProjectState {
-    id: Option<String>,
-    name: Option<String>,
-    project_root: Option<String>,
-    cwd: Option<String>,
-    auto_route_replies: Option<bool>,
-    route_approval_requests: Option<bool>,
-    preferred_model_provider: Option<String>,
+pub(crate) struct PersistedProjectState {
+    pub(crate) id: Option<String>,
+    pub(crate) name: Option<String>,
+    pub(crate) project_root: Option<String>,
+    pub(crate) cwd: Option<String>,
+    pub(crate) auto_route_replies: Option<bool>,
+    pub(crate) route_approval_requests: Option<bool>,
+    pub(crate) preferred_model_provider: Option<String>,
     #[serde(default)]
-    configs: Value,
+    pub(crate) configs: Value,
     #[serde(default)]
-    agents: BTreeMap<String, PersistedAgentState>,
+    pub(crate) agents: BTreeMap<String, PersistedAgentState>,
     #[serde(rename = "orchestratorThreadID", alias = "orchestratorThreadId")]
-    orchestrator_thread_id: Option<String>,
+    pub(crate) orchestrator_thread_id: Option<String>,
     #[serde(default)]
-    thread_groups: Vec<ThreadGroupState>,
-    archived: Option<bool>,
-    detached: Option<bool>,
+    pub(crate) thread_groups: Vec<ThreadGroupState>,
+    pub(crate) archived: Option<bool>,
+    pub(crate) detached: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
-    updated_at: Option<u64>,
+    pub(crate) updated_at: Option<u64>,
     #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
-    created_at: Option<u64>,
+    pub(crate) created_at: Option<u64>,
     #[serde(flatten, default)]
-    extras: BTreeMap<String, Value>,
+    pub(crate) extras: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PersistedAgentState {
-    display_name: Option<String>,
-    role: Option<String>,
-    project_root: Option<String>,
-    cwd: Option<String>,
-    approval_policy: Option<String>,
-    sandbox_mode: Option<String>,
-    network_access: Option<bool>,
-    model: Option<String>,
-    model_provider: Option<String>,
-    reasoning_effort: Option<String>,
-    service_tier: Option<Value>,
-    approvals_reviewer: Option<Value>,
-    personality: Option<Value>,
-    config: Option<Value>,
-    base_instructions: Option<String>,
-    developer_instructions: Option<String>,
-    persist_extended_history: Option<bool>,
-    service_name: Option<String>,
-    ephemeral: Option<bool>,
-    dynamic_tools: Option<Value>,
-    issue_number: Option<u64>,
-    pull_request_number: Option<u64>,
-    blocked_reason: Option<String>,
-    unblock_when: Option<String>,
+pub(crate) struct PersistedAgentState {
+    pub(crate) display_name: Option<String>,
+    pub(crate) role: Option<String>,
+    pub(crate) project_root: Option<String>,
+    pub(crate) cwd: Option<String>,
+    pub(crate) approval_policy: Option<String>,
+    pub(crate) sandbox_mode: Option<String>,
+    pub(crate) network_access: Option<bool>,
+    pub(crate) model: Option<String>,
+    pub(crate) model_provider: Option<String>,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) service_tier: Option<Value>,
+    pub(crate) approvals_reviewer: Option<Value>,
+    pub(crate) personality: Option<Value>,
+    pub(crate) config: Option<Value>,
+    pub(crate) base_instructions: Option<String>,
+    pub(crate) developer_instructions: Option<String>,
+    pub(crate) persist_extended_history: Option<bool>,
+    pub(crate) service_name: Option<String>,
+    pub(crate) ephemeral: Option<bool>,
+    pub(crate) dynamic_tools: Option<Value>,
+    pub(crate) issue_number: Option<u64>,
+    pub(crate) pull_request_number: Option<u64>,
+    pub(crate) blocked_reason: Option<String>,
+    pub(crate) unblock_when: Option<String>,
     #[serde(default)]
-    requirements: Option<RequirementSetState>,
+    pub(crate) requirements: Option<RequirementSetState>,
     #[serde(default)]
-    requirement_packets: Vec<RequirementPacketState>,
+    pub(crate) requirement_packets: Vec<RequirementPacketState>,
     #[serde(default)]
-    requirement_review: Option<RequirementReviewBindingState>,
+    pub(crate) requirement_review: Option<RequirementReviewBindingState>,
     #[serde(default)]
-    parent_thread_id: Option<String>,
+    pub(crate) parent_thread_id: Option<String>,
     #[serde(default)]
-    hidden_from_peer_list: bool,
-    archived: Option<bool>,
+    pub(crate) hidden_from_peer_list: bool,
+    pub(crate) archived: Option<bool>,
     #[serde(flatten, default)]
-    extras: BTreeMap<String, Value>,
+    pub(crate) extras: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
@@ -225,7 +226,7 @@ fn default_verification_method() -> String {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-struct ThreadGroupState {
+pub(crate) struct ThreadGroupState {
     id: String,
     title: String,
     #[serde(default, rename = "threadIDs", alias = "threadIds")]
@@ -457,6 +458,7 @@ fn bridge_state_payload(state: &PersistedState) -> Value {
             "defaultApprovalPolicy": project.configs.get("approvalPolicy").cloned().unwrap_or(Value::Null),
             "defaultNetworkAccess": project.configs.get("networkAccess").cloned().unwrap_or(Value::Null),
             "permanentRequirementComposables": permanent_requirement_composable_ids(project),
+            "manifestRuns": manifest_runs_payload(state, normalized_root.as_str()),
             "worktrees": worktrees,
         }));
 
@@ -713,6 +715,12 @@ pub async fn execute_bridge_command(
             let result = app_server_request_json(runtime, "thread/start", params).await?;
             if let Some(project_path) = project_path {
                 let mut next_state = parse_state(&runtime.state_document_value().await);
+                let requirement_set = compose_optional_requirement_set_payload_for_project_path(
+                    runtime,
+                    &next_state,
+                    project_path,
+                    &payload,
+                )?;
                 register_tracked_thread(
                     &mut next_state,
                     &registration_payload_with_requirement_set(
@@ -721,7 +729,7 @@ pub async fn execute_bridge_command(
                             project_path,
                             role.unwrap_or("worker"),
                         ),
-                        &payload,
+                        requirement_set,
                     ),
                 )?;
                 persist_state(runtime, &next_state).await?;
@@ -1983,14 +1991,13 @@ fn register_tracked_thread(state: &mut PersistedState, payload: &Value) -> Resul
     Ok(())
 }
 
-fn registration_payload_with_requirement_set(mut registration_payload: Value, source_payload: &Value) -> Value {
-    if let Some(requirement_set) = source_payload
-        .get("requirementSet")
-        .filter(|value| !value.is_null())
-        .cloned()
-    {
+fn registration_payload_with_requirement_set(
+    mut registration_payload: Value,
+    requirement_set: Option<RequirementSetState>,
+) -> Value {
+    if let Some(requirement_set) = requirement_set {
         if let Some(object) = registration_payload.as_object_mut() {
-            object.insert("requirementSet".to_string(), requirement_set);
+            object.insert("requirementSet".to_string(), json!(requirement_set));
         }
     }
     registration_payload
@@ -2673,12 +2680,17 @@ fn developer_instructions_for_role(
 }
 
 fn resolve_role_instructions_for(role: Option<&str>) -> Result<Option<String>> {
+    let home = env::var_os("HOME").map(PathBuf::from);
+    resolve_role_instructions_for_home(home, role)
+}
+
+fn resolve_role_instructions_for_home(
+    home: Option<PathBuf>,
+    role: Option<&str>,
+) -> Result<Option<String>> {
     match role {
-        None | Some("operator") => Ok(None),
-        Some(value) => {
-            let home = env::var_os("HOME").map(PathBuf::from);
-            resolve_role_instructions(home, Some(value))
-        }
+        None => Ok(None),
+        Some(value) => resolve_role_instructions(home, Some(value)),
     }
 }
 
@@ -3399,7 +3411,6 @@ pub(crate) async fn send_follow_up_message(
 
 pub(crate) async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Result<BridgeAgentSummary> {
     let state = parse_state(&runtime.state_document_value().await);
-    let _requirement_set = parse_optional_requirement_set_payload(payload)?;
     let role = payload.get("role").and_then(Value::as_str);
     let role_value = role.unwrap_or("worker").to_string();
     let project_path = payload
@@ -3412,6 +3423,12 @@ pub(crate) async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Res
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| runtime.settings().cwd.display().to_string());
+    let requirement_set = compose_optional_requirement_set_payload_for_project_path(
+        runtime,
+        &state,
+        &project_path,
+        payload,
+    )?;
     let display_name = payload.get("displayName").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty());
     let display_name_value = display_name
         .map(str::to_string)
@@ -3620,7 +3637,7 @@ pub(crate) async fn spawn_agent(runtime: &BridgeRuntime, payload: &Value) -> Res
         &mut state,
         &registration_payload_with_requirement_set(
             settings.to_registration_payload(thread, &project_path, &role_value),
-            payload,
+            requirement_set,
         ),
     )?;
     if let Some(display_name) = display_name {
@@ -3757,14 +3774,25 @@ async fn create_thread_message(runtime: &BridgeRuntime, payload: &Value) -> Resu
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let requirement_set = parse_optional_requirement_set_payload(payload)?;
-    if requirement_set.is_some() && runtime.active_turn_id_for_thread(&thread_id).await.is_some() {
+    let has_requirement_set = payload
+        .get("requirementSet")
+        .filter(|value| !value.is_null())
+        .is_some();
+    if has_requirement_set && runtime.active_turn_id_for_thread(&thread_id).await.is_some() {
         bail!("Requirements can only be attached when starting a new turn; turn/steer cannot change output schemas.");
     }
-    let state = if let Some(requirement_set) = requirement_set {
+    let state = parse_state(&runtime.state_document_value().await);
+    let state = if has_requirement_set {
+        let requirement_set = compose_optional_requirement_set_payload_for_thread(
+            runtime,
+            &state,
+            &thread_id,
+            payload,
+        )?
+        .expect("checked requirement set");
         persist_requirements_for_thread(runtime, &thread_id, requirement_set).await?
     } else {
-        parse_state(&runtime.state_document_value().await)
+        state
     };
     let result = send_thread_input(
         runtime,
@@ -5348,6 +5376,74 @@ fn compose_requirement_set_payload(
         return Ok(set);
     }
     let available = discover_requirement_composables(runtime, state, recipient_thread_id)?;
+    merge_selected_composables_into_set(&mut set, &available, selected)?;
+    Ok(set)
+}
+
+fn compose_requirement_set_payload_for_project_path(
+    runtime: &BridgeRuntime,
+    state: &PersistedState,
+    project_path: &str,
+    payload: Value,
+) -> Result<RequirementSetState> {
+    let explicit = selected_composable_ids(&payload)?;
+    let mut set = parse_requirement_set_payload(strip_composable_selection(payload))?;
+    let selected = permanent_and_explicit_composable_ids_for_project_path(state, project_path, explicit);
+    if selected.is_empty() {
+        return Ok(set);
+    }
+    let available = discover_requirement_composables_for_project_path(runtime, project_path)?;
+    merge_selected_composables_into_set(&mut set, &available, selected)?;
+    Ok(set)
+}
+
+fn compose_optional_requirement_set_payload_for_thread(
+    runtime: &BridgeRuntime,
+    state: &PersistedState,
+    recipient_thread_id: &str,
+    payload: &Value,
+) -> Result<Option<RequirementSetState>> {
+    let Some(requirement_set_payload) = payload
+        .get("requirementSet")
+        .filter(|value| !value.is_null())
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let mut set = compose_requirement_set_payload(runtime, state, recipient_thread_id, requirement_set_payload)?;
+    validate_requirement_set(&set)?;
+    if set.id.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+        set.id = Some(format!("requirements-{}", unix_now()));
+    }
+    Ok(Some(set))
+}
+
+fn compose_optional_requirement_set_payload_for_project_path(
+    runtime: &BridgeRuntime,
+    state: &PersistedState,
+    project_path: &str,
+    payload: &Value,
+) -> Result<Option<RequirementSetState>> {
+    let Some(requirement_set_payload) = payload
+        .get("requirementSet")
+        .filter(|value| !value.is_null())
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let mut set = compose_requirement_set_payload_for_project_path(runtime, state, project_path, requirement_set_payload)?;
+    validate_requirement_set(&set)?;
+    if set.id.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+        set.id = Some(format!("requirements-{}", unix_now()));
+    }
+    Ok(Some(set))
+}
+
+fn merge_selected_composables_into_set(
+    set: &mut RequirementSetState,
+    available: &BTreeMap<String, RequirementComposableState>,
+    selected: Vec<String>,
+) -> Result<()> {
     let selected_set: BTreeSet<String> = selected.iter().cloned().collect();
     for id in &selected_set {
         let Some(composable) = available.get(id) else {
@@ -5369,7 +5465,7 @@ fn compose_requirement_set_payload(
     }
     merge_requirement_items(&mut merged, &set.requirements)?;
     set.requirements = merged;
-    Ok(set)
+    Ok(())
 }
 
 fn selected_composable_ids(payload: &Value) -> Result<Vec<String>> {
@@ -5403,6 +5499,26 @@ fn permanent_and_explicit_composable_ids(
     let mut selected = Vec::new();
     let mut seen = BTreeSet::new();
     for id in permanent_requirement_composable_ids_for_thread(state, recipient_thread_id)
+        .into_iter()
+        .chain(explicit)
+    {
+        if seen.insert(id.clone()) {
+            selected.push(id);
+        }
+    }
+    selected
+}
+
+fn permanent_and_explicit_composable_ids_for_project_path(
+    state: &PersistedState,
+    project_path: &str,
+    explicit: Vec<String>,
+) -> Vec<String> {
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+    for id in project_by_root(state, project_path)
+        .map(permanent_requirement_composable_ids)
+        .unwrap_or_default()
         .into_iter()
         .chain(explicit)
     {
@@ -5502,6 +5618,25 @@ fn discover_requirement_composables(
     Ok(composables)
 }
 
+fn discover_requirement_composables_for_project_path(
+    runtime: &BridgeRuntime,
+    project_path: &str,
+) -> Result<BTreeMap<String, RequirementComposableState>> {
+    let project_root = PathBuf::from(normalize_path(project_path.to_string()));
+    let mut composables = BTreeMap::new();
+    load_requirement_composables_from_dir(
+        &global_requirement_composables_dir(runtime),
+        "global",
+        &mut composables,
+    )?;
+    load_requirement_composables_from_dir(
+        &project_root.join(".codex").join("requirements").join("composables"),
+        "project",
+        &mut composables,
+    )?;
+    Ok(composables)
+}
+
 fn global_requirement_composables_dir(runtime: &BridgeRuntime) -> PathBuf {
     if let Some(home) = env::var_os("CODEX_HOME") {
         return PathBuf::from(home).join("requirements").join("composables");
@@ -5526,6 +5661,18 @@ fn project_root_for_thread(state: &PersistedState, thread_id: &str) -> Option<Pa
             .or(project.project_root.as_deref())
             .or(project.cwd.as_deref())
             .map(PathBuf::from)
+    })
+}
+
+fn project_by_root<'a>(state: &'a PersistedState, project_path: &str) -> Option<&'a PersistedProjectState> {
+    let normalized = normalize_path(project_path.to_string());
+    state.projects.values().find(|project| {
+        project
+            .project_root
+            .as_deref()
+            .or(project.cwd.as_deref())
+            .map(|root| normalize_path(root.to_string()) == normalized)
+            .unwrap_or(false)
     })
 }
 
@@ -6430,6 +6577,11 @@ where
     F: Fn(&str) -> bool + Copy,
 {
     let mut state = parse_state(&runtime.state_document_value().await);
+    if let Some(agent) = agent_state_for_thread(&state, thread_id) {
+        if let Some(message) = manifest_archive_denial_for_agent(agent) {
+            bail!("{message}");
+        }
+    }
     let hook_context = agent_state_for_thread(&state, thread_id).and_then(|agent| {
         matches!(agent.role.as_deref(), Some("worker") | Some("qa")).then(|| {
             Some((
@@ -6811,6 +6963,8 @@ mod tests {
     use tokio::{net::TcpListener, sync::{mpsc, oneshot}};
     use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn sample_state() -> PersistedState {
         let mut state = PersistedState::default();
         let mut project_alpha = PersistedProjectState {
@@ -6913,6 +7067,62 @@ mod tests {
         state.projects.insert("alpha".to_string(), project_alpha);
         state.projects.insert("beta".to_string(), project_beta);
         state
+    }
+
+    #[test]
+    fn operator_role_instructions_resolve_to_operator_role_file() {
+        let temp = TempDir::new().expect("tempdir");
+        let roles = temp.path().join(".codex/roles");
+        fs::create_dir_all(&roles).expect("roles dir");
+        fs::write(roles.join("operator.md"), "operator role instructions\n")
+            .expect("operator role write");
+
+        let instructions =
+            resolve_role_instructions_for_home(Some(temp.path().to_path_buf()), Some("operator"))
+                .expect("operator instructions");
+
+        assert_eq!(instructions.as_deref(), Some("operator role instructions"));
+    }
+
+    #[test]
+    fn operator_start_params_use_operator_role_file_when_not_overridden() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let temp = TempDir::new().expect("tempdir");
+        let roles = temp.path().join(".codex/roles");
+        fs::create_dir_all(&roles).expect("roles dir");
+        fs::write(roles.join("operator.md"), "operator role instructions\n")
+            .expect("operator role write");
+        let old_home = env::var_os("HOME");
+        unsafe {
+            env::set_var("HOME", temp.path());
+        }
+
+        let state = PersistedState::default();
+        let settings = explicit_thread_settings_for_new_thread(
+            &state,
+            &json!({}),
+            temp.path().to_str().expect("temp path"),
+            temp.path().to_str().expect("temp path"),
+            Some("operator"),
+            None,
+            None,
+            None,
+        );
+
+        if let Some(old_home) = old_home {
+            unsafe {
+                env::set_var("HOME", old_home);
+            }
+        } else {
+            unsafe {
+                env::remove_var("HOME");
+            }
+        }
+
+        assert_eq!(
+            settings.base_instructions.as_deref(),
+            Some("operator role instructions")
+        );
     }
 
     fn sample_requirement_set() -> RequirementSetState {
@@ -9487,6 +9697,22 @@ requirements:
             .await
             .expect("runtime");
         let transport = runtime.spawn_transport();
+        let project_root = temp.path();
+        write_project_composable(project_root, "permanent", "permanentRequirement");
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "project": {
+                        "projectRoot": project_root.display().to_string(),
+                        "cwd": project_root.display().to_string(),
+                        "configs": {
+                            "requirementsPermanentComposables": ["permanent"]
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist project config");
         let requirement_set = json!({
             "id": "web-gui-contract",
             "requirements": [
@@ -9510,7 +9736,7 @@ requirements:
             "spawnAgent",
             json!({
                 "role": "worker",
-                "projectPath": temp.path().display().to_string(),
+                "projectPath": project_root.display().to_string(),
                 "displayName": "Requirements Worker",
                 "initialPrompt": "Implement the web GUI slice.",
                 "requirementSet": requirement_set,
@@ -9524,7 +9750,18 @@ requirements:
         let tracked = agent_state_for_thread(&state, "thread-requirements-worker").expect("tracked agent state");
         let requirements = tracked.requirements.as_ref().expect("requirements persisted");
         assert_eq!(requirements.id.as_deref(), Some("web-gui-contract"));
-        assert_eq!(requirements.requirements.len(), 2);
+        assert_eq!(
+            requirements
+                .requirements
+                .iter()
+                .map(|requirement| requirement.key.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "permanentRequirement",
+                "nativeGuiIsSourceOfTruth",
+                "noInventedWebsocketEventShapes"
+            ]
+        );
 
         let prompt_request = prompt_rx.await.expect("captured prompt request");
         assert_eq!(prompt_request.method, "turn/start");
@@ -9541,7 +9778,11 @@ requirements:
         );
         assert_eq!(
             schema["properties"]["requirements"]["required"],
-            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
+            json!(["permanentRequirement", "nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
+        );
+        assert_eq!(
+            schema["properties"]["requirements"]["properties"]["permanentRequirement"]["description"],
+            "Requirement: permanentRequirement statement."
         );
         assert_eq!(
             schema["properties"]["requirements"]["properties"]["nativeGuiIsSourceOfTruth"]["description"],

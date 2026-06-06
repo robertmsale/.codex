@@ -35,8 +35,13 @@ class DomMirrorSnapshot {
   factory DomMirrorSnapshot.fromWorkbench(WorkbenchViewData view) {
     final threadsByProject = <String, List<DomMirrorThread>>{};
     for (final thread in view.threads) {
+      final projectKey = thread.projectId.isNotEmpty
+          ? thread.projectId
+          : thread.projectRootPath.isNotEmpty
+              ? thread.projectRootPath
+              : thread.projectName;
       final bucket = threadsByProject.putIfAbsent(
-        thread.projectName,
+        projectKey,
         () => <DomMirrorThread>[],
       );
       final requirements = thread.requirementReview?.displayStatus;
@@ -67,7 +72,10 @@ class DomMirrorSnapshot {
             id: project.id,
             name: project.name,
             rootPath: project.rootPath,
-            threads: threadsByProject[project.name] ?? const <DomMirrorThread>[],
+            threads: threadsByProject[project.id] ??
+                threadsByProject[project.rootPath] ??
+                threadsByProject[project.name] ??
+                const <DomMirrorThread>[],
           ),
         )
         .toList(growable: false)

@@ -8,9 +8,13 @@ one canonical home and may be referenced from other surfaces when needed.
 - Global rules: `AGENTS.md`
   - Applies to every agent working in `/Users/robertsale/.codex`.
   - Owns repository-wide search boundaries and basename skill-script usage.
-- Base/operator behavior: `roles/hidden.md`
+- Base/default Codex engineering behavior: `roles/hidden.md`
   - Owns default Codex engineering behavior, editing constraints, review stance,
     user updates, and final response discipline.
+- Operator behavior: `roles/operator.md`
+  - Owns operator runtime stewardship, direct engineering behavior, control-plane
+    repair discipline, and the explicit boundary that operators cannot manage
+    agent lifecycle.
 - Orchestrator behavior: `roles/orchestrator.md`
   - Owns worker/QA lifecycle, merge gates, Requirements timing, blocker
     adjudication, and Robdex control-plane responsibilities.

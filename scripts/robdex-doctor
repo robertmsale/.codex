@@ -133,10 +133,10 @@ else
 fi
 
 if [[ -n "$curl_bin" ]]; then
-  if "$curl_bin" -fsS --max-time 1 "$bridge_url/healthz" >/dev/null 2>&1; then
-    ok "bridge health" "$bridge_url/healthz reachable"
+  if "$curl_bin" -fsS --max-time 1 "$bridge_url/health" >/dev/null 2>&1; then
+    ok "bridge health" "$bridge_url/health reachable"
   else
-    warn "bridge health" "$bridge_url/healthz not reachable"
+    warn "bridge health" "$bridge_url/health not reachable"
   fi
   if "$curl_bin" -fsS --max-time 1 "$app_server_url/healthz" >/dev/null 2>&1; then
     ok "app-server health" "$app_server_url/healthz reachable"

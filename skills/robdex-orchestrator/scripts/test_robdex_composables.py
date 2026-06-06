@@ -92,6 +92,125 @@ class RobdexComposableRequirementsTests(unittest.TestCase):
         self.assertEqual(payload["permanentSource"], "project")
         self.assertEqual(payload["requirements"][0]["key"], "reviewableArtifacts")
 
+    def test_manifest_activate_posts_file_and_prints_worker(self) -> None:
+        calls: list[tuple[str, str, dict]] = []
+
+        def fake_request(method: str, path: str, *, query=None, body=None):
+            calls.append((method, path, body or {}))
+            return {
+                "runId": "run-1",
+                "currentPhaseId": "phase-1",
+                "workerThreadId": "worker-1",
+            }
+
+        args = argparse.Namespace(file="/tmp/project/.codex/manifests/plan.md")
+        output = io.StringIO()
+        with patch.object(robdex, "_request_json", side_effect=fake_request), contextlib.redirect_stdout(output):
+            robdex._cmd_manifest_activate("orch-1", args)
+
+        self.assertEqual(calls[0][1], "/orchestrator/manifest/activate")
+        self.assertEqual(calls[0][2]["senderThreadId"], "orch-1")
+        self.assertTrue(calls[0][2]["file"].endswith("/tmp/project/.codex/manifests/plan.md"))
+        self.assertIn("Activated manifest run-1", output.getvalue())
+        self.assertIn("worker=worker-1", output.getvalue())
+
+    def test_manifest_status_prints_phase_timeline(self) -> None:
+        args = argparse.Namespace(project_path="/tmp/project", run_id=None)
+        output = io.StringIO()
+        with patch.object(
+            robdex,
+            "_request_json",
+            return_value={
+                "runs": [
+                    {
+                        "runId": "run-1",
+                        "planId": "plan",
+                        "status": "active",
+                        "currentPhaseId": "phase-1",
+                        "phases": [
+                            {
+                                "phaseId": "phase-1",
+                                "status": "running",
+                                "workerThreadId": "worker-1",
+                                "archiveCleanupState": "notReady",
+                            }
+                        ],
+                    }
+                ]
+            },
+        ), contextlib.redirect_stdout(output):
+            robdex._cmd_manifest_status("orch-1", args)
+
+        text = output.getvalue()
+        self.assertIn("run-1 | plan=plan | status=active | current=phase-1", text)
+        self.assertIn("phase-1: running | worker=worker-1 | cleanup=notReady", text)
+
+    def test_manifest_advance_cancel_and_decision_post_expected_routes(self) -> None:
+        calls: list[tuple[str, str, dict]] = []
+
+        def fake_request(method: str, path: str, *, query=None, body=None):
+            calls.append((method, path, body or {}))
+            if path.endswith("/advance"):
+                return {
+                    "advancedPhaseId": "phase-1",
+                    "archivedWorkerThreadId": "worker-1",
+                    "archiveCleanupState": "archived",
+                    "nextWorkerThreadId": "worker-2",
+                }
+            return {"run": {"runId": "run-1", "status": "cancelled"}}
+
+        advance_args = argparse.Namespace(run_id="run-1", handoff_file="/tmp/handoff.md")
+        cancel_args = argparse.Namespace(run_id="run-1", reason="stop")
+        decision_args = argparse.Namespace(
+            run_id="run-1",
+            phase_id="phase-1",
+            type="blocker",
+            text="blocked",
+            text_file=None,
+            text_stdin=False,
+        )
+        with patch.object(robdex, "_request_json", side_effect=fake_request), contextlib.redirect_stdout(io.StringIO()):
+            robdex._cmd_manifest_advance("orch-1", advance_args)
+            robdex._cmd_manifest_cancel("orch-1", cancel_args)
+            robdex._cmd_manifest_decision("orch-1", decision_args)
+
+        self.assertEqual(calls[0][1], "/orchestrator/manifest/advance")
+        self.assertTrue(calls[0][2]["handoffFile"].endswith("/tmp/handoff.md"))
+        self.assertEqual(calls[1][1], "/orchestrator/manifest/cancel")
+        self.assertEqual(calls[1][2]["reason"], "stop")
+        self.assertEqual(calls[2][1], "/orchestrator/manifest/decision")
+        self.assertEqual(calls[2][2]["type"], "blocker")
+
+    def test_manifest_cli_requires_advance_handoff_file_and_valid_decision_type(self) -> None:
+        parser, _handoff_parser, _spawn_parser = robdex.build_parser()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["manifest", "advance", "--run-id", "run-1"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "manifest",
+                    "decision",
+                    "--run-id",
+                    "run-1",
+                    "--phase-id",
+                    "phase-1",
+                    "--type",
+                    "skip",
+                    "--text",
+                    "nope",
+                ]
+            )
+
+    def test_manifest_cli_surfaces_bridge_errors_without_success_output(self) -> None:
+        args = argparse.Namespace(run_id="run-1", handoff_file="/tmp/handoff.md")
+        output = io.StringIO()
+        with patch.object(robdex, "_request_json", side_effect=SystemExit("advance denied: missing handoff")), contextlib.redirect_stdout(output):
+            with self.assertRaises(SystemExit) as raised:
+                robdex._cmd_manifest_advance("orch-1", args)
+
+        self.assertIn("advance denied", str(raised.exception))
+        self.assertEqual(output.getvalue(), "")
+
     def test_compose_merges_composables_with_task_requirements(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             requirements_file = Path(tmp) / "requirements.json"

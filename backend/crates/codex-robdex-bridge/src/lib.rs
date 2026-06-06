@@ -3,6 +3,7 @@ pub mod commands;
 pub mod config;
 pub mod hooks;
 pub mod http;
+pub mod manifest;
 pub mod models;
 pub mod runtime;
 pub mod store;

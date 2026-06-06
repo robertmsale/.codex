@@ -43,7 +43,7 @@ Start the core stack first:
 
 ```sh
 robdex doctor
-robdex start --foreground
+ROBDEX_SERVICE_MANAGER=supervisor robdex start
 ```
 
 Then launch the GUI from Flutter or the platform build artifact. Connect to the

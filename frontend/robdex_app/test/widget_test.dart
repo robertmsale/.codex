@@ -197,6 +197,30 @@ void main() {
       'requirementsReviewerDefaultModel': 'gpt-5.5',
       'requirementsReviewerDefaultReasoningEffort': 'high',
       'permanentRequirementComposables': ['no-legacy', 'non-negotiables'],
+      'manifestRuns': [
+        {
+          'runId': 'run-1',
+          'planId': 'serial-plan',
+          'title': 'Serial Plan',
+          'status': 'active',
+          'currentPhaseId': 'phase-1',
+          'sourceHash': 'sha256:abc',
+          'phases': [
+            {
+              'phaseId': 'phase-1',
+              'title': 'Phase 1',
+              'status': 'running',
+              'workerThreadId': 'worker-1',
+              'archiveCleanupState': 'notReady',
+              'archiveSafe': false,
+              'hasHandoff': false,
+              'hasBlocker': true,
+              'hasWaiver': false,
+              'hasResumeDecision': true,
+            },
+          ],
+        },
+      ],
       'autoRouteReplies': false,
       'routeApprovalRequests': true,
       'isSelected': true,
@@ -215,6 +239,64 @@ void main() {
       'no-legacy',
       'non-negotiables',
     ]);
+    expect(project.manifestRuns.single.runId, 'run-1');
+    expect(project.manifestRuns.single.phases.single.workerThreadId, 'worker-1');
+    expect(project.manifestRuns.single.phases.single.hasBlocker, isTrue);
+    expect(project.manifestRuns.single.phases.single.hasResumeDecision, isTrue);
+  });
+
+  testWidgets('project manifest runs panel renders phase timeline state', (
+    WidgetTester tester,
+  ) async {
+    final project = ProjectItem.fromJson(const {
+      'id': 'project-codex',
+      'name': 'Codex',
+      'rootPath': '/Users/robertsale/.codex',
+      'defaultCwd': '/Users/robertsale/.codex',
+      'permanentRequirementComposables': [],
+      'manifestRuns': [
+        {
+          'runId': 'run-1',
+          'planId': 'serial-plan',
+          'title': 'Serial Plan',
+          'status': 'active',
+          'currentPhaseId': 'phase-1',
+          'sourceHash': 'sha256:abc',
+          'phases': [
+            {
+              'phaseId': 'phase-1',
+              'title': 'Phase 1',
+              'status': 'running',
+              'workerThreadId': 'worker-1',
+              'archiveCleanupState': 'notReady',
+              'archiveSafe': false,
+              'hasHandoff': false,
+              'hasBlocker': true,
+              'hasWaiver': false,
+              'hasResumeDecision': true,
+            },
+          ],
+        },
+      ],
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: Scaffold(
+          body: ProjectManifestRunsPane(project: project),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('project.manifestRuns')), findsOneWidget);
+    expect(find.text('Manifest runs'), findsOneWidget);
+    expect(find.textContaining('robdex manifest activate/status/advance/cancel'), findsOneWidget);
+    expect(find.textContaining('Serial Plan | active'), findsOneWidget);
+    expect(find.textContaining('phase-1: running'), findsOneWidget);
+    expect(find.textContaining('worker worker-1'), findsOneWidget);
+    expect(find.textContaining('blocker yes'), findsOneWidget);
+    expect(find.textContaining('resume yes'), findsOneWidget);
   });
 
   test('workbench view parses project permanent composables from native payload', () {
@@ -1435,7 +1517,9 @@ void main() {
                 id: 'planner-visible',
                 title: 'App Planner',
                 role: 'planner',
-                projectName: mockWorkbenchData.projects.first.name,
+                projectId: mockWorkbenchData.projects.first.id,
+                projectRootPath: mockWorkbenchData.projects.first.rootPath,
+                projectName: 'stale-display-name',
                 preview: 'Planning product scope.',
                 isRunning: false,
                 unreadCount: 0,

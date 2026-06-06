@@ -204,7 +204,35 @@ pub struct UiProjectItem {
     pub operator_developer_instructions: Option<String>,
     pub hidden_developer_instructions: Option<String>,
     pub permanent_requirement_composables: Vec<String>,
+    pub manifest_runs: Vec<UiManifestRunSummary>,
     pub is_selected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiManifestRunSummary {
+    pub run_id: String,
+    pub plan_id: String,
+    pub title: String,
+    pub status: String,
+    pub current_phase_id: Option<String>,
+    pub source_hash: String,
+    pub phases: Vec<UiManifestPhaseSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiManifestPhaseSummary {
+    pub phase_id: String,
+    pub title: String,
+    pub status: String,
+    pub worker_thread_id: Option<String>,
+    pub archive_cleanup_state: String,
+    pub archive_safe: bool,
+    pub has_handoff: bool,
+    pub has_blocker: bool,
+    pub has_waiver: bool,
+    pub has_resume_decision: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -213,7 +241,23 @@ pub struct UiThreadItem {
     pub id: String,
     pub title: String,
     pub role: String,
+    pub project_id: String,
+    pub project_root_path: String,
+    pub project_orchestrator_thread_id: Option<String>,
+    pub project_orchestrator_name: Option<String>,
     pub project_name: String,
+    pub sandbox_mode: Option<String>,
+    pub network_access: Option<bool>,
+    pub approval_policy: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub service_tier: Option<String>,
+    pub effective_sandbox_mode: Option<String>,
+    pub effective_network_access: Option<bool>,
+    pub effective_approval_policy: Option<String>,
+    pub effective_model: Option<String>,
+    pub effective_reasoning_effort: Option<String>,
+    pub effective_service_tier: Option<String>,
     pub preview: String,
     pub is_running: bool,
     pub unread_count: u32,

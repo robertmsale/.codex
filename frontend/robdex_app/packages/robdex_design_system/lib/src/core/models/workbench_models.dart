@@ -159,6 +159,7 @@ class ProjectItem {
     required this.operatorDeveloperInstructions,
     required this.hiddenDeveloperInstructions,
     required this.permanentRequirementComposables,
+    required this.manifestRuns,
     required this.isSelected,
   });
 
@@ -193,6 +194,7 @@ class ProjectItem {
   final String? operatorDeveloperInstructions;
   final String? hiddenDeveloperInstructions;
   final List<String> permanentRequirementComposables;
+  final List<ManifestRunSummary> manifestRuns;
   final bool isSelected;
 
   factory ProjectItem.fromJson(Map<String, dynamic> json) {
@@ -236,7 +238,87 @@ class ProjectItem {
           (json['permanentRequirementComposables'] as List<dynamic>? ?? const [])
               .whereType<String>()
               .toList(growable: false),
+      manifestRuns: (json['manifestRuns'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(ManifestRunSummary.fromJson)
+          .toList(growable: false),
       isSelected: json['isSelected'] as bool? ?? false,
+    );
+  }
+}
+
+class ManifestRunSummary {
+  const ManifestRunSummary({
+    required this.runId,
+    required this.planId,
+    required this.title,
+    required this.status,
+    required this.currentPhaseId,
+    required this.sourceHash,
+    required this.phases,
+  });
+
+  final String runId;
+  final String planId;
+  final String title;
+  final String status;
+  final String? currentPhaseId;
+  final String sourceHash;
+  final List<ManifestPhaseSummary> phases;
+
+  factory ManifestRunSummary.fromJson(Map<String, dynamic> json) {
+    return ManifestRunSummary(
+      runId: json['runId'] as String? ?? '',
+      planId: json['planId'] as String? ?? '',
+      title: json['title'] as String? ?? '',
+      status: json['status'] as String? ?? '',
+      currentPhaseId: json['currentPhaseId'] as String?,
+      sourceHash: json['sourceHash'] as String? ?? '',
+      phases: (json['phases'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(ManifestPhaseSummary.fromJson)
+          .toList(growable: false),
+    );
+  }
+}
+
+class ManifestPhaseSummary {
+  const ManifestPhaseSummary({
+    required this.phaseId,
+    required this.title,
+    required this.status,
+    required this.workerThreadId,
+    required this.archiveCleanupState,
+    required this.archiveSafe,
+    required this.hasHandoff,
+    required this.hasBlocker,
+    required this.hasWaiver,
+    required this.hasResumeDecision,
+  });
+
+  final String phaseId;
+  final String title;
+  final String status;
+  final String? workerThreadId;
+  final String archiveCleanupState;
+  final bool archiveSafe;
+  final bool hasHandoff;
+  final bool hasBlocker;
+  final bool hasWaiver;
+  final bool hasResumeDecision;
+
+  factory ManifestPhaseSummary.fromJson(Map<String, dynamic> json) {
+    return ManifestPhaseSummary(
+      phaseId: json['phaseId'] as String? ?? '',
+      title: json['title'] as String? ?? '',
+      status: json['status'] as String? ?? '',
+      workerThreadId: json['workerThreadId'] as String?,
+      archiveCleanupState: json['archiveCleanupState'] as String? ?? '',
+      archiveSafe: json['archiveSafe'] as bool? ?? false,
+      hasHandoff: json['hasHandoff'] as bool? ?? false,
+      hasBlocker: json['hasBlocker'] as bool? ?? false,
+      hasWaiver: json['hasWaiver'] as bool? ?? false,
+      hasResumeDecision: json['hasResumeDecision'] as bool? ?? false,
     );
   }
 }
@@ -251,12 +333,44 @@ class ThreadItem {
     required this.isRunning,
     required this.unreadCount,
     required this.requirementReview,
+    this.projectId = '',
+    this.projectRootPath = '',
+    this.projectOrchestratorThreadId,
+    this.projectOrchestratorName,
+    this.sandboxMode,
+    this.networkAccess,
+    this.approvalPolicy,
+    this.model,
+    this.reasoningEffort,
+    this.serviceTier,
+    this.effectiveSandboxMode,
+    this.effectiveNetworkAccess,
+    this.effectiveApprovalPolicy,
+    this.effectiveModel,
+    this.effectiveReasoningEffort,
+    this.effectiveServiceTier,
   });
 
   final String id;
   final String title;
   final String role;
+  final String projectId;
+  final String projectRootPath;
+  final String? projectOrchestratorThreadId;
+  final String? projectOrchestratorName;
   final String projectName;
+  final String? sandboxMode;
+  final bool? networkAccess;
+  final String? approvalPolicy;
+  final String? model;
+  final String? reasoningEffort;
+  final String? serviceTier;
+  final String? effectiveSandboxMode;
+  final bool? effectiveNetworkAccess;
+  final String? effectiveApprovalPolicy;
+  final String? effectiveModel;
+  final String? effectiveReasoningEffort;
+  final String? effectiveServiceTier;
   final String preview;
   final bool isRunning;
   final int unreadCount;
@@ -267,7 +381,23 @@ class ThreadItem {
       id: json['id'] as String? ?? '',
       title: json['title'] as String? ?? '',
       role: json['role'] as String? ?? 'worker',
+      projectId: json['projectId'] as String? ?? '',
+      projectRootPath: json['projectRootPath'] as String? ?? '',
+      projectOrchestratorThreadId: json['projectOrchestratorThreadId'] as String?,
+      projectOrchestratorName: json['projectOrchestratorName'] as String?,
       projectName: json['projectName'] as String? ?? '',
+      sandboxMode: json['sandboxMode'] as String?,
+      networkAccess: json['networkAccess'] as bool?,
+      approvalPolicy: json['approvalPolicy'] as String?,
+      model: json['model'] as String?,
+      reasoningEffort: json['reasoningEffort'] as String?,
+      serviceTier: json['serviceTier'] as String?,
+      effectiveSandboxMode: json['effectiveSandboxMode'] as String?,
+      effectiveNetworkAccess: json['effectiveNetworkAccess'] as bool?,
+      effectiveApprovalPolicy: json['effectiveApprovalPolicy'] as String?,
+      effectiveModel: json['effectiveModel'] as String?,
+      effectiveReasoningEffort: json['effectiveReasoningEffort'] as String?,
+      effectiveServiceTier: json['effectiveServiceTier'] as String?,
       preview: json['preview'] as String? ?? '',
       isRunning: json['isRunning'] as bool? ?? false,
       unreadCount: json['unreadCount'] as int? ?? 0,

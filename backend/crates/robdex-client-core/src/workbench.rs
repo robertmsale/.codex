@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use robdex_protocol::{
     UiChatEntry, UiInspectorFact, UiLiveProcessItem, UiModelItem, UiPendingApprovalItem,
-    UiProjectItem, UiRequirementReviewRequirement, UiRequirementReviewSummary,
+    UiManifestPhaseSummary, UiManifestRunSummary, UiProjectItem, UiRequirementReviewRequirement, UiRequirementReviewSummary,
     UiRequirementVerdictSummary, UiThreadGroupItem, UiThreadItem, UiWorkerMetadata,
     UiWorkspaceFile, UiWorkspaceSelection, WorkbenchViewData,
 };
@@ -767,6 +767,7 @@ pub async fn build_workbench_with_models(
     };
     let selected_project_id = selected_project_id(&snapshot);
     let running_ids = running_thread_ids(&snapshot);
+    let global_defaults = extract_global_defaults(&snapshot);
     let project_records = extract_project_records(&snapshot);
     let visible_thread_records = extract_thread_records(&snapshot);
     let selectable_thread_records = extract_thread_records_including_hidden(&snapshot);
@@ -807,21 +808,55 @@ pub async fn build_workbench_with_models(
             operator_developer_instructions: record.operator_developer_instructions.clone(),
             hidden_developer_instructions: record.hidden_developer_instructions.clone(),
             permanent_requirement_composables: record.permanent_requirement_composables.clone(),
+            manifest_runs: record.manifest_runs.clone(),
             is_selected: Some(record.id.as_str()) == selected_project_id.as_deref(),
         })
         .collect::<Vec<_>>();
 
     let threads = visible_thread_records
         .iter()
-        .map(|record| UiThreadItem {
+        .map(|record| {
+            let project_record = project_records.iter().find(|project| project.id == record.project_id);
+            UiThreadItem {
             id: record.id.clone(),
             title: record.display_name.clone(),
             role: record.role.clone(),
+            project_id: record.project_id.clone(),
+            project_root_path: record.project_root.clone(),
+            project_orchestrator_thread_id: record.project_orchestrator_thread_id.clone(),
+            project_orchestrator_name: record.project_orchestrator_name.clone(),
             project_name: record.project_name.clone(),
+            sandbox_mode: record.sandbox_mode.clone(),
+            network_access: record.network_access,
+            approval_policy: record.approval_policy.clone(),
+            model: record.model.clone(),
+            reasoning_effort: record.reasoning_effort.clone(),
+            service_tier: record.service_tier.clone(),
+            effective_sandbox_mode: record
+                .sandbox_mode
+                .clone()
+                .or_else(|| global_defaults.sandbox_mode.clone()),
+            effective_network_access: record.network_access.or(global_defaults.network_access),
+            effective_approval_policy: record
+                .approval_policy
+                .clone()
+                .or_else(|| global_defaults.approval_policy.clone()),
+            effective_model: record
+                .model
+                .clone()
+                .or_else(|| role_default_model(project_record, Some(record.role.as_str()))),
+            effective_reasoning_effort: record
+                .reasoning_effort
+                .clone()
+                .or_else(|| {
+                    role_default_reasoning_effort(project_record, Some(record.role.as_str()))
+                }),
+            effective_service_tier: record.service_tier.clone(),
             preview: record.preview.clone(),
             is_running: running_ids.contains(&record.id),
             unread_count: 0,
             requirement_review: record.requirement_review.clone(),
+            }
         })
         .collect::<Vec<_>>();
 
@@ -876,7 +911,6 @@ pub async fn build_workbench_with_models(
                 .find(|project| project.id == value.project_id)
         })
         .or_else(|| selected_project(&snapshot, selected_project_id.as_deref()));
-    let global_defaults = extract_global_defaults(&snapshot);
     let effective_sandbox_mode = selected
         .and_then(|value| value.sandbox_mode.clone())
         .or_else(|| global_defaults.sandbox_mode.clone());
@@ -1267,6 +1301,7 @@ struct ProjectRecord {
     operator_developer_instructions: Option<String>,
     hidden_developer_instructions: Option<String>,
     permanent_requirement_composables: Vec<String>,
+    manifest_runs: Vec<UiManifestRunSummary>,
 }
 
 #[derive(Clone)]
@@ -1589,6 +1624,101 @@ fn role_sort_key(role: &str) -> (u8, &str) {
     }
 }
 
+fn parse_manifest_runs(value: Option<&Value>) -> Vec<UiManifestRunSummary> {
+    value
+        .and_then(Value::as_array)
+        .map(|runs| {
+            runs.iter()
+                .filter_map(Value::as_object)
+                .map(|run| UiManifestRunSummary {
+                    run_id: run
+                        .get("runId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    plan_id: run
+                        .get("planId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    title: run
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    status: run
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    current_phase_id: run
+                        .get("currentPhaseId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    source_hash: run
+                        .get("sourceHash")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    phases: run
+                        .get("phases")
+                        .and_then(Value::as_array)
+                        .map(|phases| {
+                            phases
+                                .iter()
+                                .filter_map(Value::as_object)
+                                .map(|phase| UiManifestPhaseSummary {
+                                    phase_id: phase
+                                        .get("phaseId")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    title: phase
+                                        .get("title")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    status: phase
+                                        .get("status")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    worker_thread_id: phase
+                                        .get("workerThreadId")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_string),
+                                    archive_cleanup_state: phase
+                                        .get("archiveCleanupState")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    archive_safe: phase
+                                        .get("archiveSafe")
+                                        .and_then(Value::as_bool)
+                                        .unwrap_or(false),
+                                    has_handoff: phase
+                                        .get("handoff")
+                                        .is_some_and(|value| !value.is_null()),
+                                    has_blocker: phase
+                                        .get("blocker")
+                                        .is_some_and(|value| !value.is_null()),
+                                    has_waiver: phase
+                                        .get("waiver")
+                                        .is_some_and(|value| !value.is_null()),
+                                    has_resume_decision: phase
+                                        .get("resumeDecision")
+                                        .is_some_and(|value| !value.is_null()),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
+                .filter(|run| !run.run_id.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
     let mut records = Vec::new();
     let Some(projects) = snapshot
@@ -1767,6 +1897,7 @@ fn extract_project_records(snapshot: &Value) -> Vec<ProjectRecord> {
                 .and_then(Value::as_str)
                 .map(str::to_string),
             permanent_requirement_composables,
+            manifest_runs: parse_manifest_runs(project.get("manifestRuns")),
             root_path,
             orchestrator_thread_id: project
                 .get("orchestratorThreadID")
@@ -2123,6 +2254,52 @@ mod tests {
             records[0].permanent_requirement_composables,
             vec!["no-legacy".to_string(), "non-negotiables".to_string()]
         );
+    }
+
+    #[test]
+    fn project_records_include_manifest_run_summaries() {
+        let snapshot = json!({
+            "state": {
+                "projects": {
+                    "p1": {
+                        "id": "p1",
+                        "name": "Project",
+                        "projectRoot": "/tmp/project",
+                        "manifestRuns": [{
+                            "runId": "run-1",
+                            "planId": "plan",
+                            "title": "Plan",
+                            "status": "active",
+                            "currentPhaseId": "phase-1",
+                            "sourceHash": "sha256:abc",
+                            "phases": [{
+                                "phaseId": "phase-1",
+                                "title": "Phase 1",
+                                "status": "running",
+                                "workerThreadId": "worker-1",
+                                "archiveCleanupState": "notReady",
+                                "archiveSafe": false,
+                                "handoff": null,
+                                "blocker": {"text": "blocked"},
+                                "waiver": null,
+                                "resumeDecision": {"text": "resume"}
+                            }]
+                        }]
+                    }
+                }
+            }
+        });
+
+        let records = extract_project_records(&snapshot);
+        assert_eq!(records.len(), 1);
+        let run = &records[0].manifest_runs[0];
+        assert_eq!(run.run_id, "run-1");
+        assert_eq!(run.current_phase_id.as_deref(), Some("phase-1"));
+        assert_eq!(run.phases[0].worker_thread_id.as_deref(), Some("worker-1"));
+        assert!(!run.phases[0].archive_safe);
+        assert!(run.phases[0].has_blocker);
+        assert!(!run.phases[0].has_waiver);
+        assert!(run.phases[0].has_resume_decision);
     }
 
     #[tokio::test]

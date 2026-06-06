@@ -337,6 +337,90 @@ class ProjectPermanentComposablesPane extends StatelessWidget {
   }
 }
 
+class ProjectManifestRunsPane extends StatelessWidget {
+  const ProjectManifestRunsPane({
+    super.key,
+    required this.project,
+  });
+
+  final ProjectItem project;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final runs = project.manifestRuns;
+    return Column(
+      key: const ValueKey('project.manifestRuns'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('Manifest runs', style: theme.textTheme.titleSmall),
+        const SizedBox(height: 6),
+        Text(
+          'Serial manifest lifecycle state. Use `robdex manifest activate/status/advance/cancel` for lifecycle actions.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+          ),
+        ),
+        const SizedBox(height: 8),
+        if (runs.isEmpty)
+          Text(
+            'No manifest runs for this project.',
+            style: theme.textTheme.bodySmall,
+          )
+        else
+          for (final run in runs) ...[
+            DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border(
+                  left: BorderSide(
+                    color: theme.colorScheme.primary.withValues(alpha: 0.5),
+                    width: 3,
+                  ),
+                ),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.only(left: 10, top: 4, bottom: 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      '${run.title.isEmpty ? run.planId : run.title} | ${run.status}',
+                      style: theme.textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      'run ${run.runId} | current ${run.currentPhaseId ?? '-'} | ${run.sourceHash}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.62),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    for (final phase in run.phases)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(
+                          '${phase.phaseId}: ${phase.status}'
+                          ' | worker ${phase.workerThreadId ?? '-'}'
+                          ' | handoff ${phase.hasHandoff ? 'yes' : 'no'}'
+                          ' | blocker ${phase.hasBlocker ? 'yes' : 'no'}'
+                          ' | waiver ${phase.hasWaiver ? 'yes' : 'no'}'
+                          ' | resume ${phase.hasResumeDecision ? 'yes' : 'no'}'
+                          ' | cleanup ${phase.archiveCleanupState.isEmpty ? '-' : phase.archiveCleanupState}',
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+      ],
+    );
+  }
+}
+
 class RobdexWorkbench extends StatefulWidget {
   const RobdexWorkbench({super.key});
 
@@ -1416,6 +1500,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                   () => permanentRequirementComposables = next.toList(growable: true),
                 ),
               ),
+              const SizedBox(height: 16),
+              ProjectManifestRunsPane(project: project),
             ],
           );
         }

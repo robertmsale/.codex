@@ -36,7 +36,15 @@ class ThreadListPanel extends StatelessWidget {
       for (final project in projects) project.id: <ThreadItem>[],
     };
     for (final thread in threads) {
-      final project = projects.where((project) => project.name == thread.projectName).cast<ProjectItem?>().firstWhere(
+      final project = projects.where((project) {
+        if (thread.projectId.isNotEmpty && project.id == thread.projectId) {
+          return true;
+        }
+        if (thread.projectRootPath.isNotEmpty && project.rootPath == thread.projectRootPath) {
+          return true;
+        }
+        return project.name == thread.projectName;
+      }).cast<ProjectItem?>().firstWhere(
             (project) => project != null,
             orElse: () => null,
           );

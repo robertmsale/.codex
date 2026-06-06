@@ -38,6 +38,7 @@ use crate::{
         orchestrator_warm_handoff, register_live_process, complete_live_process,
         orchestrator_update_worker_metadata, orchestrator_whoami,
     },
+    manifest::{manifest_activate, manifest_advance, manifest_cancel, manifest_decision, manifest_status},
     models::{
         BridgeEvent, LiveProcessRecord, MAX_TRANSPORT_MESSAGES_PER_THREAD, PROTOCOL_VERSION, SequencedEvent, SERVER_NAME, SERVER_VERSION, ThreadMessagesResponse,
     },
@@ -102,6 +103,11 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/orchestrator/requirements/set", post(orchestrator_requirements_set_route))
         .route("/orchestrator/requirements/composables", post(orchestrator_requirements_composables_route))
         .route("/orchestrator/requirements/status", post(orchestrator_requirements_status_route))
+        .route("/orchestrator/manifest/activate", post(orchestrator_manifest_activate_route))
+        .route("/orchestrator/manifest/status", post(orchestrator_manifest_status_route))
+        .route("/orchestrator/manifest/advance", post(orchestrator_manifest_advance_route))
+        .route("/orchestrator/manifest/cancel", post(orchestrator_manifest_cancel_route))
+        .route("/orchestrator/manifest/decision", post(orchestrator_manifest_decision_route))
         .route("/orchestrator/approval-decision", post(orchestrator_approval_decision_route))
         .route("/ws", get(ws_upgrade))
         .route("/workbench/ws", get(workbench_ws_upgrade))
@@ -1206,6 +1212,119 @@ async fn orchestrator_requirements_status_route(
             Err(error) => map_orchestrator_error(error.to_string()),
         },
         Err(error) => map_bad_request(error),
+    }
+}
+
+async fn orchestrator_manifest_activate_route(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    let sender = payload.get("senderThreadId").and_then(Value::as_str);
+    let file = payload.get("file").and_then(Value::as_str);
+    match (require_sender_thread(sender), file) {
+        (Ok(sender_thread_id), Some(file)) => match manifest_activate(&runtime, sender_thread_id, file).await {
+            Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+            Err(error) => map_orchestrator_error(error.to_string()),
+        },
+        (Err(error), _) => map_bad_request(error),
+        (_, None) => map_bad_request("file is required"),
+    }
+}
+
+async fn orchestrator_manifest_status_route(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    match require_sender_thread(payload.get("senderThreadId").and_then(Value::as_str)) {
+        Ok(sender_thread_id) => match manifest_status(
+            &runtime,
+            sender_thread_id,
+            payload.get("projectPath").and_then(Value::as_str),
+            payload.get("runId").and_then(Value::as_str),
+        )
+        .await
+        {
+            Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+            Err(error) => map_orchestrator_error(error.to_string()),
+        },
+        Err(error) => map_bad_request(error),
+    }
+}
+
+async fn orchestrator_manifest_advance_route(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    let run_id = payload.get("runId").and_then(Value::as_str);
+    let handoff_file = payload.get("handoffFile").and_then(Value::as_str);
+    match (
+        require_sender_thread(payload.get("senderThreadId").and_then(Value::as_str)),
+        run_id,
+        handoff_file,
+    ) {
+        (Ok(sender_thread_id), Some(run_id), Some(handoff_file)) => {
+            match manifest_advance(&runtime, sender_thread_id, run_id, handoff_file).await {
+                Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+                Err(error) => map_orchestrator_error(error.to_string()),
+            }
+        }
+        (Err(error), _, _) => map_bad_request(error),
+        (_, None, _) => map_bad_request("runId is required"),
+        (_, _, None) => map_bad_request("handoffFile is required"),
+    }
+}
+
+async fn orchestrator_manifest_cancel_route(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    let run_id = payload.get("runId").and_then(Value::as_str);
+    match (
+        require_sender_thread(payload.get("senderThreadId").and_then(Value::as_str)),
+        run_id,
+    ) {
+        (Ok(sender_thread_id), Some(run_id)) => match manifest_cancel(
+            &runtime,
+            sender_thread_id,
+            run_id,
+            payload.get("reason").and_then(Value::as_str),
+        )
+        .await
+        {
+            Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+            Err(error) => map_orchestrator_error(error.to_string()),
+        },
+        (Err(error), _) => map_bad_request(error),
+        (_, None) => map_bad_request("runId is required"),
+    }
+}
+
+async fn orchestrator_manifest_decision_route(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    let run_id = payload.get("runId").and_then(Value::as_str);
+    let phase_id = payload.get("phaseId").and_then(Value::as_str);
+    let decision_type = payload.get("type").and_then(Value::as_str);
+    let text = payload.get("text").and_then(Value::as_str);
+    match (
+        require_sender_thread(payload.get("senderThreadId").and_then(Value::as_str)),
+        run_id,
+        phase_id,
+        decision_type,
+        text,
+    ) {
+        (Ok(sender_thread_id), Some(run_id), Some(phase_id), Some(decision_type), Some(text)) => {
+            match manifest_decision(&runtime, sender_thread_id, run_id, phase_id, decision_type, text).await {
+                Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+                Err(error) => map_orchestrator_error(error.to_string()),
+            }
+        }
+        (Err(error), _, _, _, _) => map_bad_request(error),
+        (_, None, _, _, _) => map_bad_request("runId is required"),
+        (_, _, None, _, _) => map_bad_request("phaseId is required"),
+        (_, _, _, None, _) => map_bad_request("type is required"),
+        (_, _, _, _, None) => map_bad_request("text is required"),
     }
 }
 

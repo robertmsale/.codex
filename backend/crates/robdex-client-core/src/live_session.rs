@@ -313,6 +313,9 @@ async fn reduce_message(
             let Some(snapshot) = event.get("data").cloned() else {
                 return Ok(ReduceOutcome::None);
             };
+            if !is_workbench_snapshot_payload(&snapshot) {
+                return Ok(ReduceOutcome::None);
+            }
             let should_preserve_messages = current_view
                 .selection
                 .thread_id
@@ -389,6 +392,38 @@ async fn reduce_message(
     }
 }
 
+fn is_workbench_snapshot_payload(snapshot: &Value) -> bool {
+    let Some(projects) = snapshot
+        .get("state")
+        .and_then(|state| state.get("projects"))
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    if !projects
+        .values()
+        .all(|project| project.get("agents").and_then(Value::as_object).is_some())
+    {
+        return false;
+    }
+    snapshot
+        .get("threadCache")
+        .and_then(Value::as_object)
+        .and_then(|cache| {
+            cache
+                .get("runningThreadIDs")
+                .or_else(|| cache.get("runningThreadIds"))
+        })
+        .and_then(Value::as_array)
+        .is_some()
+        && snapshot
+            .get("liveProcessesByThreadID")
+            .or_else(|| snapshot.get("liveProcessesByThreadId"))
+            .and_then(Value::as_object)
+            .is_some()
+        && snapshot.get("connectionStatus").and_then(Value::as_str).is_some()
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 async fn send_json(
     write: &mut futures_util::stream::SplitSink<
@@ -461,4 +496,48 @@ async fn send_thread_selection(
         }),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::is_workbench_snapshot_payload;
+
+    #[test]
+    fn workbench_snapshot_payload_requires_robdex_state_shape() {
+        let snapshot = json!({
+            "state": {
+                "projects": {
+                    "project-1": {
+                        "id": "project-1",
+                        "agents": {}
+                    }
+                }
+            },
+            "threadCache": {
+                "runningThreadIDs": []
+            },
+            "liveProcessesByThreadID": {},
+            "connectionStatus": "connected"
+        });
+
+        assert!(is_workbench_snapshot_payload(&snapshot));
+    }
+
+    #[test]
+    fn legacy_app_snapshot_payload_is_not_workbench_state() {
+        let legacy_snapshot = json!({
+            "state": {
+                "projectCatalog": [],
+                "threadMetadataByID": {}
+            },
+            "threadCache": {
+                "runningThreadIDs": []
+            },
+            "connectionStatus": "connected"
+        });
+
+        assert!(!is_workbench_snapshot_payload(&legacy_snapshot));
+    }
 }

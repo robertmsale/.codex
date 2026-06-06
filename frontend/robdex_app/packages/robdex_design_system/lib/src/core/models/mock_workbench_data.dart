@@ -28,6 +28,7 @@ const mockWorkbenchData = WorkbenchViewData(
       operatorDeveloperInstructions: 'Coordinate local tooling and configuration.',
       hiddenDeveloperInstructions: 'Operate quietly and only when explicitly routed.',
       permanentRequirementComposables: ['non-negotiables'],
+      manifestRuns: [],
       isSelected: true,
     ),
     ProjectItem(
@@ -55,6 +56,7 @@ const mockWorkbenchData = WorkbenchViewData(
       operatorDeveloperInstructions: 'Handle coordination and environment issues.',
       hiddenDeveloperInstructions: 'Remain available for narrow support work.',
       permanentRequirementComposables: ['no-legacy'],
+      manifestRuns: [],
       isSelected: false,
     ),
   ],

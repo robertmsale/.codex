@@ -16,11 +16,11 @@ mkdir -p "$CODEX_HOME"
 robdex doctor
 robdex bootstrap plan --profile minimal
 robdex setup orchestration --dry-run
-robdex start --foreground
+export ROBDEX_SERVICE_MANAGER=supervisor
+robdex start
 ```
 
-Use `robdex status` in another shell to inspect the local bridge. Use
-`robdex stop` only for a background or service-managed stack.
+Use `robdex status` in another shell to inspect the local bridge.
 
 ## Environment
 
@@ -39,18 +39,15 @@ Use `robdex status` in another shell to inspect the local bridge. Use
 
 Supported modes:
 
-- no `ROBDEX_SERVICE_MANAGER`: starts app-server and bridge with local pid and
-  log files under `ROBDEX_STATE_HOME`;
-- `robdex start --foreground`: runs the two-process core stack in the current
-  terminal;
 - `ROBDEX_SERVICE_MANAGER=supervisor`: uses configured supervisor service
   names;
 - `ROBDEX_SERVICE_MANAGER=systemd`: uses configured Linux user units;
 - `ROBDEX_SERVICE_MANAGER=launchctl`: uses configured macOS launchd labels.
 
-`robdex status` reports configured paths, local pid-file state when applicable,
-and bridge health. `robdex stop` stops the configured service manager or the
-pid-file fallback processes.
+`robdex start`, `robdex status`, and `robdex stop` require a configured service
+manager. Robdex intentionally does not start unmanaged pid-file or foreground
+fallback bridge processes, because multiple bridge owners can corrupt GUI state
+and make service ownership ambiguous.
 
 `robdex install-plan` prints a human-readable service plan. For structured
 frontend/bootstrap output, use:
@@ -182,12 +179,5 @@ orchestration. See [`gui-packaging.md`](gui-packaging.md).
 
 ## Uninstall and Rollback
 
-For the foreground or pid-file fallback:
-
-```sh
-robdex stop
-rm -rf "$ROBDEX_HOME"
-```
-
-For service-managed installs, stop and disable the user services first. Keep or
-remove `ROBDEX_STATE_HOME` deliberately; it contains local Robdex state.
+Stop and disable the configured user services first. Keep or remove
+`ROBDEX_STATE_HOME` deliberately; it contains local Robdex state.

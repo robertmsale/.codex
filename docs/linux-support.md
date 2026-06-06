@@ -28,12 +28,6 @@ developer-specific absolute path.
 
 ## Services
 
-The portable fallback is:
-
-```sh
-robdex start --foreground
-```
-
 For Linux user services, set:
 
 ```sh
@@ -51,7 +45,9 @@ robdex stop
 ```
 
 Systemd unit generation is still staged work. Until generated templates exist,
-foreground or pid-file fallback is the supported portable path.
+configure `supervisor` explicitly or start the binaries by hand for debugging
+outside `robdex-service`. `robdex-service` intentionally refuses unmanaged
+pid-file fallback processes.
 
 ## Shell Behavior
 

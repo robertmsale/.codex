@@ -217,7 +217,7 @@ That is deliberate. Otherwise the worker and reviewer can loop pointlessly:
 Instead, the bridge sends an explicit continuation message:
 
 ```text
-[Requirements] Your final claim packet marked every currently required claim as `notSatisfied`, so Robdex did not request Requirements Review. Continue working until at least one currently required requirement can be claimed `satisfied`, `blocked`, or `notApplicable`, then provide an updated final Requirements claim packet. An all-`notSatisfied` packet is never terminal. If you are blocked, use the `blocked` claim on the specific blocked requirement and provide concrete blocker evidence.
+This is the owner. Your final claim packet marked every currently required claim as `notSatisfied`, so Robdex did not request Requirements Review. Continue working until at least one currently required requirement can be claimed `satisfied`, `blocked`, or `notApplicable`, then provide an updated final Requirements claim packet. An all-`notSatisfied` packet is absolutely unacceptable. If you are blocked, use the `blocked` claim on the specific blocked requirement and provide concrete blocker evidence. If you submit another final message with all claims as `notSatisfied` then you will be terminated.
 ```
 
 If the agent is truly blocked, it must use the `blocked` claim on the specific blocked requirement with evidence.

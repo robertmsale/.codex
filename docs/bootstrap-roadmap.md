@@ -56,7 +56,7 @@ The doctor checks:
 - bridge release/debug build status.
 - safe app-server and bridge health reachability.
 - required Robdex scripts on `PATH`.
-- available service managers and foreground fallback.
+- available service managers.
 
 This slice adds the first doctor implementation at `scripts/robdex-doctor`.
 `robdex doctor` is also available through the public Robdex wrapper.
@@ -109,7 +109,6 @@ Goal: one command starts the core local stack or gives exact remediation.
 
 Support order:
 
-- foreground process fallback on all supported platforms.
 - macOS service manager integration when configured.
 - Linux `systemd --user` or supervisor integration when configured.
 
@@ -117,8 +116,9 @@ Support order:
 prerequisite.
 
 This slice adds `scripts/robdex-service` and `robdex start/status/stop`
-delegation. It supports a pid-file fallback, foreground fallback, and configured
-`supervisor`, `systemd --user`, or `launchctl` service-manager paths.
+delegation. It supports configured `supervisor`, `systemd --user`, or
+`launchctl` service-manager paths. It intentionally does not support pid-file or
+foreground fallback ownership for normal service control.
 
 ### 6. Optional GUI Setup
 

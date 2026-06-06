@@ -759,6 +759,110 @@ def _cmd_requirements_composables_show(thread_id: str, args: argparse.Namespace)
     raise SystemExit(f"robdex: unknown requirements composable {wanted!r}")
 
 
+def _manifest_post(thread_id: str, action: str, body: dict[str, Any]) -> dict[str, Any]:
+    payload = {"senderThreadId": thread_id}
+    payload.update(body)
+    return _request_json("POST", f"/orchestrator/manifest/{action}", body=payload)
+
+
+def _cmd_manifest_activate(thread_id: str, args: argparse.Namespace) -> None:
+    payload = _manifest_post(thread_id, "activate", {"file": _normalize_path(args.file)})
+    run_id = _normalize_text(str(payload.get("runId") or "")) or "unknown-run"
+    phase_id = _normalize_text(str(payload.get("currentPhaseId") or "")) or "unknown-phase"
+    worker = _normalize_text(str(payload.get("workerThreadId") or "")) or "unknown-worker"
+    print(f"Activated manifest {run_id} | phase={phase_id} | worker={worker}")
+
+
+def _cmd_manifest_status(thread_id: str, args: argparse.Namespace) -> None:
+    payload = _manifest_post(
+        thread_id,
+        "status",
+        {
+            "projectPath": _normalize_path(args.project_path),
+            "runId": _normalize_text(args.run_id),
+        },
+    )
+    runs = payload.get("runs")
+    if not isinstance(runs, list) or not runs:
+        print("No manifest runs.")
+        return
+    lines: list[str] = []
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        run_id = _normalize_text(str(run.get("runId") or "")) or "unknown-run"
+        plan_id = _normalize_text(str(run.get("planId") or "")) or "unknown-plan"
+        status = _normalize_text(str(run.get("status") or "")) or "unknown"
+        current = _normalize_text(str(run.get("currentPhaseId") or "")) or "-"
+        lines.append(f"{run_id} | plan={plan_id} | status={status} | current={current}")
+        phases = run.get("phases")
+        if isinstance(phases, list):
+            for phase in phases:
+                if not isinstance(phase, dict):
+                    continue
+                phase_id = _normalize_text(str(phase.get("phaseId") or "")) or "unknown-phase"
+                phase_status = _normalize_text(str(phase.get("status") or "")) or "unknown"
+                worker = _normalize_text(str(phase.get("workerThreadId") or "")) or "-"
+                cleanup = _normalize_text(str(phase.get("archiveCleanupState") or "")) or "-"
+                lines.append(f"  - {phase_id}: {phase_status} | worker={worker} | cleanup={cleanup}")
+    _print_lines(lines)
+
+
+def _cmd_manifest_advance(thread_id: str, args: argparse.Namespace) -> None:
+    payload = _manifest_post(
+        thread_id,
+        "advance",
+        {
+            "runId": args.run_id,
+            "handoffFile": _normalize_path(args.handoff_file),
+        },
+    )
+    phase = _normalize_text(str(payload.get("advancedPhaseId") or "")) or "unknown-phase"
+    archived = _normalize_text(str(payload.get("archivedWorkerThreadId") or "")) or "unknown-worker"
+    cleanup = _normalize_text(str(payload.get("archiveCleanupState") or "")) or "unknown"
+    next_worker = _normalize_text(str(payload.get("nextWorkerThreadId") or "")) or "-"
+    print(f"Advanced manifest | phase={phase} | archived={archived} | cleanup={cleanup} | nextWorker={next_worker}")
+
+
+def _cmd_manifest_cancel(thread_id: str, args: argparse.Namespace) -> None:
+    payload = _manifest_post(
+        thread_id,
+        "cancel",
+        {
+            "runId": args.run_id,
+            "reason": _normalize_text(args.reason),
+        },
+    )
+    run = payload.get("run") if isinstance(payload.get("run"), dict) else {}
+    run_id = _normalize_text(str(run.get("runId") or "")) or args.run_id
+    status = _normalize_text(str(run.get("status") or "")) or "cancelled"
+    print(f"Manifest {run_id} is {status}.")
+
+
+def _cmd_manifest_decision(thread_id: str, args: argparse.Namespace) -> None:
+    text = _resolve_text_input(
+        argparse.ArgumentParser(prog="robdex manifest decision"),
+        args,
+        inline_attr="text",
+        file_attr="text_file",
+        stdin_attr="text_stdin",
+        label="manifest decision",
+    )
+    payload = _manifest_post(
+        thread_id,
+        "decision",
+        {
+            "runId": args.run_id,
+            "phaseId": args.phase_id,
+            "type": args.type,
+            "text": text,
+        },
+    )
+    run = payload.get("run") if isinstance(payload.get("run"), dict) else {}
+    run_id = _normalize_text(str(run.get("runId") or "")) or args.run_id
+    print(f"Recorded manifest {args.type} decision for {run_id} phase {args.phase_id}.")
+
+
 def _cmd_requirements_compose(thread_id: str, args: argparse.Namespace) -> None:
     base_payload = _read_json_file(args.requirements_file, "requirements")
     composables = _selected_composable_items(thread_id, args)
@@ -1370,6 +1474,51 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     p_req_compose.add_argument("--name")
     p_req_compose.add_argument("--project-path")
 
+    p_manifest = sub.add_parser(
+        "manifest",
+        help="Manage file-backed serial Robdex manifests.",
+    )
+    manifest_sub = p_manifest.add_subparsers(dest="manifest_cmd", required=True)
+
+    p_manifest_activate = manifest_sub.add_parser(
+        "activate",
+        help="Activate a Markdown manifest from PROJECT/.codex/manifests/.",
+    )
+    p_manifest_activate.add_argument("--file", required=True)
+
+    p_manifest_status = manifest_sub.add_parser(
+        "status",
+        help="Show manifest runs and phase state.",
+    )
+    p_manifest_status.add_argument("--project-path")
+    p_manifest_status.add_argument("--run-id")
+
+    p_manifest_advance = manifest_sub.add_parser(
+        "advance",
+        help="Advance the current phase after passed Requirements review and handoff.",
+    )
+    p_manifest_advance.add_argument("--run-id", required=True)
+    p_manifest_advance.add_argument("--handoff-file", required=True)
+
+    p_manifest_cancel = manifest_sub.add_parser(
+        "cancel",
+        help="Cancel an active manifest run and stop future phase materialization.",
+    )
+    p_manifest_cancel.add_argument("--run-id", required=True)
+    p_manifest_cancel.add_argument("--reason")
+
+    p_manifest_decision = manifest_sub.add_parser(
+        "decision",
+        help="Record a durable blocker, waiver, or resume decision for a manifest phase.",
+    )
+    p_manifest_decision.add_argument("--run-id", required=True)
+    p_manifest_decision.add_argument("--phase-id", required=True)
+    p_manifest_decision.add_argument("--type", choices=["blocker", "waiver", "resume"], required=True)
+    decision_text = p_manifest_decision.add_mutually_exclusive_group(required=True)
+    decision_text.add_argument("--text")
+    decision_text.add_argument("--text-file")
+    decision_text.add_argument("--text-stdin", action="store_true")
+
     p_handoff = _add_handoff_parser(sub)
 
     p_approve = sub.add_parser("approve-approval", help="disabled: approval-based command execution is not allowed")
@@ -1495,6 +1644,19 @@ def main() -> int:
             _cmd_requirements_composables_show(thread_id, args)
     elif args.cmd == "requirements-compose":
         _cmd_requirements_compose(thread_id, args)
+    elif args.cmd == "manifest":
+        if args.manifest_cmd == "activate":
+            _cmd_manifest_activate(thread_id, args)
+        elif args.manifest_cmd == "status":
+            _cmd_manifest_status(thread_id, args)
+        elif args.manifest_cmd == "advance":
+            _cmd_manifest_advance(thread_id, args)
+        elif args.manifest_cmd == "cancel":
+            _cmd_manifest_cancel(thread_id, args)
+        elif args.manifest_cmd == "decision":
+            _cmd_manifest_decision(thread_id, args)
+        else:
+            parser.error(f"unknown manifest command: {args.manifest_cmd}")
     elif args.cmd == "handoff":
         _cmd_handoff(thread_id, args, parser)
     elif args.cmd == "approve-approval":

@@ -311,6 +311,80 @@ fn current_view_clone(current_view: &Option<WorkbenchViewData>) -> Result<Workbe
         .ok_or_else(|| anyhow!("No current view"))
 }
 
+fn select_thread_from_current_view(
+    current_view: &Option<WorkbenchViewData>,
+    thread_id: &str,
+    chat_entries: Vec<UiChatEntry>,
+) -> Result<WorkbenchViewData> {
+    let mut view = current_view_clone(current_view)?;
+    let thread = view
+        .threads
+        .iter()
+        .find(|thread| thread.id == thread_id)
+        .cloned()
+        .ok_or_else(|| anyhow!("Thread is not present in the current workbench state"))?;
+
+    view.selection.project_id = Some(thread.project_id.clone()).filter(|value| !value.is_empty());
+    view.selection.project_root_path =
+        Some(thread.project_root_path.clone()).filter(|value| !value.is_empty());
+    view.selection.project_orchestrator_thread_id = thread.project_orchestrator_thread_id.clone();
+    view.selection.project_orchestrator_name = thread.project_orchestrator_name.clone();
+    view.selection.thread_id = Some(thread.id.clone());
+    view.selection.thread_role = Some(thread.role.clone());
+    view.selection.project_name = thread.project_name.clone();
+    view.selection.thread_name = thread.title.clone();
+    view.selection.sandbox_mode = thread.sandbox_mode.clone();
+    view.selection.network_access = thread.network_access;
+    view.selection.approval_policy = thread.approval_policy.clone();
+    view.selection.model = thread.model.clone();
+    view.selection.reasoning_effort = thread.reasoning_effort.clone();
+    view.selection.service_tier = thread.service_tier.clone();
+    view.selection.effective_sandbox_mode = thread.effective_sandbox_mode.clone();
+    view.selection.effective_network_access = thread.effective_network_access;
+    view.selection.effective_approval_policy = thread.effective_approval_policy.clone();
+    view.selection.effective_model = thread.effective_model.clone();
+    view.selection.effective_reasoning_effort = thread.effective_reasoning_effort.clone();
+    view.selection.effective_service_tier = thread.effective_service_tier.clone();
+    view.selection.is_running = thread.is_running;
+
+    view.chat_entries = chat_entries;
+    view.context_window_remaining_percent = None;
+    view.live_processes.clear();
+    view.requirement_review = thread.requirement_review.clone();
+    view.worker_metadata = None;
+    view.workspace_files.clear();
+    view.inspector_facts = vec![
+        robdex_protocol::UiInspectorFact {
+            label: "Role".to_string(),
+            value: thread.role.clone(),
+        },
+        robdex_protocol::UiInspectorFact {
+            label: "Model".to_string(),
+            value: thread.model.clone().unwrap_or_else(|| "default".to_string()),
+        },
+        robdex_protocol::UiInspectorFact {
+            label: "Sandbox".to_string(),
+            value: thread
+                .sandbox_mode
+                .clone()
+                .unwrap_or_else(|| "default".to_string()),
+        },
+        robdex_protocol::UiInspectorFact {
+            label: "Network".to_string(),
+            value: match thread.network_access {
+                Some(true) => "enabled".to_string(),
+                Some(false) => "disabled".to_string(),
+                None => "default".to_string(),
+            },
+        },
+        robdex_protocol::UiInspectorFact {
+            label: "Project".to_string(),
+            value: thread.project_name,
+        },
+    ];
+    Ok(view)
+}
+
 fn unix_now_millis() -> u128 {
     #[cfg(target_arch = "wasm32")]
     {
@@ -740,7 +814,14 @@ async fn handle_action(
             Ok(view)
         }
         Action::Reload => client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.load_initial_view().await,
-        Action::SelectThread(thread_id) => client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.select_thread(thread_id).await,
+        Action::SelectThread(thread_id) => {
+            let entries = client
+                .as_ref()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .fetch_thread_history(&thread_id)
+                .await?;
+            select_thread_from_current_view(current_view, &thread_id, entries)
+        }
         Action::FetchThreadHistory => {
             let thread_id = current_view
                 .as_ref()
