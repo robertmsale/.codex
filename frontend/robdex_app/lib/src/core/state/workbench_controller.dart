@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:rinf/rinf.dart';
@@ -15,6 +16,9 @@ class WorkbenchController extends ChangeNotifier {
   Object? _error;
   StreamSubscription<RustSignalPack<WorkbenchStateSignal>>? _subscription;
   StreamSubscription<RustSignalPack<ThreadHistoryStateSignal>>? _historySubscription;
+  StreamSubscription<RustSignalPack<BridgeTaskResultSignal>>? _bridgeTaskSubscription;
+  final Map<String, Completer<dynamic>> _bridgeTaskCompleters = <String, Completer<dynamic>>{};
+  int _bridgeTaskSerial = 0;
   List<ChatEntry> _threadHistoryEntries = const [];
   bool _isThreadHistoryLoading = false;
   Object? _threadHistoryError;
@@ -32,6 +36,7 @@ class WorkbenchController extends ChangeNotifier {
   }) async {
     _subscription?.cancel();
     _historySubscription?.cancel();
+    _bridgeTaskSubscription?.cancel();
     _subscription = WorkbenchStateSignal.rustSignalStream.listen(
       (pack) {
         final signal = pack.message;
@@ -69,10 +74,132 @@ class WorkbenchController extends ChangeNotifier {
         notifyListeners();
       },
     );
+    _bridgeTaskSubscription = BridgeTaskResultSignal.rustSignalStream.listen(
+      (pack) {
+        final signal = pack.message;
+        final completer = _bridgeTaskCompleters.remove(signal.requestId);
+        if (completer == null || completer.isCompleted) {
+          return;
+        }
+        if (signal.errorMessage.isNotEmpty) {
+          completer.completeError(StateError(signal.errorMessage));
+          return;
+        }
+        if (signal.payloadJson.isEmpty) {
+          completer.complete(null);
+          return;
+        }
+        completer.complete(jsonDecode(signal.payloadJson));
+      },
+      onError: (Object error) {
+        final pending = _bridgeTaskCompleters.values.toList(growable: false);
+        _bridgeTaskCompleters.clear();
+        for (final completer in pending) {
+          if (!completer.isCompleted) {
+            completer.completeError(error);
+          }
+        }
+      },
+    );
     InitializeWorkbenchSignal(
       host: host,
       port: port,
     ).sendSignalToRust();
+  }
+
+  String _nextBridgeTaskRequestId(String task) {
+    _bridgeTaskSerial += 1;
+    return '$task-$_bridgeTaskSerial';
+  }
+
+  Future<dynamic> _awaitBridgeTask(String requestId) {
+    final completer = Completer<dynamic>();
+    _bridgeTaskCompleters[requestId] = completer;
+    return completer.future.timeout(
+      const Duration(seconds: 45),
+      onTimeout: () {
+        _bridgeTaskCompleters.remove(requestId);
+        throw StateError('Bridge task timed out.');
+      },
+    );
+  }
+
+  Future<ThreadStatsData> loadThreadStats(String threadId) async {
+    final requestId = _nextBridgeTaskRequestId('threadStats');
+    LoadThreadStatsSignal(requestId: requestId, threadId: threadId).sendSignalToRust();
+    final payload = await _awaitBridgeTask(requestId);
+    return ThreadStatsData.fromJson(payload as Map<String, dynamic>);
+  }
+
+  Future<List<Map<String, dynamic>>> loadProjectHookLogs(String projectId) async {
+    final requestId = _nextBridgeTaskRequestId('projectHookLogs');
+    LoadProjectHookLogsSignal(requestId: requestId, projectId: projectId).sendSignalToRust();
+    final payload = await _awaitBridgeTask(requestId);
+    final logs = payload is Map<String, dynamic> ? payload['logs'] : null;
+    return (logs as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
+  }
+
+  Future<void> clearProjectHookLogs(String projectId) async {
+    final requestId = _nextBridgeTaskRequestId('clearProjectHookLogs');
+    ClearProjectHookLogsSignal(requestId: requestId, projectId: projectId).sendSignalToRust();
+    await _awaitBridgeTask(requestId);
+  }
+
+  Future<List<Map<String, dynamic>>> loadRequirementComposables({
+    String? senderThreadId,
+    String? recipientThreadId,
+    String? projectPath,
+  }) async {
+    final requestId = _nextBridgeTaskRequestId('requirementComposables');
+    LoadRequirementComposablesSignal(
+      requestId: requestId,
+      senderThreadId: senderThreadId ?? '',
+      recipientThreadId: recipientThreadId ?? '',
+      projectPath: projectPath ?? '',
+    ).sendSignalToRust();
+    final payload = await _awaitBridgeTask(requestId);
+    final items = payload is Map<String, dynamic> ? payload['items'] : null;
+    return (items as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
+  }
+
+  Future<void> setThreadRequirements({
+    String? senderThreadId,
+    required String recipientThreadId,
+    String? projectPath,
+    String? requirementSetJson,
+  }) async {
+    final requestId = _nextBridgeTaskRequestId('setThreadRequirements');
+    SetThreadRequirementsSignal(
+      requestId: requestId,
+      senderThreadId: senderThreadId ?? '',
+      recipientThreadId: recipientThreadId,
+      projectPath: projectPath ?? '',
+      requirementSetJson: requirementSetJson ?? '',
+    ).sendSignalToRust();
+    await _awaitBridgeTask(requestId);
+  }
+
+  Future<String> uploadImageBytes({
+    required String filename,
+    required String contentType,
+    required Uint8List bytes,
+  }) async {
+    final requestId = _nextBridgeTaskRequestId('uploadImageBytes');
+    UploadImageBytesSignal(
+      requestId: requestId,
+      filename: filename,
+      contentType: contentType,
+      bytes: bytes,
+    ).sendSignalToRust();
+    final payload = await _awaitBridgeTask(requestId);
+    if (payload case {'path': final String path} when path.trim().isNotEmpty) {
+      return path;
+    }
+    throw StateError('Bridge upload response missing path.');
   }
 
   void reload() {
@@ -377,6 +504,15 @@ class WorkbenchController extends ChangeNotifier {
     _subscription = null;
     _historySubscription?.cancel();
     _historySubscription = null;
+    _bridgeTaskSubscription?.cancel();
+    _bridgeTaskSubscription = null;
+    final pending = _bridgeTaskCompleters.values.toList(growable: false);
+    _bridgeTaskCompleters.clear();
+    for (final completer in pending) {
+      if (!completer.isCompleted) {
+        completer.completeError(StateError('Disconnected from bridge.'));
+      }
+    }
     _view = null;
     _isLoading = false;
     _error = null;
@@ -390,6 +526,7 @@ class WorkbenchController extends ChangeNotifier {
   void dispose() {
     _subscription?.cancel();
     _historySubscription?.cancel();
+    _bridgeTaskSubscription?.cancel();
     super.dispose();
   }
 }

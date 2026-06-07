@@ -1,26 +1,16 @@
-import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
 import '../../core/models/thread_stats_models.dart';
 
 Future<void> showThreadStatsModal({
   required BuildContext context,
   required String threadId,
-  required Uri? bridgeBaseUri,
-  Future<ThreadStatsData> Function(String threadId)? loadStats,
+  required Future<ThreadStatsData> Function(String threadId) loadStats,
 }) async {
   final theme = Theme.of(context);
-  if (bridgeBaseUri == null && loadStats == null) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Thread statistics are unavailable without a bridge connection.')),
-    );
-    return;
-  }
-
   showDialog<void>(
     context: context,
     barrierDismissible: false,
@@ -52,9 +42,7 @@ Future<void> showThreadStatsModal({
   );
 
   try {
-    final stats = loadStats != null
-        ? await loadStats(threadId)
-        : await _fetchThreadStats(threadId: threadId, bridgeBaseUri: bridgeBaseUri!);
+    final stats = await loadStats(threadId);
     if (!context.mounted) {
       return;
     }
@@ -72,21 +60,6 @@ Future<void> showThreadStatsModal({
       SnackBar(content: Text('Unable to load thread statistics: $error')),
     );
   }
-}
-
-Future<ThreadStatsData> _fetchThreadStats({
-  required String threadId,
-  required Uri bridgeBaseUri,
-}) async {
-  final url = bridgeBaseUri.resolve('/threads/${Uri.encodeComponent(threadId)}/stats');
-  final response = await http.get(url);
-  if (response.statusCode == 404) {
-    throw StateError('No session statistics found for this thread.');
-  }
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw StateError('HTTP ${response.statusCode}: ${response.body}');
-  }
-  return ThreadStatsData.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
 }
 
 class ThreadStatsModalView extends StatelessWidget {

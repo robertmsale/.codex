@@ -5,9 +5,11 @@ import 'package:flutter/material.dart';
 
 import '../../core/models/workbench_view_data.dart';
 import '../../core/models/workbench_models.dart';
+import '../../core/models/thread_stats_models.dart';
 import '../chat/chat_timeline.dart';
 import '../composer/composer_panel.dart';
 import '../inspector/inspector_panel.dart';
+import '../requirements/requirement_set_form.dart';
 import '../sidebar/thread_list_panel.dart';
 import '../stats/thread_stats_modal.dart';
 
@@ -42,7 +44,10 @@ class RobdexShellScreen extends StatelessWidget {
     required this.onArchiveThreadGroup,
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
-    this.bridgeBaseUri,
+    required this.loadThreadStats,
+    this.loadRequirementComposables,
+    this.setThreadRequirements,
+    this.uploadImageBytes,
     this.onOpenLink,
     this.chatBottomDrawer,
     this.terminalAvailable = false,
@@ -78,7 +83,10 @@ class RobdexShellScreen extends StatelessWidget {
   final ValueChanged<String> onArchiveThreadGroup;
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
-  final Uri? bridgeBaseUri;
+  final Future<ThreadStatsData> Function(String threadId) loadThreadStats;
+  final RequirementComposableLoader? loadRequirementComposables;
+  final Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements;
+  final ImageBytesUploader? uploadImageBytes;
   final ValueChanged<String>? onOpenLink;
   final Widget? chatBottomDrawer;
   final bool terminalAvailable;
@@ -127,7 +135,10 @@ class RobdexShellScreen extends StatelessWidget {
                               onArchiveThreadGroup: onArchiveThreadGroup,
                               onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
                               onUpdateWorkerMetadata: onUpdateWorkerMetadata,
-                              bridgeBaseUri: bridgeBaseUri,
+                              loadThreadStats: loadThreadStats,
+                              loadRequirementComposables: loadRequirementComposables,
+                              setThreadRequirements: setThreadRequirements,
+                              uploadImageBytes: uploadImageBytes,
                               onOpenLink: onOpenLink,
                               terminalAvailable: terminalAvailable,
                               onTerminalPressed: onTerminalPressed,
@@ -161,7 +172,10 @@ class RobdexShellScreen extends StatelessWidget {
                               onArchiveThreadGroup: onArchiveThreadGroup,
                               onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
                               onUpdateWorkerMetadata: onUpdateWorkerMetadata,
-                              bridgeBaseUri: bridgeBaseUri,
+                              loadThreadStats: loadThreadStats,
+                              loadRequirementComposables: loadRequirementComposables,
+                              setThreadRequirements: setThreadRequirements,
+                              uploadImageBytes: uploadImageBytes,
                               onOpenLink: onOpenLink,
                               chatBottomDrawer: chatBottomDrawer,
                               terminalAvailable: terminalAvailable,
@@ -206,7 +220,10 @@ class _WideShell extends StatefulWidget {
     required this.onArchiveThreadGroup,
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
-    required this.bridgeBaseUri,
+    required this.loadThreadStats,
+    required this.loadRequirementComposables,
+    required this.setThreadRequirements,
+    required this.uploadImageBytes,
     required this.onOpenLink,
     required this.chatBottomDrawer,
     required this.terminalAvailable,
@@ -240,7 +257,10 @@ class _WideShell extends StatefulWidget {
   final ValueChanged<String> onArchiveThreadGroup;
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
-  final Uri? bridgeBaseUri;
+  final Future<ThreadStatsData> Function(String threadId) loadThreadStats;
+  final RequirementComposableLoader? loadRequirementComposables;
+  final Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements;
+  final ImageBytesUploader? uploadImageBytes;
   final ValueChanged<String>? onOpenLink;
   final Widget? chatBottomDrawer;
   final bool terminalAvailable;
@@ -315,7 +335,14 @@ class _WideShellState extends State<_WideShell> {
                           onInterrupt: widget.onInterruptThread,
                           onTerminateCommandExecution:
                               widget.onTerminateCommandExecution,
-                          bridgeBaseUri: widget.bridgeBaseUri,
+                          loadRequirementComposables: widget.loadRequirementComposables,
+                          setThreadRequirements: widget.setThreadRequirements == null
+                              ? null
+                              : (requirementSetJson) => widget.setThreadRequirements!(
+                                    workbench.selection.threadId ?? '',
+                                    requirementSetJson,
+                                  ),
+                          uploadImageBytes: widget.uploadImageBytes,
                           onOpenLink: widget.onOpenLink,
                           composerEnabled: workbench.selection.threadId != null,
                           isRunning: workbench.selection.isRunning,
@@ -333,7 +360,7 @@ class _WideShellState extends State<_WideShell> {
                             pendingApprovalCount:
                                 workbench.pendingApprovals.length,
                             onOpenHistory: widget.onOpenHistory,
-                            bridgeBaseUri: widget.bridgeBaseUri,
+                            loadThreadStats: widget.loadThreadStats,
                             onCompactThread: widget.onCompactThread,
                             onTerminateCommandExecution:
                                 widget.onTerminateCommandExecution,
@@ -341,7 +368,9 @@ class _WideShellState extends State<_WideShell> {
                               context,
                               workbench: workbench,
                               onThreadSelected: widget.onThreadSelected,
-                              bridgeBaseUri: widget.bridgeBaseUri,
+                              loadRequirementComposables: widget.loadRequirementComposables,
+                              setThreadRequirements: widget.setThreadRequirements,
+                              uploadImageBytes: widget.uploadImageBytes,
                               onApprovalDecision: widget.onApprovalDecision,
                               onSettingsChanged: widget.onSettingsChanged,
                               onRunningStateChanged:
@@ -413,7 +442,10 @@ class _CompactShell extends StatefulWidget {
     required this.onArchiveThreadGroup,
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
-    required this.bridgeBaseUri,
+    required this.loadThreadStats,
+    required this.loadRequirementComposables,
+    required this.setThreadRequirements,
+    required this.uploadImageBytes,
     required this.onOpenLink,
     required this.terminalAvailable,
     required this.onTerminalPressed,
@@ -446,7 +478,10 @@ class _CompactShell extends StatefulWidget {
   final ValueChanged<String> onArchiveThreadGroup;
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
-  final Uri? bridgeBaseUri;
+  final Future<ThreadStatsData> Function(String threadId) loadThreadStats;
+  final RequirementComposableLoader? loadRequirementComposables;
+  final Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements;
+  final ImageBytesUploader? uploadImageBytes;
   final ValueChanged<String>? onOpenLink;
   final bool terminalAvailable;
   final VoidCallback? onTerminalPressed;
@@ -656,7 +691,14 @@ class _CompactShellState extends State<_CompactShell> {
       onSend: widget.onSendMessage,
       onInterrupt: widget.onInterruptThread,
       onTerminateCommandExecution: widget.onTerminateCommandExecution,
-      bridgeBaseUri: widget.bridgeBaseUri,
+      loadRequirementComposables: widget.loadRequirementComposables,
+      setThreadRequirements: widget.setThreadRequirements == null
+          ? null
+          : (requirementSetJson) => widget.setThreadRequirements!(
+                widget.workbench.selection.threadId ?? '',
+                requirementSetJson,
+              ),
+      uploadImageBytes: widget.uploadImageBytes,
       onOpenLink: widget.onOpenLink,
       composerEnabled: true,
       isRunning: widget.workbench.selection.isRunning,
@@ -709,7 +751,7 @@ class _CompactShellState extends State<_CompactShell> {
                       : () => showThreadStatsModal(
                             context: context,
                             threadId: widget.workbench.selection.threadId!,
-                            bridgeBaseUri: widget.bridgeBaseUri,
+                            loadStats: widget.loadThreadStats,
                           ),
                   tooltip: 'Thread statistics',
                   icon: const Icon(Icons.query_stats_rounded),
@@ -750,7 +792,9 @@ class _CompactShellState extends State<_CompactShell> {
                 context,
                 workbench: widget.workbench,
                 onThreadSelected: widget.onThreadSelected,
-                bridgeBaseUri: widget.bridgeBaseUri,
+                loadRequirementComposables: widget.loadRequirementComposables,
+                setThreadRequirements: widget.setThreadRequirements,
+                uploadImageBytes: widget.uploadImageBytes,
                 onApprovalDecision: widget.onApprovalDecision,
                 onSettingsChanged: widget.onSettingsChanged,
                 onRunningStateChanged: widget.onRunningStateChanged,
@@ -842,7 +886,7 @@ class _DesktopThreadControls extends StatelessWidget {
     required this.liveProcesses,
     required this.pendingApprovalCount,
     required this.onOpenHistory,
-    required this.bridgeBaseUri,
+    required this.loadThreadStats,
     required this.onCompactThread,
     required this.onTerminateCommandExecution,
     required this.onMore,
@@ -852,7 +896,7 @@ class _DesktopThreadControls extends StatelessWidget {
   final List<LiveProcessItem> liveProcesses;
   final int pendingApprovalCount;
   final VoidCallback onOpenHistory;
-  final Uri? bridgeBaseUri;
+  final Future<ThreadStatsData> Function(String threadId) loadThreadStats;
   final VoidCallback onCompactThread;
   final ValueChanged<String> onTerminateCommandExecution;
   final VoidCallback onMore;
@@ -891,7 +935,7 @@ class _DesktopThreadControls extends StatelessWidget {
                   ? () => showThreadStatsModal(
                         context: context,
                         threadId: selection.threadId!,
-                        bridgeBaseUri: bridgeBaseUri,
+                        loadStats: loadThreadStats,
                       )
                   : null,
               tooltip: 'Thread statistics',
@@ -1219,7 +1263,9 @@ Future<void> _showInspectorDialog(
   BuildContext context, {
   required WorkbenchViewData workbench,
   required ValueChanged<String> onThreadSelected,
-  required Uri? bridgeBaseUri,
+  required RequirementComposableLoader? loadRequirementComposables,
+  required Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements,
+  required ImageBytesUploader? uploadImageBytes,
   required Future<void> Function(PendingApprovalItem approval, String decision, String? message)
       onApprovalDecision,
   required ValueChanged<ThreadSettingsDraft> onSettingsChanged,
@@ -1249,7 +1295,9 @@ Future<void> _showInspectorDialog(
             threadGroups: workbench.threadGroups,
             workerMetadata: workbench.workerMetadata,
             requirementReview: workbench.requirementReview,
-            bridgeBaseUri: bridgeBaseUri,
+            loadRequirementComposables: loadRequirementComposables,
+            setThreadRequirements: setThreadRequirements,
+            uploadImageBytes: uploadImageBytes,
             onOpenThread: onThreadSelected,
             onSettingsChanged: onSettingsChanged,
             onRunningStateChanged: onRunningStateChanged,
@@ -1273,7 +1321,9 @@ Future<void> _showInspectorSheet(
   BuildContext context, {
   required WorkbenchViewData workbench,
   required ValueChanged<String> onThreadSelected,
-  required Uri? bridgeBaseUri,
+  required RequirementComposableLoader? loadRequirementComposables,
+  required Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements,
+  required ImageBytesUploader? uploadImageBytes,
   required Future<void> Function(PendingApprovalItem approval, String decision, String? message)
       onApprovalDecision,
   required ValueChanged<ThreadSettingsDraft> onSettingsChanged,
@@ -1303,7 +1353,9 @@ Future<void> _showInspectorSheet(
             threadGroups: workbench.threadGroups,
             workerMetadata: workbench.workerMetadata,
             requirementReview: workbench.requirementReview,
-            bridgeBaseUri: bridgeBaseUri,
+            loadRequirementComposables: loadRequirementComposables,
+            setThreadRequirements: setThreadRequirements,
+            uploadImageBytes: uploadImageBytes,
             onOpenThread: onThreadSelected,
             onSettingsChanged: onSettingsChanged,
             onRunningStateChanged: onRunningStateChanged,

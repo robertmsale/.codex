@@ -698,6 +698,7 @@ class ChatEntry {
     this.command,
     this.output,
     this.deliveryState,
+    this.semanticCard,
     this.planItems = const <PlanChecklistItem>[],
     this.isStreaming = false,
     this.isTool = false,
@@ -715,6 +716,7 @@ class ChatEntry {
   final String? command;
   final String? output;
   final String? deliveryState;
+  final ChatSemanticCard? semanticCard;
   final List<PlanChecklistItem> planItems;
   final bool isStreaming;
   final bool isTool;
@@ -742,12 +744,107 @@ class ChatEntry {
       command: json['command'] as String?,
       output: json['output'] as String?,
       deliveryState: json['deliveryState'] as String?,
+      semanticCard: json['semanticCard'] is Map<String, dynamic>
+          ? ChatSemanticCard.fromJson(json['semanticCard'] as Map<String, dynamic>)
+          : null,
       planItems: (json['planItems'] as List<dynamic>? ?? const [])
           .whereType<Map<String, dynamic>>()
           .map(PlanChecklistItem.fromJson)
           .toList(growable: false),
       isStreaming: json['isStreaming'] as bool? ?? false,
       isTool: json['isTool'] as bool? ?? false,
+    );
+  }
+}
+
+class ChatSemanticCard {
+  const ChatSemanticCard({
+    required this.kind,
+    required this.title,
+    required this.summary,
+    required this.tone,
+    required this.icon,
+    this.statusLabel,
+    this.rows = const <ChatSemanticRow>[],
+    this.plannerOptions = const <PlannerOption>[],
+  });
+
+  final String kind;
+  final String title;
+  final String summary;
+  final String tone;
+  final String icon;
+  final String? statusLabel;
+  final List<ChatSemanticRow> rows;
+  final List<PlannerOption> plannerOptions;
+
+  factory ChatSemanticCard.fromJson(Map<String, dynamic> json) {
+    return ChatSemanticCard(
+      kind: json['kind'] as String? ?? '',
+      title: json['title'] as String? ?? '',
+      summary: json['summary'] as String? ?? '',
+      statusLabel: json['statusLabel'] as String?,
+      tone: json['tone'] as String? ?? 'secondary',
+      icon: json['icon'] as String? ?? 'review',
+      rows: (json['rows'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(ChatSemanticRow.fromJson)
+          .toList(growable: false),
+      plannerOptions: (json['plannerOptions'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(PlannerOption.fromJson)
+          .toList(growable: false),
+    );
+  }
+}
+
+class ChatSemanticRow {
+  const ChatSemanticRow({
+    required this.key,
+    required this.title,
+    required this.summary,
+    required this.tone,
+    required this.icon,
+    this.detail,
+    this.trailingLabel,
+    this.bullets = const <String>[],
+  });
+
+  final String key;
+  final String title;
+  final String summary;
+  final String tone;
+  final String icon;
+  final String? detail;
+  final String? trailingLabel;
+  final List<String> bullets;
+
+  factory ChatSemanticRow.fromJson(Map<String, dynamic> json) {
+    return ChatSemanticRow(
+      key: json['key'] as String? ?? '',
+      title: json['title'] as String? ?? '',
+      summary: json['summary'] as String? ?? '',
+      detail: json['detail'] as String?,
+      trailingLabel: json['trailingLabel'] as String?,
+      tone: json['tone'] as String? ?? 'secondary',
+      icon: json['icon'] as String? ?? 'review',
+      bullets: (json['bullets'] as List<dynamic>? ?? const [])
+          .whereType<String>()
+          .toList(growable: false),
+    );
+  }
+}
+
+class PlannerOption {
+  const PlannerOption({required this.label, required this.description});
+
+  final String label;
+  final String description;
+
+  factory PlannerOption.fromJson(Map<String, dynamic> json) {
+    return PlannerOption(
+      label: json['label'] as String? ?? '',
+      description: json['description'] as String? ?? '',
     );
   }
 }

@@ -1,11 +1,10 @@
-import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
-import 'package:http/http.dart' as http;
 
 import '../../core/models/workbench_models.dart';
 import '../inspector/inspector_panel.dart';
@@ -45,8 +44,10 @@ class ComposerPanel extends StatefulWidget {
     required this.onSettingsChanged,
     required this.onCompactThread,
     this.requirementReview,
-    this.bridgeBaseUri,
-    this.httpClient,
+    this.loadRequirementComposables,
+    this.setThreadRequirements,
+    this.uploadImageBytes,
+    this.contextWindowRemainingPercent,
     this.terminalAvailable = false,
     this.onTerminalPressed,
   });
@@ -60,8 +61,10 @@ class ComposerPanel extends StatefulWidget {
   final ValueChanged<ThreadSettingsDraft> onSettingsChanged;
   final VoidCallback onCompactThread;
   final RequirementReviewSummary? requirementReview;
-  final Uri? bridgeBaseUri;
-  final http.Client? httpClient;
+  final RequirementComposableLoader? loadRequirementComposables;
+  final Future<void> Function(String requirementSetJson)? setThreadRequirements;
+  final ImageBytesUploader? uploadImageBytes;
+  final int? contextWindowRemainingPercent;
   final bool terminalAvailable;
   final VoidCallback? onTerminalPressed;
 
@@ -77,6 +80,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
   late final TextEditingController _controller;
   final FocusNode _focusNode = FocusNode();
   final List<String> _localImagePaths = <String>[];
+  final Map<String, Uint8List> _localImagePreviewBytes = <String, Uint8List>{};
   bool _hasDraftText = false;
   bool _isDesktopDragging = false;
   bool _isPickingImages = false;
@@ -139,6 +143,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
     _controller.clear();
     setState(() {
       _localImagePaths.clear();
+      _localImagePreviewBytes.clear();
     });
   }
 
@@ -363,10 +368,10 @@ class _ComposerPanelState extends State<ComposerPanel> {
           : 'Set active Requirements for this thread without sending a message.',
       showActivationToggle: hasStoredRequirements,
       requirementsActive: requirementsActive,
-      bridgeBaseUri: widget.bridgeBaseUri,
       recipientThreadId: widget.selection.threadId,
       projectPath: widget.selection.projectRootPath,
-      httpClient: widget.httpClient,
+      loadComposableItems: widget.loadRequirementComposables,
+      uploadImageBytes: widget.uploadImageBytes,
     );
     if (!mounted || result == null) {
       return;
@@ -376,56 +381,21 @@ class _ComposerPanelState extends State<ComposerPanel> {
 
   Future<void> _setThreadRequirements(String requirementSetJson) async {
     final sourceId = widget.selection.threadId;
-    final baseUri = widget.bridgeBaseUri;
-    if (sourceId == null || baseUri == null) {
+    final setRequirements = widget.setThreadRequirements;
+    if (sourceId == null || setRequirements == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Select a bridge-backed thread first.')),
       );
       return;
     }
-    Object? decoded;
-    if (requirementSetJson.isEmpty) {
-      decoded = null;
-    } else {
-      try {
-        decoded = jsonDecode(requirementSetJson);
-      } catch (error) {
-        if (!mounted) {
-          return;
-        }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Invalid requirements JSON: $error')),
-        );
-        return;
-      }
-    }
     try {
-      final response = await submitThreadRequirementSet(
-        baseUri: baseUri,
-        recipientThreadId: sourceId,
-        requirementSet: decoded,
-        projectPath: widget.selection.projectRootPath,
-        httpClient: widget.httpClient,
-      );
+      await setRequirements(requirementSetJson);
       if (!mounted) {
         return;
       }
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        final isInactive = decoded is Map && decoded['active'] == false;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              decoded == null
-                  ? 'Requirements cleared.'
-                  : (isInactive ? 'Requirements deactivated.' : 'Requirements set.'),
-            ),
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Set requirements failed: ${response.body}')),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Requirements updated.')),
+      );
     } catch (error) {
       if (!mounted) {
         return;
@@ -475,7 +445,10 @@ class _ComposerPanelState extends State<ComposerPanel> {
     _appendImagePaths(next);
   }
 
-  void _appendImagePaths(List<String> paths) {
+  void _appendImagePaths(
+    List<String> paths, {
+    Map<String, Uint8List> previewBytes = const <String, Uint8List>{},
+  }) {
     if (paths.isEmpty) {
       return;
     }
@@ -489,6 +462,10 @@ class _ComposerPanelState extends State<ComposerPanel> {
       for (final path in next) {
         if (!_localImagePaths.contains(path)) {
           _localImagePaths.add(path);
+        }
+        final bytes = previewBytes[path];
+        if (bytes != null) {
+          _localImagePreviewBytes[path] = bytes;
         }
       }
     });
@@ -526,12 +503,21 @@ class _ComposerPanelState extends State<ComposerPanel> {
       if (kIsWeb) {
         await _uploadWebImages(files);
       } else {
-        _appendImagePaths(
-          files
-              .map((file) => file.path)
-              .whereType<String>()
-              .toList(growable: false),
-        );
+        final paths = <String>[];
+        final previews = <String, Uint8List>{};
+        for (final file in files) {
+          final path = file.path;
+          if (path == null || path.isEmpty) {
+            continue;
+          }
+          paths.add(path);
+          try {
+            previews[path] = await file.readAsBytes();
+          } catch (_) {
+            // Keep the attachment usable even when preview bytes are unavailable.
+          }
+        }
+        _appendImagePaths(paths, previewBytes: previews);
       }
     } catch (_) {
       if (mounted) {
@@ -549,38 +535,29 @@ class _ComposerPanelState extends State<ComposerPanel> {
   }
 
   Future<void> _uploadWebImages(List<XFile> files) async {
-    final baseUri = widget.bridgeBaseUri;
-    if (baseUri == null) {
+    final upload = widget.uploadImageBytes;
+    if (upload == null) {
       setState(() {
-        _attachmentError = 'Bridge URL is unavailable for image upload.';
+        _attachmentError = 'Image upload is unavailable.';
       });
       return;
     }
 
     final uploaded = <String>[];
+    final previews = <String, Uint8List>{};
     for (final file in files) {
       final filename = file.name.trim().isEmpty ? 'image' : file.name.trim();
-      final uploadUri = baseUri.resolve('/uploads/images/instant').replace(
-        queryParameters: {'filename': filename},
-      );
       final bytes = await file.readAsBytes();
-      final response = await http.post(
-        uploadUri,
-        headers: {'content-type': _contentTypeFor(filename)},
-        body: bytes,
+      final savedPath = await upload(
+        filename: filename,
+        contentType: _contentTypeFor(filename),
+        bytes: bytes,
       );
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw StateError('Image upload failed with ${response.statusCode}');
-      }
-      final payload = jsonDecode(response.body);
-      final savedPath = payload is Map<String, dynamic> ? payload['path'] as String? : null;
-      if (savedPath == null || savedPath.trim().isEmpty) {
-        throw StateError('Image upload response missing path');
-      }
       uploaded.add(savedPath);
+      previews[savedPath] = bytes;
     }
 
-    _appendImagePaths(uploaded);
+    _appendImagePaths(uploaded, previewBytes: previews);
   }
 
   String _contentTypeFor(String path) {
@@ -621,7 +598,13 @@ class _ComposerPanelState extends State<ComposerPanel> {
         return;
       }
 
-      _appendImagePaths(<String>[capturedPath]);
+      final previews = <String, Uint8List>{};
+      try {
+        previews[capturedPath] = await XFile(capturedPath).readAsBytes();
+      } catch (_) {
+        // Keep the captured attachment usable even when preview bytes are unavailable.
+      }
+      _appendImagePaths(<String>[capturedPath], previewBytes: previews);
       _focusNode.requestFocus();
     } on PlatformException {
       if (!mounted) {
@@ -653,19 +636,10 @@ class _ComposerPanelState extends State<ComposerPanel> {
     return lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
   }
 
-  Uri? _thumbnailUriFor(String path) {
-    final baseUri = widget.bridgeBaseUri;
-    if (baseUri == null || path.trim().isEmpty) {
-      return null;
-    }
-    return baseUri.resolve('/images/thumbnail').replace(
-      queryParameters: {'saved_path': path},
-    );
-  }
-
   void _removeImageAt(int index) {
     setState(() {
-      _localImagePaths.removeAt(index);
+      final removed = _localImagePaths.removeAt(index);
+      _localImagePreviewBytes.remove(removed);
     });
   }
 
@@ -677,7 +651,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
       _ => false,
     };
     final supportsPathAttachments = !kIsWeb;
-    final supportsImagePicker = supportsPathAttachments || widget.bridgeBaseUri != null;
+    final supportsImagePicker = supportsPathAttachments || widget.uploadImageBytes != null;
     final supportsScreenshots = defaultTargetPlatform == TargetPlatform.macOS;
     final showsInterrupt =
         widget.isRunning && !_hasDraftText && !_isShowingSendTransition;
@@ -710,6 +684,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
                 runSpacing: 8,
                 children: List<Widget>.generate(_localImagePaths.length, (index) {
                   final path = _localImagePaths[index];
+                  final previewBytes = _localImagePreviewBytes[path];
                   return DecoratedBox(
                     decoration: BoxDecoration(
                       color: theme.colorScheme.surface.withValues(alpha: 0.72),
@@ -723,31 +698,9 @@ class _ComposerPanelState extends State<ComposerPanel> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Builder(
-                            builder: (context) {
-                              final thumbnailUri = kIsWeb ? _thumbnailUriFor(path) : null;
-                              if (thumbnailUri == null) {
-                                return Icon(
-                                  Icons.image_outlined,
-                                  size: 15,
-                                  color: theme.colorScheme.secondary,
-                                );
-                              }
-                              return ClipRRect(
-                                borderRadius: BorderRadius.circular(6),
-                                child: Image.network(
-                                  thumbnailUri.toString(),
-                                  width: 22,
-                                  height: 22,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, _, _) => Icon(
-                                    Icons.image_outlined,
-                                    size: 15,
-                                    color: theme.colorScheme.secondary,
-                                  ),
-                                ),
-                              );
-                            },
+                          _AttachmentPreview(
+                            bytes: previewBytes,
+                            color: theme.colorScheme.secondary,
                           ),
                           const SizedBox(width: 8),
                           ConstrainedBox(
@@ -896,7 +849,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
                                 break;
                               case 'requirements':
                                 _editRequirements();
-                                break;
+                                break; // TODO: Add warm handoff button here and use _handoffPrompt 
                             }
                           },
                           itemBuilder: (context) => [
@@ -938,6 +891,10 @@ class _ComposerPanelState extends State<ComposerPanel> {
                           ],
                         ),
                       ),
+                    ),
+                    const SizedBox(width: 10),
+                    _ContextWindowDonut(
+                      percentRemaining: widget.contextWindowRemainingPercent,
                     ),
                     const SizedBox(width: 10),
 	                    Expanded(
@@ -1101,6 +1058,123 @@ class _ComposerPanelState extends State<ComposerPanel> {
 	      ),
 	    );
 	  }
+}
+
+class _AttachmentPreview extends StatelessWidget {
+  const _AttachmentPreview({required this.bytes, required this.color});
+
+  final Uint8List? bytes;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final imageBytes = bytes;
+    if (imageBytes == null || imageBytes.isEmpty) {
+      return Icon(Icons.image_outlined, size: 15, color: color);
+    }
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(6),
+      child: Image.memory(
+        imageBytes,
+        width: 24,
+        height: 24,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (_, _, _) =>
+            Icon(Icons.image_outlined, size: 15, color: color),
+      ),
+    );
+  }
+}
+
+class _ContextWindowDonut extends StatelessWidget {
+  const _ContextWindowDonut({required this.percentRemaining});
+
+  final int? percentRemaining;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final raw = percentRemaining;
+    final int? clamped = raw == null ? null : raw.clamp(0, 100).toInt();
+    final fraction = clamped == null ? 0.0 : clamped / 100.0;
+    final color = switch (clamped) {
+      null => theme.colorScheme.outline,
+      <= 15 => theme.colorScheme.error,
+      <= 35 => Colors.amber.shade800,
+      _ => theme.colorScheme.secondary,
+    };
+    final label = clamped == null
+        ? 'Context remaining unavailable'
+        : '$clamped percent context remaining';
+    return Tooltip(
+      message: clamped == null ? 'Context remaining unavailable' : '$clamped% remaining',
+      child: Semantics(
+        label: label,
+        image: true,
+        child: SizedBox.square(
+          dimension: 28,
+          child: CustomPaint(
+            painter: _ContextWindowDonutPainter(
+              fraction: fraction,
+              color: color,
+              trackColor: theme.colorScheme.outline.withValues(alpha: 0.22),
+            ),
+            child: Center(
+              child: Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: color.withValues(alpha: clamped == null ? 0.38 : 0.95),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ContextWindowDonutPainter extends CustomPainter {
+  const _ContextWindowDonutPainter({
+    required this.fraction,
+    required this.color,
+    required this.trackColor,
+  });
+
+  final double fraction;
+  final Color color;
+  final Color trackColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = (size.shortestSide - 4) / 2;
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round;
+    canvas.drawCircle(center, radius, stroke..color = trackColor);
+    if (fraction <= 0) {
+      return;
+    }
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      -1.5708,
+      fraction * 6.28318,
+      false,
+      stroke..color = color,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ContextWindowDonutPainter oldDelegate) {
+    return oldDelegate.fraction != fraction ||
+        oldDelegate.color != color ||
+        oldDelegate.trackColor != trackColor;
+  }
 }
 
 class _ComposerSettingsControls extends StatelessWidget {

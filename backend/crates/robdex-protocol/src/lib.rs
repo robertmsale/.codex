@@ -333,8 +333,42 @@ pub struct UiChatEntry {
     pub command: Option<String>,
     pub output: Option<String>,
     pub delivery_state: Option<String>,
+    pub semantic_card: Option<UiChatSemanticCard>,
     pub is_streaming: bool,
     pub is_tool: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiChatSemanticCard {
+    pub kind: String,
+    pub title: String,
+    pub summary: String,
+    pub status_label: Option<String>,
+    pub tone: String,
+    pub icon: String,
+    pub rows: Vec<UiChatSemanticRow>,
+    pub planner_options: Vec<UiPlannerOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiChatSemanticRow {
+    pub key: String,
+    pub title: String,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub trailing_label: Option<String>,
+    pub tone: String,
+    pub icon: String,
+    pub bullets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiPlannerOption {
+    pub label: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

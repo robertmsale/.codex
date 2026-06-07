@@ -27,6 +27,49 @@ pub struct TerminateCommandExecutionSignal {
 }
 
 #[derive(Deserialize, DartSignal)]
+pub struct LoadThreadStatsSignal {
+    pub request_id: String,
+    pub thread_id: String,
+}
+
+#[derive(Deserialize, DartSignal)]
+pub struct LoadProjectHookLogsSignal {
+    pub request_id: String,
+    pub project_id: String,
+}
+
+#[derive(Deserialize, DartSignal)]
+pub struct ClearProjectHookLogsSignal {
+    pub request_id: String,
+    pub project_id: String,
+}
+
+#[derive(Deserialize, DartSignal)]
+pub struct LoadRequirementComposablesSignal {
+    pub request_id: String,
+    pub sender_thread_id: String,
+    pub recipient_thread_id: String,
+    pub project_path: String,
+}
+
+#[derive(Deserialize, DartSignal)]
+pub struct SetThreadRequirementsSignal {
+    pub request_id: String,
+    pub sender_thread_id: String,
+    pub recipient_thread_id: String,
+    pub project_path: String,
+    pub requirement_set_json: String,
+}
+
+#[derive(Deserialize, DartSignal)]
+pub struct UploadImageBytesSignal {
+    pub request_id: String,
+    pub filename: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Deserialize, DartSignal)]
 pub struct CreateProjectSignal {
     pub name: String,
     pub root_path: String,
@@ -236,6 +279,14 @@ pub struct WorkbenchStateSignal {
 pub struct ThreadHistoryStateSignal {
     pub entries_json: String,
     pub is_loading: bool,
+    pub error_message: String,
+}
+
+#[derive(Serialize, RustSignal)]
+pub struct BridgeTaskResultSignal {
+    pub request_id: String,
+    pub task: String,
+    pub payload_json: String,
     pub error_message: String,
 }
 

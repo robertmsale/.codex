@@ -9,8 +9,6 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:robdex_app/src/app/robdex_app.dart';
 import 'package:robdex_app/src/bindings/signals/signals.dart';
 import 'package:robdex_app/src/terminal/integrated_terminal.dart';
@@ -172,6 +170,7 @@ void main() {
           onArchiveThreadGroup: (_) {},
           onMoveSelectedThreadToGroup: (_) {},
           onUpdateWorkerMetadata: (_) {},
+          loadThreadStats: (_) async => _widgetStats,
           enableGraphics: true,
         ),
       ),
@@ -752,6 +751,27 @@ void main() {
                       displayLabel: 'Assistant',
                       timestamp: null,
                       body: verdictJson,
+                      semanticCard: ChatSemanticCard(
+                        kind: 'requirementsVerdict',
+                        title: 'Requirements Review Passed',
+                        summary: 'Requirement passed after required short delay.',
+                        tone: 'success',
+                        icon: 'verified',
+                        rows: [
+                          ChatSemanticRow(
+                            key: 'workerDoesNotHaveToDoAnything',
+                            title: 'workerDoesNotHaveToDoAnything',
+                            summary: 'The worker slept for 20 seconds as instructed.',
+                            trailingLabel: 'Pass',
+                            tone: 'success',
+                            icon: 'verified',
+                            bullets: [
+                              'Evidence: The command output shows the requested delay completed.',
+                              'Correction: None.',
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                   title: 'Requirements Reviewer',
@@ -855,6 +875,32 @@ void main() {
                   displayLabel: 'Assistant',
                   timestamp: null,
                   body: plannerJson,
+                  semanticCard: ChatSemanticCard(
+                    kind: 'plannerResponse',
+                    title: 'Stripe planning',
+                    summary: 'We should inspect the API boundary first.',
+                    tone: 'primary',
+                    icon: 'planner',
+                    rows: [
+                      ChatSemanticRow(
+                        key: 'clarification',
+                        title: 'Which planning direction should I use?',
+                        summary: '',
+                        tone: 'primary',
+                        icon: 'question',
+                      ),
+                    ],
+                    plannerOptions: [
+                      PlannerOption(
+                        label: 'Contract first',
+                        description: 'Map DTOs before implementation.',
+                      ),
+                      PlannerOption(
+                        label: 'UI first',
+                        description: 'Start from visible workflow.',
+                      ),
+                    ],
+                  ),
                 ),
               ],
               title: 'Planner',
@@ -1366,6 +1412,14 @@ void main() {
                 displayLabel: 'Assistant',
                 timestamp: null,
                 body: commentaryJson,
+                semanticCard: ChatSemanticCard(
+                  kind: 'requirementsClaim',
+                  title: 'Requirements Commentary',
+                  summary: 'Still validating bridge health before final review.',
+                  statusLabel: 'commentary',
+                  tone: 'secondary',
+                  icon: 'notes',
+                ),
               ),
             ],
             title: 'Worker',
@@ -1642,16 +1696,14 @@ void main() {
   ) async {
     Map<String, dynamic>? setRequestBody;
     var sendCount = 0;
-    final client = MockClient((request) async {
-      if (request.url.path == '/orchestrator/requirements/composables') {
-        return http.Response(jsonEncode({'items': []}), 200);
-      }
-      if (request.url.path == '/orchestrator/requirements/set') {
-        setRequestBody = jsonDecode(request.body) as Map<String, dynamic>;
-        return http.Response(jsonEncode({'ok': true}), 200);
-      }
-      return http.Response('unexpected ${request.url.path}', 404);
-    });
+    Future<void> setThreadRequirements(String requirementSetJson) async {
+      setRequestBody = <String, dynamic>{
+        'recipientThreadId': mockWorkbenchData.selection.threadId,
+        'requirementSet': requirementSetJson.trim().isEmpty
+            ? null
+            : jsonDecode(requirementSetJson) as Map<String, dynamic>,
+      };
+    }
 
     await tester.pumpWidget(
       MaterialApp(
@@ -1664,8 +1716,8 @@ void main() {
               selection: mockWorkbenchData.selection,
               availableModels: mockWorkbenchData.availableModels,
               requirementReview: null,
-              bridgeBaseUri: Uri.parse('http://bridge.test'),
-              httpClient: client,
+              loadRequirementComposables: ({senderThreadId, recipientThreadId, projectPath}) async => const <Map<String, dynamic>>[],
+              setThreadRequirements: setThreadRequirements,
               onSettingsChanged: (_) {},
               onCompactThread: () {},
               onSend: (_) => sendCount += 1,
@@ -1702,23 +1754,21 @@ void main() {
     expect(requirementSet?['active'], isTrue);
     expect(requirementSet?['enforceOnTurns'], isTrue);
     expect(requirementSet?['requirements'], isNotEmpty);
-    expect(find.text('Requirements set.'), findsOneWidget);
+    expect(find.text('Requirements updated.'), findsOneWidget);
   });
 
   testWidgets('composer replaces, clears, and deactivates stored requirements', (
     WidgetTester tester,
   ) async {
     final requestBodies = <Map<String, dynamic>>[];
-    final client = MockClient((request) async {
-      if (request.url.path == '/orchestrator/requirements/composables') {
-        return http.Response(jsonEncode({'items': []}), 200);
-      }
-      if (request.url.path == '/orchestrator/requirements/set') {
-        requestBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
-        return http.Response(jsonEncode({'ok': true}), 200);
-      }
-      return http.Response('unexpected ${request.url.path}', 404);
-    });
+    Future<void> setThreadRequirements(String requirementSetJson) async {
+      requestBodies.add(<String, dynamic>{
+        'recipientThreadId': mockWorkbenchData.selection.threadId,
+        'requirementSet': requirementSetJson.trim().isEmpty
+            ? null
+            : jsonDecode(requirementSetJson) as Map<String, dynamic>,
+      });
+    }
 
     await tester.pumpWidget(
       MaterialApp(
@@ -1731,8 +1781,8 @@ void main() {
               selection: mockWorkbenchData.selection,
               availableModels: mockWorkbenchData.availableModels,
               requirementReview: _reviewSummary(status: 'inReview'),
-              bridgeBaseUri: Uri.parse('http://bridge.test'),
-              httpClient: client,
+              loadRequirementComposables: ({senderThreadId, recipientThreadId, projectPath}) async => const <Map<String, dynamic>>[],
+              setThreadRequirements: setThreadRequirements,
               onSettingsChanged: (_) {},
               onCompactThread: () {},
               onSend: (_) {},
@@ -1760,7 +1810,7 @@ void main() {
     expect(requestBodies.last.containsKey('senderThreadId'), isFalse);
     expect(requestBodies.last['recipientThreadId'], mockWorkbenchData.selection.threadId);
     expect(requestBodies.last['requirementSet'], isNull);
-    expect(find.text('Requirements cleared.'), findsOneWidget);
+    expect(find.text('Requirements updated.'), findsOneWidget);
 
     await tester.tap(find.byTooltip('Add'));
     await tester.pumpAndSettle();
@@ -1779,16 +1829,14 @@ void main() {
     WidgetTester tester,
   ) async {
     Map<String, dynamic>? requestBody;
-    final client = MockClient((request) async {
-      if (request.url.path == '/orchestrator/requirements/composables') {
-        return http.Response(jsonEncode({'items': []}), 200);
-      }
-      if (request.url.path == '/orchestrator/requirements/set') {
-        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
-        return http.Response(jsonEncode({'ok': true}), 200);
-      }
-      return http.Response('unexpected ${request.url.path}', 404);
-    });
+    Future<void> setThreadRequirements(String requirementSetJson) async {
+      requestBody = <String, dynamic>{
+        'recipientThreadId': mockWorkbenchData.selection.threadId,
+        'requirementSet': requirementSetJson.trim().isEmpty
+            ? null
+            : jsonDecode(requirementSetJson) as Map<String, dynamic>,
+      };
+    }
 
     await tester.pumpWidget(
       MaterialApp(
@@ -1806,8 +1854,8 @@ void main() {
                 storedRequirementCount: 1,
                 requirementSetActive: false,
               ),
-              bridgeBaseUri: Uri.parse('http://bridge.test'),
-              httpClient: client,
+              loadRequirementComposables: ({senderThreadId, recipientThreadId, projectPath}) async => const <Map<String, dynamic>>[],
+              setThreadRequirements: setThreadRequirements,
               onSettingsChanged: (_) {},
               onCompactThread: () {},
               onSend: (_) {},
@@ -1841,16 +1889,14 @@ void main() {
   ) async {
     Map<String, dynamic>? requestBody;
     var sendCount = 0;
-    final client = MockClient((request) async {
-      if (request.url.path == '/orchestrator/requirements/composables') {
-        return http.Response(jsonEncode({'items': []}), 200);
-      }
-      if (request.url.path == '/orchestrator/requirements/set') {
-        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
-        return http.Response(jsonEncode({'ok': true}), 200);
-      }
-      return http.Response('unexpected ${request.url.path}', 404);
-    });
+    Future<void> setThreadRequirements(String requirementSetJson) async {
+      requestBody = <String, dynamic>{
+        'recipientThreadId': mockWorkbenchData.selection.threadId,
+        'requirementSet': requirementSetJson.trim().isEmpty
+            ? null
+            : jsonDecode(requirementSetJson) as Map<String, dynamic>,
+      };
+    }
 
     await tester.pumpWidget(
       MaterialApp(
@@ -1863,8 +1909,8 @@ void main() {
               selection: mockWorkbenchData.selection,
               availableModels: mockWorkbenchData.availableModels,
               requirementReview: _reviewSummary(status: 'inReview'),
-              bridgeBaseUri: Uri.parse('http://bridge.test'),
-              httpClient: client,
+              loadRequirementComposables: ({senderThreadId, recipientThreadId, projectPath}) async => const <Map<String, dynamic>>[],
+              setThreadRequirements: setThreadRequirements,
               onSettingsChanged: (_) {},
               onCompactThread: () {},
               onSend: (_) => sendCount += 1,
@@ -1894,38 +1940,21 @@ void main() {
     expect(requirementSet?['active'], isTrue);
     expect(requirementSet?['enforceOnTurns'], isTrue);
     expect(requirementSet?['requirements'], isNotEmpty);
-    expect(find.text('Requirements set.'), findsOneWidget);
+    expect(find.text('Requirements updated.'), findsOneWidget);
   });
 
-  test('shared requirements submit helper posts the thread state payload', () async {
-    Map<String, dynamic>? requestBody;
-    final client = MockClient((request) async {
-      expect(request.url.toString(), 'http://bridge.test/orchestrator/requirements/set');
-      expect(request.headers['Content-Type'], 'application/json');
-      requestBody = jsonDecode(request.body) as Map<String, dynamic>;
-      return http.Response(jsonEncode({'ok': true}), 200);
+  test('requirements JSON remains parseable for Rust-owned submission', () async {
+    final jsonText = const JsonEncoder.withIndent('  ').convert({
+      'id': 'requirements',
+      'active': false,
+      'enforceOnTurns': false,
+      'requirements': [
+        {'key': 'stored', 'statement': 'Stored but inactive.'},
+      ],
     });
-
-    final response = await submitThreadRequirementSet(
-      baseUri: Uri.parse('http://bridge.test'),
-      recipientThreadId: 'target-thread',
-      projectPath: '/tmp/project',
-      requirementSet: {
-        'id': 'requirements',
-        'active': false,
-        'enforceOnTurns': false,
-        'requirements': [
-          {'key': 'stored', 'statement': 'Stored but inactive.'},
-        ],
-      },
-      httpClient: client,
-    );
-
-    expect(response.statusCode, 200);
-    expect(requestBody?.containsKey('senderThreadId'), isFalse);
-    expect(requestBody?['recipientThreadId'], 'target-thread');
-    expect(requestBody?['projectPath'], '/tmp/project');
-    expect((requestBody?['requirementSet'] as Map<String, dynamic>)['active'], isFalse);
+    final decoded = jsonDecode(jsonText) as Map<String, dynamic>;
+    expect(decoded['active'], isFalse);
+    expect(decoded['requirements'], isNotEmpty);
   });
 
   testWidgets('nested requirements claim packet renders claim rows without raw json', (
@@ -1948,6 +1977,34 @@ void main() {
                 displayLabel: 'Assistant',
                 timestamp: null,
                 body: claimJson,
+                semanticCard: ChatSemanticCard(
+                  kind: 'requirementsClaim',
+                  title: 'Requirements Claim',
+                  summary: 'Frontend rendering now understands nested Requirements packets.',
+                  statusLabel: '2 claims',
+                  tone: 'success',
+                  icon: 'factCheck',
+                  rows: [
+                    ChatSemanticRow(
+                      key: 'chatRendersNullPacket',
+                      title: 'chatRendersNullPacket',
+                      summary: 'The card renders the summary and hides raw JSON.',
+                      trailingLabel: 'Satisfied · risk low',
+                      tone: 'success',
+                      icon: 'check',
+                      bullets: ['Widget test covers requirements:null rendering.'],
+                    ),
+                    ChatSemanticRow(
+                      key: 'chatRendersClaimObject',
+                      title: 'chatRendersClaimObject',
+                      summary: 'The nested requirements object supplies the displayed claim entries.',
+                      trailingLabel: 'Satisfied · risk low',
+                      tone: 'success',
+                      icon: 'check',
+                      bullets: ['Widget test covers nested claim rows.'],
+                    ),
+                  ],
+                ),
               ),
             ],
             title: 'Worker',
@@ -2033,7 +2090,6 @@ void main() {
               onPressed: () => showThreadStatsModal(
                 context: context,
                 threadId: 'thread-a',
-                bridgeBaseUri: null,
                 loadStats: (_) => completer.future,
               ),
               child: const Text('Open stats'),
@@ -2077,7 +2133,6 @@ void main() {
                 onPressed: () => showThreadStatsModal(
                     context: context,
                     threadId: 'thread-a',
-                    bridgeBaseUri: null,
                     loadStats: (_) => completer.future,
                   ),
                   child: const Text('Open stats'),
@@ -2151,37 +2206,7 @@ void main() {
   testWidgets('requirements form fetches and inspects composable details', (
     WidgetTester tester,
   ) async {
-    final requests = <http.Request>[];
-    final client = MockClient((request) async {
-      requests.add(request);
-      expect(request.url.path, '/orchestrator/requirements/composables');
-      final body = jsonDecode(request.body) as Map<String, dynamic>;
-      expect(body['senderThreadId'], 'orch-1');
-      expect(body['recipientThreadId'], 'worker-1');
-      expect(body['projectPath'], '/tmp/project');
-      return http.Response(
-        jsonEncode({
-          'items': [
-            {
-              'id': 'review-evidence',
-              'title': 'Review Evidence',
-              'description': 'Concrete review evidence.',
-              'scope': 'global',
-              'requirements': [
-                {
-                  'key': 'reviewableArtifacts',
-                  'statement': 'Completion proof must include exact evidence.',
-                  'severity': 'high',
-                  'verificationMethod': 'manualEvidence',
-                },
-              ],
-            },
-          ],
-        }),
-        200,
-        headers: {'content-type': 'application/json'},
-      );
-    });
+    final requests = <Map<String, String?>>[];
 
     await tester.pumpWidget(
       MaterialApp(
@@ -2192,11 +2217,32 @@ void main() {
                 context,
                 title: 'Requirements',
                 actionLabel: 'Set',
-                bridgeBaseUri: Uri.parse('http://bridge.local'),
                 senderThreadId: 'orch-1',
                 recipientThreadId: 'worker-1',
                 projectPath: '/tmp/project',
-                httpClient: client,
+                loadComposableItems: ({senderThreadId, recipientThreadId, projectPath}) async {
+                  requests.add({
+                    'senderThreadId': senderThreadId,
+                    'recipientThreadId': recipientThreadId,
+                    'projectPath': projectPath,
+                  });
+                  return [
+                    {
+                      'id': 'review-evidence',
+                      'title': 'Review Evidence',
+                      'description': 'Concrete review evidence.',
+                      'scope': 'global',
+                      'requirements': [
+                        {
+                          'key': 'reviewableArtifacts',
+                          'statement': 'Completion proof must include exact evidence.',
+                          'severity': 'high',
+                          'verificationMethod': 'manualEvidence',
+                        },
+                      ],
+                    },
+                  ];
+                },
               );
             },
             child: const Text('Open'),

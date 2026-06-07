@@ -4,7 +4,7 @@ set -euo pipefail
 cd /Users/robertsale/.codex/backend
 
 exec /Users/robertsale/.codex/backend/target/release/codex-robdex-bridge \
-  --host 127.0.0.1 \
+  --host :: \
   --port 42080 \
   --app-server-url ws://127.0.0.1:4200 \
   --project-path /Users/robertsale/.codex \

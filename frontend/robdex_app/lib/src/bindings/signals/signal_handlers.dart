@@ -1,6 +1,15 @@
 part of 'signals.dart';
 
 final assignRustSignal = <String, void Function(Uint8List, Uint8List)>{
+  'BridgeTaskResultSignal': (Uint8List messageBytes, Uint8List binary) {
+    final message = BridgeTaskResultSignal.bincodeDeserialize(messageBytes);
+    final rustSignal = RustSignalPack(
+      message,
+      binary,
+    );
+    _bridgeTaskResultSignalStreamController.add(rustSignal);
+    BridgeTaskResultSignal.latestRustSignal = rustSignal;
+  },
   'HookToastSignal': (Uint8List messageBytes, Uint8List binary) {
     final message = HookToastSignal.bincodeDeserialize(messageBytes);
     final rustSignal = RustSignalPack(

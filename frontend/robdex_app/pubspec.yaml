@@ -33,12 +33,10 @@ dependencies:
 
   cupertino_icons: ^1.0.8
   google_fonts: ^6.3.2
-  http: ^1.6.0
   rinf: ^8.8.1
   robdex_design_system:
     path: packages/robdex_design_system
   tuple: ^2.0.2
-  web_socket_channel: ^3.0.3
   shared_preferences: ^2.5.3
   webview_flutter: ^4.13.1
   xterm: ^4.0.0

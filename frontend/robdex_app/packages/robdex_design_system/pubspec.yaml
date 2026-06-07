@@ -15,7 +15,6 @@ dependencies:
   flutter_markdown_plus: ^1.0.7
   google_fonts: ^6.3.2
   highlight: ^0.7.0
-  http: ^1.6.0
   screen_capturer: ^0.2.3
 
 dev_dependencies:

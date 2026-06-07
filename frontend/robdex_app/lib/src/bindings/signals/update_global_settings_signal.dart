@@ -1,6 +1,7 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
+
 @immutable
 class UpdateGlobalSettingsSignal {
   const UpdateGlobalSettingsSignal({
@@ -8,10 +9,6 @@ class UpdateGlobalSettingsSignal {
     required this.sandboxMode,
     required this.networkAccessMode,
   });
-
-  final String approvalPolicy;
-  final String sandboxMode;
-  final String networkAccessMode;
 
   static UpdateGlobalSettingsSignal deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
@@ -33,6 +30,22 @@ class UpdateGlobalSettingsSignal {
     return value;
   }
 
+  final String approvalPolicy;
+  final String sandboxMode;
+  final String networkAccessMode;
+
+  UpdateGlobalSettingsSignal copyWith({
+    String? approvalPolicy,
+    String? sandboxMode,
+    String? networkAccessMode,
+  }) {
+    return UpdateGlobalSettingsSignal(
+      approvalPolicy: approvalPolicy ?? this.approvalPolicy,
+      sandboxMode: sandboxMode ?? this.sandboxMode,
+      networkAccessMode: networkAccessMode ?? this.networkAccessMode,
+    );
+  }
+
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeString(approvalPolicy);
@@ -42,26 +55,50 @@ class UpdateGlobalSettingsSignal {
   }
 
   Uint8List bincodeSerialize() {
-    final serializer = BincodeSerializer();
-    serialize(serializer);
-    return serializer.bytes;
+      final serializer = BincodeSerializer();
+      serialize(serializer);
+      return serializer.bytes;
   }
 
   @override
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
-    return other is UpdateGlobalSettingsSignal &&
-        approvalPolicy == other.approvalPolicy &&
-        sandboxMode == other.sandboxMode &&
-        networkAccessMode == other.networkAccessMode;
+
+    return other is UpdateGlobalSettingsSignal
+      && approvalPolicy == other.approvalPolicy
+      && sandboxMode == other.sandboxMode
+      && networkAccessMode == other.networkAccessMode;
   }
 
   @override
-  int get hashCode => Object.hash(approvalPolicy, sandboxMode, networkAccessMode);
+  int get hashCode => Object.hash(
+        approvalPolicy,
+        sandboxMode,
+        networkAccessMode,
+      );
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'approvalPolicy: $approvalPolicy, '
+        'sandboxMode: $sandboxMode, '
+        'networkAccessMode: $networkAccessMode'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'UpdateGlobalSettingsSignal';
+  }
 }
 
 extension UpdateGlobalSettingsSignalDartSignalExt on UpdateGlobalSettingsSignal {
+  /// Sends the signal to Rust.
+  /// Passing data from Rust to Dart involves a memory copy
+  /// because Rust cannot own data managed by Dart's garbage collector.
   void sendSignalToRust() {
     final messageBytes = bincodeSerialize();
     final binary = Uint8List(0);

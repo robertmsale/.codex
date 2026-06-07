@@ -1,11 +1,23 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
-import 'package:http/http.dart' as http;
 
 import '../../core/models/workbench_models.dart';
+
+typedef RequirementComposableLoader = Future<List<Map<String, dynamic>>> Function({
+  String? senderThreadId,
+  String? recipientThreadId,
+  String? projectPath,
+});
+
+typedef ImageBytesUploader = Future<String> Function({
+  required String filename,
+  required String contentType,
+  required Uint8List bytes,
+});
 
 const _severityOptions = ['blocker', 'high', 'medium', 'low'];
 const _verificationOptions = [
@@ -38,37 +50,6 @@ String requirementSetJsonFromReviewSummary(
   });
 }
 
-Future<http.Response> submitThreadRequirementSet({
-  required Uri baseUri,
-  required String recipientThreadId,
-  required Object? requirementSet,
-  String? senderThreadId,
-  String? projectPath,
-  http.Client? httpClient,
-}) {
-  final body = <String, Object?>{
-    'recipientThreadId': recipientThreadId,
-    'requirementSet': requirementSet,
-  };
-  if (senderThreadId != null && senderThreadId.trim().isNotEmpty) {
-    body['senderThreadId'] = senderThreadId.trim();
-  }
-  if (projectPath != null && projectPath.trim().isNotEmpty) {
-    body['projectPath'] = projectPath.trim();
-  }
-  final uri = baseUri.resolve('/orchestrator/requirements/set');
-  final headers = const {
-    'Accept': 'application/json',
-    'Content-Type': 'application/json',
-  };
-  final requestBody = jsonEncode(body);
-  final client = httpClient;
-  if (client == null) {
-    return http.post(uri, headers: headers, body: requestBody);
-  }
-  return client.post(uri, headers: headers, body: requestBody);
-}
-
 Future<String?> showRequirementSetFormDialog(
   BuildContext context, {
   String? initialJson,
@@ -77,12 +58,12 @@ Future<String?> showRequirementSetFormDialog(
   String helperText = 'Define the requirements. Robdex will generate the JSON contract.',
   bool showActivationToggle = false,
   bool requirementsActive = false,
-  Uri? bridgeBaseUri,
   String? senderThreadId,
   String? recipientThreadId,
   String? projectPath,
   List<Map<String, dynamic>>? initialComposableItems,
-  http.Client? httpClient,
+  RequirementComposableLoader? loadComposableItems,
+  ImageBytesUploader? uploadImageBytes,
 }) {
   return showDialog<String?>(
     context: context,
@@ -93,12 +74,12 @@ Future<String?> showRequirementSetFormDialog(
       helperText: helperText,
       showActivationToggle: showActivationToggle,
       requirementsActive: requirementsActive,
-      bridgeBaseUri: bridgeBaseUri,
       senderThreadId: senderThreadId,
       recipientThreadId: recipientThreadId,
       projectPath: projectPath,
       initialComposableItems: initialComposableItems,
-      httpClient: httpClient,
+      loadComposableItems: loadComposableItems,
+      uploadImageBytes: uploadImageBytes,
     ),
   );
 }
@@ -111,12 +92,12 @@ class _RequirementSetFormDialog extends StatefulWidget {
     required this.helperText,
     required this.showActivationToggle,
     required this.requirementsActive,
-    required this.bridgeBaseUri,
     required this.senderThreadId,
     required this.recipientThreadId,
     required this.projectPath,
     required this.initialComposableItems,
-    required this.httpClient,
+    required this.loadComposableItems,
+    required this.uploadImageBytes,
   });
 
   final String? initialJson;
@@ -125,12 +106,12 @@ class _RequirementSetFormDialog extends StatefulWidget {
   final String helperText;
   final bool showActivationToggle;
   final bool requirementsActive;
-  final Uri? bridgeBaseUri;
   final String? senderThreadId;
   final String? recipientThreadId;
   final String? projectPath;
   final List<Map<String, dynamic>>? initialComposableItems;
-  final http.Client? httpClient;
+  final RequirementComposableLoader? loadComposableItems;
+  final ImageBytesUploader? uploadImageBytes;
 
   @override
   State<_RequirementSetFormDialog> createState() => _RequirementSetFormDialogState();
@@ -302,40 +283,23 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
   }
 
   Future<void> _loadComposables() async {
-    final baseUri = widget.bridgeBaseUri;
+    final loadComposableItems = widget.loadComposableItems;
     final senderThreadId = widget.senderThreadId;
     final recipientThreadId = widget.recipientThreadId;
     final projectPath = widget.projectPath;
-    if (baseUri == null ||
+    if (loadComposableItems == null ||
         ((recipientThreadId == null || recipientThreadId.trim().isEmpty) &&
             (projectPath == null || projectPath.trim().isEmpty))) {
       return;
     }
     setState(() => _loadingComposables = true);
     try {
-      final client = widget.httpClient;
-      final response = await (client == null ? http.post : client.post)(
-        baseUri.resolve('/orchestrator/requirements/composables'),
-        headers: const {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          if (senderThreadId != null && senderThreadId.trim().isNotEmpty)
-            'senderThreadId': senderThreadId.trim(),
-          if (recipientThreadId != null && recipientThreadId.trim().isNotEmpty)
-            'recipientThreadId': recipientThreadId.trim(),
-          if (projectPath != null && projectPath.trim().isNotEmpty)
-            'projectPath': projectPath.trim(),
-        }),
+      final items = await loadComposableItems(
+        senderThreadId: senderThreadId,
+        recipientThreadId: recipientThreadId,
+        projectPath: projectPath,
       );
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw StateError('Composable requirements failed with ${response.statusCode}.');
-      }
-      final decoded = jsonDecode(response.body);
-      final items = decoded is Map<String, dynamic> ? decoded['items'] as List<dynamic>? : null;
-      final composables = (items ?? const <dynamic>[])
-          .whereType<Map<String, dynamic>>()
+      final composables = items
           .map(_RequirementComposable.fromJson)
           .toList(growable: false);
       if (!mounted) {
@@ -425,7 +389,7 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
                 _RequirementDraftCard(
                   index: i,
                   draft: _requirements[i],
-                  bridgeBaseUri: widget.bridgeBaseUri,
+                  uploadImageBytes: widget.uploadImageBytes,
                   onChanged: () => setState(() {}),
                   canRemove: _requirements.length > 1,
                   onRemove: () {
@@ -583,7 +547,7 @@ class _RequirementDraftCard extends StatelessWidget {
   const _RequirementDraftCard({
     required this.index,
     required this.draft,
-    required this.bridgeBaseUri,
+    required this.uploadImageBytes,
     required this.onChanged,
     required this.canRemove,
     required this.onRemove,
@@ -591,7 +555,7 @@ class _RequirementDraftCard extends StatelessWidget {
 
   final int index;
   final _RequirementDraft draft;
-  final Uri? bridgeBaseUri;
+  final ImageBytesUploader? uploadImageBytes;
   final VoidCallback onChanged;
   final bool canRemove;
   final VoidCallback onRemove;
@@ -610,37 +574,44 @@ class _RequirementDraftCard extends StatelessWidget {
         return;
       }
       final paths = <String>[];
+      final previews = <String, Uint8List>{};
       if (kIsWeb) {
-        final baseUri = bridgeBaseUri;
-        if (baseUri == null) {
-          throw StateError('Bridge URL is unavailable for image upload.');
+        final upload = uploadImageBytes;
+        if (upload == null) {
+          throw StateError('Image upload is unavailable.');
         }
         for (final file in files) {
           final filename = file.name.trim().isEmpty ? 'requirement-reference.png' : file.name.trim();
-          final uploadUri = baseUri.resolve('/uploads/images/instant').replace(
-            queryParameters: {'filename': filename},
+          final bytes = await file.readAsBytes();
+          final savedPath = await upload(
+            filename: filename,
+            contentType: _contentTypeFor(filename),
+            bytes: bytes,
           );
-          final response = await http.post(
-            uploadUri,
-            headers: {'content-type': _contentTypeFor(filename)},
-            body: await file.readAsBytes(),
-          );
-          if (response.statusCode < 200 || response.statusCode >= 300) {
-            throw StateError('Image upload failed with ${response.statusCode}.');
-          }
-          final payload = jsonDecode(response.body);
-          final savedPath = payload is Map<String, dynamic> ? payload['path'] as String? : null;
-          if (savedPath == null || savedPath.trim().isEmpty) {
-            throw StateError('Image upload response missing path.');
-          }
           paths.add(savedPath);
+          previews[savedPath] = bytes;
         }
       } else {
-        paths.addAll(files.map((file) => file.path).whereType<String>().where((path) => path.isNotEmpty));
+        for (final file in files) {
+          final path = file.path;
+          if (path == null || path.isEmpty) {
+            continue;
+          }
+          paths.add(path);
+          try {
+            previews[path] = await file.readAsBytes();
+          } catch (_) {
+            // Keep the attachment usable even when preview bytes are unavailable.
+          }
+        }
       }
       for (final path in paths) {
         if (!draft.referenceImagePaths.contains(path)) {
           draft.referenceImagePaths.add(path);
+        }
+        final bytes = previews[path];
+        if (bytes != null) {
+          draft.referenceImagePreviewBytes[path] = bytes;
         }
       }
       onChanged();
@@ -748,6 +719,9 @@ class _RequirementDraftCard extends StatelessWidget {
                 children: [
                   for (final path in draft.referenceImagePaths)
                     InputChip(
+                      avatar: _ReferenceImageAvatar(
+                        bytes: draft.referenceImagePreviewBytes[path],
+                      ),
                       label: Text(
                         path.split('/').last,
                         overflow: TextOverflow.ellipsis,
@@ -755,6 +729,7 @@ class _RequirementDraftCard extends StatelessWidget {
                       tooltip: path,
                       onDeleted: () {
                         draft.referenceImagePaths.remove(path);
+                        draft.referenceImagePreviewBytes.remove(path);
                         onChanged();
                       },
                     ),
@@ -763,6 +738,30 @@ class _RequirementDraftCard extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _ReferenceImageAvatar extends StatelessWidget {
+  const _ReferenceImageAvatar({required this.bytes});
+
+  final Uint8List? bytes;
+
+  @override
+  Widget build(BuildContext context) {
+    final imageBytes = bytes;
+    if (imageBytes == null || imageBytes.isEmpty) {
+      return const Icon(Icons.image_outlined, size: 16);
+    }
+    return ClipOval(
+      child: Image.memory(
+        imageBytes,
+        width: 24,
+        height: 24,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (_, _, _) => const Icon(Icons.image_outlined, size: 16),
       ),
     );
   }
@@ -793,6 +792,8 @@ class _RequirementDraft {
 
   final TextEditingController statement;
   final List<String> referenceImagePaths;
+  final Map<String, Uint8List> referenceImagePreviewBytes =
+      <String, Uint8List>{};
   String severity;
   String verificationMethod;
 

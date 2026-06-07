@@ -18,7 +18,7 @@ class ProjectStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return SizedBox(
+    return SizedBox( // Add padding
       height: 34,
       child: Row(
         children: [

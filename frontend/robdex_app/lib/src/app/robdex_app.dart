@@ -6,7 +6,6 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'package:rinf/rinf.dart';
 import 'package:robdex_design_system/robdex_design_system.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -16,6 +15,8 @@ import '../core/state/workbench_controller.dart';
 import '../ide_host_bridge/ide_host_bridge.dart' as ide_host_bridge;
 import '../terminal/integrated_terminal.dart';
 import '../web/dom_mirror/dom_mirror.dart';
+
+const smartRadius = 2.0;
 
 class RobdexApp extends StatelessWidget {
   const RobdexApp({super.key});
@@ -31,7 +32,6 @@ class RobdexApp extends StatelessWidget {
   }
 }
 
-
 enum _ProjectSettingsTab {
   project,
   orchestrator,
@@ -44,11 +44,7 @@ enum _ProjectSettingsTab {
   operator,
 }
 
-enum _ProjectSettingsResult {
-  cancel,
-  save,
-  delete,
-}
+enum _ProjectSettingsResult { cancel, save, delete }
 
 class ProjectRoleModelSettingsPane extends StatelessWidget {
   const ProjectRoleModelSettingsPane({
@@ -79,11 +75,15 @@ class ProjectRoleModelSettingsPane extends StatelessWidget {
             decoration: const InputDecoration(labelText: 'Model'),
             items: [
               const DropdownMenuItem(value: '', child: Text('Default')),
-              ...availableModels.where((model) => !model.hidden).map(
+              ...availableModels
+                  .where((model) => !model.hidden)
+                  .map(
                     (model) => DropdownMenuItem(
                       value: model.id,
                       child: Text(
-                        model.name?.trim().isNotEmpty == true ? model.name! : model.id,
+                        model.name?.trim().isNotEmpty == true
+                            ? model.name!
+                            : model.id,
                       ),
                     ),
                   ),
@@ -156,9 +156,18 @@ class ProjectDefaultRuntimeSettingsPane extends StatelessWidget {
                 child: Text(_inheritedLabel('Default', inheritedSandboxMode)),
               ),
               DropdownMenuItem(value: 'read-only', child: Text('Read-only')),
-              DropdownMenuItem(value: 'workspace-write', child: Text('Workspace')),
-              DropdownMenuItem(value: 'danger-full-access', child: Text('Danger')),
-              DropdownMenuItem(value: 'external-sandbox', child: Text('External')),
+              DropdownMenuItem(
+                value: 'workspace-write',
+                child: Text('Workspace'),
+              ),
+              DropdownMenuItem(
+                value: 'danger-full-access',
+                child: Text('Danger'),
+              ),
+              DropdownMenuItem(
+                value: 'external-sandbox',
+                child: Text('External'),
+              ),
             ],
             onChanged: (value) => onSandboxModeChanged(value ?? ''),
           ),
@@ -173,7 +182,9 @@ class ProjectDefaultRuntimeSettingsPane extends StatelessWidget {
             items: [
               DropdownMenuItem(
                 value: '',
-                child: Text(_inheritedLabel('Default', inheritedApprovalPolicy)),
+                child: Text(
+                  _inheritedLabel('Default', inheritedApprovalPolicy),
+                ),
               ),
               DropdownMenuItem(value: 'untrusted', child: Text('untrusted')),
               DropdownMenuItem(value: 'on-failure', child: Text('on-failure')),
@@ -193,12 +204,18 @@ class ProjectDefaultRuntimeSettingsPane extends StatelessWidget {
             items: [
               DropdownMenuItem(
                 value: 'default',
-                child: Text(_inheritedLabel('Default', _networkAccessLabel(inheritedNetworkAccess))),
+                child: Text(
+                  _inheritedLabel(
+                    'Default',
+                    _networkAccessLabel(inheritedNetworkAccess),
+                  ),
+                ),
               ),
               DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
               DropdownMenuItem(value: 'disabled', child: Text('Disabled')),
             ],
-            onChanged: (value) => onNetworkAccessModeChanged(value ?? 'default'),
+            onChanged: (value) =>
+                onNetworkAccessModeChanged(value ?? 'default'),
           ),
         ),
       ],
@@ -284,7 +301,9 @@ class ProjectPermanentComposablesPane extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             error!,
-            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.error,
+            ),
           ),
         ] else if (composables.isEmpty) ...[
           const SizedBox(height: 8),
@@ -299,7 +318,9 @@ class ProjectPermanentComposablesPane extends StatelessWidget {
               key: ValueKey('project.permanentComposable.${composable.id}'),
               contentPadding: EdgeInsets.zero,
               value: selected.contains(composable.id),
-              title: Text(composable.title.isEmpty ? composable.id : composable.title),
+              title: Text(
+                composable.title.isEmpty ? composable.id : composable.title,
+              ),
               subtitle: Text(
                 '${composable.id} | ${composable.scope.isEmpty ? 'unknown' : composable.scope} | ${composable.requirementCount} requirements'
                 '${composable.description.isEmpty ? '' : '\n${composable.description}'}',
@@ -307,9 +328,12 @@ class ProjectPermanentComposablesPane extends StatelessWidget {
               secondary: Tooltip(
                 message: 'Inspect composable',
                 child: IconButton(
-                  key: ValueKey('project.permanentComposable.inspect.${composable.id}'),
+                  key: ValueKey(
+                    'project.permanentComposable.inspect.${composable.id}',
+                  ),
                   icon: const Icon(Icons.info_outline),
-                  onPressed: () => _showProjectComposableDetails(context, composable),
+                  onPressed: () =>
+                      _showProjectComposableDetails(context, composable),
                 ),
               ),
               onChanged: (enabled) {
@@ -336,7 +360,9 @@ class ProjectPermanentComposablesPane extends StatelessWidget {
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(composable.title.isEmpty ? composable.id : composable.title),
+        title: Text(
+          composable.title.isEmpty ? composable.id : composable.title,
+        ),
         content: SizedBox(
           width: 560,
           child: SingleChildScrollView(
@@ -344,7 +370,11 @@ class ProjectPermanentComposablesPane extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(composable.description.isEmpty ? composable.id : composable.description),
+                Text(
+                  composable.description.isEmpty
+                      ? composable.id
+                      : composable.description,
+                ),
                 const SizedBox(height: 12),
                 for (final requirement in composable.requirements) ...[
                   Text(
@@ -370,10 +400,7 @@ class ProjectPermanentComposablesPane extends StatelessWidget {
 }
 
 class ProjectManifestRunsPane extends StatelessWidget {
-  const ProjectManifestRunsPane({
-    super.key,
-    required this.project,
-  });
+  const ProjectManifestRunsPane({super.key, required this.project});
 
   final ProjectItem project;
 
@@ -424,7 +451,9 @@ class ProjectManifestRunsPane extends StatelessWidget {
                     Text(
                       'run ${run.runId} | current ${run.currentPhaseId ?? '-'} | ${run.sourceHash}',
                       style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.62),
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.62,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 6),
@@ -566,9 +595,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       }
       final messenger = ScaffoldMessenger.of(context);
       messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(
-        SnackBar(content: Text(error)),
-      );
+      messenger.showSnackBar(SnackBar(content: Text(error)));
     });
   }
 
@@ -663,8 +690,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     final port = uri.hasPort
         ? uri.port
         : uri.scheme == 'https'
-            ? 443
-            : 80;
+        ? 443
+        : 80;
     _hostController.text = host;
     _portController.text = port.toString();
     _graphicsEnabled = false;
@@ -683,21 +710,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
         _didRequestConnect = true;
       });
     }
-    _controller.start(
-      host: _hostController.text.trim(),
-      port: port,
-    );
-  }
-
-  Uri get _bridgeBaseUri {
-    if (kIsWeb) {
-      return _configuredWebBridgeBaseUri ?? Uri.base.resolve('/');
-    }
-    final host = _hostController.text.trim().isEmpty
-        ? '127.0.0.1'
-        : _hostController.text.trim();
-    final port = int.tryParse(_portController.text.trim()) ?? 42080;
-    return Uri.parse('http://$host:$port');
+    _controller.start(host: _hostController.text.trim(), port: port);
   }
 
   Uri? get _configuredWebBridgeBaseUri {
@@ -708,31 +721,12 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   }
 
   Future<List<_HookLogEntry>> _fetchProjectHookLogs(String projectId) async {
-    final response = await http.get(
-      _bridgeBaseUri.resolve('/projects/$projectId/hook-logs'),
-    );
-    if (response.statusCode != 200) {
-      throw StateError('Hook logs failed with ${response.statusCode}');
-    }
-    final payload = jsonDecode(response.body) as Map<String, dynamic>;
-    final logs = payload['logs'];
-    if (logs is! List) {
-      return const <_HookLogEntry>[];
-    }
-    return logs
-        .whereType<Map<String, dynamic>>()
-        .map(_HookLogEntry.fromJson)
-        .toList(growable: false);
+    final logs = await _controller.loadProjectHookLogs(projectId);
+    return logs.map(_HookLogEntry.fromJson).toList(growable: false);
   }
 
-  Future<void> _clearProjectHookLogs(String projectId) async {
-    final response = await http.delete(
-      _bridgeBaseUri.resolve('/projects/$projectId/hook-logs'),
-    );
-    if (response.statusCode != 200) {
-      throw StateError('Clear hook logs failed with ${response.statusCode}');
-    }
-  }
+  Future<void> _clearProjectHookLogs(String projectId) =>
+      _controller.clearProjectHookLogs(projectId);
 
   void _returnToLogin() {
     _terminalController.closeAll();
@@ -760,8 +754,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           final stage = _controller.error != null
               ? _ConnectionStage.error
               : _didRequestConnect
-                  ? _ConnectionStage.connecting
-                  : _ConnectionStage.idle;
+              ? _ConnectionStage.connecting
+              : _ConnectionStage.idle;
           return _ConnectionScreen(
             animation: _spaceController,
             nebulaProgramFuture: _nebulaProgramFuture,
@@ -853,7 +847,15 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             unblockWhen: draft.unblockWhen,
             clearBlocked: draft.clearBlocked,
           ),
-          bridgeBaseUri: _bridgeBaseUri,
+          loadThreadStats: _controller.loadThreadStats,
+          loadRequirementComposables: _controller.loadRequirementComposables,
+          setThreadRequirements: (threadId, requirementSetJson) =>
+              _controller.setThreadRequirements(
+                recipientThreadId: threadId,
+                projectPath: _controller.view?.selection.projectRootPath,
+                requirementSetJson: requirementSetJson,
+              ),
+          uploadImageBytes: _controller.uploadImageBytes,
           onOpenLink: ide_host_bridge.openMentionedFile,
           chatBottomDrawer: IntegratedTerminalDrawer(
             controller: _terminalController,
@@ -957,7 +959,6 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
               threadName: _controller.view?.selection.threadName ?? 'History',
               contextWindowRemainingPercent:
                   _controller.view?.contextWindowRemainingPercent,
-              bridgeBaseUri: _bridgeBaseUri,
             ),
           ),
         );
@@ -999,8 +1000,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                       child: Text(
                         '${project.name}  ${project.defaultCwd}',
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              fontFamily: 'monospace',
-                            ),
+                          fontFamily: 'monospace',
+                        ),
                       ),
                     ),
                     const SizedBox(height: 12),
@@ -1008,13 +1009,31 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                       initialValue: role,
                       decoration: const InputDecoration(labelText: 'Role'),
                       items: const [
-                        DropdownMenuItem(value: 'worker', child: Text('Worker')),
-                        DropdownMenuItem(value: 'designer', child: Text('Designer')),
-                        DropdownMenuItem(value: 'planner', child: Text('Planner')),
+                        DropdownMenuItem(
+                          value: 'worker',
+                          child: Text('Worker'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'designer',
+                          child: Text('Designer'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'planner',
+                          child: Text('Planner'),
+                        ),
                         DropdownMenuItem(value: 'qa', child: Text('QA')),
-                        DropdownMenuItem(value: 'operator', child: Text('Operator')),
-                        DropdownMenuItem(value: 'orchestrator', child: Text('Orchestrator')),
-                        DropdownMenuItem(value: 'hidden', child: Text('Hidden')),
+                        DropdownMenuItem(
+                          value: 'operator',
+                          child: Text('Operator'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'orchestrator',
+                          child: Text('Orchestrator'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'hidden',
+                          child: Text('Hidden'),
+                        ),
                       ],
                       onChanged: (value) {
                         if (value == null) return;
@@ -1026,7 +1045,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                       controller: promptController,
                       minLines: 3,
                       maxLines: 8,
-                      decoration: const InputDecoration(labelText: 'Initial prompt'),
+                      decoration: const InputDecoration(
+                        labelText: 'Initial prompt',
+                      ),
                     ),
                     const SizedBox(height: 12),
                     OutlinedButton.icon(
@@ -1038,8 +1059,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                           actionLabel: 'Attach',
                           helperText:
                               'These requirements are attached before the first turn starts.',
-                          bridgeBaseUri: _bridgeBaseUri,
                           projectPath: project.rootPath,
+                          loadComposableItems: _controller.loadRequirementComposables,
+                          uploadImageBytes: _controller.uploadImageBytes,
                         );
                         if (next == null) {
                           return;
@@ -1064,19 +1086,25 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                       initialValue: modelId,
                       decoration: const InputDecoration(labelText: 'Model'),
                       items: [
-                        const DropdownMenuItem(value: '', child: Text('Default')),
+                        const DropdownMenuItem(
+                          value: '',
+                          child: Text('Default'),
+                        ),
                         ...availableModels
                             .where((model) => !model.hidden)
                             .map(
                               (model) => DropdownMenuItem(
                                 value: model.id,
                                 child: Text(
-                                  model.name?.trim().isNotEmpty == true ? model.name! : model.id,
+                                  model.name?.trim().isNotEmpty == true
+                                      ? model.name!
+                                      : model.id,
                                 ),
                               ),
                             ),
                       ],
-                      onChanged: (value) => setDialogState(() => modelId = value ?? ''),
+                      onChanged: (value) =>
+                          setDialogState(() => modelId = value ?? ''),
                     ),
                     const SizedBox(height: 12),
                     Wrap(
@@ -1087,55 +1115,115 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                           width: 180,
                           child: DropdownButtonFormField<String>(
                             initialValue: reasoningEffort,
-                            decoration: const InputDecoration(labelText: 'Reasoning'),
+                            decoration: const InputDecoration(
+                              labelText: 'Reasoning',
+                            ),
                             items: const [
-                              DropdownMenuItem(value: '', child: Text('Default')),
-                              DropdownMenuItem(value: 'low', child: Text('Low')),
-                              DropdownMenuItem(value: 'medium', child: Text('Medium')),
-                              DropdownMenuItem(value: 'high', child: Text('High')),
+                              DropdownMenuItem(
+                                value: '',
+                                child: Text('Default'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'low',
+                                child: Text('Low'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'medium',
+                                child: Text('Medium'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'high',
+                                child: Text('High'),
+                              ),
                             ],
-                            onChanged: (value) => setDialogState(() => reasoningEffort = value ?? ''),
+                            onChanged: (value) => setDialogState(
+                              () => reasoningEffort = value ?? '',
+                            ),
                           ),
                         ),
                         SizedBox(
                           width: 180,
                           child: DropdownButtonFormField<String>(
                             initialValue: sandboxMode,
-                            decoration: const InputDecoration(labelText: 'Sandbox'),
+                            decoration: const InputDecoration(
+                              labelText: 'Sandbox',
+                            ),
                             items: const [
-                              DropdownMenuItem(value: '', child: Text('Default')),
-                              DropdownMenuItem(value: 'workspace-write', child: Text('Workspace')),
-                              DropdownMenuItem(value: 'danger-full-access', child: Text('Danger')),
+                              DropdownMenuItem(
+                                value: '',
+                                child: Text('Default'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'workspace-write',
+                                child: Text('Workspace'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'danger-full-access',
+                                child: Text('Danger'),
+                              ),
                             ],
-                            onChanged: (value) => setDialogState(() => sandboxMode = value ?? ''),
+                            onChanged: (value) =>
+                                setDialogState(() => sandboxMode = value ?? ''),
                           ),
                         ),
                         SizedBox(
                           width: 180,
                           child: DropdownButtonFormField<String>(
                             initialValue: networkAccessMode,
-                            decoration: const InputDecoration(labelText: 'Network'),
+                            decoration: const InputDecoration(
+                              labelText: 'Network',
+                            ),
                             items: const [
-                              DropdownMenuItem(value: 'default', child: Text('Default')),
-                              DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
-                              DropdownMenuItem(value: 'disabled', child: Text('Disabled')),
+                              DropdownMenuItem(
+                                value: 'default',
+                                child: Text('Default'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'enabled',
+                                child: Text('Enabled'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'disabled',
+                                child: Text('Disabled'),
+                              ),
                             ],
-                            onChanged: (value) => setDialogState(() => networkAccessMode = value ?? 'default'),
+                            onChanged: (value) => setDialogState(
+                              () => networkAccessMode = value ?? 'default',
+                            ),
                           ),
                         ),
                         SizedBox(
                           width: 180,
                           child: DropdownButtonFormField<String>(
                             initialValue: approvalPolicy,
-                            decoration: const InputDecoration(labelText: 'Approval'),
+                            decoration: const InputDecoration(
+                              labelText: 'Approval',
+                            ),
                             items: const [
-                              DropdownMenuItem(value: '', child: Text('Default')),
-                              DropdownMenuItem(value: 'untrusted', child: Text('untrusted')),
-                              DropdownMenuItem(value: 'on-failure', child: Text('on-failure')),
-                              DropdownMenuItem(value: 'on-request', child: Text('on-request')),
-                              DropdownMenuItem(value: 'never', child: Text('never')),
+                              DropdownMenuItem(
+                                value: '',
+                                child: Text('Default'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'untrusted',
+                                child: Text('untrusted'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'on-failure',
+                                child: Text('on-failure'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'on-request',
+                                child: Text('on-request'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'never',
+                                child: Text('never'),
+                              ),
                             ],
-                            onChanged: (value) => setDialogState(() => approvalPolicy = value ?? ''),
+                            onChanged: (value) => setDialogState(
+                              () => approvalPolicy = value ?? '',
+                            ),
                           ),
                         ),
                       ],
@@ -1259,17 +1347,23 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   }
 
   Future<void> _showProjectSettingsDialog(ProjectItem project) async {
-    final availableModels = _controller.view?.availableModels ?? const <ModelItem>[];
-    var permanentRequirementComposables =
-        project.permanentRequirementComposables.toList(growable: true);
+    final availableModels =
+        _controller.view?.availableModels ?? const <ModelItem>[];
+    var permanentRequirementComposables = project
+        .permanentRequirementComposables
+        .toList(growable: true);
     List<ProjectRequirementComposable> projectRequirementComposables =
         const <ProjectRequirementComposable>[];
     String? projectRequirementComposablesError;
     try {
-      projectRequirementComposables = await _fetchProjectRequirementComposables(project);
+      projectRequirementComposables = await _fetchProjectRequirementComposables(
+        project,
+      );
     } catch (error) {
-      projectRequirementComposablesError =
-          error.toString().replaceFirst('Bad state: ', '');
+      projectRequirementComposablesError = error.toString().replaceFirst(
+        'Bad state: ',
+        '',
+      );
     }
     if (!mounted) {
       return;
@@ -1287,19 +1381,23 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     String defaultNetworkAccessMode = project.defaultNetworkAccess == null
         ? 'default'
         : (project.defaultNetworkAccess! ? 'enabled' : 'disabled');
-    final roleRuntimeDefaults =
-        Map<String, RoleRuntimeDefaults>.from(project.roleRuntimeDefaults);
+    final roleRuntimeDefaults = Map<String, RoleRuntimeDefaults>.from(
+      project.roleRuntimeDefaults,
+    );
     String orchestratorModelId = project.orchestratorDefaultModel ?? '';
-    String orchestratorReasoningEffort = project.orchestratorDefaultReasoningEffort ?? '';
+    String orchestratorReasoningEffort =
+        project.orchestratorDefaultReasoningEffort ?? '';
     String workerModelId = project.workerDefaultModel ?? '';
     String workerReasoningEffort = project.workerDefaultReasoningEffort ?? '';
     String qaModelId = project.qaDefaultModel ?? '';
     String qaReasoningEffort = project.qaDefaultReasoningEffort ?? '';
     String designerModelId = project.designerDefaultModel ?? '';
-    String designerReasoningEffort = project.designerDefaultReasoningEffort ?? '';
+    String designerReasoningEffort =
+        project.designerDefaultReasoningEffort ?? '';
     String plannerModelId = project.plannerDefaultModel ?? '';
     String plannerReasoningEffort = project.plannerDefaultReasoningEffort ?? '';
-    String requirementsReviewerModelId = project.requirementsReviewerDefaultModel ?? '';
+    String requirementsReviewerModelId =
+        project.requirementsReviewerDefaultModel ?? '';
     String requirementsReviewerReasoningEffort =
         project.requirementsReviewerDefaultReasoningEffort ?? '';
     final orchestratorDeveloperInstructionsController = TextEditingController(
@@ -1338,53 +1436,55 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           );
         }
 
-        ({IconData icon, String tooltip, Color color}) tabVisuals(_ProjectSettingsTab tab) {
+        ({IconData icon, String tooltip, Color color}) tabVisuals(
+          _ProjectSettingsTab tab,
+        ) {
           return switch (tab) {
             _ProjectSettingsTab.project => (
-                icon: Icons.workspaces_outlined,
-                tooltip: 'Project',
-                color: theme.colorScheme.primary,
-              ),
+              icon: Icons.workspaces_outlined,
+              tooltip: 'Project',
+              color: theme.colorScheme.primary,
+            ),
             _ProjectSettingsTab.orchestrator => (
-                icon: Icons.account_tree_outlined,
-                tooltip: 'Orchestrator',
-                color: theme.colorScheme.secondary,
-              ),
+              icon: Icons.account_tree_outlined,
+              tooltip: 'Orchestrator',
+              color: theme.colorScheme.secondary,
+            ),
             _ProjectSettingsTab.worker => (
-                icon: Icons.build_circle_outlined,
-                tooltip: 'Worker',
-                color: theme.colorScheme.onSurface.withValues(alpha: 0.72),
-              ),
+              icon: Icons.build_circle_outlined,
+              tooltip: 'Worker',
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.72),
+            ),
             _ProjectSettingsTab.qa => (
-                icon: Icons.fact_check_outlined,
-                tooltip: 'QA',
-                color: theme.colorScheme.tertiary,
-              ),
+              icon: Icons.fact_check_outlined,
+              tooltip: 'QA',
+              color: theme.colorScheme.tertiary,
+            ),
             _ProjectSettingsTab.designer => (
-                icon: Icons.palette_outlined,
-                tooltip: 'Designer',
-                color: Colors.amber.shade700,
-              ),
+              icon: Icons.palette_outlined,
+              tooltip: 'Designer',
+              color: Colors.amber.shade700,
+            ),
             _ProjectSettingsTab.planner => (
-                icon: Icons.psychology_alt_outlined,
-                tooltip: 'Planner',
-                color: theme.colorScheme.primary,
-              ),
+              icon: Icons.psychology_alt_outlined,
+              tooltip: 'Planner',
+              color: theme.colorScheme.primary,
+            ),
             _ProjectSettingsTab.requirementsReviewer => (
-                icon: Icons.rule_folder_outlined,
-                tooltip: 'Requirements Reviewer',
-                color: theme.colorScheme.error,
-              ),
+              icon: Icons.rule_folder_outlined,
+              tooltip: 'Requirements Reviewer',
+              color: theme.colorScheme.error,
+            ),
             _ProjectSettingsTab.hidden => (
-                icon: Icons.visibility_off_outlined,
-                tooltip: 'Hidden',
-                color: theme.colorScheme.outline,
-              ),
+              icon: Icons.visibility_off_outlined,
+              tooltip: 'Hidden',
+              color: theme.colorScheme.outline,
+            ),
             _ProjectSettingsTab.operator => (
-                icon: Icons.verified_user_outlined,
-                tooltip: 'Operator',
-                color: theme.colorScheme.primary,
-              ),
+              icon: Icons.verified_user_outlined,
+              tooltip: 'Operator',
+              color: theme.colorScheme.primary,
+            ),
           };
         }
 
@@ -1397,7 +1497,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           return Tooltip(
             message: visuals.tooltip,
             child: InkWell(
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(smartRadius),
               onTap: () => setDialogState(() => activeTab = tab),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 180),
@@ -1405,10 +1505,12 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 width: 44,
                 height: 44,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(smartRadius),
                   color: selected
                       ? visuals.color.withValues(alpha: 0.18)
-                      : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.42),
+                      : theme.colorScheme.surfaceContainerHighest.withValues(
+                          alpha: 0.42,
+                        ),
                   border: Border.all(
                     color: selected
                         ? visuals.color.withValues(alpha: 0.55)
@@ -1436,7 +1538,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             curve: Curves.easeOutCubic,
             padding: const EdgeInsets.fromLTRB(18, 18, 18, 20),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(smartRadius),
               color: theme.colorScheme.surface.withValues(alpha: 0.78),
               border: Border.all(color: accent.withValues(alpha: 0.28)),
               gradient: LinearGradient(
@@ -1466,8 +1568,10 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           return Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
-              color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.36),
+              borderRadius: BorderRadius.circular(smartRadius),
+              color: theme.colorScheme.surfaceContainerHighest.withValues(
+                alpha: 0.36,
+              ),
               border: Border.all(
                 color: theme.colorScheme.outline.withValues(alpha: 0.18),
               ),
@@ -1486,7 +1590,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                     maxLines: 2,
                     style: theme.textTheme.bodySmall?.copyWith(
                       fontFamily: 'monospace',
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
+                      color: theme.colorScheme.onSurface.withValues(
+                        alpha: 0.82,
+                      ),
                     ),
                   ),
                 ),
@@ -1523,7 +1629,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                   Expanded(
                     child: TextField(
                       controller: cwdController,
-                      decoration: const InputDecoration(labelText: 'Default CWD'),
+                      decoration: const InputDecoration(
+                        labelText: 'Default CWD',
+                      ),
                     ),
                   ),
                 ],
@@ -1540,10 +1648,14 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                       decoration: const InputDecoration(labelText: 'Provider'),
                       items: const [
                         DropdownMenuItem(value: '', child: Text('Default')),
-                        DropdownMenuItem(value: 'openai', child: Text('OpenAI')),
+                        DropdownMenuItem(
+                          value: 'openai',
+                          child: Text('OpenAI'),
+                        ),
                       ],
-                      onChanged: (value) =>
-                          setDialogState(() => preferredModelProvider = value ?? ''),
+                      onChanged: (value) => setDialogState(
+                        () => preferredModelProvider = value ?? '',
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -1562,7 +1674,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 availableModels: availableModels,
                 modelId: defaultModelId,
                 reasoningEffort: defaultReasoningEffort,
-                onModelChanged: (value) => setDialogState(() => defaultModelId = value),
+                onModelChanged: (value) =>
+                    setDialogState(() => defaultModelId = value),
                 onReasoningChanged: (value) =>
                     setDialogState(() => defaultReasoningEffort = value),
               ),
@@ -1585,13 +1698,15 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
               const SizedBox(height: 16),
               SwitchListTile(
                 value: autoRouteReplies,
-                onChanged: (value) => setDialogState(() => autoRouteReplies = value),
+                onChanged: (value) =>
+                    setDialogState(() => autoRouteReplies = value),
                 title: const Text('Auto-route replies'),
                 contentPadding: EdgeInsets.zero,
               ),
               SwitchListTile(
                 value: routeApprovalRequests,
-                onChanged: (value) => setDialogState(() => routeApprovalRequests = value),
+                onChanged: (value) =>
+                    setDialogState(() => routeApprovalRequests = value),
                 title: const Text('Route approvals'),
                 contentPadding: EdgeInsets.zero,
               ),
@@ -1601,7 +1716,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 selectedIds: permanentRequirementComposables,
                 error: projectRequirementComposablesError,
                 onChanged: (next) => setDialogState(
-                  () => permanentRequirementComposables = next.toList(growable: true),
+                  () => permanentRequirementComposables = next.toList(
+                    growable: true,
+                  ),
                 ),
               ),
               const SizedBox(height: 16),
@@ -1634,18 +1751,25 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             String? sandboxMode,
             String? networkAccessMode,
           }) {
-            final nextApproval = approvalPolicy ?? runtimeDefaults.approvalPolicy ?? '';
-            final nextSandbox = sandboxMode ?? runtimeDefaults.sandboxMode ?? '';
-            final nextNetworkMode = networkAccessMode ??
+            final nextApproval =
+                approvalPolicy ?? runtimeDefaults.approvalPolicy ?? '';
+            final nextSandbox =
+                sandboxMode ?? runtimeDefaults.sandboxMode ?? '';
+            final nextNetworkMode =
+                networkAccessMode ??
                 (runtimeDefaults.networkAccess == null
                     ? 'default'
-                    : (runtimeDefaults.networkAccess! ? 'enabled' : 'disabled'));
+                    : (runtimeDefaults.networkAccess!
+                          ? 'enabled'
+                          : 'disabled'));
             final nextNetwork = switch (nextNetworkMode) {
               'enabled' => true,
               'disabled' => false,
               _ => null,
             };
-            if (nextApproval.isEmpty && nextSandbox.isEmpty && nextNetwork == null) {
+            if (nextApproval.isEmpty &&
+                nextSandbox.isEmpty &&
+                nextNetwork == null) {
               roleRuntimeDefaults.remove(roleKey);
             } else {
               roleRuntimeDefaults[roleKey] = RoleRuntimeDefaults(
@@ -1655,6 +1779,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
               );
             }
           }
+
           return paneShell(
             accent: accent,
             children: [
@@ -1664,7 +1789,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                   availableModels: availableModels,
                   modelId: modelId ?? '',
                   reasoningEffort: reasoningEffort ?? '',
-                  onModelChanged: (value) => setDialogState(() => onModelChanged(value)),
+                  onModelChanged: (value) =>
+                      setDialogState(() => onModelChanged(value)),
                   onReasoningChanged: (value) =>
                       setDialogState(() => onReasoningChanged(value)),
                 ),
@@ -1679,14 +1805,15 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                   inheritedSandboxMode: defaultSandboxMode.trim().isNotEmpty
                       ? defaultSandboxMode
                       : project.globalDefaultSandboxMode,
-                  inheritedApprovalPolicy: defaultApprovalPolicy.trim().isNotEmpty
+                  inheritedApprovalPolicy:
+                      defaultApprovalPolicy.trim().isNotEmpty
                       ? defaultApprovalPolicy
                       : project.globalDefaultApprovalPolicy,
                   inheritedNetworkAccess: defaultNetworkAccessMode == 'enabled'
                       ? true
                       : defaultNetworkAccessMode == 'disabled'
-                          ? false
-                          : project.globalDefaultNetworkAccess,
+                      ? false
+                      : project.globalDefaultNetworkAccess,
                   onSandboxModeChanged: (value) => setDialogState(
                     () => updateRuntimeDefaults(sandboxMode: value),
                   ),
@@ -1699,7 +1826,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 ),
                 const SizedBox(height: 16),
               ],
-              if (supportsDeveloperInstructions && instructionsController != null)
+              if (supportsDeveloperInstructions &&
+                  instructionsController != null)
                 developerInstructionsField(instructionsController),
             ],
           );
@@ -1712,100 +1840,105 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             final activePane = switch (activeTab) {
               _ProjectSettingsTab.project => projectPane(setDialogState),
               _ProjectSettingsTab.orchestrator => rolePane(
-                  tab: activeTab,
-                  roleKey: 'orchestrator',
-                  modelId: orchestratorModelId,
-                  onModelChanged: (value) => orchestratorModelId = value,
-                  reasoningEffort: orchestratorReasoningEffort,
-                  onReasoningChanged: (value) => orchestratorReasoningEffort = value,
-                  instructionsController: orchestratorDeveloperInstructionsController,
-                  supportsModelSettings: true,
-                  setDialogState: setDialogState,
-                ),
+                tab: activeTab,
+                roleKey: 'orchestrator',
+                modelId: orchestratorModelId,
+                onModelChanged: (value) => orchestratorModelId = value,
+                reasoningEffort: orchestratorReasoningEffort,
+                onReasoningChanged: (value) =>
+                    orchestratorReasoningEffort = value,
+                instructionsController:
+                    orchestratorDeveloperInstructionsController,
+                supportsModelSettings: true,
+                setDialogState: setDialogState,
+              ),
               _ProjectSettingsTab.worker => rolePane(
-                  tab: activeTab,
-                  roleKey: 'worker',
-                  modelId: workerModelId,
-                  onModelChanged: (value) => workerModelId = value,
-                  reasoningEffort: workerReasoningEffort,
-                  onReasoningChanged: (value) => workerReasoningEffort = value,
-                  instructionsController: workerDeveloperInstructionsController,
-                  supportsModelSettings: true,
-                  setDialogState: setDialogState,
-                ),
+                tab: activeTab,
+                roleKey: 'worker',
+                modelId: workerModelId,
+                onModelChanged: (value) => workerModelId = value,
+                reasoningEffort: workerReasoningEffort,
+                onReasoningChanged: (value) => workerReasoningEffort = value,
+                instructionsController: workerDeveloperInstructionsController,
+                supportsModelSettings: true,
+                setDialogState: setDialogState,
+              ),
               _ProjectSettingsTab.qa => rolePane(
-                  tab: activeTab,
-                  roleKey: 'qa',
-                  modelId: qaModelId,
-                  onModelChanged: (value) => qaModelId = value,
-                  reasoningEffort: qaReasoningEffort,
-                  onReasoningChanged: (value) => qaReasoningEffort = value,
-                  instructionsController: qaDeveloperInstructionsController,
-                  supportsModelSettings: true,
-                  setDialogState: setDialogState,
-                ),
+                tab: activeTab,
+                roleKey: 'qa',
+                modelId: qaModelId,
+                onModelChanged: (value) => qaModelId = value,
+                reasoningEffort: qaReasoningEffort,
+                onReasoningChanged: (value) => qaReasoningEffort = value,
+                instructionsController: qaDeveloperInstructionsController,
+                supportsModelSettings: true,
+                setDialogState: setDialogState,
+              ),
               _ProjectSettingsTab.designer => rolePane(
-                  tab: activeTab,
-                  roleKey: 'designer',
-                  modelId: designerModelId,
-                  onModelChanged: (value) => designerModelId = value,
-                  reasoningEffort: designerReasoningEffort,
-                  onReasoningChanged: (value) => designerReasoningEffort = value,
-                  instructionsController: designerDeveloperInstructionsController,
-                  supportsModelSettings: true,
-                  setDialogState: setDialogState,
-                ),
+                tab: activeTab,
+                roleKey: 'designer',
+                modelId: designerModelId,
+                onModelChanged: (value) => designerModelId = value,
+                reasoningEffort: designerReasoningEffort,
+                onReasoningChanged: (value) => designerReasoningEffort = value,
+                instructionsController: designerDeveloperInstructionsController,
+                supportsModelSettings: true,
+                setDialogState: setDialogState,
+              ),
               _ProjectSettingsTab.planner => rolePane(
-                  tab: activeTab,
-                  roleKey: 'planner',
-                  modelId: plannerModelId,
-                  onModelChanged: (value) => plannerModelId = value,
-                  reasoningEffort: plannerReasoningEffort,
-                  onReasoningChanged: (value) => plannerReasoningEffort = value,
-                  instructionsController: null,
-                  supportsModelSettings: true,
-                  supportsDeveloperInstructions: false,
-                  setDialogState: setDialogState,
-                ),
+                tab: activeTab,
+                roleKey: 'planner',
+                modelId: plannerModelId,
+                onModelChanged: (value) => plannerModelId = value,
+                reasoningEffort: plannerReasoningEffort,
+                onReasoningChanged: (value) => plannerReasoningEffort = value,
+                instructionsController: null,
+                supportsModelSettings: true,
+                supportsDeveloperInstructions: false,
+                setDialogState: setDialogState,
+              ),
               _ProjectSettingsTab.requirementsReviewer => rolePane(
-                  tab: activeTab,
-                  roleKey: 'requirements-reviewer',
-                  modelId: requirementsReviewerModelId,
-                  onModelChanged: (value) => requirementsReviewerModelId = value,
-                  reasoningEffort: requirementsReviewerReasoningEffort,
-                  onReasoningChanged: (value) =>
-                      requirementsReviewerReasoningEffort = value,
-                  instructionsController: null,
-                  supportsModelSettings: true,
-                  supportsDeveloperInstructions: false,
-                  setDialogState: setDialogState,
-                ),
+                tab: activeTab,
+                roleKey: 'requirements-reviewer',
+                modelId: requirementsReviewerModelId,
+                onModelChanged: (value) => requirementsReviewerModelId = value,
+                reasoningEffort: requirementsReviewerReasoningEffort,
+                onReasoningChanged: (value) =>
+                    requirementsReviewerReasoningEffort = value,
+                instructionsController: null,
+                supportsModelSettings: true,
+                supportsDeveloperInstructions: false,
+                setDialogState: setDialogState,
+              ),
               _ProjectSettingsTab.hidden => rolePane(
-                  tab: activeTab,
-                  roleKey: 'hidden',
-                  modelId: null,
-                  onModelChanged: (_) {},
-                  reasoningEffort: null,
-                  onReasoningChanged: (_) {},
-                  instructionsController: hiddenDeveloperInstructionsController,
-                  supportsModelSettings: false,
-                  setDialogState: setDialogState,
-                ),
+                tab: activeTab,
+                roleKey: 'hidden',
+                modelId: null,
+                onModelChanged: (_) {},
+                reasoningEffort: null,
+                onReasoningChanged: (_) {},
+                instructionsController: hiddenDeveloperInstructionsController,
+                supportsModelSettings: false,
+                setDialogState: setDialogState,
+              ),
               _ProjectSettingsTab.operator => rolePane(
-                  tab: activeTab,
-                  roleKey: 'operator',
-                  modelId: null,
-                  onModelChanged: (_) {},
-                  reasoningEffort: null,
-                  onReasoningChanged: (_) {},
-                  instructionsController: operatorDeveloperInstructionsController,
-                  supportsModelSettings: false,
-                  setDialogState: setDialogState,
-                ),
+                tab: activeTab,
+                roleKey: 'operator',
+                modelId: null,
+                onModelChanged: (_) {},
+                reasoningEffort: null,
+                onReasoningChanged: (_) {},
+                instructionsController: operatorDeveloperInstructionsController,
+                supportsModelSettings: false,
+                setDialogState: setDialogState,
+              ),
             };
 
             return AlertDialog(
-              insetPadding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+              insetPadding: const EdgeInsets.symmetric(
+                horizontal: 28,
+                vertical: 24,
+              ),
               titlePadding: const EdgeInsets.fromLTRB(24, 22, 24, 0),
               contentPadding: const EdgeInsets.fromLTRB(24, 18, 24, 8),
               actionsPadding: const EdgeInsets.fromLTRB(24, 0, 24, 18),
@@ -1834,10 +1967,13 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                   children: [
                     DecoratedBox(
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(18),
-                        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.22),
+                        borderRadius: BorderRadius.circular(smartRadius),
+                        color: theme.colorScheme.surfaceContainerHighest
+                            .withValues(alpha: 0.22),
                         border: Border.all(
-                          color: theme.colorScheme.outline.withValues(alpha: 0.16),
+                          color: theme.colorScheme.outline.withValues(
+                            alpha: 0.16,
+                          ),
                         ),
                       ),
                       child: Padding(
@@ -1853,17 +1989,14 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                       ),
                     ),
                     const SizedBox(height: 18),
-                    Expanded(
-                      child: SingleChildScrollView(
-                        child: activePane,
-                      ),
-                    ),
+                    Expanded(child: SingleChildScrollView(child: activePane)),
                   ],
                 ),
               ),
               actions: [
                 TextButton.icon(
-                  onPressed: () => Navigator.of(context).pop(_ProjectSettingsResult.delete),
+                  onPressed: () =>
+                      Navigator.of(context).pop(_ProjectSettingsResult.delete),
                   icon: const Icon(Icons.delete_outline),
                   label: const Text('Delete Project'),
                   style: TextButton.styleFrom(
@@ -1871,11 +2004,13 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                   ),
                 ),
                 TextButton(
-                  onPressed: () => Navigator.of(context).pop(_ProjectSettingsResult.cancel),
+                  onPressed: () =>
+                      Navigator.of(context).pop(_ProjectSettingsResult.cancel),
                   child: const Text('Cancel'),
                 ),
                 FilledButton(
-                  onPressed: () => Navigator.of(context).pop(_ProjectSettingsResult.save),
+                  onPressed: () =>
+                      Navigator.of(context).pop(_ProjectSettingsResult.save),
                   child: const Text('Save'),
                 ),
               ],
@@ -1916,9 +2051,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       defaultApprovalPolicy: defaultApprovalPolicy,
       defaultNetworkAccessMode: defaultNetworkAccessMode,
       roleRuntimeDefaultsJson: jsonEncode(
-        roleRuntimeDefaults.map(
-          (key, value) => MapEntry(key, value.toJson()),
-        ),
+        roleRuntimeDefaults.map((key, value) => MapEntry(key, value.toJson())),
       ),
       orchestratorModelId: orchestratorModelId,
       orchestratorReasoningEffort: orchestratorReasoningEffort,
@@ -1934,15 +2067,17 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
       requirementsReviewerReasoningEffort: requirementsReviewerReasoningEffort,
       orchestratorDeveloperInstructions:
           orchestratorDeveloperInstructionsController.text.trim(),
-      workerDeveloperInstructions:
-          workerDeveloperInstructionsController.text.trim(),
+      workerDeveloperInstructions: workerDeveloperInstructionsController.text
+          .trim(),
       qaDeveloperInstructions: qaDeveloperInstructionsController.text.trim(),
-      designerDeveloperInstructions:
-          designerDeveloperInstructionsController.text.trim(),
-      operatorDeveloperInstructions:
-          operatorDeveloperInstructionsController.text.trim(),
-      hiddenDeveloperInstructions:
-          hiddenDeveloperInstructionsController.text.trim(),
+      designerDeveloperInstructions: designerDeveloperInstructionsController
+          .text
+          .trim(),
+      operatorDeveloperInstructions: operatorDeveloperInstructionsController
+          .text
+          .trim(),
+      hiddenDeveloperInstructions: hiddenDeveloperInstructionsController.text
+          .trim(),
       permanentRequirementComposables: permanentRequirementComposables,
     );
   }
@@ -1982,30 +2117,20 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     }
     _controller.deleteProject(project.id);
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Deleted project "${project.name}" from Robdex tracking.')),
+      SnackBar(
+        content: Text(
+          'Deleted project "${project.name}" from Robdex tracking.',
+        ),
+      ),
     );
   }
 
-  Future<List<ProjectRequirementComposable>> _fetchProjectRequirementComposables(
-    ProjectItem project,
-  ) async {
-    final response = await http.post(
-      _bridgeBaseUri.resolve('/orchestrator/requirements/composables'),
-      headers: const {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode({
-        'projectPath': project.rootPath,
-      }),
+  Future<List<ProjectRequirementComposable>>
+  _fetchProjectRequirementComposables(ProjectItem project) async {
+    final items = await _controller.loadRequirementComposables(
+      projectPath: project.rootPath,
     );
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw StateError('Composable requirements failed with ${response.statusCode}.');
-    }
-    final decoded = jsonDecode(response.body);
-    final items = decoded is Map<String, dynamic> ? decoded['items'] as List<dynamic>? : null;
-    return (items ?? const <dynamic>[])
-        .whereType<Map<String, dynamic>>()
+    return items
         .map(ProjectRequirementComposable.fromJson)
         .toList(growable: false);
   }
@@ -2022,7 +2147,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           heightFactor: 0.72,
           child: StatefulBuilder(
             builder: (context, setModalState) {
-              Future<List<_HookLogEntry>> load() => _fetchProjectHookLogs(project.id);
+              Future<List<_HookLogEntry>> load() =>
+                  _fetchProjectHookLogs(project.id);
 
               Future<void> clearLogs() async {
                 await _clearProjectHookLogs(project.id);
@@ -2063,8 +2189,11 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                       child: FutureBuilder<List<_HookLogEntry>>(
                         future: load(),
                         builder: (context, snapshot) {
-                          if (snapshot.connectionState != ConnectionState.done) {
-                            return const Center(child: CircularProgressIndicator());
+                          if (snapshot.connectionState !=
+                              ConnectionState.done) {
+                            return const Center(
+                              child: CircularProgressIndicator(),
+                            );
                           }
                           if (snapshot.hasError) {
                             return Center(
@@ -2091,7 +2220,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                               const SizedBox(height: 8),
                               Expanded(
                                 child: logs.isEmpty
-                                    ? const Center(child: Text('No hook logs recorded.'))
+                                    ? const Center(
+                                        child: Text('No hook logs recorded.'),
+                                      )
                                     : ListView.separated(
                                         itemCount: logs.length,
                                         separatorBuilder: (_, _) =>
@@ -2101,11 +2232,14 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                                           return Container(
                                             padding: const EdgeInsets.all(12),
                                             decoration: BoxDecoration(
-                                              borderRadius: BorderRadius.circular(12),
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                    smartRadius,
+                                                  ),
                                               border: Border.all(
-                                                color: Theme.of(context)
-                                                    .colorScheme
-                                                    .outlineVariant,
+                                                color: Theme.of(
+                                                  context,
+                                                ).colorScheme.outlineVariant,
                                               ),
                                             ),
                                             child: Column(
@@ -2117,28 +2251,30 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                                                     Expanded(
                                                       child: Text(
                                                         log.event,
-                                                        style: Theme.of(context)
-                                                            .textTheme
-                                                            .titleSmall,
+                                                        style: Theme.of(
+                                                          context,
+                                                        ).textTheme.titleSmall,
                                                       ),
                                                     ),
                                                     Text(
                                                       log.status,
-                                                      style: Theme.of(context)
-                                                          .textTheme
-                                                          .labelMedium,
+                                                      style: Theme.of(
+                                                        context,
+                                                      ).textTheme.labelMedium,
                                                     ),
                                                   ],
                                                 ),
                                                 const SizedBox(height: 6),
                                                 Text(
                                                   '${log.agentName} · ${log.role} · ${log.createdAtLabel}',
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .bodySmall,
+                                                  style: Theme.of(
+                                                    context,
+                                                  ).textTheme.bodySmall,
                                                 ),
                                                 if (log.detail != null &&
-                                                    log.detail!.trim().isNotEmpty) ...[
+                                                    log.detail!
+                                                        .trim()
+                                                        .isNotEmpty) ...[
                                                   const SizedBox(height: 8),
                                                   SelectableText(
                                                     log.detail!,
@@ -2146,7 +2282,8 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                                                         .textTheme
                                                         .bodySmall
                                                         ?.copyWith(
-                                                          fontFamily: 'monospace',
+                                                          fontFamily:
+                                                              'monospace',
                                                         ),
                                                   ),
                                                 ],
@@ -2190,17 +2327,28 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                   children: [
                     TextField(
                       controller: nameController,
-                      decoration: const InputDecoration(labelText: 'Agent name'),
+                      decoration: const InputDecoration(
+                        labelText: 'Agent name',
+                      ),
                     ),
                     const SizedBox(height: 12),
                     DropdownButtonFormField<String>(
                       initialValue: role,
                       decoration: const InputDecoration(labelText: 'Role'),
                       items: const [
-                        DropdownMenuItem(value: 'worker', child: Text('Worker')),
+                        DropdownMenuItem(
+                          value: 'worker',
+                          child: Text('Worker'),
+                        ),
                         DropdownMenuItem(value: 'qa', child: Text('QA')),
-                        DropdownMenuItem(value: 'operator', child: Text('Operator')),
-                        DropdownMenuItem(value: 'planner', child: Text('Planner')),
+                        DropdownMenuItem(
+                          value: 'operator',
+                          child: Text('Operator'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'planner',
+                          child: Text('Planner'),
+                        ),
                       ],
                       onChanged: (value) {
                         if (value == null) return;
@@ -2214,7 +2362,9 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                       controller: promptController,
                       minLines: 3,
                       maxLines: 6,
-                      decoration: const InputDecoration(labelText: 'Initial prompt'),
+                      decoration: const InputDecoration(
+                        labelText: 'Initial prompt',
+                      ),
                     ),
                     const SizedBox(height: 12),
                     OutlinedButton.icon(
@@ -2226,8 +2376,10 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                           actionLabel: 'Attach',
                           helperText:
                               'These requirements are attached before the spawned agent starts its first turn.',
-                          bridgeBaseUri: _bridgeBaseUri,
-                          projectPath: _controller.view?.selection.projectRootPath,
+                          projectPath:
+                              _controller.view?.selection.projectRootPath,
+                          loadComposableItems: _controller.loadRequirementComposables,
+                          uploadImageBytes: _controller.uploadImageBytes,
                         );
                         if (next == null) {
                           return;
@@ -2288,7 +2440,10 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
     );
   }
 
-  Future<String?> _promptGroupName(BuildContext context, String initialValue) async {
+  Future<String?> _promptGroupName(
+    BuildContext context,
+    String initialValue,
+  ) async {
     final controller = TextEditingController(text: initialValue);
     final result = await showDialog<String>(
       context: context,
@@ -2367,10 +2522,7 @@ warp: ${warp.toStringAsFixed(3)}''';
 }
 
 class _WebConnectionScreen extends StatelessWidget {
-  const _WebConnectionScreen({
-    required this.errorText,
-    required this.onRetry,
-  });
+  const _WebConnectionScreen({required this.errorText, required this.onRetry});
 
   final String? errorText;
   final VoidCallback onRetry;
@@ -2386,7 +2538,7 @@ class _WebConnectionScreen extends StatelessWidget {
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: theme.colorScheme.surface.withValues(alpha: 0.86),
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(smartRadius),
               border: Border.all(color: theme.colorScheme.outline),
             ),
             child: Padding(
@@ -2395,7 +2547,10 @@ class _WebConnectionScreen extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Connecting to Robdex', style: theme.textTheme.titleMedium),
+                  Text(
+                    'Connecting to Robdex',
+                    style: theme.textTheme.titleMedium,
+                  ),
                   const SizedBox(height: 12),
                   Text(
                     errorText ?? 'Using the bridge that served this web app.',
@@ -2462,13 +2617,11 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
   bool get _isError => widget.stage == _ConnectionStage.error;
 
   void _copyDebugValues() {
-    Clipboard.setData(
-      ClipboardData(text: _debugValues.toClipboardString()),
-    );
+    Clipboard.setData(ClipboardData(text: _debugValues.toClipboardString()));
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Copied')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Copied')));
   }
 
   @override
@@ -2477,18 +2630,19 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
     final scheme = theme.colorScheme;
     final isIOS = defaultTargetPlatform == TargetPlatform.iOS;
     final effectsEnabled = widget.graphicsEnabled;
-    final reduceMotion = MediaQuery.maybeOf(context)?.disableAnimations ??
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ??
         PlatformDispatcher.instance.accessibilityFeatures.disableAnimations;
     final panelBorder = _isError
         ? const Color(0xFFB86262)
         : _isBusy
-            ? scheme.primary
-            : const Color(0xFF5CA8FF);
+        ? scheme.primary
+        : const Color(0xFF5CA8FF);
     final panelGlow = _isError
         ? const Color(0xFFB86262)
         : _isBusy
-            ? scheme.secondary
-            : const Color(0xFF5B76FF);
+        ? scheme.secondary
+        : const Color(0xFF5B76FF);
 
     return Scaffold(
       body: Stack(
@@ -2578,8 +2732,9 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                       return Transform.scale(
                         scale: scale,
                         child: AnimatedOpacity(
-                          duration:
-                              Duration(milliseconds: reduceMotion ? 0 : 500),
+                          duration: Duration(
+                            milliseconds: reduceMotion ? 0 : 500,
+                          ),
                           curve: Curves.easeOut,
                           opacity: 1,
                           child: child,
@@ -2587,13 +2742,12 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                       );
                     },
                     child: AnimatedContainer(
-                      duration:
-                          Duration(milliseconds: reduceMotion ? 0 : 320),
+                      duration: Duration(milliseconds: reduceMotion ? 0 : 320),
                       curve: Curves.easeOutCubic,
                       padding: const EdgeInsets.fromLTRB(22, 22, 22, 20),
                       decoration: BoxDecoration(
                         color: const Color(0xCC081019),
-                        borderRadius: BorderRadius.circular(28),
+                        borderRadius: BorderRadius.circular(smartRadius),
                         border: Border.all(
                           color: panelBorder.withValues(
                             alpha: _isBusy ? 0.9 : 0.64,
@@ -2616,10 +2770,7 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                         gradient: const LinearGradient(
                           begin: Alignment.topCenter,
                           end: Alignment.bottomCenter,
-                          colors: [
-                            Color(0xF0142030),
-                            Color(0xEE09111A),
-                          ],
+                          colors: [Color(0xF0142030), Color(0xEE09111A)],
                         ),
                       ),
                       child: Column(
@@ -2643,19 +2794,20 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                                       'Robdex',
                                       style: theme.textTheme.headlineMedium
                                           ?.copyWith(
-                                        fontWeight: FontWeight.w800,
-                                        letterSpacing: 0.6,
-                                      ),
+                                            fontWeight: FontWeight.w800,
+                                            letterSpacing: 0.6,
+                                          ),
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
                                       '${widget.hostController.text.trim().isEmpty ? '127.0.0.1' : widget.hostController.text.trim()}:${widget.portController.text.trim().isEmpty ? '42080' : widget.portController.text.trim()}',
                                       style: theme.textTheme.labelMedium
                                           ?.copyWith(
-                                        color: scheme.secondary
-                                            .withValues(alpha: 0.92),
-                                        letterSpacing: 0.9,
-                                      ),
+                                            color: scheme.secondary.withValues(
+                                              alpha: 0.92,
+                                            ),
+                                            letterSpacing: 0.9,
+                                          ),
                                     ),
                                   ],
                                 ),
@@ -2680,8 +2832,9 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                                       focusNode: widget.hostFocusNode,
                                       enabled: !_isBusy,
                                       textInputAction: TextInputAction.next,
-                                      decoration:
-                                          const InputDecoration(labelText: 'Host'),
+                                      decoration: const InputDecoration(
+                                        labelText: 'Host',
+                                      ),
                                       onSubmitted: (_) =>
                                           widget.portFocusNode.requestFocus(),
                                     ),
@@ -2692,8 +2845,9 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                                       enabled: !_isBusy,
                                       keyboardType: TextInputType.number,
                                       textInputAction: TextInputAction.done,
-                                      decoration:
-                                          const InputDecoration(labelText: 'Port'),
+                                      decoration: const InputDecoration(
+                                        labelText: 'Port',
+                                      ),
                                       onSubmitted: (_) => widget.onConnect(),
                                     ),
                                   ],
@@ -2708,8 +2862,9 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                                       focusNode: widget.hostFocusNode,
                                       enabled: !_isBusy,
                                       textInputAction: TextInputAction.next,
-                                      decoration:
-                                          const InputDecoration(labelText: 'Host'),
+                                      decoration: const InputDecoration(
+                                        labelText: 'Host',
+                                      ),
                                       onSubmitted: (_) =>
                                           widget.portFocusNode.requestFocus(),
                                     ),
@@ -2722,8 +2877,9 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                                       enabled: !_isBusy,
                                       keyboardType: TextInputType.number,
                                       textInputAction: TextInputAction.done,
-                                      decoration:
-                                          const InputDecoration(labelText: 'Port'),
+                                      decoration: const InputDecoration(
+                                        labelText: 'Port',
+                                      ),
                                       onSubmitted: (_) => widget.onConnect(),
                                     ),
                                   ),
@@ -2733,8 +2889,9 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                           ),
                           const SizedBox(height: 14),
                           AnimatedSwitcher(
-                            duration:
-                                Duration(milliseconds: reduceMotion ? 0 : 220),
+                            duration: Duration(
+                              milliseconds: reduceMotion ? 0 : 220,
+                            ),
                             child: _isError && widget.errorText != null
                                 ? Padding(
                                     key: const ValueKey('error'),
@@ -2757,9 +2914,11 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                                             widget.errorText!,
                                             style: theme.textTheme.bodySmall
                                                 ?.copyWith(
-                                              color: const Color(0xFFFFB0A6),
-                                              height: 1.35,
-                                            ),
+                                                  color: const Color(
+                                                    0xFFFFB0A6,
+                                                  ),
+                                                  height: 1.35,
+                                                ),
                                           ),
                                         ),
                                       ],
@@ -2793,8 +2952,8 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                                               strokeWidth: 2.1,
                                               valueColor:
                                                   const AlwaysStoppedAnimation(
-                                                Colors.black,
-                                              ),
+                                                    Colors.black,
+                                                  ),
                                             ),
                                           )
                                         : Icon(
@@ -2921,7 +3080,7 @@ class BootstrapEntryPanel extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: const Color(0x55111A26),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(smartRadius),
         border: Border.all(color: const Color(0x2636C7FF)),
       ),
       child: Padding(
@@ -3206,8 +3365,8 @@ class _CoreBadge extends StatelessWidget {
     final color = isError
         ? const Color(0xFFFF8B7A)
         : isBusy
-            ? Theme.of(context).colorScheme.primary
-            : Theme.of(context).colorScheme.secondary;
+        ? Theme.of(context).colorScheme.primary
+        : Theme.of(context).colorScheme.secondary;
 
     return SizedBox(
       width: 52,
@@ -3233,9 +3392,7 @@ class _CoreBadge extends StatelessWidget {
                   const Color(0xFF0B1725),
                 ],
               ),
-              border: Border.all(
-                color: color.withValues(alpha: 0.76),
-              ),
+              border: Border.all(color: color.withValues(alpha: 0.76)),
             ),
             child: Stack(
               alignment: Alignment.center,
@@ -3247,9 +3404,7 @@ class _CoreBadge extends StatelessWidget {
                     height: 36,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      border: Border.all(
-                        color: color.withValues(alpha: 0.5),
-                      ),
+                      border: Border.all(color: color.withValues(alpha: 0.5)),
                     ),
                   ),
                 ),
@@ -3403,15 +3558,19 @@ class _PeripheralVisionLayerState extends State<_PeripheralVisionLayer> {
       builder: (context, _) {
         final blurStrength = widget.reduceMotion
             ? widget.values.blur
-            : (widget.warp > 0 ? widget.values.blur * 1.333 : widget.values.blur);
+            : (widget.warp > 0
+                  ? widget.values.blur * 1.333
+                  : widget.values.blur);
         final aberrationStrength = widget.reduceMotion
             ? widget.values.chroma
             : (widget.warp > 0
-                ? widget.values.chroma * 1.591
-                : widget.values.chroma);
+                  ? widget.values.chroma * 1.591
+                  : widget.values.chroma);
         final warpStrength = widget.reduceMotion
             ? widget.values.warp
-            : (widget.warp > 0 ? widget.values.warp * 1.5625 : widget.values.warp);
+            : (widget.warp > 0
+                  ? widget.values.warp * 1.5625
+                  : widget.values.warp);
 
         shader.setFloat(2, 0.5);
         shader.setFloat(3, 0.46);
@@ -3451,10 +3610,7 @@ class _NebulaShaderPainter extends CustomPainter {
     shader.setFloat(1, size.height);
     shader.setFloat(2, elapsedSeconds.toDouble());
     shader.setFloat(3, warp);
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()..shader = shader,
-    );
+    canvas.drawRect(Offset.zero & size, Paint()..shader = shader);
   }
 
   @override
@@ -3486,28 +3642,25 @@ class _StarfieldPainter extends CustomPainter {
       ..shader = LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
-        colors: const [
-          Color(0x1804070B),
-          Color(0x2208111B),
-          Color(0x1403060A),
-        ],
+        colors: const [Color(0x1804070B), Color(0x2208111B), Color(0x1403060A)],
       ).createShader(rect);
     canvas.drawRect(rect, background);
 
     final center = Offset(size.width / 2, size.height * 0.45);
     final glowPaint = Paint()
-      ..shader = RadialGradient(
-        colors: [
-          const Color(0xFF305C9B).withValues(alpha: 0.14 + (0.05 * warp)),
-          const Color(0xFF0A1320).withValues(alpha: 0.04),
-          const Color(0xFF000000).withValues(alpha: 0),
-        ],
-      ).createShader(
-        Rect.fromCircle(
-          center: center,
-          radius: math.max(size.width, size.height) * 0.52,
-        ),
-      );
+      ..shader =
+          RadialGradient(
+            colors: [
+              const Color(0xFF305C9B).withValues(alpha: 0.14 + (0.05 * warp)),
+              const Color(0xFF0A1320).withValues(alpha: 0.04),
+              const Color(0xFF000000).withValues(alpha: 0),
+            ],
+          ).createShader(
+            Rect.fromCircle(
+              center: center,
+              radius: math.max(size.width, size.height) * 0.52,
+            ),
+          );
     canvas.drawCircle(
       center,
       math.max(size.width, size.height) * 0.52,
@@ -3559,7 +3712,7 @@ class _StarfieldPainter extends CustomPainter {
     final center = Offset(size.width / 2, size.height * 0.45);
     final maxRadius =
         math.sqrt(size.width * size.width + size.height * size.height) *
-            radiusScale;
+        radiusScale;
     final paint = Paint()
       ..strokeCap = StrokeCap.round
       ..color = color;
@@ -3574,10 +3727,7 @@ class _StarfieldPainter extends CustomPainter {
       final lifeProgress = (phase + (elapsedSeconds / cycleSeconds)) % 1.0;
       final eased = math.pow(lifeProgress, 2.35).toDouble();
       final radius = eased * maxRadius;
-      final vector = Offset(
-        math.cos(angle) * spread,
-        math.sin(angle),
-      );
+      final vector = Offset(math.cos(angle) * spread, math.sin(angle));
       final normalized = vector / vector.distance;
       final point = center + (normalized * radius);
 
@@ -3603,9 +3753,7 @@ class _StarfieldPainter extends CustomPainter {
           color.withValues(alpha: 0),
         ],
         stops: const [0.0, 0.42, 1.0],
-      ).createShader(
-        Rect.fromCircle(center: point, radius: glowRadius * 2.6),
-      );
+      ).createShader(Rect.fromCircle(center: point, radius: glowRadius * 2.6));
       canvas.drawCircle(point, glowRadius * 2.6, glowPaint);
 
       corePaint.color = Colors.white.withValues(
@@ -3638,14 +3786,12 @@ class _ThreadHistorySheet extends StatefulWidget {
     required this.threadId,
     required this.threadName,
     required this.contextWindowRemainingPercent,
-    required this.bridgeBaseUri,
   });
 
   final WorkbenchController controller;
   final String threadId;
   final String threadName;
   final int? contextWindowRemainingPercent;
-  final Uri bridgeBaseUri;
 
   @override
   State<_ThreadHistorySheet> createState() => _ThreadHistorySheetState();
@@ -3684,8 +3830,8 @@ class _ThreadHistorySheetState extends State<_ThreadHistorySheet> {
           final filteredEntries = regex == null
               ? typeFilteredEntries
               : typeFilteredEntries
-                  .where((entry) => regex.hasMatch(_searchableText(entry)))
-                  .toList(growable: false);
+                    .where((entry) => regex.hasMatch(_searchableText(entry)))
+                    .toList(growable: false);
 
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -3695,8 +3841,8 @@ class _ThreadHistorySheetState extends State<_ThreadHistorySheet> {
                   Text(
                     'History',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                   const Spacer(),
                   IconButton(
@@ -3748,8 +3894,8 @@ class _ThreadHistorySheetState extends State<_ThreadHistorySheet> {
                 Text(
                   'Invalid regular expression',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
+                    color: Theme.of(context).colorScheme.error,
+                  ),
                 ),
               ],
               if (error != null) ...[
@@ -3757,8 +3903,8 @@ class _ThreadHistorySheetState extends State<_ThreadHistorySheet> {
                 Text(
                   '$error',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
+                    color: Theme.of(context).colorScheme.error,
+                  ),
                 ),
               ],
               const SizedBox(height: 8),
@@ -3773,7 +3919,6 @@ class _ThreadHistorySheetState extends State<_ThreadHistorySheet> {
                   onInterrupt: () {},
                   composerEnabled: false,
                   isRunning: false,
-                  bridgeBaseUri: widget.bridgeBaseUri,
                   showComposer: false,
                   headerControls: Row(
                     children: [
@@ -3817,10 +3962,13 @@ enum _HistoryMessageType {
     return switch (this) {
       _HistoryMessageType.all => true,
       _HistoryMessageType.user => _entryType(entry) == _HistoryMessageType.user,
-      _HistoryMessageType.assistant => _entryType(entry) == _HistoryMessageType.assistant,
+      _HistoryMessageType.assistant =>
+        _entryType(entry) == _HistoryMessageType.assistant,
       _HistoryMessageType.tool => _entryType(entry) == _HistoryMessageType.tool,
-      _HistoryMessageType.system => _entryType(entry) == _HistoryMessageType.system,
-      _HistoryMessageType.other => _entryType(entry) == _HistoryMessageType.other,
+      _HistoryMessageType.system =>
+        _entryType(entry) == _HistoryMessageType.system,
+      _HistoryMessageType.other =>
+        _entryType(entry) == _HistoryMessageType.other,
     };
   }
 }
@@ -3832,7 +3980,10 @@ _HistoryMessageType _entryType(ChatEntry entry) {
 
   final author = entry.author.trim().toLowerCase();
   final label = entry.displayLabel.trim().toLowerCase();
-  if (author == 'user' || author == 'operator' || label == 'user' || label == 'operator') {
+  if (author == 'user' ||
+      author == 'operator' ||
+      label == 'user' ||
+      label == 'operator') {
     return _HistoryMessageType.user;
   }
   if (author == 'assistant' || label == 'assistant') {

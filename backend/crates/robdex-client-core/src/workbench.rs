@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use robdex_protocol::{
-    UiChatEntry, UiGlobalSettings, UiInspectorFact, UiLiveProcessItem, UiModelItem, UiPendingApprovalItem,
+    UiChatEntry, UiChatSemanticCard, UiChatSemanticRow, UiGlobalSettings, UiInspectorFact, UiLiveProcessItem, UiModelItem, UiPendingApprovalItem,
     UiManifestPhaseSummary, UiManifestRunSummary, UiProjectItem, UiRequirementReviewRequirement, UiRequirementReviewSummary,
-    UiRequirementVerdictSummary, UiThreadGroupItem, UiThreadItem, UiWorkerMetadata,
+    UiRequirementVerdictSummary, UiPlannerOption, UiThreadGroupItem, UiThreadItem, UiWorkerMetadata,
     UiWorkspaceFile, UiWorkspaceSelection, WorkbenchViewData,
 };
 
@@ -15,7 +15,6 @@ use crate::{
     bridge::BridgeEndpoint,
     net::{HttpClient, delete as http_delete, get_json, http_client, post_empty, post_json},
 };
-#[cfg(not(target_arch = "wasm32"))]
 use crate::net::post_bytes;
 
 #[derive(Debug, Clone)]
@@ -155,6 +154,95 @@ impl WorkbenchClient {
         )
         .await?;
         Ok(serde_json::from_value(payload)?)
+    }
+
+    pub async fn fetch_thread_stats_json(&self, thread_id: &str) -> Result<Value> {
+        Ok(serde_json::to_value(self.fetch_thread_stats(thread_id).await?)?)
+    }
+
+    pub async fn fetch_project_hook_logs_json(&self, project_id: &str) -> Result<Value> {
+        get_json(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join(&format!("/projects/{project_id}/hook-logs"))?,
+        )
+        .await
+    }
+
+    pub async fn clear_project_hook_logs(&self, project_id: &str) -> Result<()> {
+        http_delete(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join(&format!("/projects/{project_id}/hook-logs"))?,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn fetch_requirement_composables_json(
+        &self,
+        sender_thread_id: Option<&str>,
+        recipient_thread_id: Option<&str>,
+        project_path: Option<&str>,
+    ) -> Result<Value> {
+        post_json(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join("/orchestrator/requirements/composables")?,
+            json!({
+                "senderThreadId": sender_thread_id,
+                "recipientThreadId": recipient_thread_id,
+                "projectPath": project_path,
+            }),
+        )
+        .await
+    }
+
+    pub async fn set_thread_requirements_json(
+        &self,
+        sender_thread_id: Option<&str>,
+        recipient_thread_id: &str,
+        project_path: Option<&str>,
+        requirement_set_json: Option<String>,
+    ) -> Result<Value> {
+        let requirement_set = parse_optional_json_text(requirement_set_json.as_deref(), "requirement set")?;
+        post_json(
+            &self.client,
+            self.endpoint
+                .http_base
+                .join("/orchestrator/requirements/set")?,
+            json!({
+                "senderThreadId": sender_thread_id,
+                "recipientThreadId": recipient_thread_id,
+                "projectPath": project_path,
+                "requirementSet": requirement_set,
+            }),
+        )
+        .await
+    }
+
+    pub async fn upload_image_bytes(
+        &self,
+        filename: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> Result<String> {
+        let response = post_bytes(
+            &self.client,
+            self.endpoint.http_base.join("/uploads/images/instant")?,
+            filename,
+            bytes,
+            content_type,
+        )
+        .await?;
+        response
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("bridge upload response missing path"))
     }
 
     pub async fn create_project(
@@ -1159,6 +1247,7 @@ pub async fn fetch_thread_messages(
                 command: None,
                 output: None,
                 delivery_state: None,
+                semantic_card: None,
                 is_streaming: false,
                 is_tool: true,
             }]);
@@ -1199,6 +1288,7 @@ fn chat_entry_from_message(message: &serde_json::Map<String, Value>) -> UiChatEn
         .to_string();
     let subtitle = message.get("subtitle").and_then(Value::as_str).map(str::to_string);
     let author = author_for_role(role);
+    let semantic_card = semantic_card_for_message(role, &body, is_streaming(message));
     let display_label = display_label_for_message(role, kind.as_deref(), subtitle.as_deref(), body.as_str());
     UiChatEntry {
         id: message
@@ -1229,8 +1319,339 @@ fn chat_entry_from_message(message: &serde_json::Map<String, Value>) -> UiChatEn
             .get("deliveryState")
             .and_then(Value::as_str)
             .map(str::to_string),
+        semantic_card,
         is_streaming: is_streaming(message),
         is_tool: role == Some("tool"),
+    }
+}
+
+fn semantic_card_for_message(
+    role: Option<&str>,
+    body: &str,
+    is_streaming: bool,
+) -> Option<UiChatSemanticCard> {
+    if is_streaming || role != Some("assistant") {
+        return None;
+    }
+    let text = body.trim();
+    if !text.starts_with('{') || !text.ends_with('}') {
+        return None;
+    }
+    let Ok(decoded) = serde_json::from_str::<Value>(text) else {
+        return None;
+    };
+    let Some(object) = decoded.as_object() else {
+        return None;
+    };
+    let verdict_payload = object
+        .get("requirements")
+        .and_then(Value::as_object)
+        .map(|_| object.get("requirements").cloned().unwrap_or(Value::Null))
+        .unwrap_or_else(|| decoded.clone());
+    if verdict_payload.get("overallVerdict").and_then(Value::as_str).is_some()
+        && verdict_payload.get("route").and_then(Value::as_object).is_some()
+    {
+        return Some(requirements_verdict_card(&verdict_payload));
+    }
+    if let Some(requirements) = object.get("requirements") {
+        if object.get("summary").and_then(Value::as_str).is_some()
+            && (requirements.is_null() || requirements.is_object())
+        {
+            return Some(requirements_claim_card(&decoded));
+        }
+    }
+    if object.get("finalDisposition").and_then(Value::as_str).is_some()
+        && object.get("summary").and_then(Value::as_str).is_some()
+    {
+        return Some(requirements_claim_card(&decoded));
+    }
+    if object.get("response").and_then(Value::as_str).is_some()
+        && object.contains_key("currentPlan")
+    {
+        return Some(planner_response_card(object));
+    }
+    None
+}
+
+fn requirements_claim_card(payload: &Value) -> UiChatSemanticCard {
+    let object = payload.as_object();
+    let summary = object
+        .and_then(|object| object.get("summary"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let disposition = object
+        .and_then(|object| object.get("finalDisposition"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let nested_requirements = object
+        .and_then(|object| object.get("requirements"))
+        .and_then(Value::as_object);
+    let source_entries: Vec<(&String, &Value)> = if let Some(requirements) = nested_requirements {
+        requirements.iter().collect()
+    } else {
+        object
+            .map(|object| {
+                object
+                    .iter()
+                    .filter(|(key, value)| {
+                        key.as_str() != "summary"
+                            && key.as_str() != "finalDisposition"
+                            && key.as_str() != "requirements"
+                            && value.is_object()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let rows = source_entries
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let value = value.as_object()?;
+            let claim = value.get("claim").and_then(Value::as_str).unwrap_or("unknown");
+            let risk = value.get("risk").and_then(Value::as_str).unwrap_or("unknown");
+            let justification = value
+                .get("justification")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let bullets = value
+                .get("evidence")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .take(4)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(UiChatSemanticRow {
+                key: key.to_string(),
+                title: key.to_string(),
+                summary: justification,
+                detail: None,
+                trailing_label: Some(format!("{} · risk {}", title_case_claim(claim), risk)),
+                tone: claim_tone(claim).to_string(),
+                icon: claim_icon(claim).to_string(),
+                bullets,
+            })
+        })
+        .collect::<Vec<_>>();
+    let is_commentary = object
+        .and_then(|object| object.get("requirements"))
+        .is_some_and(Value::is_null);
+    let (title, tone, icon) = if is_commentary {
+        ("Requirements Commentary", "secondary", "notes")
+    } else {
+        match disposition {
+            "readyForRequirementsReview" => ("Requirements Claim", "success", "factCheck"),
+            "blockedNeedsOwnerAction" => ("Requirements Blocked", "warning", "warning"),
+            "continueWorkNeeded" => ("Requirements Need Work", "danger", "build"),
+            _ if rows.is_empty() => ("Requirements Output", "secondary", "rule"),
+            _ => ("Requirements Claim", "success", "factCheck"),
+        }
+    };
+    UiChatSemanticCard {
+        kind: "requirementsClaim".to_string(),
+        title: title.to_string(),
+        summary,
+        status_label: if is_commentary {
+            Some("commentary".to_string())
+        } else if rows.is_empty() {
+            None
+        } else {
+            Some(format!("{} {}", rows.len(), if rows.len() == 1 { "claim" } else { "claims" }))
+        },
+        tone: tone.to_string(),
+        icon: icon.to_string(),
+        rows,
+        planner_options: Vec::new(),
+    }
+}
+
+fn requirements_verdict_card(payload: &Value) -> UiChatSemanticCard {
+    let Some(object) = payload.as_object() else {
+        return UiChatSemanticCard {
+            kind: "requirementsVerdict".to_string(),
+            title: "Requirements Review".to_string(),
+            summary: String::new(),
+            status_label: None,
+            tone: "secondary".to_string(),
+            icon: "review".to_string(),
+            rows: Vec::new(),
+            planner_options: Vec::new(),
+        };
+    };
+    let overall = object.get("overallVerdict").and_then(Value::as_str).unwrap_or("unknown");
+    let route_message = object
+        .get("route")
+        .and_then(Value::as_object)
+        .and_then(|route| route.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let rows = object
+        .iter()
+        .filter(|(key, value)| key.as_str() != "overallVerdict" && key.as_str() != "route" && value.is_object())
+        .filter_map(|(key, value)| {
+            let value = value.as_object()?;
+            let verdict = value.get("verdict").and_then(Value::as_str).unwrap_or("unknown");
+            let reason = value.get("reason").and_then(Value::as_str).unwrap_or_default().to_string();
+            let evidence = value.get("evidenceAssessment").and_then(Value::as_str).unwrap_or_default();
+            let correction = value.get("requiredCorrection").and_then(Value::as_str).unwrap_or_default();
+            let mut bullets = Vec::new();
+            if !evidence.trim().is_empty() {
+                bullets.push(format!("Evidence: {}", evidence.trim()));
+            }
+            if !correction.trim().is_empty() {
+                bullets.push(format!("Correction: {}", correction.trim()));
+            }
+            Some(UiChatSemanticRow {
+                key: key.to_string(),
+                title: key.to_string(),
+                summary: reason,
+                detail: None,
+                trailing_label: Some(title_case_verdict(verdict).to_string()),
+                tone: verdict_tone(verdict).to_string(),
+                icon: verdict_icon(verdict).to_string(),
+                bullets,
+            })
+        })
+        .collect();
+    UiChatSemanticCard {
+        kind: "requirementsVerdict".to_string(),
+        title: match overall {
+            "pass" => "Requirements Review Passed",
+            "fail" => "Requirements Review Failed",
+            "acceptedBlocked" => "Requirements Review Accepted Blocker",
+            "rejectedBlocked" => "Requirements Review Rejected Blocker",
+            "needsHumanWaiver" => "Requirements Review Needs Waiver",
+            _ => "Requirements Review",
+        }
+        .to_string(),
+        summary: route_message,
+        status_label: None,
+        tone: verdict_tone(overall).to_string(),
+        icon: verdict_icon(overall).to_string(),
+        rows,
+        planner_options: Vec::new(),
+    }
+}
+
+fn planner_response_card(object: &serde_json::Map<String, Value>) -> UiChatSemanticCard {
+    let options = object
+        .get("clarification")
+        .and_then(Value::as_object)
+        .and_then(|clarification| clarification.get("options"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_object)
+                .map(|option| UiPlannerOption {
+                    label: option.get("label").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    description: option.get("description").and_then(Value::as_str).unwrap_or_default().to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let question = object
+        .get("clarification")
+        .and_then(Value::as_object)
+        .and_then(|clarification| clarification.get("question"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    UiChatSemanticCard {
+        kind: "plannerResponse".to_string(),
+        title: object
+            .get("currentPlan")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("Planner")
+            .trim()
+            .to_string(),
+        summary: object.get("response").and_then(Value::as_str).unwrap_or_default().to_string(),
+        status_label: None,
+        tone: "primary".to_string(),
+        icon: "planner".to_string(),
+        rows: if question.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![UiChatSemanticRow {
+                key: "clarification".to_string(),
+                title: question.trim().to_string(),
+                summary: String::new(),
+                detail: None,
+                trailing_label: None,
+                tone: "primary".to_string(),
+                icon: "question".to_string(),
+                bullets: Vec::new(),
+            }]
+        },
+        planner_options: options,
+    }
+}
+
+fn verdict_tone(value: &str) -> &'static str {
+    match value {
+        "pass" => "success",
+        "fail" | "rejectedBlocked" => "danger",
+        "acceptedBlocked" | "needsHumanWaiver" => "warning",
+        _ => "secondary",
+    }
+}
+
+fn claim_tone(value: &str) -> &'static str {
+    match value {
+        "satisfied" => "success",
+        "notSatisfied" => "danger",
+        "blocked" => "warning",
+        "notApplicable" => "muted",
+        _ => "secondary",
+    }
+}
+
+fn verdict_icon(value: &str) -> &'static str {
+    match value {
+        "pass" => "verified",
+        "fail" => "cancel",
+        "acceptedBlocked" => "warning",
+        "rejectedBlocked" => "problem",
+        "needsHumanWaiver" => "gavel",
+        _ => "review",
+    }
+}
+
+fn claim_icon(value: &str) -> &'static str {
+    match value {
+        "satisfied" => "check",
+        "notSatisfied" => "cancel",
+        "blocked" => "warning",
+        "notApplicable" => "remove",
+        _ => "dot",
+    }
+}
+
+fn title_case_verdict(value: &str) -> &'static str {
+    match value {
+        "acceptedBlocked" => "Accepted blocker",
+        "rejectedBlocked" => "Rejected blocker",
+        "needsHumanWaiver" => "Needs waiver",
+        "pass" => "Pass",
+        "fail" => "Fail",
+        _ => "Unknown",
+    }
+}
+
+fn title_case_claim(value: &str) -> &'static str {
+    match value {
+        "satisfied" => "Satisfied",
+        "notSatisfied" => "Not satisfied",
+        "blocked" => "Blocked",
+        "notApplicable" => "Not applicable",
+        _ => "Unknown",
     }
 }
 

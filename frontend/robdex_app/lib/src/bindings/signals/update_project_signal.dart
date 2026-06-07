@@ -264,11 +264,7 @@ class UpdateProjectSignal {
       && designerDeveloperInstructions == other.designerDeveloperInstructions
       && operatorDeveloperInstructions == other.operatorDeveloperInstructions
       && hiddenDeveloperInstructions == other.hiddenDeveloperInstructions
-      && permanentRequirementComposables.length == other.permanentRequirementComposables.length
-      && permanentRequirementComposables
-          .asMap()
-          .entries
-          .every((entry) => other.permanentRequirementComposables[entry.key] == entry.value);
+      && listEquals(permanentRequirementComposables, other.permanentRequirementComposables);
   }
 
   @override
@@ -303,7 +299,7 @@ class UpdateProjectSignal {
         designerDeveloperInstructions,
         operatorDeveloperInstructions,
         hiddenDeveloperInstructions,
-        Object.hashAll(permanentRequirementComposables),
+        permanentRequirementComposables,
       ]);
 
   @override

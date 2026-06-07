@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/foundation.dart';
@@ -12,6 +11,9 @@ import '../../core/formatters/timestamps.dart';
 import '../../core/models/workbench_models.dart';
 import '../composer/composer_panel.dart';
 import '../inspector/inspector_panel.dart';
+import '../requirements/requirement_set_form.dart';
+
+const smartRadius = 6.0;
 
 class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
@@ -32,7 +34,9 @@ class ChatTimeline extends StatefulWidget {
     this.headerControls,
     this.overlay,
     this.leading,
-    this.bridgeBaseUri,
+    this.loadRequirementComposables,
+    this.setThreadRequirements,
+    this.uploadImageBytes,
     this.onOpenLink,
     this.onTerminateCommandExecution,
     this.requirementReview,
@@ -57,7 +61,9 @@ class ChatTimeline extends StatefulWidget {
   final Widget? headerControls;
   final Widget? overlay;
   final Widget? leading;
-  final Uri? bridgeBaseUri;
+  final RequirementComposableLoader? loadRequirementComposables;
+  final Future<void> Function(String requirementSetJson)? setThreadRequirements;
+  final ImageBytesUploader? uploadImageBytes;
   final ValueChanged<String>? onOpenLink;
   final ValueChanged<String>? onTerminateCommandExecution;
   final RequirementReviewSummary? requirementReview;
@@ -89,13 +95,12 @@ class _ChatTimelineState extends State<ChatTimeline> {
   void didUpdateWidget(covariant ChatTimeline oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    final currentKeys = widget.entries
-        .map(_entryStorageKey)
-        .toSet();
+    final currentKeys = widget.entries.map(_entryStorageKey).toSet();
     _expandedEntryKeys.removeWhere((key) => !currentKeys.contains(key));
 
     final threadChanged = widget.threadId != oldWidget.threadId;
-    final entriesChanged = widget.entries.length != oldWidget.entries.length ||
+    final entriesChanged =
+        widget.entries.length != oldWidget.entries.length ||
         !_sameEntryIdentity(widget.entries, oldWidget.entries);
 
     if (!threadChanged && !entriesChanged) {
@@ -118,51 +123,36 @@ class _ChatTimelineState extends State<ChatTimeline> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (widget.leading != null) ...[
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: widget.leading!,
-              ),
-              const SizedBox(width: 10),
-            ],
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.title,
-                    style: theme.textTheme.bodyLarge?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    widget.contextWindowRemainingPercent == null
-                        ? '--% remaining'
-                        : '${widget.contextWindowRemainingPercent!}% remaining',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.52),
-                    ),
-                  ),
-                ],
+            Text(
+              widget.title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodyLarge?.copyWith(
+                fontWeight: FontWeight.w700,
               ),
             ),
-            if (widget.headerControls != null) ...[
-              const SizedBox(width: 18),
-              Flexible(
-                flex: 0,
-                child: DefaultTextStyle.merge(
-                  style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.74),
-                      ) ??
-                      const TextStyle(),
-                  child: widget.headerControls!,
-                ),
-              ),
-            ],
+            const SizedBox(height: 8),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                if (widget.leading != null) widget.leading!,
+                const Spacer(),
+                if (widget.headerControls != null)
+                  DefaultTextStyle.merge(
+                    style:
+                        theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurface.withValues(
+                            alpha: 0.74,
+                          ),
+                        ) ??
+                        const TextStyle(),
+                    child: widget.headerControls!,
+                  ),
+              ],
+            ),
           ],
         ),
         const SizedBox(height: 16),
@@ -188,7 +178,9 @@ class _ChatTimelineState extends State<ChatTimeline> {
                 anchorThreshold: 50,
                 builder: (context, scrollController) {
                   return ListView.separated(
-                    key: PageStorageKey<String>('chat-timeline-${widget.threadId ?? 'none'}'),
+                    key: PageStorageKey<String>(
+                      'chat-timeline-${widget.threadId ?? 'none'}',
+                    ),
                     controller: scrollController,
                     itemCount: widget.entries.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 6),
@@ -210,7 +202,6 @@ class _ChatTimelineState extends State<ChatTimeline> {
                         },
                         onTerminateCommandExecution:
                             widget.onTerminateCommandExecution,
-                        bridgeBaseUri: widget.bridgeBaseUri,
                         onOpenLink: widget.onOpenLink,
                         onSend: widget.onSend,
                       );
@@ -219,12 +210,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
                 },
               ),
               if (widget.overlay != null)
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  child: widget.overlay!,
-                ),
+                Positioned(top: 0, left: 0, right: 0, child: widget.overlay!),
             ],
           ),
         ),
@@ -238,7 +224,10 @@ class _ChatTimelineState extends State<ChatTimeline> {
             onSettingsChanged: widget.onSettingsChanged ?? (_) {},
             onCompactThread: widget.onCompactThread ?? () {},
             requirementReview: widget.requirementReview,
-            bridgeBaseUri: widget.bridgeBaseUri,
+            loadRequirementComposables: widget.loadRequirementComposables,
+            setThreadRequirements: widget.setThreadRequirements,
+            uploadImageBytes: widget.uploadImageBytes,
+            contextWindowRemainingPercent: widget.contextWindowRemainingPercent,
             terminalAvailable: widget.terminalAvailable,
             onTerminalPressed: widget.onTerminalPressed,
             onSend: widget.onSend,
@@ -262,17 +251,14 @@ const WorkspaceSelection _emptySelection = WorkspaceSelection(
   connectionLabel: 'Bridge Unknown',
 );
 
-typedef _TimelineScrollWidgetBuilder = Widget Function(
-  BuildContext context,
-  ScrollController scrollController,
-);
+typedef _TimelineScrollWidgetBuilder =
+    Widget Function(BuildContext context, ScrollController scrollController);
 
 class _TimelineAutoScrollController extends ChangeNotifier
     implements ValueListenable<bool> {
-  _TimelineAutoScrollController({
-    ScrollController? scrollController,
-  })  : scrollController = scrollController ?? ScrollController(),
-        _ownsScrollController = scrollController == null;
+  _TimelineAutoScrollController({ScrollController? scrollController})
+    : scrollController = scrollController ?? ScrollController(),
+      _ownsScrollController = scrollController == null;
 
   final bool _ownsScrollController;
   final ScrollController scrollController;
@@ -295,7 +281,8 @@ class _TimelineAutoScrollController extends ChangeNotifier
     anchored = metrics.maxScrollExtent - metrics.pixels <= threshold;
   }
 
-  Future<void> jumpToAnchor() => _goToLazyAnchor(scrollController.position.jumpTo);
+  Future<void> jumpToAnchor() =>
+      _goToLazyAnchor(scrollController.position.jumpTo);
 
   Future<void> _goToLazyAnchor(
     FutureOr<void> Function(double position) move,
@@ -342,7 +329,8 @@ class _TimelineAutoScroller<T> extends StatefulWidget {
   final _TimelineScrollWidgetBuilder builder;
 
   @override
-  State<_TimelineAutoScroller<T>> createState() => _TimelineAutoScrollerState<T>();
+  State<_TimelineAutoScroller<T>> createState() =>
+      _TimelineAutoScrollerState<T>();
 }
 
 class _TimelineAutoScrollerState<T> extends State<_TimelineAutoScroller<T>> {
@@ -421,22 +409,27 @@ class _RequirementsReviewInlineBanner extends StatelessWidget {
     final theme = Theme.of(context);
     final reviewerThreadId = summary.reviewerThreadId;
     final parentThreadId = summary.parentThreadId;
-    final isReviewerThread = selectedThreadRole == 'requirements-reviewer' ||
+    final isReviewerThread =
+        selectedThreadRole == 'requirements-reviewer' ||
         selectedThreadRole == 'requirementsReviewer';
     final isWaiverRequired = summary.status == 'waiverRequired';
     final targetThreadId = isReviewerThread ? parentThreadId : reviewerThreadId;
-    final buttonLabel = isReviewerThread ? 'Back to source thread' : 'Open review thread';
+    final buttonLabel = isReviewerThread
+        ? 'Back to source thread'
+        : 'Open review thread';
     final statusText = isReviewerThread
         ? 'Nested requirements reviewer'
         : isWaiverRequired
-            ? 'Human waiver required'
-            : 'Requirements ${summary.displayStatus.toLowerCase()}';
+        ? 'Human waiver required'
+        : 'Requirements ${summary.displayStatus.toLowerCase()}';
     final counts = isWaiverRequired
         ? 'Waiver needed · ${summary.activeRequirementCount} active'
         : summary.verdicts.isEmpty
         ? '${summary.activeRequirementCount} active'
         : '${summary.passedCount} passed · ${summary.failedCount} failed · ${summary.blockedCount} blocked';
-    final accentColor = isWaiverRequired ? Colors.amber.shade700 : theme.colorScheme.primary;
+    final accentColor = isWaiverRequired
+        ? Colors.amber.shade700
+        : theme.colorScheme.primary;
 
     return Semantics(
       key: const ValueKey('semantic.requirementsReview.inline'),
@@ -444,8 +437,10 @@ class _RequirementsReviewInlineBanner extends StatelessWidget {
       label: statusText,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: isWaiverRequired ? const Color(0xFF231C09) : const Color(0xFF111923),
-          borderRadius: BorderRadius.circular(12),
+          color: isWaiverRequired
+              ? const Color(0xFF231C09)
+              : const Color(0xFF111923),
+          borderRadius: BorderRadius.circular(smartRadius),
           border: Border.all(
             color: isWaiverRequired
                 ? accentColor.withValues(alpha: 0.64)
@@ -460,8 +455,8 @@ class _RequirementsReviewInlineBanner extends StatelessWidget {
                 isReviewerThread
                     ? Icons.rate_review_outlined
                     : isWaiverRequired
-                        ? Icons.policy_outlined
-                        : Icons.rule_folder_outlined,
+                    ? Icons.policy_outlined
+                    : Icons.rule_folder_outlined,
                 color: accentColor,
                 size: 16,
               ),
@@ -475,7 +470,9 @@ class _RequirementsReviewInlineBanner extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.labelMedium?.copyWith(
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.88),
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.88,
+                        ),
                         fontWeight: FontWeight.w700,
                       ),
                     ),
@@ -485,13 +482,17 @@ class _RequirementsReviewInlineBanner extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.52),
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.52,
+                        ),
                       ),
                     ),
                   ],
                 ),
               ),
-              if (targetThreadId != null && targetThreadId.isNotEmpty && onOpenThread != null)
+              if (targetThreadId != null &&
+                  targetThreadId.isNotEmpty &&
+                  onOpenThread != null)
                 TextButton.icon(
                   onPressed: () => onOpenThread!(targetThreadId),
                   icon: Icon(
@@ -555,7 +556,6 @@ class _ChatBubble extends StatelessWidget {
     required this.expanded,
     required this.onExpandedChanged,
     this.onTerminateCommandExecution,
-    this.bridgeBaseUri,
     this.onOpenLink,
     this.onSend,
   });
@@ -564,7 +564,6 @@ class _ChatBubble extends StatelessWidget {
   final bool expanded;
   final ValueChanged<bool> onExpandedChanged;
   final ValueChanged<String>? onTerminateCommandExecution;
-  final Uri? bridgeBaseUri;
   final ValueChanged<String>? onOpenLink;
   final ValueChanged<ComposerSubmission>? onSend;
 
@@ -572,15 +571,14 @@ class _ChatBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
-    final isConversation = !entry.isTool &&
-        (entry.author == 'User' || entry.author == 'Assistant' || entry.author == 'Operator');
+    final isConversation =
+        !entry.isTool &&
+        (entry.author == 'User' ||
+            entry.author == 'Assistant' ||
+            entry.author == 'Operator');
 
-    final fallbackPlanItems = entry.hasPlanItems ? const <PlanChecklistItem>[] : _planItemsFromBody(entry.body);
-    if (entry.hasPlanItems || fallbackPlanItems.isNotEmpty) {
-      return _PlanUpdateCard(
-        entry: entry,
-        fallbackItems: fallbackPlanItems,
-      );
+    if (entry.hasPlanItems) {
+      return _PlanUpdateCard(entry: entry, fallbackItems: const <PlanChecklistItem>[]);
     }
 
     if (!isConversation) {
@@ -589,31 +587,14 @@ class _ChatBubble extends StatelessWidget {
         expanded: expanded,
         onExpandedChanged: onExpandedChanged,
         onTerminateCommandExecution: onTerminateCommandExecution,
-        bridgeBaseUri: bridgeBaseUri,
       );
     }
 
-    final requirementsVerdictPayload = _requirementsVerdictPayloadFromBody(entry);
-    if (requirementsVerdictPayload != null) {
-      return _RequirementsVerdictCard(
-        entry: entry,
-        payload: requirementsVerdictPayload,
-      );
-    }
-
-    final requirementsPayload = _requirementsClaimPayloadFromBody(entry);
-    if (requirementsPayload != null) {
-      return _RequirementsClaimCard(
-        entry: entry,
-        payload: requirementsPayload,
-      );
-    }
-
-    final plannerPayload = _plannerPayloadFromBody(entry);
-    if (plannerPayload != null) {
+    final semanticCard = entry.semanticCard;
+    if (semanticCard != null && semanticCard.kind == 'plannerResponse') {
       return _PlannerResponseCard(
         entry: entry,
-        payload: plannerPayload,
+        card: semanticCard,
         onPick: (label) {
           onSend?.call(
             ComposerSubmission(
@@ -624,6 +605,9 @@ class _ChatBubble extends StatelessWidget {
           );
         },
       );
+    }
+    if (semanticCard != null) {
+      return _SemanticMessageCard(entry: entry, card: semanticCard);
     }
 
     final isUser = entry.author == 'User' || entry.author == 'Operator';
@@ -639,10 +623,12 @@ class _ChatBubble extends StatelessWidget {
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: bubbleColor,
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(smartRadius),
             border: Border.all(
               color: isUser
-                  ? theme.colorScheme.primary.withValues(alpha: isPending ? 0.18 : 0.28)
+                  ? theme.colorScheme.primary.withValues(
+                      alpha: isPending ? 0.18 : 0.28,
+                    )
                   : theme.colorScheme.outline.withValues(alpha: 0.72),
             ),
           ),
@@ -664,14 +650,20 @@ class _ChatBubble extends StatelessWidget {
                             style: theme.textTheme.labelSmall?.copyWith(
                               fontWeight: FontWeight.w600,
                               color: isPending
-                                  ? theme.colorScheme.onSurface.withValues(alpha: 0.68)
-                                  : theme.colorScheme.onSurface.withValues(alpha: 0.8),
+                                  ? theme.colorScheme.onSurface.withValues(
+                                      alpha: 0.68,
+                                    )
+                                  : theme.colorScheme.onSurface.withValues(
+                                      alpha: 0.8,
+                                    ),
                             ),
                           ),
                           Text(
                             timestampLabel,
                             style: theme.textTheme.labelSmall?.copyWith(
-                              color: theme.colorScheme.onSurface.withValues(alpha: 0.58),
+                              color: theme.colorScheme.onSurface.withValues(
+                                alpha: 0.58,
+                              ),
                             ),
                           ),
                           if (isPending)
@@ -686,7 +678,9 @@ class _ChatBubble extends StatelessWidget {
                             const SizedBox(
                               width: 8,
                               height: 8,
-                              child: CircularProgressIndicator(strokeWidth: 1.5),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 1.5,
+                              ),
                             ),
                         ],
                       ),
@@ -699,11 +693,17 @@ class _ChatBubble extends StatelessWidget {
                       child: ExcludeSemantics(
                         child: IconButton(
                           onPressed: () => _copyBubbleText(context, entry.body),
-                          icon: const Icon(Icons.content_copy_rounded, size: 14),
+                          icon: const Icon(
+                            Icons.content_copy_rounded,
+                            size: 14,
+                          ),
                           tooltip: 'Copy',
                           splashRadius: 14,
                           padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints.tightFor(width: 22, height: 22),
+                          constraints: const BoxConstraints.tightFor(
+                            width: 22,
+                            height: 22,
+                          ),
                           visualDensity: VisualDensity.compact,
                         ),
                       ),
@@ -744,10 +744,7 @@ class _ChatBubble extends StatelessWidget {
 }
 
 class _PlanUpdateCard extends StatelessWidget {
-  const _PlanUpdateCard({
-    required this.entry,
-    this.fallbackItems = const [],
-  });
+  const _PlanUpdateCard({required this.entry, this.fallbackItems = const []});
 
   final ChatEntry entry;
   final List<PlanChecklistItem> fallbackItems;
@@ -757,7 +754,9 @@ class _PlanUpdateCard extends StatelessWidget {
     final theme = Theme.of(context);
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
     final note = _planSummary(entry.body);
-    final accent = entry.isStreaming ? Colors.amber.shade700 : theme.colorScheme.primary;
+    final accent = entry.isStreaming
+        ? Colors.amber.shade700
+        : theme.colorScheme.primary;
     final items = entry.hasPlanItems ? entry.planItems : fallbackItems;
 
     return Align(
@@ -766,14 +765,12 @@ class _PlanUpdateCard extends StatelessWidget {
         constraints: const BoxConstraints(maxWidth: 720),
         child: DecoratedBox(
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(smartRadius),
             color: Color.alphaBlend(
               accent.withValues(alpha: 0.07),
               theme.colorScheme.surface,
             ),
-            border: Border.all(
-              color: accent.withValues(alpha: 0.22),
-            ),
+            border: Border.all(color: accent.withValues(alpha: 0.22)),
           ),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
@@ -807,7 +804,9 @@ class _PlanUpdateCard extends StatelessWidget {
                     Text(
                       timestampLabel,
                       style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.62),
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.62,
+                        ),
                       ),
                     ),
                   ],
@@ -818,14 +817,18 @@ class _PlanUpdateCard extends StatelessWidget {
                     note,
                     style: theme.textTheme.bodySmall?.copyWith(
                       height: 1.4,
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
+                      color: theme.colorScheme.onSurface.withValues(
+                        alpha: 0.82,
+                      ),
                     ),
                   ),
                 ],
                 const SizedBox(height: 14),
                 ...items.asMap().entries.map(
                   (entry) => Padding(
-                    padding: EdgeInsets.only(bottom: entry.key == items.length - 1 ? 0 : 10),
+                    padding: EdgeInsets.only(
+                      bottom: entry.key == items.length - 1 ? 0 : 10,
+                    ),
                     child: _PlanChecklistRow(item: entry.value),
                   ),
                 ),
@@ -839,9 +842,7 @@ class _PlanUpdateCard extends StatelessWidget {
 }
 
 class _PlanChecklistRow extends StatelessWidget {
-  const _PlanChecklistRow({
-    required this.item,
-  });
+  const _PlanChecklistRow({required this.item});
 
   final PlanChecklistItem item;
 
@@ -851,13 +852,13 @@ class _PlanChecklistRow extends StatelessWidget {
     final accent = item.completed
         ? Colors.green.shade700
         : item.isInProgress
-            ? Colors.amber.shade800
-            : theme.colorScheme.onSurface.withValues(alpha: 0.52);
+        ? Colors.amber.shade800
+        : theme.colorScheme.onSurface.withValues(alpha: 0.52);
     final icon = item.completed
         ? Icons.check_circle_rounded
         : item.isInProgress
-            ? Icons.radio_button_checked_rounded
-            : Icons.radio_button_unchecked_rounded;
+        ? Icons.radio_button_checked_rounded
+        : Icons.radio_button_unchecked_rounded;
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -887,7 +888,9 @@ class _PlanChecklistRow extends StatelessWidget {
                 style: theme.textTheme.bodyMedium?.copyWith(
                   height: 1.34,
                   color: animatedColor,
-                  decoration: item.completed ? TextDecoration.lineThrough : null,
+                  decoration: item.completed
+                      ? TextDecoration.lineThrough
+                      : null,
                   decorationColor: accent.withValues(alpha: 0.6),
                 ),
               );
@@ -899,71 +902,24 @@ class _PlanChecklistRow extends StatelessWidget {
   }
 }
 
-class _RequirementsClaimCard extends StatelessWidget {
-  const _RequirementsClaimCard({
-    required this.entry,
-    required this.payload,
-  });
+class _SemanticMessageCard extends StatelessWidget {
+  const _SemanticMessageCard({required this.entry, required this.card});
 
   final ChatEntry entry;
-  final Map<String, dynamic> payload;
+  final ChatSemanticCard card;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
-    final disposition = payload['finalDisposition'] as String? ?? 'unknown';
-    final summary = payload['summary'] as String? ?? '';
-    final nestedRequirements = payload['requirements'];
-    final requirementEntries = nestedRequirements is Map<String, dynamic>
-        ? nestedRequirements.entries
-            .where((entry) => entry.value is Map<String, dynamic>)
-            .toList(growable: false)
-        : payload.entries
-            .where((entry) =>
-                entry.key != 'summary' &&
-                entry.key != 'finalDisposition' &&
-                entry.key != 'requirements' &&
-                entry.value is Map<String, dynamic>)
-            .toList(growable: false);
-    final isCommentaryPacket = payload.containsKey('requirements') && nestedRequirements == null;
-    final accent = isCommentaryPacket
-        ? theme.colorScheme.secondary
-        : switch (disposition) {
-            'readyForRequirementsReview' => Colors.green.shade700,
-            'blockedNeedsOwnerAction' => Colors.amber.shade800,
-            'continueWorkNeeded' => theme.colorScheme.error,
-            _ => requirementEntries.isEmpty ? theme.colorScheme.secondary : Colors.green.shade700,
-          };
-    final title = isCommentaryPacket
-        ? 'Requirements Commentary'
-        : switch (disposition) {
-            'readyForRequirementsReview' => 'Requirements Claim',
-            'blockedNeedsOwnerAction' => 'Requirements Blocked',
-            'continueWorkNeeded' => 'Requirements Need Work',
-            _ => requirementEntries.isEmpty ? 'Requirements Output' : 'Requirements Claim',
-          };
-    final icon = isCommentaryPacket
-        ? Icons.notes_rounded
-        : switch (disposition) {
-            'readyForRequirementsReview' => _requirementsDispositionIcon(disposition),
-            'blockedNeedsOwnerAction' => _requirementsDispositionIcon(disposition),
-            'continueWorkNeeded' => _requirementsDispositionIcon(disposition),
-            _ => requirementEntries.isEmpty ? Icons.rule_outlined : Icons.fact_check_rounded,
-          };
-    final statusLabel = isCommentaryPacket
-        ? 'commentary'
-        : requirementEntries.isEmpty
-            ? null
-            : '${requirementEntries.length} ${requirementEntries.length == 1 ? 'claim' : 'claims'}';
-
+    final accent = _semanticToneColor(theme, card.tone);
     return Align(
       alignment: Alignment.centerLeft,
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 760),
         child: DecoratedBox(
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(smartRadius),
             color: Color.alphaBlend(
               accent.withValues(alpha: 0.08),
               theme.colorScheme.surface,
@@ -977,27 +933,32 @@ class _RequirementsClaimCard extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Icon(icon, color: accent, size: 18),
+                    Icon(_semanticIcon(card.icon), color: accent, size: 18),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        title,
+                        card.title,
                         style: theme.textTheme.titleSmall?.copyWith(
                           fontWeight: FontWeight.w800,
                         ),
                       ),
                     ),
-                    if (statusLabel != null) ...[
+                    if (card.statusLabel != null) ...[
                       Container(
                         margin: const EdgeInsets.only(right: 8),
-                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 7,
+                          vertical: 3,
+                        ),
                         decoration: BoxDecoration(
                           color: accent.withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(999),
-                          border: Border.all(color: accent.withValues(alpha: 0.24)),
+                          border: Border.all(
+                            color: accent.withValues(alpha: 0.24),
+                          ),
                         ),
                         child: Text(
-                          statusLabel,
+                          card.statusLabel!,
                           style: theme.textTheme.labelSmall?.copyWith(
                             color: accent,
                             fontWeight: FontWeight.w700,
@@ -1008,108 +969,27 @@ class _RequirementsClaimCard extends StatelessWidget {
                     Text(
                       timestampLabel,
                       style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.58),
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.58,
+                        ),
                       ),
                     ),
                   ],
                 ),
-                if (summary.trim().isNotEmpty) ...[
+                if (card.summary.trim().isNotEmpty) ...[
                   const SizedBox(height: 10),
                   Text(
-                    summary.trim(),
+                    card.summary.trim(),
                     style: theme.textTheme.bodySmall?.copyWith(
                       height: 1.36,
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
+                      color: theme.colorScheme.onSurface.withValues(
+                        alpha: 0.82,
+                      ),
                     ),
                   ),
                 ],
-                if (requirementEntries.isNotEmpty) const SizedBox(height: 12),
-                ...requirementEntries.map((entry) {
-                  final value = entry.value as Map<String, dynamic>;
-                  final claim = value['claim'] as String? ?? 'unknown';
-                  final risk = value['risk'] as String? ?? 'unknown';
-                  final justification = value['justification'] as String? ?? '';
-                  final evidence = (value['evidence'] as List<dynamic>? ?? const [])
-                      .whereType<String>()
-                      .toList(growable: false);
-                  final claimColor = _requirementsClaimColor(theme, claim);
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        border: Border(
-                          left: BorderSide(color: claimColor, width: 3),
-                        ),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.only(left: 10),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Icon(_requirementsClaimIcon(claim), color: claimColor, size: 16),
-                                const SizedBox(width: 7),
-                                Expanded(
-                                  child: Text(
-                                    entry.key,
-                                    style: theme.textTheme.labelLarge?.copyWith(
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                ),
-                                Text(
-                                  '${_titleCaseClaim(claim)} · risk $risk',
-                                  style: theme.textTheme.labelSmall?.copyWith(
-                                    color: claimColor,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            if (justification.trim().isNotEmpty) ...[
-                              const SizedBox(height: 5),
-                              Text(
-                                justification.trim(),
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  height: 1.34,
-                                  color: theme.colorScheme.onSurface.withValues(alpha: 0.78),
-                                ),
-                              ),
-                            ],
-                            if (evidence.isNotEmpty) ...[
-                              const SizedBox(height: 6),
-                              for (final item in evidence.take(4))
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 3),
-                                  child: Row(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        '• ',
-                                        style: theme.textTheme.bodySmall?.copyWith(
-                                          color: theme.colorScheme.onSurface.withValues(alpha: 0.56),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        child: Text(
-                                          item,
-                                          style: theme.textTheme.bodySmall?.copyWith(
-                                            height: 1.32,
-                                            color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                }),
+                if (card.rows.isNotEmpty) const SizedBox(height: 12),
+                ...card.rows.map((row) => _SemanticMessageRow(row: row)),
               ],
             ),
           ),
@@ -1119,169 +999,96 @@ class _RequirementsClaimCard extends StatelessWidget {
   }
 }
 
-class _RequirementsVerdictCard extends StatelessWidget {
-  const _RequirementsVerdictCard({
-    required this.entry,
-    required this.payload,
-  });
+class _SemanticMessageRow extends StatelessWidget {
+  const _SemanticMessageRow({required this.row});
 
-  final ChatEntry entry;
-  final Map<String, dynamic> payload;
+  final ChatSemanticRow row;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final timestampLabel = formatLocalTimeLabel(entry.timestamp);
-    final overall = payload['overallVerdict'] as String? ?? 'unknown';
-    final route = payload['route'] is Map<String, dynamic>
-        ? payload['route'] as Map<String, dynamic>
-        : const <String, dynamic>{};
-    final routeMessage = route['message'] as String? ?? '';
-    final requirementEntries = payload.entries
-        .where((entry) =>
-            entry.key != 'overallVerdict' &&
-            entry.key != 'route' &&
-            entry.value is Map<String, dynamic>)
-        .toList(growable: false);
-    final accent = _requirementsVerdictColor(theme, overall);
-    final title = switch (overall) {
-      'pass' => 'Requirements Review Passed',
-      'fail' => 'Requirements Review Failed',
-      'acceptedBlocked' => 'Requirements Review Accepted Blocker',
-      'rejectedBlocked' => 'Requirements Review Rejected Blocker',
-      'needsHumanWaiver' => 'Requirements Review Needs Waiver',
-      _ => 'Requirements Review',
-    };
-
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 760),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            color: Color.alphaBlend(
-              accent.withValues(alpha: 0.08),
-              theme.colorScheme.surface,
-            ),
-            border: Border.all(color: accent.withValues(alpha: 0.28)),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(_requirementsVerdictIcon(overall), color: accent, size: 18),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        title,
-                        style: theme.textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+    final rowColor = _semanticToneColor(theme, row.tone);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(left: BorderSide(color: rowColor, width: 3)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.only(left: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(_semanticIcon(row.icon), color: rowColor, size: 16),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      row.title,
+                      style: theme.textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
                       ),
-                    ),
-                    Text(
-                      timestampLabel,
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.58),
-                      ),
-                    ),
-                  ],
-                ),
-                if (routeMessage.trim().isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  Text(
-                    routeMessage.trim(),
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      height: 1.36,
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.82),
                     ),
                   ),
-                ],
-                const SizedBox(height: 12),
-                ...requirementEntries.map((entry) {
-                  final value = entry.value as Map<String, dynamic>;
-                  final verdict = value['verdict'] as String? ?? 'unknown';
-                  final reason = value['reason'] as String? ?? '';
-                  final evidenceAssessment = value['evidenceAssessment'] as String? ?? '';
-                  final requiredCorrection = value['requiredCorrection'] as String? ?? '';
-                  final verdictColor = _requirementsVerdictColor(theme, verdict);
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        border: Border(
-                          left: BorderSide(color: verdictColor, width: 3),
-                        ),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.only(left: 10),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Icon(_requirementsVerdictIcon(verdict), color: verdictColor, size: 16),
-                                const SizedBox(width: 7),
-                                Expanded(
-                                  child: Text(
-                                    entry.key,
-                                    style: theme.textTheme.labelLarge?.copyWith(
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                ),
-                                Text(
-                                  _titleCaseVerdict(verdict),
-                                  style: theme.textTheme.labelSmall?.copyWith(
-                                    color: verdictColor,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            if (reason.trim().isNotEmpty) ...[
-                              const SizedBox(height: 5),
-                              Text(
-                                reason.trim(),
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  height: 1.34,
-                                  color: theme.colorScheme.onSurface.withValues(alpha: 0.78),
-                                ),
-                              ),
-                            ],
-                            if (evidenceAssessment.trim().isNotEmpty) ...[
-                              const SizedBox(height: 5),
-                              Text(
-                                'Evidence: ${evidenceAssessment.trim()}',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  height: 1.32,
-                                  color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
-                                ),
-                              ),
-                            ],
-                            if (requiredCorrection.trim().isNotEmpty) ...[
-                              const SizedBox(height: 5),
-                              Text(
-                                'Correction: ${requiredCorrection.trim()}',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  height: 1.32,
-                                  color: verdictColor.withValues(alpha: 0.9),
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
+                  if (row.trailingLabel != null)
+                    Text(
+                      row.trailingLabel!,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: rowColor,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
-                  );
-                }),
+                ],
+              ),
+              if (row.summary.trim().isNotEmpty) ...[
+                const SizedBox(height: 5),
+                Text(
+                  row.summary.trim(),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    height: 1.34,
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.78),
+                  ),
+                ),
               ],
-            ),
+              if (row.detail?.trim().isNotEmpty == true) ...[
+                const SizedBox(height: 5),
+                Text(
+                  row.detail!.trim(),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    height: 1.32,
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                  ),
+                ),
+              ],
+              if (row.bullets.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                for (final item in row.bullets)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 3),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '• ',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withValues(alpha: 0.56),
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            item,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              height: 1.32,
+                              color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ],
           ),
         ),
       ),
@@ -1330,9 +1137,7 @@ class _AnimatedStatusIcon extends StatelessWidget {
 }
 
 class _AnimatedStatusDot extends StatelessWidget {
-  const _AnimatedStatusDot({
-    required this.color,
-  });
+  const _AnimatedStatusDot({required this.color});
 
   final Color color;
 
@@ -1368,117 +1173,21 @@ void _copyBubbleText(BuildContext context, String text) {
   );
 }
 
-Map<String, dynamic>? _requirementsClaimPayloadFromBody(ChatEntry entry) {
-  if (entry.isStreaming || entry.author != 'Assistant') {
-    return null;
-  }
-  final text = entry.body.trim();
-  if (!text.startsWith('{') || !text.endsWith('}')) {
-    return null;
-  }
-  try {
-    final decoded = jsonDecode(text);
-    if (decoded is! Map<String, dynamic>) {
-      return null;
-    }
-    final disposition = decoded['finalDisposition'];
-    final requirements = decoded['requirements'];
-    if (decoded['summary'] is String &&
-        (requirements == null || requirements is Map<String, dynamic>)) {
-      return decoded;
-    }
-    if (disposition is String && decoded['summary'] is String) {
-      return decoded;
-    }
-  } catch (_) {
-    return null;
-  }
-  return null;
-}
-
-Map<String, dynamic>? _requirementsVerdictPayloadFromBody(ChatEntry entry) {
-  if (entry.isStreaming || entry.author != 'Assistant') {
-    return null;
-  }
-  final text = entry.body.trim();
-  if (!text.startsWith('{') || !text.endsWith('}')) {
-    return null;
-  }
-  try {
-    final decoded = jsonDecode(text);
-    if (decoded is! Map<String, dynamic>) {
-      return null;
-    }
-    final nestedRequirements = decoded['requirements'];
-    final verdictPayload = nestedRequirements is Map<String, dynamic>
-        ? nestedRequirements
-        : decoded;
-    final overall = verdictPayload['overallVerdict'];
-    final route = verdictPayload['route'];
-	    if (overall is String && route is Map<String, dynamic>) {
-	      return verdictPayload;
-	    }
-  } catch (_) {
-    return null;
-  }
-  return null;
-}
-
-Map<String, dynamic>? _plannerPayloadFromBody(ChatEntry entry) {
-  if (entry.isStreaming || entry.author != 'Assistant') {
-    return null;
-  }
-  final text = entry.body.trim();
-  if (!text.startsWith('{') || !text.endsWith('}')) {
-    return null;
-  }
-  try {
-    final decoded = jsonDecode(text);
-    if (decoded is! Map<String, dynamic>) {
-      return null;
-    }
-    if (decoded['response'] is! String || !decoded.containsKey('currentPlan')) {
-      return null;
-    }
-    final clarification = decoded['clarification'];
-    if (clarification != null) {
-      if (clarification is! Map<String, dynamic> ||
-          clarification['question'] is! String ||
-          clarification['options'] is! List<dynamic>) {
-        return null;
-      }
-    }
-    return decoded;
-  } catch (_) {
-    return null;
-  }
-}
-
 class _PlannerResponseCard extends StatelessWidget {
   const _PlannerResponseCard({
     required this.entry,
-    required this.payload,
+    required this.card,
     required this.onPick,
   });
 
   final ChatEntry entry;
-  final Map<String, dynamic> payload;
+  final ChatSemanticCard card;
   final ValueChanged<String> onPick;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final currentPlan = payload['currentPlan'] as String?;
-    final response = payload['response'] as String? ?? '';
-    final clarification = payload['clarification'];
-    final options = clarification is Map<String, dynamic>
-        ? (clarification['options'] as List<dynamic>? ?? const [])
-            .whereType<Map<String, dynamic>>()
-            .toList(growable: false)
-        : const <Map<String, dynamic>>[];
-    final question = clarification is Map<String, dynamic>
-        ? clarification['question'] as String?
-        : null;
+    final question = card.rows.isEmpty ? null : card.rows.first.title;
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -1507,9 +1216,7 @@ class _PlannerResponseCard extends StatelessWidget {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        currentPlan?.trim().isNotEmpty == true
-                            ? currentPlan!.trim()
-                            : 'Planner',
+                        card.title.trim().isNotEmpty ? card.title.trim() : 'Planner',
                         style: theme.textTheme.labelLarge?.copyWith(
                           fontWeight: FontWeight.w800,
                         ),
@@ -1525,7 +1232,7 @@ class _PlannerResponseCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 SelectableText(
-                  response,
+                  card.summary,
                   scrollPhysics: const NeverScrollableScrollPhysics(),
                   style: theme.textTheme.bodyMedium?.copyWith(height: 1.4),
                 ),
@@ -1542,10 +1249,10 @@ class _PlannerResponseCard extends StatelessWidget {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      for (final option in options)
+                      for (final option in card.plannerOptions)
                         _PlannerClarificationButton(
-                          label: option['label'] as String? ?? '',
-                          description: option['description'] as String? ?? '',
+                          label: option.label,
+                          description: option.description,
                           onPick: onPick,
                         ),
                     ],
@@ -1587,69 +1294,34 @@ class _PlannerClarificationButton extends StatelessWidget {
   }
 }
 
-IconData _requirementsDispositionIcon(String disposition) {
-  return switch (disposition) {
-    'readyForRequirementsReview' => Icons.fact_check_rounded,
-    'blockedNeedsOwnerAction' => Icons.warning_amber_rounded,
-    'continueWorkNeeded' => Icons.build_circle_outlined,
-    _ => Icons.rule_outlined,
-  };
-}
-
-IconData _requirementsVerdictIcon(String verdict) {
-  return switch (verdict) {
-    'pass' => Icons.verified_rounded,
-    'fail' => Icons.cancel_rounded,
-    'acceptedBlocked' => Icons.warning_amber_rounded,
-    'rejectedBlocked' => Icons.report_problem_outlined,
-    'needsHumanWaiver' => Icons.gavel_rounded,
+IconData _semanticIcon(String icon) {
+  return switch (icon) {
+    'factCheck' => Icons.fact_check_rounded,
+    'warning' => Icons.warning_amber_rounded,
+    'build' => Icons.build_circle_outlined,
+    'rule' => Icons.rule_outlined,
+    'notes' => Icons.notes_rounded,
+    'verified' => Icons.verified_rounded,
+    'cancel' => Icons.cancel_rounded,
+    'problem' => Icons.report_problem_outlined,
+    'gavel' => Icons.gavel_rounded,
+    'check' => Icons.check_circle_rounded,
+    'remove' => Icons.remove_circle_outline,
+    'dot' => Icons.radio_button_checked_rounded,
+    'planner' => Icons.psychology_alt_outlined,
+    'question' => Icons.help_outline_rounded,
     _ => Icons.rate_review_outlined,
   };
 }
 
-IconData _requirementsClaimIcon(String claim) {
-  return switch (claim) {
-    'satisfied' => Icons.check_circle_rounded,
-    'notSatisfied' => Icons.cancel_rounded,
-    'blocked' => Icons.warning_amber_rounded,
-    'notApplicable' => Icons.remove_circle_outline,
-    _ => Icons.radio_button_checked_rounded,
-  };
-}
-
-Color _requirementsVerdictColor(ThemeData theme, String verdict) {
-  return switch (verdict) {
-    'pass' => Colors.green.shade700,
-    'fail' || 'rejectedBlocked' => theme.colorScheme.error,
-    'acceptedBlocked' || 'needsHumanWaiver' => Colors.amber.shade800,
+Color _semanticToneColor(ThemeData theme, String tone) {
+  return switch (tone) {
+    'success' => Colors.green.shade700,
+    'danger' => theme.colorScheme.error,
+    'warning' => Colors.amber.shade800,
+    'muted' => theme.colorScheme.outline,
+    'primary' => theme.colorScheme.primary,
     _ => theme.colorScheme.secondary,
-  };
-}
-
-Color _requirementsClaimColor(ThemeData theme, String claim) {
-  return switch (claim) {
-    'satisfied' => Colors.green.shade700,
-    'notSatisfied' => theme.colorScheme.error,
-    'blocked' => Colors.amber.shade800,
-    'notApplicable' => theme.colorScheme.outline,
-    _ => theme.colorScheme.secondary,
-  };
-}
-
-String _titleCaseVerdict(String verdict) {
-  return switch (verdict) {
-    'acceptedBlocked' => 'Accepted blocker',
-    'rejectedBlocked' => 'Rejected blocker',
-    'needsHumanWaiver' => 'Needs waiver',
-    _ => verdict.isEmpty ? 'Unknown' : verdict[0].toUpperCase() + verdict.substring(1),
-  };
-}
-
-String _titleCaseClaim(String claim) {
-  return switch (claim) {
-    'notSatisfied' => 'Not satisfied',
-    'notApplicable' => 'Not applicable',
-    _ => claim.isEmpty ? 'Unknown' : claim[0].toUpperCase() + claim.substring(1),
   };
 }
 
@@ -1668,7 +1340,9 @@ MarkdownStyleSheet _conversationMarkdownStyle(ThemeData theme, bool isPending) {
       fontSize: (theme.textTheme.bodySmall?.fontSize ?? 12) * 0.94,
       height: 1.35,
       color: theme.colorScheme.onSurface,
-      backgroundColor: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.9),
+      backgroundColor: theme.colorScheme.surfaceContainerHighest.withValues(
+        alpha: 0.9,
+      ),
     ),
     codeblockPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
     codeblockDecoration: BoxDecoration(
@@ -1680,7 +1354,9 @@ MarkdownStyleSheet _conversationMarkdownStyle(ThemeData theme, bool isPending) {
     ),
     blockquote: theme.textTheme.bodySmall?.copyWith(
       height: 1.35,
-      color: theme.colorScheme.onSurface.withValues(alpha: isPending ? 0.78 : 0.9),
+      color: theme.colorScheme.onSurface.withValues(
+        alpha: isPending ? 0.78 : 0.9,
+      ),
     ),
     blockquotePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
     blockquoteDecoration: BoxDecoration(
@@ -1693,9 +1369,7 @@ MarkdownStyleSheet _conversationMarkdownStyle(ThemeData theme, bool isPending) {
         ),
       ),
     ),
-    listBullet: theme.textTheme.bodySmall?.copyWith(
-      height: 1.35,
-    ),
+    listBullet: theme.textTheme.bodySmall?.copyWith(height: 1.35),
   );
 }
 
@@ -1734,7 +1408,9 @@ List<InlineSpan> _highlightNodesToSpans(
   TextStyle baseStyle,
   ThemeData theme,
 ) {
-  return nodes.map((node) => _highlightNodeToSpan(node, baseStyle, theme)).toList();
+  return nodes
+      .map((node) => _highlightNodeToSpan(node, baseStyle, theme))
+      .toList();
 }
 
 InlineSpan _highlightNodeToSpan(
@@ -1749,10 +1425,7 @@ InlineSpan _highlightNodeToSpan(
       children: _highlightNodesToSpans(node.children!, style, theme),
     );
   }
-  return TextSpan(
-    text: node.value ?? '',
-    style: style,
-  );
+  return TextSpan(text: node.value ?? '', style: style);
 }
 
 TextStyle? _highlightStyleForClass(String? className, ThemeData theme) {
@@ -1813,14 +1486,12 @@ class _InlineEventRow extends StatelessWidget {
     required this.expanded,
     required this.onExpandedChanged,
     this.onTerminateCommandExecution,
-    this.bridgeBaseUri,
   });
 
   final ChatEntry entry;
   final bool expanded;
   final ValueChanged<bool> onExpandedChanged;
   final ValueChanged<String>? onTerminateCommandExecution;
-  final Uri? bridgeBaseUri;
 
   @override
   Widget build(BuildContext context) {
@@ -1833,15 +1504,9 @@ class _InlineEventRow extends StatelessWidget {
           onTerminateCommandExecution: onTerminateCommandExecution,
         );
       case 'imageGeneration':
-        return _ImageGenerationEventRow(
-          entry: entry,
-          bridgeBaseUri: bridgeBaseUri,
-        );
+        return _ImageGenerationEventRow(entry: entry);
       case 'imageView':
-        return _ImageGenerationEventRow(
-          entry: entry,
-          bridgeBaseUri: bridgeBaseUri,
-        );
+        return _ImageGenerationEventRow(entry: entry);
       case 'mcpToolCall':
         return _ToolEventRow(
           entry: entry,
@@ -1867,28 +1532,15 @@ class _InlineEventRow extends StatelessWidget {
 class _ImageGenerationEventRow extends StatelessWidget {
   const _ImageGenerationEventRow({
     required this.entry,
-    required this.bridgeBaseUri,
   });
 
   final ChatEntry entry;
-  final Uri? bridgeBaseUri;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
     final path = entry.output?.trim();
-    final canLoad = bridgeBaseUri != null && path != null && path.isNotEmpty;
-    final thumbnailUri = canLoad
-        ? bridgeBaseUri!.resolve('/images/thumbnail').replace(
-              queryParameters: {'saved_path': path},
-            )
-        : null;
-    final imageUri = canLoad
-        ? bridgeBaseUri!.resolve('/images/image').replace(
-              queryParameters: {'saved_path': path},
-            )
-        : null;
 
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 760),
@@ -1897,23 +1549,8 @@ class _ImageGenerationEventRow extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (thumbnailUri != null) ...[
-              InkWell(
-                borderRadius: BorderRadius.circular(14),
-                onTap: () => _showImageDialog(context, imageUri!, path!),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(14),
-                  child: Image.network(
-                    thumbnailUri.toString(),
-                    width: 100,
-                    height: 100,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => const _ImagePlaceholder(),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-            ],
+            const _ImagePlaceholder(),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1924,7 +1561,9 @@ class _ImageGenerationEventRow extends StatelessWidget {
                         'Image',
                         style: theme.textTheme.labelMedium?.copyWith(
                           fontWeight: FontWeight.w800,
-                          color: theme.colorScheme.onSurface.withValues(alpha: 0.9),
+                          color: theme.colorScheme.onSurface.withValues(
+                            alpha: 0.9,
+                          ),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -1937,7 +1576,9 @@ class _ImageGenerationEventRow extends StatelessWidget {
                       Text(
                         timestampLabel,
                         style: theme.textTheme.labelSmall?.copyWith(
-                          color: theme.colorScheme.onSurface.withValues(alpha: 0.58),
+                          color: theme.colorScheme.onSurface.withValues(
+                            alpha: 0.58,
+                          ),
                         ),
                       ),
                     ],
@@ -1947,7 +1588,9 @@ class _ImageGenerationEventRow extends StatelessWidget {
                     SelectableText(
                       entry.command!.trim(),
                       style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.88),
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.88,
+                        ),
                       ),
                     ),
                   ],
@@ -1957,7 +1600,9 @@ class _ImageGenerationEventRow extends StatelessWidget {
                       path,
                       style: theme.textTheme.bodySmall?.copyWith(
                         fontFamily: 'monospace',
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.62),
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.62,
+                        ),
                       ),
                     ),
                   ],
@@ -1967,56 +1612,6 @@ class _ImageGenerationEventRow extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-
-  void _showImageDialog(BuildContext context, Uri imageUri, String path) {
-    showDialog<void>(
-      context: context,
-      builder: (context) {
-        return Dialog(
-          backgroundColor: Colors.black,
-          insetPadding: const EdgeInsets.all(18),
-          child: Stack(
-            children: [
-              InteractiveViewer(
-                minScale: 0.5,
-                maxScale: 6,
-                child: Center(
-                  child: Image.network(
-                    imageUri.toString(),
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, _, _) => const Padding(
-                      padding: EdgeInsets.all(32),
-                      child: _ImagePlaceholder(),
-                    ),
-                  ),
-                ),
-              ),
-              Positioned(
-                top: 8,
-                right: 8,
-                child: IconButton.filledTonal(
-                  tooltip: 'Close',
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.close),
-                ),
-              ),
-              Positioned(
-                left: 12,
-                right: 64,
-                bottom: 12,
-                child: SelectableText(
-                  path,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Colors.white.withValues(alpha: 0.78),
-                      ),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 }
@@ -2059,8 +1654,12 @@ class _CommandEventRow extends StatelessWidget {
     final statusColor = _eventStatusColor(theme, entry);
     final statusIcon = _eventStatusIcon(entry);
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
-    final canExpand = _hasValue(entry.output) || _hasValue(entry.body) || _hasValue(entry.processId);
-    final canTerminate = (entry.isStreaming || _isInProgressStatus(entry.status)) &&
+    final canExpand =
+        _hasValue(entry.output) ||
+        _hasValue(entry.body) ||
+        _hasValue(entry.processId);
+    final canTerminate =
+        (entry.isStreaming || _isInProgressStatus(entry.status)) &&
         (entry.processId?.trim().isNotEmpty ?? false) &&
         entry.id.trim().isNotEmpty &&
         onTerminateCommandExecution != null;
@@ -2095,9 +1694,13 @@ class _CommandEventRow extends StatelessWidget {
                     child: Padding(
                       padding: const EdgeInsets.all(2),
                       child: Icon(
-                        expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                        expanded
+                            ? Icons.keyboard_arrow_up_rounded
+                            : Icons.keyboard_arrow_down_rounded,
                         size: 18,
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.68,
+                        ),
                       ),
                     ),
                   ),
@@ -2112,18 +1715,24 @@ class _CommandEventRow extends StatelessWidget {
                 if (canTerminate) ...[
                   const SizedBox(width: 6),
                   Semantics(
-                    key: ValueKey('semantic.command.terminate.${entry.processId}'),
+                    key: ValueKey(
+                      'semantic.command.terminate.${entry.processId}',
+                    ),
                     container: true,
                     button: true,
                     label: 'Terminate command process ${entry.processId}',
                     child: ExcludeSemantics(
                       child: IconButton(
-                        onPressed: () => onTerminateCommandExecution?.call(entry.processId!),
+                        onPressed: () =>
+                            onTerminateCommandExecution?.call(entry.processId!),
                         icon: const Icon(Icons.stop_circle_outlined, size: 16),
                         tooltip: 'Terminate command',
                         splashRadius: 14,
                         padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints.tightFor(width: 22, height: 22),
+                        constraints: const BoxConstraints.tightFor(
+                          width: 22,
+                          height: 22,
+                        ),
                         visualDensity: VisualDensity.compact,
                         color: theme.colorScheme.error,
                       ),
@@ -2135,7 +1744,9 @@ class _CommandEventRow extends StatelessWidget {
             const SizedBox(height: 6),
             if (expanded)
               Text(
-                entry.command?.trim().isNotEmpty == true ? entry.command!.trim() : entry.body.trim(),
+                entry.command?.trim().isNotEmpty == true
+                    ? entry.command!.trim()
+                    : entry.body.trim(),
                 style: theme.textTheme.bodySmall?.copyWith(
                   fontFamily: 'monospace',
                   height: 1.38,
@@ -2144,7 +1755,11 @@ class _CommandEventRow extends StatelessWidget {
               )
             else
               Text(
-                _compactPreview(entry.command?.trim().isNotEmpty == true ? entry.command!.trim() : entry.body.trim()),
+                _compactPreview(
+                  entry.command?.trim().isNotEmpty == true
+                      ? entry.command!.trim()
+                      : entry.body.trim(),
+                ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.bodySmall?.copyWith(
@@ -2194,9 +1809,16 @@ class _ToolEventRow extends StatelessWidget {
     final theme = Theme.of(context);
     final statusColor = _eventStatusColor(theme, entry);
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
-    final canExpand = _hasValue(entry.output) || _needsExpansion(entry.command) || _needsExpansion(entry.body);
-    final title = entry.subtitle?.trim().isNotEmpty == true ? entry.subtitle!.trim() : 'Tool';
-    final preview = entry.command?.trim().isNotEmpty == true ? entry.command!.trim() : entry.body.trim();
+    final canExpand =
+        _hasValue(entry.output) ||
+        _needsExpansion(entry.command) ||
+        _needsExpansion(entry.body);
+    final title = entry.subtitle?.trim().isNotEmpty == true
+        ? entry.subtitle!.trim()
+        : 'Tool';
+    final preview = entry.command?.trim().isNotEmpty == true
+        ? entry.command!.trim()
+        : entry.body.trim();
 
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 760),
@@ -2221,7 +1843,9 @@ class _ToolEventRow extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.labelMedium?.copyWith(
                       fontWeight: FontWeight.w700,
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.88),
+                      color: theme.colorScheme.onSurface.withValues(
+                        alpha: 0.88,
+                      ),
                     ),
                   ),
                 ),
@@ -2233,9 +1857,13 @@ class _ToolEventRow extends StatelessWidget {
                     child: Padding(
                       padding: const EdgeInsets.all(2),
                       child: Icon(
-                        expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                        expanded
+                            ? Icons.keyboard_arrow_up_rounded
+                            : Icons.keyboard_arrow_down_rounded,
                         size: 18,
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.68,
+                        ),
                       ),
                     ),
                   ),
@@ -2286,9 +1914,14 @@ class _FileChangeEventRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
-    final hasUnifiedDiff = _hasValue(entry.output) && _looksLikeUnifiedDiff(entry.output!);
-    final canExpand = !hasUnifiedDiff && (_hasValue(entry.output) || _hasValue(entry.command));
-    final summary = entry.command?.trim().isNotEmpty == true ? entry.command!.trim() : entry.body.trim();
+    final hasUnifiedDiff =
+        _hasValue(entry.output) && _looksLikeUnifiedDiff(entry.output!);
+    final canExpand =
+        !hasUnifiedDiff &&
+        (_hasValue(entry.output) || _hasValue(entry.command));
+    final summary = entry.command?.trim().isNotEmpty == true
+        ? entry.command!.trim()
+        : entry.body.trim();
 
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 760),
@@ -2311,7 +1944,9 @@ class _FileChangeEventRow extends StatelessWidget {
                     children: [
                       Text(
                         'Files',
-                        style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w800),
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                       if (canExpand) ...[
                         const SizedBox(width: 2),
@@ -2321,9 +1956,13 @@ class _FileChangeEventRow extends StatelessWidget {
                           child: Padding(
                             padding: const EdgeInsets.all(2),
                             child: Icon(
-                              expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                              expanded
+                                  ? Icons.keyboard_arrow_up_rounded
+                                  : Icons.keyboard_arrow_down_rounded,
                               size: 18,
-                              color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                              color: theme.colorScheme.onSurface.withValues(
+                                alpha: 0.68,
+                              ),
                             ),
                           ),
                         ),
@@ -2338,7 +1977,9 @@ class _FileChangeEventRow extends StatelessWidget {
                       expanded ? summary : _compactPreview(summary),
                       style: theme.textTheme.bodySmall?.copyWith(
                         height: 1.34,
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.76),
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.76,
+                        ),
                       ),
                     ),
                   ],
@@ -2347,7 +1988,11 @@ class _FileChangeEventRow extends StatelessWidget {
                     _DiffEventSection(value: entry.output!),
                   ] else if (expanded && _hasValue(entry.output)) ...[
                     const SizedBox(height: 8),
-                    _EventSection(label: 'Diff', value: entry.output!, mono: true),
+                    _EventSection(
+                      label: 'Diff',
+                      value: entry.output!,
+                      mono: true,
+                    ),
                   ],
                 ],
               ),
@@ -2374,22 +2019,23 @@ class _GenericEventRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
-    final canExpand = _needsExpansion(entry.body) || _hasValue(entry.output) || _hasValue(entry.command);
+    final canExpand =
+        _needsExpansion(entry.body) ||
+        _hasValue(entry.output) ||
+        _hasValue(entry.command);
     final label = _genericEventTitle(entry);
     final summary = _hasValue(entry.body)
         ? entry.body.trim()
         : _hasValue(entry.command)
-            ? entry.command!.trim()
-            : entry.displayLabel;
+        ? entry.command!.trim()
+        : entry.displayLabel;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _AnimatedStatusDot(
-            color: _eventStatusColor(theme, entry),
-          ),
+          _AnimatedStatusDot(color: _eventStatusColor(theme, entry)),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -2399,7 +2045,9 @@ class _GenericEventRow extends StatelessWidget {
                   children: [
                     Text(
                       label,
-                      style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w700),
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     if (canExpand) ...[
                       const SizedBox(width: 2),
@@ -2409,9 +2057,13 @@ class _GenericEventRow extends StatelessWidget {
                         child: Padding(
                           padding: const EdgeInsets.all(2),
                           child: Icon(
-                            expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                            expanded
+                                ? Icons.keyboard_arrow_up_rounded
+                                : Icons.keyboard_arrow_down_rounded,
                             size: 18,
-                            color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
+                            color: theme.colorScheme.onSurface.withValues(
+                              alpha: 0.68,
+                            ),
                           ),
                         ),
                       ),
@@ -2426,13 +2078,19 @@ class _GenericEventRow extends StatelessWidget {
                     expanded ? summary : _compactPreview(summary),
                     style: theme.textTheme.bodySmall?.copyWith(
                       height: 1.34,
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.72),
+                      color: theme.colorScheme.onSurface.withValues(
+                        alpha: 0.72,
+                      ),
                     ),
                   ),
                 ],
                 if (expanded && _hasValue(entry.output)) ...[
                   const SizedBox(height: 8),
-                  _EventSection(label: 'Output', value: entry.output!, mono: true),
+                  _EventSection(
+                    label: 'Output',
+                    value: entry.output!,
+                    mono: true,
+                  ),
                 ],
               ],
             ),
@@ -2444,9 +2102,7 @@ class _GenericEventRow extends StatelessWidget {
 }
 
 class _DiffEventSection extends StatelessWidget {
-  const _DiffEventSection({
-    required this.value,
-  });
+  const _DiffEventSection({required this.value});
 
   final String value;
 
@@ -2462,14 +2118,16 @@ class _DiffEventSection extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(10),
+        color: theme.colorScheme.surfaceContainerHighest.withValues(
+          alpha: 0.18,
+        ),
         border: Border.all(
           color: theme.colorScheme.outline.withValues(alpha: 0.18),
         ),
       ),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         child: Text.rich(
           TextSpan(
             style: textStyle,
@@ -2494,33 +2152,46 @@ List<InlineSpan> _diffTextSpans(
   TextStyle baseStyle,
 ) {
   final lines = value.split('\n');
-  return lines.asMap().entries.map((entry) {
-    final line = entry.value;
-    final kind = _classifyDiffLine(line);
-    final color = switch (kind) {
-      _DiffLineKind.added => Colors.green.shade100,
-      _DiffLineKind.removed => Colors.red.shade100,
-      _DiffLineKind.hunk => theme.colorScheme.primary.withValues(alpha: 0.94),
-      _DiffLineKind.header => theme.colorScheme.onSurface.withValues(alpha: 0.62),
-      _DiffLineKind.context => theme.colorScheme.onSurface.withValues(alpha: 0.82),
-    };
-    final backgroundColor = switch (kind) {
-      _DiffLineKind.added => Colors.green.shade900.withValues(alpha: 0.18),
-      _DiffLineKind.removed => Colors.red.shade900.withValues(alpha: 0.16),
-      _DiffLineKind.hunk => theme.colorScheme.primary.withValues(alpha: 0.12),
-      _DiffLineKind.header => theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.42),
-      _DiffLineKind.context => null,
-    };
-    final suffix = entry.key == lines.length - 1 ? '' : '\n';
-    return TextSpan(
-      text: '$line$suffix',
-      style: baseStyle.copyWith(
-        color: color,
-        backgroundColor: backgroundColor,
-        fontWeight: kind == _DiffLineKind.hunk ? FontWeight.w700 : null,
-      ),
-    );
-  }).toList(growable: false);
+  return lines
+      .asMap()
+      .entries
+      .map((entry) {
+        final line = entry.value;
+        final kind = _classifyDiffLine(line);
+        final color = switch (kind) {
+          _DiffLineKind.added => Colors.green.shade100,
+          _DiffLineKind.removed => Colors.red.shade100,
+          _DiffLineKind.hunk => theme.colorScheme.primary.withValues(
+            alpha: 0.94,
+          ),
+          _DiffLineKind.header => theme.colorScheme.onSurface.withValues(
+            alpha: 0.62,
+          ),
+          _DiffLineKind.context => theme.colorScheme.onSurface.withValues(
+            alpha: 0.82,
+          ),
+        };
+        final backgroundColor = switch (kind) {
+          _DiffLineKind.added => Colors.green.shade900.withValues(alpha: 0.18),
+          _DiffLineKind.removed => Colors.red.shade900.withValues(alpha: 0.16),
+          _DiffLineKind.hunk => theme.colorScheme.primary.withValues(
+            alpha: 0.12,
+          ),
+          _DiffLineKind.header =>
+            theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.42),
+          _DiffLineKind.context => null,
+        };
+        final suffix = entry.key == lines.length - 1 ? '' : '\n';
+        return TextSpan(
+          text: '$line$suffix',
+          style: baseStyle.copyWith(
+            color: color,
+            backgroundColor: backgroundColor,
+            fontWeight: kind == _DiffLineKind.hunk ? FontWeight.w700 : null,
+          ),
+        );
+      })
+      .toList(growable: false);
 }
 
 _DiffLineKind _classifyDiffLine(String line) {
@@ -2570,7 +2241,9 @@ class _EventSection extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(10, 9, 10, 10),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
-        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.28),
+        color: theme.colorScheme.surfaceContainerHighest.withValues(
+          alpha: 0.28,
+        ),
         border: Border.all(
           color: theme.colorScheme.outline.withValues(alpha: 0.18),
         ),
@@ -2610,31 +2283,44 @@ Color _eventStatusColor(ThemeData theme, ChatEntry? entry) {
   if (status == null || status.isEmpty) {
     return theme.colorScheme.secondary;
   }
-  if (status.contains('fail') || status.contains('error') || status.contains('reject')) {
+  if (status.contains('fail') ||
+      status.contains('error') ||
+      status.contains('reject')) {
     return theme.colorScheme.error;
   }
-  if (status.contains('progress') || status.contains('pending') || status.contains('running')) {
+  if (status.contains('progress') ||
+      status.contains('pending') ||
+      status.contains('running')) {
     return Colors.amber.shade700;
   }
-  if (status.contains('complete') || status.contains('success') || status.contains('approved')) {
+  if (status.contains('complete') ||
+      status.contains('success') ||
+      status.contains('approved')) {
     return Colors.green.shade700;
   }
   return theme.colorScheme.secondary;
 }
 
-
 IconData _eventStatusIcon(ChatEntry entry) {
   final status = entry.status?.toLowerCase();
   if (status == null || status.isEmpty) {
-    return entry.isStreaming ? Icons.schedule_rounded : Icons.check_circle_rounded;
+    return entry.isStreaming
+        ? Icons.schedule_rounded
+        : Icons.check_circle_rounded;
   }
-  if (status.contains('fail') || status.contains('error') || status.contains('reject')) {
+  if (status.contains('fail') ||
+      status.contains('error') ||
+      status.contains('reject')) {
     return Icons.cancel_rounded;
   }
-  if (status.contains('progress') || status.contains('pending') || status.contains('running')) {
+  if (status.contains('progress') ||
+      status.contains('pending') ||
+      status.contains('running')) {
     return Icons.schedule_rounded;
   }
-  if (status.contains('complete') || status.contains('success') || status.contains('approved')) {
+  if (status.contains('complete') ||
+      status.contains('success') ||
+      status.contains('approved')) {
     return Icons.check_circle_rounded;
   }
   return Icons.radio_button_checked_rounded;
@@ -2662,7 +2348,7 @@ String _genericEventTitle(ChatEntry entry) {
           .where((part) => part.isNotEmpty)
           .map((part) => part[0].toUpperCase() + part.substring(1))
           .join(' ');
-    }
+  }
 }
 
 bool _needsExpansion(String? value) {
@@ -2700,7 +2386,10 @@ String? _planSummary(String body) {
       .split('\n')
       .map((line) => line.trim())
       .where((line) => line.isNotEmpty)
-      .where((line) => !RegExp(r'^\[(pending|in_progress|completed)\]\s+').hasMatch(line))
+      .where(
+        (line) =>
+            !RegExp(r'^\[(pending|in_progress|completed)\]\s+').hasMatch(line),
+      )
       .toList(growable: false);
   if (lines.isEmpty) {
     return null;
@@ -2719,23 +2408,4 @@ String? _planSummary(String body) {
       })
       .where((line) => line.isNotEmpty)
       .join(' ');
-}
-
-List<PlanChecklistItem> _planItemsFromBody(String body) {
-  final statusPattern = RegExp(r'^\[(pending|in_progress|completed)\]\s+(.+)$');
-  return body
-      .replaceAll('\r\n', '\n')
-      .split('\n')
-      .map((line) => line.trim())
-      .map(statusPattern.firstMatch)
-      .whereType<RegExpMatch>()
-      .map((match) {
-        final status = match.group(1)!;
-        return PlanChecklistItem(
-          text: match.group(2)!.trim(),
-          completed: status == 'completed',
-          status: status,
-        );
-      })
-      .toList(growable: false);
 }

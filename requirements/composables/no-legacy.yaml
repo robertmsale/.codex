@@ -11,6 +11,6 @@ appliesTo:
   - generated-artifacts
 requirements:
   - key: noLegacyLeftBehind
-    statement: Treat the assigned area as clean slate. Delete obsolete code paths, executable scripts, wrappers, aliases, hard-error stubs, tombstone files, deprecated entrypoints, fallback behavior, flags, docs, comments, tests, generated artifacts, config, migration shims, and UI affordances that preserve, describe, advertise, route to, or reserve names for legacy behavior after the replacement is complete. Do not keep compatibility artifacts or disabled legacy entrypoints.
-    severity: blocker
+    statement: Treat the assigned area as clean slate. Delete obsolete code paths, executable scripts, wrappers, aliases, hard-error stubs, tombstone files, deprecated entrypoints, fallback behavior, flags, docs, comments, tests, generated artifacts, config, migration shims, and UI affordances that preserve, describe, advertise, route to, or reserve names for legacy behavior after the replacement is complete. Do not keep compatibility artifacts or disabled legacy entrypoints. This requirement supersedes any requirements where the task has 'delete or ...' language in it. 
+    severity: OWNER
     verificationMethod: diffReview

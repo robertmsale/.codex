@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${1:-frontend/robdex_app}"
+
+network_matches="$(rg -n 'package:http|\bhttp\.|web_socket_channel|WebSocket|WebSocketChannel|ws://|wss://|["'\'']/(workbench|threads|requirements|projects|global-settings|orchestrator|uploads|images)' "$root/lib" "$root/packages/robdex_design_system/lib" "$root/packages/design_lab/lib" -g '*.dart' || true)"
+if [[ -n "$network_matches" ]]; then
+  printf '%s\n' "Dart network ownership guard failed. Rust/Rinf must own Robdex transport." >&2
+  printf '%s\n' "$network_matches" >&2
+  exit 1
+fi
+
+direct_dependency_matches="$(rg -n '^\s*(http|web_socket_channel):' "$root/pubspec.yaml" "$root/packages/robdex_design_system/pubspec.yaml" "$root/packages/design_lab/pubspec.yaml" || true)"
+if [[ -n "$direct_dependency_matches" ]]; then
+  printf '%s\n' "Dart network dependency guard failed. Remove direct HTTP/WebSocket dependencies." >&2
+  printf '%s\n' "$direct_dependency_matches" >&2
+  exit 1
+fi
+
+state_reduction_matches="$(rg -n '_requirementsClaimPayloadFromBody|_requirementsVerdictPayloadFromBody|_plannerPayloadFromBody|_planItemsFromBody|semantic payload from body|Requirements reviewer verdict from body|planner structured output from body|semanticPayload|semanticKind|Map<String, dynamic> payload|payload\[[^]]+\]|overallVerdict|finalDisposition|currentPlan|clarification\]|requirementsClaimPayload|requirementsVerdictPayload|plannerPayload' "$root/packages/robdex_design_system/lib/src/features/chat" "$root/lib/src/app" -g '*.dart' || true)"
+if [[ -n "$state_reduction_matches" ]]; then
+  printf '%s\n' "Dart state ownership guard failed. Rust must classify Requirements/planner/reviewer protocol payloads into typed UI-ready DTOs; Dart chat/app code must not interpret protocol packet maps." >&2
+  printf '%s\n' "$state_reduction_matches" >&2
+  exit 1
+fi
+
+printf '%s\n' "Dart ownership guard passed: no Robdex network transport remains in Dart app/design-system/design-lab source, and Dart chat/app code does not interpret Requirements/planner/reviewer protocol packet maps."

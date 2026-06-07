@@ -13,15 +13,18 @@ use tokio::sync::mpsc;
 use tokio_with_wasm::alias as tokio;
 
 use crate::signals::{
-    ArchiveThreadGroupSignal, ArchiveThreadSignal, CreateProjectSignal, CreateThreadGroupSignal,
-    CreateThreadSignal, DecideApprovalSignal, DeleteProjectSignal, DeleteThreadGroupSignal,
+    ArchiveThreadGroupSignal, ArchiveThreadSignal, BridgeTaskResultSignal, ClearProjectHookLogsSignal,
+    CreateProjectSignal, CreateThreadGroupSignal, CreateThreadSignal, DecideApprovalSignal,
+    DeleteProjectSignal, DeleteThreadGroupSignal,
     FetchThreadHistorySignal, InitializeWorkbenchSignal, MoveSelectedThreadToGroupSignal, ReloadWorkbenchSignal,
+    LoadProjectHookLogsSignal, LoadRequirementComposablesSignal, LoadThreadStatsSignal,
     RenameThreadGroupSignal, RenameThreadSignal, SelectProjectSignal, SelectThreadSignal,
     SendThreadMessageSignal, SetProjectOrchestratorSignal, SetThreadRunningStateSignal,
-    SpawnAgentSignal, TerminalCloseAllSignal, TerminalCloseSignal, TerminalInputSignal,
+    SetThreadRequirementsSignal, SpawnAgentSignal, TerminalCloseAllSignal, TerminalCloseSignal, TerminalInputSignal,
     TerminalEventSignal, TerminalOpenSignal, TerminalResizeSignal, TerminateCommandExecutionSignal,
     ThreadCompactSignal, UpdateGlobalSettingsSignal, UpdateProjectSignal, UpdateThreadSettingsSignal,
     UpdateWorkerMetadataSignal, InterruptThreadSignal, ThreadHistoryStateSignal, HookToastSignal,
+    UploadImageBytesSignal,
     WarmHandoffSignal, WorkbenchStateSignal,
 };
 use crate::terminal::TerminalRegistry;
@@ -33,6 +36,28 @@ enum Action {
     FetchThreadHistory,
     ThreadCompact,
     TerminateCommandExecution(String),
+    LoadThreadStats { request_id: String, thread_id: String },
+    LoadProjectHookLogs { request_id: String, project_id: String },
+    ClearProjectHookLogs { request_id: String, project_id: String },
+    LoadRequirementComposables {
+        request_id: String,
+        sender_thread_id: Option<String>,
+        recipient_thread_id: Option<String>,
+        project_path: Option<String>,
+    },
+    SetThreadRequirements {
+        request_id: String,
+        sender_thread_id: Option<String>,
+        recipient_thread_id: String,
+        project_path: Option<String>,
+        requirement_set_json: Option<String>,
+    },
+    UploadImageBytes {
+        request_id: String,
+        filename: String,
+        content_type: String,
+        bytes: Vec<u8>,
+    },
     CreateProject {
         name: String,
         root_path: String,
@@ -306,6 +331,7 @@ fn apply_optimistic_action(current_view: &mut Option<WorkbenchViewData>, action:
         command: None,
         output: None,
         delivery_state: Some("pending".to_string()),
+        semantic_card: None,
         is_streaming: false,
         is_tool: false,
     });
@@ -441,6 +467,39 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
     spawn_unit::<ThreadCompactSignal, _>(tx.clone(), || Action::ThreadCompact);
     spawn_map::<TerminateCommandExecutionSignal, _>(tx.clone(), |signal| {
         Action::TerminateCommandExecution(signal.message.process_id)
+    });
+    spawn_map::<LoadThreadStatsSignal, _>(tx.clone(), |signal| Action::LoadThreadStats {
+        request_id: signal.message.request_id,
+        thread_id: signal.message.thread_id,
+    });
+    spawn_map::<LoadProjectHookLogsSignal, _>(tx.clone(), |signal| Action::LoadProjectHookLogs {
+        request_id: signal.message.request_id,
+        project_id: signal.message.project_id,
+    });
+    spawn_map::<ClearProjectHookLogsSignal, _>(tx.clone(), |signal| Action::ClearProjectHookLogs {
+        request_id: signal.message.request_id,
+        project_id: signal.message.project_id,
+    });
+    spawn_map::<LoadRequirementComposablesSignal, _>(tx.clone(), |signal| {
+        Action::LoadRequirementComposables {
+            request_id: signal.message.request_id,
+            sender_thread_id: non_empty(signal.message.sender_thread_id),
+            recipient_thread_id: non_empty(signal.message.recipient_thread_id),
+            project_path: non_empty(signal.message.project_path),
+        }
+    });
+    spawn_map::<SetThreadRequirementsSignal, _>(tx.clone(), |signal| Action::SetThreadRequirements {
+        request_id: signal.message.request_id,
+        sender_thread_id: non_empty(signal.message.sender_thread_id),
+        recipient_thread_id: signal.message.recipient_thread_id,
+        project_path: non_empty(signal.message.project_path),
+        requirement_set_json: Some(signal.message.requirement_set_json),
+    });
+    spawn_map::<UploadImageBytesSignal, _>(tx.clone(), |signal| Action::UploadImageBytes {
+        request_id: signal.message.request_id,
+        filename: signal.message.filename,
+        content_type: signal.message.content_type,
+        bytes: signal.message.bytes,
     });
     spawn_map::<CreateProjectSignal, _>(tx.clone(), |signal| Action::CreateProject {
         name: signal.message.name,
@@ -799,6 +858,15 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
     spawn_unit::<TerminalCloseAllSignal, _>(tx, || Action::TerminalCloseAll);
 }
 
+fn non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn spawn_unit<TSignal, F>(tx: mpsc::UnboundedSender<Action>, map: F)
 where
     TSignal: DartSignal + Send + 'static,
@@ -842,12 +910,26 @@ async fn handle_action(
         }
         Action::Reload => client.as_mut().ok_or_else(|| anyhow!("Not connected"))?.load_initial_view().await,
         Action::SelectThread(thread_id) => {
-            let entries = client
-                .as_ref()
-                .ok_or_else(|| anyhow!("Not connected"))?
+            let client_ref = client.as_mut().ok_or_else(|| anyhow!("Not connected"))?;
+            let entries = client_ref
                 .fetch_thread_history(&thread_id)
                 .await?;
-            select_thread_from_current_view(current_view, &thread_id, entries)
+            if current_view
+                .as_ref()
+                .is_some_and(|view| view.threads.iter().any(|thread| thread.id == thread_id))
+            {
+                select_thread_from_current_view(current_view, &thread_id, entries)
+            } else {
+                let view = client_ref
+                    .refresh_thread_with_preserved_messages(thread_id.clone(), entries)
+                    .await?;
+                if view.selection.thread_id.as_deref() != Some(thread_id.as_str()) {
+                    return Err(anyhow!(
+                        "Thread is not present in the current workbench state"
+                    ));
+                }
+                Ok(view)
+            }
         }
         Action::FetchThreadHistory => {
             let thread_id = current_view
@@ -886,6 +968,110 @@ async fn handle_action(
                 .ok_or_else(|| anyhow!("Not connected"))?
                 .terminate_command_execution(&thread_id, &process_id)
                 .await?;
+            current_view_clone(current_view)
+        }
+        Action::LoadThreadStats { request_id, thread_id } => {
+            let task = "threadStats";
+            let result = client
+                .as_ref()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .fetch_thread_stats_json(&thread_id)
+                .await;
+            match result {
+                Ok(payload) => emit_bridge_task_result(request_id, task, payload),
+                Err(error) => emit_bridge_task_error(request_id, task, &error),
+            }
+            current_view_clone(current_view)
+        }
+        Action::LoadProjectHookLogs { request_id, project_id } => {
+            let task = "projectHookLogs";
+            let result = client
+                .as_ref()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .fetch_project_hook_logs_json(&project_id)
+                .await;
+            match result {
+                Ok(payload) => emit_bridge_task_result(request_id, task, payload),
+                Err(error) => emit_bridge_task_error(request_id, task, &error),
+            }
+            current_view_clone(current_view)
+        }
+        Action::ClearProjectHookLogs { request_id, project_id } => {
+            let task = "clearProjectHookLogs";
+            let result = client
+                .as_ref()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .clear_project_hook_logs(&project_id)
+                .await;
+            match result {
+                Ok(()) => emit_bridge_task_result(request_id, task, serde_json::json!({"ok": true})),
+                Err(error) => emit_bridge_task_error(request_id, task, &error),
+            }
+            current_view_clone(current_view)
+        }
+        Action::LoadRequirementComposables {
+            request_id,
+            sender_thread_id,
+            recipient_thread_id,
+            project_path,
+        } => {
+            let task = "requirementComposables";
+            let result = client
+                .as_ref()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .fetch_requirement_composables_json(
+                    sender_thread_id.as_deref(),
+                    recipient_thread_id.as_deref(),
+                    project_path.as_deref(),
+                )
+                .await;
+            match result {
+                Ok(payload) => emit_bridge_task_result(request_id, task, payload),
+                Err(error) => emit_bridge_task_error(request_id, task, &error),
+            }
+            current_view_clone(current_view)
+        }
+        Action::SetThreadRequirements {
+            request_id,
+            sender_thread_id,
+            recipient_thread_id,
+            project_path,
+            requirement_set_json,
+        } => {
+            let task = "setThreadRequirements";
+            let requirement_set_json = requirement_set_json.filter(|value| !value.trim().is_empty());
+            let result = client
+                .as_ref()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .set_thread_requirements_json(
+                    sender_thread_id.as_deref(),
+                    &recipient_thread_id,
+                    project_path.as_deref(),
+                    requirement_set_json,
+                )
+                .await;
+            match result {
+                Ok(payload) => emit_bridge_task_result(request_id, task, payload),
+                Err(error) => emit_bridge_task_error(request_id, task, &error),
+            }
+            current_view_clone(current_view)
+        }
+        Action::UploadImageBytes {
+            request_id,
+            filename,
+            content_type,
+            bytes,
+        } => {
+            let task = "uploadImageBytes";
+            let result = client
+                .as_ref()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .upload_image_bytes(&filename, &content_type, bytes)
+                .await;
+            match result {
+                Ok(path) => emit_bridge_task_result(request_id, task, serde_json::json!({"path": path})),
+                Err(error) => emit_bridge_task_error(request_id, task, &error),
+            }
             current_view_clone(current_view)
         }
         Action::CreateProject {
@@ -1378,6 +1564,26 @@ fn emit_thread_history_state(
         entries_json,
         is_loading,
         error_message: error_message.to_string(),
+    }
+    .send_signal_to_dart();
+}
+
+fn emit_bridge_task_result(request_id: String, task: &str, payload: serde_json::Value) {
+    BridgeTaskResultSignal {
+        request_id,
+        task: task.to_string(),
+        payload_json: serde_json::to_string(&payload).unwrap_or_else(|_| "null".to_string()),
+        error_message: String::new(),
+    }
+    .send_signal_to_dart();
+}
+
+fn emit_bridge_task_error(request_id: String, task: &str, error: &anyhow::Error) {
+    BridgeTaskResultSignal {
+        request_id,
+        task: task.to_string(),
+        payload_json: String::new(),
+        error_message: error.to_string(),
     }
     .send_signal_to_dart();
 }

@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 
 import '../../core/models/workbench_models.dart';
@@ -13,7 +11,9 @@ class InspectorPanel extends StatelessWidget {
     required this.threadGroups,
     required this.workerMetadata,
     required this.requirementReview,
-    required this.bridgeBaseUri,
+    required this.loadRequirementComposables,
+    required this.setThreadRequirements,
+    required this.uploadImageBytes,
     required this.onOpenThread,
     required this.onSettingsChanged,
     required this.onRunningStateChanged,
@@ -33,7 +33,9 @@ class InspectorPanel extends StatelessWidget {
   final List<ThreadGroupItem> threadGroups;
   final WorkerMetadata? workerMetadata;
   final RequirementReviewSummary? requirementReview;
-  final Uri? bridgeBaseUri;
+  final RequirementComposableLoader? loadRequirementComposables;
+  final Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements;
+  final ImageBytesUploader? uploadImageBytes;
   final ValueChanged<String> onOpenThread;
   final ValueChanged<ThreadSettingsDraft> onSettingsChanged;
   final ValueChanged<bool> onRunningStateChanged;
@@ -87,7 +89,9 @@ class InspectorPanel extends StatelessWidget {
                 _RequirementsReviewCard(
                   summary: requirementReview,
                   sourceThreadId: selection.threadId,
-                  bridgeBaseUri: bridgeBaseUri,
+                  loadRequirementComposables: loadRequirementComposables,
+                  setThreadRequirements: setThreadRequirements,
+                  uploadImageBytes: uploadImageBytes,
                   onOpenThread: onOpenThread,
                 ),
               ],
@@ -359,13 +363,17 @@ class _RequirementsReviewCard extends StatelessWidget {
   const _RequirementsReviewCard({
     required this.summary,
     required this.sourceThreadId,
-    required this.bridgeBaseUri,
+    required this.loadRequirementComposables,
+    required this.setThreadRequirements,
+    required this.uploadImageBytes,
     required this.onOpenThread,
   });
 
   final RequirementReviewSummary? summary;
   final String? sourceThreadId;
-  final Uri? bridgeBaseUri;
+  final RequirementComposableLoader? loadRequirementComposables;
+  final Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements;
+  final ImageBytesUploader? uploadImageBytes;
   final ValueChanged<String> onOpenThread;
 
   @override
@@ -429,7 +437,7 @@ class _RequirementsReviewCard extends StatelessWidget {
                 _InspectorActionButton(
                   label: hasStoredRequirements ? 'Replace Requirements' : 'Attach Requirements',
                   icon: Icons.rule_folder_outlined,
-                  onPressed: sourceThreadId == null || bridgeBaseUri == null
+                  onPressed: sourceThreadId == null || setThreadRequirements == null
                       ? null
                       : () => _setRequirements(context),
                 ),
@@ -505,8 +513,8 @@ class _RequirementsReviewCard extends StatelessWidget {
 
   Future<void> _setRequirements(BuildContext context) async {
     final sourceId = sourceThreadId;
-    final baseUri = bridgeBaseUri;
-    if (sourceId == null || baseUri == null) {
+    final submit = setThreadRequirements;
+    if (sourceId == null || submit == null) {
       return;
     }
     final storedRequirements = summary?.storedRequirementCount ?? 0;
@@ -523,53 +531,21 @@ class _RequirementsReviewCard extends StatelessWidget {
       helperText: 'Define active requirements for this thread. Robdex generates and submits the JSON contract.',
       showActivationToggle: hasStoredRequirements,
       requirementsActive: requirementsActive,
-      bridgeBaseUri: bridgeBaseUri,
       recipientThreadId: sourceId,
+      loadComposableItems: loadRequirementComposables,
+      uploadImageBytes: uploadImageBytes,
     );
     if (submitted == null) {
       return;
     }
-    Object? decoded;
-    if (submitted.trim().isEmpty) {
-      decoded = null;
-    } else {
-      try {
-        decoded = jsonDecode(submitted);
-      } catch (error) {
-        if (!context.mounted) {
-          return;
-        }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Invalid requirements JSON: $error')),
-        );
-        return;
-      }
-    }
     try {
-      final response = await submitThreadRequirementSet(
-        baseUri: baseUri,
-        recipientThreadId: sourceId,
-        requirementSet: decoded,
-      );
+      await submit(sourceId, submitted);
       if (!context.mounted) {
         return;
       }
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        final isInactive = decoded is Map && decoded['active'] == false;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              decoded == null
-                  ? 'Requirements cleared.'
-                  : (isInactive ? 'Requirements deactivated.' : 'Requirements set.'),
-            ),
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Set requirements failed: ${response.body}')),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Requirements updated.')),
+      );
     } catch (error) {
       if (!context.mounted) {
         return;
