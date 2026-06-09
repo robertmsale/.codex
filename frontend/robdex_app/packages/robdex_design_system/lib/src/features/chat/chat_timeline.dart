@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/foundation.dart';
@@ -1549,7 +1550,7 @@ class _ImageGenerationEventRow extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const _ImagePlaceholder(),
+            _ImagePreview(entry: entry),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -1616,8 +1617,38 @@ class _ImageGenerationEventRow extends StatelessWidget {
   }
 }
 
-class _ImagePlaceholder extends StatelessWidget {
-  const _ImagePlaceholder();
+class _ImagePreview extends StatelessWidget {
+  const _ImagePreview({required this.entry});
+
+  final ChatEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final encoded = entry.imagePreviewBase64?.trim();
+    if (encoded != null && encoded.isNotEmpty) {
+      try {
+        final bytes = base64Decode(encoded);
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: Image.memory(
+            bytes,
+            width: 100,
+            height: 100,
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+            errorBuilder: (_, _, _) => const _ImageUnavailable(),
+          ),
+        );
+      } catch (_) {
+        return const _ImageUnavailable();
+      }
+    }
+    return const _ImageUnavailable();
+  }
+}
+
+class _ImageUnavailable extends StatelessWidget {
+  const _ImageUnavailable();
 
   @override
   Widget build(BuildContext context) {

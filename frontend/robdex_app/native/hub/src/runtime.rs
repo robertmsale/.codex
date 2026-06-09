@@ -17,7 +17,7 @@ use crate::signals::{
     CreateProjectSignal, CreateThreadGroupSignal, CreateThreadSignal, DecideApprovalSignal,
     DeleteProjectSignal, DeleteThreadGroupSignal,
     FetchThreadHistorySignal, InitializeWorkbenchSignal, MoveSelectedThreadToGroupSignal, ReloadWorkbenchSignal,
-    LoadProjectHookLogsSignal, LoadRequirementComposablesSignal, LoadThreadStatsSignal,
+    LoadPeriodStatsSignal, LoadProjectHookLogsSignal, LoadRequirementComposablesSignal, LoadThreadStatsSignal,
     RenameThreadGroupSignal, RenameThreadSignal, SelectProjectSignal, SelectThreadSignal,
     SendThreadMessageSignal, SetProjectOrchestratorSignal, SetThreadRunningStateSignal,
     SetThreadRequirementsSignal, SpawnAgentSignal, TerminalCloseAllSignal, TerminalCloseSignal, TerminalInputSignal,
@@ -37,6 +37,14 @@ enum Action {
     ThreadCompact,
     TerminateCommandExecution(String),
     LoadThreadStats { request_id: String, thread_id: String },
+    LoadPeriodStats {
+        request_id: String,
+        start_ms: u64,
+        end_ms: u64,
+        label: String,
+        quota_reset_at_ms: Option<u64>,
+        quota_remaining_percent: Option<f64>,
+    },
     LoadProjectHookLogs { request_id: String, project_id: String },
     ClearProjectHookLogs { request_id: String, project_id: String },
     LoadRequirementComposables {
@@ -330,6 +338,9 @@ fn apply_optimistic_action(current_view: &mut Option<WorkbenchViewData>, action:
         process_id: None,
         command: None,
         output: None,
+        image_preview_base64: None,
+        image_preview_content_type: None,
+        image_preview_error: None,
         delivery_state: Some("pending".to_string()),
         semantic_card: None,
         is_streaming: false,
@@ -471,6 +482,14 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
     spawn_map::<LoadThreadStatsSignal, _>(tx.clone(), |signal| Action::LoadThreadStats {
         request_id: signal.message.request_id,
         thread_id: signal.message.thread_id,
+    });
+    spawn_map::<LoadPeriodStatsSignal, _>(tx.clone(), |signal| Action::LoadPeriodStats {
+        request_id: signal.message.request_id,
+        start_ms: signal.message.start_ms,
+        end_ms: signal.message.end_ms,
+        label: signal.message.label,
+        quota_reset_at_ms: signal.message.has_quota.then_some(signal.message.quota_reset_at_ms),
+        quota_remaining_percent: signal.message.has_quota.then_some(signal.message.quota_remaining_percent),
     });
     spawn_map::<LoadProjectHookLogsSignal, _>(tx.clone(), |signal| Action::LoadProjectHookLogs {
         request_id: signal.message.request_id,
@@ -976,6 +995,32 @@ async fn handle_action(
                 .as_ref()
                 .ok_or_else(|| anyhow!("Not connected"))?
                 .fetch_thread_stats_json(&thread_id)
+                .await;
+            match result {
+                Ok(payload) => emit_bridge_task_result(request_id, task, payload),
+                Err(error) => emit_bridge_task_error(request_id, task, &error),
+            }
+            current_view_clone(current_view)
+        }
+        Action::LoadPeriodStats {
+            request_id,
+            start_ms,
+            end_ms,
+            label,
+            quota_reset_at_ms,
+            quota_remaining_percent,
+        } => {
+            let task = "periodStats";
+            let result = client
+                .as_ref()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .fetch_period_stats_json(
+                    start_ms,
+                    end_ms,
+                    &label,
+                    quota_reset_at_ms,
+                    quota_remaining_percent,
+                )
                 .await;
             match result {
                 Ok(payload) => emit_bridge_task_result(request_id, task, payload),

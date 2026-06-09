@@ -83,7 +83,29 @@ if tmux has-session -t "$session" 2>/dev/null; then
   exit 1
 fi
 
-cmd=(flutter run -d "$device_id")
+path_without_codex_shim=""
+IFS=':' read -r -a path_entries <<<"${PATH:-}"
+for path_entry in "${path_entries[@]}"; do
+  [[ -z "$path_entry" || "$path_entry" == "$HOME/.codex/shim" ]] && continue
+  if [[ -n "$path_without_codex_shim" ]]; then
+    path_without_codex_shim+=":$path_entry"
+  else
+    path_without_codex_shim="$path_entry"
+  fi
+done
+runtime_path="$path_without_codex_shim"
+for required_path in /usr/bin /bin /usr/sbin /sbin /usr/local/bin /opt/homebrew/bin; do
+  case ":$runtime_path:" in
+    *":$required_path:"*) ;;
+    *) runtime_path="$runtime_path:$required_path" ;;
+  esac
+done
+runtime_path="${runtime_path#:}"
+
+flutter_bin="$(PATH="$runtime_path" command -v flutter || true)"
+[[ -n "$flutter_bin" ]] || { echo "real flutter binary not found outside $HOME/.codex/shim" >&2; exit 1; }
+
+cmd=("$flutter_bin" run -d "$device_id")
 [[ -n "$target" ]] && cmd+=(--target "$target")
 [[ -n "$flavor" ]] && cmd+=(--flavor "$flavor")
 if [[ ${#extra_args[@]} -gt 0 ]]; then
@@ -97,6 +119,7 @@ escaped_cmd="$(printf '%q ' "${cmd[@]}")"
 cat >"$runner" <<EOF
 #!/bin/bash
 set -o pipefail
+export PATH="$(printf '%q' "$runtime_path")"
 cd "$(printf '%q' "$workdir")" || exit 1
 {
   printf '[designer-flutter-run] session: %s\n' "$(printf '%q' "$session")"
@@ -104,7 +127,8 @@ cd "$(printf '%q' "$workdir")" || exit 1
   printf '[designer-flutter-run] device: %s\n' "$(printf '%q' "$device_id")"
   printf '[designer-flutter-run] command: %s\n' "$(printf '%q' "${cmd[0]}") ${escaped_cmd#* }"
   printf '[designer-flutter-run] flutter path: '
-  command -v flutter || true
+  printf '%s\n' "$(printf '%q' "$flutter_bin")"
+  printf '[designer-flutter-run] PATH: %s\n' "\$PATH"
   printf '[designer-flutter-run] started at: %s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   ROBDEX_DESIGNER_FLUTTER_RUN=1 ${escaped_cmd% }
   status=\$?
@@ -115,8 +139,7 @@ exit "\${PIPESTATUS[0]}"
 EOF
 chmod +x "$runner"
 
-tmux new-session -d -s "$session" -c "$workdir"
-tmux send-keys -t "$session" "$runner" C-m
+tmux new-session -d -s "$session" -c "$workdir" /bin/bash "$runner"
 
 for _ in {1..20}; do
   if [[ -s "$log_file" ]]; then

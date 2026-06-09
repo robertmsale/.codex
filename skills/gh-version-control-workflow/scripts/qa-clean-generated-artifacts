@@ -1,0 +1,27 @@
+#!/bin/bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+codex_root="$(cd "$script_dir/../../.." && pwd)"
+
+source "$codex_root/scripts/privileged_exec_bypass.sh"
+# shellcheck source=./_worktree_lib.sh
+source "$script_dir/_worktree_lib.sh"
+
+if [[ $# -ne 1 ]]; then
+  cat >&2 <<'EOF'
+Usage:
+  qa-clean-generated-artifacts <worktree_path>
+
+Discard only sanctioned QA build/runtime dirt in a managed .worktrees checkout.
+Currently allowed:
+  clients/app/ios/Podfile.lock
+  clients/packages/design_system/lib/src/copy/generated
+EOF
+  exit 2
+fi
+
+run_via_privileged_exec_bypass_script "$script_dir/qa-clean-generated-artifacts" "$@"
+
+worktree_path="$(normalize_mirrored_path "$1")"
+qa_clean_generated_artifacts_cmd "$worktree_path"

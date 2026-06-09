@@ -54,6 +54,16 @@ class RobdexDesignLabHome extends StatelessWidget {
         ),
       );
     }
+    if (surface == 'weeklyStats') {
+      return const Scaffold(
+        body: Center(
+          child: SizedBox(
+            width: 920,
+            child: PeriodStatsView(stats: _mockPeriodStats),
+          ),
+        ),
+      );
+    }
     if (surface == 'inspector') {
       return Scaffold(
         body: Align(
@@ -94,6 +104,7 @@ class RobdexDesignLabHome extends StatelessWidget {
         onThreadSelected: (_) {},
         onProjectSelected: (_) {},
         onDisconnect: () {},
+        onGlobalSettings: () {},
         onCreateProject: () {},
         onProjectSettings: (_) {},
         onCreateThread: (_) {},
@@ -116,6 +127,8 @@ class RobdexDesignLabHome extends StatelessWidget {
         onArchiveThreadGroup: (_) {},
         onMoveSelectedThreadToGroup: (_) {},
         onUpdateWorkerMetadata: (_) {},
+        loadThreadStats: (_) async => _mockThreadStats,
+        loadPeriodStats: (_) async => _mockPeriodStats,
       ),
     );
   }
@@ -164,4 +177,45 @@ const _mockThreadStats = ThreadStatsData(
   warnings: [
     'line 702: token attribution is estimated for tool payloads.',
   ],
+);
+
+const _mockPeriodStats = PeriodStatsData(
+  label: 'Weekly quota attribution',
+  startMs: 1780446600000,
+  endMs: 1781029200000,
+  generatedAtMs: 1781029200000,
+  sessionCount: 28,
+  totals: TokenTotals(
+    inputTokens: 4200000,
+    uncachedInputTokens: 2180000,
+    outputTokens: 720000,
+    cachedInputTokens: 2020000,
+    reasoningOutputTokens: 210000,
+    totalTokens: 5130000,
+  ),
+  estimates: TokenEstimates(
+    userMessageInputTokens: 260000,
+    toolOutputInputTokens: 1460000,
+    toolCallOutputTokens: 210000,
+    skillInstructionInputTokens: 88000,
+  ),
+  compactionCount: 11,
+  categories: [
+    TokenCategoryBreakdown(key: 'tool_output', label: 'Tool outputs', tokens: 1460000, estimated: true),
+    TokenCategoryBreakdown(key: 'user_message', label: 'User messages', tokens: 260000, estimated: true),
+    TokenCategoryBreakdown(key: 'tool_call', label: 'Tool call inputs', tokens: 210000, estimated: true),
+    TokenCategoryBreakdown(key: 'assistant_message', label: 'Assistant messages', tokens: 190000, estimated: true),
+    TokenCategoryBreakdown(key: 'skill_instruction', label: 'Skill instructions', tokens: 88000, estimated: true),
+  ],
+  topItems: [
+    TokenTopItem(label: 'worker-session.jsonl · Tool output flutter test', kind: 'tool_output', line: 1204, tokens: 142000, estimated: true),
+    TokenTopItem(label: 'qa-session.jsonl · Tool output design lab sweep', kind: 'tool_output', line: 841, tokens: 118000, estimated: true),
+  ],
+  warnings: [],
+  quota: WeeklyQuotaData(
+    resetAtMs: 1781051400000,
+    remainingPercent: 30,
+    usedPercent: 70,
+    inferredStartMs: 1780446600000,
+  ),
 );

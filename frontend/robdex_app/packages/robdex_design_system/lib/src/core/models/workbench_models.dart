@@ -697,6 +697,9 @@ class ChatEntry {
     this.processId,
     this.command,
     this.output,
+    this.imagePreviewBase64,
+    this.imagePreviewContentType,
+    this.imagePreviewError,
     this.deliveryState,
     this.semanticCard,
     this.planItems = const <PlanChecklistItem>[],
@@ -715,6 +718,9 @@ class ChatEntry {
   final String? processId;
   final String? command;
   final String? output;
+  final String? imagePreviewBase64;
+  final String? imagePreviewContentType;
+  final String? imagePreviewError;
   final String? deliveryState;
   final ChatSemanticCard? semanticCard;
   final List<PlanChecklistItem> planItems;
@@ -743,6 +749,9 @@ class ChatEntry {
       processId: json['processId'] as String?,
       command: json['command'] as String?,
       output: json['output'] as String?,
+      imagePreviewBase64: json['imagePreviewBase64'] as String?,
+      imagePreviewContentType: json['imagePreviewContentType'] as String?,
+      imagePreviewError: json['imagePreviewError'] as String?,
       deliveryState: json['deliveryState'] as String?,
       semanticCard: json['semanticCard'] is Map<String, dynamic>
           ? ChatSemanticCard.fromJson(json['semanticCard'] as Map<String, dynamic>)

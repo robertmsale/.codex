@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 futures-util.workspace = true
 robdex-protocol = { path = "../robdex-protocol" }
 serde.workspace = true

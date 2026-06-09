@@ -131,6 +131,21 @@ class WorkbenchController extends ChangeNotifier {
     return ThreadStatsData.fromJson(payload as Map<String, dynamic>);
   }
 
+  Future<PeriodStatsData> loadPeriodStats(PeriodStatsRequest request) async {
+    final requestId = _nextBridgeTaskRequestId('periodStats');
+    LoadPeriodStatsSignal(
+      requestId: requestId,
+      startMs: Uint64(BigInt.from(request.startMs)),
+      endMs: Uint64(BigInt.from(request.endMs)),
+      label: request.label,
+      quotaResetAtMs: Uint64(BigInt.from(request.quotaResetAtMs ?? 0)),
+      quotaRemainingPercent: request.quotaRemainingPercent ?? 0,
+      hasQuota: request.quotaResetAtMs != null && request.quotaRemainingPercent != null,
+    ).sendSignalToRust();
+    final payload = await _awaitBridgeTask(requestId);
+    return PeriodStatsData.fromJson(payload as Map<String, dynamic>);
+  }
+
   Future<List<Map<String, dynamic>>> loadProjectHookLogs(String projectId) async {
     final requestId = _nextBridgeTaskRequestId('projectHookLogs');
     LoadProjectHookLogsSignal(requestId: requestId, projectId: projectId).sendSignalToRust();

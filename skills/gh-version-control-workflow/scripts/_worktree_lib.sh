@@ -135,7 +135,15 @@ _safe_move_path() {
 clean_known_qa_generated_artifacts() {
   local repo_path="$1"
   local pathspec="clients/packages/design_system/lib/src/copy/generated"
+  local tracked_pathspec
   local status line code path
+
+  for tracked_pathspec in "clients/app/ios/Podfile.lock"; do
+    status="$(env PATH="$(git_subprocess_path)" git -C "$repo_path" status --porcelain=v1 -- "$tracked_pathspec" 2>/dev/null || true)"
+    [[ -n "$status" ]] || continue
+    run_checked "$repo_path" git -C "$repo_path" restore --source=HEAD --staged --worktree -- "$tracked_pathspec" >/dev/null
+  done
+
   status="$(env PATH="$(git_subprocess_path)" git -C "$repo_path" status --porcelain=v1 -- "$pathspec" 2>/dev/null || true)"
   [[ -n "$status" ]] || return 0
   while IFS= read -r line; do
@@ -146,6 +154,41 @@ clean_known_qa_generated_artifacts() {
       _safe_move_path "$repo_path/$path"
     fi
   done <<<"$status"
+}
+
+qa_clean_generated_artifacts_cmd() {
+  local worktree_path checkout_root before after cleaned_paths
+  worktree_path="$(absolute_path "$1")"
+  checkout_root="$(worktree_checkout_root "$worktree_path")"
+  require_managed_worktree_path "$checkout_root"
+  clear_git_metadata_restrictions "$REQUIRED_WORKTREE_ROOT"
+  clear_inactive_index_lock "$REQUIRED_WORKTREE_ROOT"
+
+  before="$(run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" status --short -- clients/app/ios/Podfile.lock clients/packages/design_system/lib/src/copy/generated | tr -d '\r')"
+  clean_known_qa_generated_artifacts "$REQUIRED_WORKTREE_ROOT"
+  after="$(run_checked "$REQUIRED_WORKTREE_ROOT" git -C "$REQUIRED_WORKTREE_ROOT" status --short -- clients/app/ios/Podfile.lock clients/packages/design_system/lib/src/copy/generated | tr -d '\r')"
+
+  if [[ -z "$before" ]]; then
+    printf 'all clear: no known QA-generated artifacts were dirty in %s\n' "$REQUIRED_WORKTREE_ROOT"
+    return 0
+  fi
+
+  cleaned_paths="$(python3 -c '
+import sys
+before = set(line[3:] for line in sys.argv[1].splitlines() if len(line) > 3)
+after = set(line[3:] for line in sys.argv[2].splitlines() if len(line) > 3)
+for path in sorted(before - after):
+    print(path)
+' "$before" "$after")"
+
+  if [[ -n "$cleaned_paths" ]]; then
+    printf 'cleaned known QA-generated artifacts in %s:\n%s\n' "$REQUIRED_WORKTREE_ROOT" "$cleaned_paths"
+  fi
+
+  if [[ -n "$after" ]]; then
+    printf 'remaining known QA-generated artifact dirt in %s:\n%s\n' "$REQUIRED_WORKTREE_ROOT" "$after" >&2
+    return 1
+  fi
 }
 
 run_checked() {

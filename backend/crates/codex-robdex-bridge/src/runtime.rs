@@ -49,7 +49,7 @@ use crate::{
     store::RobdexBridgeStore,
     transport::{DEFAULT_RECONNECT_DELAY_MS, TransportControlMessage, run_transport_loop},
     transforms::resolve_role_instructions,
-    thread_stats::{self, ThreadStatsJob, ThreadStatsResponse},
+        thread_stats::{self, PeriodStatsJob, PeriodStatsResponse, ThreadStatsJob, ThreadStatsResponse},
     upstream::{RunningStateReducer, UpstreamRuntimeEvent, transport_messages},
 };
 
@@ -246,6 +246,35 @@ impl BridgeRuntime {
         let result = tokio::task::spawn_blocking(move || thread_stats::compute_thread_stats(job))
             .await
             .context("thread stats worker panicked")?;
+        drop(permit);
+        result
+    }
+
+    pub async fn period_stats(
+        &self,
+        start_ms: u64,
+        end_ms: u64,
+        label: String,
+        quota_reset_at_ms: Option<u64>,
+        quota_remaining_percent: Option<f64>,
+    ) -> Result<PeriodStatsResponse> {
+        let permit = self
+            .thread_stats_jobs
+            .acquire()
+            .await
+            .context("period stats worker semaphore closed")?;
+        let codex_home = thread_stats::codex_home_from_state_root(&self.settings.paths.state_root)?;
+        let job = PeriodStatsJob {
+            codex_home,
+            start_ms,
+            end_ms,
+            label,
+            quota_reset_at_ms,
+            quota_remaining_percent,
+        };
+        let result = tokio::task::spawn_blocking(move || thread_stats::compute_period_stats(job))
+            .await
+            .context("period stats worker panicked")?;
         drop(permit);
         result
     }

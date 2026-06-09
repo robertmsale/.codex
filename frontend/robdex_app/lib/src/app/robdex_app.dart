@@ -848,6 +848,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
             clearBlocked: draft.clearBlocked,
           ),
           loadThreadStats: _controller.loadThreadStats,
+          loadPeriodStats: _controller.loadPeriodStats,
           loadRequirementComposables: _controller.loadRequirementComposables,
           setThreadRequirements: (threadId, requirementSetJson) =>
               _controller.setThreadRequirements(

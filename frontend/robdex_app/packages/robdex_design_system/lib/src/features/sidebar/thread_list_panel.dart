@@ -17,6 +17,7 @@ class ThreadListPanel extends StatelessWidget {
     required this.onProjectSettings,
     required this.onCreateThread,
     required this.onSpawnAgent,
+    required this.onWeeklyStats,
   });
 
   final WorkspaceSelection selection;
@@ -30,6 +31,7 @@ class ThreadListPanel extends StatelessWidget {
   final ValueChanged<ProjectItem> onProjectSettings;
   final ValueChanged<ProjectItem> onCreateThread;
   final VoidCallback onSpawnAgent;
+  final VoidCallback onWeeklyStats;
 
   @override
   Widget build(BuildContext context) {
@@ -66,6 +68,13 @@ class ThreadListPanel extends StatelessWidget {
           child: Row(
             children: [
               const Spacer(),
+              _SemanticIconButton(
+                id: 'semantic.sidebar.weeklyStats',
+                label: 'Open weekly quota attribution',
+                onPressed: onWeeklyStats,
+                tooltip: 'Weekly quota attribution',
+                icon: const Icon(Icons.pie_chart_rounded, size: 17),
+              ),
               _SemanticIconButton(
                 id: 'semantic.sidebar.globalSettings',
                 label: 'Open global settings',

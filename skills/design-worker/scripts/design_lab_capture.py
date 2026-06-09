@@ -199,6 +199,8 @@ def shot_command(args: argparse.Namespace, url: str, shot_args: list[str]) -> li
         cmd.extend(["--width", args.width])
     if args.height:
         cmd.extend(["--height", args.height])
+    if args.build_mode == "release" and "--noForceRunMain" not in shot_args:
+        cmd.append("--noForceRunMain")
     cmd.extend(shot_args)
     return cmd
 

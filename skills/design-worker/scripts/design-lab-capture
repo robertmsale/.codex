@@ -2,7 +2,5 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-codex_home="${CODEX_HOME:-$HOME/.codex}"
-uv_project="$codex_home/backend/python/codex-services"
 
-exec uv run --project "$uv_project" python "$script_dir/design_lab_capture.py" "$@"
+exec python3 "$script_dir/design_lab_capture.py" "$@"

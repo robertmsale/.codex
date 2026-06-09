@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +116,44 @@ def parse_idb_list_targets_output(text: str) -> list[dict[str, str]]:
     return devices
 
 
+def parse_simctl_devices_output(text: str) -> list[dict[str, str]]:
+    try:
+        payload = json.loads(text or "{}")
+    except json.JSONDecodeError as error:
+        raise DriverError(f"simctl list devices returned invalid JSON: {error}") from error
+    devices_by_runtime = payload.get("devices")
+    if not isinstance(devices_by_runtime, dict):
+        raise DriverError("simctl list devices did not return a devices object.")
+    devices: list[dict[str, str]] = []
+    for runtime_name, runtime_devices in devices_by_runtime.items():
+        if not isinstance(runtime_name, str) or "iOS" not in runtime_name:
+            continue
+        if not isinstance(runtime_devices, list):
+            continue
+        for item in runtime_devices:
+            if not isinstance(item, dict):
+                continue
+            if item.get("state") != "Booted" or not item.get("isAvailable", True):
+                continue
+            device_id = str(item.get("udid") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if not device_id or not name:
+                continue
+            runtime_label = runtime_name.split(".")[-1].replace("-", " ")
+            devices.append(
+                {
+                    "name": name,
+                    "device_id": normalize_platform_device_id(device_id, platform="ios"),
+                    "platform": "ios",
+                    "details": runtime_label,
+                    "os_version": runtime_label,
+                    "architecture": "",
+                    "companion": "",
+                }
+            )
+    return devices
+
+
 def normalize_platform_device_id(device_id: str, *, platform: str | None = None) -> str:
     normalized = device_id.strip()
     if platform == "ios" or re.fullmatch(r"[0-9a-fA-F-]{36}", normalized):
@@ -135,10 +174,12 @@ def parse_json_value(raw: str | None) -> Any:
 
 
 def normalize_screenshot_out_path(device_id: str, requested_path: str) -> str:
-    image_name = Path(requested_path).name
-    if image_name in {"", ".", ".."}:
+    path = Path(requested_path).expanduser()
+    if path.name in {"", ".", ".."}:
         raise SystemExit("Invalid screenshot image name.")
-    return str(SCREENSHOT_ROOT / device_id / image_name)
+    if path.is_absolute():
+        return str(path)
+    return str((Path.cwd() / path).resolve(strict=False))
 
 
 def ensure_idb_available() -> str:
@@ -181,9 +222,45 @@ def run_simctl_screenshot(*, device_id: str, destination: Path, cwd: Path) -> No
         raise DriverError((result.stderr or result.stdout or "simctl screenshot failed").strip())
 
 
+def transient_simulator_service_error(text: str) -> bool:
+    markers = (
+        "CoreSimulatorService connection became invalid",
+        "CoreSimulatorService connection refused",
+        "simdiskimaged crashed or is not responding",
+        "Unable to locate device set",
+        "unable to discover Simulator runtimes",
+    )
+    return any(marker in text for marker in markers)
+
+
 def list_devices(*, cwd: Path) -> list[dict[str, str]]:
-    output = must_run_idb(argv=["list-targets"], cwd=cwd)
-    return parse_idb_list_targets_output(output)
+    attempts = int(os.environ.get("DESIGNER_DRIVE_DEVICE_LIST_ATTEMPTS", "8"))
+    delay = float(os.environ.get("DESIGNER_DRIVE_DEVICE_LIST_RETRY_DELAY", "1.0"))
+    last_error = ""
+    for attempt in range(max(1, attempts)):
+        result = run_idb(argv=["list-targets"], cwd=cwd)
+        if result.returncode == 0:
+            return parse_idb_list_targets_output(result.stdout or "")
+        xcrun = xcrun_executable()
+        if not xcrun:
+            raise DriverError((result.stderr or result.stdout or "idb list-targets failed and xcrun is not available").strip())
+        simctl = subprocess.run(
+            [xcrun, "simctl", "list", "devices", "booted", "--json"],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            env=launch_env(),
+        )
+        if simctl.returncode == 0:
+            return parse_simctl_devices_output(simctl.stdout or "{}")
+        idb_error = (result.stderr or result.stdout or "idb list-targets failed").strip()
+        simctl_error = (simctl.stderr or simctl.stdout or "simctl list devices failed").strip()
+        last_error = f"{idb_error}; fallback simctl failed: {simctl_error}"
+        if attempt + 1 < attempts and transient_simulator_service_error(last_error):
+            time.sleep(delay)
+            continue
+        break
+    raise DriverError(last_error or "idb list-targets failed")
 
 
 def require_device(*, device_id: str, cwd: Path) -> dict[str, str]:

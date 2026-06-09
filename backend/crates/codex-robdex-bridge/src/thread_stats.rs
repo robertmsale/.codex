@@ -24,6 +24,32 @@ pub struct ThreadStatsResponse {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PeriodStatsResponse {
+    pub label: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub generated_at_ms: u64,
+    pub session_count: u64,
+    pub totals: TokenTotals,
+    pub estimates: TokenEstimates,
+    pub compaction_count: u64,
+    pub categories: Vec<TokenCategoryBreakdown>,
+    pub top_items: Vec<TokenTopItem>,
+    pub warnings: Vec<String>,
+    pub quota: Option<WeeklyQuotaStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WeeklyQuotaStats {
+    pub reset_at_ms: u64,
+    pub remaining_percent: f64,
+    pub used_percent: f64,
+    pub inferred_start_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenTotals {
@@ -83,6 +109,16 @@ pub struct ThreadStatsJob {
     pub thread_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PeriodStatsJob {
+    pub codex_home: PathBuf,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub label: String,
+    pub quota_reset_at_ms: Option<u64>,
+    pub quota_remaining_percent: Option<f64>,
+}
+
 pub fn compute_thread_stats(job: ThreadStatsJob) -> Result<Option<ThreadStatsResponse>> {
     let sessions_dir = job.codex_home.join("sessions");
     let Some(session_path) = resolve_session_file(&sessions_dir, &job.thread_id)? else {
@@ -93,6 +129,136 @@ pub fn compute_thread_stats(job: ThreadStatsJob) -> Result<Option<ThreadStatsRes
     let mut stats = aggregate_session_jsonl(&job.thread_id, &session_path, &contents);
     stats.generated_at_ms = generated_now_ms();
     Ok(Some(stats))
+}
+
+pub fn compute_period_stats(job: PeriodStatsJob) -> Result<PeriodStatsResponse> {
+    let sessions_dir = job.codex_home.join("sessions");
+    let mut totals = TokenTotals::default();
+    let mut estimates = TokenEstimates::default();
+    let mut categories: BTreeMap<String, TokenCategoryBreakdown> = BTreeMap::new();
+    let mut top_items = Vec::new();
+    let mut warnings = Vec::new();
+    let mut session_count = 0_u64;
+    let mut compaction_count = 0_u64;
+
+    for path in session_files_in_period(&sessions_dir, job.start_ms, job.end_ms)? {
+        let contents = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) => {
+                warnings.push(format!("{}: failed to read session ({error})", path.display()));
+                continue;
+            }
+        };
+        let thread_id = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("session");
+        let stats = aggregate_session_jsonl(thread_id, &path, &contents);
+        session_count += 1;
+        totals = add_totals(totals, stats.totals);
+        estimates = add_estimates(estimates, stats.estimates);
+        compaction_count = compaction_count.saturating_add(stats.compaction_count);
+        for category in stats.categories {
+            add_category(
+                &mut categories,
+                &category.key,
+                &category.label,
+                category.tokens,
+                category.estimated,
+            );
+        }
+        top_items.extend(stats.top_items.into_iter().map(|mut item| {
+            item.label = format!("{} · {}", path.file_name().and_then(|value| value.to_str()).unwrap_or("session"), item.label);
+            item
+        }));
+        warnings.extend(stats.warnings.into_iter().map(|warning| {
+            format!("{}: {warning}", path.file_name().and_then(|value| value.to_str()).unwrap_or("session"))
+        }));
+    }
+
+    top_items.sort_by(|left, right| right.tokens.cmp(&left.tokens).then_with(|| left.line.cmp(&right.line)));
+    top_items.truncate(24);
+
+    let quota = match (job.quota_reset_at_ms, job.quota_remaining_percent) {
+        (Some(reset_at_ms), Some(remaining_percent)) => Some(WeeklyQuotaStats {
+            reset_at_ms,
+            remaining_percent,
+            used_percent: (100.0 - remaining_percent).clamp(0.0, 100.0),
+            inferred_start_ms: reset_at_ms.saturating_sub(168 * 60 * 60 * 1000),
+        }),
+        _ => None,
+    };
+
+    Ok(PeriodStatsResponse {
+        label: job.label,
+        start_ms: job.start_ms,
+        end_ms: job.end_ms,
+        generated_at_ms: generated_now_ms(),
+        session_count,
+        totals,
+        estimates,
+        compaction_count,
+        categories: categories.into_values().collect(),
+        top_items,
+        warnings,
+        quota,
+    })
+}
+
+fn session_files_in_period(sessions_dir: &Path, start_ms: u64, end_ms: u64) -> Result<Vec<PathBuf>> {
+    if !sessions_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    collect_session_files(sessions_dir, start_ms, end_ms, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_session_files(path: &Path, start_ms: u64, end_ms: u64, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in read_dirs_sorted(path)? {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_session_files(&path, start_ms, end_ms, out)?;
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let modified_ms = entry.metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(system_time_ms)
+            .unwrap_or(0);
+        if modified_ms >= start_ms && modified_ms <= end_ms {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn system_time_ms(value: SystemTime) -> Option<u64> {
+    value.duration_since(SystemTime::UNIX_EPOCH).ok().map(|duration| duration.as_millis() as u64)
+}
+
+fn add_totals(left: TokenTotals, right: TokenTotals) -> TokenTotals {
+    TokenTotals {
+        input_tokens: left.input_tokens.saturating_add(right.input_tokens),
+        uncached_input_tokens: left.uncached_input_tokens.saturating_add(right.uncached_input_tokens),
+        output_tokens: left.output_tokens.saturating_add(right.output_tokens),
+        cached_input_tokens: left.cached_input_tokens.saturating_add(right.cached_input_tokens),
+        reasoning_output_tokens: left.reasoning_output_tokens.saturating_add(right.reasoning_output_tokens),
+        total_tokens: left.total_tokens.saturating_add(right.total_tokens),
+    }
+}
+
+fn add_estimates(left: TokenEstimates, right: TokenEstimates) -> TokenEstimates {
+    TokenEstimates {
+        user_message_input_tokens: left.user_message_input_tokens.saturating_add(right.user_message_input_tokens),
+        tool_output_input_tokens: left.tool_output_input_tokens.saturating_add(right.tool_output_input_tokens),
+        tool_call_output_tokens: left.tool_call_output_tokens.saturating_add(right.tool_call_output_tokens),
+        skill_instruction_input_tokens: left.skill_instruction_input_tokens.saturating_add(right.skill_instruction_input_tokens),
+    }
 }
 
 pub fn resolve_session_file(sessions_dir: &Path, thread_id: &str) -> Result<Option<PathBuf>> {

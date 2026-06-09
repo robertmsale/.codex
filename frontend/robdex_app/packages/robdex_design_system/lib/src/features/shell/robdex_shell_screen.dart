@@ -45,6 +45,7 @@ class RobdexShellScreen extends StatelessWidget {
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
     required this.loadThreadStats,
+    required this.loadPeriodStats,
     this.loadRequirementComposables,
     this.setThreadRequirements,
     this.uploadImageBytes,
@@ -84,6 +85,7 @@ class RobdexShellScreen extends StatelessWidget {
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
   final Future<ThreadStatsData> Function(String threadId) loadThreadStats;
+  final Future<PeriodStatsData> Function(PeriodStatsRequest request) loadPeriodStats;
   final RequirementComposableLoader? loadRequirementComposables;
   final Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements;
   final ImageBytesUploader? uploadImageBytes;
@@ -136,6 +138,7 @@ class RobdexShellScreen extends StatelessWidget {
                               onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
                               onUpdateWorkerMetadata: onUpdateWorkerMetadata,
                               loadThreadStats: loadThreadStats,
+                              loadPeriodStats: loadPeriodStats,
                               loadRequirementComposables: loadRequirementComposables,
                               setThreadRequirements: setThreadRequirements,
                               uploadImageBytes: uploadImageBytes,
@@ -173,6 +176,7 @@ class RobdexShellScreen extends StatelessWidget {
                               onMoveSelectedThreadToGroup: onMoveSelectedThreadToGroup,
                               onUpdateWorkerMetadata: onUpdateWorkerMetadata,
                               loadThreadStats: loadThreadStats,
+                              loadPeriodStats: loadPeriodStats,
                               loadRequirementComposables: loadRequirementComposables,
                               setThreadRequirements: setThreadRequirements,
                               uploadImageBytes: uploadImageBytes,
@@ -221,6 +225,7 @@ class _WideShell extends StatefulWidget {
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
     required this.loadThreadStats,
+    required this.loadPeriodStats,
     required this.loadRequirementComposables,
     required this.setThreadRequirements,
     required this.uploadImageBytes,
@@ -258,6 +263,7 @@ class _WideShell extends StatefulWidget {
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
   final Future<ThreadStatsData> Function(String threadId) loadThreadStats;
+  final Future<PeriodStatsData> Function(PeriodStatsRequest request) loadPeriodStats;
   final RequirementComposableLoader? loadRequirementComposables;
   final Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements;
   final ImageBytesUploader? uploadImageBytes;
@@ -310,6 +316,10 @@ class _WideShellState extends State<_WideShell> {
                     onProjectSettings: widget.onProjectSettings,
                     onCreateThread: widget.onCreateThread,
                     onSpawnAgent: widget.onSpawnAgent,
+                    onWeeklyStats: () => showWeeklyQuotaStatsModal(
+                      context: context,
+                      loadStats: widget.loadPeriodStats,
+                    ),
                   ),
                 ),
               ),
@@ -443,6 +453,7 @@ class _CompactShell extends StatefulWidget {
     required this.onMoveSelectedThreadToGroup,
     required this.onUpdateWorkerMetadata,
     required this.loadThreadStats,
+    required this.loadPeriodStats,
     required this.loadRequirementComposables,
     required this.setThreadRequirements,
     required this.uploadImageBytes,
@@ -479,6 +490,7 @@ class _CompactShell extends StatefulWidget {
   final ValueChanged<String?> onMoveSelectedThreadToGroup;
   final ValueChanged<WorkerMetadataDraft> onUpdateWorkerMetadata;
   final Future<ThreadStatsData> Function(String threadId) loadThreadStats;
+  final Future<PeriodStatsData> Function(PeriodStatsRequest request) loadPeriodStats;
   final RequirementComposableLoader? loadRequirementComposables;
   final Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements;
   final ImageBytesUploader? uploadImageBytes;
@@ -678,7 +690,11 @@ class _CompactShellState extends State<_CompactShell> {
           onCreateProject: widget.onCreateProject,
           onProjectSettings: widget.onProjectSettings,
           onCreateThread: widget.onCreateThread,
-        onSpawnAgent: widget.onSpawnAgent,
+          onSpawnAgent: widget.onSpawnAgent,
+          onWeeklyStats: () => showWeeklyQuotaStatsModal(
+            context: context,
+            loadStats: widget.loadPeriodStats,
+          ),
       );
     }
 

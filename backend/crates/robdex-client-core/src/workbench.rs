@@ -1,8 +1,11 @@
 #[cfg(not(target_arch = "wasm32"))]
 use anyhow::anyhow;
 use anyhow::Result;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::sync::{Mutex, OnceLock};
 
 use robdex_protocol::{
     UiChatEntry, UiChatSemanticCard, UiChatSemanticRow, UiGlobalSettings, UiInspectorFact, UiLiveProcessItem, UiModelItem, UiPendingApprovalItem,
@@ -13,7 +16,7 @@ use robdex_protocol::{
 
 use crate::{
     bridge::BridgeEndpoint,
-    net::{HttpClient, delete as http_delete, get_json, http_client, post_empty, post_json},
+    net::{HttpClient, delete as http_delete, get_bytes, get_json, http_client, post_empty, post_json},
 };
 use crate::net::post_bytes;
 
@@ -38,6 +41,32 @@ pub struct ThreadStatsResponse {
     pub categories: Vec<TokenCategoryBreakdown>,
     pub top_items: Vec<TokenTopItem>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PeriodStatsResponse {
+    pub label: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub generated_at_ms: u64,
+    pub session_count: u64,
+    pub totals: TokenTotals,
+    pub estimates: TokenEstimates,
+    pub compaction_count: u64,
+    pub categories: Vec<TokenCategoryBreakdown>,
+    pub top_items: Vec<TokenTopItem>,
+    pub warnings: Vec<String>,
+    pub quota: Option<WeeklyQuotaStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WeeklyQuotaStats {
+    pub reset_at_ms: u64,
+    pub remaining_percent: f64,
+    pub used_percent: f64,
+    pub inferred_start_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -142,7 +171,7 @@ impl WorkbenchClient {
     }
 
     pub async fn fetch_thread_history(&self, thread_id: &str) -> Result<Vec<UiChatEntry>> {
-        fetch_thread_messages(&self.endpoint, thread_id, None).await
+        fetch_thread_messages(&self.endpoint, thread_id, Some(50)).await
     }
 
     pub async fn fetch_thread_stats(&self, thread_id: &str) -> Result<ThreadStatsResponse> {
@@ -158,6 +187,30 @@ impl WorkbenchClient {
 
     pub async fn fetch_thread_stats_json(&self, thread_id: &str) -> Result<Value> {
         Ok(serde_json::to_value(self.fetch_thread_stats(thread_id).await?)?)
+    }
+
+    pub async fn fetch_period_stats_json(
+        &self,
+        start_ms: u64,
+        end_ms: u64,
+        label: &str,
+        quota_reset_at_ms: Option<u64>,
+        quota_remaining_percent: Option<f64>,
+    ) -> Result<Value> {
+        let mut url = self.endpoint.http_base.join("/stats/period")?;
+        {
+            let mut query = url.query_pairs_mut();
+            query.append_pair("startMs", &start_ms.to_string());
+            query.append_pair("endMs", &end_ms.to_string());
+            query.append_pair("label", label);
+            if let Some(reset_at_ms) = quota_reset_at_ms {
+                query.append_pair("quotaResetAtMs", &reset_at_ms.to_string());
+            }
+            if let Some(remaining_percent) = quota_remaining_percent {
+                query.append_pair("quotaRemainingPercent", &remaining_percent.to_string());
+            }
+        }
+        get_json(&self.client, url).await
     }
 
     pub async fn fetch_project_hook_logs_json(&self, project_id: &str) -> Result<Value> {
@@ -979,7 +1032,7 @@ pub async fn build_workbench_with_models(
             }
         });
 
-    let messages = if let Some(selected) = selected {
+    let mut messages = if let Some(selected) = selected {
         if preserved_messages.is_some() && Some(selected.id.as_str()) == selected_thread_id {
             preserved_messages.unwrap_or_default()
         } else if let Some(messages) =
@@ -992,6 +1045,7 @@ pub async fn build_workbench_with_models(
     } else {
         Vec::new()
     };
+    hydrate_chat_entry_image_previews(&mut messages, endpoint).await;
 
     let context_window_remaining_percent = selected.and_then(|selected| {
         snapshot
@@ -1246,6 +1300,9 @@ pub async fn fetch_thread_messages(
                 process_id: None,
                 command: None,
                 output: None,
+                image_preview_base64: None,
+                image_preview_content_type: None,
+                image_preview_error: None,
                 delivery_state: None,
                 semantic_card: None,
                 is_streaming: false,
@@ -1253,7 +1310,9 @@ pub async fn fetch_thread_messages(
             }]);
         }
     };
-    Ok(chat_entries_from_thread_payload(&payload))
+    let mut entries = chat_entries_from_thread_payload(&payload);
+    hydrate_chat_entry_image_previews(&mut entries, endpoint).await;
+    Ok(entries)
 }
 
 pub fn chat_entries_from_thread_payload(payload: &Value) -> Vec<UiChatEntry> {
@@ -1315,6 +1374,9 @@ fn chat_entry_from_message(message: &serde_json::Map<String, Value>) -> UiChatEn
             .and_then(|tool| tool.get("output"))
             .and_then(Value::as_str)
             .map(str::to_string),
+        image_preview_base64: None,
+        image_preview_content_type: None,
+        image_preview_error: None,
         delivery_state: message
             .get("deliveryState")
             .and_then(Value::as_str)
@@ -1323,6 +1385,57 @@ fn chat_entry_from_message(message: &serde_json::Map<String, Value>) -> UiChatEn
         is_streaming: is_streaming(message),
         is_tool: role == Some("tool"),
     }
+}
+
+pub async fn hydrate_chat_entry_image_previews(entries: &mut [UiChatEntry], endpoint: &BridgeEndpoint) {
+    for entry in entries {
+        if !matches!(entry.kind.as_deref(), Some("imageView" | "imageGeneration")) {
+            continue;
+        }
+        let Some(path) = entry.output.as_deref().map(str::trim).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        if !path.starts_with('/') {
+            entry.image_preview_error = Some("image path is not absolute".to_string());
+            continue;
+        }
+        match fetch_image_thumbnail_preview(endpoint, path).await {
+            Ok((encoded, content_type)) => {
+                entry.image_preview_base64 = Some(encoded);
+                entry.image_preview_content_type = Some(content_type);
+                entry.image_preview_error = None;
+            }
+            Err(error) => {
+                entry.image_preview_error = Some(error.to_string());
+            }
+        }
+    }
+}
+
+static IMAGE_THUMBNAIL_CACHE: OnceLock<Mutex<BTreeMap<String, (String, String)>>> = OnceLock::new();
+
+fn image_thumbnail_cache() -> &'static Mutex<BTreeMap<String, (String, String)>> {
+    IMAGE_THUMBNAIL_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+async fn fetch_image_thumbnail_preview(endpoint: &BridgeEndpoint, path: &str) -> Result<(String, String)> {
+    let cache_key = format!("{}|{}", endpoint.http_base, path);
+    if let Ok(cache) = image_thumbnail_cache().lock()
+        && let Some(cached) = cache.get(&cache_key)
+    {
+        return Ok(cached.clone());
+    }
+
+    let client = http_client();
+    let mut url = endpoint.http_base.join("/images/thumbnail")?;
+    url.query_pairs_mut().append_pair("saved_path", path);
+    let (bytes, content_type) = get_bytes(&client, url).await?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let content_type = content_type.unwrap_or_else(|| "image/png".to_string());
+    if let Ok(mut cache) = image_thumbnail_cache().lock() {
+        cache.insert(cache_key, (encoded.clone(), content_type.clone()));
+    }
+    Ok((encoded, content_type))
 }
 
 fn semantic_card_for_message(

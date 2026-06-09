@@ -993,6 +993,7 @@ name = "robdex-client-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "futures-util",
  "gloo-net",
  "reqwest",

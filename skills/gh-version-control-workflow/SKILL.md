@@ -38,6 +38,10 @@ result if needed, then run the next step.
   - `qa-fastforward <worktree_path> [integration_branch]`
   - for a dedicated `.worktrees/...` checkout, stashes scratch/untracked QA artifacts, updates that checkout onto the latest integration branch, then restores the stash
   - for a QA device-specific checked-out integration repo, fast-forwards the checked-out integration branch to `origin/<integration_branch>` and surfaces dirty/conflict failures directly
+- QA generated-artifact cleanup:
+  - `qa-clean-generated-artifacts <worktree_path>`
+  - for a dedicated `.worktrees/...` checkout, discards only sanctioned QA build/runtime dirt such as `clients/app/ios/Podfile.lock` and generated design-system copy artifacts
+  - use this after simulator/iOS launch activity leaves known generated dirt; it is not a generic restore/reset command
 - Commit:
   - `git-commit <worktree_path> "<message>"`
 - Publish (push + PR, force-with-lease on non-FF for non-integration branches):

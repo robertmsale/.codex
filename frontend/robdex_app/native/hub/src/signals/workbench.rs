@@ -33,6 +33,17 @@ pub struct LoadThreadStatsSignal {
 }
 
 #[derive(Deserialize, DartSignal)]
+pub struct LoadPeriodStatsSignal {
+    pub request_id: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub label: String,
+    pub quota_reset_at_ms: u64,
+    pub quota_remaining_percent: f64,
+    pub has_quota: bool,
+}
+
+#[derive(Deserialize, DartSignal)]
 pub struct LoadProjectHookLogsSignal {
     pub request_id: String,
     pub project_id: String,

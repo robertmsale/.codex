@@ -15,6 +15,7 @@ use crate::{
     workbench::{
         build_workbench_with_models, chat_entries_from_thread_payload,
         context_window_remaining_percent_from_thread_payload,
+        hydrate_chat_entry_image_previews,
         parse_live_process_items,
     },
 };
@@ -357,7 +358,9 @@ async fn reduce_message(
                 return Ok(ReduceOutcome::None);
             }
             let mut next_view = current_view.clone();
-            next_view.chat_entries = chat_entries_from_thread_payload(&payload);
+            let mut chat_entries = chat_entries_from_thread_payload(&payload);
+            hydrate_chat_entry_image_previews(&mut chat_entries, endpoint).await;
+            next_view.chat_entries = chat_entries;
             next_view.context_window_remaining_percent =
                 context_window_remaining_percent_from_thread_payload(&payload);
             Ok(ReduceOutcome::View(next_view))

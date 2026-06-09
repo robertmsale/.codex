@@ -68,6 +68,7 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/threads/{thread_id}/metadata", post(thread_metadata_update_http))
         .route("/threads/{thread_id}/compact", post(thread_compact_http))
         .route("/threads/{thread_id}/stats", get(thread_stats_http))
+        .route("/stats/period", get(period_stats_http))
         .route("/threads/{thread_id}/commands/terminate", post(thread_command_terminate_http))
         .route("/threads/{thread_id}/qa/devices", get(legacy_qa_harness_http))
         .route("/threads/{thread_id}/qa/devices/{device_key}/reserve", post(legacy_qa_harness_http))
@@ -605,6 +606,38 @@ async fn thread_stats_http(
     match runtime.thread_stats(thread_id).await {
         Ok(Some(stats)) => (StatusCode::OK, Json(stats)).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "thread stats not found").into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PeriodStatsQuery {
+    #[serde(rename = "startMs")]
+    start_ms: u64,
+    #[serde(rename = "endMs")]
+    end_ms: u64,
+    label: Option<String>,
+    #[serde(rename = "quotaResetAtMs")]
+    quota_reset_at_ms: Option<u64>,
+    #[serde(rename = "quotaRemainingPercent")]
+    quota_remaining_percent: Option<f64>,
+}
+
+async fn period_stats_http(
+    State(runtime): State<Arc<BridgeRuntime>>,
+    Query(query): Query<PeriodStatsQuery>,
+) -> impl IntoResponse {
+    if query.start_ms > query.end_ms {
+        return (StatusCode::BAD_REQUEST, "startMs must be <= endMs").into_response();
+    }
+    match runtime.period_stats(
+        query.start_ms,
+        query.end_ms,
+        query.label.unwrap_or_else(|| "Period stats".to_string()),
+        query.quota_reset_at_ms,
+        query.quota_remaining_percent,
+    ).await {
+        Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
     }
 }

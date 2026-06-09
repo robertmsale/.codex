@@ -50,6 +50,86 @@ class ThreadStatsData {
   }
 }
 
+class PeriodStatsData {
+  const PeriodStatsData({
+    required this.label,
+    required this.startMs,
+    required this.endMs,
+    required this.generatedAtMs,
+    required this.sessionCount,
+    required this.totals,
+    required this.estimates,
+    required this.compactionCount,
+    required this.categories,
+    required this.topItems,
+    required this.warnings,
+    this.quota,
+  });
+
+  final String label;
+  final int startMs;
+  final int endMs;
+  final int generatedAtMs;
+  final int sessionCount;
+  final TokenTotals totals;
+  final TokenEstimates estimates;
+  final int compactionCount;
+  final List<TokenCategoryBreakdown> categories;
+  final List<TokenTopItem> topItems;
+  final List<String> warnings;
+  final WeeklyQuotaData? quota;
+
+  factory PeriodStatsData.fromJson(Map<String, dynamic> json) {
+    return PeriodStatsData(
+      label: json['label'] as String? ?? 'Period stats',
+      startMs: json['startMs'] as int? ?? 0,
+      endMs: json['endMs'] as int? ?? 0,
+      generatedAtMs: json['generatedAtMs'] as int? ?? 0,
+      sessionCount: json['sessionCount'] as int? ?? 0,
+      totals: TokenTotals.fromJson(json['totals'] as Map<String, dynamic>? ?? const {}),
+      estimates: TokenEstimates.fromJson(json['estimates'] as Map<String, dynamic>? ?? const {}),
+      compactionCount: json['compactionCount'] as int? ?? 0,
+      categories: (json['categories'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(TokenCategoryBreakdown.fromJson)
+          .toList(growable: false),
+      topItems: (json['topItems'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(TokenTopItem.fromJson)
+          .toList(growable: false),
+      warnings: (json['warnings'] as List<dynamic>? ?? const [])
+          .whereType<String>()
+          .toList(growable: false),
+      quota: json['quota'] is Map<String, dynamic>
+          ? WeeklyQuotaData.fromJson(json['quota'] as Map<String, dynamic>)
+          : null,
+    );
+  }
+}
+
+class WeeklyQuotaData {
+  const WeeklyQuotaData({
+    required this.resetAtMs,
+    required this.remainingPercent,
+    required this.usedPercent,
+    required this.inferredStartMs,
+  });
+
+  final int resetAtMs;
+  final double remainingPercent;
+  final double usedPercent;
+  final int inferredStartMs;
+
+  factory WeeklyQuotaData.fromJson(Map<String, dynamic> json) {
+    return WeeklyQuotaData(
+      resetAtMs: json['resetAtMs'] as int? ?? 0,
+      remainingPercent: (json['remainingPercent'] as num? ?? 0).toDouble(),
+      usedPercent: (json['usedPercent'] as num? ?? 0).toDouble(),
+      inferredStartMs: json['inferredStartMs'] as int? ?? 0,
+    );
+  }
+}
+
 class TokenTotals {
   const TokenTotals({
     required this.inputTokens,

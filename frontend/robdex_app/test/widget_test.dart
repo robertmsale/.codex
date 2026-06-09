@@ -171,6 +171,7 @@ void main() {
           onMoveSelectedThreadToGroup: (_) {},
           onUpdateWorkerMetadata: (_) {},
           loadThreadStats: (_) async => _widgetStats,
+          loadPeriodStats: (_) async => _widgetPeriodStats,
           enableGraphics: true,
         ),
       ),
@@ -1557,6 +1558,7 @@ void main() {
             pendingApprovals: const [],
             onDisconnect: () {},
             onGlobalSettings: () {},
+            onWeeklyStats: () {},
             onThreadSelected: (_) {},
             onCreateProject: () {},
             onProjectSettings: (_) {},
@@ -1609,6 +1611,7 @@ void main() {
             pendingApprovals: const [],
             onDisconnect: () {},
             onGlobalSettings: () {},
+            onWeeklyStats: () {},
             onThreadSelected: (_) {},
             onCreateProject: () {},
             onProjectSettings: (_) {},
@@ -1668,6 +1671,7 @@ void main() {
               pendingApprovals: const [],
               onDisconnect: () {},
               onGlobalSettings: () {},
+              onWeeklyStats: () {},
               onThreadSelected: (_) {},
               onCreateProject: () {},
               onProjectSettings: (_) {},
@@ -2722,4 +2726,40 @@ const _widgetStats = ThreadStatsData(
     TokenTopItem(label: 'User message', kind: 'user_message', line: 3, tokens: 120, estimated: true),
   ],
   warnings: ['estimate only'],
+);
+
+const _widgetPeriodStats = PeriodStatsData(
+  label: 'Weekly quota attribution',
+  startMs: 1,
+  endMs: 2,
+  generatedAtMs: 3,
+  sessionCount: 2,
+  totals: TokenTotals(
+    inputTokens: 1200,
+    uncachedInputTokens: 700,
+    outputTokens: 300,
+    cachedInputTokens: 500,
+    reasoningOutputTokens: 90,
+    totalTokens: 1500,
+  ),
+  estimates: TokenEstimates(
+    userMessageInputTokens: 120,
+    toolOutputInputTokens: 220,
+    toolCallOutputTokens: 80,
+    skillInstructionInputTokens: 60,
+  ),
+  compactionCount: 1,
+  categories: [
+    TokenCategoryBreakdown(key: 'tool_output', label: 'Tool outputs', tokens: 220, estimated: true),
+  ],
+  topItems: [
+    TokenTopItem(label: 'Tool output', kind: 'tool_output', line: 7, tokens: 220, estimated: true),
+  ],
+  warnings: [],
+  quota: WeeklyQuotaData(
+    resetAtMs: 2,
+    remainingPercent: 30,
+    usedPercent: 70,
+    inferredStartMs: 1,
+  ),
 );
