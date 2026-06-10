@@ -301,25 +301,22 @@ class _WideShellState extends State<_WideShell> {
                   right: BorderSide(color: Color(0xFF30343B)),
                 ),
               ),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
-                child: RepaintBoundary(
-                  child: ThreadListPanel(
-                    selection: workbench.selection,
-                    projects: workbench.projects,
-                    threads: workbench.threads,
-                    pendingApprovals: workbench.pendingApprovals,
-                    onDisconnect: widget.onDisconnect,
-                    onGlobalSettings: widget.onGlobalSettings,
-                    onThreadSelected: widget.onThreadSelected,
-                    onCreateProject: widget.onCreateProject,
-                    onProjectSettings: widget.onProjectSettings,
-                    onCreateThread: widget.onCreateThread,
-                    onSpawnAgent: widget.onSpawnAgent,
-                    onWeeklyStats: () => showWeeklyQuotaStatsModal(
-                      context: context,
-                      loadStats: widget.loadPeriodStats,
-                    ),
+              child: RepaintBoundary(
+                child: ThreadListPanel(
+                  selection: workbench.selection,
+                  projects: workbench.projects,
+                  threads: workbench.threads,
+                  pendingApprovals: workbench.pendingApprovals,
+                  onDisconnect: widget.onDisconnect,
+                  onGlobalSettings: widget.onGlobalSettings,
+                  onThreadSelected: widget.onThreadSelected,
+                  onCreateProject: widget.onCreateProject,
+                  onProjectSettings: widget.onProjectSettings,
+                  onCreateThread: widget.onCreateThread,
+                  onSpawnAgent: widget.onSpawnAgent,
+                  onWeeklyStats: () => showWeeklyQuotaStatsModal(
+                    context: context,
+                    loadStats: widget.loadPeriodStats,
                   ),
                 ),
               ),
@@ -329,13 +326,16 @@ class _WideShellState extends State<_WideShell> {
           Expanded(
             child: DecoratedBox(
               decoration: const BoxDecoration(color: Color(0xFF171C22)),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(28, 16, 62, 22),
-                child: RepaintBoundary(
-                  child: Column(
-                    children: [
-                      Expanded(
-                        child: ChatTimeline(
+              child: Stack(
+                children: [
+                  const Positioned.fill(child: _WorkspacePaperSurface()),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(28, 16, 28, 22),
+                    child: RepaintBoundary(
+                      child: Column(
+                        children: [
+                          Expanded(
+                            child: ChatTimeline(
                           threadId: workbench.selection.threadId,
                           entries: workbench.chatEntries,
                           title: workbench.selection.threadName,
@@ -410,11 +410,13 @@ class _WideShellState extends State<_WideShell> {
                           ),
                         ),
                       ),
-                      if (widget.chatBottomDrawer != null)
-                        widget.chatBottomDrawer!,
-                    ],
+                          if (widget.chatBottomDrawer != null)
+                            widget.chatBottomDrawer!,
+                        ],
+                      ),
+                    ),
                   ),
-                ),
+                ],
               ),
             ),
           ),
@@ -500,6 +502,91 @@ class _CompactShell extends StatefulWidget {
 
   @override
   State<_CompactShell> createState() => _CompactShellState();
+}
+
+
+class _WorkspacePaperSurface extends StatefulWidget {
+  const _WorkspacePaperSurface();
+
+  @override
+  State<_WorkspacePaperSurface> createState() => _WorkspacePaperSurfaceState();
+}
+
+class _WorkspacePaperSurfaceState extends State<_WorkspacePaperSurface> {
+  FragmentShader? _shader;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadShader();
+  }
+
+  Future<void> _loadShader() async {
+    try {
+      final program = await FragmentProgram.fromAsset(
+        'packages/robdex_design_system/shaders/timeline_paper_surface.frag',
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _shader = program.fragmentShader();
+      });
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _shader?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: RepaintBoundary(
+        child: CustomPaint(
+          painter: _WorkspacePaperSurfacePainter(shader: _shader),
+        ),
+      ),
+    );
+  }
+}
+
+class _WorkspacePaperSurfacePainter extends CustomPainter {
+  const _WorkspacePaperSurfacePainter({required this.shader});
+
+  final FragmentShader? shader;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Color(0xFF101820),
+            Color(0xFF0D151C),
+            Color(0xFF0A1117),
+          ],
+        ).createShader(rect),
+    );
+    final activeShader = shader;
+    if (activeShader != null) {
+      activeShader.setFloat(0, size.width);
+      activeShader.setFloat(1, size.height);
+      activeShader.setFloat(2, 0.0);
+      canvas.drawRect(rect, Paint()..shader = activeShader);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _WorkspacePaperSurfacePainter oldDelegate) {
+    return oldDelegate.shader != shader;
+  }
 }
 
 class _ShellNebulaBackdrop extends StatefulWidget {
@@ -636,13 +723,13 @@ class _SidebarResizeHandle extends StatelessWidget {
         behavior: HitTestBehavior.translucent,
         onHorizontalDragUpdate: (details) => onDrag(details.delta.dx),
         child: SizedBox(
-          width: 6,
+          width: 1,
           child: Center(
             child: Container(
               width: 1,
               height: double.infinity,
               decoration: BoxDecoration(
-                color: theme.colorScheme.outline.withValues(alpha: 0.18),
+                color: theme.colorScheme.outline.withValues(alpha: 0.24),
               ),
             ),
           ),
@@ -698,39 +785,44 @@ class _CompactShellState extends State<_CompactShell> {
       );
     }
 
-    return ChatTimeline(
-      threadId: widget.workbench.selection.threadId,
-      entries: widget.workbench.chatEntries,
-      title: widget.workbench.selection.threadName,
-      contextWindowRemainingPercent:
-          widget.workbench.contextWindowRemainingPercent,
-      onSend: widget.onSendMessage,
-      onInterrupt: widget.onInterruptThread,
-      onTerminateCommandExecution: widget.onTerminateCommandExecution,
-      loadRequirementComposables: widget.loadRequirementComposables,
-      setThreadRequirements: widget.setThreadRequirements == null
-          ? null
-          : (requirementSetJson) => widget.setThreadRequirements!(
-                widget.workbench.selection.threadId ?? '',
-                requirementSetJson,
-              ),
-      uploadImageBytes: widget.uploadImageBytes,
-      onOpenLink: widget.onOpenLink,
-      composerEnabled: true,
-      isRunning: widget.workbench.selection.isRunning,
-      selection: widget.workbench.selection,
-      availableModels: widget.workbench.availableModels,
-      onSettingsChanged: widget.onSettingsChanged,
-      requirementReview: widget.workbench.requirementReview,
-      onOpenThread: widget.onThreadSelected,
-      terminalAvailable: widget.terminalAvailable,
-      onTerminalPressed: widget.onTerminalPressed,
-      overlay: _ApprovalOverlay(
+    return Stack(
+      children: [
+        const Positioned.fill(child: _WorkspacePaperSurface()),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+          child: ChatTimeline(
+        threadId: widget.workbench.selection.threadId,
+        entries: widget.workbench.chatEntries,
+        title: widget.workbench.selection.threadName,
+        contextWindowRemainingPercent:
+            widget.workbench.contextWindowRemainingPercent,
+        onSend: widget.onSendMessage,
+        onInterrupt: widget.onInterruptThread,
+        onTerminateCommandExecution: widget.onTerminateCommandExecution,
+        loadRequirementComposables: widget.loadRequirementComposables,
+        setThreadRequirements: widget.setThreadRequirements == null
+            ? null
+            : (requirementSetJson) => widget.setThreadRequirements!(
+                  widget.workbench.selection.threadId ?? '',
+                  requirementSetJson,
+                ),
+        uploadImageBytes: widget.uploadImageBytes,
+        onOpenLink: widget.onOpenLink,
+        composerEnabled: true,
+        isRunning: widget.workbench.selection.isRunning,
         selection: widget.workbench.selection,
-        pendingApprovals: widget.workbench.pendingApprovals,
-        onApprovalDecision: widget.onApprovalDecision,
-      ),
-      leading: Semantics(
+        availableModels: widget.workbench.availableModels,
+        onSettingsChanged: widget.onSettingsChanged,
+        requirementReview: widget.workbench.requirementReview,
+        onOpenThread: widget.onThreadSelected,
+        terminalAvailable: widget.terminalAvailable,
+        onTerminalPressed: widget.onTerminalPressed,
+        overlay: _ApprovalOverlay(
+          selection: widget.workbench.selection,
+          pendingApprovals: widget.workbench.pendingApprovals,
+          onApprovalDecision: widget.onApprovalDecision,
+        ),
+        leading: Semantics(
         key: const ValueKey('semantic.thread.backToThreads'),
         container: true,
         button: true,
@@ -829,6 +921,9 @@ class _CompactShellState extends State<_CompactShell> {
           ],
         ),
       ),
+        ),
+        ),
+      ],
     );
   }
 }

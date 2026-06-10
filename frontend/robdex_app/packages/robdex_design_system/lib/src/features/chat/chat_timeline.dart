@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -124,37 +123,51 @@ class _ChatTimelineState extends State<ChatTimeline> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              widget.title,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodyLarge?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                if (widget.leading != null) widget.leading!,
-                const Spacer(),
-                if (widget.headerControls != null)
-                  DefaultTextStyle.merge(
-                    style:
-                        theme.textTheme.labelSmall?.copyWith(
-                          color: theme.colorScheme.onSurface.withValues(
-                            alpha: 0.74,
-                          ),
-                        ) ??
-                        const TextStyle(),
-                    child: widget.headerControls!,
-                  ),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                const Color(0xFF171C22).withValues(alpha: 0.5),
+                const Color(0xFF171C22).withValues(alpha: 0.18),
+                const Color(0xFF171C22).withValues(alpha: 0.0),
               ],
+              stops: const [0.0, 0.52, 1.0],
             ),
-          ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                widget.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  if (widget.leading != null) widget.leading!,
+                  const Spacer(),
+                  if (widget.headerControls != null)
+                    DefaultTextStyle.merge(
+                      style:
+                          theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withValues(
+                              alpha: 0.74,
+                            ),
+                          ) ??
+                          const TextStyle(),
+                      child: widget.headerControls!,
+                    ),
+                ],
+              ),
+            ],
+          ),
         ),
         const SizedBox(height: 16),
         Divider(
@@ -239,6 +252,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
     );
   }
 }
+
 
 const WorkspaceSelection _emptySelection = WorkspaceSelection(
   projectId: null,

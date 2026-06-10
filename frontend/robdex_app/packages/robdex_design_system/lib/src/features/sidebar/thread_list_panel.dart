@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -60,11 +62,15 @@ class ThreadListPanel extends StatelessWidget {
     final orderedProjects = [...projects]
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return Stack(
+      fit: StackFit.expand,
       children: [
+        const _BrushedMetalSidebarSurface(),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(4, 4, 2, 12),
+          padding: const EdgeInsets.fromLTRB(14, 14, 12, 12),
           child: Row(
             children: [
               const Spacer(),
@@ -100,7 +106,7 @@ class ThreadListPanel extends StatelessWidget {
           ),
         ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(4, 0, 4, 10),
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
           child: Row(
             children: [
               Text(
@@ -151,8 +157,128 @@ class ThreadListPanel extends StatelessWidget {
             },
           ),
         ),
+          ],
+        ),
       ],
     );
+  }
+}
+
+class _BrushedMetalSidebarSurface extends StatefulWidget {
+  const _BrushedMetalSidebarSurface();
+
+  @override
+  State<_BrushedMetalSidebarSurface> createState() => _BrushedMetalSidebarSurfaceState();
+}
+
+class _BrushedMetalSidebarSurfaceState extends State<_BrushedMetalSidebarSurface> {
+  FragmentShader? _shader;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadShader();
+  }
+
+  Future<void> _loadShader() async {
+    try {
+      final program = await FragmentProgram.fromAsset(
+        'packages/robdex_design_system/shaders/brushed_metal_sidebar.frag',
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _shader = program.fragmentShader();
+      });
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _shader?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: RepaintBoundary(
+        child: CustomPaint(
+          painter: _BrushedMetalSidebarPainter(
+            shader: _shader,
+            surfaceColor: Theme.of(context).colorScheme.surface,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BrushedMetalSidebarPainter extends CustomPainter {
+  const _BrushedMetalSidebarPainter({
+    required this.shader,
+    required this.surfaceColor,
+  });
+
+  final FragmentShader? shader;
+  final Color surfaceColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final base = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          surfaceColor.withValues(alpha: 0.78),
+          const Color(0xFF0B1219).withValues(alpha: 0.88),
+          const Color(0xFF111820).withValues(alpha: 0.82),
+        ],
+        stops: const [0.0, 0.56, 1.0],
+      ).createShader(rect);
+    canvas.drawRect(rect, base);
+
+    final activeShader = shader;
+    if (activeShader != null) {
+      activeShader.setFloat(0, size.width);
+      activeShader.setFloat(1, size.height);
+      activeShader.setFloat(2, 0.0);
+      canvas.drawRect(rect, Paint()..shader = activeShader);
+    }
+
+    final edgePaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.centerLeft,
+        end: Alignment.centerRight,
+        colors: [
+          Colors.white.withValues(alpha: 0.055),
+          Colors.transparent,
+          Colors.black.withValues(alpha: 0.16),
+        ],
+        stops: const [0.0, 0.18, 1.0],
+      ).createShader(rect);
+    canvas.drawRect(rect, edgePaint);
+
+    final topBottomPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          Colors.white.withValues(alpha: 0.035),
+          Colors.transparent,
+          Colors.black.withValues(alpha: 0.1),
+        ],
+        stops: const [0.0, 0.48, 1.0],
+      ).createShader(rect);
+    canvas.drawRect(rect, topBottomPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _BrushedMetalSidebarPainter oldDelegate) {
+    return oldDelegate.shader != shader ||
+        oldDelegate.surfaceColor != surfaceColor;
   }
 }
 
@@ -181,9 +307,11 @@ class _ProjectSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Expanded(
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: Row(
+            children: [
+              Expanded(
               child: Text(
                 project.name,
                 maxLines: 1,
@@ -211,6 +339,7 @@ class _ProjectSection extends StatelessWidget {
               visualDensity: VisualDensity.compact,
             ),
           ],
+          ),
         ),
         const SizedBox(height: 4),
         ...threads.map(
@@ -259,42 +388,38 @@ class _ThreadTile extends StatelessWidget {
         thread,
         details.globalPosition,
       ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(8),
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 2),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(7),
+      child: Semantics(
+        key: thread.isRunning ? const ValueKey('semantic.thread.runningShimmer') : null,
+        container: thread.isRunning,
+        label: thread.isRunning ? 'Thread is marked running' : null,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 2),
               color: isSelected
-                  ? Colors.white.withValues(alpha: 0.06)
+                  ? Colors.white.withValues(alpha: 0.045)
                   : Colors.transparent,
-              border: Border.all(
-                color: isSelected
-                    ? Colors.white.withValues(alpha: 0.035)
-                    : Colors.transparent,
-              ),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    thread.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                      color: foreground,
-                    ),
-                  ),
-                ),
-                if (thread.isRunning) ...[
-                  _RunningBadge(isSelected: isSelected),
-                  const SizedBox(width: 6),
-                ],
+              child: Stack(
+                children: [
+                  if (thread.isRunning)
+                    Positioned.fill(child: _RunningThreadShimmer(isSelected: isSelected)),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            thread.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                              color: foreground,
+                            ),
+                          ),
+                        ),
                 if (hasPendingApproval) ...[
                   const _PendingApprovalBadge(),
                   const SizedBox(width: 6),
@@ -314,7 +439,11 @@ class _ThreadTile extends StatelessWidget {
                     ),
                   ),
                 ],
-              ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -554,39 +683,117 @@ class _PendingApprovalBadge extends StatelessWidget {
   }
 }
 
-class _RunningBadge extends StatelessWidget {
-  const _RunningBadge({required this.isSelected});
+class _RunningThreadShimmer extends StatefulWidget {
+  const _RunningThreadShimmer({required this.isSelected});
 
   final bool isSelected;
 
   @override
+  State<_RunningThreadShimmer> createState() => _RunningThreadShimmerState();
+}
+
+class _RunningThreadShimmerState extends State<_RunningThreadShimmer>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2600),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final color = Colors.green.shade700;
-    return Semantics(
-      key: const ValueKey('semantic.thread.runningBadge'),
-      container: true,
-      label: 'Thread is marked running',
-      child: ExcludeSemantics(
-        child: Tooltip(
-          message: 'Running',
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: color.withValues(alpha: 0.45)),
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) {
+          return CustomPaint(
+            painter: _RunningThreadShimmerPainter(
+              progress: Curves.easeInOutCubic.transform(_controller.value),
+              isSelected: widget.isSelected,
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(5),
-              child: Icon(
-                Icons.bolt_rounded,
-                size: 11,
-                color: color,
-              ),
-            ),
-          ),
-        ),
+          );
+        },
       ),
     );
+  }
+}
+
+class _RunningThreadShimmerPainter extends CustomPainter {
+  const _RunningThreadShimmerPainter({required this.progress, required this.isSelected});
+
+  final double progress;
+  final bool isSelected;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final baseAlpha = isSelected ? 0.14 : 0.1;
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+          colors: [
+            Colors.transparent,
+            const Color(0xFF43FF7A).withValues(alpha: baseAlpha * 0.52),
+            const Color(0xFF7BFFAB).withValues(alpha: baseAlpha * 1.18),
+            const Color(0xFF31E86F).withValues(alpha: baseAlpha * 0.56),
+            Colors.transparent,
+          ],
+          stops: const [0.0, 0.22, 0.5, 0.78, 1.0],
+        ).createShader(rect),
+    );
+
+    final shaftCenter = -0.28 + (progress * 1.56);
+    final shaft = Rect.fromLTWH((shaftCenter * size.width) - 34, 0, 68, size.height);
+    canvas.save();
+    canvas.skew(-0.32, 0);
+    canvas.drawRect(
+      shaft,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+          colors: [
+            Colors.transparent,
+            const Color(0xFFA8FFC6).withValues(alpha: 0.0),
+            const Color(0xFFB7FFD0).withValues(alpha: isSelected ? 0.24 : 0.19),
+            const Color(0xFF72FF9B).withValues(alpha: 0.0),
+            Colors.transparent,
+          ],
+          stops: const [0.0, 0.18, 0.5, 0.82, 1.0],
+        ).createShader(shaft),
+    );
+    canvas.restore();
+
+    final edge = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          Colors.white.withValues(alpha: 0.018),
+          Colors.transparent,
+          Colors.black.withValues(alpha: 0.09),
+        ],
+      ).createShader(rect);
+    canvas.drawRect(rect, edge);
+  }
+
+  @override
+  bool shouldRepaint(covariant _RunningThreadShimmerPainter oldDelegate) {
+    return oldDelegate.progress != progress || oldDelegate.isSelected != isSelected;
   }
 }
 

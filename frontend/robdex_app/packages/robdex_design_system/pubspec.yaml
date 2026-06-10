@@ -30,3 +30,5 @@ flutter:
   shaders:
     - shaders/connection_nebula.frag
     - shaders/peripheral_vision_filter.frag
+    - shaders/brushed_metal_sidebar.frag
+    - shaders/timeline_paper_surface.frag

@@ -64,6 +64,26 @@ class RobdexDesignLabHome extends StatelessWidget {
         ),
       );
     }
+    if (surface == 'sidebar') {
+      return Scaffold(
+        body: SizedBox.expand(
+          child: ThreadListPanel(
+            selection: workbench.selection,
+            projects: workbench.projects,
+            threads: workbench.threads,
+            pendingApprovals: workbench.pendingApprovals,
+            onDisconnect: () {},
+            onGlobalSettings: () {},
+            onThreadSelected: (_) {},
+            onCreateProject: () {},
+            onProjectSettings: (_) {},
+            onCreateThread: (_) {},
+            onSpawnAgent: () {},
+            onWeeklyStats: () {},
+          ),
+        ),
+      );
+    }
     if (surface == 'inspector') {
       return Scaffold(
         body: Align(
