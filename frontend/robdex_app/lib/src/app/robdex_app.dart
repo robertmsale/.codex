@@ -857,6 +857,7 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
                 requirementSetJson: requirementSetJson,
               ),
           uploadImageBytes: _controller.uploadImageBytes,
+          loadFullSizeImage: _controller.loadFullSizeImage,
           onOpenLink: ide_host_bridge.openMentionedFile,
           chatBottomDrawer: IntegratedTerminalDrawer(
             controller: _terminalController,

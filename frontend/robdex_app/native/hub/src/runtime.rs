@@ -24,7 +24,7 @@ use crate::signals::{
     TerminalEventSignal, TerminalOpenSignal, TerminalResizeSignal, TerminateCommandExecutionSignal,
     ThreadCompactSignal, UpdateGlobalSettingsSignal, UpdateProjectSignal, UpdateThreadSettingsSignal,
     UpdateWorkerMetadataSignal, InterruptThreadSignal, ThreadHistoryStateSignal, HookToastSignal,
-    UploadImageBytesSignal,
+    UploadImageBytesSignal, LoadImageBytesSignal,
     WarmHandoffSignal, WorkbenchStateSignal,
 };
 use crate::terminal::TerminalRegistry;
@@ -65,6 +65,10 @@ enum Action {
         filename: String,
         content_type: String,
         bytes: Vec<u8>,
+    },
+    LoadImageBytes {
+        request_id: String,
+        path: String,
     },
     CreateProject {
         name: String,
@@ -519,6 +523,10 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
         filename: signal.message.filename,
         content_type: signal.message.content_type,
         bytes: signal.message.bytes,
+    });
+    spawn_map::<LoadImageBytesSignal, _>(tx.clone(), |signal| Action::LoadImageBytes {
+        request_id: signal.message.request_id,
+        path: signal.message.path,
     });
     spawn_map::<CreateProjectSignal, _>(tx.clone(), |signal| Action::CreateProject {
         name: signal.message.name,
@@ -1115,6 +1123,27 @@ async fn handle_action(
                 .await;
             match result {
                 Ok(path) => emit_bridge_task_result(request_id, task, serde_json::json!({"path": path})),
+                Err(error) => emit_bridge_task_error(request_id, task, &error),
+            }
+            current_view_clone(current_view)
+        }
+        Action::LoadImageBytes { request_id, path } => {
+            let task = "loadImageBytes";
+            let result = client
+                .as_ref()
+                .ok_or_else(|| anyhow!("Not connected"))?
+                .load_image_bytes(&path)
+                .await;
+            match result {
+                Ok((bytes_base64, content_type)) => emit_bridge_task_result(
+                    request_id,
+                    task,
+                    serde_json::json!({
+                        "path": path,
+                        "bytesBase64": bytes_base64,
+                        "contentType": content_type,
+                    }),
+                ),
                 Err(error) => emit_bridge_task_error(request_id, task, &error),
             }
             current_view_clone(current_view)

@@ -298,6 +298,16 @@ impl WorkbenchClient {
             .ok_or_else(|| anyhow!("bridge upload response missing path"))
     }
 
+
+    pub async fn load_image_bytes(&self, path: &str) -> Result<(String, String)> {
+        let mut url = self.endpoint.http_base.join("/images/image")?;
+        url.query_pairs_mut().append_pair("saved_path", path);
+        let (bytes, content_type) = get_bytes(&self.client, url).await?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let content_type = content_type.unwrap_or_else(|| "application/octet-stream".to_string());
+        Ok((encoded, content_type))
+    }
+
     pub async fn create_project(
         &mut self,
         name: String,

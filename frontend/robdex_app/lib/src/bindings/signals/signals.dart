@@ -28,6 +28,7 @@ part 'fetch_thread_history_signal.dart';
 part 'hook_toast_signal.dart';
 part 'initialize_workbench_signal.dart';
 part 'interrupt_thread_signal.dart';
+part 'load_image_bytes_signal.dart';
 part 'load_period_stats_signal.dart';
 part 'load_project_hook_logs_signal.dart';
 part 'load_requirement_composables_signal.dart';

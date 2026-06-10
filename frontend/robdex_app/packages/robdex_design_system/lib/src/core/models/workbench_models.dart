@@ -684,6 +684,21 @@ class LiveProcessItem {
   }
 }
 
+
+class FullSizeImageData {
+  const FullSizeImageData({
+    required this.path,
+    required this.bytesBase64,
+    required this.contentType,
+  });
+
+  final String path;
+  final String bytesBase64;
+  final String contentType;
+}
+
+typedef FullSizeImageLoader = Future<FullSizeImageData> Function(String path);
+
 class ChatEntry {
   const ChatEntry({
     required this.id,

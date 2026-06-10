@@ -80,6 +80,13 @@ pub struct UploadImageBytesSignal {
     pub bytes: Vec<u8>,
 }
 
+
+#[derive(Deserialize, DartSignal)]
+pub struct LoadImageBytesSignal {
+    pub request_id: String,
+    pub path: String,
+}
+
 #[derive(Deserialize, DartSignal)]
 pub struct CreateProjectSignal {
     pub name: String,

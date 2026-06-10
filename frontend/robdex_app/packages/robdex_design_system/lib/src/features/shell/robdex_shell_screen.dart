@@ -49,6 +49,7 @@ class RobdexShellScreen extends StatelessWidget {
     this.loadRequirementComposables,
     this.setThreadRequirements,
     this.uploadImageBytes,
+    this.loadFullSizeImage,
     this.onOpenLink,
     this.chatBottomDrawer,
     this.terminalAvailable = false,
@@ -89,6 +90,7 @@ class RobdexShellScreen extends StatelessWidget {
   final RequirementComposableLoader? loadRequirementComposables;
   final Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements;
   final ImageBytesUploader? uploadImageBytes;
+  final FullSizeImageLoader? loadFullSizeImage;
   final ValueChanged<String>? onOpenLink;
   final Widget? chatBottomDrawer;
   final bool terminalAvailable;
@@ -142,6 +144,7 @@ class RobdexShellScreen extends StatelessWidget {
                               loadRequirementComposables: loadRequirementComposables,
                               setThreadRequirements: setThreadRequirements,
                               uploadImageBytes: uploadImageBytes,
+                              loadFullSizeImage: loadFullSizeImage,
                               onOpenLink: onOpenLink,
                               terminalAvailable: terminalAvailable,
                               onTerminalPressed: onTerminalPressed,
@@ -180,6 +183,7 @@ class RobdexShellScreen extends StatelessWidget {
                               loadRequirementComposables: loadRequirementComposables,
                               setThreadRequirements: setThreadRequirements,
                               uploadImageBytes: uploadImageBytes,
+                              loadFullSizeImage: loadFullSizeImage,
                               onOpenLink: onOpenLink,
                               chatBottomDrawer: chatBottomDrawer,
                               terminalAvailable: terminalAvailable,
@@ -229,6 +233,7 @@ class _WideShell extends StatefulWidget {
     required this.loadRequirementComposables,
     required this.setThreadRequirements,
     required this.uploadImageBytes,
+    required this.loadFullSizeImage,
     required this.onOpenLink,
     required this.chatBottomDrawer,
     required this.terminalAvailable,
@@ -267,6 +272,7 @@ class _WideShell extends StatefulWidget {
   final RequirementComposableLoader? loadRequirementComposables;
   final Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements;
   final ImageBytesUploader? uploadImageBytes;
+  final FullSizeImageLoader? loadFullSizeImage;
   final ValueChanged<String>? onOpenLink;
   final Widget? chatBottomDrawer;
   final bool terminalAvailable;
@@ -353,6 +359,7 @@ class _WideShellState extends State<_WideShell> {
                                     requirementSetJson,
                                   ),
                           uploadImageBytes: widget.uploadImageBytes,
+                          loadFullSizeImage: widget.loadFullSizeImage,
                           onOpenLink: widget.onOpenLink,
                           composerEnabled: workbench.selection.threadId != null,
                           isRunning: workbench.selection.isRunning,
@@ -459,6 +466,7 @@ class _CompactShell extends StatefulWidget {
     required this.loadRequirementComposables,
     required this.setThreadRequirements,
     required this.uploadImageBytes,
+    required this.loadFullSizeImage,
     required this.onOpenLink,
     required this.terminalAvailable,
     required this.onTerminalPressed,
@@ -496,6 +504,7 @@ class _CompactShell extends StatefulWidget {
   final RequirementComposableLoader? loadRequirementComposables;
   final Future<void> Function(String recipientThreadId, String requirementSetJson)? setThreadRequirements;
   final ImageBytesUploader? uploadImageBytes;
+  final FullSizeImageLoader? loadFullSizeImage;
   final ValueChanged<String>? onOpenLink;
   final bool terminalAvailable;
   final VoidCallback? onTerminalPressed;
@@ -807,6 +816,7 @@ class _CompactShellState extends State<_CompactShell> {
                   requirementSetJson,
                 ),
         uploadImageBytes: widget.uploadImageBytes,
+        loadFullSizeImage: widget.loadFullSizeImage,
         onOpenLink: widget.onOpenLink,
         composerEnabled: true,
         isRunning: widget.workbench.selection.isRunning,

@@ -1,7 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
-
 import 'package:flutter/foundation.dart';
 import 'package:rinf/rinf.dart';
 import 'package:robdex_design_system/robdex_design_system.dart';
@@ -215,6 +213,28 @@ class WorkbenchController extends ChangeNotifier {
       return path;
     }
     throw StateError('Bridge upload response missing path.');
+  }
+
+
+  Future<FullSizeImageData> loadFullSizeImage(String path) async {
+    final requestId = _nextBridgeTaskRequestId('loadImageBytes');
+    LoadImageBytesSignal(
+      requestId: requestId,
+      path: path,
+    ).sendSignalToRust();
+    final payload = await _awaitBridgeTask(requestId);
+    if (payload case {
+      'path': final String imagePath,
+      'bytesBase64': final String bytesBase64,
+      'contentType': final String contentType,
+    } when bytesBase64.isNotEmpty) {
+      return FullSizeImageData(
+        path: imagePath,
+        bytesBase64: bytesBase64,
+        contentType: contentType,
+      );
+    }
+    throw StateError('Bridge image response missing image bytes.');
   }
 
   void reload() {

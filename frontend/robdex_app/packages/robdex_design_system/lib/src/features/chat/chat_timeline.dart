@@ -37,6 +37,7 @@ class ChatTimeline extends StatefulWidget {
     this.loadRequirementComposables,
     this.setThreadRequirements,
     this.uploadImageBytes,
+    this.loadFullSizeImage,
     this.onOpenLink,
     this.onTerminateCommandExecution,
     this.requirementReview,
@@ -64,6 +65,7 @@ class ChatTimeline extends StatefulWidget {
   final RequirementComposableLoader? loadRequirementComposables;
   final Future<void> Function(String requirementSetJson)? setThreadRequirements;
   final ImageBytesUploader? uploadImageBytes;
+  final FullSizeImageLoader? loadFullSizeImage;
   final ValueChanged<String>? onOpenLink;
   final ValueChanged<String>? onTerminateCommandExecution;
   final RequirementReviewSummary? requirementReview;
@@ -217,6 +219,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
                         onTerminateCommandExecution:
                             widget.onTerminateCommandExecution,
                         onOpenLink: widget.onOpenLink,
+                        loadFullSizeImage: widget.loadFullSizeImage,
                         onSend: widget.onSend,
                       );
                     },
@@ -572,6 +575,7 @@ class _ChatBubble extends StatelessWidget {
     required this.onExpandedChanged,
     this.onTerminateCommandExecution,
     this.onOpenLink,
+    this.loadFullSizeImage,
     this.onSend,
   });
 
@@ -580,6 +584,7 @@ class _ChatBubble extends StatelessWidget {
   final ValueChanged<bool> onExpandedChanged;
   final ValueChanged<String>? onTerminateCommandExecution;
   final ValueChanged<String>? onOpenLink;
+  final FullSizeImageLoader? loadFullSizeImage;
   final ValueChanged<ComposerSubmission>? onSend;
 
   @override
@@ -602,6 +607,7 @@ class _ChatBubble extends StatelessWidget {
         expanded: expanded,
         onExpandedChanged: onExpandedChanged,
         onTerminateCommandExecution: onTerminateCommandExecution,
+        loadFullSizeImage: loadFullSizeImage,
       );
     }
 
@@ -1501,12 +1507,14 @@ class _InlineEventRow extends StatelessWidget {
     required this.expanded,
     required this.onExpandedChanged,
     this.onTerminateCommandExecution,
+    this.loadFullSizeImage,
   });
 
   final ChatEntry entry;
   final bool expanded;
   final ValueChanged<bool> onExpandedChanged;
   final ValueChanged<String>? onTerminateCommandExecution;
+  final FullSizeImageLoader? loadFullSizeImage;
 
   @override
   Widget build(BuildContext context) {
@@ -1519,9 +1527,15 @@ class _InlineEventRow extends StatelessWidget {
           onTerminateCommandExecution: onTerminateCommandExecution,
         );
       case 'imageGeneration':
-        return _ImageGenerationEventRow(entry: entry);
+        return _ImageGenerationEventRow(
+          entry: entry,
+          loadFullSizeImage: loadFullSizeImage,
+        );
       case 'imageView':
-        return _ImageGenerationEventRow(entry: entry);
+        return _ImageGenerationEventRow(
+          entry: entry,
+          loadFullSizeImage: loadFullSizeImage,
+        );
       case 'mcpToolCall':
         return _ToolEventRow(
           entry: entry,
@@ -1547,9 +1561,11 @@ class _InlineEventRow extends StatelessWidget {
 class _ImageGenerationEventRow extends StatelessWidget {
   const _ImageGenerationEventRow({
     required this.entry,
+    this.loadFullSizeImage,
   });
 
   final ChatEntry entry;
+  final FullSizeImageLoader? loadFullSizeImage;
 
   @override
   Widget build(BuildContext context) {
@@ -1564,7 +1580,10 @@ class _ImageGenerationEventRow extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _ImagePreview(entry: entry),
+            _ImagePreview(
+              entry: entry,
+              loadFullSizeImage: loadFullSizeImage,
+            ),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -1632,17 +1651,24 @@ class _ImageGenerationEventRow extends StatelessWidget {
 }
 
 class _ImagePreview extends StatelessWidget {
-  const _ImagePreview({required this.entry});
+  const _ImagePreview({
+    required this.entry,
+    this.loadFullSizeImage,
+  });
 
   final ChatEntry entry;
+  final FullSizeImageLoader? loadFullSizeImage;
 
   @override
   Widget build(BuildContext context) {
+    final path = entry.output?.trim();
+    final canOpen = loadFullSizeImage != null && path != null && path.isNotEmpty;
     final encoded = entry.imagePreviewBase64?.trim();
+    Widget preview;
     if (encoded != null && encoded.isNotEmpty) {
       try {
         final bytes = base64Decode(encoded);
-        return ClipRRect(
+        preview = ClipRRect(
           borderRadius: BorderRadius.circular(6),
           child: Image.memory(
             bytes,
@@ -1654,10 +1680,166 @@ class _ImagePreview extends StatelessWidget {
           ),
         );
       } catch (_) {
-        return const _ImageUnavailable();
+        preview = const _ImageUnavailable();
       }
+    } else {
+      preview = const _ImageUnavailable();
     }
-    return const _ImageUnavailable();
+
+    if (!canOpen) {
+      return preview;
+    }
+
+    return Semantics(
+      button: true,
+      label: 'Open full size image',
+      child: Tooltip(
+        message: 'Open full size image',
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () => _showFullSizeImageDialog(
+            context,
+            path: path,
+            loadFullSizeImage: loadFullSizeImage!,
+          ),
+          child: Stack(
+            children: [
+              preview,
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.26),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                right: 6,
+                bottom: 6,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.52),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Padding(
+                    padding: EdgeInsets.all(4),
+                    child: Icon(Icons.open_in_full_rounded, size: 14),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> _showFullSizeImageDialog(
+  BuildContext context, {
+  required String path,
+  required FullSizeImageLoader loadFullSizeImage,
+}) {
+  final imageFuture = loadFullSizeImage(path);
+  return showDialog<void>(
+    context: context,
+    builder: (context) => _FullSizeImageDialog(
+      path: path,
+      imageFuture: imageFuture,
+    ),
+  );
+}
+
+class _FullSizeImageDialog extends StatelessWidget {
+  const _FullSizeImageDialog({
+    required this.path,
+    required this.imageFuture,
+  });
+
+  final String path;
+  final Future<FullSizeImageData> imageFuture;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Dialog.fullscreen(
+      backgroundColor: const Color(0xF2070B10),
+      child: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 10, 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: SelectableText(
+                      path,
+                      maxLines: 2,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontFamily: 'monospace',
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.72),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close image',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+            ),
+            Divider(
+              height: 1,
+              color: theme.colorScheme.outline.withValues(alpha: 0.32),
+            ),
+            Expanded(
+              child: FutureBuilder<FullSizeImageData>(
+                future: imageFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          'Could not load full size image: ${snapshot.error}',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    );
+                  }
+                  final image = snapshot.data;
+                  if (image == null || image.bytesBase64.isEmpty) {
+                    return const Center(child: Text('No image data returned.'));
+                  }
+                  try {
+                    final bytes = base64Decode(image.bytesBase64);
+                    return InteractiveViewer(
+                      minScale: 0.2,
+                      maxScale: 8,
+                      child: Center(
+                        child: Image.memory(
+                          bytes,
+                          fit: BoxFit.contain,
+                          gaplessPlayback: true,
+                        ),
+                      ),
+                    );
+                  } catch (error) {
+                    return Center(child: Text('Could not decode image: $error'));
+                  }
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

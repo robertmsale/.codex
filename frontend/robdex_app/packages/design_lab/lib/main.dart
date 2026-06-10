@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:robdex_design_system/robdex_design_system.dart';
 
@@ -60,6 +62,18 @@ class RobdexDesignLabHome extends StatelessWidget {
           child: SizedBox(
             width: 920,
             child: PeriodStatsView(stats: _mockPeriodStats),
+          ),
+        ),
+      );
+    }
+    if (surface == 'brushedMetalShader') {
+      return const Scaffold(
+        backgroundColor: Color(0xFF05090F),
+        body: Center(
+          child: SizedBox(
+            width: 520,
+            height: 520,
+            child: _BrushedMetalShaderSpecimen(),
           ),
         ),
       );
@@ -149,8 +163,113 @@ class RobdexDesignLabHome extends StatelessWidget {
         onUpdateWorkerMetadata: (_) {},
         loadThreadStats: (_) async => _mockThreadStats,
         loadPeriodStats: (_) async => _mockPeriodStats,
+        loadFullSizeImage: (_) async => const FullSizeImageData(
+          path: '/tmp/robdex-design-lab-static.png',
+          bytesBase64: '',
+          contentType: 'image/png',
+        ),
       ),
     );
+  }
+}
+
+
+class _BrushedMetalShaderSpecimen extends StatefulWidget {
+  const _BrushedMetalShaderSpecimen();
+
+  @override
+  State<_BrushedMetalShaderSpecimen> createState() => _BrushedMetalShaderSpecimenState();
+}
+
+class _BrushedMetalShaderSpecimenState extends State<_BrushedMetalShaderSpecimen> {
+  FragmentShader? _shader;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadShader();
+  }
+
+  Future<void> _loadShader() async {
+    try {
+      final program = await FragmentProgram.fromAsset(
+        'packages/robdex_design_system/shaders/brushed_metal_sidebar.frag',
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _shader = program.fragmentShader();
+      });
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _shader?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.36),
+            blurRadius: 36,
+            offset: const Offset(0, 18),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: CustomPaint(
+          painter: _BrushedMetalShaderSpecimenPainter(shader: _shader),
+          child: const SizedBox.expand(),
+        ),
+      ),
+    );
+  }
+}
+
+class _BrushedMetalShaderSpecimenPainter extends CustomPainter {
+  const _BrushedMetalShaderSpecimenPainter({required this.shader});
+
+  final FragmentShader? shader;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color(0xFF121923),
+            Color(0xFF071018),
+            Color(0xFF101821),
+          ],
+          stops: [0.0, 0.56, 1.0],
+        ).createShader(rect),
+    );
+
+    final activeShader = shader;
+    if (activeShader != null) {
+      activeShader.setFloat(0, size.width);
+      activeShader.setFloat(1, size.height);
+      activeShader.setFloat(2, 0.0);
+      canvas.drawRect(rect, Paint()..shader = activeShader);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _BrushedMetalShaderSpecimenPainter oldDelegate) {
+    return oldDelegate.shader != shader;
   }
 }
 
