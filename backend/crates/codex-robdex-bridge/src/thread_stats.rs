@@ -153,7 +153,14 @@ pub fn compute_period_stats(job: PeriodStatsJob) -> Result<PeriodStatsResponse> 
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or("session");
-        let stats = aggregate_session_jsonl(thread_id, &path, &contents);
+        let stats = aggregate_session_jsonl_in_period(thread_id, &path, &contents, job.start_ms, job.end_ms);
+        if stats.totals.total_tokens == 0
+            && stats.estimates == TokenEstimates::default()
+            && stats.compaction_count == 0
+            && stats.top_items.is_empty()
+        {
+            continue;
+        }
         session_count += 1;
         totals = add_totals(totals, stats.totals);
         estimates = add_estimates(estimates, stats.estimates);
@@ -316,6 +323,25 @@ pub fn aggregate_session_jsonl(
     session_path: &Path,
     contents: &str,
 ) -> ThreadStatsResponse {
+    aggregate_session_jsonl_window(thread_id, session_path, contents, None)
+}
+
+fn aggregate_session_jsonl_in_period(
+    thread_id: &str,
+    session_path: &Path,
+    contents: &str,
+    start_ms: u64,
+    end_ms: u64,
+) -> ThreadStatsResponse {
+    aggregate_session_jsonl_window(thread_id, session_path, contents, Some((start_ms, end_ms)))
+}
+
+fn aggregate_session_jsonl_window(
+    thread_id: &str,
+    session_path: &Path,
+    contents: &str,
+    window_ms: Option<(u64, u64)>,
+) -> ThreadStatsResponse {
     let mut warnings = Vec::new();
     let mut totals = TokenTotals::default();
     let mut estimates = TokenEstimates::default();
@@ -324,6 +350,7 @@ pub fn aggregate_session_jsonl(
     let mut categories: BTreeMap<String, TokenCategoryBreakdown> = BTreeMap::new();
     let mut compaction_lines = BTreeSet::new();
     let mut last_total = 0;
+    let mut last_totals = TokenTotals::default();
     let mut seen_total_snapshots = BTreeSet::new();
 
     for (line_index, raw_line) in contents.lines().enumerate() {
@@ -339,12 +366,22 @@ pub fn aggregate_session_jsonl(
             }
         };
 
-        if line_mentions_compaction(&value) {
+        let in_window = window_ms
+            .map(|(start_ms, end_ms)| {
+                event_timestamp_ms(&value)
+                    .map(|timestamp_ms| timestamp_ms >= start_ms && timestamp_ms <= end_ms)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true);
+
+        if in_window && line_mentions_compaction(&value) {
             compaction_lines.insert(line);
         }
 
         if let Some(usage) = token_count_usage(&value) {
-            totals = usage.total;
+            if window_ms.is_none() {
+                totals = usage.total;
+            }
             let snapshot_key = (
                 usage.total.input_tokens,
                 usage.total.output_tokens,
@@ -353,28 +390,42 @@ pub fn aggregate_session_jsonl(
                 usage.total.total_tokens,
             );
             if seen_total_snapshots.insert(snapshot_key) {
-                let event_usage = usage.last.unwrap_or(usage.total);
+                let event_usage = if window_ms.is_some() {
+                    usage.last.unwrap_or_else(|| diff_totals(usage.total, last_totals))
+                } else {
+                    usage.last.unwrap_or(usage.total)
+                };
                 let delta_tokens = usage
                     .last
                     .map(event_usage_tokens)
                     .unwrap_or_else(|| usage.total.total_tokens.saturating_sub(last_total));
                 last_total = usage.total.total_tokens;
-                timeline.push(TokenTimelinePoint {
-                    index: timeline.len() as u64 + 1,
-                    line,
-                    input_tokens: event_usage.input_tokens,
-                    uncached_input_tokens: event_usage.uncached_input_tokens,
-                    output_tokens: event_usage.output_tokens,
-                    cached_input_tokens: event_usage.cached_input_tokens,
-                    reasoning_output_tokens: event_usage.reasoning_output_tokens,
-                    total_tokens: timeline
-                        .last()
-                        .map(|point: &TokenTimelinePoint| point.total_tokens)
-                        .unwrap_or(0)
-                        .saturating_add(delta_tokens),
-                    delta_tokens,
-                });
+                last_totals = usage.total;
+                if in_window {
+                    if window_ms.is_some() {
+                        totals = add_totals(totals, event_usage);
+                    }
+                    timeline.push(TokenTimelinePoint {
+                        index: timeline.len() as u64 + 1,
+                        line,
+                        input_tokens: event_usage.input_tokens,
+                        uncached_input_tokens: event_usage.uncached_input_tokens,
+                        output_tokens: event_usage.output_tokens,
+                        cached_input_tokens: event_usage.cached_input_tokens,
+                        reasoning_output_tokens: event_usage.reasoning_output_tokens,
+                        total_tokens: timeline
+                            .last()
+                            .map(|point: &TokenTimelinePoint| point.total_tokens)
+                            .unwrap_or(0)
+                            .saturating_add(delta_tokens),
+                        delta_tokens,
+                    });
+                }
             }
+            continue;
+        }
+
+        if !in_window {
             continue;
         }
 
@@ -423,6 +474,76 @@ pub fn aggregate_session_jsonl(
         top_items,
         warnings,
     }
+}
+
+fn diff_totals(current: TokenTotals, previous: TokenTotals) -> TokenTotals {
+    TokenTotals {
+        input_tokens: current.input_tokens.saturating_sub(previous.input_tokens),
+        uncached_input_tokens: current
+            .uncached_input_tokens
+            .saturating_sub(previous.uncached_input_tokens),
+        output_tokens: current.output_tokens.saturating_sub(previous.output_tokens),
+        cached_input_tokens: current
+            .cached_input_tokens
+            .saturating_sub(previous.cached_input_tokens),
+        reasoning_output_tokens: current
+            .reasoning_output_tokens
+            .saturating_sub(previous.reasoning_output_tokens),
+        total_tokens: current.total_tokens.saturating_sub(previous.total_tokens),
+    }
+}
+
+fn event_timestamp_ms(value: &Value) -> Option<u64> {
+    value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339_utc_ms)
+}
+
+fn parse_rfc3339_utc_ms(value: &str) -> Option<u64> {
+    let value = value.strip_suffix('Z')?;
+    let (date, time) = value.split_once('T')?;
+    let mut date_parts = date.split('-');
+    let year = date_parts.next()?.parse::<i32>().ok()?;
+    let month = date_parts.next()?.parse::<u32>().ok()?;
+    let day = date_parts.next()?.parse::<u32>().ok()?;
+    let mut time_parts = time.split(':');
+    let hour = time_parts.next()?.parse::<u32>().ok()?;
+    let minute = time_parts.next()?.parse::<u32>().ok()?;
+    let second_part = time_parts.next()?;
+    let (second_text, fractional_text) = second_part.split_once('.').unwrap_or((second_part, ""));
+    let second = second_text.parse::<u32>().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let millis = fractional_text.chars().take(3).collect::<String>();
+    let millis = if millis.is_empty() {
+        0
+    } else {
+        format!("{millis:0<3}").parse::<u64>().ok()?
+    };
+    let days = days_from_civil(year, month, day)?;
+    let seconds = days
+        .checked_mul(86_400)?
+        .checked_add(hour as i64 * 3_600 + minute as i64 * 60 + second as i64)?;
+    if seconds < 0 {
+        return None;
+    }
+    Some(seconds as u64 * 1_000 + millis)
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
+    let year = year - i32::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let month = month as i32;
+    let day = day as i32;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    if !(0..=365).contains(&doy) {
+        return None;
+    }
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146_097 + doe - 719_468) as i64)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -638,6 +759,31 @@ not-json
         let stats = aggregate_session_jsonl("thread-a", Path::new("/tmp/thread-a.jsonl"), jsonl);
         assert_eq!(stats.totals.total_tokens, 12);
         assert_eq!(stats.warnings.len(), 1);
+    }
+
+    #[test]
+    fn period_aggregation_uses_event_deltas_inside_window() {
+        let jsonl = r#"{"timestamp":"2026-06-10T00:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":5,"total_tokens":135}}}}
+{"timestamp":"2026-06-11T00:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":25,"output_tokens":55,"reasoning_output_tokens":12,"total_tokens":227}}}}
+{"timestamp":"2026-06-11T00:01:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"current window user message"}}
+{"timestamp":"2026-06-12T00:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":400,"cached_input_tokens":40,"output_tokens":80,"reasoning_output_tokens":20,"total_tokens":500}}}}
+"#;
+        let stats = aggregate_session_jsonl_in_period(
+            "thread-a",
+            Path::new("/tmp/thread-a.jsonl"),
+            jsonl,
+            parse_rfc3339_utc_ms("2026-06-11T00:00:00.000Z").unwrap(),
+            parse_rfc3339_utc_ms("2026-06-11T23:59:59.999Z").unwrap(),
+        );
+
+        assert_eq!(stats.totals.input_tokens, 60);
+        assert_eq!(stats.totals.cached_input_tokens, 5);
+        assert_eq!(stats.totals.uncached_input_tokens, 55);
+        assert_eq!(stats.totals.output_tokens, 25);
+        assert_eq!(stats.totals.reasoning_output_tokens, 7);
+        assert_eq!(stats.totals.total_tokens, 92);
+        assert_eq!(stats.timeline.len(), 1);
+        assert!(stats.estimates.user_message_input_tokens > 0);
     }
 
     #[test]

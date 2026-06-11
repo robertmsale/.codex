@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -507,7 +505,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
         final previews = <String, Uint8List>{};
         for (final file in files) {
           final path = file.path;
-          if (path == null || path.isEmpty) {
+          if (path.isEmpty) {
             continue;
           }
           paths.add(path);
@@ -734,38 +732,40 @@ class _ComposerPanelState extends State<ComposerPanel> {
               children: [
                 CallbackShortcuts(
                   bindings: <ShortcutActivator, VoidCallback>{
-                    const SingleActivator(LogicalKeyboardKey.tab): () {
-                      final current = _slashSuggestionState;
-                      if (current != null) {
-                        _completeSlashSelection(current, _selectedSlashIndex);
-                      }
-                    },
-                    const SingleActivator(LogicalKeyboardKey.arrowDown): () {
-                      final current = _slashSuggestionState;
-                      if (current != null && current.options.isNotEmpty) {
-                        setState(() {
-                          _selectedSlashIndex =
-                              (_selectedSlashIndex + 1) % current.options.length;
-                        });
-                      }
-                    },
-                    const SingleActivator(LogicalKeyboardKey.arrowUp): () {
-                      final current = _slashSuggestionState;
-                      if (current != null && current.options.isNotEmpty) {
-                        setState(() {
-                          _selectedSlashIndex =
-                              (_selectedSlashIndex - 1 + current.options.length) %
-                                  current.options.length;
-                        });
-                      }
-                    },
-                    const SingleActivator(LogicalKeyboardKey.escape): () {
-                      if (_slashSuggestionState != null) {
-                        setState(() {
-                          _dismissedSlashText = _controller.text;
-                          _selectedSlashIndex = 0;
-                        });
-                      }
+                    if (suggestions != null) ...{
+                      const SingleActivator(LogicalKeyboardKey.tab): () {
+                        final current = _slashSuggestionState;
+                        if (current != null) {
+                          _completeSlashSelection(current, _selectedSlashIndex);
+                        }
+                      },
+                      const SingleActivator(LogicalKeyboardKey.arrowDown): () {
+                        final current = _slashSuggestionState;
+                        if (current != null && current.options.isNotEmpty) {
+                          setState(() {
+                            _selectedSlashIndex =
+                                (_selectedSlashIndex + 1) % current.options.length;
+                          });
+                        }
+                      },
+                      const SingleActivator(LogicalKeyboardKey.arrowUp): () {
+                        final current = _slashSuggestionState;
+                        if (current != null && current.options.isNotEmpty) {
+                          setState(() {
+                            _selectedSlashIndex =
+                                (_selectedSlashIndex - 1 + current.options.length) %
+                                    current.options.length;
+                          });
+                        }
+                      },
+                      const SingleActivator(LogicalKeyboardKey.escape): () {
+                        if (_slashSuggestionState != null) {
+                          setState(() {
+                            _dismissedSlashText = _controller.text;
+                            _selectedSlashIndex = 0;
+                          });
+                        }
+                      },
                     },
                     const SingleActivator(LogicalKeyboardKey.enter): () {
                       _submit();
@@ -1096,7 +1096,7 @@ class _ContextWindowDonut extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final raw = percentRemaining;
-    final int? clamped = raw == null ? null : raw.clamp(0, 100).toInt();
+    final int? clamped = raw?.clamp(0, 100).toInt();
     final fraction = clamped == null ? 0.0 : clamped / 100.0;
     final color = switch (clamped) {
       null => theme.colorScheme.outline,

@@ -1033,6 +1033,51 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1600));
   });
 
+  testWidgets('composer arrow keys move cursor when slash suggestions are inactive', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 980,
+            height: 420,
+            child: ChatTimeline(
+              threadId: 'config-operator',
+              entries: const [],
+              title: 'Config Operator',
+              contextWindowRemainingPercent: 92,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: true,
+              isRunning: false,
+              showComposer: true,
+              selection: mockWorkbenchData.selection,
+              availableModels: mockWorkbenchData.availableModels,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final field = find.byType(TextField).last;
+    await tester.enterText(field, 'first line\nsecond line\nthird line');
+    await tester.tap(field);
+    await tester.pump();
+    final controller = tester.widget<TextField>(field).controller!;
+    controller.selection = TextSelection.collapsed(offset: controller.text.length);
+    final endOffset = controller.selection.baseOffset;
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.pump();
+    expect(controller.selection.baseOffset, lessThan(endOffset));
+
+    final upOffset = controller.selection.baseOffset;
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pump();
+    expect(controller.selection.baseOffset, greaterThan(upOffset));
+  });
+
   testWidgets('handoff slash command inserts a warm handoff prompt', (
     WidgetTester tester,
   ) async {
@@ -2121,6 +2166,30 @@ void main() {
     expect(find.text('Cumulative Usage'), findsOneWidget);
     expect(find.text('Attribution Breakdown'), findsOneWidget);
     expect(find.text('Top Expensive Items'), findsOneWidget);
+  });
+
+  testWidgets('weekly quota stats shows credit equivalent instead of used percent echo', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: const Scaffold(
+          body: SingleChildScrollView(
+            child: PeriodStatsView(stats: _widgetPeriodStats),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Approximate ChatGPT credit equivalent'), findsOneWidget);
+    expect(find.text('Credit rate card'), findsOneWidget);
+    expect(find.text('Total Credits'), findsOneWidget);
+    expect(find.text('Input Credits'), findsOneWidget);
+    expect(find.text('Cached Credits'), findsOneWidget);
+    expect(find.text('Output Credits'), findsOneWidget);
+    expect(find.text('70.0% weekly quota used'), findsNothing);
+    expect(find.text('Remaining'), findsNothing);
   });
 
   testWidgets('thread stats modal reports loading failures without opening stats', (

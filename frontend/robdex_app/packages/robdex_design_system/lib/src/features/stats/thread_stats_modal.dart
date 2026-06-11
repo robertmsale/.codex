@@ -136,6 +136,7 @@ class _WeeklyQuotaStatsDialog extends StatefulWidget {
 class _WeeklyQuotaStatsDialogState extends State<_WeeklyQuotaStatsDialog> {
   final _resetController = TextEditingController();
   final _remainingController = TextEditingController(text: '30');
+  DateTime? _selectedReset;
   PeriodStatsData? _stats;
   String? _error;
   bool _loading = false;
@@ -147,11 +148,39 @@ class _WeeklyQuotaStatsDialogState extends State<_WeeklyQuotaStatsDialog> {
     super.dispose();
   }
 
+  Future<void> _pickResetDateTime() async {
+    final now = DateTime.now();
+    final initial = _selectedReset ?? _parseQuotaResetTime(_resetController.text.trim()) ?? now;
+    final date = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(now.year - 2),
+      lastDate: DateTime(now.year + 2),
+      helpText: 'Select weekly quota reset date',
+    );
+    if (date == null || !mounted) {
+      return;
+    }
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(initial),
+      helpText: 'Select weekly quota reset time',
+    );
+    if (time == null || !mounted) {
+      return;
+    }
+    final selected = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    setState(() {
+      _selectedReset = selected;
+      _resetController.text = _formatDate(selected.millisecondsSinceEpoch);
+    });
+  }
+
   Future<void> _run() async {
-    final reset = _parseQuotaResetTime(_resetController.text.trim());
+    final reset = _selectedReset ?? _parseQuotaResetTime(_resetController.text.trim());
     final remaining = double.tryParse(_remainingController.text.trim());
     if (reset == null || remaining == null) {
-      setState(() => _error = 'Enter a reset time like 2026-06-10 17:30:00-07:00 or June 10th, 2026 5:30PM PST, and remaining as a number.');
+      setState(() => _error = 'Pick a reset date/time and enter remaining as a number.');
       return;
     }
     final resetMs = reset.millisecondsSinceEpoch;
@@ -209,7 +238,7 @@ class _WeeklyQuotaStatsDialogState extends State<_WeeklyQuotaStatsDialog> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Enter the next weekly reset and current remaining percentage. Robdex infers the 168-hour window start and scans session logs in that window.',
+                      'Pick the next weekly reset and enter the current remaining percentage. Robdex infers the 168-hour window start, scans session logs modified in that window, and filters counted events by timestamp.',
                       style: theme.textTheme.bodyMedium,
                     ),
                     const SizedBox(height: 16),
@@ -219,9 +248,16 @@ class _WeeklyQuotaStatsDialogState extends State<_WeeklyQuotaStatsDialog> {
                           flex: 2,
                           child: TextField(
                             controller: _resetController,
-                            decoration: const InputDecoration(
+                            readOnly: true,
+                            onTap: _loading ? null : _pickResetDateTime,
+                            decoration: InputDecoration(
                               labelText: 'Next reset',
-                              hintText: '2026-06-10 17:30:00-07:00',
+                              hintText: 'Pick date and time',
+                              suffixIcon: IconButton(
+                                tooltip: 'Pick reset date and time',
+                                onPressed: _loading ? null : _pickResetDateTime,
+                                icon: const Icon(Icons.event_rounded),
+                              ),
                             ),
                           ),
                         ),
@@ -262,22 +298,38 @@ class _WeeklyQuotaStatsDialogState extends State<_WeeklyQuotaStatsDialog> {
   }
 }
 
-class PeriodStatsView extends StatelessWidget {
+class PeriodStatsView extends StatefulWidget {
   const PeriodStatsView({super.key, required this.stats});
 
   final PeriodStatsData stats;
 
   @override
+  State<PeriodStatsView> createState() => _PeriodStatsViewState();
+}
+
+class _PeriodStatsViewState extends State<PeriodStatsView> {
+  _CreditRateCard _selectedRateCard = _creditRateCards.first;
+
+  @override
   Widget build(BuildContext context) {
+    final stats = widget.stats;
     final quota = stats.quota;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (quota != null) ...[
           _Panel(
-            title: '${quota.usedPercent.toStringAsFixed(1)}% weekly quota used',
-            subtitle: '${stats.sessionCount} session logs scanned from ${_formatDate(stats.startMs)} to ${_formatDate(stats.endMs)}.',
-            child: _QuotaSummary(quota: quota, totals: stats.totals),
+            title: 'Approximate ChatGPT credit equivalent',
+            subtitle:
+                '${stats.sessionCount} session logs scanned from ${_formatDate(stats.startMs)} to ${_formatDate(stats.endMs)}. Entered quota remaining: ${quota.remainingPercent.toStringAsFixed(1)}%.',
+            child: _CreditEquivalentSummary(
+              totals: stats.totals,
+              selectedRateCard: _selectedRateCard,
+              onRateCardChanged: (rateCard) {
+                if (rateCard == null) return;
+                setState(() => _selectedRateCard = rateCard);
+              },
+            ),
           ),
           const SizedBox(height: 18),
         ],
@@ -298,6 +350,34 @@ class PeriodStatsView extends StatelessWidget {
     );
   }
 }
+
+class _CreditRateCard {
+  const _CreditRateCard({
+    required this.label,
+    required this.inputCreditsPerMillion,
+    required this.cachedInputCreditsPerMillion,
+    required this.outputCreditsPerMillion,
+  });
+
+  final String label;
+  final double? inputCreditsPerMillion;
+  final double? cachedInputCreditsPerMillion;
+  final double? outputCreditsPerMillion;
+
+  bool get hasRates => inputCreditsPerMillion != null && cachedInputCreditsPerMillion != null && outputCreditsPerMillion != null;
+}
+
+const _creditRateCards = <_CreditRateCard>[
+  _CreditRateCard(label: 'GPT-5.5', inputCreditsPerMillion: 125, cachedInputCreditsPerMillion: 12.5, outputCreditsPerMillion: 750),
+  _CreditRateCard(label: 'GPT-5.5 Cyber', inputCreditsPerMillion: 500, cachedInputCreditsPerMillion: 50, outputCreditsPerMillion: 3000),
+  _CreditRateCard(label: 'GPT-5.4', inputCreditsPerMillion: 62.5, cachedInputCreditsPerMillion: 6.25, outputCreditsPerMillion: 375),
+  _CreditRateCard(label: 'GPT-5.4-Mini', inputCreditsPerMillion: 18.75, cachedInputCreditsPerMillion: 1.875, outputCreditsPerMillion: 113),
+  _CreditRateCard(label: 'GPT-5.3-Codex', inputCreditsPerMillion: 43.75, cachedInputCreditsPerMillion: 4.375, outputCreditsPerMillion: 350),
+  _CreditRateCard(label: 'GPT-5.2', inputCreditsPerMillion: 43.75, cachedInputCreditsPerMillion: 4.375, outputCreditsPerMillion: 350),
+  _CreditRateCard(label: 'GPT-5.3-Codex-Spark', inputCreditsPerMillion: null, cachedInputCreditsPerMillion: null, outputCreditsPerMillion: null),
+  _CreditRateCard(label: 'GPT-Image-2.0 (image)', inputCreditsPerMillion: 200, cachedInputCreditsPerMillion: 50, outputCreditsPerMillion: 750),
+  _CreditRateCard(label: 'GPT-Image-2.0 (text)', inputCreditsPerMillion: 125, cachedInputCreditsPerMillion: 31.25, outputCreditsPerMillion: 250),
+];
 
 class ThreadStatsModalView extends StatelessWidget {
   const ThreadStatsModalView({
@@ -504,50 +584,95 @@ class _HeroMetrics extends StatelessWidget {
   }
 }
 
-class _QuotaSummary extends StatelessWidget {
-  const _QuotaSummary({required this.quota, required this.totals});
+class _CreditEquivalentSummary extends StatelessWidget {
+  const _CreditEquivalentSummary({
+    required this.totals,
+    required this.selectedRateCard,
+    required this.onRateCardChanged,
+  });
 
-  final WeeklyQuotaData quota;
   final TokenTotals totals;
+  final _CreditRateCard selectedRateCard;
+  final ValueChanged<_CreditRateCard?> onRateCardChanged;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Row(
+    if (!selectedRateCard.hasRates) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _RateCardPicker(
+            selectedRateCard: selectedRateCard,
+            onRateCardChanged: onRateCardChanged,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Research preview rates are not published in this rate card.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.66),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      );
+    }
+    final inputCredits = totals.uncachedInputTokens / 1000000 * selectedRateCard.inputCreditsPerMillion!;
+    final cachedCredits = totals.cachedInputTokens / 1000000 * selectedRateCard.cachedInputCreditsPerMillion!;
+    final outputCredits = totals.outputTokens / 1000000 * selectedRateCard.outputCreditsPerMillion!;
+    final totalCredits = inputCredits + cachedCredits + outputCredits;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(
-          width: 140,
-          height: 140,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              CircularProgressIndicator(
-                value: quota.usedPercent.clamp(0, 100) / 100,
-                strokeWidth: 14,
-                backgroundColor: theme.colorScheme.surfaceContainerHighest,
-              ),
-              Center(
-                child: Text(
-                  '${quota.usedPercent.toStringAsFixed(0)}%',
-                  style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900),
-                ),
-              ),
-            ],
-          ),
+        _RateCardPicker(
+          selectedRateCard: selectedRateCard,
+          onRateCardChanged: onRateCardChanged,
         ),
-        const SizedBox(width: 22),
-        Expanded(
-          child: Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: [
-              _MetricTile(width: 180, label: 'Remaining', value: '${quota.remainingPercent.toStringAsFixed(1)}%', icon: Icons.battery_5_bar_rounded),
-              _MetricTile(width: 180, label: 'Uncached Input', value: _formatNumber(totals.uncachedInputTokens), icon: Icons.new_releases_rounded),
-              _MetricTile(width: 180, label: 'Total Tokens', value: _formatNumber(totals.totalTokens), icon: Icons.query_stats_rounded),
-            ],
-          ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            _MetricTile(width: 190, label: 'Total Credits', value: _formatCredits(totalCredits), icon: Icons.query_stats_rounded),
+            _MetricTile(width: 190, label: 'Input Credits', value: _formatCredits(inputCredits), icon: Icons.input_rounded),
+            _MetricTile(width: 190, label: 'Cached Credits', value: _formatCredits(cachedCredits), icon: Icons.memory_rounded),
+            _MetricTile(width: 190, label: 'Output Credits', value: _formatCredits(outputCredits), icon: Icons.output_rounded),
+          ],
         ),
       ],
+    );
+  }
+}
+
+class _RateCardPicker extends StatelessWidget {
+  const _RateCardPicker({
+    required this.selectedRateCard,
+    required this.onRateCardChanged,
+  });
+
+  final _CreditRateCard selectedRateCard;
+  final ValueChanged<_CreditRateCard?> onRateCardChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 320),
+      child: DropdownButtonFormField<_CreditRateCard>(
+        initialValue: selectedRateCard,
+        isExpanded: true,
+        decoration: const InputDecoration(
+          labelText: 'Credit rate card',
+          isDense: true,
+        ),
+        items: [
+          for (final rateCard in _creditRateCards)
+            DropdownMenuItem<_CreditRateCard>(
+              value: rateCard,
+              child: Text(rateCard.label),
+            ),
+        ],
+        onChanged: onRateCardChanged,
+      ),
     );
   }
 }
@@ -1322,6 +1447,22 @@ String _formatNumber(int value) {
   return value.toString();
 }
 
+String _formatCredits(double value) {
+  if (value >= 1000000) {
+    return '${(value / 1000000).toStringAsFixed(2)}M';
+  }
+  if (value >= 1000) {
+    return '${(value / 1000).toStringAsFixed(1)}K';
+  }
+  if (value >= 100) {
+    return value.toStringAsFixed(0);
+  }
+  if (value >= 10) {
+    return value.toStringAsFixed(1);
+  }
+  return value.toStringAsFixed(2);
+}
+
 String _compactTick(int value) {
   if (value <= 0) {
     return '0';
@@ -1333,5 +1474,10 @@ String _formatDate(int value) {
   if (value <= 0) return 'unknown';
   final date = DateTime.fromMillisecondsSinceEpoch(value).toLocal();
   String two(int part) => part.toString().padLeft(2, '0');
-  return '${date.year}-${two(date.month)}-${two(date.day)} ${two(date.hour)}:${two(date.minute)}';
+  final offset = date.timeZoneOffset;
+  final sign = offset.isNegative ? '-' : '+';
+  final absoluteOffset = offset.abs();
+  final offsetHours = two(absoluteOffset.inHours);
+  final offsetMinutes = two(absoluteOffset.inMinutes.remainder(60));
+  return '${date.year}-${two(date.month)}-${two(date.day)} ${two(date.hour)}:${two(date.minute)}:${two(date.second)}$sign$offsetHours:$offsetMinutes';
 }
