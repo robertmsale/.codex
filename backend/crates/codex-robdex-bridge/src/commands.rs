@@ -4214,6 +4214,16 @@ fn requirements_self_setting_allowed(role: &str) -> bool {
     !matches!(role, "worker" | "qa" | "planner")
 }
 
+fn planner_requirements_target_allowed(
+    sender: &crate::models::ScopedAgentRecord,
+    recipient: &crate::models::ScopedAgentRecord,
+) -> bool {
+    sender.role == "planner"
+        && sender.project_path == recipient.project_path
+        && sender.thread_id != recipient.thread_id
+        && !recipient.is_hidden
+}
+
 fn ensure_requirements_view_allowed(
     sender: &crate::models::ScopedAgentRecord,
     recipient: &crate::models::ScopedAgentRecord,
@@ -4227,8 +4237,11 @@ fn ensure_requirements_view_allowed(
     if sender.is_orchestrator && sender.project_path == recipient.project_path && recipient.role == "worker" {
         return Ok(());
     }
+    if planner_requirements_target_allowed(sender, recipient) {
+        return Ok(());
+    }
     bail!(
-        "Requirements access denied. Orchestrators may only target workers in their project; other roles may only target themselves."
+        "Requirements access denied. Orchestrators may only target workers in their project; planners may target non-hidden agents in their project; other roles may only target themselves."
     )
 }
 
@@ -4240,7 +4253,7 @@ fn ensure_requirements_mutation_allowed(
         if requirements_self_setting_allowed(&sender.role) {
             return Ok(());
         }
-        bail!("Workers and QA threads cannot set Requirements on themselves.");
+        bail!("Workers, QA, and planner threads cannot set Requirements on themselves.");
     }
     if sender.role == "operator" {
         return Ok(());
@@ -4248,8 +4261,11 @@ fn ensure_requirements_mutation_allowed(
     if sender.is_orchestrator && sender.project_path == recipient.project_path && recipient.role == "worker" {
         return Ok(());
     }
+    if planner_requirements_target_allowed(sender, recipient) {
+        return Ok(());
+    }
     bail!(
-        "Requirements mutation denied. Orchestrators may only set Requirements on workers in their project; other roles may only set Requirements on themselves."
+        "Requirements mutation denied. Orchestrators may only set Requirements on workers in their project; planners may set Requirements on non-hidden agents in their project; other roles may only set Requirements on themselves."
     )
 }
 
@@ -7245,6 +7261,15 @@ mod tests {
                 ..Default::default()
             },
         );
+        project_alpha.agents.insert(
+            "planner-a".to_string(),
+            PersistedAgentState {
+                display_name: Some("Planner A".to_string()),
+                role: Some("planner".to_string()),
+                project_root: Some("/alpha".to_string()),
+                ..Default::default()
+            },
+        );
 
         let mut project_beta = PersistedProjectState {
             project_root: Some("/beta".to_string()),
@@ -9071,7 +9096,9 @@ requirements:
         )
         .await
         .expect_err("worker self set should fail");
-        assert!(worker_error.to_string().contains("Workers and QA threads cannot set Requirements on themselves"));
+        assert!(worker_error
+            .to_string()
+            .contains("Workers, QA, and planner threads cannot set Requirements on themselves"));
 
         let qa_error = orchestrator_set_requirements(
             &runtime,
@@ -9083,7 +9110,9 @@ requirements:
         )
         .await
         .expect_err("qa self set should fail");
-        assert!(qa_error.to_string().contains("Workers and QA threads cannot set Requirements on themselves"));
+        assert!(qa_error
+            .to_string()
+            .contains("Workers, QA, and planner threads cannot set Requirements on themselves"));
     }
 
     #[tokio::test]
@@ -9159,6 +9188,85 @@ requirements:
         .await
         .expect_err("orchestrator hidden requirements should fail");
         assert!(hidden_error.to_string().contains("Orchestrators may only set Requirements on workers"));
+    }
+
+    #[tokio::test]
+    async fn planner_can_set_requirements_on_same_project_non_hidden_agents() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut state = sample_state();
+        state
+            .projects
+            .get_mut("alpha")
+            .and_then(|project| project.agents.get_mut("hidden-a"))
+            .expect("hidden")
+            .hidden_from_peer_list = true;
+        persist_state(&runtime, &state).await.expect("persist state");
+        let payload = serde_json::to_value(sample_requirement_set()).expect("requirements json");
+
+        let worker_result = orchestrator_set_requirements(
+            &runtime,
+            "planner-a",
+            Some("worker-a"),
+            None,
+            None,
+            payload.clone(),
+        )
+        .await
+        .expect("planner worker requirements");
+        assert_eq!(worker_result["threadId"], "worker-a");
+
+        let qa_result = orchestrator_set_requirements(
+            &runtime,
+            "planner-a",
+            Some("qa-a"),
+            None,
+            None,
+            payload.clone(),
+        )
+        .await
+        .expect("planner qa requirements");
+        assert_eq!(qa_result["threadId"], "qa-a");
+
+        let cross_project_error = orchestrator_set_requirements(
+            &runtime,
+            "planner-a",
+            Some("worker-b"),
+            None,
+            None,
+            payload.clone(),
+        )
+        .await
+        .expect_err("planner cross-project requirements should fail");
+        assert!(cross_project_error.to_string().contains("planners may set Requirements on non-hidden agents in their project"));
+
+        let hidden_error = orchestrator_set_requirements(
+            &runtime,
+            "planner-a",
+            Some("hidden-a"),
+            None,
+            None,
+            payload,
+        )
+        .await
+        .expect_err("planner hidden requirements should fail");
+        assert!(hidden_error.to_string().contains("planners may set Requirements on non-hidden agents in their project"));
+
+        let self_error = orchestrator_set_requirements(
+            &runtime,
+            "planner-a",
+            None,
+            None,
+            None,
+            serde_json::to_value(sample_requirement_set()).expect("requirements json"),
+        )
+        .await
+        .expect_err("planner self requirements should fail");
+        assert!(self_error
+            .to_string()
+            .contains("Workers, QA, and planner threads cannot set Requirements on themselves"));
     }
 
     #[tokio::test]

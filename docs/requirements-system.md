@@ -35,7 +35,7 @@ They are:
 - **Canonical**: the full RequirementSet remains the source of truth even when worker claim schemas shrink.
 - **Progressive**: after partial review success, future worker schemas include only unresolved requirements to reduce output tokens.
 - **Regression-aware**: reviewers still evaluate every canonical requirement and can re-fail previously passed requirements.
-- **Role-aware**: workers and QA do not set Requirements on other agents; orchestrators set worker Requirements; GUI/operator paths can directly manage selected-thread Requirements.
+- **Role-aware**: workers and QA do not set Requirements on other agents; orchestrators set worker Requirements; planners may set Requirements on non-hidden agents in their project; GUI/operator paths can directly manage selected-thread Requirements.
 - **System-managed**: workers do not request review manually. The bridge decides when a claim is reviewable and routes it.
 
 ## Main State Objects
@@ -525,7 +525,8 @@ This distinction matters because agent authorization rules are role-scoped:
 
 - workers and QA cannot set Requirements on themselves;
 - orchestrators can set Requirements on workers;
-- non-worker/non-QA agents may set Requirements on themselves through the sanctioned self path;
+- planners can set Requirements on non-hidden agents in their project, but not on themselves;
+- non-worker/non-QA/non-planner agents may set Requirements on themselves through the sanctioned self path;
 - operator/GUI direct management is a separate owner action.
 
 Requirements are separate from communication visibility. Hidden agents may be targeted for Requirements by owner/direct GUI paths even when they are hidden from normal peer communication lists.

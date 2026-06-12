@@ -1,4 +1,4 @@
-# Requirements For Orchestrators
+# Requirements For Orchestrators And Planners
 
 Use Requirements when task constraints must become an explicit completion contract rather than prompt prose.
 
