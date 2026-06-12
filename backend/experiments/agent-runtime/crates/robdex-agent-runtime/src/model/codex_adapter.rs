@@ -55,18 +55,18 @@ impl CodexBackedModelClient {
         })
     }
 
-    fn execute_code_tool_schema() -> Value {
+    fn execute_code_tool_schema(execute_code_contract: &str) -> Value {
         json!({
             "type": "function",
             "name": "execute_code",
-            "description": "Evaluate Starlark in the experimental host runtime. Complete interface: output(value) emits final tool output; host calls return script values but are not implicit final output. APIs: fs.read(path), fs.write(path, content), patch.apply(unified_diff), cmd[\"rg\"].run(args=[...], cwd=\".\"), cmd[\"git\"].status(), cmd[\"git\"].diff(args=[...]), cmd[\"cargo\"].check(args=[...]). No raw shell or unregistered binaries.",
+            "description": execute_code_contract,
             "parameters": {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
                     "source": {
                         "type": "string",
-                        "description": "Starlark source using only: output(value); fs.read(path); fs.write(path, content); patch.apply(unified_diff); cmd[\"rg\"].run(args=[...], cwd=\".\"); cmd[\"git\"].status(); cmd[\"git\"].diff(args=[...]); cmd[\"cargo\"].check(args=[...]). Assign host-call return values and pass the desired final value to output(value)."
+                        "description": execute_code_contract
                     }
                 },
                 "required": ["source"]
@@ -142,10 +142,10 @@ pub fn bounded_raw_response(response: &Value) -> Value {
 
 #[async_trait]
 impl ModelClient for CodexBackedModelClient {
-    async fn request_tool_call(&self, role_instructions: &str, message: &str) -> Result<ModelToolTurn> {
-        let tool = Self::execute_code_tool_schema();
+    async fn request_tool_call(&self, role_instructions: &str, execute_code_contract: &str, message: &str) -> Result<ModelToolTurn> {
+        let tool = Self::execute_code_tool_schema(execute_code_contract);
         let instructions = format!(
-            "{role_instructions}\n\nCall execute_code exactly once. Use output(value) in the Starlark source for final tool output; host calls only return script values."
+            "{role_instructions}\n\nCall execute_code exactly once. Current execute_code contract:\n{execute_code_contract}"
         );
         let request_for_shape = ResponsesApiRequest {
             model: self.model.clone(),

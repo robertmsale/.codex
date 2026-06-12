@@ -103,6 +103,75 @@ CREATE TABLE IF NOT EXISTS command_runs (
 );
 
 ALTER TABLE command_runs ADD COLUMN IF NOT EXISTS policy_decision JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE command_runs ADD COLUMN IF NOT EXISTS command_version_id UUID;
+
+CREATE TABLE IF NOT EXISTS command_definitions (
+    id UUID PRIMARY KEY,
+    action_id TEXT NOT NULL UNIQUE,
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    current_version_id UUID,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS command_versions (
+    id UUID PRIMARY KEY,
+    definition_id UUID NOT NULL REFERENCES command_definitions(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    version_number BIGINT NOT NULL,
+    action_id TEXT NOT NULL,
+    binary_name TEXT NOT NULL,
+    starlark_object TEXT NOT NULL,
+    starlark_method TEXT NOT NULL,
+    config JSONB NOT NULL,
+    model_description TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(definition_id, version_number)
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'command_definitions_current_version_fk'
+    ) THEN
+        ALTER TABLE command_definitions ADD CONSTRAINT command_definitions_current_version_fk
+            FOREIGN KEY (current_version_id) REFERENCES command_versions(id) DEFERRABLE INITIALLY DEFERRED;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'command_runs_command_version_fk'
+    ) THEN
+        ALTER TABLE command_runs ADD CONSTRAINT command_runs_command_version_fk
+            FOREIGN KEY (command_version_id) REFERENCES command_versions(id) ON DELETE SET NULL;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS command_versions_action_idx ON command_versions(action_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS command_registry_requests (
+    id UUID PRIMARY KEY,
+    session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    operation TEXT NOT NULL CHECK (operation IN ('add', 'update', 'disable', 'enable')),
+    proposed_command JSONB NOT NULL,
+    rationale TEXT NOT NULL,
+    recommended_policy TEXT NOT NULL,
+    requester TEXT NOT NULL,
+    requested_by_role JSONB NOT NULL DEFAULT '{}'::jsonb,
+    approval_request_id UUID,
+    approval_status TEXT NOT NULL CHECK (approval_status IN ('pending', 'approved', 'denied')),
+    application_status TEXT NOT NULL CHECK (application_status IN ('pending', 'applied', 'failed')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    decided_at TIMESTAMPTZ,
+    applied_at TIMESTAMPTZ
+);
+ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS session_id UUID REFERENCES sessions(id) ON DELETE SET NULL;
+ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS requested_by_role JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS approval_request_id UUID;
+CREATE INDEX IF NOT EXISTS command_registry_requests_status_idx ON command_registry_requests(approval_status, application_status, created_at DESC);
 
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_id TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_version TEXT;

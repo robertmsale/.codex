@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use uuid::Uuid;
 use std::collections::BTreeSet;
 
-use robdex_agent_runtime::{approvals, db, routing, runtime};
+use robdex_agent_runtime::{approvals, command_registry, db, routing, runtime};
 use robdex_agent_runtime::roles::{DEFAULT_ROLE_ID, RoleRegistry};
 
 const DEFAULT_DATABASE_URL: &str =
@@ -47,6 +47,10 @@ enum Command {
         #[command(subcommand)]
         command: ApprovalsCommand,
     },
+    CommandRegistry {
+        #[command(subcommand)]
+        command: CommandRegistryCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -83,6 +87,39 @@ enum ApprovalsCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum CommandRegistryCommand {
+    List,
+    Show { action_id: String },
+    Requests {
+        #[command(subcommand)]
+        command: CommandRegistryRequestCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CommandRegistryRequestCommand {
+    Create {
+        #[arg(long)]
+        session: Uuid,
+        json_file: std::path::PathBuf,
+    },
+    List,
+    Show { id: Uuid },
+    Decide {
+        #[arg(long)]
+        session: Uuid,
+        id: Uuid,
+        #[arg(long)]
+        status: String,
+    },
+    Apply {
+        #[arg(long)]
+        session: Uuid,
+        id: Uuid,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -109,6 +146,7 @@ async fn main() -> Result<()> {
                 RolesCommand::Import { manifest } => {
                     let imported = registry.load_for_import(&manifest)?;
                     routing::validate_manifest_against_db(&pool, &imported.manifest).await?;
+                    command_registry::validate_policy_actions_exist(&pool, imported.snapshot.policy.keys().cloned()).await?;
                     db::import_role_version(&pool, &imported).await?;
                     println!(
                         "imported {} {} {}",
@@ -127,6 +165,7 @@ async fn main() -> Result<()> {
                     }
                     for imported in &imports {
                         routing::validate_routing(&imported.manifest.routing, Some(&pool), &context).await?;
+                        command_registry::validate_policy_actions_exist(&pool, imported.snapshot.policy.keys().cloned()).await?;
                     }
                     for imported in imports {
                         db::import_role_version(&pool, &imported).await?;
@@ -141,11 +180,24 @@ async fn main() -> Result<()> {
                 }
                 RolesCommand::Validate { manifest } => {
                     if let Some(path) = manifest {
-                        let role = registry.load_path(&path)?;
-                        println!("valid {}", role.id);
+                        let imported = registry.load_for_import(&path)?;
+                        routing::validate_manifest_against_db(&pool, &imported.manifest).await?;
+                        command_registry::validate_policy_actions_exist(&pool, imported.snapshot.policy.keys().cloned()).await?;
+                        println!("valid {}", imported.snapshot.id);
                     } else {
-                        let roles = registry.validate_all()?;
-                        println!("valid {} role manifests", roles.len());
+                        let paths = registry.manifest_paths()?;
+                        let mut imports = Vec::new();
+                        let mut context = BTreeSet::new();
+                        for path in &paths {
+                            let imported = registry.load_for_import(path)?;
+                            context.insert(imported.snapshot.id.clone());
+                            imports.push(imported);
+                        }
+                        for imported in &imports {
+                            routing::validate_routing(&imported.manifest.routing, Some(&pool), &context).await?;
+                            command_registry::validate_policy_actions_exist(&pool, imported.snapshot.policy.keys().cloned()).await?;
+                        }
+                        println!("valid {} role manifests", imports.len());
                     }
                 }
                 RolesCommand::Show { id } => {
@@ -172,6 +224,36 @@ async fn main() -> Result<()> {
                 approvals::resume(&pool, id).await?;
                 println!("resumed {id}");
             }
+        },
+        Command::CommandRegistry { command } => match command {
+            CommandRegistryCommand::List => {
+                println!("{}", serde_json::to_string_pretty(&command_registry::list(&pool).await?)?);
+            }
+            CommandRegistryCommand::Show { action_id } => {
+                println!("{}", serde_json::to_string_pretty(&command_registry::show(&pool, &action_id).await?)?);
+            }
+            CommandRegistryCommand::Requests { command } => match command {
+                CommandRegistryRequestCommand::Create { session, json_file } => {
+                    let raw = std::fs::read_to_string(&json_file)?;
+                    let input: command_registry::ChangeRequestInput = serde_json::from_str(&raw)?;
+                    let id = command_registry::create_request(&pool, session, input).await?;
+                    println!("{id}");
+                }
+                CommandRegistryRequestCommand::List => {
+                    println!("{}", serde_json::to_string_pretty(&command_registry::list_requests(&pool).await?)?);
+                }
+                CommandRegistryRequestCommand::Show { id } => {
+                    println!("{}", serde_json::to_string_pretty(&command_registry::show_request(&pool, id).await?)?);
+                }
+                CommandRegistryRequestCommand::Decide { session, id, status } => {
+                    command_registry::decide_request(&pool, session, id, &status).await?;
+                    println!("command registry request {id} {status}");
+                }
+                CommandRegistryRequestCommand::Apply { session, id } => {
+                    command_registry::apply_request(&pool, session, id).await?;
+                    println!("applied command registry request {id}");
+                }
+            },
         },
     }
     Ok(())

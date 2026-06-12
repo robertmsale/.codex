@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -17,138 +17,22 @@ use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::syntax::{AstModule, Dialect};
 use starlark::values::Value;
+use starlark::values::AllocValue;
 use starlark::values::list::UnpackList;
 use starlark::values::none::NoneType;
+use starlark::values::structs::AllocStruct;
+use starlark_map::small_map::SmallMap;
 use uuid::Uuid;
 use wait_timeout::ChildExt;
 
 use crate::db;
 use crate::approvals;
+use crate::command_registry::{self, CommandVersion};
 use crate::lifecycle::{self, TerminalStatus};
 use crate::policy::{PolicyEngine, RuntimeDecision};
 use crate::roles::RoleSnapshot;
 
 const OUTPUT_LIMIT_BYTES: usize = 12_000;
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
-
-#[derive(Debug, Clone)]
-pub struct BinaryRegistry {
-    rg: BinaryEntry,
-    git: BinaryEntry,
-    cargo: BinaryEntry,
-}
-
-impl BinaryRegistry {
-    pub fn new() -> Self {
-        Self {
-            rg: BinaryEntry {
-                name: "rg",
-                candidate_paths: vec![
-                    PathBuf::from("/opt/homebrew/bin/rg"),
-                    PathBuf::from("/usr/local/bin/rg"),
-                    PathBuf::from("/usr/bin/rg"),
-                ],
-                cwd_policy: CwdPolicy::UnderExecutionRoot,
-                env_policy: EnvPolicy::Empty,
-                timeout: COMMAND_TIMEOUT,
-                output_limit: OUTPUT_LIMIT_BYTES,
-            },
-            git: BinaryEntry {
-                name: "git",
-                candidate_paths: vec![
-                    PathBuf::from("/opt/homebrew/bin/git"),
-                    PathBuf::from("/usr/local/bin/git"),
-                    PathBuf::from("/usr/bin/git"),
-                ],
-                cwd_policy: CwdPolicy::UnderExecutionRoot,
-                env_policy: EnvPolicy::Empty,
-                timeout: COMMAND_TIMEOUT,
-                output_limit: OUTPUT_LIMIT_BYTES,
-            },
-            cargo: BinaryEntry {
-                name: "cargo",
-                candidate_paths: vec![
-                    PathBuf::from("/Users/robertsale/.cargo/bin/cargo"),
-                    PathBuf::from("/opt/homebrew/bin/cargo"),
-                    PathBuf::from("/usr/local/bin/cargo"),
-                    PathBuf::from("/usr/bin/cargo"),
-                ],
-                cwd_policy: CwdPolicy::UnderExecutionRoot,
-                env_policy: EnvPolicy::MinimalCargo,
-                timeout: Duration::from_secs(120),
-                output_limit: OUTPUT_LIMIT_BYTES,
-            },
-        }
-    }
-
-    fn rg(&self) -> Result<ResolvedBinary> {
-        self.rg.resolve()
-    }
-
-    fn git(&self) -> Result<ResolvedBinary> {
-        self.git.resolve()
-    }
-
-    fn cargo(&self) -> Result<ResolvedBinary> {
-        self.cargo.resolve()
-    }
-}
-
-impl Default for BinaryRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Clone)]
-struct BinaryEntry {
-    name: &'static str,
-    candidate_paths: Vec<PathBuf>,
-    cwd_policy: CwdPolicy,
-    env_policy: EnvPolicy,
-    timeout: Duration,
-    output_limit: usize,
-}
-
-#[derive(Debug, Clone, Copy, Serialize)]
-enum CwdPolicy {
-    UnderExecutionRoot,
-}
-
-#[derive(Debug, Clone, Copy, Serialize)]
-enum EnvPolicy {
-    Empty,
-    MinimalCargo,
-}
-
-#[derive(Debug, Clone)]
-struct ResolvedBinary {
-    name: &'static str,
-    path: PathBuf,
-    cwd_policy: CwdPolicy,
-    env_policy: EnvPolicy,
-    timeout: Duration,
-    output_limit: usize,
-}
-
-impl BinaryEntry {
-    fn resolve(&self) -> Result<ResolvedBinary> {
-        let path = self
-            .candidate_paths
-            .iter()
-            .find(|candidate| candidate.is_file())
-            .cloned()
-            .with_context(|| format!("registered binary `{}` is not available", self.name))?;
-        Ok(ResolvedBinary {
-            name: self.name,
-            path,
-            cwd_policy: self.cwd_policy,
-            env_policy: self.env_policy,
-            timeout: self.timeout,
-            output_limit: self.output_limit,
-        })
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct ExecutionRoot {
@@ -262,7 +146,7 @@ pub struct ExecuteCodePacket {
 #[derive(Debug, ProvidesStaticType)]
 struct HostKernel {
     root: ExecutionRoot,
-    registry: BinaryRegistry,
+    commands: std::collections::BTreeMap<String, CommandVersion>,
     role_snapshot: RoleSnapshot,
     output: RefCell<Vec<String>>,
     records: RefCell<Vec<HostRecord>>,
@@ -286,7 +170,7 @@ struct PolicyDecisionRecord {
 #[derive(Debug)]
 struct HostApiRecord {
     id: Uuid,
-    action: &'static str,
+    action: String,
     status: String,
     input: JsonValue,
     output: JsonValue,
@@ -298,6 +182,7 @@ struct HostApiRecord {
 struct CommandRecord {
     id: Uuid,
     host_api_call_id: Uuid,
+    command_version_id: Uuid,
     binary_name: String,
     binary_path: String,
     argv: Vec<String>,
@@ -375,7 +260,8 @@ pub async fn execute_code(
     )
     .await?;
 
-    let result = evaluate_starlark(source, root.clone(), role_snapshot.clone());
+    let live_commands = command_registry::live_visible_commands(pool, role_snapshot).await?;
+    let result = evaluate_starlark(source, root.clone(), role_snapshot.clone(), live_commands);
     let status = if result.error.is_some() {
         TerminalStatus::Failed
     } else {
@@ -440,16 +326,15 @@ struct EvalResult {
     error: Option<String>,
 }
 
-fn evaluate_starlark(source: &str, root: ExecutionRoot, role_snapshot: RoleSnapshot) -> EvalResult {
-    let script = format!(
-        r#"
-cmd = {{"rg": cmd_rg, "git": cmd_git, "cargo": cmd_cargo}}
-{source}
-"#
-    );
+fn evaluate_starlark(source: &str, root: ExecutionRoot, role_snapshot: RoleSnapshot, live_commands: Vec<CommandVersion>) -> EvalResult {
+    let prelude = match command_registry::starlark_prelude(&live_commands) {
+        Ok(prelude) => prelude,
+        Err(error) => return EvalResult { output: String::new(), records: Vec::new(), error: Some(error.to_string()) },
+    };
+    let script = format!("{prelude}\n{source}");
     let kernel = HostKernel {
         root,
-        registry: BinaryRegistry::new(),
+        commands: live_commands.into_iter().map(|command| (command.action_id.clone(), command)).collect(),
         role_snapshot,
         output: RefCell::new(Vec::new()),
         records: RefCell::new(Vec::new()),
@@ -478,9 +363,8 @@ cmd = {{"rg": cmd_rg, "git": cmd_git, "cargo": cmd_cargo}}
 fn add_host_builtins(builder: &mut GlobalsBuilder) {
     builder.namespace("fs", fs_builtins);
     builder.namespace("patch", patch_builtins);
-    builder.namespace_no_docs("cmd_rg", cmd_rg_builtins);
-    builder.namespace_no_docs("cmd_git", cmd_git_builtins);
-    builder.namespace_no_docs("cmd_cargo", cmd_cargo_builtins);
+    builder.namespace_no_docs("__cmd", cmd_dynamic_builtins);
+    struct_builtins(builder);
     output_builtins(builder);
 }
 
@@ -503,10 +387,11 @@ fn patch_builtins(builder: &mut GlobalsBuilder) {
 }
 
 #[starlark_module]
-fn cmd_rg_builtins(builder: &mut GlobalsBuilder) {
+fn cmd_dynamic_builtins(builder: &mut GlobalsBuilder) {
     fn run<'v>(
+        action: &'v str,
         args: UnpackList<Value<'v>>,
-        cwd: Option<&'v str>,
+        cwd: &'v str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<String> {
         let args = args
@@ -516,54 +401,10 @@ fn cmd_rg_builtins(builder: &mut GlobalsBuilder) {
                 value
                     .unpack_str()
                     .map(ToString::to_string)
-                    .ok_or_else(|| anyhow::anyhow!("cmd[\"rg\"].run args must be strings"))
+                    .ok_or_else(|| anyhow::anyhow!("registry command args must be strings"))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        host_kernel(eval).run_rg(args, cwd.unwrap_or("."))
-    }
-}
-
-#[starlark_module]
-fn cmd_git_builtins(builder: &mut GlobalsBuilder) {
-    fn status<'v>(eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
-        host_kernel(eval).run_git_status()
-    }
-
-    fn diff<'v>(
-        args: UnpackList<Value<'v>>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<String> {
-        let args = args
-            .items
-            .iter()
-            .map(|value| {
-                value
-                    .unpack_str()
-                    .map(ToString::to_string)
-                    .ok_or_else(|| anyhow::anyhow!("cmd[\"git\"].diff args must be strings"))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        host_kernel(eval).run_git_diff(args)
-    }
-}
-
-#[starlark_module]
-fn cmd_cargo_builtins(builder: &mut GlobalsBuilder) {
-    fn check<'v>(
-        args: UnpackList<Value<'v>>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<String> {
-        let args = args
-            .items
-            .iter()
-            .map(|value| {
-                value
-                    .unpack_str()
-                    .map(ToString::to_string)
-                    .ok_or_else(|| anyhow::anyhow!("cmd[\"cargo\"].check args must be strings"))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        host_kernel(eval).run_cargo_check(args)
+        host_kernel(eval).run_registry_command(action, args, cwd)
     }
 }
 
@@ -575,6 +416,15 @@ fn output_builtins(builder: &mut GlobalsBuilder) {
     }
 }
 
+#[starlark_module]
+fn struct_builtins(builder: &mut GlobalsBuilder) {
+    fn r#struct<'v>(
+        #[starlark(kwargs)] kwargs: SmallMap<String, Value<'v>>,
+    ) -> anyhow::Result<impl AllocValue<'v>> {
+        Ok(AllocStruct(kwargs.into_iter().collect::<Vec<_>>()))
+    }
+}
+
 fn host_kernel<'v, 'a>(eval: &Evaluator<'v, 'a, '_>) -> &'a HostKernel {
     eval.extra
         .expect("HostKernel must be installed in Evaluator.extra")
@@ -583,7 +433,7 @@ fn host_kernel<'v, 'a>(eval: &Evaluator<'v, 'a, '_>) -> &'a HostKernel {
 }
 
 impl HostKernel {
-    fn decide(&self, action: &'static str, input: JsonValue) -> crate::policy::PolicyResult {
+    fn decide(&self, action: &str, input: JsonValue) -> crate::policy::PolicyResult {
         let decision = PolicyEngine::decide(&self.role_snapshot, action, input);
         self.records.borrow_mut().push(HostRecord::Policy(PolicyDecisionRecord {
             decision: decision.decision.as_str().to_string(),
@@ -604,7 +454,7 @@ impl HostKernel {
         let (output, truncated) = truncate_text(&text, OUTPUT_LIMIT_BYTES);
         self.records.borrow_mut().push(HostRecord::HostApi(HostApiRecord {
             id: Uuid::new_v4(),
-            action: "fs.read",
+            action: "fs.read".to_string(),
             status: "completed".to_string(),
             input,
             output: json!({"content": output, "resolvedPath": resolved.display().to_string()}),
@@ -614,51 +464,42 @@ impl HostKernel {
         Ok(output)
     }
 
-    fn run_rg(&self, args: Vec<String>, cwd: &str) -> anyhow::Result<String> {
-        self.run_registered_command("cmd.rg.run", self.registry.rg()?, args, cwd)
-    }
-
-    fn run_git_status(&self) -> anyhow::Result<String> {
-        self.run_registered_command("cmd.git.status", self.registry.git()?, vec!["status".to_string(), "--short".to_string()], ".")
-    }
-
-    fn run_git_diff(&self, args: Vec<String>) -> anyhow::Result<String> {
-        if args.iter().any(|arg| arg == "--output" || arg.starts_with("--output=")) {
-            bail!("cmd[\"git\"].diff does not allow output-writing arguments");
+    fn run_registry_command(&self, action: &str, args: Vec<String>, cwd: &str) -> anyhow::Result<String> {
+        let command_version = self
+            .commands
+            .get(action)
+            .ok_or_else(|| anyhow::anyhow!("registry command is not visible in this execute_code call: {action}"))?;
+        if !command_version.allow_args_arg && !args.is_empty() {
+            bail!("{action} does not accept args");
         }
-        let mut argv = vec!["diff".to_string()];
+        let mut argv = command_version.argv_prefix.clone();
         argv.extend(args);
-        self.run_registered_command("cmd.git.diff", self.registry.git()?, argv, ".")
-    }
-
-    fn run_cargo_check(&self, args: Vec<String>) -> anyhow::Result<String> {
-        let mut argv = vec!["check".to_string()];
-        argv.extend(args);
-        self.run_registered_command("cmd.cargo.check", self.registry.cargo()?, argv, ".")
-    }
-
-    fn run_registered_command(&self, action: &'static str, binary: ResolvedBinary, args: Vec<String>, cwd: &str) -> anyhow::Result<String> {
+        reject_forbidden_args(&command_version, &argv)?;
+        let cwd = if command_version.allow_cwd_arg { cwd } else { &command_version.default_cwd };
+        let binary_path = command_version.resolve_binary()?;
         let input = json!({
-            "binary": binary.name,
-            "argv": args,
+            "binary": command_version.binary_name,
+            "argv": argv,
             "cwd": cwd,
             "executionRoot": self.root.as_path().display().to_string(),
+            "commandVersionId": command_version.version_id,
         });
         let policy = self.decide(action, input.clone());
         if !policy.decision.can_execute() {
             bail!("{action} blocked by policy: {}", policy.decision.as_str());
         }
         let started = Instant::now();
-        let resolved_cwd = match binary.cwd_policy {
-            CwdPolicy::UnderExecutionRoot => self.root.resolve_cwd(cwd)?,
-        };
-        let mut command = Command::new(&binary.path);
-        command.args(&args).current_dir(&resolved_cwd);
-        match binary.env_policy {
-            EnvPolicy::Empty => {
+        if command_version.cwd_policy != "underExecutionRoot" {
+            bail!("unsupported cwd policy for {action}: {}", command_version.cwd_policy);
+        }
+        let resolved_cwd = self.root.resolve_cwd(cwd)?;
+        let mut command = Command::new(&binary_path);
+        command.args(&argv).current_dir(&resolved_cwd);
+        match command_version.env_policy.as_str() {
+            "empty" => {
                 command.env_clear();
             }
-            EnvPolicy::MinimalCargo => {
+            "minimalCargo" => {
                 command.env_clear();
                 if let Ok(value) = std::env::var("PATH") {
                     command.env("PATH", value);
@@ -673,10 +514,11 @@ impl HostKernel {
                     command.env("RUSTUP_HOME", value);
                 }
             }
+            other => bail!("unsupported env policy for {action}: {other}"),
         }
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let output = command.spawn().and_then(|mut child| {
-            match child.wait_timeout(binary.timeout)? {
+            match child.wait_timeout(command_version.timeout)? {
                 Some(_) => child.wait_with_output(),
                 None => {
                     let _ = child.kill();
@@ -701,23 +543,24 @@ impl HostKernel {
             ),
             Err(error) => ("failed", None, String::new(), error.to_string()),
         };
-        let (stdout, stdout_truncated) = truncate_text(&stdout, binary.output_limit);
-        let (stderr, stderr_truncated) = truncate_text(&stderr, binary.output_limit);
+        let (stdout, stdout_truncated) = truncate_text(&stdout, command_version.output_limit);
+        let (stderr, stderr_truncated) = truncate_text(&stderr, command_version.output_limit);
         let truncation = json!({
             "stdoutTruncated": stdout_truncated,
             "stderrTruncated": stderr_truncated,
-            "limitBytes": binary.output_limit,
+            "limitBytes": command_version.output_limit,
         });
         let policy_decision = json!({
             "action": action,
             "decision": RuntimeDecision::Allow.as_str(),
             "reason": policy.reason,
             "role": {"id": policy.role_id, "version": policy.role_version},
+            "commandVersionId": command_version.version_id,
         });
         let host_api_call_id = Uuid::new_v4();
         self.records.borrow_mut().push(HostRecord::HostApi(HostApiRecord {
             id: host_api_call_id,
-            action,
+            action: action.to_string(),
             status: status.to_string(),
             input,
             output: json!({"stdout": stdout, "stderr": stderr, "exitStatus": exit_status}),
@@ -727,15 +570,16 @@ impl HostKernel {
         self.records.borrow_mut().push(HostRecord::Command(CommandRecord {
             id: Uuid::new_v4(),
             host_api_call_id,
-            binary_name: binary.name.to_string(),
-            binary_path: binary.path.display().to_string(),
-            argv: args,
+            command_version_id: command_version.version_id,
+            binary_name: command_version.binary_name.clone(),
+            binary_path: binary_path.display().to_string(),
+            argv,
             cwd: resolved_cwd.display().to_string(),
             status: status.to_string(),
             stdout: stdout.clone(),
             stderr: stderr.clone(),
             exit_status,
-            timeout_ms: binary.timeout.as_millis() as i64,
+            timeout_ms: command_version.timeout.as_millis() as i64,
             duration_ms: started.elapsed().as_millis() as i64,
             truncation,
             policy_decision,
@@ -820,180 +664,17 @@ impl HostKernel {
     }
 }
 
-pub async fn execute_resumed_rg(
-    pool: &PgPool,
-    session_id: Uuid,
-    turn_id: Option<Uuid>,
-    script_run_id: Uuid,
-    input: &JsonValue,
-    policy_decision: JsonValue,
-) -> Result<JsonValue> {
-    let argv = input
-        .get("argv")
-        .and_then(JsonValue::as_array)
-        .ok_or_else(|| anyhow::anyhow!("paused cmd.rg.run input missing argv"))?
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(ToString::to_string)
-                .ok_or_else(|| anyhow::anyhow!("paused cmd.rg.run argv must contain strings"))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let cwd = input
-        .get("cwd")
-        .and_then(JsonValue::as_str)
-        .ok_or_else(|| anyhow::anyhow!("paused cmd.rg.run input missing cwd"))?;
-    let execution_root = input
-        .get("executionRoot")
-        .and_then(JsonValue::as_str)
-        .ok_or_else(|| anyhow::anyhow!("paused cmd.rg.run input missing executionRoot"))?;
-    let root = ExecutionRoot::new(execution_root)?;
-    let registry = BinaryRegistry::new();
-    let binary = registry.rg()?;
-    let started = Instant::now();
-    let resolved_cwd = match binary.cwd_policy {
-        CwdPolicy::UnderExecutionRoot => root.resolve_cwd(cwd)?,
-    };
-    let mut command = Command::new(&binary.path);
-    command.args(&argv).current_dir(&resolved_cwd);
-    match binary.env_policy {
-        EnvPolicy::Empty => {
-            command.env_clear();
-        }
-        EnvPolicy::MinimalCargo => {
-            command.env_clear();
-            if let Ok(value) = std::env::var("PATH") {
-                command.env("PATH", value);
-            }
-            if let Ok(value) = std::env::var("HOME") {
-                command.env("HOME", value);
-            }
-            if let Ok(value) = std::env::var("CARGO_HOME") {
-                command.env("CARGO_HOME", value);
-            }
-            if let Ok(value) = std::env::var("RUSTUP_HOME") {
-                command.env("RUSTUP_HOME", value);
-            }
+fn reject_forbidden_args(command_version: &CommandVersion, argv: &[String]) -> Result<()> {
+    for forbidden in &command_version.forbidden_args {
+        if argv.iter().any(|arg| arg == forbidden || arg.starts_with(&format!("{forbidden}="))) {
+            bail!(
+                "{} rejects forbidden argv item from registry policy: {}",
+                command_version.action_id,
+                forbidden
+            );
         }
     }
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let output = command.spawn().and_then(|mut child| match child.wait_timeout(binary.timeout)? {
-        Some(_) => child.wait_with_output(),
-        None => {
-            let _ = child.kill();
-            let mut output = child.wait_with_output()?;
-            output.status = std::process::ExitStatus::from_raw(124);
-            Ok(output)
-        }
-    });
-    let (status, exit_status, stdout, stderr) = match output {
-        Ok(output) => (
-            if output.status.code() == Some(124) {
-                "timeout"
-            } else if output.status.success() {
-                "completed"
-            } else {
-                "failed"
-            },
-            output.status.code(),
-            String::from_utf8_lossy(&output.stdout).to_string(),
-            String::from_utf8_lossy(&output.stderr).to_string(),
-        ),
-        Err(error) => ("failed", None, String::new(), error.to_string()),
-    };
-    let duration_ms = started.elapsed().as_millis() as i64;
-    let (stdout, stdout_truncated) = truncate_text(&stdout, binary.output_limit);
-    let (stderr, stderr_truncated) = truncate_text(&stderr, binary.output_limit);
-    let truncation = json!({
-        "stdoutTruncated": stdout_truncated,
-        "stderrTruncated": stderr_truncated,
-        "limitBytes": binary.output_limit,
-    });
-    let host_api_call_id = Uuid::new_v4();
-    sqlx::query(
-        r#"
-        INSERT INTO host_api_calls (id, script_run_id, api_name, input, status, started_at)
-        VALUES ($1, $2, 'cmd.rg.run', $3, 'running', $4)
-        "#,
-    )
-    .bind(host_api_call_id)
-    .bind(script_run_id)
-    .bind(input)
-    .bind(Utc::now())
-    .execute(pool)
-    .await?;
-    lifecycle::complete_host_api_call(
-        pool,
-        host_api_call_id,
-        TerminalStatus::try_from(status)?,
-        &json!({"stdout": stdout, "stderr": stderr, "exitStatus": exit_status}),
-        duration_ms,
-        &truncation,
-        Utc::now(),
-    )
-    .await?;
-    let command_id = Uuid::new_v4();
-    sqlx::query(
-        r#"
-        INSERT INTO command_runs (id, host_api_call_id, binary_name, argv, cwd, status, started_at, timeout_ms)
-        VALUES ($1, $2, $3, $4, $5, 'running', $6, $7)
-        "#,
-    )
-    .bind(command_id)
-    .bind(host_api_call_id)
-    .bind(binary.name)
-    .bind(json!(argv))
-    .bind(resolved_cwd.display().to_string())
-    .bind(Utc::now())
-    .bind(binary.timeout.as_millis() as i64)
-    .execute(pool)
-    .await?;
-    lifecycle::complete_command_run(
-        pool,
-        command_id,
-        TerminalStatus::try_from(status)?,
-        &stdout,
-        &stderr,
-        exit_status,
-        duration_ms,
-        &policy_decision,
-        &truncation,
-        Utc::now(),
-    )
-    .await?;
-    db::append_event(
-        pool,
-        session_id,
-        turn_id,
-        "command",
-        Some(command_id),
-        "command.completed",
-        Some(status),
-        json!({
-            "binary": binary.name,
-            "binaryPath": binary.path.display().to_string(),
-            "argv": input.get("argv").cloned().unwrap_or(JsonValue::Null),
-            "cwd": resolved_cwd.display().to_string(),
-            "status": status,
-            "stdout": stdout,
-            "stderr": stderr,
-            "exitStatus": exit_status,
-            "timeoutMs": binary.timeout.as_millis() as i64,
-            "durationMs": duration_ms,
-            "truncation": truncation,
-            "policyDecision": policy_decision,
-        }),
-    )
-    .await?;
-    Ok(json!({
-        "commandRunId": command_id,
-        "hostApiCallId": host_api_call_id,
-        "status": status,
-        "stdout": stdout,
-        "stderr": stderr,
-        "exitStatus": exit_status,
-    }))
+    Ok(())
 }
 
 pub async fn execute_resumed_action(
@@ -1006,8 +687,7 @@ pub async fn execute_resumed_action(
     policy_decision: JsonValue,
 ) -> Result<JsonValue> {
     match action {
-        "cmd.rg.run" => execute_resumed_rg(pool, session_id, turn_id, script_run_id, input, policy_decision).await,
-        "cmd.git.status" | "cmd.git.diff" | "cmd.cargo.check" => {
+        action if command_registry::is_registry_command_action(action) => {
             execute_resumed_command(pool, session_id, turn_id, script_run_id, action, input, policy_decision).await
         }
         "fs.write" => execute_resumed_fs_write(pool, session_id, turn_id, script_run_id, input, policy_decision).await,
@@ -1119,22 +799,24 @@ async fn execute_resumed_command(
     input: &JsonValue,
     policy_decision: JsonValue,
 ) -> Result<JsonValue> {
-    let registry = BinaryRegistry::new();
-    let (binary, argv) = match action {
-        "cmd.git.status" => (registry.git()?, vec!["status".to_string(), "--short".to_string()]),
-        "cmd.git.diff" => {
-            let mut argv = vec!["diff".to_string()];
-            argv.extend(json_string_array(input, "argv")?.into_iter().skip(1));
-            (registry.git()?, argv)
-        }
-        "cmd.cargo.check" => {
-            let mut argv = vec!["check".to_string()];
-            argv.extend(json_string_array(input, "argv")?.into_iter().skip(1));
-            (registry.cargo()?, argv)
-        }
-        other => bail!("unsupported resumed command action: {other}"),
+    let command_version = if let Some(version_id) = input
+        .get("commandVersionId")
+        .and_then(JsonValue::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+    {
+        command_registry::command_by_version(pool, version_id).await?
+    } else {
+        command_registry::command_by_action(pool, action).await?
     };
-    execute_resumed_command_with_binary(pool, session_id, turn_id, script_run_id, input, policy_decision, binary, argv).await
+    let stored_argv = json_string_array(input, "argv")?;
+    let mut argv = command_version.argv_prefix.clone();
+    if stored_argv.starts_with(&command_version.argv_prefix) {
+        argv = stored_argv;
+    } else {
+        argv.extend(stored_argv);
+    }
+    reject_forbidden_args(&command_version, &argv)?;
+    execute_resumed_command_with_version(pool, session_id, turn_id, script_run_id, input, policy_decision, command_version, argv).await
 }
 
 fn json_string_array(input: &JsonValue, key: &str) -> Result<Vec<String>> {
@@ -1152,39 +834,42 @@ fn json_string_array(input: &JsonValue, key: &str) -> Result<Vec<String>> {
         .collect()
 }
 
-async fn execute_resumed_command_with_binary(
+async fn execute_resumed_command_with_version(
     pool: &PgPool,
     session_id: Uuid,
     turn_id: Option<Uuid>,
     script_run_id: Uuid,
     input: &JsonValue,
     policy_decision: JsonValue,
-    binary: ResolvedBinary,
+    command_version: CommandVersion,
     argv: Vec<String>,
 ) -> Result<JsonValue> {
     let cwd = input.get("cwd").and_then(JsonValue::as_str).unwrap_or(".");
     let execution_root = input.get("executionRoot").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused command missing executionRoot"))?;
     let root = ExecutionRoot::new(execution_root)?;
     let started = Instant::now();
-    let resolved_cwd = match binary.cwd_policy {
-        CwdPolicy::UnderExecutionRoot => root.resolve_cwd(cwd)?,
-    };
-    let mut command = Command::new(&binary.path);
+    if command_version.cwd_policy != "underExecutionRoot" {
+        bail!("unsupported cwd policy for {}: {}", command_version.action_id, command_version.cwd_policy);
+    }
+    let resolved_cwd = root.resolve_cwd(cwd)?;
+    let binary_path = command_version.resolve_binary()?;
+    let mut command = Command::new(&binary_path);
     command.args(&argv).current_dir(&resolved_cwd);
-    match binary.env_policy {
-        EnvPolicy::Empty => {
+    match command_version.env_policy.as_str() {
+        "empty" => {
             command.env_clear();
         }
-        EnvPolicy::MinimalCargo => {
+        "minimalCargo" => {
             command.env_clear();
             if let Ok(value) = std::env::var("PATH") { command.env("PATH", value); }
             if let Ok(value) = std::env::var("HOME") { command.env("HOME", value); }
             if let Ok(value) = std::env::var("CARGO_HOME") { command.env("CARGO_HOME", value); }
             if let Ok(value) = std::env::var("RUSTUP_HOME") { command.env("RUSTUP_HOME", value); }
         }
+        other => bail!("unsupported env policy for {}: {other}", command_version.action_id),
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let output = command.spawn().and_then(|mut child| match child.wait_timeout(binary.timeout)? {
+    let output = command.spawn().and_then(|mut child| match child.wait_timeout(command_version.timeout)? {
         Some(_) => child.wait_with_output(),
         None => {
             let _ = child.kill();
@@ -1203,32 +888,33 @@ async fn execute_resumed_command_with_binary(
         Err(error) => ("failed", None, String::new(), error.to_string()),
     };
     let duration_ms = started.elapsed().as_millis() as i64;
-    let (stdout, stdout_truncated) = truncate_text(&stdout, binary.output_limit);
-    let (stderr, stderr_truncated) = truncate_text(&stderr, binary.output_limit);
-    let truncation = json!({"stdoutTruncated": stdout_truncated, "stderrTruncated": stderr_truncated, "limitBytes": binary.output_limit});
+    let (stdout, stdout_truncated) = truncate_text(&stdout, command_version.output_limit);
+    let (stderr, stderr_truncated) = truncate_text(&stderr, command_version.output_limit);
+    let truncation = json!({"stdoutTruncated": stdout_truncated, "stderrTruncated": stderr_truncated, "limitBytes": command_version.output_limit});
     let host_api_call_id = Uuid::new_v4();
     sqlx::query("INSERT INTO host_api_calls (id, script_run_id, api_name, input, status, started_at) VALUES ($1, $2, $3, $4, 'running', $5)")
         .bind(host_api_call_id)
         .bind(script_run_id)
-        .bind(policy_decision.get("action").and_then(JsonValue::as_str).unwrap_or(binary.name))
+        .bind(&command_version.action_id)
         .bind(input)
         .bind(Utc::now())
         .execute(pool)
         .await?;
     lifecycle::complete_host_api_call(pool, host_api_call_id, TerminalStatus::try_from(status)?, &json!({"stdout": stdout, "stderr": stderr, "exitStatus": exit_status}), duration_ms, &truncation, Utc::now()).await?;
     let command_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO command_runs (id, host_api_call_id, binary_name, argv, cwd, status, started_at, timeout_ms) VALUES ($1, $2, $3, $4, $5, 'running', $6, $7)")
+    sqlx::query("INSERT INTO command_runs (id, host_api_call_id, binary_name, argv, cwd, status, started_at, timeout_ms, command_version_id) VALUES ($1, $2, $3, $4, $5, 'running', $6, $7, $8)")
         .bind(command_id)
         .bind(host_api_call_id)
-        .bind(binary.name)
+        .bind(&command_version.binary_name)
         .bind(json!(argv))
         .bind(resolved_cwd.display().to_string())
         .bind(Utc::now())
-        .bind(binary.timeout.as_millis() as i64)
+        .bind(command_version.timeout.as_millis() as i64)
+        .bind(command_version.version_id)
         .execute(pool)
         .await?;
     lifecycle::complete_command_run(pool, command_id, TerminalStatus::try_from(status)?, &stdout, &stderr, exit_status, duration_ms, &policy_decision, &truncation, Utc::now()).await?;
-    db::append_event(pool, session_id, turn_id, "command", Some(command_id), "command.completed", Some(status), json!({"binary":binary.name,"binaryPath":binary.path.display().to_string(),"argv":argv,"cwd":resolved_cwd.display().to_string(),"status":status,"stdout":stdout,"stderr":stderr,"exitStatus":exit_status,"timeoutMs":binary.timeout.as_millis() as i64,"durationMs":duration_ms,"truncation":truncation,"policyDecision":policy_decision})).await?;
+    db::append_event(pool, session_id, turn_id, "command", Some(command_id), "command.completed", Some(status), json!({"binary":command_version.binary_name,"binaryPath":binary_path.display().to_string(),"commandVersionId":command_version.version_id,"argv":argv,"cwd":resolved_cwd.display().to_string(),"status":status,"stdout":stdout,"stderr":stderr,"exitStatus":exit_status,"timeoutMs":command_version.timeout.as_millis() as i64,"durationMs":duration_ms,"truncation":truncation,"policyDecision":policy_decision})).await?;
     Ok(json!({"commandRunId": command_id, "hostApiCallId": host_api_call_id, "status": status, "stdout": stdout, "stderr": stderr, "exitStatus": exit_status}))
 }
 
@@ -1410,10 +1096,9 @@ async fn persist_record(
                     policy.payload["input"].clone(),
                 );
                 let approval_id = approvals::request_approval(pool, session_id, Some(turn_id), &policy_result, role_snapshot).await?;
-                if matches!(
-                    policy_result.action.as_str(),
-                    "cmd.rg.run" | "fs.write" | "patch.apply" | "cmd.git.status" | "cmd.git.diff" | "cmd.cargo.check"
-                ) {
+                if command_registry::is_registry_command_action(&policy_result.action)
+                    || matches!(policy_result.action.as_str(), "fs.write" | "patch.apply")
+                {
                     approvals::create_paused_action(
                         pool,
                         approval_id,
@@ -1438,7 +1123,7 @@ async fn persist_record(
             )
             .bind(call.id)
             .bind(script_run_id)
-            .bind(call.action)
+            .bind(&call.action)
             .bind(&call.input)
             .bind(Utc::now())
             .execute(pool)
@@ -1474,8 +1159,8 @@ async fn persist_record(
         HostRecord::Command(command) => {
             sqlx::query(
                 r#"
-                INSERT INTO command_runs (id, host_api_call_id, binary_name, argv, cwd, status, started_at, timeout_ms)
-                VALUES ($1, $2, $3, $4, $5, 'running', $6, $7)
+                INSERT INTO command_runs (id, host_api_call_id, binary_name, argv, cwd, status, started_at, timeout_ms, command_version_id)
+                VALUES ($1, $2, $3, $4, $5, 'running', $6, $7, $8)
                 "#,
             )
             .bind(command.id)
@@ -1485,6 +1170,7 @@ async fn persist_record(
             .bind(&command.cwd)
             .bind(Utc::now())
             .bind(command.timeout_ms)
+            .bind(command.command_version_id)
             .execute(pool)
             .await?;
             lifecycle::complete_command_run(
@@ -1510,6 +1196,7 @@ async fn persist_record(
                 Some(&command.status),
                 json!({
                     "binary": command.binary_name,
+                    "commandVersionId": command.command_version_id,
                     "binaryPath": command.binary_path,
                     "argv": command.argv,
                     "cwd": command.cwd,

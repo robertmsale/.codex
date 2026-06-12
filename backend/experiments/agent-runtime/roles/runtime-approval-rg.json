@@ -17,7 +17,10 @@
     "patch.apply",
     "cmd.git.status",
     "cmd.git.diff",
-    "cmd.cargo.check"
+    "cmd.cargo.check",
+    "command_registry.request",
+    "command_registry.decide",
+    "command_registry.apply"
   ],
   "policy": {
     "tool.execute_code": "allow",
@@ -27,7 +30,10 @@
     "patch.apply": "ownerApproval",
     "cmd.git.status": "allow",
     "cmd.git.diff": "allow",
-    "cmd.cargo.check": "allow"
+    "cmd.cargo.check": "allow",
+    "command_registry.request": "allow",
+    "command_registry.decide": "allow",
+    "command_registry.apply": "allow"
   },
   "routing": {
     "mode": "direct",

@@ -20,6 +20,7 @@ sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json"] }
 starlark = { version = "0.13", default-features = false }
+starlark_map = "0.13"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "fs", "io-util"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 codex-api = { path = "../../../../vendor/codex/codex-rs/codex-api" }

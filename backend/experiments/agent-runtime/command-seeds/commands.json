@@ -1,0 +1,97 @@
+[
+  {
+    "actionId": "cmd.rg.run",
+    "binaryName": "rg",
+    "candidatePaths": [
+      "/opt/homebrew/bin/rg",
+      "/usr/local/bin/rg",
+      "/usr/bin/rg"
+    ],
+    "starlarkObject": "rg",
+    "starlarkMethod": "run",
+    "argvPrefix": [],
+    "allowArgsArg": true,
+    "allowCwdArg": true,
+    "defaultCwd": ".",
+    "cwdPolicy": "underExecutionRoot",
+    "envPolicy": "empty",
+    "timeoutMs": 5000,
+    "outputLimitBytes": 12000,
+    "mutationClass": "readOnly",
+    "modelDescription": "run ripgrep with structured argv under the execution root"
+  },
+  {
+    "actionId": "cmd.git.status",
+    "binaryName": "git",
+    "candidatePaths": [
+      "/opt/homebrew/bin/git",
+      "/usr/local/bin/git",
+      "/usr/bin/git"
+    ],
+    "starlarkObject": "git",
+    "starlarkMethod": "status",
+    "argvPrefix": [
+      "status",
+      "--short"
+    ],
+    "allowArgsArg": false,
+    "allowCwdArg": false,
+    "defaultCwd": ".",
+    "cwdPolicy": "underExecutionRoot",
+    "envPolicy": "empty",
+    "timeoutMs": 5000,
+    "outputLimitBytes": 12000,
+    "mutationClass": "readOnly",
+    "modelDescription": "run read-only git status --short"
+  },
+  {
+    "actionId": "cmd.git.diff",
+    "binaryName": "git",
+    "candidatePaths": [
+      "/opt/homebrew/bin/git",
+      "/usr/local/bin/git",
+      "/usr/bin/git"
+    ],
+    "starlarkObject": "git",
+    "starlarkMethod": "diff",
+    "argvPrefix": [
+      "diff"
+    ],
+    "allowArgsArg": true,
+    "allowCwdArg": false,
+    "defaultCwd": ".",
+    "cwdPolicy": "underExecutionRoot",
+    "envPolicy": "empty",
+    "timeoutMs": 5000,
+    "outputLimitBytes": 12000,
+    "mutationClass": "readOnly",
+    "modelDescription": "run read-only git diff with structured argv",
+    "forbiddenArgs": [
+      "--output"
+    ]
+  },
+  {
+    "actionId": "cmd.cargo.check",
+    "binaryName": "cargo",
+    "candidatePaths": [
+      "/Users/robertsale/.cargo/bin/cargo",
+      "/opt/homebrew/bin/cargo",
+      "/usr/local/bin/cargo",
+      "/usr/bin/cargo"
+    ],
+    "starlarkObject": "cargo",
+    "starlarkMethod": "check",
+    "argvPrefix": [
+      "check"
+    ],
+    "allowArgsArg": true,
+    "allowCwdArg": false,
+    "defaultCwd": ".",
+    "cwdPolicy": "underExecutionRoot",
+    "envPolicy": "minimalCargo",
+    "timeoutMs": 120000,
+    "outputLimitBytes": 12000,
+    "mutationClass": "buildArtifacts",
+    "modelDescription": "run cargo check with structured argv and minimal cargo environment"
+  }
+]

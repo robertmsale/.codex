@@ -3,12 +3,11 @@ use anyhow::{Result, bail};
 pub const ACTIVE_ACTIONS: &[&str] = &[
     "tool.execute_code",
     "fs.read",
-    "cmd.rg.run",
     "fs.write",
     "patch.apply",
-    "cmd.git.status",
-    "cmd.git.diff",
-    "cmd.cargo.check",
+    "command_registry.request",
+    "command_registry.decide",
+    "command_registry.apply",
 ];
 pub const RESERVED_ACTIONS: &[&str] = &[
     "agent.spawn.<role>",
@@ -25,7 +24,7 @@ pub fn is_known_action(action: &str) -> bool {
 }
 
 pub fn is_active_action(action: &str) -> bool {
-    ACTIVE_ACTIONS.contains(&action)
+    ACTIVE_ACTIONS.contains(&action) || crate::command_registry::is_registry_command_action(action)
 }
 
 pub fn validate_known_action(action: &str) -> Result<()> {

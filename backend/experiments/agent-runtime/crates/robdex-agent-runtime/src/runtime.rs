@@ -4,7 +4,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{approvals, db, routing};
+use crate::{approvals, command_registry, db, routing};
 use crate::lifecycle::{self, TerminalStatus};
 use crate::model::codex_adapter::{bounded_raw_response, concise_response_summary, CodexBackedModelClient};
 use crate::model::ModelClient;
@@ -44,8 +44,10 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
     .await?;
     let _route = routing::decide_route(pool, session_id, Some(turn_id), &role_snapshot).await?;
 
+    let live_commands = command_registry::live_visible_commands(pool, &role_snapshot).await?;
+    let execute_code_contract = command_registry::execute_code_contract(&live_commands);
     let model = CodexBackedModelClient::new_with_model(role_snapshot.model_defaults.model.clone())?;
-    let plan = model.request_tool_call(&role_snapshot.instruction_text, message).await?;
+    let plan = model.request_tool_call(&role_snapshot.instruction_text, &execute_code_contract, message).await?;
     let model_event_id = Uuid::new_v4();
     sqlx::query(
         r#"
@@ -88,6 +90,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
                 },
                 "toolChoice": plan.request_shape.get("tool_choice").cloned(),
                 "tools": plan.request_shape.get("tools").and_then(serde_json::Value::as_array).map(Vec::len),
+                "executeCodeContract": execute_code_contract,
             },
             "response": concise_response_summary(&plan.raw_response),
         }),

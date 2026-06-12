@@ -13,6 +13,7 @@ pub async fn init(pool: &PgPool) -> Result<()> {
     sqlx::raw_sql(include_str!("../../../migrations/001_initial.sql"))
         .execute(pool)
         .await?;
+    crate::command_registry::seed_defaults(pool).await?;
     Ok(())
 }
 

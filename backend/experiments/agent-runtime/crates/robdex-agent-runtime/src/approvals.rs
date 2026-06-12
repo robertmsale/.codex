@@ -293,10 +293,9 @@ pub async fn resume(pool: &PgPool, approval_id: Uuid) -> Result<()> {
     validate_resume_paused_status(&paused_status)
         .map_err(|error| anyhow::anyhow!("{error}: {paused_id} status={paused_status}"))?;
     let action_name: String = paused.get("action_name");
-    if !matches!(
-        action_name.as_str(),
-        "cmd.rg.run" | "fs.write" | "patch.apply" | "cmd.git.status" | "cmd.git.diff" | "cmd.cargo.check"
-    ) {
+    if !crate::command_registry::is_registry_command_action(&action_name)
+        && !matches!(action_name.as_str(), "fs.write" | "patch.apply")
+    {
         bail!("resume does not support action in this phase: {action_name}");
     }
     let session_id: Uuid = paused.get("session_id");

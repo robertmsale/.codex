@@ -182,7 +182,7 @@ impl RoleRegistry {
         let manifest: RoleManifest = serde_json::from_value(manifest_json.clone())
             .with_context(|| format!("role manifest schema is invalid: {}", path.display()))?;
         let base = path.parent().unwrap_or(&self.root);
-        self.validate_manifest(&manifest, base)
+        self.validate_manifest_with_options(&manifest, base, true)
             .with_context(|| format!("invalid role manifest: {}", path.display()))?;
         let instruction_text = self.resolve_prompt(&manifest, base)?;
         let role_version_id = Uuid::new_v4();
@@ -214,6 +214,15 @@ impl RoleRegistry {
     }
 
     pub fn validate_manifest(&self, manifest: &RoleManifest, base: &Path) -> Result<()> {
+        self.validate_manifest_with_options(manifest, base, false)
+    }
+
+    fn validate_manifest_with_options(
+        &self,
+        manifest: &RoleManifest,
+        base: &Path,
+        allow_registry_command_actions: bool,
+    ) -> Result<()> {
         validate_role_id(&manifest.id)?;
         validate_non_empty("version", &manifest.version)?;
         validate_non_empty("displayName", &manifest.display_name)?;
@@ -226,10 +235,10 @@ impl RoleRegistry {
         }
 
         for action in &manifest.capabilities {
-            actions::validate_known_action(action)?;
+            validate_manifest_action(action, allow_registry_command_actions)?;
         }
         for action in manifest.policy.keys() {
-            actions::validate_known_action(action)?;
+            validate_manifest_action(action, allow_registry_command_actions)?;
         }
         let capability_set: BTreeSet<_> = manifest.capabilities.iter().collect();
         let policy_set: BTreeSet<_> = manifest.policy.keys().collect();
@@ -257,6 +266,14 @@ impl RoleRegistry {
             bail!("prompt instruction body must not be empty: {}", prompt_path.display());
         }
         Ok(text)
+    }
+}
+
+fn validate_manifest_action(action: &str, allow_registry_command_actions: bool) -> Result<()> {
+    if allow_registry_command_actions && crate::command_registry::is_registry_command_action(action) {
+        Ok(())
+    } else {
+        actions::validate_known_action(action)
     }
 }
 

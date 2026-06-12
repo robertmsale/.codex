@@ -3373,16 +3373,21 @@ fn requirements_verdict_properties(set: &RequirementSetState) -> (serde_json::Ma
             continue;
         }
         required.push(key.to_string());
-        let default_description = format!("Review requirement: {}", requirement.statement);
+        let default_description = canonical_requirement_schema_description(requirement);
+        let verdict_description = requirement
+            .verdict_schema_description
+            .as_deref()
+            .map(|description| {
+                format!(
+                    "{} Acceptance criteria: {}",
+                    default_description,
+                    description.trim()
+                )
+            })
+            .unwrap_or(default_description);
         properties.insert(
             key.to_string(),
-            verdict_property_schema(
-                requirement
-                    .verdict_schema_description
-                    .as_deref()
-                    .unwrap_or(default_description.as_str()),
-                requirement_review_previously_passed(set, key),
-            ),
+            verdict_property_schema(&verdict_description, requirement_review_previously_passed(set, key)),
         );
     }
     required.push("overallVerdict".to_string());
@@ -3414,6 +3419,16 @@ fn requirements_verdict_properties(set: &RequirementSetState) -> (serde_json::Ma
         }),
     );
     (properties, required)
+}
+
+fn canonical_requirement_schema_description(requirement: &RequirementState) -> String {
+    format!(
+        "Canonical requirement `{}`: {} Severity: {}; verification: {}.",
+        requirement.key,
+        requirement.statement.trim(),
+        requirement.severity,
+        requirement.verification_method
+    )
 }
 
 fn claim_property_schema(description: &str) -> Value {
@@ -6216,20 +6231,75 @@ pub(crate) fn requirements_review_prompt(
     _turn_id: &str,
     claim_text: &str,
 ) -> String {
-    let mut prompt = format!(
-        "Perform an adversarial Requirements Review.\n\nReview subject: {source_label}\n\nStructured responses use `summary` plus `requirements`.\n- Use `requirements: null` only for reviewer progress/commentary.\n- When finishing review, `requirements` must be the object containing every requirement verdict plus `overallVerdict` and `route`.\n\nRules:\n- Compare every canonical requirement against the actual work and available evidence, even if the source claim packet only contains currently unresolved requirements.\n- Previously passed requirements remain binding. Re-fail any previously passed requirement if later work regresses it.\n- If the schema offers `{{\"verdict\":\"stillPassing\"}}`, use it only after checking that a previously passed requirement still passes for the same reason.\n- Do not use `stillPassing` when a requirement is new, failed, blocked, waived, changed by the latest work, or lacks enough evidence to confirm it still passes.\n- For unrelated requirements or requirements that are repeatedly passing because nothing relevant changed, keep `reason` and `evidenceAssessment` brief, or use `stillPassing` when the schema allows it.\n- Fail missing, weak, circular, or unverifiable evidence.\n- Reject fake blockers.\n- Accept true external blockers only with concrete proof.\n- Never implement fixes and never relax requirements.\n- Shell/chrome or scope exclusions cannot erase core in-scope requirements.\n\nRequirements:\n"
-    );
-    for requirement in &set.requirements {
-        prompt.push_str(&format!(
-            "- `{}` [{}; verification={}]: {}\n",
-            requirement.key, requirement.severity, requirement.verification_method, requirement.statement
-        ));
-    }
+    let mut prompt = format!("Review subject: {source_label}\n\n");
+    prompt.push_str("Latest source claim packet:\n");
+    prompt.push_str(&compact_source_claim_packet(claim_text));
+    prompt.push_str("\n\nRequirement state:\n");
+    prompt.push_str(&compact_requirement_review_state(set));
     if let Some(summary) = compact_requirements_claim_summary(claim_text) {
-        prompt.push_str("\nSource evidence summary:\n");
+        prompt.push_str("\n\nEvidence index:\n");
         prompt.push_str(&summary);
     }
+    prompt.push_str("\n\nReview all canonical requirements from the active structured output schema. Use `stillPassing` only where the schema allows it and the requirement still passes.");
     prompt
+}
+
+fn compact_source_claim_packet(claim_text: &str) -> String {
+    let trimmed = claim_text.trim();
+    if trimmed.is_empty() {
+        return "(empty source claim packet)".to_string();
+    }
+    serde_json::from_str::<Value>(trimmed)
+        .ok()
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_else(|| trimmed.to_string())
+}
+
+fn compact_requirement_review_state(set: &RequirementSetState) -> String {
+    let all_keys = set
+        .requirements
+        .iter()
+        .map(|requirement| requirement.key.as_str())
+        .filter(|key| !key.trim().is_empty())
+        .collect::<Vec<_>>();
+    let previously_passed = all_keys
+        .iter()
+        .copied()
+        .filter(|key| {
+            set.review_progress
+                .get(*key)
+                .map(|progress| progress.status == "passed")
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    let currently_unresolved = all_keys
+        .iter()
+        .copied()
+        .filter(|key| {
+            !set.review_progress
+                .get(*key)
+                .map(|progress| progress.status == "passed")
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    let relevant_progress = set
+        .review_progress
+        .iter()
+        .filter(|(_, progress)| progress.status != "passed")
+        .map(|(key, progress)| {
+            if let Some(updated_at) = progress.updated_at {
+                format!("{key}:{}@{updated_at}", progress.status)
+            } else {
+                format!("{key}:{}", progress.status)
+            }
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "* previouslyPassed: [{}]\n* currentlyUnresolved: [{}]\n* previousFailuresBlockersWaivers: [{}]",
+        previously_passed.join(", "),
+        currently_unresolved.join(", "),
+        relevant_progress.join(", ")
+    )
 }
 
 fn compact_requirements_claim_summary(claim_text: &str) -> Option<String> {
@@ -7616,7 +7686,7 @@ mod tests {
     }
 
     #[test]
-    fn reviewer_prompt_preserves_full_set_and_mentions_regression_review() {
+    fn reviewer_prompt_is_compact_and_schema_carries_full_requirement_contract() {
         let mut set = sample_requirement_set();
         set.review_progress.insert(
             "nativeGuiIsSourceOfTruth".to_string(),
@@ -7633,15 +7703,30 @@ mod tests {
             "turn-1",
             r#"{"summary":"fixed one item","requirements":{"noInventedWebsocketEventShapes":{"claim":"satisfied","evidence":["test"],"justification":"fixed","risk":"low"}}}"#,
         );
-        assert!(prompt.contains("Compare every canonical requirement"));
-        assert!(prompt.contains("Re-fail any previously passed requirement"));
-        assert!(prompt.contains(r#"{"verdict":"stillPassing"}"#));
-        assert!(prompt.contains("only after checking that a previously passed requirement still passes for the same reason"));
+        assert!(prompt.contains("Review subject: Worker"));
+        assert!(prompt.contains("Latest source claim packet:"));
+        assert!(prompt.contains("Requirement state:"));
+        assert!(prompt.contains("* previouslyPassed: [nativeGuiIsSourceOfTruth]"));
+        assert!(prompt.contains("* currentlyUnresolved: [noInventedWebsocketEventShapes]"));
+        assert!(prompt.contains("Review all canonical requirements from the active structured output schema."));
+        assert!(!prompt.contains("Requirements:\n"));
+        assert!(!prompt.contains("Perform an adversarial Requirements Review."));
+        assert!(!prompt.contains("Compare every canonical requirement"));
+        assert!(!prompt.contains("The web GUI must mirror the native Flutter GUI."));
 
-        assert!(prompt.contains("`nativeGuiIsSourceOfTruth`"));
-        assert!(prompt.contains("`noInventedWebsocketEventShapes`"));
-        assert!(prompt.contains("Previously passed requirements remain binding"));
-        assert!(prompt.contains("keep `reason` and `evidenceAssessment` brief"));
+        let schema = requirements_verdict_schema(&set);
+        let requirements_schema = &schema["properties"]["requirements"];
+        assert_eq!(
+            requirements_schema["required"],
+            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes", "overallVerdict", "route"])
+        );
+        let native_schema_description = serde_json::to_string(
+            &requirements_schema["properties"]["nativeGuiIsSourceOfTruth"],
+        )
+        .expect("serialize native schema");
+        assert!(native_schema_description.contains("The web GUI must mirror the native Flutter GUI."));
+        assert!(native_schema_description.contains("Severity: blocker"));
+        assert!(native_schema_description.contains("verification: diffReview"));
     }
 
     #[tokio::test]
@@ -8640,7 +8725,7 @@ requirements:
     }
 
     #[test]
-    fn requirements_review_prompt_includes_compact_evidence_without_ids_or_raw_packet() {
+    fn requirements_review_prompt_includes_evidence_without_hidden_ids_or_requirement_prose() {
         let prompt = requirements_review_prompt(
             &sample_requirement_set(),
             "Config Operator",
@@ -8659,15 +8744,16 @@ requirements:
             }"#,
         );
         assert!(prompt.contains("Review subject: Config Operator"));
-        assert!(prompt.contains("Source evidence summary:"));
+        assert!(prompt.contains("Latest source claim packet:"));
+        assert!(prompt.contains("Evidence index:"));
         assert!(prompt.contains("Rendered reviewer verdict card."));
         assert!(prompt.contains("/tmp/reviewer-verdict-card.png"));
         assert!(!prompt.contains("Source thread ID"));
         assert!(!prompt.contains("Source turn ID"));
-        assert!(!prompt.contains("Source agent claim packet"));
         assert!(!prompt.contains("thread-secret"));
         assert!(!prompt.contains("turn-secret"));
-        assert!(!prompt.contains("\"requirements\""));
+        assert!(!prompt.contains("The web GUI must mirror the native Flutter GUI."));
+        assert!(!prompt.contains("Do not invent websocket or HTTP event shapes."));
     }
 
     fn assert_strict_object_schema(value: &Value) {

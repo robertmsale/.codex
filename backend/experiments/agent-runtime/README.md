@@ -41,6 +41,61 @@ output(value)
 Host API calls return values to the script, but they do not implicitly append to
 the final tool output. This keeps tool result packets deterministic and concise.
 
+## Typed command registry
+
+Postgres is the runtime source of truth for concrete `cmd[...]` commands. Rust
+owns finite kernel/native action categories and enforcement semantics; concrete
+command definitions and immutable command versions live in `command_definitions`
+and `command_versions`. Seed files under `command-seeds/` are import material
+only. At `init-db`, the current seed bundle imports the supported command
+behavior into Postgres:
+
+- `cmd["rg"].run(args=[...], cwd=".")`
+- `cmd["git"].status()`
+- `cmd["git"].diff(args=[...])`
+- `cmd["cargo"].check(args=[...])`
+
+Every command version stores the action id, binary name and resolution
+candidates, Starlark object/method surface, argv prefix/argument policy,
+cwd/env/timeout/output policy, mutation class, model-facing description, and
+creation metadata. `execute_code` queries the enabled current DB command
+versions at every tool boundary, filters them through the session role snapshot
+policy, builds the Starlark `cmd` surface from that live registry, and generates
+the model-visible `execute_code` contract from the same live rows. Agents receive
+the current interface directly in the tool schema and prompt; they are not told
+to read README, manifests, or source files to understand command semantics.
+
+Registry-defined command execution remains structured. There is no raw shell:
+commands run only through argv arrays, execution-root cwd enforcement, explicit
+env policy, timeout/output limits, binary resolution policy, mutation class, and
+role policy. Each `command_runs` row records the exact `command_version_id` used
+so historical traces remain attributable after later registry changes.
+
+Role policy may reference DB-backed command action ids such as `cmd.rg.run` or a
+later imported `cmd.<name>.<method>`. Runtime role import validates registry
+command action references against Postgres command definitions, not a static
+Rust allowlist of concrete command names.
+
+Command-registry changes use structured requests in `command_registry_requests`.
+A request contains the operation (`add`, `update`, `disable`, or `enable`), the
+proposed command definition, rationale, recommended policy, requester identity,
+approval status, and application status. Approval records a decision only. The
+separate `command-registry requests apply <id>` command validates and applies an
+approved pending request. Denied requests and apply-before-approval do not mutate
+the registry.
+
+CLI affordances:
+
+```sh
+robdex-agent-runtime command-registry list
+robdex-agent-runtime command-registry show <action-id>
+robdex-agent-runtime command-registry requests create --session <session-id> <json-file>
+robdex-agent-runtime command-registry requests list
+robdex-agent-runtime command-registry requests show <id>
+robdex-agent-runtime command-registry requests decide --session <session-id> <id> --status approved|denied
+robdex-agent-runtime command-registry requests apply --session <session-id> <id>
+```
+
 ## Role policy foundation
 
 Postgres is the runtime source of truth for roles. JSON manifests and prompt files in `roles/` are seed/import/export artifacts only. Import resolves prompt files into immutable `role_versions.instruction_text`; runtime session creation reads the current DB role version and stores a complete immutable `sessions.role_snapshot`.
@@ -48,12 +103,14 @@ Postgres is the runtime source of truth for roles. JSON manifests and prompt fil
 Active actions implemented by this slice:
 - `tool.execute_code`
 - `fs.read`
-- `cmd.rg.run`
 - `fs.write`
 - `patch.apply`
-- `cmd.git.status`
-- `cmd.git.diff`
-- `cmd.cargo.check`
+- `command_registry.request`
+- `command_registry.decide`
+- `command_registry.apply`
+
+Concrete `cmd.*` actions are active when present as enabled current DB command
+versions and allowed by the session role snapshot policy.
 
 Reserved future action names documented but not implemented here:
 - `agent.spawn.<role>`
@@ -74,7 +131,7 @@ Routing metadata is structured role data. The supported mode is `direct`, with `
 
 ## Action-only approval resume
 
-Approval resume is explicit and action-only. `approvals decide` only persists a decision and never executes the blocked action. `approvals resume <approval-id>` requires an approved request and a linked pending paused action. Resumable actions use immutable stored input for `cmd.rg.run`, `fs.write`, `patch.apply`, `cmd.git.status`, `cmd.git.diff`, and `cmd.cargo.check`. Resume does not call the model, does not replay the script or turn, and does not rewrite the original failed turn. Resume records `approval.resume.started`, `policy.resumeDecision`, mutation/command evidence, and `approval.resume.completed` or `approval.resume.failed`.
+Approval resume is explicit and action-only. `approvals decide` only persists a decision and never executes the blocked action. `approvals resume <approval-id>` requires an approved request and a linked pending paused action. Resumable command actions are any DB registry command action with immutable stored input including `commandVersionId`; native resumable mutation actions are `fs.write` and `patch.apply`. Resume does not call the model, does not replay the script or turn, and does not rewrite the original failed turn. Resume records `approval.resume.started`, `policy.resumeDecision`, mutation/command evidence, and `approval.resume.completed` or `approval.resume.failed`.
 
 ## Validation database hygiene
 
@@ -93,6 +150,7 @@ scripts/validate-db-canonical-roles.sh
 scripts/validate-approvals-routing.sh
 scripts/validate-action-resume.sh
 scripts/validate-mutation-actions.sh
+scripts/validate-command-registry.sh
 ```
 
 Validation database administration defaults to `ROBDEX_AGENT_RUNTIME_VALIDATION_ADMIN_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres`. Override that admin connection only when the same local Postgres server requires a different maintenance database. Do not point validation cleanup at the normal runtime database.

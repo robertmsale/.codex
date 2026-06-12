@@ -1,6 +1,7 @@
 pub mod routing;
 pub mod approvals;
 pub mod actions;
+pub mod command_registry;
 pub mod db;
 pub mod lifecycle;
 pub mod model;
