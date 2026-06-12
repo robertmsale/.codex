@@ -9,6 +9,34 @@ approve_request() {
   local id="$1" file="$2"
   run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$id" --status approved --final-scope global --final-policy allow --final-command-file "$file"
 }
+create_internal_request() {
+  local file="$1"
+  python3 - "$ROBDEX_AGENT_RUNTIME_DATABASE_URL" "$ADMIN_SESSION" "$file" <<'PY'
+import json, subprocess, sys, uuid
+db, session, file = sys.argv[1:]
+data = json.load(open(file))
+request_id = str(uuid.uuid4())
+command = data["command"]
+def lit(value):
+    return "'" + value.replace("'", "''") + "'"
+sql = f"""
+INSERT INTO command_registry_requests
+(id, session_id, operation, proposed_command, requester_context, rationale, recommended_policy, requester, requested_by_role, approval_status, application_status)
+VALUES (
+{lit(request_id)}, {lit(session)}, {lit(data['operation'])}, {lit(json.dumps(command))}::jsonb,
+'{{"validationOnly":true,"source":"validate-command-registry.sh"}}'::jsonb,
+{lit(data.get('rationale', 'validation internal request'))},
+{lit(data.get('recommendedPolicy', 'validation only'))},
+'validation-internal-helper',
+'{{}}'::jsonb,
+'pending',
+'pending'
+)
+"""
+subprocess.check_call(["psql", db, "-v", "ON_ERROR_STOP=1", "-Atc", sql], stdout=subprocess.DEVNULL)
+print(request_id)
+PY
+}
 write_request() {
   local file="$1" operation="$2" action="$3" object="$4" mutation_class="${5:-readOnly}"
   python3 - "$file" "$operation" "$action" "$object" "$mutation_class" <<'PY'
@@ -31,7 +59,7 @@ req={
     "defaultCwd":".",
     "cwdPolicy":"underExecutionRoot",
     "envPolicy":"empty",
-    "timeoutMs":5000,
+    "syncAllowed":True,"asyncAllowed":True,"maxRuntimeMs":5000,"endOfTurnBehavior":"terminate","stdinPolicy":"forbid","minAwaitMs":0,"maxAwaitMs":60000,"outputBufferBytes":64000,"terminateGraceMs":1000,
     "outputLimitBytes":12000,
     "mutationClass":mutation_class,
     "modelDescription":f"validation helper for {action}"
@@ -70,7 +98,7 @@ sql "select action_id || ':' || (current_version_id is not null) from command_de
 printf 'seed_version_trace_columns='; sql "select count(*) from command_versions where action_id in ('cmd.rg.run','cmd.git.status','cmd.git.diff','cmd.cargo.check')"
 ALLOW=$(cargo run --quiet -- new-session --role runtime-allow)
 printf 'allow_session=%s\n' "$ALLOW"
-run cargo run --quiet -- --workdir . send --session "$ALLOW" --message 'Use execute_code with exactly this Starlark source: matches = cmd["rg"].run(args=["--files", "-g", "Cargo.toml"], cwd="."); output(matches)'
+run cargo run --quiet -- --workdir . send --session "$ALLOW" --message 'Use execute_code with exactly this Starlark source: matches = cmd["rg"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").sync(); output(matches)'
 printf 'command_version_id_count='; sql "select count(*) from command_runs where command_version_id is not null"
 [[ "$(sql "select count(*) from command_runs where command_version_id is not null")" -gt 0 ]]
 printf 'command_event_versions='; sql "select count(*) from event_stream where session_id='$ALLOW' and event_type='command.completed' and payload ? 'commandVersionId'"
@@ -88,7 +116,7 @@ printf 'seed_disabled_after_init='; sql "select enabled from command_definitions
 [[ "$(sql "select enabled from command_definitions where action_id='cmd.rg.run'")" == "f" ]]
 run psql "$ROBDEX_AGENT_RUNTIME_DATABASE_URL" -c "UPDATE command_definitions SET enabled=true WHERE action_id='cmd.rg.run'"
 write_request /tmp/agent-runtime-seed-repoint.json update cmd.rg.run rg_repointed metadataOnlyProbe
-SEED_REPOINT_REQ=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-seed-repoint.json)
+SEED_REPOINT_REQ=$(create_internal_request /tmp/agent-runtime-seed-repoint.json)
 approve_request "$SEED_REPOINT_REQ" /tmp/agent-runtime-seed-repoint.json
 run cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$SEED_REPOINT_REQ"
 REPOINTED_VERSION_BEFORE=$(sql "select current_version_id from command_definitions where action_id='cmd.rg.run'")
@@ -106,7 +134,7 @@ printf 'seed_refresh_requests_before=%s after=%s\n' "$SEED_REFRESH_BEFORE" "$SEE
 [[ "$SEED_REFRESH_AFTER" -gt "$SEED_REFRESH_BEFORE" ]]
 
 write_request /tmp/agent-runtime-command-request.json add cmd.rg.files rg_files
-REQ_ID=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-command-request.json)
+REQ_ID=$(create_internal_request /tmp/agent-runtime-command-request.json)
 printf 'request_id=%s\n' "$REQ_ID"
 APPLY_BEFORE=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$REQ_ID" 2>&1 || true)
 printf 'apply_before_approval=%s\n' "$APPLY_BEFORE" | rg 'must be approved'
@@ -115,7 +143,7 @@ DENIED_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$
 printf 'denied_apply=%s\n' "$DENIED_APPLY" | rg 'must be approved'
 printf 'denied_registry_count='; sql "select count(*) from command_definitions where action_id='cmd.rg.files'"
 [[ "$(sql "select count(*) from command_definitions where action_id='cmd.rg.files'")" -eq 0 ]]
-REQ_ID2=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-command-request.json)
+REQ_ID2=$(create_internal_request /tmp/agent-runtime-command-request.json)
 MISSING_FINAL_DECIDE=$(cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$REQ_ID2" --status approved 2>&1 || true)
 printf 'missing_final_decide=%s\n' "$MISSING_FINAL_DECIDE" | rg 'requires final scope'
 printf 'missing_final_decide_status='; sql "select approval_status || '/' || application_status from command_registry_requests where id='$REQ_ID2'"
@@ -125,7 +153,7 @@ run cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSI
 printf 'approved_registry_count='; sql "select count(*) from command_definitions where action_id='cmd.rg.files'"
 [[ "$(sql "select count(*) from command_definitions where action_id='cmd.rg.files'")" -eq 1 ]]
 
-DUP_REQ=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-command-request.json)
+DUP_REQ=$(create_internal_request /tmp/agent-runtime-command-request.json)
 approve_request "$DUP_REQ" /tmp/agent-runtime-command-request.json
 DUP_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$DUP_REQ" 2>&1 || true)
 printf 'duplicate_add_apply=%s\n' "$DUP_APPLY" | rg 'already exists'
@@ -133,7 +161,7 @@ printf 'duplicate_add_status='; sql "select application_status from command_regi
 [[ "$(sql "select application_status from command_registry_requests where id='$DUP_REQ'")" == "pending" ]]
 
 write_request /tmp/agent-runtime-missing-update.json update cmd.rg.missing rg_missing
-MISSING_UPDATE=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-missing-update.json)
+MISSING_UPDATE=$(create_internal_request /tmp/agent-runtime-missing-update.json)
 approve_request "$MISSING_UPDATE" /tmp/agent-runtime-missing-update.json
 MISSING_UPDATE_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$MISSING_UPDATE" 2>&1 || true)
 printf 'missing_update_apply=%s\n' "$MISSING_UPDATE_APPLY" | rg 'does not exist'
@@ -141,7 +169,7 @@ printf 'missing_update_status='; sql "select application_status from command_reg
 [[ "$(sql "select application_status from command_registry_requests where id='$MISSING_UPDATE'")" == "pending" ]]
 
 write_request /tmp/agent-runtime-missing-enable.json enable cmd.rg.missing_enable rg_missing_enable
-MISSING_ENABLE=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-missing-enable.json)
+MISSING_ENABLE=$(create_internal_request /tmp/agent-runtime-missing-enable.json)
 approve_request "$MISSING_ENABLE" /tmp/agent-runtime-missing-enable.json
 MISSING_ENABLE_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$MISSING_ENABLE" 2>&1 || true)
 printf 'missing_enable_apply=%s\n' "$MISSING_ENABLE_APPLY" | rg 'does not exist|did not change exactly one disabled row'
@@ -149,7 +177,7 @@ printf 'missing_enable_status='; sql "select application_status from command_reg
 [[ "$(sql "select application_status from command_registry_requests where id='$MISSING_ENABLE'")" == "pending" ]]
 
 write_request /tmp/agent-runtime-missing-disable.json disable cmd.rg.missing_disable rg_missing_disable
-MISSING_DISABLE=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-missing-disable.json)
+MISSING_DISABLE=$(create_internal_request /tmp/agent-runtime-missing-disable.json)
 approve_request "$MISSING_DISABLE" /tmp/agent-runtime-missing-disable.json
 MISSING_DISABLE_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$MISSING_DISABLE" 2>&1 || true)
 printf 'missing_disable_apply=%s\n' "$MISSING_DISABLE_APPLY" | rg 'did not change exactly one enabled row'
@@ -157,19 +185,19 @@ printf 'missing_disable_status='; sql "select application_status from command_re
 [[ "$(sql "select application_status from command_registry_requests where id='$MISSING_DISABLE'")" == "pending" ]]
 
 write_request /tmp/agent-runtime-disable.json disable cmd.rg.files rg_files
-DISABLE_REQ=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-disable.json)
+DISABLE_REQ=$(create_internal_request /tmp/agent-runtime-disable.json)
 approve_request "$DISABLE_REQ" /tmp/agent-runtime-disable.json
 run cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$DISABLE_REQ"
 printf 'disable_enabled_state='; sql "select enabled from command_definitions where action_id='cmd.rg.files'"
 [[ "$(sql "select enabled from command_definitions where action_id='cmd.rg.files'")" == "f" ]]
-DISABLE_AGAIN=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-disable.json)
+DISABLE_AGAIN=$(create_internal_request /tmp/agent-runtime-disable.json)
 approve_request "$DISABLE_AGAIN" /tmp/agent-runtime-disable.json
 DISABLE_AGAIN_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$DISABLE_AGAIN" 2>&1 || true)
 printf 'disable_again_apply=%s\n' "$DISABLE_AGAIN_APPLY" | rg 'did not change exactly one enabled row'
 printf 'disable_again_status='; sql "select application_status from command_registry_requests where id='$DISABLE_AGAIN'"
 [[ "$(sql "select application_status from command_registry_requests where id='$DISABLE_AGAIN'")" == "pending" ]]
 write_request /tmp/agent-runtime-enable.json enable cmd.rg.files rg_files
-ENABLE_REQ=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-enable.json)
+ENABLE_REQ=$(create_internal_request /tmp/agent-runtime-enable.json)
 approve_request "$ENABLE_REQ" /tmp/agent-runtime-enable.json
 run cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$ENABLE_REQ"
 printf 'enable_enabled_state='; sql "select enabled from command_definitions where action_id='cmd.rg.files'"
@@ -177,7 +205,7 @@ printf 'enable_enabled_state='; sql "select enabled from command_definitions whe
 ENABLE_ALREADY_VERSION_BEFORE=$(sql "select current_version_id from command_definitions where action_id='cmd.rg.files'")
 ENABLE_ALREADY_VERSION_COUNT_BEFORE=$(sql "select count(*) from command_versions cv join command_definitions cd on cd.id=cv.definition_id where cd.action_id='cmd.rg.files'")
 write_request /tmp/agent-runtime-enable-again.json enable cmd.rg.files rg_files_enable_again
-ENABLE_AGAIN=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-enable-again.json)
+ENABLE_AGAIN=$(create_internal_request /tmp/agent-runtime-enable-again.json)
 approve_request "$ENABLE_AGAIN" /tmp/agent-runtime-enable-again.json
 ENABLE_AGAIN_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$ENABLE_AGAIN" 2>&1 || true)
 printf 'enable_again_apply=%s\n' "$ENABLE_AGAIN_APPLY" | rg 'did not change exactly one disabled row'
@@ -191,7 +219,7 @@ printf 'enable_again_version_count_before=%s after=%s\n' "$ENABLE_ALREADY_VERSIO
 [[ "$ENABLE_ALREADY_VERSION_COUNT_BEFORE" == "$ENABLE_ALREADY_VERSION_COUNT_AFTER" ]]
 
 write_request /tmp/agent-runtime-approval-apply.json add cmd.rg.applyapproval rg_applyapproval
-REQ_ID3=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-approval-apply.json)
+REQ_ID3=$(create_internal_request /tmp/agent-runtime-approval-apply.json)
 approve_request "$REQ_ID3" /tmp/agent-runtime-approval-apply.json
 python3 - <<'PY2'
 import json
@@ -217,17 +245,17 @@ printf 'registry_apply_after_approval='; sql "select application_status from com
 [[ "$(sql "select application_status from command_registry_requests where id='$REQ_ID3'")" == "applied" ]]
 
 write_request /tmp/agent-runtime-metadata-class.json add cmd.rg.metadata rg_metadata metadataOnlyProbe
-META_REQ=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-metadata-class.json)
+META_REQ=$(create_internal_request /tmp/agent-runtime-metadata-class.json)
 approve_request "$META_REQ" /tmp/agent-runtime-metadata-class.json
 run cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$META_REQ"
 printf 'mutation_class_stored='; sql "select cv.config->>'mutationClass' from command_definitions cd join command_versions cv on cv.id=cd.current_version_id where cd.action_id='cmd.rg.metadata'"
 [[ "$(sql "select cv.config->>'mutationClass' from command_definitions cd join command_versions cv on cv.id=cd.current_version_id where cd.action_id='cmd.rg.metadata'")" == "metadataOnlyProbe" ]]
 
 LIVE=$(cargo run --quiet -- new-session --role runtime-allow)
-run cargo run --quiet -- --workdir . send --session "$LIVE" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_files"].run(args=["-g", "Cargo.toml"], cwd="."); output(files)'
+run cargo run --quiet -- --workdir . send --session "$LIVE" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_files"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); output(files)'
 printf 'live_new_command_runs='; sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.files'"
 [[ "$(sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.files'")" -gt 0 ]]
-run cargo run --quiet -- --workdir . send --session "$LIVE" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_metadata"].run(args=["-g", "Cargo.toml"], cwd="."); output(files)'
+run cargo run --quiet -- --workdir . send --session "$LIVE" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_metadata"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); output(files)'
 printf 'metadata_class_command_runs='; sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.metadata'"
 [[ "$(sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.metadata'")" -gt 0 ]]
 

@@ -13,7 +13,46 @@ pub async fn init(pool: &PgPool) -> Result<()> {
     sqlx::raw_sql(include_str!("../../../migrations/001_initial.sql"))
         .execute(pool)
         .await?;
+    reconcile_managed_processes(pool).await?;
     crate::command_registry::bootstrap_seed_defaults(pool).await?;
+    Ok(())
+}
+
+pub async fn reconcile_managed_processes(pool: &PgPool) -> Result<()> {
+    let rows = sqlx::query(
+        r#"
+        UPDATE managed_processes
+        SET status = 'lost',
+            end_time = now(),
+            termination_reason = 'runtimeRestart'
+        WHERE status = 'running'
+        RETURNING id, session_id, starting_turn_id, handle, command_version_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    for row in rows {
+        let process_id: Uuid = row.get("id");
+        let session_id: Uuid = row.get("session_id");
+        let turn_id: Option<Uuid> = row.get("starting_turn_id");
+        let handle: String = row.get("handle");
+        let command_version_id: Option<Uuid> = row.get("command_version_id");
+        append_event(
+            pool,
+            session_id,
+            turn_id,
+            "process",
+            Some(process_id),
+            "process.lost",
+            Some("lost"),
+            serde_json::json!({
+                "handle": handle,
+                "commandVersionId": command_version_id,
+                "reason": "session-only process is no longer attached after runtime startup",
+            }),
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -142,6 +181,16 @@ pub async fn session_project_key(pool: &PgPool, session_id: Uuid) -> Result<Opti
         .fetch_one(pool)
         .await?;
     Ok(row.get("project_key"))
+}
+
+pub async fn session_process_handles(pool: &PgPool, session_id: Uuid) -> Result<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT handle FROM managed_processes WHERE session_id = $1 ORDER BY start_time ASC",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|row| row.get("handle")).collect())
 }
 
 pub async fn session_role_snapshot(pool: &PgPool, session_id: Uuid) -> Result<RoleSnapshot> {

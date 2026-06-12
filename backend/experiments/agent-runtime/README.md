@@ -59,18 +59,18 @@ stored `project_key` matches the command scope. Session creation accepts
 
 The bundled seed import creates:
 
-- `cmd["rg"].run(args=[...], cwd=".")`
-- `cmd["git"].status()`
-- `cmd["git"].diff(args=[...])`
-- `cmd["cargo"].check(args=[...])`
+- `cmd["rg"].run(args=[...], cwd=".").sync()` or `.start()`
+- `cmd["git"].status().sync()` or `.start()`
+- `cmd["git"].diff(args=[...]).sync()` or `.start()`
+- `cmd["cargo"].check(args=[...]).sync()` or `.start()`
 
 Every command version stores the action id, binary name and resolution
 candidates, Starlark object/method surface, argv prefix/argument policy,
-cwd/env/timeout/output policy, `mutationClass` metadata, model-facing
-description, the approver-selected final execution policy, and creation metadata.
+cwd/env/max-runtime/output policy, process policy, `mutationClass` metadata,
+model-facing description, the approver-selected final execution policy, and creation metadata.
 `mutationClass` is descriptive trace/model metadata in this phase; it is not an
 execution policy boundary. Scoped command execution authority comes from the
-stored final execution policy, registry argv/cwd/env/timeout/output fields, and
+stored final execution policy, registry argv/cwd/env/max-runtime/output fields, and
 native kernel protections. `execute_code` queries the enabled current DB command
 versions at every tool boundary, merges global plus matching project commands,
 rejects ambiguous action identifier conflicts before surfacing commands, builds the Starlark `cmd`
@@ -81,7 +81,7 @@ to read README, manifests, or source files to understand command semantics.
 
 Registry-defined command execution remains structured. There is no raw shell:
 commands run only through argv arrays, execution-root cwd enforcement, explicit
-env policy, timeout/output limits, binary resolution policy, and the stored
+env policy, max-runtime/output limits, binary resolution policy, and the stored
 final execution policy selected by the approver. A final policy of `allow`
 executes immediately, `deny` leaves the command visible but blocks before side
 effects, and `ownerApproval` or `orchestratorApproval` creates the matching
@@ -124,7 +124,6 @@ CLI affordances:
 robdex-agent-runtime command-registry list
 robdex-agent-runtime command-registry show <action-id>
 robdex-agent-runtime command-registry seed-requests --session <session-id> --mode missing|refresh
-robdex-agent-runtime command-registry requests create --session <session-id> <json-file>
 robdex-agent-runtime command-registry requests list
 robdex-agent-runtime command-registry requests show <id>
 robdex-agent-runtime command-registry requests decide --session <session-id> <id> --status denied
@@ -133,8 +132,11 @@ robdex-agent-runtime command-registry requests decide --session <session-id> <id
 robdex-agent-runtime command-registry requests apply --session <session-id> <id>
 ```
 
-`seed-requests` is the explicit seed import/refresh affordance. It creates
-ordinary registry requests from `command-seeds/`; it does not approve or apply
+Agents create ordinary registry change requests through the native
+`request_command_registry_change` model tool. The CLI request commands are for
+approver/operator inspection, decision, and apply only. `seed-requests` is the
+explicit registry maintenance/bootstrap staging affordance. It creates
+reviewable registry requests from `command-seeds/`; it does not approve or apply
 them. `--mode missing` requests only absent bundled commands. `--mode refresh`
 requests updates for existing bundled commands and adds for absent bundled
 commands.
@@ -207,3 +209,9 @@ DROP DATABASE IF EXISTS "robdex_agent_runtime_validation_<run_id>" WITH (FORCE);
 ```
 
 The cleanup helper refuses destructive cleanup for database names that do not start with `robdex_agent_runtime_validation_`.
+
+## Session-only managed process surface
+
+Registry command versions carry process policy as data: `syncAllowed`, `asyncAllowed`, `maxRuntimeMs` (`null` means no configured maximum runtime kill), `endOfTurnBehavior`, `stdinPolicy`, await bounds, bounded output buffer bytes, and terminate grace. The model-facing Starlark surface is explicit: `cmd["name"].method(...).sync()` runs synchronously under the command version's max-runtime semantics, and `cmd["name"].method(...).start()` returns an opaque session-only process handle. Process handles are not OS PIDs. The handle API is exposed through `proc[handle]` with `is_running()`, `await_for(mins=N)`, `flush_buffer()`, `terminate()`, and `input(text)`.
+
+The current experimental CLI executes each `send` as a short-lived runtime process, so handles are session-only runtime objects and startup reconciliation marks any previously `running` rows as `lost` instead of pretending to reattach them. Process metadata is persisted in `managed_processes`; incremental bounded output is persisted in `process_output_chunks` when handles are flushed. Command execution remains policy-controlled: approval-required commands pause before side effects, sync/async permission is checked before execution, stdin is rejected unless explicitly allowed, and command traces retain the exact `command_version_id`.

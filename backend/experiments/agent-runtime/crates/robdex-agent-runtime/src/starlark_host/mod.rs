@@ -1,9 +1,13 @@
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::os::unix::process::ExitStatusExt;
-use std::process::Command;
-use std::process::Stdio;
-use std::time::Instant;
+use std::os::unix::process::CommandExt;
+use std::process::{Child, Command, Stdio};
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -11,6 +15,7 @@ use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
+use once_cell::sync::Lazy;
 use starlark::any::ProvidesStaticType;
 use starlark::environment::{GlobalsBuilder, Module};
 use starlark::eval::Evaluator;
@@ -33,6 +38,9 @@ use crate::policy::{PolicyEngine, RuntimeDecision};
 use crate::roles::RoleSnapshot;
 
 const OUTPUT_LIMIT_BYTES: usize = 12_000;
+
+static PROCESS_MANAGER: Lazy<Mutex<BTreeMap<Uuid, BTreeMap<String, ManagedProcess>>>> =
+    Lazy::new(|| Mutex::new(BTreeMap::new()));
 
 #[derive(Debug, Clone)]
 pub struct ExecutionRoot {
@@ -145,6 +153,7 @@ pub struct ExecuteCodePacket {
 
 #[derive(Debug, ProvidesStaticType)]
 struct HostKernel {
+    session_id: Uuid,
     root: ExecutionRoot,
     commands: std::collections::BTreeMap<String, CommandVersion>,
     role_snapshot: RoleSnapshot,
@@ -153,10 +162,69 @@ struct HostKernel {
 }
 
 #[derive(Debug)]
+struct ManagedProcess {
+    id: Uuid,
+    handle: String,
+    command_version: CommandVersion,
+    command_version_id: Uuid,
+    binary_name: String,
+    binary_path: String,
+    argv: Vec<String>,
+    cwd: String,
+    child: Child,
+    stdout: Arc<Mutex<String>>,
+    stderr: Arc<Mutex<String>>,
+    stdout_flush_cursor: usize,
+    stderr_flush_cursor: usize,
+    started: Instant,
+    started_at: chrono::DateTime<Utc>,
+    status: String,
+    termination_reason: Option<String>,
+}
+
+#[derive(Debug)]
+struct ManagedProcessRecord {
+    id: Uuid,
+    handle: String,
+    command_version_id: Uuid,
+    binary_name: String,
+    binary_path: String,
+    argv: Vec<String>,
+    cwd: String,
+    os_pid: Option<i64>,
+    os_pgid: Option<i64>,
+    status: String,
+    end_of_turn_behavior: String,
+    max_runtime_ms: Option<i64>,
+    termination_reason: Option<String>,
+    event: String,
+    payload: JsonValue,
+}
+
+#[derive(Debug)]
+struct ProcessOutputRecord {
+    process_id: Uuid,
+    handle: String,
+    stream: String,
+    content: String,
+    truncated: bool,
+}
+
+#[derive(Debug)]
+struct ApprovalPauseRecord {
+    action: String,
+    policy: crate::policy::PolicyResult,
+    action_input: JsonValue,
+}
+
+#[derive(Debug)]
 enum HostRecord {
     Policy(PolicyDecisionRecord),
     HostApi(HostApiRecord),
     Command(CommandRecord),
+    ManagedProcess(ManagedProcessRecord),
+    ProcessOutput(ProcessOutputRecord),
+    ApprovalPause(ApprovalPauseRecord),
     FileMutation(FileMutationRecord),
     PatchRun(PatchRunRecord),
 }
@@ -191,7 +259,7 @@ struct CommandRecord {
     stdout: String,
     stderr: String,
     exit_status: Option<i32>,
-    timeout_ms: i64,
+    max_runtime_ms: Option<i64>,
     duration_ms: i64,
     truncation: JsonValue,
     policy_decision: JsonValue,
@@ -262,7 +330,11 @@ pub async fn execute_code(
 
     let project_key = crate::db::session_project_key(pool, session_id).await?;
     let live_commands = command_registry::live_visible_commands(pool, role_snapshot, project_key.as_deref()).await?;
-    let result = evaluate_starlark(source, root.clone(), role_snapshot.clone(), live_commands);
+    let mut process_handles = crate::db::session_process_handles(pool, session_id).await?;
+    process_handles.extend(active_process_handles(session_id));
+    process_handles.sort();
+    process_handles.dedup();
+    let result = evaluate_starlark(session_id, source, root.clone(), role_snapshot.clone(), live_commands, process_handles);
     let status = if result.error.is_some() {
         TerminalStatus::Failed
     } else {
@@ -327,13 +399,14 @@ struct EvalResult {
     error: Option<String>,
 }
 
-fn evaluate_starlark(source: &str, root: ExecutionRoot, role_snapshot: RoleSnapshot, live_commands: Vec<CommandVersion>) -> EvalResult {
-    let prelude = match command_registry::starlark_prelude(&live_commands) {
+fn evaluate_starlark(session_id: Uuid, source: &str, root: ExecutionRoot, role_snapshot: RoleSnapshot, live_commands: Vec<CommandVersion>, process_handles: Vec<String>) -> EvalResult {
+    let prelude = match command_registry::starlark_prelude(&live_commands, &process_handles) {
         Ok(prelude) => prelude,
         Err(error) => return EvalResult { output: String::new(), records: Vec::new(), error: Some(error.to_string()) },
     };
     let script = format!("{prelude}\n{source}");
     let kernel = HostKernel {
+        session_id,
         root,
         commands: live_commands.into_iter().map(|command| (command.action_id.clone(), command)).collect(),
         role_snapshot,
@@ -353,6 +426,7 @@ fn evaluate_starlark(source: &str, root: ExecutionRoot, role_snapshot: RoleSnaps
         Err(error) => Some(format!("execute_code source is not valid Starlark syntax: {error}")),
     };
     let output = kernel.output.borrow().join("\n");
+    kernel.cleanup_end_of_turn();
     let records = kernel.records.into_inner();
     EvalResult {
         output,
@@ -365,8 +439,21 @@ fn add_host_builtins(builder: &mut GlobalsBuilder) {
     builder.namespace("fs", fs_builtins);
     builder.namespace("patch", patch_builtins);
     builder.namespace_no_docs("__cmd", cmd_dynamic_builtins);
+    builder.namespace_no_docs("__proc", proc_dynamic_builtins);
     struct_builtins(builder);
     output_builtins(builder);
+}
+
+fn active_process_handles(session_id: Uuid) -> Vec<String> {
+    PROCESS_MANAGER
+        .lock()
+        .map(|manager| {
+            manager
+                .get(&session_id)
+                .map(|processes| processes.keys().cloned().collect())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default()
 }
 
 #[starlark_module]
@@ -389,7 +476,7 @@ fn patch_builtins(builder: &mut GlobalsBuilder) {
 
 #[starlark_module]
 fn cmd_dynamic_builtins(builder: &mut GlobalsBuilder) {
-    fn run<'v>(
+    fn sync<'v>(
         action: &'v str,
         args: UnpackList<Value<'v>>,
         cwd: &'v str,
@@ -406,6 +493,49 @@ fn cmd_dynamic_builtins(builder: &mut GlobalsBuilder) {
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         host_kernel(eval).run_registry_command(action, args, cwd)
+    }
+
+    fn start<'v>(
+        action: &'v str,
+        args: UnpackList<Value<'v>>,
+        cwd: &'v str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<String> {
+        let args = args
+            .items
+            .iter()
+            .map(|value| {
+                value
+                    .unpack_str()
+                    .map(ToString::to_string)
+                    .ok_or_else(|| anyhow::anyhow!("registry command args must be strings"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        host_kernel(eval).start_registry_command(action, args, cwd)
+    }
+}
+
+#[starlark_module]
+fn proc_dynamic_builtins(builder: &mut GlobalsBuilder) {
+    fn is_running<'v>(handle: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<bool> {
+        host_kernel(eval).proc_is_running(handle)
+    }
+
+    fn await_for<'v>(handle: &'v str, #[starlark(default = 0)] mins: i32, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<NoneType> {
+        host_kernel(eval).proc_await_for(handle, mins)?;
+        Ok(NoneType)
+    }
+
+    fn flush_buffer<'v>(handle: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).proc_flush(handle)
+    }
+
+    fn terminate<'v>(handle: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).proc_terminate(handle)
+    }
+
+    fn input<'v>(handle: &'v str, text: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).proc_input(handle, text)
     }
 }
 
@@ -470,6 +600,231 @@ impl HostKernel {
             .commands
             .get(action)
             .ok_or_else(|| anyhow::anyhow!("registry command is not visible in this execute_code call: {action}"))?;
+        if !command_version.sync_allowed {
+            bail!("{action} does not allow synchronous execution");
+        }
+        self.execute_registry_command(action, args, cwd)
+    }
+
+    fn start_registry_command(&self, action: &str, args: Vec<String>, cwd: &str) -> anyhow::Result<String> {
+        let command_version = self
+            .commands
+            .get(action)
+            .ok_or_else(|| anyhow::anyhow!("registry command is not visible in this execute_code call: {action}"))?;
+        if !command_version.async_allowed {
+            bail!("{action} does not allow asynchronous execution");
+        }
+        let handle = format!("proc_{}", Uuid::new_v4().simple());
+        let (mut command, binary_path, argv, resolved_cwd, policy, input) = self.prepare_registry_command(action, args, cwd, "start")?;
+        let started_at = Utc::now();
+        command.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::piped());
+        command.process_group(0);
+        let mut child = command.spawn().with_context(|| format!("failed to start async command: {action}"))?;
+        let child_pid = child.id();
+        if let Some(max_runtime) = command_version.max_runtime {
+            thread::spawn(move || {
+                thread::sleep(max_runtime);
+                terminate_process_group(child_pid, 0);
+            });
+        }
+        let stdout_buf = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = Arc::new(Mutex::new(String::new()));
+        let buffer_limit = command_version.output_buffer_bytes;
+        if let Some(mut stdout) = child.stdout.take() {
+            let target = Arc::clone(&stdout_buf);
+            thread::spawn(move || {
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match stdout.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if let Ok(mut buffer) = target.lock() {
+                                buffer.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                                enforce_string_buffer_limit(&mut buffer, buffer_limit);
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+        if let Some(mut stderr) = child.stderr.take() {
+            let target = Arc::clone(&stderr_buf);
+            thread::spawn(move || {
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match stderr.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if let Ok(mut buffer) = target.lock() {
+                                buffer.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                                enforce_string_buffer_limit(&mut buffer, buffer_limit);
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+        let process_id = Uuid::new_v4();
+        let os_pid = Some(child_pid as i64);
+        self.records.borrow_mut().push(HostRecord::ManagedProcess(ManagedProcessRecord {
+            id: process_id,
+            handle: handle.clone(),
+            command_version_id: command_version.version_id,
+            binary_name: command_version.binary_name.clone(),
+            binary_path: binary_path.display().to_string(),
+            argv: argv.clone(),
+            cwd: resolved_cwd.display().to_string(),
+            os_pid,
+            os_pgid: os_pid,
+            status: "running".to_string(),
+            end_of_turn_behavior: command_version.end_of_turn_behavior.clone(),
+            max_runtime_ms: command_version.max_runtime.map(|d| d.as_millis() as i64),
+            termination_reason: None,
+            event: "process.started".to_string(),
+            payload: json!({"handle": handle, "commandVersionId": command_version.version_id, "policyDecision": policy.to_event_payload(), "input": input}),
+        }));
+        PROCESS_MANAGER
+            .lock()
+            .map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?
+            .entry(self.session_id)
+            .or_default()
+            .insert(handle.clone(), ManagedProcess {
+            id: process_id,
+            handle: handle.clone(),
+            command_version: command_version.clone(),
+            command_version_id: command_version.version_id,
+            binary_name: command_version.binary_name.clone(),
+            binary_path: binary_path.display().to_string(),
+            argv,
+            cwd: resolved_cwd.display().to_string(),
+            child,
+            stdout: stdout_buf,
+            stderr: stderr_buf,
+            stdout_flush_cursor: 0,
+            stderr_flush_cursor: 0,
+            started: Instant::now(),
+            started_at,
+            status: "running".to_string(),
+            termination_reason: None,
+        });
+        Ok(handle)
+    }
+
+    fn proc_is_running(&self, handle: &str) -> anyhow::Result<bool> {
+        let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
+        let proc = manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)).ok_or_else(|| anyhow::anyhow!("session-only process no longer attached to this runtime session: {handle}"))?;
+        let running = proc.refresh_status()?;
+        if proc.status == "completed" {
+            self.records.borrow_mut().push(HostRecord::ManagedProcess(proc.snapshot_record("process.naturalExit", json!({"handle": handle}))));
+        } else if proc.status == "maxRuntimeExceeded" {
+            self.records.borrow_mut().push(HostRecord::ManagedProcess(proc.snapshot_record("process.maxRuntimeExceeded", json!({"handle": handle}))));
+        }
+        Ok(running)
+    }
+
+    fn proc_await_for(&self, handle: &str, mins: i32) -> anyhow::Result<()> {
+        let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
+        let proc = manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)).ok_or_else(|| anyhow::anyhow!("session-only process no longer attached to this runtime session: {handle}"))?;
+        let requested_ms = (mins.max(0) as u64).saturating_mul(60_000);
+        let min_ms = proc.command_version.min_await_ms.max(0) as u64;
+        let max_ms = proc.command_version.max_await_ms.max(0) as u64;
+        let wait_ms = requested_ms.max(min_ms);
+        if max_ms > 0 && wait_ms > max_ms {
+            bail!("await_for exceeds maxAwaitMs: requested {wait_ms}ms, max {max_ms}ms");
+        }
+        let deadline = Instant::now() + Duration::from_millis(wait_ms);
+        while Instant::now() < deadline {
+            if !proc.refresh_status()? {
+                break;
+            }
+            proc.enforce_max_runtime()?;
+            thread::sleep(Duration::from_millis(25));
+        }
+        self.records.borrow_mut().push(HostRecord::ManagedProcess(proc.snapshot_record("process.awaited", json!({"handle": handle, "requestedMins": mins, "effectiveMs": wait_ms}))));
+        if proc.status == "completed" {
+            self.records.borrow_mut().push(HostRecord::ManagedProcess(proc.snapshot_record("process.naturalExit", json!({"handle": handle}))));
+        } else if proc.status == "maxRuntimeExceeded" {
+            self.records.borrow_mut().push(HostRecord::ManagedProcess(proc.snapshot_record("process.maxRuntimeExceeded", json!({"handle": handle}))));
+        }
+        Ok(())
+    }
+
+    fn proc_flush(&self, handle: &str) -> anyhow::Result<String> {
+        let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
+        let proc = manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)).ok_or_else(|| anyhow::anyhow!("session-only process no longer attached to this runtime session: {handle}"))?;
+        let (stdout, stdout_truncated) = proc.take_stdout_since_flush();
+        let (stderr, stderr_truncated) = proc.take_stderr_since_flush();
+        if !stdout.is_empty() {
+            self.records.borrow_mut().push(HostRecord::ProcessOutput(ProcessOutputRecord { process_id: proc.id, handle: handle.to_string(), stream: "stdout".to_string(), content: stdout.clone(), truncated: stdout_truncated }));
+        }
+        if !stderr.is_empty() {
+            self.records.borrow_mut().push(HostRecord::ProcessOutput(ProcessOutputRecord { process_id: proc.id, handle: handle.to_string(), stream: "stderr".to_string(), content: stderr.clone(), truncated: stderr_truncated }));
+        }
+        if stdout.is_empty() && stderr.is_empty() {
+            self.records.borrow_mut().push(HostRecord::ProcessOutput(ProcessOutputRecord { process_id: proc.id, handle: handle.to_string(), stream: "stdout".to_string(), content: String::new(), truncated: false }));
+        }
+        self.records.borrow_mut().push(HostRecord::ManagedProcess(proc.snapshot_record("process.flushed", json!({"handle": handle, "stdoutBytes": stdout.len(), "stderrBytes": stderr.len()}))));
+        Ok(format!("{stdout}{stderr}"))
+    }
+
+    fn proc_terminate(&self, handle: &str) -> anyhow::Result<String> {
+        let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
+        let proc = manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)).ok_or_else(|| anyhow::anyhow!("session-only process no longer attached to this runtime session: {handle}"))?;
+        proc.terminate("terminated", true)?;
+        self.records.borrow_mut().push(HostRecord::ManagedProcess(proc.snapshot_record("process.terminated", json!({"handle": handle, "terminateGraceMs": proc.command_version.terminate_grace_ms}))));
+        Ok("terminated".to_string())
+    }
+
+    fn proc_input(&self, handle: &str, text: &str) -> anyhow::Result<String> {
+        let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
+        let proc = manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)).ok_or_else(|| anyhow::anyhow!("session-only process no longer attached to this runtime session: {handle}"))?;
+        if proc.command_version.stdin_policy != "allow" {
+            bail!("stdinPolicy forbids input for process handle: {handle}");
+        }
+        if let Some(stdin) = proc.child.stdin.as_mut() {
+            stdin.write_all(text.as_bytes())?;
+            stdin.flush()?;
+            self.records.borrow_mut().push(HostRecord::ManagedProcess(proc.snapshot_record("process.stdin", json!({"handle": handle, "bytes": text.len()}))));
+            Ok("input accepted".to_string())
+        } else {
+            bail!("stdin is no longer attached for process handle: {handle}");
+        }
+    }
+
+    fn execute_registry_command(&self, action: &str, args: Vec<String>, cwd: &str) -> anyhow::Result<String> {
+        let command_version = self
+            .commands
+            .get(action)
+            .ok_or_else(|| anyhow::anyhow!("registry command is not visible in this execute_code call: {action}"))?;
+        let (mut command, binary_path, argv, resolved_cwd, policy, input) = self.prepare_registry_command(action, args, cwd, "sync")?;
+        let started = Instant::now();
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        command.process_group(0);
+        let output = command.spawn().and_then(|mut child| {
+            match command_version.max_runtime {
+                Some(max_runtime) => match child.wait_timeout(max_runtime)? {
+                    Some(_) => child.wait_with_output(),
+                    None => {
+                        terminate_process_group(child.id(), command_version.terminate_grace_ms);
+                        let _ = child.kill();
+                        let mut output = child.wait_with_output()?;
+                        output.status = std::process::ExitStatus::from_raw(124 << 8);
+                        Ok(output)
+                    }
+                },
+                None => child.wait_with_output(),
+            }
+        });
+        self.record_command_result(command_version, action, input, policy, binary_path.display().to_string(), argv, resolved_cwd.display().to_string(), started, output)
+    }
+
+    fn prepare_registry_command(&self, action: &str, args: Vec<String>, cwd: &str, execution_mode: &str) -> anyhow::Result<(Command, PathBuf, Vec<String>, PathBuf, crate::policy::PolicyResult, JsonValue)> {
+        let command_version = self
+            .commands
+            .get(action)
+            .ok_or_else(|| anyhow::anyhow!("registry command is not visible in this execute_code call: {action}"))?;
         if !command_version.allow_args_arg && !args.is_empty() {
             bail!("{action} does not accept args");
         }
@@ -484,6 +839,7 @@ impl HostKernel {
             "cwd": cwd,
             "executionRoot": self.root.as_path().display().to_string(),
             "commandVersionId": command_version.version_id,
+            "executionMode": execution_mode,
         });
         let decision = command_version.execution_policy.as_str();
         let policy = crate::policy::PolicyResult {
@@ -510,9 +866,15 @@ impl HostKernel {
             payload: policy.to_event_payload(),
         }));
         if !policy.decision.can_execute() {
+            if policy.decision == RuntimeDecision::ApprovalRequired {
+                self.records.borrow_mut().push(HostRecord::ApprovalPause(ApprovalPauseRecord {
+                    action: action.to_string(),
+                    policy: policy.clone(),
+                    action_input: input.clone(),
+                }));
+            }
             bail!("{action} blocked by policy: {}", policy.decision.as_str());
         }
-        let started = Instant::now();
         if command_version.cwd_policy != "underExecutionRoot" {
             bail!("unsupported cwd policy for {action}: {}", command_version.cwd_policy);
         }
@@ -540,22 +902,25 @@ impl HostKernel {
             }
             other => bail!("unsupported env policy for {action}: {other}"),
         }
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let output = command.spawn().and_then(|mut child| {
-            match child.wait_timeout(command_version.timeout)? {
-                Some(_) => child.wait_with_output(),
-                None => {
-                    let _ = child.kill();
-                    let mut output = child.wait_with_output()?;
-                    output.status = std::process::ExitStatus::from_raw(124);
-                    Ok(output)
-                }
-            }
-        });
+        Ok((command, binary_path, argv, resolved_cwd, policy, input))
+    }
+
+    fn record_command_result(
+        &self,
+        command_version: &CommandVersion,
+        action: &str,
+        input: JsonValue,
+        policy: crate::policy::PolicyResult,
+        binary_path: String,
+        argv: Vec<String>,
+        cwd: String,
+        started: Instant,
+        output: std::io::Result<std::process::Output>,
+    ) -> anyhow::Result<String> {
         let (status, exit_status, stdout, stderr) = match output {
             Ok(output) => (
                 if output.status.code() == Some(124) {
-                    "timeout"
+                    "maxRuntimeExceeded"
                 } else if output.status.success() {
                     "completed"
                 } else {
@@ -596,20 +961,22 @@ impl HostKernel {
             host_api_call_id,
             command_version_id: command_version.version_id,
             binary_name: command_version.binary_name.clone(),
-            binary_path: binary_path.display().to_string(),
+            binary_path,
             argv,
-            cwd: resolved_cwd.display().to_string(),
+            cwd,
             status: status.to_string(),
             stdout: stdout.clone(),
             stderr: stderr.clone(),
             exit_status,
-            timeout_ms: command_version.timeout.as_millis() as i64,
+            max_runtime_ms: command_version.max_runtime.map(|d| d.as_millis() as i64),
             duration_ms: started.elapsed().as_millis() as i64,
             truncation,
             policy_decision,
         }));
         if status == "completed" {
             Ok(stdout)
+        } else if status == "maxRuntimeExceeded" {
+            bail!("command exceeded maxRuntimeMs")
         } else {
             bail!(stderr)
         }
@@ -685,6 +1052,136 @@ impl HostKernel {
             bail!(error);
         }
         Ok(json!({"status": status}).to_string())
+    }
+
+    fn cleanup_end_of_turn(&self) {
+        let Ok(mut manager) = PROCESS_MANAGER.lock() else {
+            return;
+        };
+        let Some(processes) = manager.get_mut(&self.session_id) else {
+            return;
+        };
+        let mut remove_handles = Vec::new();
+        for (handle, process) in processes.iter_mut() {
+            if process.status == "running" && process.command_version.end_of_turn_behavior == "terminate" {
+                let _ = process.terminate("endOfTurnCleanup", true);
+                self.records.borrow_mut().push(HostRecord::ManagedProcess(process.snapshot_record("process.endOfTurnCleanup", json!({"handle": process.handle}))));
+                remove_handles.push(handle.clone());
+            } else if process.status == "running" {
+                self.records.borrow_mut().push(HostRecord::ManagedProcess(process.snapshot_record("process.continued", json!({"handle": process.handle, "note": "session-only process remains attached only while this runtime instance owns it"}))));
+            } else {
+                remove_handles.push(handle.clone());
+            }
+        }
+        for handle in remove_handles {
+            processes.remove(&handle);
+        }
+    }
+}
+
+impl ManagedProcess {
+    fn refresh_status(&mut self) -> anyhow::Result<bool> {
+        if self.status != "running" {
+            return Ok(false);
+        }
+        match self.child.try_wait()? {
+            Some(status) => {
+                if self.command_version.max_runtime.is_some_and(|max| self.started.elapsed() >= max) && !status.success() {
+                    self.status = "maxRuntimeExceeded".to_string();
+                    self.termination_reason = Some("maxRuntimeExceeded".to_string());
+                } else {
+                    self.status = if status.success() { "completed" } else { "failed" }.to_string();
+                    self.termination_reason = Some("naturalExit".to_string());
+                }
+                Ok(false)
+            }
+            None => Ok(true),
+        }
+    }
+
+    fn enforce_max_runtime(&mut self) -> anyhow::Result<()> {
+        if self.status == "running" {
+            if let Some(max_runtime) = self.command_version.max_runtime {
+                if self.started.elapsed() >= max_runtime {
+                    self.terminate("maxRuntimeExceeded", false)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn terminate(&mut self, reason: &str, graceful: bool) -> anyhow::Result<()> {
+        if self.status != "running" {
+            return Ok(());
+        }
+        if graceful {
+            terminate_process_group(self.child.id(), self.command_version.terminate_grace_ms);
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.status = if reason == "maxRuntimeExceeded" { "maxRuntimeExceeded" } else { "terminated" }.to_string();
+        self.termination_reason = Some(reason.to_string());
+        Ok(())
+    }
+
+    fn take_stdout_since_flush(&mut self) -> (String, bool) {
+        let _ = self.refresh_status();
+        if self.status != "running" {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let text = self.stdout.lock().map(|buffer| buffer.clone()).unwrap_or_default();
+        if self.stdout_flush_cursor > text.len() {
+            self.stdout_flush_cursor = 0;
+        }
+        let new = text.get(self.stdout_flush_cursor..).unwrap_or("").to_string();
+        self.stdout_flush_cursor = text.len();
+        truncate_text(&new, self.command_version.output_limit)
+    }
+
+    fn take_stderr_since_flush(&mut self) -> (String, bool) {
+        let _ = self.refresh_status();
+        if self.status != "running" {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let text = self.stderr.lock().map(|buffer| buffer.clone()).unwrap_or_default();
+        if self.stderr_flush_cursor > text.len() {
+            self.stderr_flush_cursor = 0;
+        }
+        let new = text.get(self.stderr_flush_cursor..).unwrap_or("").to_string();
+        self.stderr_flush_cursor = text.len();
+        truncate_text(&new, self.command_version.output_limit)
+    }
+
+    fn snapshot_record(&self, event: &str, payload: JsonValue) -> ManagedProcessRecord {
+        ManagedProcessRecord {
+            id: self.id,
+            handle: self.handle.clone(),
+            command_version_id: self.command_version_id,
+            binary_name: self.binary_name.clone(),
+            binary_path: self.binary_path.clone(),
+            argv: self.argv.clone(),
+            cwd: self.cwd.clone(),
+            os_pid: Some(self.child.id() as i64),
+            os_pgid: Some(self.child.id() as i64),
+            status: self.status.clone(),
+            end_of_turn_behavior: self.command_version.end_of_turn_behavior.clone(),
+            max_runtime_ms: self.command_version.max_runtime.map(|d| d.as_millis() as i64),
+            termination_reason: self.termination_reason.clone(),
+            event: event.to_string(),
+            payload: json!({"startedAt": self.started_at, "details": payload}),
+        }
+    }
+}
+
+fn terminate_process_group(pid: u32, grace_ms: i64) {
+    unsafe {
+        let _ = libc::killpg(pid as i32, libc::SIGTERM);
+    }
+    if grace_ms > 0 {
+        thread::sleep(Duration::from_millis(grace_ms as u64));
+    }
+    unsafe {
+        let _ = libc::killpg(pid as i32, libc::SIGKILL);
     }
 }
 
@@ -840,6 +1337,9 @@ async fn execute_resumed_command(
         argv.extend(stored_argv);
     }
     reject_forbidden_args(&command_version, &argv)?;
+    if input.get("executionMode").and_then(JsonValue::as_str) == Some("start") {
+        return execute_resumed_async_command_with_version(pool, session_id, turn_id, script_run_id, input, policy_decision, command_version, argv).await;
+    }
     execute_resumed_command_with_version(pool, session_id, turn_id, script_run_id, input, policy_decision, command_version, argv).await
 }
 
@@ -879,6 +1379,7 @@ async fn execute_resumed_command_with_version(
     let binary_path = command_version.resolve_binary()?;
     let mut command = Command::new(&binary_path);
     command.args(&argv).current_dir(&resolved_cwd);
+    command.process_group(0);
     match command_version.env_policy.as_str() {
         "empty" => {
             command.env_clear();
@@ -893,18 +1394,22 @@ async fn execute_resumed_command_with_version(
         other => bail!("unsupported env policy for {}: {other}", command_version.action_id),
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let output = command.spawn().and_then(|mut child| match child.wait_timeout(command_version.timeout)? {
-        Some(_) => child.wait_with_output(),
-        None => {
-            let _ = child.kill();
-            let mut output = child.wait_with_output()?;
-            output.status = std::process::ExitStatus::from_raw(124);
-            Ok(output)
-        }
+    let output = command.spawn().and_then(|mut child| match command_version.max_runtime {
+        Some(max_runtime) => match child.wait_timeout(max_runtime)? {
+            Some(_) => child.wait_with_output(),
+            None => {
+                terminate_process_group(child.id(), command_version.terminate_grace_ms);
+                let _ = child.kill();
+                let mut output = child.wait_with_output()?;
+                output.status = std::process::ExitStatus::from_raw(124 << 8);
+                Ok(output)
+            }
+        },
+        None => child.wait_with_output(),
     });
     let (status, exit_status, stdout, stderr) = match output {
         Ok(output) => (
-            if output.status.code() == Some(124) { "timeout" } else if output.status.success() { "completed" } else { "failed" },
+            if output.status.code() == Some(124) { "maxRuntimeExceeded" } else if output.status.success() { "completed" } else { "failed" },
             output.status.code(),
             String::from_utf8_lossy(&output.stdout).to_string(),
             String::from_utf8_lossy(&output.stderr).to_string(),
@@ -926,20 +1431,154 @@ async fn execute_resumed_command_with_version(
         .await?;
     lifecycle::complete_host_api_call(pool, host_api_call_id, TerminalStatus::try_from(status)?, &json!({"stdout": stdout, "stderr": stderr, "exitStatus": exit_status}), duration_ms, &truncation, Utc::now()).await?;
     let command_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO command_runs (id, host_api_call_id, binary_name, argv, cwd, status, started_at, timeout_ms, command_version_id) VALUES ($1, $2, $3, $4, $5, 'running', $6, $7, $8)")
+    sqlx::query("INSERT INTO command_runs (id, host_api_call_id, binary_name, argv, cwd, status, started_at, max_runtime_ms, command_version_id) VALUES ($1, $2, $3, $4, $5, 'running', $6, $7, $8)")
         .bind(command_id)
         .bind(host_api_call_id)
         .bind(&command_version.binary_name)
         .bind(json!(argv))
         .bind(resolved_cwd.display().to_string())
         .bind(Utc::now())
-        .bind(command_version.timeout.as_millis() as i64)
+        .bind(command_version.max_runtime.map(|d| d.as_millis() as i64))
         .bind(command_version.version_id)
         .execute(pool)
         .await?;
     lifecycle::complete_command_run(pool, command_id, TerminalStatus::try_from(status)?, &stdout, &stderr, exit_status, duration_ms, &policy_decision, &truncation, Utc::now()).await?;
-    db::append_event(pool, session_id, turn_id, "command", Some(command_id), "command.completed", Some(status), json!({"binary":command_version.binary_name,"binaryPath":binary_path.display().to_string(),"commandVersionId":command_version.version_id,"argv":argv,"cwd":resolved_cwd.display().to_string(),"status":status,"stdout":stdout,"stderr":stderr,"exitStatus":exit_status,"timeoutMs":command_version.timeout.as_millis() as i64,"durationMs":duration_ms,"truncation":truncation,"policyDecision":policy_decision})).await?;
+    db::append_event(pool, session_id, turn_id, "command", Some(command_id), "command.completed", Some(status), json!({"binary":command_version.binary_name,"binaryPath":binary_path.display().to_string(),"commandVersionId":command_version.version_id,"argv":argv,"cwd":resolved_cwd.display().to_string(),"status":status,"stdout":stdout,"stderr":stderr,"exitStatus":exit_status,"maxRuntimeMs":command_version.max_runtime.map(|d| d.as_millis() as i64),"durationMs":duration_ms,"truncation":truncation,"policyDecision":policy_decision})).await?;
     Ok(json!({"commandRunId": command_id, "hostApiCallId": host_api_call_id, "status": status, "stdout": stdout, "stderr": stderr, "exitStatus": exit_status}))
+}
+
+async fn execute_resumed_async_command_with_version(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Option<Uuid>,
+    script_run_id: Uuid,
+    input: &JsonValue,
+    policy_decision: JsonValue,
+    command_version: CommandVersion,
+    argv: Vec<String>,
+) -> Result<JsonValue> {
+    if !command_version.async_allowed {
+        bail!("{} does not allow asynchronous execution", command_version.action_id);
+    }
+    let cwd = input.get("cwd").and_then(JsonValue::as_str).unwrap_or(".");
+    let execution_root = input.get("executionRoot").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused command missing executionRoot"))?;
+    let root = ExecutionRoot::new(execution_root)?;
+    if command_version.cwd_policy != "underExecutionRoot" {
+        bail!("unsupported cwd policy for {}: {}", command_version.action_id, command_version.cwd_policy);
+    }
+    let resolved_cwd = root.resolve_cwd(cwd)?;
+    let binary_path = command_version.resolve_binary()?;
+    let mut command = Command::new(&binary_path);
+    command.args(&argv).current_dir(&resolved_cwd).stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::piped());
+    command.process_group(0);
+    match command_version.env_policy.as_str() {
+        "empty" => {
+            command.env_clear();
+        }
+        "minimalCargo" => {
+            command.env_clear();
+            if let Ok(value) = std::env::var("PATH") { command.env("PATH", value); }
+            if let Ok(value) = std::env::var("HOME") { command.env("HOME", value); }
+            if let Ok(value) = std::env::var("CARGO_HOME") { command.env("CARGO_HOME", value); }
+            if let Ok(value) = std::env::var("RUSTUP_HOME") { command.env("RUSTUP_HOME", value); }
+        }
+        other => bail!("unsupported env policy for {}: {other}", command_version.action_id),
+    }
+    let handle = format!("proc_{}", Uuid::new_v4().simple());
+    let process_id = Uuid::new_v4();
+    let mut child = command.spawn().with_context(|| format!("failed to resume async command: {}", command_version.action_id))?;
+    let child_pid = child.id();
+    if let Some(max_runtime) = command_version.max_runtime {
+        thread::spawn(move || {
+            thread::sleep(max_runtime);
+            terminate_process_group(child_pid, 0);
+        });
+    }
+    let stdout_buf = Arc::new(Mutex::new(String::new()));
+    let stderr_buf = Arc::new(Mutex::new(String::new()));
+    let buffer_limit = command_version.output_buffer_bytes;
+    if let Some(mut stdout) = child.stdout.take() {
+        let target = Arc::clone(&stdout_buf);
+        thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            loop {
+                match stdout.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => if let Ok(mut buffer) = target.lock() {
+                        buffer.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                        enforce_string_buffer_limit(&mut buffer, buffer_limit);
+                    },
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    if let Some(mut stderr) = child.stderr.take() {
+        let target = Arc::clone(&stderr_buf);
+        thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            loop {
+                match stderr.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => if let Ok(mut buffer) = target.lock() {
+                        buffer.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                        enforce_string_buffer_limit(&mut buffer, buffer_limit);
+                    },
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    PROCESS_MANAGER
+        .lock()
+        .map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?
+        .entry(session_id)
+        .or_default()
+        .insert(handle.clone(), ManagedProcess {
+            id: process_id,
+            handle: handle.clone(),
+            command_version: command_version.clone(),
+            command_version_id: command_version.version_id,
+            binary_name: command_version.binary_name.clone(),
+            binary_path: binary_path.display().to_string(),
+            argv: argv.clone(),
+            cwd: resolved_cwd.display().to_string(),
+            child,
+            stdout: stdout_buf,
+            stderr: stderr_buf,
+            stdout_flush_cursor: 0,
+            stderr_flush_cursor: 0,
+            started: Instant::now(),
+            started_at: Utc::now(),
+            status: "running".to_string(),
+            termination_reason: None,
+        });
+    sqlx::query(
+        r#"
+        INSERT INTO managed_processes (
+            id, handle, session_id, starting_turn_id, command_version_id, binary_name, argv, cwd,
+            os_pid, os_pgid, status, start_time, end_of_turn_behavior, max_runtime_ms, metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 'running', now(), $10, $11, $12)
+        "#,
+    )
+    .bind(process_id)
+    .bind(&handle)
+    .bind(session_id)
+    .bind(turn_id)
+    .bind(command_version.version_id)
+    .bind(&command_version.binary_name)
+    .bind(json!(argv))
+    .bind(resolved_cwd.display().to_string())
+    .bind(child_pid as i64)
+    .bind(&command_version.end_of_turn_behavior)
+    .bind(command_version.max_runtime.map(|d| d.as_millis() as i64))
+    .bind(json!({"binaryPath": binary_path.display().to_string(), "policyDecision": policy_decision, "resumed": true, "input": input}))
+    .execute(pool)
+    .await?;
+    db::append_event(pool, session_id, turn_id, "process", Some(process_id), "process.started", Some("running"), json!({"handle": handle, "commandVersionId": command_version.version_id, "binary": command_version.binary_name, "argv": argv, "cwd": resolved_cwd.display().to_string(), "resumed": true})).await?;
+    let _ = script_run_id;
+    Ok(json!({"processId": process_id, "handle": handle, "status": "running", "executionMode": "start"}))
 }
 
 fn affected_paths(diff: &str) -> Result<Vec<String>> {
@@ -1234,7 +1873,7 @@ async fn persist_record(
         HostRecord::Command(command) => {
             sqlx::query(
                 r#"
-                INSERT INTO command_runs (id, host_api_call_id, binary_name, argv, cwd, status, started_at, timeout_ms, command_version_id)
+                INSERT INTO command_runs (id, host_api_call_id, binary_name, argv, cwd, status, started_at, max_runtime_ms, command_version_id)
                 VALUES ($1, $2, $3, $4, $5, 'running', $6, $7, $8)
                 "#,
             )
@@ -1244,7 +1883,7 @@ async fn persist_record(
             .bind(json!(command.argv))
             .bind(&command.cwd)
             .bind(Utc::now())
-            .bind(command.timeout_ms)
+            .bind(command.max_runtime_ms)
             .bind(command.command_version_id)
             .execute(pool)
             .await?;
@@ -1279,10 +1918,137 @@ async fn persist_record(
                     "stdout": command.stdout,
                     "stderr": command.stderr,
                     "exitStatus": command.exit_status,
-                    "timeoutMs": command.timeout_ms,
+                    "maxRuntimeMs": command.max_runtime_ms,
                     "durationMs": command.duration_ms,
                     "truncation": command.truncation,
                     "policyDecision": command.policy_decision,
+                    "processGroupTermination": {
+                        "attempted": command.status == "maxRuntimeExceeded",
+                        "reason": if command.status == "maxRuntimeExceeded" { "maxRuntimeExceeded" } else { "naturalExit" },
+                    },
+                }),
+            )
+            .await?;
+        }
+        HostRecord::ManagedProcess(process) => {
+            sqlx::query(
+                r#"
+                INSERT INTO managed_processes (
+                    id, handle, session_id, starting_turn_id, command_version_id, binary_name, argv, cwd,
+                    os_pid, os_pgid, status, start_time, end_time, end_of_turn_behavior,
+                    max_runtime_ms, termination_reason, metadata
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), CASE WHEN $11 = 'running' THEN NULL ELSE now() END, $12, $13, $14, $15)
+                ON CONFLICT (handle) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    end_time = CASE WHEN EXCLUDED.status = 'running' THEN managed_processes.end_time ELSE now() END,
+                    termination_reason = EXCLUDED.termination_reason,
+                    metadata = managed_processes.metadata || EXCLUDED.metadata
+                "#,
+            )
+            .bind(process.id)
+            .bind(&process.handle)
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(process.command_version_id)
+            .bind(&process.binary_name)
+            .bind(json!(process.argv))
+            .bind(&process.cwd)
+            .bind(process.os_pid)
+            .bind(process.os_pgid)
+            .bind(&process.status)
+            .bind(&process.end_of_turn_behavior)
+            .bind(process.max_runtime_ms)
+            .bind(&process.termination_reason)
+            .bind(json!({
+                "binaryPath": process.binary_path,
+                "lastEvent": process.event,
+                "payload": process.payload,
+            }))
+            .execute(pool)
+            .await?;
+            db::append_event(
+                pool,
+                session_id,
+                Some(turn_id),
+                "process",
+                Some(process.id),
+                &process.event,
+                Some(&process.status),
+                json!({
+                    "handle": process.handle,
+                    "commandVersionId": process.command_version_id,
+                    "binary": process.binary_name,
+                    "argv": process.argv,
+                    "cwd": process.cwd,
+                    "pid": process.os_pid,
+                    "pgid": process.os_pgid,
+                    "endOfTurnBehavior": process.end_of_turn_behavior,
+                    "maxRuntimeMs": process.max_runtime_ms,
+                    "terminationReason": process.termination_reason,
+                    "payload": process.payload,
+                }),
+            )
+            .await?;
+        }
+        HostRecord::ProcessOutput(output) => {
+            sqlx::query(
+                r#"
+                INSERT INTO process_output_chunks (id, process_id, stream, content, truncated)
+                VALUES ($1, $2, $3, $4, $5)
+                "#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(output.process_id)
+            .bind(&output.stream)
+            .bind(&output.content)
+            .bind(output.truncated)
+            .execute(pool)
+            .await?;
+            db::append_event(
+                pool,
+                session_id,
+                Some(turn_id),
+                "process",
+                Some(output.process_id),
+                "process.output",
+                Some("completed"),
+                json!({
+                    "handle": output.handle,
+                    "stream": output.stream,
+                    "content": output.content,
+                    "truncated": output.truncated,
+                }),
+            )
+            .await?;
+        }
+        HostRecord::ApprovalPause(pause) => {
+            let approval_id = approvals::request_approval(pool, session_id, Some(turn_id), &pause.policy, role_snapshot).await?;
+            let paused_id = approvals::create_paused_action(
+                pool,
+                approval_id,
+                session_id,
+                Some(turn_id),
+                Some(tool_call_id),
+                Some(script_run_id),
+                &pause.action,
+                pause.action_input.clone(),
+                role_snapshot,
+            )
+            .await?;
+            db::append_event(
+                pool,
+                session_id,
+                Some(turn_id),
+                "approval",
+                Some(approval_id),
+                "approval.paused_action_created",
+                Some("pendingApproval"),
+                json!({
+                    "approvalRequestId": approval_id,
+                    "pausedActionId": paused_id,
+                    "action": pause.action,
+                    "input": pause.action_input,
                 }),
             )
             .await?;
@@ -1392,4 +2158,138 @@ fn truncate_text(input: &str, limit: usize) -> (String, bool) {
         end -= 1;
     }
     (input[..end].to_string(), true)
+}
+
+fn enforce_string_buffer_limit(buffer: &mut String, limit: usize) {
+    if limit == 0 || buffer.len() <= limit {
+        return;
+    }
+    let mut start = buffer.len() - limit;
+    while !buffer.is_char_boundary(start) {
+        start += 1;
+    }
+    buffer.drain(..start);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::roles::{
+        LifecycleAuthorityMetadata, ManifestDecision, ModelDefaults, RoleSnapshot, RoutingMetadata,
+        VisibilityMetadata,
+    };
+    use chrono::Utc;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn test_role() -> RoleSnapshot {
+        let mut policy = BTreeMap::new();
+        policy.insert("fs.read".to_string(), ManifestDecision::Allow);
+        RoleSnapshot {
+            id: "test-role".to_string(),
+            version: "1.0.0".to_string(),
+            display_name: "Test Role".to_string(),
+            role_version_id: Uuid::new_v4(),
+            instruction_text: "test".to_string(),
+            model_defaults: ModelDefaults { model: "test".to_string(), reasoning_effort: "low".to_string() },
+            capabilities: vec![],
+            policy,
+            routing: RoutingMetadata { mode: "direct".to_string(), default_recipient: None, allowed_recipients: vec![], reserved_actions: vec![] },
+            visibility: VisibilityMetadata { listed: false, owner_visible: false },
+            lifecycle_authority: LifecycleAuthorityMetadata { can_spawn_agents: false, can_archive_agents: false, reserved_actions: vec![] },
+            manifest: json!({}),
+            created_at: Utc::now(),
+        }
+    }
+
+    fn test_command(binary_name: &str, paths: &[&str], action: &str, object: &str, stdin_policy: &str, end_of_turn_behavior: &str, max_runtime: Option<Duration>) -> CommandVersion {
+        CommandVersion {
+            version_id: Uuid::new_v4(),
+            definition_id: Uuid::new_v4(),
+            action_id: action.to_string(),
+            binary_name: binary_name.to_string(),
+            candidate_paths: paths.iter().map(PathBuf::from).collect(),
+            starlark_object: object.to_string(),
+            starlark_method: "run".to_string(),
+            argv_prefix: vec![],
+            default_cwd: ".".to_string(),
+            cwd_policy: "underExecutionRoot".to_string(),
+            env_policy: "empty".to_string(),
+            max_runtime,
+            output_limit: 4096,
+            mutation_class: "readOnly".to_string(),
+            model_description: "test command".to_string(),
+            allow_cwd_arg: true,
+            allow_args_arg: true,
+            forbidden_args: vec![],
+            execution_policy: "allow".to_string(),
+            sync_allowed: true,
+            async_allowed: true,
+            end_of_turn_behavior: end_of_turn_behavior.to_string(),
+            stdin_policy: stdin_policy.to_string(),
+            min_await_ms: 100,
+            max_await_ms: 60_000,
+            output_buffer_bytes: 4096,
+            terminate_grace_ms: 10,
+        }
+    }
+
+    #[test]
+    fn continuing_process_is_controllable_later_in_same_runtime_and_isolated_by_session() {
+        let session = Uuid::new_v4();
+        let other_session = Uuid::new_v4();
+        let root = ExecutionRoot::new(".").unwrap();
+        let cmd = test_command("yes", &["/usr/bin/yes"], "cmd.yes.run", "yes", "forbid", "continue", Some(Duration::from_millis(500)));
+        let first = evaluate_starlark(session, "h = cmd[\"yes\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), vec![cmd.clone()], vec![]);
+        assert!(first.error.is_none(), "{:?}", first.error);
+        let handle = first.output.trim().trim_matches('"').to_string();
+        assert!(handle.starts_with("proc_"));
+        assert!(first.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.continued")));
+
+        let second = evaluate_starlark(session, &format!("proc[{handle:?}].await_for(mins=0); out = proc[{handle:?}].flush_buffer(); proc[{handle:?}].terminate(); output(out)"), root.clone(), test_role(), vec![cmd.clone()], vec![handle.clone()]);
+        assert!(second.error.is_none(), "{:?}", second.error);
+        assert!(second.output.contains('y'));
+        assert!(second.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.terminated")));
+
+        let isolated = evaluate_starlark(other_session, &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle]);
+        assert!(isolated.error.unwrap_or_default().contains("session-only process no longer attached"));
+    }
+
+    #[test]
+    fn stdin_allowed_process_accepts_input_and_flush_cursor_advances() {
+        let session = Uuid::new_v4();
+        let root = ExecutionRoot::new(".").unwrap();
+        let cmd = test_command("cat", &["/bin/cat"], "cmd.cat.run", "cat", "allow", "terminate", Some(Duration::from_secs(2)));
+        let script = r#"
+h = cmd["cat"].run(args=[], cwd=".").start()
+proc[h].input("hello-process\n")
+proc[h].await_for(mins=0)
+first = proc[h].flush_buffer()
+second = proc[h].flush_buffer()
+proc[h].terminate()
+output(first + "|second=" + second)
+"#;
+        let result = evaluate_starlark(session, script, root, test_role(), vec![cmd], vec![]);
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert!(result.output.contains("hello-process"));
+        assert!(result.output.contains("|second="));
+    }
+
+    #[test]
+    fn async_max_runtime_expires_without_handle_polling_and_detached_handle_errors_are_clear() {
+        let session = Uuid::new_v4();
+        let root = ExecutionRoot::new(".").unwrap();
+        let cmd = test_command("yes", &["/usr/bin/yes"], "cmd.yes.max.run", "yes_max", "forbid", "continue", Some(Duration::from_millis(100)));
+        let first = evaluate_starlark(session, "h = cmd[\"yes_max\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), vec![cmd.clone()], vec![]);
+        assert!(first.error.is_none(), "{:?}", first.error);
+        let handle = first.output.trim().trim_matches('"').to_string();
+        thread::sleep(Duration::from_millis(250));
+        let second = evaluate_starlark(session, &format!("running = proc[{handle:?}].is_running(); output(str(running))"), root.clone(), test_role(), vec![cmd.clone()], vec![handle.clone()]);
+        assert!(second.error.is_none(), "{:?}", second.error);
+        assert!(second.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.status == "maxRuntimeExceeded" || process.event == "process.continued")));
+
+        PROCESS_MANAGER.lock().unwrap().clear();
+        let detached = evaluate_starlark(session, &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle]);
+        assert!(detached.error.unwrap_or_default().contains("session-only process no longer attached"));
+    }
 }

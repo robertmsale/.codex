@@ -27,8 +27,24 @@ pub struct CommandSeed {
     pub cwd_policy: String,
     #[serde(default = "default_env_policy")]
     pub env_policy: String,
-    #[serde(default = "default_timeout_ms")]
-    pub timeout_ms: i64,
+    #[serde(default = "default_true")]
+    pub sync_allowed: bool,
+    #[serde(default = "default_true")]
+    pub async_allowed: bool,
+    #[serde(default)]
+    pub max_runtime_ms: Option<i64>,
+    #[serde(default = "default_end_of_turn_behavior")]
+    pub end_of_turn_behavior: String,
+    #[serde(default = "default_stdin_policy")]
+    pub stdin_policy: String,
+    #[serde(default = "default_min_await_ms")]
+    pub min_await_ms: i64,
+    #[serde(default = "default_max_await_ms")]
+    pub max_await_ms: i64,
+    #[serde(default = "default_output_buffer_bytes")]
+    pub output_buffer_bytes: i64,
+    #[serde(default = "default_terminate_grace_ms")]
+    pub terminate_grace_ms: i64,
     #[serde(default = "default_output_limit")]
     pub output_limit_bytes: i64,
     #[serde(default = "default_mutation_class")]
@@ -47,10 +63,16 @@ pub struct CommandSeed {
 fn default_cwd() -> String { ".".to_string() }
 fn default_cwd_policy() -> String { "underExecutionRoot".to_string() }
 fn default_env_policy() -> String { "empty".to_string() }
-fn default_timeout_ms() -> i64 { 5_000 }
 fn default_output_limit() -> i64 { 12_000 }
 fn default_mutation_class() -> String { "readOnly".to_string() }
 fn default_execution_policy() -> String { "allow".to_string() }
+fn default_true() -> bool { true }
+fn default_end_of_turn_behavior() -> String { "terminate".to_string() }
+fn default_stdin_policy() -> String { "forbid".to_string() }
+fn default_min_await_ms() -> i64 { 0 }
+fn default_max_await_ms() -> i64 { 60_000 }
+fn default_output_buffer_bytes() -> i64 { 64_000 }
+fn default_terminate_grace_ms() -> i64 { 1_000 }
 
 #[derive(Debug, Clone)]
 pub struct CommandVersion {
@@ -65,7 +87,7 @@ pub struct CommandVersion {
     pub default_cwd: String,
     pub cwd_policy: String,
     pub env_policy: String,
-    pub timeout: Duration,
+    pub max_runtime: Option<Duration>,
     pub output_limit: usize,
     pub mutation_class: String,
     pub model_description: String,
@@ -73,6 +95,14 @@ pub struct CommandVersion {
     pub allow_args_arg: bool,
     pub forbidden_args: Vec<String>,
     pub execution_policy: String,
+    pub sync_allowed: bool,
+    pub async_allowed: bool,
+    pub end_of_turn_behavior: String,
+    pub stdin_policy: String,
+    pub min_await_ms: i64,
+    pub max_await_ms: i64,
+    pub output_buffer_bytes: usize,
+    pub terminate_grace_ms: i64,
 }
 
 impl CommandVersion {
@@ -88,8 +118,9 @@ pub fn model_line(&self) -> String {
         let args = if self.allow_args_arg { "args=[...]" } else { "" };
         let cwd = if self.allow_cwd_arg { ", cwd=\".\"" } else { "" };
         format!(
-            "cmd[\"{}\"].{}({}{}) -> {}; action {}; command_version_id {}",
+            "cmd[\"{}\"].{}({}{}).sync() for synchronous execution or .start() for a managed async process; {}; action {}; command_version_id {}; syncAllowed {}; asyncAllowed {}; maxRuntimeMs {:?}; endOfTurnBehavior {}; stdinPolicy {}; minAwaitMs {}; maxAwaitMs {}; outputBufferBytes {}; terminateGraceMs {}",
             self.starlark_object, self.starlark_method, args, cwd, self.model_description, self.action_id, self.version_id
+            , self.sync_allowed, self.async_allowed, self.max_runtime.map(|d| d.as_millis()), self.end_of_turn_behavior, self.stdin_policy, self.min_await_ms, self.max_await_ms, self.output_buffer_bytes, self.terminate_grace_ms
         )
     }
 }
@@ -228,8 +259,47 @@ fn validate_seed(seed: &CommandSeed) -> Result<()> {
     if seed.candidate_paths.is_empty() { bail!("candidatePaths must not be empty"); }
     if seed.cwd_policy != "underExecutionRoot" { bail!("unsupported cwdPolicy: {}", seed.cwd_policy); }
     if !matches!(seed.env_policy.as_str(), "empty" | "minimalCargo") { bail!("unsupported envPolicy: {}", seed.env_policy); }
-    if seed.timeout_ms <= 0 || seed.output_limit_bytes <= 0 { bail!("timeout/output limits must be positive"); }
+    if let Some(max_runtime_ms) = seed.max_runtime_ms {
+        if max_runtime_ms <= 0 { bail!("maxRuntimeMs must be null or positive"); }
+    }
+    if !matches!(seed.end_of_turn_behavior.as_str(), "terminate" | "continue") { bail!("unsupported endOfTurnBehavior: {}", seed.end_of_turn_behavior); }
+    if !matches!(seed.stdin_policy.as_str(), "forbid" | "allow") { bail!("unsupported stdinPolicy: {}", seed.stdin_policy); }
+    if seed.min_await_ms < 0 || seed.max_await_ms < seed.min_await_ms { bail!("invalid await policy"); }
+    if seed.output_buffer_bytes <= 0 || seed.output_limit_bytes <= 0 { bail!("output limits must be positive"); }
     Ok(())
+}
+
+fn command_version_from_row(row: &sqlx::postgres::PgRow) -> Result<CommandVersion> {
+    let seed: CommandSeed = serde_json::from_value(row.get("config"))?;
+    Ok(CommandVersion {
+        definition_id: row.get("definition_id"),
+        version_id: row.get("version_id"),
+        action_id: row.get("action_id"),
+        binary_name: row.get("binary_name"),
+        candidate_paths: seed.candidate_paths.into_iter().map(PathBuf::from).collect(),
+        starlark_object: row.get("starlark_object"),
+        starlark_method: row.get("starlark_method"),
+        argv_prefix: seed.argv_prefix,
+        default_cwd: seed.default_cwd,
+        cwd_policy: seed.cwd_policy,
+        env_policy: seed.env_policy,
+        max_runtime: seed.max_runtime_ms.map(|ms| Duration::from_millis(ms as u64)),
+        output_limit: seed.output_limit_bytes as usize,
+        mutation_class: seed.mutation_class,
+        model_description: row.get("model_description"),
+        allow_cwd_arg: seed.allow_cwd_arg,
+        allow_args_arg: seed.allow_args_arg,
+        forbidden_args: seed.forbidden_args,
+        execution_policy: seed.execution_policy,
+        sync_allowed: seed.sync_allowed,
+        async_allowed: seed.async_allowed,
+        end_of_turn_behavior: seed.end_of_turn_behavior,
+        stdin_policy: seed.stdin_policy,
+        min_await_ms: seed.min_await_ms,
+        max_await_ms: seed.max_await_ms,
+        output_buffer_bytes: seed.output_buffer_bytes as usize,
+        terminate_grace_ms: seed.terminate_grace_ms,
+    })
 }
 
 fn validate_scope(scope: &RegistryScope) -> Result<()> {
@@ -284,32 +354,10 @@ pub async fn live_visible_commands(pool: &PgPool, _snapshot: &RoleSnapshot, proj
     let mut seen = std::collections::BTreeSet::new();
     for row in rows {
         let action_id: String = row.get("action_id");
-        let config: Value = row.get("config");
-        let seed: CommandSeed = serde_json::from_value(config)?;
         if !seen.insert(action_id.clone()) {
             bail!("ambiguous active command surface for action id: {action_id}");
         }
-        commands.push(CommandVersion {
-            definition_id: row.get("definition_id"),
-            version_id: row.get("version_id"),
-            action_id,
-            binary_name: row.get("binary_name"),
-            candidate_paths: seed.candidate_paths.into_iter().map(PathBuf::from).collect(),
-            starlark_object: row.get("starlark_object"),
-            starlark_method: row.get("starlark_method"),
-            argv_prefix: seed.argv_prefix,
-            default_cwd: seed.default_cwd,
-            cwd_policy: seed.cwd_policy,
-            env_policy: seed.env_policy,
-            timeout: Duration::from_millis(seed.timeout_ms as u64),
-            output_limit: seed.output_limit_bytes as usize,
-            mutation_class: seed.mutation_class,
-            model_description: row.get("model_description"),
-            allow_cwd_arg: seed.allow_cwd_arg,
-            allow_args_arg: seed.allow_args_arg,
-            forbidden_args: seed.forbidden_args,
-            execution_policy: seed.execution_policy,
-        });
+        commands.push(command_version_from_row(&row)?);
     }
     Ok(commands)
 }
@@ -322,28 +370,7 @@ pub async fn command_by_action(pool: &PgPool, action_id: &str) -> Result<Command
         WHERE cd.enabled=true AND cv.action_id=$1
         "#,
     ).bind(action_id).fetch_one(pool).await?;
-    let seed: CommandSeed = serde_json::from_value(row.get("config"))?;
-    Ok(CommandVersion {
-        definition_id: row.get("definition_id"),
-        version_id: row.get("version_id"),
-        action_id: row.get("action_id"),
-        binary_name: row.get("binary_name"),
-        candidate_paths: seed.candidate_paths.into_iter().map(PathBuf::from).collect(),
-        starlark_object: row.get("starlark_object"),
-        starlark_method: row.get("starlark_method"),
-        argv_prefix: seed.argv_prefix,
-        default_cwd: seed.default_cwd,
-        cwd_policy: seed.cwd_policy,
-        env_policy: seed.env_policy,
-        timeout: Duration::from_millis(seed.timeout_ms as u64),
-        output_limit: seed.output_limit_bytes as usize,
-        mutation_class: seed.mutation_class,
-        model_description: row.get("model_description"),
-        allow_cwd_arg: seed.allow_cwd_arg,
-        allow_args_arg: seed.allow_args_arg,
-        forbidden_args: seed.forbidden_args,
-        execution_policy: seed.execution_policy,
-    })
+    command_version_from_row(&row)
 }
 
 pub async fn command_by_version(pool: &PgPool, version_id: Uuid) -> Result<CommandVersion> {
@@ -354,33 +381,12 @@ pub async fn command_by_version(pool: &PgPool, version_id: Uuid) -> Result<Comma
         WHERE cv.id=$1
         "#,
     ).bind(version_id).fetch_one(pool).await?;
-    let seed: CommandSeed = serde_json::from_value(row.get("config"))?;
-    Ok(CommandVersion {
-        definition_id: row.get("definition_id"),
-        version_id: row.get("version_id"),
-        action_id: row.get("action_id"),
-        binary_name: row.get("binary_name"),
-        candidate_paths: seed.candidate_paths.into_iter().map(PathBuf::from).collect(),
-        starlark_object: row.get("starlark_object"),
-        starlark_method: row.get("starlark_method"),
-        argv_prefix: seed.argv_prefix,
-        default_cwd: seed.default_cwd,
-        cwd_policy: seed.cwd_policy,
-        env_policy: seed.env_policy,
-        timeout: Duration::from_millis(seed.timeout_ms as u64),
-        output_limit: seed.output_limit_bytes as usize,
-        mutation_class: seed.mutation_class,
-        model_description: row.get("model_description"),
-        allow_cwd_arg: seed.allow_cwd_arg,
-        allow_args_arg: seed.allow_args_arg,
-        forbidden_args: seed.forbidden_args,
-        execution_policy: seed.execution_policy,
-    })
+    command_version_from_row(&row)
 }
 
 pub fn execute_code_contract(commands: &[CommandVersion]) -> String {
     let mut lines = vec![
-        "Evaluate Starlark in the experimental host runtime. Use output(value) to emit final tool output; host calls return script values and do not implicitly become final output. Native APIs: fs.read(path), fs.write(path, content), patch.apply(unified_diff). Registry commands available now:".to_string(),
+        "Evaluate Starlark in the experimental host runtime. Use output(value) to emit final tool output; host calls return script values and do not implicitly become final output. Native APIs: fs.read(path), fs.write(path, content), patch.apply(unified_diff). Registry commands return invocation objects: call .sync() for synchronous execution or .start() for a managed async process handle, then use proc[handle].is_running(), proc[handle].await_for(mins=N), proc[handle].flush_buffer(), proc[handle].terminate(), and proc[handle].input(text). Handles are opaque session-only values, not OS PIDs. Registry commands available now:".to_string(),
     ];
     for command in commands { lines.push(format!("- {}", command.model_line())); }
     lines.push("No raw shell, network, arbitrary environment, unregistered binaries, or undocumented command surfaces are available.".to_string());
@@ -391,9 +397,12 @@ pub fn request_tool_contract() -> String {
     "Use request_command_registry_change when execute_code is blocked by a missing or outdated command registry entry. Submit operation add/update/disable/enable, proposedCommand, rationale, intendedUse, currentBlockerOrNeed, and requesterContext. Do not choose authoritative scope or execution policy; approvers select final scope, final execution policy, and final command edits before separate apply. This is a native model tool outside Starlark.".to_string()
 }
 
-pub fn starlark_prelude(commands: &[CommandVersion]) -> Result<String> {
+pub fn starlark_prelude(commands: &[CommandVersion], process_handles: &[String]) -> Result<String> {
     use std::collections::BTreeMap;
-    let mut out = String::from("cmd = {}\n");
+    let mut out = String::from("cmd = {}\nproc = {}\ndef __proc_obj(handle):\n    return struct(is_running=lambda: __proc.is_running(handle), await_for=lambda mins=0: __proc.await_for(handle, mins), flush_buffer=lambda: __proc.flush_buffer(handle), terminate=lambda: __proc.terminate(handle), input=lambda text: __proc.input(handle, text))\ndef __cmd_start(action, args, cwd):\n    handle = __cmd.start(action, args, cwd)\n    proc[handle] = __proc_obj(handle)\n    return handle\ndef __cmd_invocation(action, args, cwd):\n    return struct(sync=lambda: __cmd.sync(action, args, cwd), start=lambda: __cmd_start(action, args, cwd))\n");
+    for handle in process_handles {
+        out.push_str(&format!("proc[{handle:?}] = __proc_obj({handle:?})\n"));
+    }
     let mut by_object: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for command in commands {
         validate_identifier("starlarkObject", &command.starlark_object)?;
@@ -407,7 +416,7 @@ pub fn starlark_prelude(commands: &[CommandVersion]) -> Result<String> {
         };
         let args_expr = if command.allow_args_arg { "args" } else { "[]" };
         let cwd_expr = if command.allow_cwd_arg { "cwd".to_string() } else { format!("\"{}\"", command.default_cwd) };
-        out.push_str(&format!("def {fname}({params}):\n    return __cmd.run(\"{}\", {args_expr}, {cwd_expr})\n", command.action_id));
+        out.push_str(&format!("def {fname}({params}):\n    return __cmd_invocation(\"{}\", {args_expr}, {cwd_expr})\n", command.action_id));
         by_object.entry(command.starlark_object.clone()).or_default().push((command.starlark_method.clone(), fname));
     }
     for (object, methods) in by_object {

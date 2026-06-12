@@ -98,7 +98,15 @@ impl CodexBackedModelClient {
                             "defaultCwd":{"type":"string"},
                             "cwdPolicy":{"type":"string"},
                             "envPolicy":{"type":"string"},
-                            "timeoutMs":{"type":"integer"},
+                            "syncAllowed":{"type":"boolean"},
+                            "asyncAllowed":{"type":"boolean"},
+                            "maxRuntimeMs":{"anyOf":[{"type":"integer"},{"type":"null"}]},
+                            "endOfTurnBehavior":{"type":"string","enum":["terminate","continue"]},
+                            "stdinPolicy":{"type":"string","enum":["forbid","allow"]},
+                            "minAwaitMs":{"type":"integer"},
+                            "maxAwaitMs":{"type":"integer"},
+                            "outputBufferBytes":{"type":"integer"},
+                            "terminateGraceMs":{"type":"integer"},
                             "outputLimitBytes":{"type":"integer"},
                             "mutationClass":{"type":"string"},
                             "modelDescription":{"type":"string"},
@@ -106,7 +114,7 @@ impl CodexBackedModelClient {
                             "allowArgsArg":{"type":"boolean"},
                             "forbiddenArgs":{"type":"array","items":{"type":"string"}}
                         },
-                        "required":["actionId","binaryName","candidatePaths","starlarkObject","starlarkMethod","argvPrefix","defaultCwd","cwdPolicy","envPolicy","timeoutMs","outputLimitBytes","mutationClass","modelDescription","allowCwdArg","allowArgsArg","forbiddenArgs"]
+                        "required":["actionId","binaryName","candidatePaths","starlarkObject","starlarkMethod","argvPrefix","defaultCwd","cwdPolicy","envPolicy","syncAllowed","asyncAllowed","maxRuntimeMs","endOfTurnBehavior","stdinPolicy","minAwaitMs","maxAwaitMs","outputBufferBytes","terminateGraceMs","outputLimitBytes","mutationClass","modelDescription","allowCwdArg","allowArgsArg","forbiddenArgs"]
                     },
                     "rationale":{"type":"string"},
                     "intendedUse":{"type":"string"},

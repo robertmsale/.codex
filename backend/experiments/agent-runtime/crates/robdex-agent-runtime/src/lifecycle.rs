@@ -8,7 +8,8 @@ use uuid::Uuid;
 pub enum TerminalStatus {
     Completed,
     Failed,
-    Timeout,
+    MaxRuntimeExceeded,
+    Terminated,
 }
 
 impl TerminalStatus {
@@ -16,7 +17,8 @@ impl TerminalStatus {
         match self {
             TerminalStatus::Completed => "completed",
             TerminalStatus::Failed => "failed",
-            TerminalStatus::Timeout => "timeout",
+            TerminalStatus::MaxRuntimeExceeded => "maxRuntimeExceeded",
+            TerminalStatus::Terminated => "terminated",
         }
     }
 }
@@ -28,7 +30,8 @@ impl TryFrom<&str> for TerminalStatus {
         match value {
             "completed" => Ok(Self::Completed),
             "failed" => Ok(Self::Failed),
-            "timeout" => Ok(Self::Timeout),
+            "maxRuntimeExceeded" => Ok(Self::MaxRuntimeExceeded),
+            "terminated" => Ok(Self::Terminated),
             other => bail!("unsupported terminal status: {other}"),
         }
     }

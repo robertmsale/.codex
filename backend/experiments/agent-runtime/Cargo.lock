@@ -3832,6 +3832,8 @@ dependencies = [
  "chrono",
  "clap",
  "codex-api",
+ "libc",
+ "once_cell",
  "reqwest",
  "serde",
  "serde_json",

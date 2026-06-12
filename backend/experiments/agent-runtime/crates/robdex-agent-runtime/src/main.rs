@@ -107,11 +107,6 @@ enum CommandRegistryCommand {
 
 #[derive(Debug, Subcommand)]
 enum CommandRegistryRequestCommand {
-    Create {
-        #[arg(long)]
-        session: Uuid,
-        json_file: std::path::PathBuf,
-    },
     List,
     Show { id: Uuid },
     Decide {
@@ -254,12 +249,6 @@ async fn main() -> Result<()> {
                 }
             }
             CommandRegistryCommand::Requests { command } => match command {
-                CommandRegistryRequestCommand::Create { session, json_file } => {
-                    let raw = std::fs::read_to_string(&json_file)?;
-                    let input: command_registry::ChangeRequestInput = serde_json::from_str(&raw)?;
-                    let id = command_registry::create_request(&pool, session, input).await?;
-                    println!("{id}");
-                }
                 CommandRegistryRequestCommand::List => {
                     println!("{}", serde_json::to_string_pretty(&command_registry::list_requests(&pool).await?)?);
                 }

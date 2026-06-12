@@ -15,10 +15,18 @@
     "defaultCwd": ".",
     "cwdPolicy": "underExecutionRoot",
     "envPolicy": "empty",
-    "timeoutMs": 5000,
     "outputLimitBytes": 12000,
     "mutationClass": "readOnly",
-    "modelDescription": "run ripgrep with structured argv under the execution root"
+    "modelDescription": "run ripgrep with structured argv under the execution root",
+    "syncAllowed": true,
+    "asyncAllowed": true,
+    "maxRuntimeMs": 5000,
+    "endOfTurnBehavior": "terminate",
+    "stdinPolicy": "forbid",
+    "minAwaitMs": 0,
+    "maxAwaitMs": 60000,
+    "outputBufferBytes": 64000,
+    "terminateGraceMs": 1000
   },
   {
     "actionId": "cmd.git.status",
@@ -39,10 +47,18 @@
     "defaultCwd": ".",
     "cwdPolicy": "underExecutionRoot",
     "envPolicy": "empty",
-    "timeoutMs": 5000,
     "outputLimitBytes": 12000,
     "mutationClass": "readOnly",
-    "modelDescription": "run read-only git status --short"
+    "modelDescription": "run read-only git status --short",
+    "syncAllowed": true,
+    "asyncAllowed": true,
+    "maxRuntimeMs": 5000,
+    "endOfTurnBehavior": "terminate",
+    "stdinPolicy": "forbid",
+    "minAwaitMs": 0,
+    "maxAwaitMs": 60000,
+    "outputBufferBytes": 64000,
+    "terminateGraceMs": 1000
   },
   {
     "actionId": "cmd.git.diff",
@@ -62,13 +78,21 @@
     "defaultCwd": ".",
     "cwdPolicy": "underExecutionRoot",
     "envPolicy": "empty",
-    "timeoutMs": 5000,
     "outputLimitBytes": 12000,
     "mutationClass": "readOnly",
     "modelDescription": "run read-only git diff with structured argv",
     "forbiddenArgs": [
       "--output"
-    ]
+    ],
+    "syncAllowed": true,
+    "asyncAllowed": true,
+    "maxRuntimeMs": 5000,
+    "endOfTurnBehavior": "terminate",
+    "stdinPolicy": "forbid",
+    "minAwaitMs": 0,
+    "maxAwaitMs": 60000,
+    "outputBufferBytes": 64000,
+    "terminateGraceMs": 1000
   },
   {
     "actionId": "cmd.cargo.check",
@@ -89,9 +113,17 @@
     "defaultCwd": ".",
     "cwdPolicy": "underExecutionRoot",
     "envPolicy": "minimalCargo",
-    "timeoutMs": 120000,
     "outputLimitBytes": 12000,
     "mutationClass": "buildArtifacts",
-    "modelDescription": "run cargo check with structured argv and minimal cargo environment"
+    "modelDescription": "run cargo check with structured argv and minimal cargo environment",
+    "syncAllowed": true,
+    "asyncAllowed": true,
+    "maxRuntimeMs": 120000,
+    "endOfTurnBehavior": "terminate",
+    "stdinPolicy": "forbid",
+    "minAwaitMs": 0,
+    "maxAwaitMs": 60000,
+    "outputBufferBytes": 64000,
+    "terminateGraceMs": 1000
   }
 ]

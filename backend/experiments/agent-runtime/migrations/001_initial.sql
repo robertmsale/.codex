@@ -97,13 +97,14 @@ CREATE TABLE IF NOT EXISTS command_runs (
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at TIMESTAMPTZ,
     duration_ms BIGINT,
-    timeout_ms BIGINT NOT NULL,
+    max_runtime_ms BIGINT,
     policy_decision JSONB NOT NULL DEFAULT '{}'::jsonb,
     truncation JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
 ALTER TABLE command_runs ADD COLUMN IF NOT EXISTS policy_decision JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE command_runs ADD COLUMN IF NOT EXISTS command_version_id UUID;
+ALTER TABLE command_runs ADD COLUMN IF NOT EXISTS max_runtime_ms BIGINT;
 
 CREATE TABLE IF NOT EXISTS command_definitions (
     id UUID PRIMARY KEY,
@@ -159,6 +160,39 @@ BEGIN
 END $$;
 
 CREATE INDEX IF NOT EXISTS command_versions_action_idx ON command_versions(action_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS managed_processes (
+    id UUID PRIMARY KEY,
+    handle TEXT NOT NULL UNIQUE,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    starting_turn_id UUID,
+    command_version_id UUID REFERENCES command_versions(id) ON DELETE SET NULL,
+    binary_name TEXT NOT NULL,
+    argv JSONB NOT NULL,
+    cwd TEXT NOT NULL,
+    os_pid BIGINT,
+    os_pgid BIGINT,
+    status TEXT NOT NULL,
+    start_time TIMESTAMPTZ NOT NULL DEFAULT now(),
+    end_time TIMESTAMPTZ,
+    end_of_turn_behavior TEXT NOT NULL,
+    max_runtime_ms BIGINT,
+    termination_reason TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS process_output_chunks (
+    id UUID PRIMARY KEY,
+    process_id UUID NOT NULL REFERENCES managed_processes(id) ON DELETE CASCADE,
+    stream TEXT NOT NULL,
+    chunk_index BIGSERIAL NOT NULL,
+    content TEXT NOT NULL,
+    truncated BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS managed_processes_session_handle_idx ON managed_processes(session_id, handle);
+CREATE INDEX IF NOT EXISTS process_output_chunks_process_idx ON process_output_chunks(process_id, chunk_index);
 
 CREATE TABLE IF NOT EXISTS command_registry_requests (
     id UUID PRIMARY KEY,
