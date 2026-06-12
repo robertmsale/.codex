@@ -28,6 +28,8 @@ enum Command {
     NewSession {
         #[arg(long, default_value = DEFAULT_ROLE_ID)]
         role: String,
+        #[arg(long)]
+        project: Option<String>,
     },
     Send {
         #[arg(long)]
@@ -118,6 +120,14 @@ enum CommandRegistryRequestCommand {
         id: Uuid,
         #[arg(long)]
         status: String,
+        #[arg(long)]
+        final_scope: Option<String>,
+        #[arg(long)]
+        final_project: Option<String>,
+        #[arg(long)]
+        final_policy: Option<String>,
+        #[arg(long)]
+        final_command_file: Option<std::path::PathBuf>,
     },
     Apply {
         #[arg(long)]
@@ -135,9 +145,9 @@ async fn main() -> Result<()> {
             db::init(&pool).await?;
             println!("initialized experimental Postgres schema");
         }
-        Command::NewSession { role } => {
+        Command::NewSession { role, project } => {
             let snapshot = db::current_role_snapshot(&pool, &role).await?;
-            let id = db::new_session(&pool, &snapshot).await?;
+            let id = db::new_session(&pool, &snapshot, project.as_deref()).await?;
             println!("{id}");
         }
         Command::Send { session, message } => {
@@ -256,8 +266,23 @@ async fn main() -> Result<()> {
                 CommandRegistryRequestCommand::Show { id } => {
                     println!("{}", serde_json::to_string_pretty(&command_registry::show_request(&pool, id).await?)?);
                 }
-                CommandRegistryRequestCommand::Decide { session, id, status } => {
-                    command_registry::decide_request(&pool, session, id, &status).await?;
+                CommandRegistryRequestCommand::Decide { session, id, status, final_scope, final_project, final_policy, final_command_file } => {
+                    let scope = final_scope.map(|scope_type| command_registry::RegistryScope { scope_type, project_key: final_project });
+                    let policy = final_policy
+                        .map(|decision| command_registry::FinalExecutionPolicy { decision, reason: None });
+                    let final_command = match final_command_file {
+                        Some(path) => {
+                            let raw = std::fs::read_to_string(path)?;
+                            let value: serde_json::Value = serde_json::from_str(&raw)?;
+                            if let Some(command) = value.get("command").cloned() {
+                                Some(serde_json::from_value(command)?)
+                            } else {
+                                Some(serde_json::from_value(value)?)
+                            }
+                        }
+                        None => None,
+                    };
+                    command_registry::decide_request(&pool, session, id, &status, scope, policy, final_command).await?;
                     println!("command registry request {id} {status}");
                 }
                 CommandRegistryRequestCommand::Apply { session, id } => {

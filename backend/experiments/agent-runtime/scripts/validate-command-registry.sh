@@ -5,6 +5,10 @@ source scripts/lib-validation-db.sh
 validation_setup_database
 run() { printf '\n$ %s\n' "$*"; "$@"; }
 sql() { psql "$ROBDEX_AGENT_RUNTIME_DATABASE_URL" -At -c "$1"; }
+approve_request() {
+  local id="$1" file="$2"
+  run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$id" --status approved --final-scope global --final-policy allow --final-command-file "$file"
+}
 write_request() {
   local file="$1" operation="$2" action="$3" object="$4" mutation_class="${5:-readOnly}"
   python3 - "$file" "$operation" "$action" "$object" "$mutation_class" <<'PY'
@@ -39,6 +43,26 @@ PY
 
 run cargo run --quiet -- init-db
 run cargo run --quiet -- roles import-seeds
+printf 'seed_role_concrete_cmd_policy_count='; sql "select count(*) from role_versions, jsonb_object_keys(policy) action where action like 'cmd.%'"
+[[ "$(sql "select count(*) from role_versions, jsonb_object_keys(policy) action where action like 'cmd.%'")" -eq 0 ]]
+python3 - <<'PY'
+import json, pathlib
+d={
+  "id": "runtime-invalid-cmd-role",
+  "version": "1.0.0",
+  "displayName": "Runtime Invalid Command Role",
+  "prompt": {"path": str(pathlib.Path("roles/prompts/runtime-allow.md").resolve())},
+  "modelDefaults": {"model": "gpt-5.5", "reasoningEffort": "medium"},
+  "capabilities": ["tool.execute_code", "cmd.rg.run"],
+  "policy": {"tool.execute_code": "allow", "cmd.rg.run": "allow"},
+  "routing": {"mode": "direct", "defaultRecipient": "owner", "allowedRecipients": ["owner"], "reservedActions": ["message.send", "message.route"]},
+  "visibility": {"listed": True, "ownerVisible": True},
+  "lifecycleAuthority": {"canSpawnAgents": False, "canArchiveAgents": False, "reservedActions": ["agent.spawn.<role>", "agent.archive"]},
+}
+pathlib.Path("/tmp/agent-runtime-invalid-cmd-role.json").write_text(json.dumps(d))
+PY
+INVALID_CMD_ROLE=$(cargo run --quiet -- roles import /tmp/agent-runtime-invalid-cmd-role.json 2>&1 || true)
+printf 'invalid_cmd_role=%s\n' "$INVALID_CMD_ROLE" | rg 'concrete command actions are not valid role policy entries'
 ADMIN_SESSION=$(cargo run --quiet -- new-session --role runtime-allow)
 printf 'admin_session=%s\n' "$ADMIN_SESSION"
 printf '\n[seeded registry]\n'; cargo run --quiet -- command-registry list | tee /tmp/agent-runtime-command-registry-list.json
@@ -65,7 +89,7 @@ printf 'seed_disabled_after_init='; sql "select enabled from command_definitions
 run psql "$ROBDEX_AGENT_RUNTIME_DATABASE_URL" -c "UPDATE command_definitions SET enabled=true WHERE action_id='cmd.rg.run'"
 write_request /tmp/agent-runtime-seed-repoint.json update cmd.rg.run rg_repointed metadataOnlyProbe
 SEED_REPOINT_REQ=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-seed-repoint.json)
-run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$SEED_REPOINT_REQ" --status approved
+approve_request "$SEED_REPOINT_REQ" /tmp/agent-runtime-seed-repoint.json
 run cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$SEED_REPOINT_REQ"
 REPOINTED_VERSION_BEFORE=$(sql "select current_version_id from command_definitions where action_id='cmd.rg.run'")
 REPOINTED_OBJECT_BEFORE=$(sql "select cv.config->>'starlarkObject' from command_definitions cd join command_versions cv on cv.id=cd.current_version_id where cd.action_id='cmd.rg.run'")
@@ -92,13 +116,17 @@ printf 'denied_apply=%s\n' "$DENIED_APPLY" | rg 'must be approved'
 printf 'denied_registry_count='; sql "select count(*) from command_definitions where action_id='cmd.rg.files'"
 [[ "$(sql "select count(*) from command_definitions where action_id='cmd.rg.files'")" -eq 0 ]]
 REQ_ID2=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-command-request.json)
-run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$REQ_ID2" --status approved
+MISSING_FINAL_DECIDE=$(cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$REQ_ID2" --status approved 2>&1 || true)
+printf 'missing_final_decide=%s\n' "$MISSING_FINAL_DECIDE" | rg 'requires final scope'
+printf 'missing_final_decide_status='; sql "select approval_status || '/' || application_status from command_registry_requests where id='$REQ_ID2'"
+[[ "$(sql "select approval_status || '/' || application_status from command_registry_requests where id='$REQ_ID2'")" == "pending/pending" ]]
+approve_request "$REQ_ID2" /tmp/agent-runtime-command-request.json
 run cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$REQ_ID2"
 printf 'approved_registry_count='; sql "select count(*) from command_definitions where action_id='cmd.rg.files'"
 [[ "$(sql "select count(*) from command_definitions where action_id='cmd.rg.files'")" -eq 1 ]]
 
 DUP_REQ=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-command-request.json)
-run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$DUP_REQ" --status approved
+approve_request "$DUP_REQ" /tmp/agent-runtime-command-request.json
 DUP_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$DUP_REQ" 2>&1 || true)
 printf 'duplicate_add_apply=%s\n' "$DUP_APPLY" | rg 'already exists'
 printf 'duplicate_add_status='; sql "select application_status from command_registry_requests where id='$DUP_REQ'"
@@ -106,7 +134,7 @@ printf 'duplicate_add_status='; sql "select application_status from command_regi
 
 write_request /tmp/agent-runtime-missing-update.json update cmd.rg.missing rg_missing
 MISSING_UPDATE=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-missing-update.json)
-run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$MISSING_UPDATE" --status approved
+approve_request "$MISSING_UPDATE" /tmp/agent-runtime-missing-update.json
 MISSING_UPDATE_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$MISSING_UPDATE" 2>&1 || true)
 printf 'missing_update_apply=%s\n' "$MISSING_UPDATE_APPLY" | rg 'does not exist'
 printf 'missing_update_status='; sql "select application_status from command_registry_requests where id='$MISSING_UPDATE'"
@@ -114,15 +142,15 @@ printf 'missing_update_status='; sql "select application_status from command_reg
 
 write_request /tmp/agent-runtime-missing-enable.json enable cmd.rg.missing_enable rg_missing_enable
 MISSING_ENABLE=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-missing-enable.json)
-run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$MISSING_ENABLE" --status approved
+approve_request "$MISSING_ENABLE" /tmp/agent-runtime-missing-enable.json
 MISSING_ENABLE_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$MISSING_ENABLE" 2>&1 || true)
-printf 'missing_enable_apply=%s\n' "$MISSING_ENABLE_APPLY" | rg 'did not change exactly one disabled row'
+printf 'missing_enable_apply=%s\n' "$MISSING_ENABLE_APPLY" | rg 'does not exist|did not change exactly one disabled row'
 printf 'missing_enable_status='; sql "select application_status from command_registry_requests where id='$MISSING_ENABLE'"
 [[ "$(sql "select application_status from command_registry_requests where id='$MISSING_ENABLE'")" == "pending" ]]
 
 write_request /tmp/agent-runtime-missing-disable.json disable cmd.rg.missing_disable rg_missing_disable
 MISSING_DISABLE=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-missing-disable.json)
-run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$MISSING_DISABLE" --status approved
+approve_request "$MISSING_DISABLE" /tmp/agent-runtime-missing-disable.json
 MISSING_DISABLE_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$MISSING_DISABLE" 2>&1 || true)
 printf 'missing_disable_apply=%s\n' "$MISSING_DISABLE_APPLY" | rg 'did not change exactly one enabled row'
 printf 'missing_disable_status='; sql "select application_status from command_registry_requests where id='$MISSING_DISABLE'"
@@ -130,26 +158,41 @@ printf 'missing_disable_status='; sql "select application_status from command_re
 
 write_request /tmp/agent-runtime-disable.json disable cmd.rg.files rg_files
 DISABLE_REQ=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-disable.json)
-run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$DISABLE_REQ" --status approved
+approve_request "$DISABLE_REQ" /tmp/agent-runtime-disable.json
 run cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$DISABLE_REQ"
 printf 'disable_enabled_state='; sql "select enabled from command_definitions where action_id='cmd.rg.files'"
 [[ "$(sql "select enabled from command_definitions where action_id='cmd.rg.files'")" == "f" ]]
 DISABLE_AGAIN=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-disable.json)
-run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$DISABLE_AGAIN" --status approved
+approve_request "$DISABLE_AGAIN" /tmp/agent-runtime-disable.json
 DISABLE_AGAIN_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$DISABLE_AGAIN" 2>&1 || true)
 printf 'disable_again_apply=%s\n' "$DISABLE_AGAIN_APPLY" | rg 'did not change exactly one enabled row'
 printf 'disable_again_status='; sql "select application_status from command_registry_requests where id='$DISABLE_AGAIN'"
 [[ "$(sql "select application_status from command_registry_requests where id='$DISABLE_AGAIN'")" == "pending" ]]
 write_request /tmp/agent-runtime-enable.json enable cmd.rg.files rg_files
 ENABLE_REQ=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-enable.json)
-run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$ENABLE_REQ" --status approved
+approve_request "$ENABLE_REQ" /tmp/agent-runtime-enable.json
 run cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$ENABLE_REQ"
 printf 'enable_enabled_state='; sql "select enabled from command_definitions where action_id='cmd.rg.files'"
 [[ "$(sql "select enabled from command_definitions where action_id='cmd.rg.files'")" == "t" ]]
+ENABLE_ALREADY_VERSION_BEFORE=$(sql "select current_version_id from command_definitions where action_id='cmd.rg.files'")
+ENABLE_ALREADY_VERSION_COUNT_BEFORE=$(sql "select count(*) from command_versions cv join command_definitions cd on cd.id=cv.definition_id where cd.action_id='cmd.rg.files'")
+write_request /tmp/agent-runtime-enable-again.json enable cmd.rg.files rg_files_enable_again
+ENABLE_AGAIN=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-enable-again.json)
+approve_request "$ENABLE_AGAIN" /tmp/agent-runtime-enable-again.json
+ENABLE_AGAIN_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$ENABLE_AGAIN" 2>&1 || true)
+printf 'enable_again_apply=%s\n' "$ENABLE_AGAIN_APPLY" | rg 'did not change exactly one disabled row'
+printf 'enable_again_status='; sql "select application_status from command_registry_requests where id='$ENABLE_AGAIN'"
+[[ "$(sql "select application_status from command_registry_requests where id='$ENABLE_AGAIN'")" == "pending" ]]
+ENABLE_ALREADY_VERSION_AFTER=$(sql "select current_version_id from command_definitions where action_id='cmd.rg.files'")
+ENABLE_ALREADY_VERSION_COUNT_AFTER=$(sql "select count(*) from command_versions cv join command_definitions cd on cd.id=cv.definition_id where cd.action_id='cmd.rg.files'")
+printf 'enable_again_version_before=%s after=%s\n' "$ENABLE_ALREADY_VERSION_BEFORE" "$ENABLE_ALREADY_VERSION_AFTER"
+[[ "$ENABLE_ALREADY_VERSION_BEFORE" == "$ENABLE_ALREADY_VERSION_AFTER" ]]
+printf 'enable_again_version_count_before=%s after=%s\n' "$ENABLE_ALREADY_VERSION_COUNT_BEFORE" "$ENABLE_ALREADY_VERSION_COUNT_AFTER"
+[[ "$ENABLE_ALREADY_VERSION_COUNT_BEFORE" == "$ENABLE_ALREADY_VERSION_COUNT_AFTER" ]]
 
 write_request /tmp/agent-runtime-approval-apply.json add cmd.rg.applyapproval rg_applyapproval
 REQ_ID3=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-approval-apply.json)
-run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$REQ_ID3" --status approved
+approve_request "$REQ_ID3" /tmp/agent-runtime-approval-apply.json
 python3 - <<'PY2'
 import json
 from pathlib import Path
@@ -175,23 +218,11 @@ printf 'registry_apply_after_approval='; sql "select application_status from com
 
 write_request /tmp/agent-runtime-metadata-class.json add cmd.rg.metadata rg_metadata metadataOnlyProbe
 META_REQ=$(cargo run --quiet -- command-registry requests create --session "$ADMIN_SESSION" /tmp/agent-runtime-metadata-class.json)
-run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$META_REQ" --status approved
+approve_request "$META_REQ" /tmp/agent-runtime-metadata-class.json
 run cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$META_REQ"
 printf 'mutation_class_stored='; sql "select cv.config->>'mutationClass' from command_definitions cd join command_versions cv on cv.id=cd.current_version_id where cd.action_id='cmd.rg.metadata'"
 [[ "$(sql "select cv.config->>'mutationClass' from command_definitions cd join command_versions cv on cv.id=cd.current_version_id where cd.action_id='cmd.rg.metadata'")" == "metadataOnlyProbe" ]]
 
-python3 - <<'PY'
-import json
-p='roles/runtime-allow.json'
-d=json.load(open(p))
-d['prompt']['path']=str(__import__('pathlib').Path('roles/prompts/runtime-allow.md').resolve())
-for action in ['cmd.rg.files','cmd.rg.metadata']:
-    if action not in d['capabilities']:
-        d['capabilities'].append(action)
-    d['policy'][action]='allow'
-open('/tmp/runtime-allow-rg-files.json','w').write(json.dumps(d))
-PY
-run cargo run --quiet -- roles import /tmp/runtime-allow-rg-files.json
 LIVE=$(cargo run --quiet -- new-session --role runtime-allow)
 run cargo run --quiet -- --workdir . send --session "$LIVE" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_files"].run(args=["-g", "Cargo.toml"], cwd="."); output(files)'
 printf 'live_new_command_runs='; sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.files'"
@@ -200,26 +231,4 @@ run cargo run --quiet -- --workdir . send --session "$LIVE" --message 'Use execu
 printf 'metadata_class_command_runs='; sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.metadata'"
 [[ "$(sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.metadata'")" -gt 0 ]]
 
-python3 - <<'PY'
-import json
-p='roles/runtime-allow.json'
-d=json.load(open(p))
-d['prompt']['path']=str(__import__('pathlib').Path('roles/prompts/runtime-allow.md').resolve())
-if 'cmd.rg.files' not in d['capabilities']:
-    d['capabilities'].append('cmd.rg.files')
-d['policy']['cmd.rg.files']='deny'
-open('/tmp/runtime-deny-rg-files.json','w').write(json.dumps(d))
-d['policy']['cmd.rg.files']='ownerApproval'
-open('/tmp/runtime-approval-rg-files.json','w').write(json.dumps(d))
-PY
-run cargo run --quiet -- roles import /tmp/runtime-deny-rg-files.json
-DENY_SESSION=$(cargo run --quiet -- new-session --role runtime-allow)
-run cargo run --quiet -- --workdir . send --session "$DENY_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_files"].run(args=["-g", "Cargo.toml"], cwd="."); output(files)'
-printf 'db_action_deny_events='; sql "select count(*) from event_stream where session_id='$DENY_SESSION' and event_type='policy.decision' and status='deny' and payload->>'action'='cmd.rg.files'"
-[[ "$(sql "select count(*) from event_stream where session_id='$DENY_SESSION' and event_type='policy.decision' and status='deny' and payload->>'action'='cmd.rg.files'")" -gt 0 ]]
-run cargo run --quiet -- roles import /tmp/runtime-approval-rg-files.json
-APPROVAL_SESSION=$(cargo run --quiet -- new-session --role runtime-allow)
-run cargo run --quiet -- --workdir . send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_files"].run(args=["-g", "Cargo.toml"], cwd="."); output(files)'
-printf 'db_action_approval_events='; sql "select count(*) from event_stream where session_id='$APPROVAL_SESSION' and event_type='policy.decision' and status='approvalRequired' and payload->>'action'='cmd.rg.files'"
-[[ "$(sql "select count(*) from event_stream where session_id='$APPROVAL_SESSION' and event_type='policy.decision' and status='approvalRequired' and payload->>'action'='cmd.rg.files'")" -gt 0 ]]
 run cargo run --quiet -- command-registry show cmd.rg.files

@@ -107,13 +107,21 @@ ALTER TABLE command_runs ADD COLUMN IF NOT EXISTS command_version_id UUID;
 
 CREATE TABLE IF NOT EXISTS command_definitions (
     id UUID PRIMARY KEY,
-    action_id TEXT NOT NULL UNIQUE,
+    action_id TEXT NOT NULL,
+    scope_type TEXT NOT NULL DEFAULT 'global' CHECK (scope_type IN ('global', 'project')),
+    project_key TEXT,
     enabled BOOLEAN NOT NULL DEFAULT true,
     current_version_id UUID,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE command_definitions DROP CONSTRAINT IF EXISTS command_definitions_action_id_key;
+ALTER TABLE command_definitions ADD COLUMN IF NOT EXISTS scope_type TEXT NOT NULL DEFAULT 'global';
+ALTER TABLE command_definitions ADD COLUMN IF NOT EXISTS project_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS command_definitions_scope_unique_idx
+    ON command_definitions(action_id, scope_type, COALESCE(project_key, ''));
 
 CREATE TABLE IF NOT EXISTS command_versions (
     id UUID PRIMARY KEY,
@@ -157,11 +165,15 @@ CREATE TABLE IF NOT EXISTS command_registry_requests (
     session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
     operation TEXT NOT NULL CHECK (operation IN ('add', 'update', 'disable', 'enable')),
     proposed_command JSONB NOT NULL,
+    requester_context JSONB NOT NULL DEFAULT '{}'::jsonb,
     rationale TEXT NOT NULL,
     recommended_policy TEXT NOT NULL,
     requester TEXT NOT NULL,
     requested_by_role JSONB NOT NULL DEFAULT '{}'::jsonb,
     approval_request_id UUID,
+    final_scope JSONB,
+    final_execution_policy JSONB,
+    final_command JSONB,
     approval_status TEXT NOT NULL CHECK (approval_status IN ('pending', 'approved', 'denied')),
     application_status TEXT NOT NULL CHECK (application_status IN ('pending', 'applied', 'failed')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -171,11 +183,16 @@ CREATE TABLE IF NOT EXISTS command_registry_requests (
 ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS session_id UUID REFERENCES sessions(id) ON DELETE SET NULL;
 ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS requested_by_role JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS approval_request_id UUID;
+ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS requester_context JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS final_scope JSONB;
+ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS final_execution_policy JSONB;
+ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS final_command JSONB;
 CREATE INDEX IF NOT EXISTS command_registry_requests_status_idx ON command_registry_requests(approval_status, application_status, created_at DESC);
 
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_id TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_version TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS project_key TEXT;
 
 CREATE TABLE IF NOT EXISTS roles (
     id TEXT PRIMARY KEY,

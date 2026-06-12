@@ -51,6 +51,11 @@ material only. `init-db` imports the bundled seed commands only when the command
 registry is empty. After the registry exists, `init-db` only applies schema
 migrations; it does not overwrite, re-enable, or repoint current command
 definitions. Live registry changes must use explicit command-registry requests.
+Command definitions are scoped. `global` commands are visible to subsequent
+sessions in every project. `project` commands are visible only to sessions whose
+stored `project_key` matches the command scope. Session creation accepts
+`new-session --project <key>` and stores that project key so every
+`execute_code` boundary can resolve visible commands deterministically.
 
 The bundled seed import creates:
 
@@ -62,37 +67,56 @@ The bundled seed import creates:
 Every command version stores the action id, binary name and resolution
 candidates, Starlark object/method surface, argv prefix/argument policy,
 cwd/env/timeout/output policy, `mutationClass` metadata, model-facing
-description, and creation metadata. `mutationClass` is descriptive trace/model
-metadata in this phase; it is not an execution policy boundary. Execution
-authority comes from role policy, registry argv/cwd/env/timeout/output fields,
-and native kernel protections. `execute_code` queries the enabled current DB command
-versions at every tool boundary, filters them through the session role snapshot
-policy, builds the Starlark `cmd` surface from that live registry, and generates
+description, the approver-selected final execution policy, and creation metadata.
+`mutationClass` is descriptive trace/model metadata in this phase; it is not an
+execution policy boundary. Scoped command execution authority comes from the
+stored final execution policy, registry argv/cwd/env/timeout/output fields, and
+native kernel protections. `execute_code` queries the enabled current DB command
+versions at every tool boundary, merges global plus matching project commands,
+rejects ambiguous action identifier conflicts before surfacing commands, builds the Starlark `cmd`
+surface from that live registry, and generates
 the model-visible `execute_code` contract from the same live rows. Agents receive
 the current interface directly in the tool schema and prompt; they are not told
 to read README, manifests, or source files to understand command semantics.
 
 Registry-defined command execution remains structured. There is no raw shell:
 commands run only through argv arrays, execution-root cwd enforcement, explicit
-env policy, timeout/output limits, binary resolution policy, and role policy.
-Each `command_runs` row records the exact `command_version_id` used
+env policy, timeout/output limits, binary resolution policy, and the stored
+final execution policy selected by the approver. A final policy of `allow`
+executes immediately, `deny` leaves the command visible but blocks before side
+effects, and `ownerApproval` or `orchestratorApproval` creates the matching
+approval request and paused action before side effects. Role policy does not
+override scoped command final execution policy. Each `command_runs` row records the exact `command_version_id` used
 so historical traces remain attributable after later registry changes.
 
-Role policy may reference DB-backed command action ids such as `cmd.rg.run` or a
-later imported `cmd.<name>.<method>`. Runtime role import validates registry
-command action references against Postgres command definitions, not a static
-Rust allowlist of concrete command names.
+Role policy remains authority for native kernel actions such as
+`tool.execute_code`, `tool.request_command_registry_change`, and
+`command_registry.*`. Scoped DB command visibility and execution do not require
+role policy entries for command action ids.
+
+The model has two native tools and must choose exactly one per turn:
+`execute_code` for current Starlark execution, or
+`request_command_registry_change` when the current registry lacks a needed
+command. `request_command_registry_change` is a native model tool outside
+Starlark; it is not a `cmd[...]` helper, raw shell, or execute_code workaround.
+The request schema captures operation (`add`, `update`, `disable`, `enable`),
+proposed command definition, rationale, intended use, current blocker or need,
+and requester context. Requesters do not choose authoritative scope or execution
+policy. Requester-provided policy text is advisory only.
 
 Command-registry changes use structured requests in `command_registry_requests`.
-A request contains the operation (`add`, `update`, `disable`, or `enable`), the
-proposed command definition, rationale, recommended policy, requester identity,
-approval status, and application status. Approval records a decision only. The
-separate `command-registry requests apply <id>` command validates and applies an
-approved pending request. Denied requests and apply-before-approval do not mutate
-the registry. Operations are strict: `add` fails if the action already exists;
-`update`, `enable`, and `disable` fail if the action does not exist; `enable`
-and `disable` must change exactly one row. Failed apply attempts leave the
-request unapplied.
+A request stores the proposed command, requester context, role/session/turn
+context, approval status, and application status. Approval records a decision
+only. When approving, the approver must provide final scope (`global` or
+`project` plus project key), final execution policy (`allow`, `deny`,
+`ownerApproval`, or `orchestratorApproval`), and final command definition edits.
+The separate `command-registry requests apply <id>` command re-validates those
+approver-selected final values and performs the mutation. Denied requests,
+unapproved requests, missing final scope/policy/command, conflicts, failed
+validation, and failed apply attempts do not mutate the registry and do not mark
+requests applied. Operations are strict: `add` fails if the scoped action exists;
+`update`, `enable`, and `disable` fail if the scoped action does not exist;
+`enable` and `disable` must change exactly one row.
 
 CLI affordances:
 
@@ -103,7 +127,9 @@ robdex-agent-runtime command-registry seed-requests --session <session-id> --mod
 robdex-agent-runtime command-registry requests create --session <session-id> <json-file>
 robdex-agent-runtime command-registry requests list
 robdex-agent-runtime command-registry requests show <id>
-robdex-agent-runtime command-registry requests decide --session <session-id> <id> --status approved|denied
+robdex-agent-runtime command-registry requests decide --session <session-id> <id> --status denied
+robdex-agent-runtime command-registry requests decide --session <session-id> <id> --status approved --final-scope global --final-policy allow --final-command-file <json-file>
+robdex-agent-runtime command-registry requests decide --session <session-id> <id> --status approved --final-scope project --final-project <key> --final-policy allow --final-command-file <json-file>
 robdex-agent-runtime command-registry requests apply --session <session-id> <id>
 ```
 
@@ -119,6 +145,7 @@ Postgres is the runtime source of truth for roles. JSON manifests and prompt fil
 
 Active actions implemented by this slice:
 - `tool.execute_code`
+- `tool.request_command_registry_change`
 - `fs.read`
 - `fs.write`
 - `patch.apply`
@@ -127,7 +154,8 @@ Active actions implemented by this slice:
 - `command_registry.apply`
 
 Concrete `cmd.*` actions are active when present as enabled current DB command
-versions and allowed by the session role snapshot policy.
+versions visible through global or matching project scope. Their stored final
+execution policy controls allow, deny, and approval-required behavior.
 
 Reserved future action names documented but not implemented here:
 - `agent.spawn.<role>`

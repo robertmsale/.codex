@@ -182,7 +182,7 @@ impl RoleRegistry {
         let manifest: RoleManifest = serde_json::from_value(manifest_json.clone())
             .with_context(|| format!("role manifest schema is invalid: {}", path.display()))?;
         let base = path.parent().unwrap_or(&self.root);
-        self.validate_manifest_with_options(&manifest, base, true)
+        self.validate_manifest_with_options(&manifest, base, false)
             .with_context(|| format!("invalid role manifest: {}", path.display()))?;
         let instruction_text = self.resolve_prompt(&manifest, base)?;
         let role_version_id = Uuid::new_v4();
@@ -270,11 +270,11 @@ impl RoleRegistry {
 }
 
 fn validate_manifest_action(action: &str, allow_registry_command_actions: bool) -> Result<()> {
-    if allow_registry_command_actions && crate::command_registry::is_registry_command_action(action) {
-        Ok(())
-    } else {
-        actions::validate_known_action(action)
+    if crate::command_registry::is_registry_command_action(action) {
+        bail!("concrete command actions are not valid role policy entries: {action}");
     }
+    let _ = allow_registry_command_actions;
+    actions::validate_known_action(action)
 }
 
 pub fn snapshot_from_value(value: Value) -> Result<RoleSnapshot> {
@@ -376,7 +376,7 @@ mod tests {
         manifest.capabilities.push("cmd.nope.run".to_string());
         manifest.policy.insert("cmd.nope.run".to_string(), ManifestDecision::Allow);
         let error = registry.validate_manifest(&manifest, &dir).unwrap_err().to_string();
-        assert!(error.contains("unknown action in role manifest: cmd.nope.run"));
+        assert!(error.contains("concrete command actions are not valid role policy entries: cmd.nope.run"));
         let _ = fs::remove_dir_all(dir);
     }
 

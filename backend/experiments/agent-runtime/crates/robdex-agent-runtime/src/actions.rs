@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 
 pub const ACTIVE_ACTIONS: &[&str] = &[
     "tool.execute_code",
+    "tool.request_command_registry_change",
     "fs.read",
     "fs.write",
     "patch.apply",

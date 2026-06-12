@@ -9,7 +9,7 @@ use serde_json::Value;
 pub struct ToolCallRequest {
     pub call_identity: String,
     pub tool_name: String,
-    pub source: String,
+    pub arguments: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,7 +33,7 @@ pub struct ModelFinalTurn {
 
 #[async_trait]
 pub trait ModelClient {
-    async fn request_tool_call(&self, role_instructions: &str, execute_code_contract: &str, message: &str) -> Result<ModelToolTurn>;
+    async fn request_tool_call(&self, role_instructions: &str, execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn>;
     async fn submit_tool_result(
         &self,
         role_instructions: &str,

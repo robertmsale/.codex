@@ -16,6 +16,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
         bail!("session is not tracked: {session_id}");
     }
     let role_snapshot = db::session_role_snapshot(pool, session_id).await?;
+    let project_key = db::session_project_key(pool, session_id).await?;
 
     let turn_id = Uuid::new_v4();
     let turn_started = Utc::now();
@@ -44,10 +45,11 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
     .await?;
     let _route = routing::decide_route(pool, session_id, Some(turn_id), &role_snapshot).await?;
 
-    let live_commands = command_registry::live_visible_commands(pool, &role_snapshot).await?;
+    let live_commands = command_registry::live_visible_commands(pool, &role_snapshot, project_key.as_deref()).await?;
     let execute_code_contract = command_registry::execute_code_contract(&live_commands);
+    let request_registry_contract = command_registry::request_tool_contract();
     let model = CodexBackedModelClient::new_with_model(role_snapshot.model_defaults.model.clone())?;
-    let plan = model.request_tool_call(&role_snapshot.instruction_text, &execute_code_contract, message).await?;
+    let plan = model.request_tool_call(&role_snapshot.instruction_text, &execute_code_contract, &request_registry_contract, message).await?;
     let model_event_id = Uuid::new_v4();
     sqlx::query(
         r#"
@@ -91,6 +93,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
                 "toolChoice": plan.request_shape.get("tool_choice").cloned(),
                 "tools": plan.request_shape.get("tools").and_then(serde_json::Value::as_array).map(Vec::len),
                 "executeCodeContract": execute_code_contract,
+                "requestCommandRegistryChangeContract": request_registry_contract,
             },
             "response": concise_response_summary(&plan.raw_response),
         }),
@@ -98,10 +101,11 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
     .await?;
 
     let tool_call_id = Uuid::new_v4();
+    let tool_action = format!("tool.{}", plan.tool_call.tool_name);
     let tool_policy = PolicyEngine::decide(
         &role_snapshot,
-        "tool.execute_code",
-        json!({"tool": plan.tool_call.tool_name, "identity": plan.tool_call.call_identity}),
+            &tool_action,
+            json!({"tool": plan.tool_call.tool_name, "identity": plan.tool_call.call_identity}),
     );
     db::append_event(
         pool,
@@ -124,7 +128,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
         let result_json = json!({
             "ok": false,
             "blocked": true,
-            "action": "tool.execute_code",
+            "action": format!("tool.{}", plan.tool_call.tool_name),
             "decision": tool_policy.decision.as_str(),
             "reason": tool_policy.reason,
             "approvalRequestId": approval_request_id,
@@ -156,7 +160,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
     .bind(turn_id)
     .bind(&plan.tool_call.tool_name)
     .bind(&plan.tool_call.call_identity)
-    .bind(json!({"source": plan.tool_call.source}))
+    .bind(plan.tool_call.arguments.clone())
     .bind(Utc::now())
     .execute(pool)
     .await?;
@@ -172,20 +176,25 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
     )
     .await?;
 
-    let root = ExecutionRoot::new(workdir).context("invalid execution workdir")?;
-    let result = execute_code(
-        pool,
-        session_id,
-        turn_id,
-        tool_call_id,
-        &plan.tool_call.source,
-        &root,
-        &role_snapshot,
-    )
-    .await;
+    let result = match plan.tool_call.tool_name.as_str() {
+        "execute_code" => {
+            let source = plan.tool_call.arguments.get("source").and_then(serde_json::Value::as_str).context("execute_code missing source")?;
+            let root = ExecutionRoot::new(workdir).context("invalid execution workdir")?;
+            execute_code(pool, session_id, turn_id, tool_call_id, source, &root, &role_snapshot)
+                .await
+                .map(|packet| serde_json::to_value(packet).unwrap_or_else(|error| json!({"ok": false, "error": error.to_string()})))
+        }
+        "request_command_registry_change" => {
+            let input: command_registry::NativeRegistryChangeRequest = serde_json::from_value(plan.tool_call.arguments.clone())?;
+            command_registry::create_native_model_request(pool, session_id, turn_id, input, &role_snapshot, project_key.as_deref())
+                .await
+                .map(|request_id| json!({"ok": true, "requestId": request_id, "status": "pending"}))
+        }
+        other => Err(anyhow::anyhow!("unsupported native tool: {other}")),
+    };
 
     let (status, result_json) = match result {
-        Ok(packet) => (TerminalStatus::Completed, serde_json::to_value(packet)?),
+        Ok(packet) => (TerminalStatus::Completed, packet),
         Err(error) => (TerminalStatus::Failed, json!({"ok": false, "error": error.to_string()})),
     };
 

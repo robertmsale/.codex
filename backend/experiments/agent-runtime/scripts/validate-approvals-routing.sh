@@ -15,8 +15,8 @@ DENY_SESSION=$(cargo run --quiet -- new-session --role runtime-no-rg)
 APPROVAL_SESSION=$(cargo run --quiet -- new-session --role runtime-approval-rg)
 printf '\n[sessions]\nALLOW_SESSION=%s\nDENY_SESSION=%s\nAPPROVAL_SESSION=%s\n' "$ALLOW_SESSION" "$DENY_SESSION" "$APPROVAL_SESSION"
 
-run cargo run --quiet -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: text = fs.read("Cargo.toml"); matches = cmd["rg"].run(args=["--files", "-g", "Cargo.toml"], cwd="."); output("approval should not execute")'
-APPROVAL_ID=$(sql "select id from approval_requests where session_id='$APPROVAL_SESSION' and action_name='cmd.rg.run' order by created_at desc limit 1")
+run cargo run --quiet -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/approval-routing.txt", "approval should pause"); output("approval should not execute")'
+APPROVAL_ID=$(sql "select id from approval_requests where session_id='$APPROVAL_SESSION' and action_name='fs.write' order by created_at desc limit 1")
 printf '\n[approval request]\nAPPROVAL_ID=%s\n' "$APPROVAL_ID"
 printf 'pre_decision_counts='; sql "select jsonb_build_object('approvalRequests', count(*) filter (where event_type='approval.requested'), 'commands', count(*) filter (where event_type='command.completed')) from event_stream where session_id='$APPROVAL_SESSION'"
 run cargo run --quiet -- approvals list | (rg "$APPROVAL_ID" || true)
@@ -25,7 +25,7 @@ run cargo run --quiet -- approvals decide "$APPROVAL_ID" --decision denied --rea
 printf 'decision_status='; sql "select ar.status || ' decisions=' || count(ad.id) from approval_requests ar left join approval_decisions ad on ad.request_id=ar.id where ar.id='$APPROVAL_ID' group by ar.status"
 printf 'decided_events='; sql "select count(*) from event_stream where session_id='$APPROVAL_SESSION' and event_type='approval.decided' and status='denied'"
 
-run cargo run --quiet -- send --session "$DENY_SESSION" --message 'Use execute_code with exactly this Starlark source: text = fs.read("Cargo.toml"); matches = cmd["rg"].run(args=["--files", "-g", "Cargo.toml"], cwd="."); output("deny should not execute")'
+run cargo run --quiet -- send --session "$DENY_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/deny-routing.txt", "deny should not execute"); output("deny should not execute")'
 printf '\n[deny no approval]\n'; sql "select jsonb_build_object('approvalRequests', count(*) filter (where event_type='approval.requested'), 'denies', count(*) filter (where event_type='policy.decision' and status='deny'), 'commands', count(*) filter (where event_type='command.completed')) from event_stream where session_id='$DENY_SESSION'"
 
 run cargo run --quiet -- send --session "$ALLOW_SESSION" --message 'Use execute_code with exactly this Starlark source: text = fs.read("Cargo.toml"); matches = cmd["rg"].run(args=["--files", "-g", "Cargo.toml"], cwd="."); output("allow executes")'
@@ -42,8 +42,8 @@ root = pathlib.Path(sys.argv[1])
 base = {
   "version":"1.0.0",
   "modelDefaults":{"model":"gpt-5.5","reasoningEffort":"medium"},
-  "capabilities":["tool.execute_code","fs.read","cmd.rg.run"],
-  "policy":{"tool.execute_code":"allow","fs.read":"allow","cmd.rg.run":"deny"},
+  "capabilities":["tool.execute_code","fs.read"],
+  "policy":{"tool.execute_code":"allow","fs.read":"allow"},
   "visibility":{"listed":True,"ownerVisible":True},
   "lifecycleAuthority":{"canSpawnAgents":False,"canArchiveAgents":False,"reservedActions":["agent.spawn.<role>","agent.archive"]}
 }

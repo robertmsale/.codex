@@ -18,6 +18,12 @@ personality = "pragmatic"
 
 zsh_path = "/Users/robertsale/.codex/scripts/zsh"
 
+[model_providers.grok]
+name = "Grok"
+base_url = "https://api.x.ai/v1"
+wire_api = "responses"
+env_key = "XAI_API_KEY"
+
 ###############################################################################
 #                                                                             #
 #          @@@@@@  @@@@@@  @@@  @@@ @@@@@@@  @@@@@@@   @@@@@@  @@@  @@@       #

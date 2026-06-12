@@ -57,8 +57,8 @@ printf 'old_session='; sql "select (role_snapshot->>'version') || ' ' || (role_s
 run cargo run --quiet -- roles import roles/runtime-allow.json >/tmp/agent-runtime-role-restore.log
 rm -rf "$TMPDIR"
 
-run cargo run --quiet -- send --session "$DENY_SESSION" --message 'Use execute_code with exactly this Starlark source: text = fs.read("Cargo.toml"); matches = cmd["rg"].run(args=["--files", "-g", "Cargo.toml"], cwd="."); output("deny should not execute")'
-run cargo run --quiet -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: text = fs.read("Cargo.toml"); matches = cmd["rg"].run(args=["--files", "-g", "Cargo.toml"], cwd="."); output("approval should not execute")'
+run cargo run --quiet -- send --session "$DENY_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/db-role-deny.txt", "deny should not execute"); output("deny should not execute")'
+run cargo run --quiet -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/db-role-approval.txt", "approval should pause"); output("approval should not execute")'
 
 printf '\n[denied action evidence]\n'
 sql "select sequence || ':' || event_type || ':' || status || ':' || (payload->>'action') || ':' || (payload->>'decision') from event_stream where session_id='$DENY_SESSION' and event_type in ('policy.decision','command.completed') order by sequence"

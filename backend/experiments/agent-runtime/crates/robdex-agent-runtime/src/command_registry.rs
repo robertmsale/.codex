@@ -40,6 +40,8 @@ pub struct CommandSeed {
     pub allow_args_arg: bool,
     #[serde(default)]
     pub forbidden_args: Vec<String>,
+    #[serde(default = "default_execution_policy")]
+    pub execution_policy: String,
 }
 
 fn default_cwd() -> String { ".".to_string() }
@@ -48,6 +50,7 @@ fn default_env_policy() -> String { "empty".to_string() }
 fn default_timeout_ms() -> i64 { 5_000 }
 fn default_output_limit() -> i64 { 12_000 }
 fn default_mutation_class() -> String { "readOnly".to_string() }
+fn default_execution_policy() -> String { "allow".to_string() }
 
 #[derive(Debug, Clone)]
 pub struct CommandVersion {
@@ -69,6 +72,7 @@ pub struct CommandVersion {
     pub allow_cwd_arg: bool,
     pub allow_args_arg: bool,
     pub forbidden_args: Vec<String>,
+    pub execution_policy: String,
 }
 
 impl CommandVersion {
@@ -80,7 +84,7 @@ impl CommandVersion {
             .with_context(|| format!("registered binary `{}` for `{}` is not available", self.binary_name, self.action_id))
     }
 
-    pub fn model_line(&self) -> String {
+pub fn model_line(&self) -> String {
         let args = if self.allow_args_arg { "args=[...]" } else { "" };
         let cwd = if self.allow_cwd_arg { ", cwd=\".\"" } else { "" };
         format!(
@@ -88,6 +92,22 @@ impl CommandVersion {
             self.starlark_object, self.starlark_method, args, cwd, self.model_description, self.action_id, self.version_id
         )
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryScope {
+    pub scope_type: String,
+    #[serde(default)]
+    pub project_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalExecutionPolicy {
+    pub decision: String,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 pub fn is_registry_command_action(action: &str) -> bool {
@@ -103,7 +123,7 @@ pub async fn bootstrap_seed_defaults(pool: &PgPool) -> Result<()> {
         return Ok(());
     }
     for seed in default_command_seeds()? {
-        add_command(pool, &seed, "seed-bootstrap").await?;
+        add_command(pool, &seed, "seed-bootstrap", &RegistryScope { scope_type: "global".to_string(), project_key: None }).await?;
     }
     Ok(())
 }
@@ -113,20 +133,25 @@ fn default_command_seeds() -> Result<Vec<CommandSeed>> {
     Ok(serde_json::from_str(raw)?)
 }
 
-async fn add_command(pool: &PgPool, seed: &CommandSeed, created_by: &str) -> Result<Uuid> {
+async fn add_command(pool: &PgPool, seed: &CommandSeed, created_by: &str, scope: &RegistryScope) -> Result<Uuid> {
     validate_seed(seed)?;
+    validate_scope(scope)?;
     let mut tx = pool.begin().await?;
-    let existing = sqlx::query("SELECT id FROM command_definitions WHERE action_id = $1")
+    let existing = sqlx::query("SELECT id FROM command_definitions WHERE action_id = $1 AND scope_type=$2 AND COALESCE(project_key, '')=COALESCE($3, '')")
         .bind(&seed.action_id)
+        .bind(&scope.scope_type)
+        .bind(&scope.project_key)
         .fetch_optional(&mut *tx)
         .await?;
     if existing.is_some() {
         bail!("command action already exists: {}", seed.action_id);
     }
     let definition_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO command_definitions (id, action_id, enabled, metadata) VALUES ($1, $2, true, '{}'::jsonb)")
+    sqlx::query("INSERT INTO command_definitions (id, action_id, scope_type, project_key, enabled, metadata) VALUES ($1, $2, $3, $4, true, '{}'::jsonb)")
         .bind(definition_id)
         .bind(&seed.action_id)
+        .bind(&scope.scope_type)
+        .bind(&scope.project_key)
         .execute(&mut *tx)
         .await?;
     let version_id = insert_command_version(&mut tx, definition_id, seed, created_by).await?;
@@ -142,11 +167,14 @@ async fn add_command(pool: &PgPool, seed: &CommandSeed, created_by: &str) -> Res
     Ok(version_id)
 }
 
-async fn update_command(pool: &PgPool, seed: &CommandSeed, created_by: &str) -> Result<Uuid> {
+async fn update_command(pool: &PgPool, seed: &CommandSeed, created_by: &str, scope: &RegistryScope) -> Result<Uuid> {
     validate_seed(seed)?;
+    validate_scope(scope)?;
     let mut tx = pool.begin().await?;
-    let existing = sqlx::query("SELECT id FROM command_definitions WHERE action_id = $1")
+    let existing = sqlx::query("SELECT id FROM command_definitions WHERE action_id = $1 AND scope_type=$2 AND COALESCE(project_key, '')=COALESCE($3, '')")
         .bind(&seed.action_id)
+        .bind(&scope.scope_type)
+        .bind(&scope.project_key)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| anyhow::anyhow!("command action does not exist: {}", seed.action_id))?;
@@ -204,6 +232,33 @@ fn validate_seed(seed: &CommandSeed) -> Result<()> {
     Ok(())
 }
 
+fn validate_scope(scope: &RegistryScope) -> Result<()> {
+    match scope.scope_type.as_str() {
+        "global" => {
+            if scope.project_key.is_some() {
+                bail!("global command scope must not include projectKey");
+            }
+        }
+        "project" => {
+            let Some(project_key) = scope.project_key.as_deref() else {
+                bail!("project command scope requires projectKey");
+            };
+            if project_key.trim().is_empty() {
+                bail!("project command scope requires non-empty projectKey");
+            }
+        }
+        other => bail!("unsupported command scope: {other}"),
+    }
+    Ok(())
+}
+
+fn validate_execution_policy(policy: &FinalExecutionPolicy) -> Result<()> {
+    if !matches!(policy.decision.as_str(), "allow" | "deny" | "ownerApproval" | "orchestratorApproval") {
+        bail!("unsupported final execution policy decision: {}", policy.decision);
+    }
+    Ok(())
+}
+
 fn validate_identifier(field: &str, value: &str) -> Result<()> {
     if value.is_empty() || !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || value.chars().next().unwrap().is_ascii_digit() {
         bail!("{field} must be a Starlark identifier: {value}");
@@ -211,26 +266,29 @@ fn validate_identifier(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn live_visible_commands(pool: &PgPool, snapshot: &RoleSnapshot) -> Result<Vec<CommandVersion>> {
+pub async fn live_visible_commands(pool: &PgPool, _snapshot: &RoleSnapshot, project_key: Option<&str>) -> Result<Vec<CommandVersion>> {
     let rows = sqlx::query(
         r#"
-        SELECT cd.id AS definition_id, cv.id AS version_id, cv.action_id, cv.binary_name, cv.starlark_object, cv.starlark_method, cv.config, cv.model_description
+        SELECT cd.id AS definition_id, cd.scope_type, cd.project_key, cv.id AS version_id, cv.action_id, cv.binary_name, cv.starlark_object, cv.starlark_method, cv.config, cv.model_description
         FROM command_definitions cd
         JOIN command_versions cv ON cv.id = cd.current_version_id
         WHERE cd.enabled = true
+          AND (cd.scope_type='global' OR (cd.scope_type='project' AND cd.project_key=$1))
         ORDER BY cv.starlark_object, cv.starlark_method
         "#,
     )
+    .bind(project_key)
     .fetch_all(pool)
     .await?;
     let mut commands = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for row in rows {
         let action_id: String = row.get("action_id");
-        if !snapshot.policy.contains_key(&action_id) {
-            continue;
-        }
         let config: Value = row.get("config");
         let seed: CommandSeed = serde_json::from_value(config)?;
+        if !seen.insert(action_id.clone()) {
+            bail!("ambiguous active command surface for action id: {action_id}");
+        }
         commands.push(CommandVersion {
             definition_id: row.get("definition_id"),
             version_id: row.get("version_id"),
@@ -250,6 +308,7 @@ pub async fn live_visible_commands(pool: &PgPool, snapshot: &RoleSnapshot) -> Re
             allow_cwd_arg: seed.allow_cwd_arg,
             allow_args_arg: seed.allow_args_arg,
             forbidden_args: seed.forbidden_args,
+            execution_policy: seed.execution_policy,
         });
     }
     Ok(commands)
@@ -283,6 +342,7 @@ pub async fn command_by_action(pool: &PgPool, action_id: &str) -> Result<Command
         allow_cwd_arg: seed.allow_cwd_arg,
         allow_args_arg: seed.allow_args_arg,
         forbidden_args: seed.forbidden_args,
+        execution_policy: seed.execution_policy,
     })
 }
 
@@ -314,6 +374,7 @@ pub async fn command_by_version(pool: &PgPool, version_id: Uuid) -> Result<Comma
         allow_cwd_arg: seed.allow_cwd_arg,
         allow_args_arg: seed.allow_args_arg,
         forbidden_args: seed.forbidden_args,
+        execution_policy: seed.execution_policy,
     })
 }
 
@@ -324,6 +385,10 @@ pub fn execute_code_contract(commands: &[CommandVersion]) -> String {
     for command in commands { lines.push(format!("- {}", command.model_line())); }
     lines.push("No raw shell, network, arbitrary environment, unregistered binaries, or undocumented command surfaces are available.".to_string());
     lines.join("\n")
+}
+
+pub fn request_tool_contract() -> String {
+    "Use request_command_registry_change when execute_code is blocked by a missing or outdated command registry entry. Submit operation add/update/disable/enable, proposedCommand, rationale, intendedUse, currentBlockerOrNeed, and requesterContext. Do not choose authoritative scope or execution policy; approvers select final scope, final execution policy, and final command edits before separate apply. This is a native model tool outside Starlark.".to_string()
 }
 
 pub fn starlark_prelude(commands: &[CommandVersion]) -> Result<String> {
@@ -353,36 +418,41 @@ pub fn starlark_prelude(commands: &[CommandVersion]) -> Result<String> {
 }
 
 pub async fn list(pool: &PgPool) -> Result<Vec<Value>> {
-    let rows = sqlx::query("SELECT cd.action_id, cd.enabled, cd.current_version_id, cv.config FROM command_definitions cd LEFT JOIN command_versions cv ON cv.id=cd.current_version_id ORDER BY cd.action_id")
+    let rows = sqlx::query("SELECT cd.action_id, cd.scope_type, cd.project_key, cd.enabled, cd.current_version_id, cv.config FROM command_definitions cd LEFT JOIN command_versions cv ON cv.id=cd.current_version_id ORDER BY cd.scope_type, cd.project_key, cd.action_id")
         .fetch_all(pool).await?;
-    Ok(rows.into_iter().map(|r| json!({"actionId": r.get::<String,_>("action_id"), "enabled": r.get::<bool,_>("enabled"), "currentVersionId": r.get::<Option<Uuid>,_>("current_version_id"), "config": r.get::<Option<Value>,_>("config")})).collect())
+    Ok(rows.into_iter().map(|r| json!({"actionId": r.get::<String,_>("action_id"), "scope": {"type": r.get::<String,_>("scope_type"), "projectKey": r.get::<Option<String>,_>("project_key")}, "enabled": r.get::<bool,_>("enabled"), "currentVersionId": r.get::<Option<Uuid>,_>("current_version_id"), "config": r.get::<Option<Value>,_>("config")})).collect())
 }
 
 pub async fn validate_policy_actions_exist(pool: &PgPool, actions: impl Iterator<Item = String>) -> Result<()> {
     for action in actions {
         if is_registry_command_action(&action) {
-            let exists = sqlx::query("SELECT EXISTS (SELECT 1 FROM command_definitions WHERE action_id=$1)")
-                .bind(&action)
-                .fetch_one(pool)
-                .await?
-                .get::<bool, _>(0);
-            if !exists {
-                bail!("role policy references command action not present in DB registry: {action}");
-            }
+            let _ = pool;
+            bail!("concrete command actions are not valid role policy entries: {action}");
         }
     }
     Ok(())
 }
 
 pub async fn show(pool: &PgPool, action_id: &str) -> Result<Value> {
-    let row = sqlx::query("SELECT cd.id, cd.action_id, cd.enabled, cd.current_version_id, cv.config FROM command_definitions cd LEFT JOIN command_versions cv ON cv.id=cd.current_version_id WHERE cd.action_id=$1")
+    let row = sqlx::query("SELECT cd.id, cd.action_id, cd.scope_type, cd.project_key, cd.enabled, cd.current_version_id, cv.config FROM command_definitions cd LEFT JOIN command_versions cv ON cv.id=cd.current_version_id WHERE cd.action_id=$1 ORDER BY cd.scope_type, cd.project_key LIMIT 1")
         .bind(action_id).fetch_one(pool).await?;
-    Ok(json!({"id": row.get::<Uuid,_>("id"), "actionId": row.get::<String,_>("action_id"), "enabled": row.get::<bool,_>("enabled"), "currentVersionId": row.get::<Option<Uuid>,_>("current_version_id"), "config": row.get::<Option<Value>,_>("config")}))
+    Ok(json!({"id": row.get::<Uuid,_>("id"), "actionId": row.get::<String,_>("action_id"), "scope": {"type": row.get::<String,_>("scope_type"), "projectKey": row.get::<Option<String>,_>("project_key")}, "enabled": row.get::<bool,_>("enabled"), "currentVersionId": row.get::<Option<Uuid>,_>("current_version_id"), "config": row.get::<Option<Value>,_>("config")}))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangeRequestInput { pub operation: String, pub command: CommandSeed, pub rationale: String, pub recommended_policy: String, pub requester: String }
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeRegistryChangeRequest {
+    pub operation: String,
+    pub proposed_command: CommandSeed,
+    pub rationale: String,
+    pub intended_use: String,
+    pub current_blocker_or_need: String,
+    pub requester_context: Value,
+}
 
 async fn authorize_registry_action(
     pool: &PgPool,
@@ -458,8 +528,46 @@ pub async fn create_request(pool: &PgPool, session_id: Uuid, input: ChangeReques
     validate_seed(&input.command)?;
     let snapshot = authorize_registry_action(pool, session_id, "command_registry.request", serde_json::to_value(&input)?, None).await?;
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO command_registry_requests (id, session_id, operation, proposed_command, rationale, recommended_policy, requester, requested_by_role, approval_status, application_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending','pending')")
-        .bind(id).bind(session_id).bind(input.operation).bind(serde_json::to_value(input.command)?).bind(input.rationale).bind(input.recommended_policy).bind(input.requester).bind(json!({"id":snapshot.id,"version":snapshot.version,"roleVersionId":snapshot.role_version_id})).execute(pool).await?;
+    sqlx::query("INSERT INTO command_registry_requests (id, session_id, operation, proposed_command, requester_context, rationale, recommended_policy, requester, requested_by_role, approval_status, application_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending','pending')")
+        .bind(id).bind(session_id).bind(input.operation).bind(serde_json::to_value(input.command)?).bind(json!({})).bind(input.rationale).bind(input.recommended_policy).bind(input.requester).bind(json!({"id":snapshot.id,"version":snapshot.version,"roleVersionId":snapshot.role_version_id})).execute(pool).await?;
+    Ok(id)
+}
+
+pub async fn create_native_model_request(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Uuid,
+    input: NativeRegistryChangeRequest,
+    role_snapshot: &RoleSnapshot,
+    project_key: Option<&str>,
+) -> Result<Uuid> {
+    validate_seed(&input.proposed_command)?;
+    if !matches!(input.operation.as_str(), "add" | "update" | "disable" | "enable") {
+        bail!("unsupported command registry operation: {}", input.operation);
+    }
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO command_registry_requests (id, session_id, operation, proposed_command, requester_context, rationale, recommended_policy, requester, requested_by_role, approval_status, application_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending','pending')",
+    )
+    .bind(id)
+    .bind(session_id)
+    .bind(&input.operation)
+    .bind(serde_json::to_value(&input.proposed_command)?)
+    .bind(json!({
+        "turnId": turn_id,
+        "role": {"id": role_snapshot.id, "version": role_snapshot.version, "roleVersionId": role_snapshot.role_version_id},
+        "projectKey": project_key,
+        "requesterContext": input.requester_context,
+        "intendedUse": input.intended_use,
+        "currentBlockerOrNeed": input.current_blocker_or_need,
+    }))
+    .bind(input.rationale)
+    .bind("advisory only; final scope and execution policy must be selected by approver")
+    .bind("native-model-tool")
+    .bind(json!({"id":role_snapshot.id,"version":role_snapshot.version,"roleVersionId":role_snapshot.role_version_id}))
+    .execute(pool)
+    .await?;
+    db::append_event(pool, session_id, Some(turn_id), "command_registry_request", Some(id), "command_registry.requested", Some("pending"), json!({"requestId": id, "operation": input.operation, "actionId": input.proposed_command.action_id, "projectKey": project_key})).await?;
     Ok(id)
 }
 
@@ -499,44 +607,85 @@ pub async fn create_seed_import_requests(pool: &PgPool, session_id: Uuid, mode: 
     Ok(ids)
 }
 
-pub async fn decide_request(pool: &PgPool, session_id: Uuid, id: Uuid, status: &str) -> Result<()> {
+pub async fn decide_request(
+    pool: &PgPool,
+    session_id: Uuid,
+    id: Uuid,
+    status: &str,
+    final_scope: Option<RegistryScope>,
+    final_execution_policy: Option<FinalExecutionPolicy>,
+    final_command: Option<CommandSeed>,
+) -> Result<()> {
     if !matches!(status, "approved" | "denied") { bail!("approval status must be approved or denied"); }
+    if status == "approved" {
+        validate_scope(final_scope.as_ref().ok_or_else(|| anyhow::anyhow!("approved registry request requires final scope"))?)?;
+        validate_execution_policy(final_execution_policy.as_ref().ok_or_else(|| anyhow::anyhow!("approved registry request requires final execution policy"))?)?;
+        validate_seed(final_command.as_ref().ok_or_else(|| anyhow::anyhow!("approved registry request requires final command"))?)?;
+    }
     authorize_registry_action(pool, session_id, "command_registry.decide", json!({"requestId": id, "status": status}), None).await?;
-    let done = sqlx::query("UPDATE command_registry_requests SET approval_status=$2, decided_at=now() WHERE id=$1 AND approval_status='pending'")
-        .bind(id).bind(status).execute(pool).await?.rows_affected();
+    let done = sqlx::query("UPDATE command_registry_requests SET approval_status=$2, final_scope=$3, final_execution_policy=$4, final_command=$5, decided_at=now() WHERE id=$1 AND approval_status='pending'")
+        .bind(id).bind(status)
+        .bind(serde_json::to_value(final_scope)?)
+        .bind(serde_json::to_value(final_execution_policy)?)
+        .bind(serde_json::to_value(final_command)?)
+        .execute(pool).await?.rows_affected();
     if done != 1 { bail!("command registry request is not pending or does not exist: {id}"); }
     Ok(())
 }
 
 pub async fn list_requests(pool: &PgPool) -> Result<Vec<Value>> {
-    let rows = sqlx::query("SELECT id, session_id, operation, proposed_command, approval_status, application_status, requester, requested_by_role FROM command_registry_requests ORDER BY created_at DESC").fetch_all(pool).await?;
-    Ok(rows.into_iter().map(|r| json!({"id": r.get::<Uuid,_>("id"), "sessionId": r.get::<Option<Uuid>,_>("session_id"), "operation": r.get::<String,_>("operation"), "proposedCommand": r.get::<Value,_>("proposed_command"), "approvalStatus": r.get::<String,_>("approval_status"), "applicationStatus": r.get::<String,_>("application_status"), "requester": r.get::<String,_>("requester"), "requestedByRole": r.get::<Value,_>("requested_by_role")})).collect())
+    let rows = sqlx::query("SELECT id, session_id, operation, proposed_command, requester_context, final_scope, final_execution_policy, final_command, approval_status, application_status, requester, requested_by_role FROM command_registry_requests ORDER BY created_at DESC").fetch_all(pool).await?;
+    Ok(rows.into_iter().map(|r| json!({"id": r.get::<Uuid,_>("id"), "sessionId": r.get::<Option<Uuid>,_>("session_id"), "operation": r.get::<String,_>("operation"), "proposedCommand": r.get::<Value,_>("proposed_command"), "requesterContext": r.get::<Value,_>("requester_context"), "finalScope": r.get::<Option<Value>,_>("final_scope"), "finalExecutionPolicy": r.get::<Option<Value>,_>("final_execution_policy"), "finalCommand": r.get::<Option<Value>,_>("final_command"), "approvalStatus": r.get::<String,_>("approval_status"), "applicationStatus": r.get::<String,_>("application_status"), "requester": r.get::<String,_>("requester"), "requestedByRole": r.get::<Value,_>("requested_by_role")})).collect())
 }
 
 pub async fn show_request(pool: &PgPool, id: Uuid) -> Result<Value> {
     let row = sqlx::query("SELECT * FROM command_registry_requests WHERE id=$1").bind(id).fetch_one(pool).await?;
-    Ok(json!({"id": row.get::<Uuid,_>("id"), "sessionId": row.get::<Option<Uuid>,_>("session_id"), "operation": row.get::<String,_>("operation"), "proposedCommand": row.get::<Value,_>("proposed_command"), "rationale": row.get::<String,_>("rationale"), "recommendedPolicy": row.get::<String,_>("recommended_policy"), "requester": row.get::<String,_>("requester"), "requestedByRole": row.get::<Value,_>("requested_by_role"), "approvalRequestId": row.get::<Option<Uuid>,_>("approval_request_id"), "approvalStatus": row.get::<String,_>("approval_status"), "applicationStatus": row.get::<String,_>("application_status")}))
+    Ok(json!({"id": row.get::<Uuid,_>("id"), "sessionId": row.get::<Option<Uuid>,_>("session_id"), "operation": row.get::<String,_>("operation"), "proposedCommand": row.get::<Value,_>("proposed_command"), "requesterContext": row.get::<Value,_>("requester_context"), "rationale": row.get::<String,_>("rationale"), "recommendedPolicy": row.get::<String,_>("recommended_policy"), "requester": row.get::<String,_>("requester"), "requestedByRole": row.get::<Value,_>("requested_by_role"), "approvalRequestId": row.get::<Option<Uuid>,_>("approval_request_id"), "finalScope": row.get::<Option<Value>,_>("final_scope"), "finalExecutionPolicy": row.get::<Option<Value>,_>("final_execution_policy"), "finalCommand": row.get::<Option<Value>,_>("final_command"), "approvalStatus": row.get::<String,_>("approval_status"), "applicationStatus": row.get::<String,_>("application_status")}))
 }
 
 pub async fn apply_request(pool: &PgPool, session_id: Uuid, id: Uuid) -> Result<()> {
-    let row = sqlx::query("SELECT operation, proposed_command, approval_status, application_status, approval_request_id FROM command_registry_requests WHERE id=$1").bind(id).fetch_one(pool).await?;
+    let row = sqlx::query("SELECT operation, proposed_command, final_scope, final_execution_policy, final_command, approval_status, application_status, approval_request_id FROM command_registry_requests WHERE id=$1").bind(id).fetch_one(pool).await?;
     if row.get::<String,_>("approval_status") != "approved" { bail!("command registry request must be approved before apply"); }
     if row.get::<String,_>("application_status") != "pending" { bail!("command registry request already applied or failed"); }
     let linked_approval_request_id: Option<Uuid> = row.get("approval_request_id");
     authorize_registry_action(pool, session_id, "command_registry.apply", json!({"requestId": id}), linked_approval_request_id).await?;
     let operation: String = row.get("operation");
-    let command: CommandSeed = serde_json::from_value(row.get("proposed_command"))?;
+    let scope: RegistryScope = serde_json::from_value(row.get::<Option<Value>, _>("final_scope")
+        .ok_or_else(|| anyhow::anyhow!("approved registry request missing final scope"))?)?;
+    let policy: FinalExecutionPolicy = serde_json::from_value(row.get::<Option<Value>, _>("final_execution_policy")
+        .ok_or_else(|| anyhow::anyhow!("approved registry request missing final execution policy"))?)?;
+    validate_scope(&scope)?;
+    validate_execution_policy(&policy)?;
+    let mut command: CommandSeed = serde_json::from_value(row.get::<Option<Value>, _>("final_command")
+        .ok_or_else(|| anyhow::anyhow!("approved registry request missing final command"))?)?;
+    command.execution_policy = policy.decision.clone();
+    reject_scoped_conflict(pool, &command.action_id, &scope, operation.as_str()).await?;
     match operation.as_str() {
         "add" => {
-            add_command(pool, &command, "registry-request").await?;
+            add_command(pool, &command, "registry-request", &scope).await?;
         }
         "update" => {
-            update_command(pool, &command, "registry-request").await?;
+            update_command(pool, &command, "registry-request", &scope).await?;
         }
         "enable" => {
             validate_seed(&command)?;
-            let updated = sqlx::query("UPDATE command_definitions SET enabled=true, updated_at=now() WHERE action_id=$1 AND enabled=false")
+            let existing = sqlx::query("SELECT enabled FROM command_definitions WHERE action_id=$1 AND scope_type=$2 AND COALESCE(project_key, '')=COALESCE($3, '')")
                 .bind(&command.action_id)
+                .bind(&scope.scope_type)
+                .bind(&scope.project_key)
+                .fetch_optional(pool)
+                .await?;
+            let Some(existing) = existing else {
+                bail!("command action does not exist: {}", command.action_id);
+            };
+            if existing.get::<bool, _>("enabled") {
+                bail!("command enable did not change exactly one disabled row: {}", command.action_id);
+            }
+            update_command(pool, &command, "registry-request", &scope).await?;
+            let updated = sqlx::query("UPDATE command_definitions SET enabled=true, updated_at=now() WHERE action_id=$1 AND scope_type=$2 AND COALESCE(project_key, '')=COALESCE($3, '') AND enabled=false")
+                .bind(&command.action_id)
+                .bind(&scope.scope_type)
+                .bind(&scope.project_key)
                 .execute(pool)
                 .await?;
             if updated.rows_affected() != 1 {
@@ -545,8 +694,10 @@ pub async fn apply_request(pool: &PgPool, session_id: Uuid, id: Uuid) -> Result<
         }
         "disable" => {
             validate_seed(&command)?;
-            let updated = sqlx::query("UPDATE command_definitions SET enabled=false, updated_at=now() WHERE action_id=$1 AND enabled=true")
+            let updated = sqlx::query("UPDATE command_definitions SET enabled=false, updated_at=now() WHERE action_id=$1 AND scope_type=$2 AND COALESCE(project_key, '')=COALESCE($3, '') AND enabled=true")
                 .bind(&command.action_id)
+                .bind(&scope.scope_type)
+                .bind(&scope.project_key)
                 .execute(pool)
                 .await?;
             if updated.rows_affected() != 1 {
@@ -561,6 +712,32 @@ pub async fn apply_request(pool: &PgPool, session_id: Uuid, id: Uuid) -> Result<
         .await?;
     if updated.rows_affected() != 1 {
         bail!("command registry request apply status update failed: {id}");
+    }
+    Ok(())
+}
+
+async fn reject_scoped_conflict(pool: &PgPool, action_id: &str, scope: &RegistryScope, operation: &str) -> Result<()> {
+    if !matches!(operation, "add" | "update" | "enable") {
+        return Ok(());
+    }
+    if scope.scope_type == "project" {
+        let global_exists = sqlx::query("SELECT EXISTS (SELECT 1 FROM command_definitions WHERE action_id=$1 AND scope_type='global' AND enabled=true)")
+            .bind(action_id)
+            .fetch_one(pool)
+            .await?
+            .get::<bool, _>(0);
+        if global_exists {
+            bail!("scoped command action conflict: global command already visible for {action_id}");
+        }
+    } else {
+        let project_exists = sqlx::query("SELECT EXISTS (SELECT 1 FROM command_definitions WHERE action_id=$1 AND scope_type='project' AND enabled=true)")
+            .bind(action_id)
+            .fetch_one(pool)
+            .await?
+            .get::<bool, _>(0);
+        if project_exists {
+            bail!("scoped command action conflict: project command already visible for {action_id}");
+        }
     }
     Ok(())
 }

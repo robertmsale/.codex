@@ -75,6 +75,60 @@ impl CodexBackedModelClient {
         })
     }
 
+    fn request_command_registry_change_tool_schema(request_contract: &str) -> Value {
+        json!({
+            "type": "function",
+            "name": "request_command_registry_change",
+            "description": request_contract,
+            "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "operation": {"type":"string","enum":["add","update","disable","enable"]},
+                    "proposedCommand": {
+                        "type":"object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "actionId":{"type":"string"},
+                            "binaryName":{"type":"string"},
+                            "candidatePaths":{"type":"array","items":{"type":"string"}},
+                            "starlarkObject":{"type":"string"},
+                            "starlarkMethod":{"type":"string"},
+                            "argvPrefix":{"type":"array","items":{"type":"string"}},
+                            "defaultCwd":{"type":"string"},
+                            "cwdPolicy":{"type":"string"},
+                            "envPolicy":{"type":"string"},
+                            "timeoutMs":{"type":"integer"},
+                            "outputLimitBytes":{"type":"integer"},
+                            "mutationClass":{"type":"string"},
+                            "modelDescription":{"type":"string"},
+                            "allowCwdArg":{"type":"boolean"},
+                            "allowArgsArg":{"type":"boolean"},
+                            "forbiddenArgs":{"type":"array","items":{"type":"string"}}
+                        },
+                        "required":["actionId","binaryName","candidatePaths","starlarkObject","starlarkMethod","argvPrefix","defaultCwd","cwdPolicy","envPolicy","timeoutMs","outputLimitBytes","mutationClass","modelDescription","allowCwdArg","allowArgsArg","forbiddenArgs"]
+                    },
+                    "rationale":{"type":"string"},
+                    "intendedUse":{"type":"string"},
+                    "currentBlockerOrNeed":{"type":"string"},
+                    "requesterContext":{
+                        "type":"object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "sourceRole":{"type":"string"},
+                            "sourceTask":{"type":"string"},
+                            "observedError":{"type":"string"},
+                            "neededFor":{"type":"string"}
+                        },
+                        "required":["sourceRole","sourceTask","observedError","neededFor"]
+                    }
+                },
+                "required":["operation","proposedCommand","rationale","intendedUse","currentBlockerOrNeed","requesterContext"]
+            },
+            "strict": true
+        })
+    }
+
     fn request_headers(&self) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -142,16 +196,17 @@ pub fn bounded_raw_response(response: &Value) -> Value {
 
 #[async_trait]
 impl ModelClient for CodexBackedModelClient {
-    async fn request_tool_call(&self, role_instructions: &str, execute_code_contract: &str, message: &str) -> Result<ModelToolTurn> {
+    async fn request_tool_call(&self, role_instructions: &str, execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn> {
         let tool = Self::execute_code_tool_schema(execute_code_contract);
+        let request_tool = Self::request_command_registry_change_tool_schema(request_registry_contract);
         let instructions = format!(
-            "{role_instructions}\n\nCall execute_code exactly once. Current execute_code contract:\n{execute_code_contract}"
+            "{role_instructions}\n\nChoose exactly one native tool for this turn. Call execute_code when the current Starlark/command interface can satisfy the user. Call request_command_registry_change when progress is blocked by a missing or changed command registry entry. Current execute_code contract:\n{execute_code_contract}\n\nCurrent command registry request contract:\n{request_registry_contract}"
         );
         let request_for_shape = ResponsesApiRequest {
             model: self.model.clone(),
             instructions,
             input: Vec::new(),
-            tools: vec![tool.clone()],
+            tools: vec![tool.clone(), request_tool.clone()],
             tool_choice: "auto".to_string(),
             parallel_tool_calls: false,
             reasoning: None,
@@ -174,23 +229,23 @@ impl ModelClient for CodexBackedModelClient {
                 "role": "user",
                 "content": [{"type": "input_text", "text": message}]
             }],
-            "tools": [tool],
-            "tool_choice": {"type": "function", "name": "execute_code"},
+            "tools": [tool, request_tool],
+            "tool_choice": "auto",
             "parallel_tool_calls": false,
             "store": false,
             "stream": true,
             "prompt_cache_key": "robdex-agent-runtime-kernel-v1",
         });
         let raw_response = self.post_responses(&body).await?;
-        let (call_id, source) = extract_execute_code_call(&raw_response)?;
+        let (call_id, tool_name, arguments) = extract_native_tool_call(&raw_response)?;
         Ok(ModelToolTurn {
             provider: "chatgpt-codex-responses".to_string(),
             model: self.model.clone(),
             assistant_summary: "Live Responses model called execute_code.".to_string(),
             tool_call: ToolCallRequest {
                 call_identity: call_id,
-                tool_name: "execute_code".to_string(),
-                source,
+                tool_name,
+                arguments,
             },
             request_shape,
             raw_response,
@@ -205,7 +260,7 @@ impl ModelClient for CodexBackedModelClient {
         tool_result: &Value,
     ) -> Result<ModelFinalTurn> {
         let result_text = serde_json::to_string(tool_result)?;
-        let function_call_item = find_execute_code_item(tool_call_response)?;
+        let function_call_item = find_native_tool_item(tool_call_response, call_id)?;
         let instructions = format!(
             "{role_instructions}\n\nSummarize the execute_code tool result concisely."
         );
@@ -266,7 +321,7 @@ fn read_codex_auth() -> Result<CodexAuthMaterial> {
     })
 }
 
-fn find_execute_code_item(response: &Value) -> Result<Value> {
+fn find_native_tool_item(response: &Value, call_id: &str) -> Result<Value> {
     for item in response
         .get("output")
         .and_then(Value::as_array)
@@ -274,45 +329,46 @@ fn find_execute_code_item(response: &Value) -> Result<Value> {
         .flatten()
     {
         if item.get("type").and_then(Value::as_str) == Some("function_call")
-            && item.get("name").and_then(Value::as_str) == Some("execute_code")
+            && item.get("call_id").or_else(|| item.get("id")).and_then(Value::as_str) == Some(call_id)
         {
             return Ok(item.clone());
         }
     }
-    bail!("model response did not include execute_code item")
+    bail!("model response did not include native tool item for call_id {call_id}")
 }
 
-fn extract_execute_code_call(response: &Value) -> Result<(String, String)> {
+fn extract_native_tool_call(response: &Value) -> Result<(String, String, Value)> {
+    let mut calls = Vec::new();
     for item in response
         .get("output")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
     {
-        if item.get("type").and_then(Value::as_str) == Some("function_call")
-            && item.get("name").and_then(Value::as_str) == Some("execute_code")
-        {
+        if item.get("type").and_then(Value::as_str) == Some("function_call") {
+            let Some(name) = item.get("name").and_then(Value::as_str) else { continue; };
+            if !matches!(name, "execute_code" | "request_command_registry_change") {
+                continue;
+            }
             let call_id = item
                 .get("call_id")
                 .or_else(|| item.get("id"))
                 .and_then(Value::as_str)
-                .context("execute_code function_call missing call_id")?
+                .context("native function_call missing call_id")?
                 .to_string();
             let arguments = item
                 .get("arguments")
                 .and_then(Value::as_str)
-                .context("execute_code function_call missing arguments")?;
+                .context("native function_call missing arguments")?;
             let parsed: Value = serde_json::from_str(arguments)
-                .context("execute_code function_call arguments are not JSON")?;
-            let source = parsed
-                .get("source")
-                .and_then(Value::as_str)
-                .context("execute_code function_call arguments missing source")?
-                .to_string();
-            return Ok((call_id, source));
+                .context("native function_call arguments are not JSON")?;
+            calls.push((call_id, name.to_string(), parsed));
         }
     }
-    bail!("model response did not include execute_code function_call: {response}");
+    if calls.len() != 1 {
+        bail!("model response must include exactly one native tool call, got {}: {response}", calls.len());
+    }
+    Ok(calls.remove(0))
 }
 
 fn parse_responses_body(text: &str) -> Result<Value> {

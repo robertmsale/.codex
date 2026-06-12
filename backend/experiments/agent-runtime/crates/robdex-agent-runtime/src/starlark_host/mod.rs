@@ -260,7 +260,8 @@ pub async fn execute_code(
     )
     .await?;
 
-    let live_commands = command_registry::live_visible_commands(pool, role_snapshot).await?;
+    let project_key = crate::db::session_project_key(pool, session_id).await?;
+    let live_commands = command_registry::live_visible_commands(pool, role_snapshot, project_key.as_deref()).await?;
     let result = evaluate_starlark(source, root.clone(), role_snapshot.clone(), live_commands);
     let status = if result.error.is_some() {
         TerminalStatus::Failed
@@ -484,7 +485,30 @@ impl HostKernel {
             "executionRoot": self.root.as_path().display().to_string(),
             "commandVersionId": command_version.version_id,
         });
-        let policy = self.decide(action, input.clone());
+        let decision = command_version.execution_policy.as_str();
+        let policy = crate::policy::PolicyResult {
+            action: action.to_string(),
+            decision: match decision {
+                "allow" => RuntimeDecision::Allow,
+                "ownerApproval" | "orchestratorApproval" => RuntimeDecision::ApprovalRequired,
+                _ => RuntimeDecision::Deny,
+            },
+            reason: "approver-selected scoped command execution policy".to_string(),
+            input: input.clone(),
+            role_id: self.role_snapshot.id.clone(),
+            role_version: self.role_snapshot.version.clone(),
+            role_version_id: self.role_snapshot.role_version_id.to_string(),
+            required_approver_kind: match decision {
+                "ownerApproval" => Some(crate::approvals::ApproverKind::Owner),
+                "orchestratorApproval" => Some(crate::approvals::ApproverKind::Orchestrator),
+                _ => None,
+            },
+            source_decision: Some(decision.to_string()),
+        };
+        self.records.borrow_mut().push(HostRecord::Policy(PolicyDecisionRecord {
+            decision: policy.decision.as_str().to_string(),
+            payload: policy.to_event_payload(),
+        }));
         if !policy.decision.can_execute() {
             bail!("{action} blocked by policy: {}", policy.decision.as_str());
         }
@@ -1067,6 +1091,61 @@ fn parse_hunk_old_start(header: &str) -> Result<usize> {
     Ok(start.max(1))
 }
 
+fn policy_result_from_event_payload(
+    payload: &JsonValue,
+    role_snapshot: &RoleSnapshot,
+) -> Result<crate::policy::PolicyResult> {
+    let action = payload
+        .get("action")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| anyhow::anyhow!("policy event payload missing action"))?;
+    let decision = match payload.get("decision").and_then(JsonValue::as_str) {
+        Some("allow") => RuntimeDecision::Allow,
+        Some("deny") => RuntimeDecision::Deny,
+        Some("approvalRequired") => RuntimeDecision::ApprovalRequired,
+        Some(other) => bail!("unsupported policy event decision: {other}"),
+        None => bail!("policy event payload missing decision"),
+    };
+    let required_approver_kind = payload
+        .get("requiredApproverKind")
+        .and_then(JsonValue::as_str)
+        .map(crate::approvals::ApproverKind::try_from)
+        .transpose()?;
+    Ok(crate::policy::PolicyResult {
+        action: action.to_string(),
+        decision,
+        reason: payload
+            .get("reason")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("policy decision")
+            .to_string(),
+        input: payload.get("input").cloned().unwrap_or_else(|| json!({})),
+        role_id: payload
+            .get("role")
+            .and_then(|role| role.get("id"))
+            .and_then(JsonValue::as_str)
+            .unwrap_or(&role_snapshot.id)
+            .to_string(),
+        role_version: payload
+            .get("role")
+            .and_then(|role| role.get("version"))
+            .and_then(JsonValue::as_str)
+            .unwrap_or(&role_snapshot.version)
+            .to_string(),
+        role_version_id: payload
+            .get("role")
+            .and_then(|role| role.get("roleVersionId"))
+            .and_then(JsonValue::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| role_snapshot.role_version_id.to_string()),
+        source_decision: payload
+            .get("sourceDecision")
+            .and_then(JsonValue::as_str)
+            .map(str::to_string),
+        required_approver_kind,
+    })
+}
+
 async fn persist_record(
     pool: &PgPool,
     session_id: Uuid,
@@ -1090,11 +1169,7 @@ async fn persist_record(
             )
             .await?;
             if policy.decision == RuntimeDecision::ApprovalRequired.as_str() {
-                let policy_result = PolicyEngine::decide(
-                    role_snapshot,
-                    policy.payload["action"].as_str().unwrap_or(""),
-                    policy.payload["input"].clone(),
-                );
+                let policy_result = policy_result_from_event_payload(&policy.payload, role_snapshot)?;
                 let approval_id = approvals::request_approval(pool, session_id, Some(turn_id), &policy_result, role_snapshot).await?;
                 if command_registry::is_registry_command_action(&policy_result.action)
                     || matches!(policy_result.action.as_str(), "fs.write" | "patch.apply")

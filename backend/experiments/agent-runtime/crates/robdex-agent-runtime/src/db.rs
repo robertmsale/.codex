@@ -99,19 +99,20 @@ pub async fn current_role_snapshot(pool: &PgPool, role_id: &str) -> Result<RoleS
     snapshot_from_value(row.get("snapshot"))
 }
 
-pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot) -> Result<Uuid> {
+pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot, project_key: Option<&str>) -> Result<Uuid> {
     let id = Uuid::new_v4();
     let snapshot_value = snapshot_to_value(role_snapshot)?;
     sqlx::query(
         r#"
-        INSERT INTO sessions (id, status, role_id, role_version, role_snapshot)
-        VALUES ($1, 'open', $2, $3, $4)
+        INSERT INTO sessions (id, status, role_id, role_version, role_snapshot, project_key)
+        VALUES ($1, 'open', $2, $3, $4, $5)
         "#,
     )
         .bind(id)
         .bind(&role_snapshot.id)
         .bind(&role_snapshot.version)
         .bind(&snapshot_value)
+        .bind(project_key)
         .execute(pool)
         .await?;
     append_event(
@@ -127,11 +128,20 @@ pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot) -> Result<
                 "id": role_snapshot.id,
                 "version": role_snapshot.version,
                 "snapshot": snapshot_value,
-            }
+            },
+            "projectKey": project_key,
         }),
     )
     .await?;
     Ok(id)
+}
+
+pub async fn session_project_key(pool: &PgPool, session_id: Uuid) -> Result<Option<String>> {
+    let row = sqlx::query("SELECT project_key FROM sessions WHERE id = $1")
+        .bind(session_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(row.get("project_key"))
 }
 
 pub async fn session_role_snapshot(pool: &PgPool, session_id: Uuid) -> Result<RoleSnapshot> {
