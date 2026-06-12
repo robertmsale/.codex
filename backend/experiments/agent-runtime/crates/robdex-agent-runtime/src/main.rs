@@ -91,6 +91,12 @@ enum ApprovalsCommand {
 enum CommandRegistryCommand {
     List,
     Show { action_id: String },
+    SeedRequests {
+        #[arg(long)]
+        session: Uuid,
+        #[arg(long, default_value = "missing")]
+        mode: String,
+    },
     Requests {
         #[command(subcommand)]
         command: CommandRegistryRequestCommand,
@@ -231,6 +237,11 @@ async fn main() -> Result<()> {
             }
             CommandRegistryCommand::Show { action_id } => {
                 println!("{}", serde_json::to_string_pretty(&command_registry::show(&pool, &action_id).await?)?);
+            }
+            CommandRegistryCommand::SeedRequests { session, mode } => {
+                for id in command_registry::create_seed_import_requests(&pool, session, &mode).await? {
+                    println!("{id}");
+                }
             }
             CommandRegistryCommand::Requests { command } => match command {
                 CommandRegistryRequestCommand::Create { session, json_file } => {

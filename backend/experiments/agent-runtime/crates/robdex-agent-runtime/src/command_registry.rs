@@ -94,9 +94,16 @@ pub fn is_registry_command_action(action: &str) -> bool {
     action.starts_with("cmd.") && action.matches('.').count() >= 2
 }
 
-pub async fn seed_defaults(pool: &PgPool) -> Result<()> {
+pub async fn bootstrap_seed_defaults(pool: &PgPool) -> Result<()> {
+    let existing = sqlx::query("SELECT count(*) FROM command_definitions")
+        .fetch_one(pool)
+        .await?
+        .get::<i64, _>(0);
+    if existing > 0 {
+        return Ok(());
+    }
     for seed in default_command_seeds()? {
-        upsert_seed(pool, &seed).await?;
+        add_command(pool, &seed, "seed-bootstrap").await?;
     }
     Ok(())
 }
@@ -106,48 +113,82 @@ fn default_command_seeds() -> Result<Vec<CommandSeed>> {
     Ok(serde_json::from_str(raw)?)
 }
 
-pub async fn upsert_seed(pool: &PgPool, seed: &CommandSeed) -> Result<Uuid> {
+async fn add_command(pool: &PgPool, seed: &CommandSeed, created_by: &str) -> Result<Uuid> {
     validate_seed(seed)?;
-    let definition_id = Uuid::new_v4();
-    let version_id = Uuid::new_v4();
-    let config = serde_json::to_value(seed)?;
     let mut tx = pool.begin().await?;
     let existing = sqlx::query("SELECT id FROM command_definitions WHERE action_id = $1")
         .bind(&seed.action_id)
         .fetch_optional(&mut *tx)
         .await?;
-    let def_id = if let Some(row) = existing {
-        row.get::<Uuid, _>("id")
-    } else {
-        sqlx::query("INSERT INTO command_definitions (id, action_id, enabled, metadata) VALUES ($1, $2, true, '{}'::jsonb)")
-            .bind(definition_id)
-            .bind(&seed.action_id)
-            .execute(&mut *tx)
-            .await?;
-        definition_id
-    };
+    if existing.is_some() {
+        bail!("command action already exists: {}", seed.action_id);
+    }
+    let definition_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO command_definitions (id, action_id, enabled, metadata) VALUES ($1, $2, true, '{}'::jsonb)")
+        .bind(definition_id)
+        .bind(&seed.action_id)
+        .execute(&mut *tx)
+        .await?;
+    let version_id = insert_command_version(&mut tx, definition_id, seed, created_by).await?;
+    let updated = sqlx::query("UPDATE command_definitions SET current_version_id=$2, enabled=true, updated_at=now() WHERE id=$1")
+        .bind(definition_id)
+        .bind(version_id)
+        .execute(&mut *tx)
+        .await?;
+    if updated.rows_affected() != 1 {
+        bail!("command add failed to update definition: {}", seed.action_id);
+    }
+    tx.commit().await?;
+    Ok(version_id)
+}
+
+async fn update_command(pool: &PgPool, seed: &CommandSeed, created_by: &str) -> Result<Uuid> {
+    validate_seed(seed)?;
+    let mut tx = pool.begin().await?;
+    let existing = sqlx::query("SELECT id FROM command_definitions WHERE action_id = $1")
+        .bind(&seed.action_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("command action does not exist: {}", seed.action_id))?;
+    let definition_id = existing.get::<Uuid, _>("id");
+    let version_id = insert_command_version(&mut tx, definition_id, seed, created_by).await?;
+    let updated = sqlx::query("UPDATE command_definitions SET current_version_id=$2, updated_at=now() WHERE id=$1")
+        .bind(definition_id)
+        .bind(version_id)
+        .execute(&mut *tx)
+        .await?;
+    if updated.rows_affected() != 1 {
+        bail!("command update failed to update definition: {}", seed.action_id);
+    }
+    tx.commit().await?;
+    Ok(version_id)
+}
+
+async fn insert_command_version(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    definition_id: Uuid,
+    seed: &CommandSeed,
+    created_by: &str,
+) -> Result<Uuid> {
+    let version_id = Uuid::new_v4();
+    let config = serde_json::to_value(seed)?;
     sqlx::query(
         r#"
         INSERT INTO command_versions (id, definition_id, version_number, action_id, binary_name, starlark_object, starlark_method, config, model_description, created_by)
-        VALUES ($1, $2, COALESCE((SELECT max(version_number)+1 FROM command_versions WHERE definition_id=$2), 1), $3, $4, $5, $6, $7, $8, 'seed-import')
+        VALUES ($1, $2, COALESCE((SELECT max(version_number)+1 FROM command_versions WHERE definition_id=$2), 1), $3, $4, $5, $6, $7, $8, $9)
         "#,
     )
     .bind(version_id)
-    .bind(def_id)
+    .bind(definition_id)
     .bind(&seed.action_id)
     .bind(&seed.binary_name)
     .bind(&seed.starlark_object)
     .bind(&seed.starlark_method)
     .bind(&config)
     .bind(&seed.model_description)
-    .execute(&mut *tx)
+    .bind(created_by)
+    .execute(&mut **tx)
     .await?;
-    sqlx::query("UPDATE command_definitions SET current_version_id=$2, enabled=true, updated_at=now() WHERE id=$1")
-        .bind(def_id)
-        .bind(version_id)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
     Ok(version_id)
 }
 
@@ -422,6 +463,42 @@ pub async fn create_request(pool: &PgPool, session_id: Uuid, input: ChangeReques
     Ok(id)
 }
 
+pub async fn create_seed_import_requests(pool: &PgPool, session_id: Uuid, mode: &str) -> Result<Vec<Uuid>> {
+    if !matches!(mode, "missing" | "refresh") {
+        bail!("seed import mode must be missing or refresh");
+    }
+    let mut ids = Vec::new();
+    for seed in default_command_seeds()? {
+        let exists = sqlx::query("SELECT EXISTS (SELECT 1 FROM command_definitions WHERE action_id=$1)")
+            .bind(&seed.action_id)
+            .fetch_one(pool)
+            .await?
+            .get::<bool, _>(0);
+        let operation = match (mode, exists) {
+            ("missing", false) => "add",
+            ("refresh", true) => "update",
+            ("refresh", false) => "add",
+            ("missing", true) => continue,
+            _ => unreachable!(),
+        };
+        ids.push(
+            create_request(
+                pool,
+                session_id,
+                ChangeRequestInput {
+                    operation: operation.to_string(),
+                    command: seed,
+                    rationale: format!("explicit seed import mode={mode}"),
+                    recommended_policy: "operator-reviewed seed import".to_string(),
+                    requester: "command-registry seed-requests".to_string(),
+                },
+            )
+            .await?,
+        );
+    }
+    Ok(ids)
+}
+
 pub async fn decide_request(pool: &PgPool, session_id: Uuid, id: Uuid, status: &str) -> Result<()> {
     if !matches!(status, "approved" | "denied") { bail!("approval status must be approved or denied"); }
     authorize_registry_action(pool, session_id, "command_registry.decide", json!({"requestId": id, "status": status}), None).await?;
@@ -450,10 +527,40 @@ pub async fn apply_request(pool: &PgPool, session_id: Uuid, id: Uuid) -> Result<
     let operation: String = row.get("operation");
     let command: CommandSeed = serde_json::from_value(row.get("proposed_command"))?;
     match operation.as_str() {
-        "add" | "update" | "enable" => { upsert_seed(pool, &command).await?; },
-        "disable" => { sqlx::query("UPDATE command_definitions SET enabled=false, updated_at=now() WHERE action_id=$1").bind(&command.action_id).execute(pool).await?; },
+        "add" => {
+            add_command(pool, &command, "registry-request").await?;
+        }
+        "update" => {
+            update_command(pool, &command, "registry-request").await?;
+        }
+        "enable" => {
+            validate_seed(&command)?;
+            let updated = sqlx::query("UPDATE command_definitions SET enabled=true, updated_at=now() WHERE action_id=$1 AND enabled=false")
+                .bind(&command.action_id)
+                .execute(pool)
+                .await?;
+            if updated.rows_affected() != 1 {
+                bail!("command enable did not change exactly one disabled row: {}", command.action_id);
+            }
+        }
+        "disable" => {
+            validate_seed(&command)?;
+            let updated = sqlx::query("UPDATE command_definitions SET enabled=false, updated_at=now() WHERE action_id=$1 AND enabled=true")
+                .bind(&command.action_id)
+                .execute(pool)
+                .await?;
+            if updated.rows_affected() != 1 {
+                bail!("command disable did not change exactly one enabled row: {}", command.action_id);
+            }
+        }
         other => bail!("unsupported command registry operation: {other}"),
     }
-    sqlx::query("UPDATE command_registry_requests SET application_status='applied', applied_at=now() WHERE id=$1").bind(id).execute(pool).await?;
+    let updated = sqlx::query("UPDATE command_registry_requests SET application_status='applied', applied_at=now() WHERE id=$1 AND application_status='pending'")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    if updated.rows_affected() != 1 {
+        bail!("command registry request apply status update failed: {id}");
+    }
     Ok(())
 }

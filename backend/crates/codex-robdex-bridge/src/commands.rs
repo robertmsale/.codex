@@ -6236,10 +6236,6 @@ pub(crate) fn requirements_review_prompt(
     prompt.push_str(&compact_source_claim_packet(claim_text));
     prompt.push_str("\n\nRequirement state:\n");
     prompt.push_str(&compact_requirement_review_state(set));
-    if let Some(summary) = compact_requirements_claim_summary(claim_text) {
-        prompt.push_str("\n\nEvidence index:\n");
-        prompt.push_str(&summary);
-    }
     prompt.push_str("\n\nReview all canonical requirements from the active structured output schema. Use `stillPassing` only where the schema allows it and the requirement still passes.");
     prompt
 }
@@ -6300,44 +6296,6 @@ fn compact_requirement_review_state(set: &RequirementSetState) -> String {
         currently_unresolved.join(", "),
         relevant_progress.join(", ")
     )
-}
-
-fn compact_requirements_claim_summary(claim_text: &str) -> Option<String> {
-    let payload = serde_json::from_str::<Value>(claim_text.trim()).ok()?;
-    let object = payload.as_object()?;
-    let mut lines = Vec::new();
-    if let Some(summary) = object.get("summary").and_then(Value::as_str) {
-        if !summary.trim().is_empty() {
-            lines.push(format!("- Summary: {}", summary.trim()));
-        }
-    }
-    let claims_object = object
-        .get("requirements")
-        .and_then(Value::as_object)
-        .unwrap_or(object);
-    for (key, value) in claims_object {
-        let Some(claim) = value.as_object() else {
-            continue;
-        };
-        let claim_value = claim.get("claim").and_then(Value::as_str).unwrap_or("unknown");
-        let risk = claim.get("risk").and_then(Value::as_str).unwrap_or("unknown");
-        lines.push(format!("- `{key}`: claim={claim_value}; risk={risk}"));
-        if let Some(justification) = claim.get("justification").and_then(Value::as_str) {
-            if !justification.trim().is_empty() {
-                lines.push(format!("  Justification: {}", justification.trim()));
-            }
-        }
-        if let Some(evidence) = claim.get("evidence").and_then(Value::as_array) {
-            for item in evidence.iter().filter_map(Value::as_str).filter(|item| !item.trim().is_empty()) {
-                lines.push(format!("  Evidence: {}", item.trim()));
-            }
-        }
-    }
-    if lines.is_empty() {
-        None
-    } else {
-        Some(lines.join("\n"))
-    }
 }
 
 pub(crate) async fn record_requirement_packet(
@@ -8745,7 +8703,8 @@ requirements:
         );
         assert!(prompt.contains("Review subject: Config Operator"));
         assert!(prompt.contains("Latest source claim packet:"));
-        assert!(prompt.contains("Evidence index:"));
+        assert!(!prompt.contains("Evidence index:"));
+        assert!(!prompt.contains("Source evidence summary:"));
         assert!(prompt.contains("Rendered reviewer verdict card."));
         assert!(prompt.contains("/tmp/reviewer-verdict-card.png"));
         assert!(!prompt.contains("Source thread ID"));

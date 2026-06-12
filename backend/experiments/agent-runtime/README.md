@@ -46,9 +46,13 @@ the final tool output. This keeps tool result packets deterministic and concise.
 Postgres is the runtime source of truth for concrete `cmd[...]` commands. Rust
 owns finite kernel/native action categories and enforcement semantics; concrete
 command definitions and immutable command versions live in `command_definitions`
-and `command_versions`. Seed files under `command-seeds/` are import material
-only. At `init-db`, the current seed bundle imports the supported command
-behavior into Postgres:
+and `command_versions`. Seed files under `command-seeds/` are bootstrap/import
+material only. `init-db` imports the bundled seed commands only when the command
+registry is empty. After the registry exists, `init-db` only applies schema
+migrations; it does not overwrite, re-enable, or repoint current command
+definitions. Live registry changes must use explicit command-registry requests.
+
+The bundled seed import creates:
 
 - `cmd["rg"].run(args=[...], cwd=".")`
 - `cmd["git"].status()`
@@ -57,8 +61,11 @@ behavior into Postgres:
 
 Every command version stores the action id, binary name and resolution
 candidates, Starlark object/method surface, argv prefix/argument policy,
-cwd/env/timeout/output policy, mutation class, model-facing description, and
-creation metadata. `execute_code` queries the enabled current DB command
+cwd/env/timeout/output policy, `mutationClass` metadata, model-facing
+description, and creation metadata. `mutationClass` is descriptive trace/model
+metadata in this phase; it is not an execution policy boundary. Execution
+authority comes from role policy, registry argv/cwd/env/timeout/output fields,
+and native kernel protections. `execute_code` queries the enabled current DB command
 versions at every tool boundary, filters them through the session role snapshot
 policy, builds the Starlark `cmd` surface from that live registry, and generates
 the model-visible `execute_code` contract from the same live rows. Agents receive
@@ -67,8 +74,8 @@ to read README, manifests, or source files to understand command semantics.
 
 Registry-defined command execution remains structured. There is no raw shell:
 commands run only through argv arrays, execution-root cwd enforcement, explicit
-env policy, timeout/output limits, binary resolution policy, mutation class, and
-role policy. Each `command_runs` row records the exact `command_version_id` used
+env policy, timeout/output limits, binary resolution policy, and role policy.
+Each `command_runs` row records the exact `command_version_id` used
 so historical traces remain attributable after later registry changes.
 
 Role policy may reference DB-backed command action ids such as `cmd.rg.run` or a
@@ -82,19 +89,29 @@ proposed command definition, rationale, recommended policy, requester identity,
 approval status, and application status. Approval records a decision only. The
 separate `command-registry requests apply <id>` command validates and applies an
 approved pending request. Denied requests and apply-before-approval do not mutate
-the registry.
+the registry. Operations are strict: `add` fails if the action already exists;
+`update`, `enable`, and `disable` fail if the action does not exist; `enable`
+and `disable` must change exactly one row. Failed apply attempts leave the
+request unapplied.
 
 CLI affordances:
 
 ```sh
 robdex-agent-runtime command-registry list
 robdex-agent-runtime command-registry show <action-id>
+robdex-agent-runtime command-registry seed-requests --session <session-id> --mode missing|refresh
 robdex-agent-runtime command-registry requests create --session <session-id> <json-file>
 robdex-agent-runtime command-registry requests list
 robdex-agent-runtime command-registry requests show <id>
 robdex-agent-runtime command-registry requests decide --session <session-id> <id> --status approved|denied
 robdex-agent-runtime command-registry requests apply --session <session-id> <id>
 ```
+
+`seed-requests` is the explicit seed import/refresh affordance. It creates
+ordinary registry requests from `command-seeds/`; it does not approve or apply
+them. `--mode missing` requests only absent bundled commands. `--mode refresh`
+requests updates for existing bundled commands and adds for absent bundled
+commands.
 
 ## Role policy foundation
 
