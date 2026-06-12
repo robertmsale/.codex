@@ -46,6 +46,10 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum RolesCommand {
+    Import {
+        manifest: std::path::PathBuf,
+    },
+    ImportSeeds,
     List,
     Validate {
         #[arg(long)]
@@ -66,8 +70,7 @@ async fn main() -> Result<()> {
             println!("initialized experimental Postgres schema");
         }
         Command::NewSession { role } => {
-            let registry = RoleRegistry::default_for_workspace()?;
-            let snapshot = registry.snapshot(&role)?;
+            let snapshot = db::current_role_snapshot(&pool, &role).await?;
             let id = db::new_session(&pool, &snapshot).await?;
             println!("{id}");
         }
@@ -80,8 +83,25 @@ async fn main() -> Result<()> {
         Command::Roles { command } => {
             let registry = RoleRegistry::default_for_workspace()?;
             match command {
+                RolesCommand::Import { manifest } => {
+                    let imported = registry.load_for_import(&manifest)?;
+                    db::import_role_version(&pool, &imported).await?;
+                    println!(
+                        "imported {} {} {}",
+                        imported.snapshot.id, imported.snapshot.version, imported.snapshot.role_version_id
+                    );
+                }
+                RolesCommand::ImportSeeds => {
+                    let mut count = 0usize;
+                    for path in registry.manifest_paths()? {
+                        let imported = registry.load_for_import(&path)?;
+                        db::import_role_version(&pool, &imported).await?;
+                        count += 1;
+                    }
+                    println!("imported {count} seed roles");
+                }
                 RolesCommand::List => {
-                    for role in registry.validate_all()? {
+                    for role in db::list_roles(&pool).await? {
                         println!("{} {} {}", role.id, role.version, role.display_name);
                     }
                 }
@@ -95,7 +115,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 RolesCommand::Show { id } => {
-                    let role = registry.load(&id)?;
+                    let role = db::current_role_snapshot(&pool, &id).await?;
                     println!("{}", serde_json::to_string_pretty(&role)?);
                 }
             }

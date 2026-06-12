@@ -1,0 +1,20 @@
+{
+  "id": "runtime-approval-rg",
+  "version": "1.0.0",
+  "displayName": "Runtime Approval RG",
+  "prompt": { "path": "prompts/runtime-approval-rg.md" },
+  "modelDefaults": { "model": "gpt-5.5", "reasoningEffort": "medium" },
+  "capabilities": ["tool.execute_code", "fs.read", "cmd.rg.run"],
+  "policy": {
+    "tool.execute_code": "allow",
+    "fs.read": "allow",
+    "cmd.rg.run": "ownerApproval"
+  },
+  "routing": { "mode": "direct", "reservedActions": ["message.send", "message.route"] },
+  "visibility": { "listed": true, "ownerVisible": true },
+  "lifecycleAuthority": {
+    "canSpawnAgents": false,
+    "canArchiveAgents": false,
+    "reservedActions": ["agent.spawn.<role>", "agent.archive"]
+  }
+}

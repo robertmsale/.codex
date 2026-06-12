@@ -142,11 +142,14 @@ pub fn bounded_raw_response(response: &Value) -> Value {
 
 #[async_trait]
 impl ModelClient for CodexBackedModelClient {
-    async fn request_tool_call(&self, message: &str) -> Result<ModelToolTurn> {
+    async fn request_tool_call(&self, role_instructions: &str, message: &str) -> Result<ModelToolTurn> {
         let tool = Self::execute_code_tool_schema();
+        let instructions = format!(
+            "{role_instructions}\n\nCall execute_code exactly once. Use output(value) in the Starlark source for final tool output; host calls only return script values."
+        );
         let request_for_shape = ResponsesApiRequest {
             model: self.model.clone(),
-            instructions: "Call execute_code exactly once. Use output(value) in the Starlark source for final tool output; host calls only return script values.".to_string(),
+            instructions,
             input: Vec::new(),
             tools: vec![tool.clone()],
             tool_choice: "auto".to_string(),
@@ -196,15 +199,19 @@ impl ModelClient for CodexBackedModelClient {
 
     async fn submit_tool_result(
         &self,
+        role_instructions: &str,
         tool_call_response: &Value,
         call_id: &str,
         tool_result: &Value,
     ) -> Result<ModelFinalTurn> {
         let result_text = serde_json::to_string(tool_result)?;
         let function_call_item = find_execute_code_item(tool_call_response)?;
+        let instructions = format!(
+            "{role_instructions}\n\nSummarize the execute_code tool result concisely."
+        );
         let body = json!({
             "model": self.model,
-            "instructions": "Summarize the execute_code tool result concisely.",
+            "instructions": instructions,
             "input": [
                 function_call_item,
                 {

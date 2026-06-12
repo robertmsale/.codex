@@ -43,7 +43,7 @@ the final tool output. This keeps tool result packets deterministic and concise.
 
 ## Role policy foundation
 
-Experimental roles are file-backed JSON manifests in `roles/`. A role manifest defines prompt source, model defaults, active action policy, routing metadata, visibility metadata, and lifecycle authority metadata. The kernel owns the finite action catalog; role prose does not create powers.
+Postgres is the runtime source of truth for roles. JSON manifests and prompt files in `roles/` are seed/import/export artifacts only. Import resolves prompt files into immutable `role_versions.instruction_text`; runtime session creation reads the current DB role version and stores a complete immutable `sessions.role_snapshot`.
 
 Active actions implemented by this slice:
 - `tool.execute_code`
@@ -59,4 +59,4 @@ Reserved future action names documented but not implemented here:
 - `message.send`
 - `message.route`
 
-Manifest decision values are `allow`, `deny`, `ownerApproval`, and `orchestratorApproval`. Runtime policy maps approval decisions to `approvalRequired` and does not execute those actions in this task. Missing action policy defaults to deny. Sessions store immutable role snapshots at creation time; turns use the stored snapshot rather than rereading the latest manifest.
+Manifest decision values are `allow`, `deny`, `ownerApproval`, and `orchestratorApproval`. Runtime policy maps approval decisions to `approvalRequired` and does not execute those actions in this task. Missing action policy defaults to deny. Policy is execution authority; `capabilities` are validated to exactly match policy keys so they cannot contradict enforcement. Sessions store immutable role snapshots at creation time; turns use the stored snapshot rather than rereading the latest manifest. The direct Responses adapter receives the model name and instruction text from the session snapshot. Reasoning effort is stored in the DB role version and snapshot but is not applied by the current direct adapter yet.

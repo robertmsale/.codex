@@ -33,9 +33,10 @@ pub struct ModelFinalTurn {
 
 #[async_trait]
 pub trait ModelClient {
-    async fn request_tool_call(&self, message: &str) -> Result<ModelToolTurn>;
+    async fn request_tool_call(&self, role_instructions: &str, message: &str) -> Result<ModelToolTurn>;
     async fn submit_tool_result(
         &self,
+        role_instructions: &str,
         tool_call_response: &Value,
         call_id: &str,
         tool_result: &Value,

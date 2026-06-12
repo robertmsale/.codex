@@ -107,3 +107,41 @@ ALTER TABLE command_runs ADD COLUMN IF NOT EXISTS policy_decision JSONB NOT NULL
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_id TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_version TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE TABLE IF NOT EXISTS roles (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    current_version_id UUID,
+    status TEXT NOT NULL DEFAULT 'active',
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS role_versions (
+    id UUID PRIMARY KEY,
+    role_id TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    version TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    instruction_text TEXT NOT NULL,
+    manifest JSONB NOT NULL,
+    model_defaults JSONB NOT NULL,
+    policy JSONB NOT NULL,
+    routing JSONB NOT NULL,
+    visibility JSONB NOT NULL,
+    lifecycle_authority JSONB NOT NULL,
+    snapshot JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by TEXT NOT NULL DEFAULT 'seed-import'
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'roles_current_version_fk'
+    ) THEN
+        ALTER TABLE roles ADD CONSTRAINT roles_current_version_fk
+            FOREIGN KEY (current_version_id) REFERENCES role_versions(id) DEFERRABLE INITIALLY DEFERRED;
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS role_versions_role_created_idx ON role_versions(role_id, created_at DESC);

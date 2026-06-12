@@ -44,7 +44,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
     .await?;
 
     let model = CodexBackedModelClient::new_with_model(role_snapshot.model_defaults.model.clone())?;
-    let plan = model.request_tool_call(message).await?;
+    let plan = model.request_tool_call(&role_snapshot.instruction_text, message).await?;
     let model_event_id = Uuid::new_v4();
     sqlx::query(
         r#"
@@ -60,6 +60,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
         "model": plan.model,
         "summary": plan.assistant_summary,
         "tool": plan.tool_call.tool_name,
+        "requestShape": plan.request_shape.clone(),
         "raw": bounded_raw_response(&plan.raw_response),
     }))
     .execute(pool)
@@ -79,6 +80,11 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
             "tool": plan.tool_call.tool_name,
             "request": {
                 "model": plan.request_shape.get("model").cloned(),
+                "roleInstructions": {
+                    "source": "session.role_snapshot.instruction_text",
+                    "bytes": role_snapshot.instruction_text.len(),
+                    "prefix": role_snapshot.instruction_text.chars().take(80).collect::<String>(),
+                },
                 "toolChoice": plan.request_shape.get("tool_choice").cloned(),
                 "tools": plan.request_shape.get("tools").and_then(serde_json::Value::as_array).map(Vec::len),
             },
@@ -186,7 +192,12 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
     )
     .await?;
     let final_response = model
-        .submit_tool_result(&plan.raw_response, &plan.tool_call.call_identity, &result_json)
+        .submit_tool_result(
+            &role_snapshot.instruction_text,
+            &plan.raw_response,
+            &plan.tool_call.call_identity,
+            &result_json,
+        )
         .await?;
     let final_model_event_id = Uuid::new_v4();
     sqlx::query(
@@ -219,6 +230,11 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
             "finalText": final_response.final_text,
             "request": {
                 "model": final_response.request_shape.get("model").cloned(),
+                "roleInstructions": {
+                    "source": "session.role_snapshot.instruction_text",
+                    "bytes": role_snapshot.instruction_text.len(),
+                    "prefix": role_snapshot.instruction_text.chars().take(80).collect::<String>(),
+                },
                 "inputItems": final_response.request_shape.get("input").and_then(serde_json::Value::as_array).map(Vec::len),
             },
             "response": concise_response_summary(&final_response.raw_response),

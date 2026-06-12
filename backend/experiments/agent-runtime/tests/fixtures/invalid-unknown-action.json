@@ -2,7 +2,7 @@
   "id": "invalid-unknown-action",
   "version": "1.0.0",
   "displayName": "Invalid Unknown Action",
-  "prompt": { "path": "../roles/prompts/runtime-allow.md" },
+  "prompt": { "path": "../../roles/prompts/runtime-allow.md" },
   "modelDefaults": { "model": "gpt-5.5", "reasoningEffort": "medium" },
   "capabilities": ["tool.execute_code", "fs.read", "cmd.not-real.run"],
   "policy": {
