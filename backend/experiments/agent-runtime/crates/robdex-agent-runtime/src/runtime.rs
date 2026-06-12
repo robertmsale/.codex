@@ -4,7 +4,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::db;
+use crate::{approvals, db, routing};
 use crate::lifecycle::{self, TerminalStatus};
 use crate::model::codex_adapter::{bounded_raw_response, concise_response_summary, CodexBackedModelClient};
 use crate::model::ModelClient;
@@ -42,6 +42,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
         json!({"input": message}),
     )
     .await?;
+    let _route = routing::decide_route(pool, session_id, Some(turn_id), &role_snapshot).await?;
 
     let model = CodexBackedModelClient::new_with_model(role_snapshot.model_defaults.model.clone())?;
     let plan = model.request_tool_call(&role_snapshot.instruction_text, message).await?;
@@ -112,12 +113,18 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
     .await?;
 
     if !tool_policy.decision.can_execute() {
+        let approval_request_id = if tool_policy.decision.as_str() == "approvalRequired" {
+            Some(approvals::request_approval(pool, session_id, Some(turn_id), &tool_policy, &role_snapshot).await?)
+        } else {
+            None
+        };
         let result_json = json!({
             "ok": false,
             "blocked": true,
             "action": "tool.execute_code",
             "decision": tool_policy.decision.as_str(),
             "reason": tool_policy.reason,
+            "approvalRequestId": approval_request_id,
         });
         lifecycle::complete_turn(pool, turn_id, TerminalStatus::Failed, Utc::now()).await?;
         db::append_event(

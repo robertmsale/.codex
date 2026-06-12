@@ -59,14 +59,14 @@ impl CodexBackedModelClient {
         json!({
             "type": "function",
             "name": "execute_code",
-            "description": "Evaluate Starlark in the experimental host runtime. The complete interface is: output(value) emits the final tool output; fs.read(path) returns file text; cmd[\"rg\"].run(args=[...], cwd=\".\") returns an rg command result. Host API calls return values to the script but do not implicitly become final output.",
+            "description": "Evaluate Starlark in the experimental host runtime. Complete interface: output(value) emits final tool output; host calls return script values but are not implicit final output. APIs: fs.read(path), fs.write(path, content), patch.apply(unified_diff), cmd[\"rg\"].run(args=[...], cwd=\".\"), cmd[\"git\"].status(), cmd[\"git\"].diff(args=[...]), cmd[\"cargo\"].check(args=[...]). No raw shell or unregistered binaries.",
             "parameters": {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
                     "source": {
                         "type": "string",
-                        "description": "Starlark source using only this interface: output(value) for final output; fs.read(path); cmd[\"rg\"].run(args=[...], cwd=\".\"). Assign host-call return values and pass the desired final value to output(value)."
+                        "description": "Starlark source using only: output(value); fs.read(path); fs.write(path, content); patch.apply(unified_diff); cmd[\"rg\"].run(args=[...], cwd=\".\"); cmd[\"git\"].status(); cmd[\"git\"].diff(args=[...]); cmd[\"cargo\"].check(args=[...]). Assign host-call return values and pass the desired final value to output(value)."
                     }
                 },
                 "required": ["source"]

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib-validation-db.sh"
+validation_setup_database
 
-DATABASE_URL="${ROBDEX_AGENT_RUNTIME_DATABASE_URL:-postgres://postgres:postgres@127.0.0.1:5432/robdex_agent_runtime}"
-export ROBDEX_AGENT_RUNTIME_DATABASE_URL="$DATABASE_URL"
 
 run() {
   printf '\n$ %s\n' "$*"
@@ -10,7 +11,7 @@ run() {
 }
 
 sql() {
-  psql "$DATABASE_URL" -Atc "$1"
+  psql "$ROBDEX_AGENT_RUNTIME_DATABASE_URL" -Atc "$1"
 }
 
 run cargo run --quiet -- init-db

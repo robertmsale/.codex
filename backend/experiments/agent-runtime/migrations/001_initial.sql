@@ -145,3 +145,84 @@ BEGIN
     END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS role_versions_role_created_idx ON role_versions(role_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS approval_requests (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id UUID,
+    action_name TEXT NOT NULL,
+    requested_by_role JSONB NOT NULL,
+    input_context JSONB NOT NULL,
+    required_approver_kind TEXT NOT NULL CHECK (required_approver_kind IN ('owner', 'orchestrator')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'expired', 'cancelled')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS approval_requests_session_created_idx ON approval_requests(session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS approval_requests_status_created_idx ON approval_requests(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS approval_decisions (
+    id UUID PRIMARY KEY,
+    request_id UUID NOT NULL REFERENCES approval_requests(id) ON DELETE CASCADE,
+    decision TEXT NOT NULL CHECK (decision IN ('approved', 'denied')),
+    reason TEXT NOT NULL,
+    decided_by JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS approval_decisions_request_created_idx ON approval_decisions(request_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS paused_actions (
+    id UUID PRIMARY KEY,
+    approval_request_id UUID NOT NULL REFERENCES approval_requests(id) ON DELETE CASCADE,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id UUID,
+    tool_call_id UUID,
+    script_run_id UUID,
+    action_name TEXT NOT NULL,
+    action_input JSONB NOT NULL,
+    role_snapshot JSONB NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pendingApproval', 'approved', 'resuming', 'completed', 'failed', 'cancelled')),
+    result JSONB,
+    error JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS paused_actions_approval_request_idx ON paused_actions(approval_request_id);
+CREATE INDEX IF NOT EXISTS paused_actions_session_created_idx ON paused_actions(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS file_mutations (
+    id UUID PRIMARY KEY,
+    script_run_id UUID NOT NULL REFERENCES script_runs(id) ON DELETE CASCADE,
+    action_name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    before_state JSONB NOT NULL,
+    after_state JSONB NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ,
+    duration_ms BIGINT,
+    policy_decision JSONB NOT NULL DEFAULT '{}'::jsonb,
+    approval_request_id UUID REFERENCES approval_requests(id) ON DELETE SET NULL,
+    truncation JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS file_mutations_script_idx ON file_mutations(script_run_id);
+
+CREATE TABLE IF NOT EXISTS patch_runs (
+    id UUID PRIMARY KEY,
+    script_run_id UUID NOT NULL REFERENCES script_runs(id) ON DELETE CASCADE,
+    action_name TEXT NOT NULL,
+    affected_paths JSONB NOT NULL,
+    before_state JSONB NOT NULL,
+    after_state JSONB NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ,
+    duration_ms BIGINT,
+    policy_decision JSONB NOT NULL DEFAULT '{}'::jsonb,
+    approval_request_id UUID REFERENCES approval_requests(id) ON DELETE SET NULL,
+    truncation JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS patch_runs_script_idx ON patch_runs(script_run_id);

@@ -65,6 +65,9 @@ impl ManifestDecision {
 #[serde(rename_all = "camelCase")]
 pub struct RoutingMetadata {
     pub mode: String,
+    pub default_recipient: Option<String>,
+    #[serde(default)]
+    pub allowed_recipients: Vec<String>,
     #[serde(default)]
     pub reserved_actions: Vec<String>,
 }
@@ -240,6 +243,9 @@ impl RoleRegistry {
             actions::validate_known_action(action)?;
         }
         validate_non_empty("routing.mode", &manifest.routing.mode)?;
+        if manifest.routing.mode != "direct" {
+            bail!("unsupported routing mode: {}", manifest.routing.mode);
+        }
         Ok(())
     }
 
@@ -292,4 +298,79 @@ fn validate_non_empty(field: &str, value: &str) -> Result<()> {
         bail!("role manifest field must not be empty: {field}")
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::{
+        LifecycleAuthorityMetadata, ManifestDecision, ModelDefaults, PromptSource, RoleManifest,
+        RoleRegistry, RoutingMetadata, VisibilityMetadata,
+    };
+
+    fn temp_role_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "robdex_agent_runtime_role_unit_{}_{}_{}",
+            name,
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("prompts")).unwrap();
+        fs::write(dir.join("prompts/role.md"), "role instructions\n").unwrap();
+        dir
+    }
+
+    fn manifest() -> RoleManifest {
+        RoleManifest {
+            id: "unit-role".to_string(),
+            version: "1.0.0".to_string(),
+            display_name: "Unit Role".to_string(),
+            prompt: PromptSource { path: "prompts/role.md".to_string() },
+            model_defaults: ModelDefaults {
+                model: "gpt-5.5".to_string(),
+                reasoning_effort: "medium".to_string(),
+            },
+            capabilities: vec!["tool.execute_code".to_string()],
+            policy: BTreeMap::from([("tool.execute_code".to_string(), ManifestDecision::Allow)]),
+            routing: RoutingMetadata {
+                mode: "direct".to_string(),
+                default_recipient: Some("owner".to_string()),
+                allowed_recipients: vec!["owner".to_string()],
+                reserved_actions: vec!["message.send".to_string(), "message.route".to_string()],
+            },
+            visibility: VisibilityMetadata { listed: true, owner_visible: true },
+            lifecycle_authority: LifecycleAuthorityMetadata {
+                can_spawn_agents: false,
+                can_archive_agents: false,
+                reserved_actions: vec!["agent.spawn.<role>".to_string(), "agent.archive".to_string()],
+            },
+        }
+    }
+
+    #[test]
+    fn manifest_validation_rejects_unknown_actions() {
+        let dir = temp_role_dir("unknown_action");
+        let registry = RoleRegistry::from_root(dir.clone());
+        let mut manifest = manifest();
+        manifest.capabilities.push("cmd.nope.run".to_string());
+        manifest.policy.insert("cmd.nope.run".to_string(), ManifestDecision::Allow);
+        let error = registry.validate_manifest(&manifest, &dir).unwrap_err().to_string();
+        assert!(error.contains("unknown action in role manifest: cmd.nope.run"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn manifest_validation_rejects_capability_policy_mismatch() {
+        let dir = temp_role_dir("capability_mismatch");
+        let registry = RoleRegistry::from_root(dir.clone());
+        let mut manifest = manifest();
+        manifest.capabilities.push("fs.read".to_string());
+        let error = registry.validate_manifest(&manifest, &dir).unwrap_err().to_string();
+        assert!(error.contains("capabilities must exactly match policy keys"));
+        let _ = fs::remove_dir_all(dir);
+    }
 }

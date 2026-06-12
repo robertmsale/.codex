@@ -2,19 +2,55 @@
   "id": "runtime-no-rg",
   "version": "1.0.0",
   "displayName": "Runtime No RG",
-  "prompt": { "path": "prompts/runtime-no-rg.md" },
-  "modelDefaults": { "model": "gpt-5.5", "reasoningEffort": "medium" },
-  "capabilities": ["tool.execute_code", "fs.read", "cmd.rg.run"],
+  "prompt": {
+    "path": "prompts/runtime-no-rg.md"
+  },
+  "modelDefaults": {
+    "model": "gpt-5.5",
+    "reasoningEffort": "medium"
+  },
+  "capabilities": [
+    "tool.execute_code",
+    "fs.read",
+    "cmd.rg.run",
+    "fs.write",
+    "patch.apply",
+    "cmd.git.status",
+    "cmd.git.diff",
+    "cmd.cargo.check"
+  ],
   "policy": {
     "tool.execute_code": "allow",
     "fs.read": "allow",
-    "cmd.rg.run": "deny"
+    "cmd.rg.run": "deny",
+    "fs.write": "deny",
+    "patch.apply": "deny",
+    "cmd.git.status": "allow",
+    "cmd.git.diff": "allow",
+    "cmd.cargo.check": "allow"
   },
-  "routing": { "mode": "direct", "reservedActions": ["message.send", "message.route"] },
-  "visibility": { "listed": true, "ownerVisible": true },
+  "routing": {
+    "mode": "direct",
+    "defaultRecipient": "owner",
+    "allowedRecipients": [
+      "owner",
+      "orchestrator"
+    ],
+    "reservedActions": [
+      "message.send",
+      "message.route"
+    ]
+  },
+  "visibility": {
+    "listed": true,
+    "ownerVisible": true
+  },
   "lifecycleAuthority": {
     "canSpawnAgents": false,
     "canArchiveAgents": false,
-    "reservedActions": ["agent.spawn.<role>", "agent.archive"]
+    "reservedActions": [
+      "agent.spawn.<role>",
+      "agent.archive"
+    ]
   }
 }

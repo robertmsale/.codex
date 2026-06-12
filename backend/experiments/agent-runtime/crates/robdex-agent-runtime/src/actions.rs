@@ -1,6 +1,15 @@
 use anyhow::{Result, bail};
 
-pub const ACTIVE_ACTIONS: &[&str] = &["tool.execute_code", "fs.read", "cmd.rg.run"];
+pub const ACTIVE_ACTIONS: &[&str] = &[
+    "tool.execute_code",
+    "fs.read",
+    "cmd.rg.run",
+    "fs.write",
+    "patch.apply",
+    "cmd.git.status",
+    "cmd.git.diff",
+    "cmd.cargo.check",
+];
 pub const RESERVED_ACTIONS: &[&str] = &[
     "agent.spawn.<role>",
     "agent.archive",

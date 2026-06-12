@@ -1,8 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
+use std::collections::BTreeSet;
 
-use robdex_agent_runtime::{db, runtime};
+use robdex_agent_runtime::{approvals, db, routing, runtime};
 use robdex_agent_runtime::roles::{DEFAULT_ROLE_ID, RoleRegistry};
 
 const DEFAULT_DATABASE_URL: &str =
@@ -42,6 +43,10 @@ enum Command {
         #[command(subcommand)]
         command: RolesCommand,
     },
+    Approvals {
+        #[command(subcommand)]
+        command: ApprovalsCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -57,6 +62,24 @@ enum RolesCommand {
     },
     Show {
         id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ApprovalsCommand {
+    List,
+    Show {
+        id: Uuid,
+    },
+    Decide {
+        id: Uuid,
+        #[arg(long)]
+        decision: String,
+        #[arg(long)]
+        reason: String,
+    },
+    Resume {
+        id: Uuid,
     },
 }
 
@@ -85,6 +108,7 @@ async fn main() -> Result<()> {
             match command {
                 RolesCommand::Import { manifest } => {
                     let imported = registry.load_for_import(&manifest)?;
+                    routing::validate_manifest_against_db(&pool, &imported.manifest).await?;
                     db::import_role_version(&pool, &imported).await?;
                     println!(
                         "imported {} {} {}",
@@ -93,8 +117,18 @@ async fn main() -> Result<()> {
                 }
                 RolesCommand::ImportSeeds => {
                     let mut count = 0usize;
-                    for path in registry.manifest_paths()? {
-                        let imported = registry.load_for_import(&path)?;
+                    let paths = registry.manifest_paths()?;
+                    let mut imports = Vec::new();
+                    let mut context = BTreeSet::new();
+                    for path in &paths {
+                        let imported = registry.load_for_import(path)?;
+                        context.insert(imported.snapshot.id.clone());
+                        imports.push(imported);
+                    }
+                    for imported in &imports {
+                        routing::validate_routing(&imported.manifest.routing, Some(&pool), &context).await?;
+                    }
+                    for imported in imports {
                         db::import_role_version(&pool, &imported).await?;
                         count += 1;
                     }
@@ -120,6 +154,25 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Command::Approvals { command } => match command {
+            ApprovalsCommand::List => {
+                for approval in approvals::list(&pool).await? {
+                    println!("{}", serde_json::to_string(&approval)?);
+                }
+            }
+            ApprovalsCommand::Show { id } => {
+                println!("{}", serde_json::to_string_pretty(&approvals::show(&pool, id).await?)?);
+            }
+            ApprovalsCommand::Decide { id, decision, reason } => {
+                let decision = approvals::ApprovalDecision::try_from(decision.as_str())?;
+                approvals::decide(&pool, id, decision, &reason).await?;
+                println!("decided {id} {}", decision.as_str());
+            }
+            ApprovalsCommand::Resume { id } => {
+                approvals::resume(&pool, id).await?;
+                println!("resumed {id}");
+            }
+        },
     }
     Ok(())
 }
