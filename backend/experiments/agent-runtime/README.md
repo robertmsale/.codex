@@ -274,9 +274,20 @@ curl http://localhost:1234/v1/embeddings \
   -d '{"model":"qwen3-embedding-4b-dwq","input":"workflow memory smoke test"}'
 ```
 
+The optional smoke helper is explicitly opt-in and performs only an embedding call:
+
+```sh
+ROBDEX_AGENT_RUNTIME_EMBEDDING_PROVIDER=lmstudio \
+ROBDEX_AGENT_RUNTIME_EMBEDDING_BASE_URL=http://localhost:1234 \
+ROBDEX_AGENT_RUNTIME_EMBEDDING_MODEL=qwen3-embedding-4b-dwq \
+scripts/smoke-lmstudio-embeddings.sh
+```
+
 The model-visible Starlark API is concise: `workflow_memory.help()` searches using the latest prior relevant non-memory script in the same session, not the tiny current help script; `workflow_memory.remember_when(condition, title, reason)` records a candidate and promotes it only after the full script exits successfully with `condition == True`; `workflow_memory.mark_attempted(id, variant=True)` and `workflow_memory.mark_not_helpful(id, reason)` record bounded feedback events. First/plain attempts are not auto-promoted. The intended loop is plain attempt fails, call `workflow_memory.help()`, try exact or variant help when useful, and enter remember mode only for a later successful script with explicit success criteria.
 
 Role policy gates native memory actions: `workflow_memory.search`, `workflow_memory.remember.project`, `workflow_memory.remember.global`, and `workflow_memory.feedback`. Seed runtime roles allow project-scoped validation memory; global memory remains approval-gated or denied.
+
+`workflow_memory.help()` is lazy: ordinary `execute_code` scripts do not precompute help searches or embed the prior script unless the current source actually calls `workflow_memory.help()`. Raw script indexing still runs after script completion. Embedding provider/index failures are recorded as `workflow_memory.*_failed` or `workflow_memory.provider_failure` events with session/turn/script context and do not fail an otherwise successful script. Feedback APIs validate that the target memory exists and is visible in the session's project/global scope before recording attempted or not-helpful events.
 
 ## Validation database hygiene
 

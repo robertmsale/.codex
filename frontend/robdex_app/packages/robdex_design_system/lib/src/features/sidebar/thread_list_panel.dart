@@ -477,19 +477,33 @@ Future<void> _showThreadContextMenu(
           ],
         ),
       ),
+      PopupMenuItem(
+        value: 'copyId',
+        child: Row(
+          children: [
+            Icon(Icons.tag_rounded, size: 16),
+            SizedBox(width: 8),
+            Text('Copy ID'),
+          ],
+        ),
+      ),
     ],
   );
-  if (selected != 'copyName' || !context.mounted) {
+  if ((selected != 'copyName' && selected != 'copyId') || !context.mounted) {
     return;
   }
-  await Clipboard.setData(ClipboardData(text: thread.title));
+
+  final valueToCopy = selected == 'copyName' ? thread.title : thread.id;
+  await Clipboard.setData(ClipboardData(text: valueToCopy));
   if (!context.mounted) {
     return;
   }
   ScaffoldMessenger.of(context).hideCurrentSnackBar();
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
-      content: Text('Copied "${thread.title}"'),
+      content: Text(
+        selected == 'copyName' ? 'Copied "${thread.title}"' : 'Copied thread ID "${thread.id}"',
+      ),
       duration: const Duration(milliseconds: 1400),
     ),
   );

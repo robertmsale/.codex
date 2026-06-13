@@ -1149,7 +1149,19 @@ impl BridgeRuntime {
                 };
                 orchestrator_thread_id
             }
-            "pass" | "acceptedBlocked" | "waiverAccepted" => {
+            "acceptedBlocked" => {
+                let Some(project) = tracked_project_for_thread(&state_value, source_thread_id) else {
+                    return;
+                };
+                let Some(orchestrator_thread_id) = project
+                    .orchestrator_thread_id
+                    .filter(|id| id != reviewer_thread_id && id != source_thread_id)
+                else {
+                    return;
+                };
+                orchestrator_thread_id
+            }
+            "pass" | "waiverAccepted" => {
                 let Some(project) = tracked_project_for_thread(&state_value, source_thread_id) else {
                     return;
                 };
@@ -3950,6 +3962,66 @@ mod tests {
             Ok(Some(extra)) => panic!("unexpected source resume: {extra}"),
             Ok(None) | Err(_) => {}
         }
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn accepted_blocker_without_orchestrator_does_not_resume_source() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string()
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        runtime
+            .maybe_route_requirements_verdict(
+                "worker-1",
+                "reviewer-1",
+                "review-turn-blocked-no-orch",
+                &json!({
+                    "overallVerdict": "acceptedBlocked",
+                    "route": {
+                        "target": "orchestrator",
+                        "message": "External blocker accepted."
+                    },
+                    "blockedRequirement": {
+                        "verdict": "acceptedBlocked",
+                        "reason": "External dependency.",
+                        "evidenceAssessment": "sufficient",
+                        "requiredCorrection": ""
+                    }
+                }),
+            )
+            .await;
+
+        let no_request = tokio::time::timeout(std::time::Duration::from_millis(150), requests.recv()).await;
+        assert!(no_request.is_err(), "acceptedBlocked must not fall back to waking the source agent");
         transport.abort();
         server.abort();
     }

@@ -282,6 +282,46 @@ pub async fn insert_memory_event(
     Ok(())
 }
 
+pub async fn record_provider_failure(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Option<Uuid>,
+    script_run_id: Option<Uuid>,
+    event_type: &str,
+    error: &str,
+    context: Value,
+) -> Result<()> {
+    insert_memory_event(
+        pool,
+        session_id,
+        turn_id,
+        script_run_id,
+        None,
+        event_type,
+        json!({
+            "error": error,
+            "context": context,
+        }),
+    )
+    .await
+}
+
+pub async fn memory_visible_to_session(pool: &PgPool, session_id: Uuid, memory_id: Uuid) -> Result<bool> {
+    let project_key = db::session_project_key(pool, session_id).await?;
+    let count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*) FROM workflow_memories
+        WHERE id=$1
+          AND (scope_type='global' OR (scope_type='project' AND COALESCE(project_key,'')=COALESCE($2,'')))
+        "#,
+    )
+    .bind(memory_id)
+    .bind(project_key.as_deref())
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
 async fn latest_prior_non_memory_script(
     pool: &PgPool,
     session_id: Uuid,

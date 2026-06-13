@@ -36,7 +36,7 @@ use crate::command_registry::{self, CommandVersion};
 use crate::lifecycle::{self, TerminalStatus};
 use crate::policy::{PolicyEngine, RuntimeDecision};
 use crate::roles::RoleSnapshot;
-use crate::workflow_memory::{HelpResult, RememberCandidate};
+use crate::workflow_memory::RememberCandidate;
 
 const OUTPUT_LIMIT_BYTES: usize = 12_000;
 
@@ -184,11 +184,12 @@ pub struct ExecuteCodePacket {
 
 #[derive(Debug, ProvidesStaticType)]
 struct HostKernel {
+    pool: PgPool,
     session_id: Uuid,
+    script_run_id: Uuid,
     root: ExecutionRoot,
     commands: std::collections::BTreeMap<String, CommandVersion>,
     role_snapshot: RoleSnapshot,
-    memory_help_results: Vec<HelpResult>,
     memory_candidates: RefCell<Vec<RememberCandidate>>,
     output: RefCell<Vec<String>>,
     records: RefCell<Vec<HostRecord>>,
@@ -377,17 +378,15 @@ pub async fn execute_code(
     process_handles.extend(active_process_handles(session_id));
     process_handles.sort();
     process_handles.dedup();
-    let memory_help_results = crate::workflow_memory::help_results_for_latest_prior_script(pool, session_id, script_run_id, 5)
-        .await
-        .unwrap_or_default();
     let result = evaluate_starlark(
+        pool.clone(),
         session_id,
+        script_run_id,
         source,
         root.clone(),
         role_snapshot.clone(),
         live_commands,
         process_handles,
-        memory_help_results,
     );
     let status = if result.error.is_some() {
         TerminalStatus::Failed
@@ -419,7 +418,18 @@ pub async fn execute_code(
         Utc::now(),
     )
     .await?;
-    crate::workflow_memory::index_script(pool, session_id, turn_id, script_run_id, source).await?;
+    if let Err(error) = crate::workflow_memory::index_script(pool, session_id, turn_id, script_run_id, source).await {
+        crate::workflow_memory::record_provider_failure(
+            pool,
+            session_id,
+            Some(turn_id),
+            Some(script_run_id),
+            "workflow_memory.index_failed",
+            &error.to_string(),
+            json!({"phase": "script_index", "scriptRunId": script_run_id}),
+        )
+        .await?;
+    }
     db::append_event(
         pool,
         session_id,
@@ -437,7 +447,7 @@ pub async fn execute_code(
     }
 
     for candidate in &result.memory_candidates {
-        crate::workflow_memory::promote_project_memory(
+        if let Err(error) = crate::workflow_memory::promote_project_memory(
             pool,
             session_id,
             turn_id,
@@ -446,7 +456,19 @@ pub async fn execute_code(
             &candidate.title,
             &candidate.reason,
         )
-        .await?;
+        .await
+        {
+            crate::workflow_memory::record_provider_failure(
+                pool,
+                session_id,
+                Some(turn_id),
+                Some(script_run_id),
+                "workflow_memory.promotion_failed",
+                &error.to_string(),
+                json!({"phase": "promotion", "title": candidate.title}),
+            )
+            .await?;
+        }
     }
 
     Ok(ExecuteCodePacket {
@@ -469,13 +491,14 @@ struct EvalResult {
 }
 
 fn evaluate_starlark(
+    pool: PgPool,
     session_id: Uuid,
+    script_run_id: Uuid,
     source: &str,
     root: ExecutionRoot,
     role_snapshot: RoleSnapshot,
     live_commands: Vec<CommandVersion>,
     process_handles: Vec<String>,
-    memory_help_results: Vec<HelpResult>,
 ) -> EvalResult {
     let prelude = match command_registry::starlark_prelude(&live_commands, &process_handles) {
         Ok(prelude) => prelude,
@@ -490,11 +513,12 @@ fn evaluate_starlark(
     };
     let script = format!("{prelude}\n{source}");
     let kernel = HostKernel {
+        pool,
         session_id,
+        script_run_id,
         root,
         commands: live_commands.into_iter().map(|command| (command.action_id.clone(), command)).collect(),
         role_snapshot,
-        memory_help_results,
         memory_candidates: RefCell::new(Vec::new()),
         output: RefCell::new(Vec::new()),
         records: RefCell::new(Vec::new()),
@@ -754,6 +778,10 @@ fn host_kernel<'v, 'a>(eval: &Evaluator<'v, 'a, '_>) -> &'a HostKernel {
         .expect("Evaluator.extra must be HostKernel")
 }
 
+fn block_on_host_future<F: std::future::Future>(future: F) -> F::Output {
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+}
+
 impl HostKernel {
     fn decide(&self, action: &str, input: JsonValue) -> crate::policy::PolicyResult {
         let decision = PolicyEngine::decide(&self.role_snapshot, action, input);
@@ -765,22 +793,38 @@ impl HostKernel {
     }
 
     fn workflow_memory_help(&self) -> anyhow::Result<String> {
-        let input = json!({"mode": "latestPriorRelevantScript", "limit": self.memory_help_results.len()});
+        let input = json!({"mode": "latestPriorRelevantScript", "limit": 5});
         let policy = self.decide("workflow_memory.search", input.clone());
         if !policy.decision.can_execute() {
             bail!("workflow_memory.help blocked by policy: {}", policy.decision.as_str());
         }
+        let results = match block_on_host_future(crate::workflow_memory::help_results_for_latest_prior_script(
+            &self.pool,
+            self.session_id,
+            self.script_run_id,
+            5,
+        )) {
+            Ok(results) => results,
+            Err(error) => {
+                self.records.borrow_mut().push(HostRecord::WorkflowMemory(WorkflowMemoryRecord {
+                    event_type: "workflow_memory.provider_failure".to_string(),
+                    memory_id: None,
+                    payload: json!({"phase": "help", "error": error.to_string()}),
+                }));
+                Vec::new()
+            }
+        };
         let payload = json!({
             "input": input,
-            "resultCount": self.memory_help_results.len(),
-            "results": self.memory_help_results,
+            "resultCount": results.len(),
+            "results": results,
         });
         self.records.borrow_mut().push(HostRecord::WorkflowMemory(WorkflowMemoryRecord {
             event_type: "workflow_memory.help".to_string(),
             memory_id: None,
             payload: payload.clone(),
         }));
-        Ok(serde_json::to_string(&self.memory_help_results)?)
+        Ok(serde_json::to_string(payload.get("results").unwrap_or(&JsonValue::Null))?)
     }
 
     fn workflow_memory_remember_when(&self, condition: bool, title: &str, reason: &str) -> anyhow::Result<String> {
@@ -815,6 +859,11 @@ impl HostKernel {
         let policy = self.decide("workflow_memory.feedback", input.clone());
         if !policy.decision.can_execute() {
             bail!("{event_type} blocked by policy: {}", policy.decision.as_str());
+        }
+        let visible = block_on_host_future(crate::workflow_memory::memory_visible_to_session(&self.pool, self.session_id, memory_id))
+            .with_context(|| format!("failed to validate workflow memory feedback target: {memory_id}"))?;
+        if !visible {
+            bail!("workflow memory feedback target is not visible to this session: {memory_id}");
         }
         self.records.borrow_mut().push(HostRecord::WorkflowMemory(WorkflowMemoryRecord {
             event_type: event_type.to_string(),
@@ -2461,11 +2510,22 @@ mod tests {
     };
     use chrono::Utc;
     use serde_json::json;
+    use sqlx::postgres::PgPoolOptions;
     use std::collections::BTreeMap;
+
+    fn test_pool() -> PgPool {
+        PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@127.0.0.1:5432/robdex_agent_runtime_test")
+            .expect("test pool URL must parse")
+    }
 
     fn test_role() -> RoleSnapshot {
         let mut policy = BTreeMap::new();
         policy.insert("fs.read".to_string(), ManifestDecision::Allow);
+        policy.insert("fs.write".to_string(), ManifestDecision::Allow);
+        policy.insert("workflow_memory.search".to_string(), ManifestDecision::Allow);
+        policy.insert("workflow_memory.remember.project".to_string(), ManifestDecision::Allow);
+        policy.insert("workflow_memory.feedback".to_string(), ManifestDecision::Allow);
         RoleSnapshot {
             id: "test-role".to_string(),
             version: "1.0.0".to_string(),
@@ -2515,29 +2575,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn continuing_process_is_controllable_later_in_same_runtime_and_isolated_by_session() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn continuing_process_is_controllable_later_in_same_runtime_and_isolated_by_session() {
         let session = Uuid::new_v4();
         let other_session = Uuid::new_v4();
         let root = ExecutionRoot::new(".").unwrap();
         let cmd = test_command("yes", &["/usr/bin/yes"], "cmd.yes.run", "yes", "forbid", "continue", Some(Duration::from_millis(500)));
-        let first = evaluate_starlark(session, "h = cmd[\"yes\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), vec![cmd.clone()], vec![], Vec::new());
+        let first = evaluate_starlark(test_pool(), session, Uuid::new_v4(), "h = cmd[\"yes\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), vec![cmd.clone()], vec![]);
         assert!(first.error.is_none(), "{:?}", first.error);
         let handle = first.output.trim().trim_matches('"').to_string();
         assert!(handle.starts_with("proc_"));
         assert!(first.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.continued")));
 
-        let second = evaluate_starlark(session, &format!("proc[{handle:?}].await_for(mins=0); out = proc[{handle:?}].flush_buffer(); proc[{handle:?}].terminate(); output(out)"), root.clone(), test_role(), vec![cmd.clone()], vec![handle.clone()], Vec::new());
+        let second = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("proc[{handle:?}].await_for(mins=0); out = proc[{handle:?}].flush_buffer(); proc[{handle:?}].terminate(); output(out)"), root.clone(), test_role(), vec![cmd.clone()], vec![handle.clone()]);
         assert!(second.error.is_none(), "{:?}", second.error);
         assert!(second.output.contains('y'));
         assert!(second.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.terminated")));
 
-        let isolated = evaluate_starlark(other_session, &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle], Vec::new());
+        let isolated = evaluate_starlark(test_pool(), other_session, Uuid::new_v4(), &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle]);
         assert!(isolated.error.unwrap_or_default().contains("session-only process no longer attached"));
     }
 
-    #[test]
-    fn stdin_allowed_process_accepts_input_and_flush_cursor_advances() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stdin_allowed_process_accepts_input_and_flush_cursor_advances() {
         let session = Uuid::new_v4();
         let root = ExecutionRoot::new(".").unwrap();
         let cmd = test_command("cat", &["/bin/cat"], "cmd.cat.run", "cat", "allow", "terminate", Some(Duration::from_secs(2)));
@@ -2550,27 +2610,123 @@ second = proc[h].flush_buffer()
 proc[h].terminate()
 output(first + "|second=" + second)
 "#;
-        let result = evaluate_starlark(session, script, root, test_role(), vec![cmd], vec![], Vec::new());
+        let result = evaluate_starlark(test_pool(), session, Uuid::new_v4(), script, root, test_role(), vec![cmd], vec![]);
         assert!(result.error.is_none(), "{:?}", result.error);
         assert!(result.output.contains("hello-process"));
         assert!(result.output.contains("|second="));
     }
 
-    #[test]
-    fn async_max_runtime_expires_without_handle_polling_and_detached_handle_errors_are_clear() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn async_max_runtime_expires_without_handle_polling_and_detached_handle_errors_are_clear() {
         let session = Uuid::new_v4();
         let root = ExecutionRoot::new(".").unwrap();
         let cmd = test_command("yes", &["/usr/bin/yes"], "cmd.yes.max.run", "yes_max", "forbid", "continue", Some(Duration::from_millis(100)));
-        let first = evaluate_starlark(session, "h = cmd[\"yes_max\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), vec![cmd.clone()], vec![], Vec::new());
+        let first = evaluate_starlark(test_pool(), session, Uuid::new_v4(), "h = cmd[\"yes_max\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), vec![cmd.clone()], vec![]);
         assert!(first.error.is_none(), "{:?}", first.error);
         let handle = first.output.trim().trim_matches('"').to_string();
         thread::sleep(Duration::from_millis(250));
-        let second = evaluate_starlark(session, &format!("running = proc[{handle:?}].is_running(); output(str(running))"), root.clone(), test_role(), vec![cmd.clone()], vec![handle.clone()], Vec::new());
+        let second = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("running = proc[{handle:?}].is_running(); output(str(running))"), root.clone(), test_role(), vec![cmd.clone()], vec![handle.clone()]);
         assert!(second.error.is_none(), "{:?}", second.error);
         assert!(second.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.status == "maxRuntimeExceeded" || process.event == "process.continued")));
 
         PROCESS_MANAGER.lock().unwrap().clear();
-        let detached = evaluate_starlark(session, &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle], Vec::new());
+        let detached = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle]);
         assert!(detached.error.unwrap_or_default().contains("session-only process no longer attached"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn workflow_memory_deterministic_validation() {
+        let url = std::env::var("ROBDEX_AGENT_RUNTIME_DATABASE_URL").expect("validation database URL must be set");
+        let pool = PgPoolOptions::new().connect(&url).await.unwrap();
+        crate::db::init(&pool).await.unwrap();
+        let role = test_role();
+        let root_dir = std::env::temp_dir().join(format!("agent-runtime-workflow-memory-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root_dir).unwrap();
+        std::fs::write(root_dir.join("seed.txt"), "seed").unwrap();
+        let root = ExecutionRoot::new(&root_dir).unwrap();
+        let seed_session = crate::db::new_session(&pool, &role, Some("alpha"), root_dir.to_str().unwrap(), None, None, None).await.unwrap();
+        let fail_session = crate::db::new_session(&pool, &role, Some("alpha"), root_dir.to_str().unwrap(), None, None, None).await.unwrap();
+        let beta_session = crate::db::new_session(&pool, &role, Some("beta"), root_dir.to_str().unwrap(), None, None, None).await.unwrap();
+        let mut deny_role = role.clone();
+        deny_role.policy.insert("workflow_memory.remember.project".to_string(), ManifestDecision::Deny);
+        let deny_session = crate::db::new_session(&pool, &deny_role, Some("alpha"), root_dir.to_str().unwrap(), None, None, None).await.unwrap();
+
+        async fn run_script(pool: &PgPool, session: Uuid, root: &ExecutionRoot, role: &RoleSnapshot, source: &str) -> Result<serde_json::Value> {
+            let turn_id = Uuid::new_v4();
+            let tool_call_id = Uuid::new_v4();
+            sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user',$3,'running',now())")
+                .bind(turn_id)
+                .bind(session)
+                .bind(source)
+                .execute(pool)
+                .await?;
+            sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, started_at) VALUES ($1,$2,$3,'execute_code',$4,$5,'running',now())")
+                .bind(tool_call_id)
+                .bind(session)
+                .bind(turn_id)
+                .bind(format!("call_{tool_call_id}"))
+                .bind(json!({"source": source}))
+                .execute(pool)
+                .await?;
+            let packet = execute_code(pool, session, turn_id, tool_call_id, source, root, role).await?;
+            Ok(serde_json::to_value(packet)?)
+        }
+
+        let promote_source = r#"fs.write("memory-target.txt", "needle workflow memory success")
+text = fs.read("memory-target.txt")
+workflow_memory.remember_when(text == "needle workflow memory success", "Write memory target", "Use fs.write then fs.read to verify exact content after missing-file failures")
+output("promoted")"#;
+        run_script(&pool, seed_session, &root, &role, promote_source).await.unwrap();
+        let memory_id: Uuid = sqlx::query_scalar("SELECT id FROM workflow_memories WHERE session_id=$1 LIMIT 1").bind(seed_session).fetch_one(&pool).await.unwrap();
+        run_script(&pool, seed_session, &root, &role, promote_source).await.unwrap();
+        let memory_count: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memories WHERE session_id=$1").bind(seed_session).fetch_one(&pool).await.unwrap();
+        assert_eq!(memory_count, 1);
+        let duplicate_events: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memory_events WHERE session_id=$1 AND event_type='workflow_memory.duplicate_collapsed'").bind(seed_session).fetch_one(&pool).await.unwrap();
+        assert!(duplicate_events > 0);
+
+        let failed = run_script(&pool, fail_session, &root, &role, r#"fs.read("missing-workflow-memory-file.txt")
+output("unreachable")"#).await;
+        assert!(failed.is_err());
+        let failed_embeddings: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memory_script_embeddings WHERE session_id=$1").bind(fail_session).fetch_one(&pool).await.unwrap();
+        assert!(failed_embeddings > 0);
+        let failed_promotions: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memories WHERE session_id=$1").bind(fail_session).fetch_one(&pool).await.unwrap();
+        assert_eq!(failed_promotions, 0);
+
+        run_script(&pool, fail_session, &root, &role, r#"tips = workflow_memory.help()
+output(tips)"#).await.unwrap();
+        let help_results: i64 = sqlx::query_scalar("SELECT (payload->>'resultCount')::bigint FROM workflow_memory_events WHERE session_id=$1 AND event_type='workflow_memory.help' ORDER BY created_at DESC LIMIT 1").bind(fail_session).fetch_one(&pool).await.unwrap();
+        assert!(help_results > 0);
+
+        run_script(&pool, fail_session, &root, &role, &format!(r#"workflow_memory.mark_attempted("{memory_id}", variant=True)
+workflow_memory.mark_not_helpful("{memory_id}", "not enough context")
+output("feedback")"#)).await.unwrap();
+        let feedback_events: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memory_events WHERE memory_id=$1 AND event_type IN ('workflow_memory.mark_attempted','workflow_memory.mark_not_helpful')").bind(memory_id).fetch_one(&pool).await.unwrap();
+        assert_eq!(feedback_events, 2);
+
+        let denied = run_script(&pool, deny_session, &root, &deny_role, r#"workflow_memory.remember_when(True, "Denied memory", "restrictive role should block")
+output("denied")"#).await;
+        assert!(denied.is_err());
+        let denied_memories: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memories WHERE session_id=$1").bind(deny_session).fetch_one(&pool).await.unwrap();
+        assert_eq!(denied_memories, 0);
+
+        let invisible_feedback = run_script(&pool, beta_session, &root, &role, &format!(r#"workflow_memory.mark_attempted("{memory_id}", variant=True)
+output("bad")"#)).await;
+        assert!(invisible_feedback.unwrap_err().to_string().contains("not visible"));
+
+        let beta_failed = run_script(&pool, beta_session, &root, &role, r#"fs.read("missing-workflow-memory-file.txt")
+output("unreachable")"#).await;
+        assert!(beta_failed.is_err());
+        run_script(&pool, beta_session, &root, &role, r#"tips = workflow_memory.help()
+output(tips)"#).await.unwrap();
+        let beta_help_results: i64 = sqlx::query_scalar("SELECT (payload->>'resultCount')::bigint FROM workflow_memory_events WHERE session_id=$1 AND event_type='workflow_memory.help' ORDER BY created_at DESC LIMIT 1").bind(beta_session).fetch_one(&pool).await.unwrap();
+        assert_eq!(beta_help_results, 0);
+        let beta_help_mentions_alpha: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memory_events WHERE session_id=$1 AND event_type='workflow_memory.help' AND payload::text LIKE $2").bind(beta_session).bind(format!("%{memory_id}%")).fetch_one(&pool).await.unwrap();
+        assert_eq!(beta_help_mentions_alpha, 0);
+
+        let ordinary_before: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memory_events WHERE session_id=$1 AND event_type='workflow_memory.help'").bind(seed_session).fetch_one(&pool).await.unwrap();
+        run_script(&pool, seed_session, &root, &role, r#"output("ordinary no help")"#).await.unwrap();
+        let ordinary_after: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memory_events WHERE session_id=$1 AND event_type='workflow_memory.help'").bind(seed_session).fetch_one(&pool).await.unwrap();
+        assert_eq!(ordinary_before, ordinary_after);
     }
 }
