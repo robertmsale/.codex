@@ -192,7 +192,29 @@ status, registry definitions, command versions, or mutation events.
 
 ## Role policy foundation
 
-Postgres is the runtime source of truth for roles. JSON manifests and prompt files in `roles/` are seed/import/export artifacts only. Import resolves prompt files into immutable `role_versions.instruction_text`; runtime session creation reads the current DB role version and stores a complete immutable `sessions.role_snapshot`.
+Postgres is the runtime source of truth for roles. JSON manifests and prompt files in `roles/` are seed/import/export artifacts only. Import resolves prompt files into immutable `role_versions.instruction_text`; runtime session creation reads the current DB role version and stores a complete immutable `sessions.role_snapshot`. Runtime role administration uses the DB-backed `roles` CLI; prompt files are never a runtime source of truth after import.
+
+Canonical role administration:
+
+```sh
+cargo run -- roles create <manifest-or-db-export.json>
+cargo run -- roles update <manifest-or-db-export.json>
+cargo run -- roles import <manifest-or-db-export.json>
+cargo run -- roles import-seeds
+cargo run -- roles list
+cargo run -- roles show <role-id>
+cargo run -- roles versions <role-id>
+cargo run -- roles version <role-version-id>
+cargo run -- roles activate <role-id> --version-id <role-version-id>
+cargo run -- roles archive <role-id>
+cargo run -- roles unarchive <role-id>
+cargo run -- roles export <role-id> --out <db-backed-export.json>
+cargo run -- roles validate --manifest <manifest-or-db-export.json>
+```
+
+`roles create`, `roles update`, `roles import`, and `roles import-seeds` share the same canonical DB role-version insertion path after their operation-specific preconditions pass. `roles create` is strict and fails if the role id already exists. `roles update` is strict and fails if the role id does not already exist. `roles import` is the general artifact ingestion path and remains import/upsert: it creates the role when missing or appends a new immutable role version and points the role at it when present. `roles import-seeds` is bootstrap/seed import and uses the same canonical insertion path for bundled seed manifests. `roles activate` changes only `roles.current_version_id`; it is the rollback mechanism and does not delete or rewrite historical `role_versions`. `roles archive` disables the role for new sessions while preserving the role, versions, DB-backed exports, inspection, and existing session snapshots. `roles unarchive` restores new-session availability using the existing current version and does not create a role version. `roles export` reads the DB current version and includes `instructionText`, so the export can be imported into a fresh database without the original prompt file.
+
+Role validation emits structured packets with validity, role/version identity, prompt byte count, model defaults, policy actions, routing recipients, lifecycle authority, errors, and warnings. Validation rejects invalid JSON, invalid role ids, empty instruction text, missing model defaults, unknown native actions, concrete `cmd.*` role policy entries, capability/policy mismatches, unsupported routing modes, invalid reserved actions, and invalid routing recipients before activation/runtime use.
 
 Active actions implemented by this slice:
 - `tool.execute_code`
@@ -229,6 +251,33 @@ Routing metadata is structured role data. The supported mode is `direct`, with `
 
 Approval resume is explicit and action-only. `approvals decide` only persists a decision and never executes the blocked action. `approvals resume <approval-id>` requires an approved request and a linked pending paused action. Resumable command actions are any DB registry command action with immutable stored input including `commandVersionId`; native resumable mutation actions are `fs.write` and `patch.apply`. Resume does not call the model, does not replay the script or turn, and does not rewrite the original failed turn. Resume records `approval.resume.started`, `policy.resumeDecision`, mutation/command evidence, and `approval.resume.completed` or `approval.resume.failed`.
 
+## Agent-led workflow memory
+
+Workflow memory is agent-led and project-scoped by default. Raw script source remains canonical in `script_runs.source`; `workflow_memory_script_embeddings` stores one embedding/index row per script run, and promoted `workflow_memories` reference the source `script_run_id` instead of duplicating large source bodies. `workflow_memory_events` records help/search, attempted, not-helpful, promoted, and duplicate-collapsed evidence.
+
+Embedding configuration is provider-agnostic:
+
+```sh
+export ROBDEX_AGENT_RUNTIME_EMBEDDING_PROVIDER=disabled        # default
+export ROBDEX_AGENT_RUNTIME_EMBEDDING_PROVIDER=deterministic   # validation, no network
+export ROBDEX_AGENT_RUNTIME_EMBEDDING_PROVIDER=lmstudio
+export ROBDEX_AGENT_RUNTIME_EMBEDDING_BASE_URL=http://localhost:1234
+export ROBDEX_AGENT_RUNTIME_EMBEDDING_MODEL=qwen3-embedding-4b-dwq
+export ROBDEX_AGENT_RUNTIME_EMBEDDING_DIMENSIONS=2560
+```
+
+Host Postgres must have the pgvector extension package installed; `init-db` runs `CREATE EXTENSION IF NOT EXISTS vector` and stores embeddings as `halfvec(2560)` with cosine distance. The LM Studio provider is only used when explicitly configured and targets the OpenAI-compatible embeddings endpoint:
+
+```sh
+curl http://localhost:1234/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3-embedding-4b-dwq","input":"workflow memory smoke test"}'
+```
+
+The model-visible Starlark API is concise: `workflow_memory.help()` searches using the latest prior relevant non-memory script in the same session, not the tiny current help script; `workflow_memory.remember_when(condition, title, reason)` records a candidate and promotes it only after the full script exits successfully with `condition == True`; `workflow_memory.mark_attempted(id, variant=True)` and `workflow_memory.mark_not_helpful(id, reason)` record bounded feedback events. First/plain attempts are not auto-promoted. The intended loop is plain attempt fails, call `workflow_memory.help()`, try exact or variant help when useful, and enter remember mode only for a later successful script with explicit success criteria.
+
+Role policy gates native memory actions: `workflow_memory.search`, `workflow_memory.remember.project`, `workflow_memory.remember.global`, and `workflow_memory.feedback`. Seed runtime roles allow project-scoped validation memory; global memory remains approval-gated or denied.
+
 ## Validation database hygiene
 
 Manual experiments use the normal runtime database configured by `ROBDEX_AGENT_RUNTIME_DATABASE_URL`, for example:
@@ -247,6 +296,8 @@ scripts/validate-approvals-routing.sh
 scripts/validate-action-resume.sh
 scripts/validate-mutation-actions.sh
 scripts/validate-command-registry.sh
+scripts/validate-role-admin-ux.sh
+scripts/validate-workflow-memory.sh
 ```
 
 Validation database administration defaults to `ROBDEX_AGENT_RUNTIME_VALIDATION_ADMIN_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres`. Override that admin connection only when the same local Postgres server requires a different maintenance database. Do not point validation cleanup at the normal runtime database.

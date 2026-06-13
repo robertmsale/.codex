@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS event_stream (
     sequence BIGSERIAL PRIMARY KEY,
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS event_stream (
 );
 
 CREATE INDEX IF NOT EXISTS event_stream_session_sequence_idx ON event_stream(session_id, sequence);
+ALTER TABLE event_stream ALTER COLUMN session_id DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS turns (
     id UUID PRIMARY KEY,
@@ -270,6 +272,9 @@ CREATE TABLE IF NOT EXISTS role_versions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_by TEXT NOT NULL DEFAULT 'seed-import'
 );
+ALTER TABLE role_versions ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT 'seed-import';
+ALTER TABLE roles ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+ALTER TABLE roles ADD COLUMN IF NOT EXISTS unarchived_at TIMESTAMPTZ;
 
 DO $$
 BEGIN
@@ -362,3 +367,58 @@ CREATE TABLE IF NOT EXISTS patch_runs (
     truncation JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 CREATE INDEX IF NOT EXISTS patch_runs_script_idx ON patch_runs(script_run_id);
+
+CREATE TABLE IF NOT EXISTS workflow_memory_script_embeddings (
+    id UUID PRIMARY KEY,
+    script_run_id UUID NOT NULL REFERENCES script_runs(id) ON DELETE CASCADE,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    project_key TEXT,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    storage_type TEXT NOT NULL DEFAULT 'halfvec',
+    source_hash TEXT NOT NULL,
+    command_fingerprint TEXT NOT NULL,
+    embedding halfvec(2560) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(script_run_id)
+);
+CREATE INDEX IF NOT EXISTS workflow_memory_script_embeddings_project_idx
+    ON workflow_memory_script_embeddings(project_key, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS workflow_memories (
+    id UUID PRIMARY KEY,
+    script_run_id UUID NOT NULL REFERENCES script_runs(id) ON DELETE CASCADE,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('project', 'global')),
+    project_key TEXT,
+    title TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    storage_type TEXT NOT NULL DEFAULT 'halfvec',
+    source_hash TEXT NOT NULL,
+    command_fingerprint TEXT NOT NULL,
+    embedding halfvec(2560) NOT NULL,
+    helpful_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    promoted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS workflow_memories_exact_project_unique_idx
+    ON workflow_memories(scope_type, COALESCE(project_key, ''), source_hash);
+CREATE INDEX IF NOT EXISTS workflow_memories_project_idx
+    ON workflow_memories(scope_type, project_key, promoted_at DESC);
+
+CREATE TABLE IF NOT EXISTS workflow_memory_events (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id UUID,
+    script_run_id UUID REFERENCES script_runs(id) ON DELETE SET NULL,
+    memory_id UUID REFERENCES workflow_memories(id) ON DELETE SET NULL,
+    event_type TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS workflow_memory_events_memory_idx ON workflow_memory_events(memory_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS workflow_memory_events_session_idx ON workflow_memory_events(session_id, created_at DESC);

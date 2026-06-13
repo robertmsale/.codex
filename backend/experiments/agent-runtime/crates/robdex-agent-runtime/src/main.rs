@@ -94,6 +94,12 @@ enum SessionsCommand {
 
 #[derive(Debug, Subcommand)]
 enum RolesCommand {
+    Create {
+        manifest: std::path::PathBuf,
+    },
+    Update {
+        manifest: std::path::PathBuf,
+    },
     Import {
         manifest: std::path::PathBuf,
     },
@@ -105,6 +111,28 @@ enum RolesCommand {
     },
     Show {
         id: String,
+    },
+    Versions {
+        id: String,
+    },
+    Version {
+        id: Uuid,
+    },
+    Activate {
+        id: String,
+        #[arg(long = "version-id")]
+        version_id: Uuid,
+    },
+    Archive {
+        id: String,
+    },
+    Unarchive {
+        id: String,
+    },
+    Export {
+        id: String,
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
     },
 }
 
@@ -236,13 +264,41 @@ async fn main() -> Result<()> {
         Command::Roles { command } => {
             let registry = RoleRegistry::default_for_workspace()?;
             match command {
+                RolesCommand::Create { manifest } => {
+                    let imported = registry.load_for_import(&manifest)?;
+                    if db::role_exists(&pool, &imported.snapshot.id).await? {
+                        anyhow::bail!("role create requires a new role id; role already exists: {}", imported.snapshot.id);
+                    }
+                    routing::validate_manifest_against_db(&pool, &imported.manifest).await?;
+                    command_registry::validate_policy_actions_exist(&pool, imported.snapshot.policy.keys().cloned()).await?;
+                    db::import_role_version_with_actor(&pool, &imported, "role-admin-cli").await?;
+                    db::append_admin_event(&pool, "role", Some(imported.snapshot.role_version_id), "role.created", Some("active"), serde_json::json!({"roleId": imported.snapshot.id, "version": imported.snapshot.version, "roleVersionId": imported.snapshot.role_version_id})).await?;
+                    println!(
+                        "role-version {} {} {}",
+                        imported.snapshot.id, imported.snapshot.version, imported.snapshot.role_version_id
+                    );
+                }
+                RolesCommand::Update { manifest } => {
+                    let imported = registry.load_for_import(&manifest)?;
+                    if !db::role_exists(&pool, &imported.snapshot.id).await? {
+                        anyhow::bail!("role update requires an existing role id; role does not exist: {}", imported.snapshot.id);
+                    }
+                    routing::validate_manifest_against_db(&pool, &imported.manifest).await?;
+                    command_registry::validate_policy_actions_exist(&pool, imported.snapshot.policy.keys().cloned()).await?;
+                    db::import_role_version_with_actor(&pool, &imported, "role-admin-cli").await?;
+                    db::append_admin_event(&pool, "role", Some(imported.snapshot.role_version_id), "role.updated", Some("active"), serde_json::json!({"roleId": imported.snapshot.id, "version": imported.snapshot.version, "roleVersionId": imported.snapshot.role_version_id})).await?;
+                    println!(
+                        "role-version {} {} {}",
+                        imported.snapshot.id, imported.snapshot.version, imported.snapshot.role_version_id
+                    );
+                }
                 RolesCommand::Import { manifest } => {
                     let imported = registry.load_for_import(&manifest)?;
                     routing::validate_manifest_against_db(&pool, &imported.manifest).await?;
                     command_registry::validate_policy_actions_exist(&pool, imported.snapshot.policy.keys().cloned()).await?;
-                    db::import_role_version(&pool, &imported).await?;
+                    db::import_role_version_with_actor(&pool, &imported, "role-admin-cli").await?;
                     println!(
-                        "imported {} {} {}",
+                        "role-version {} {} {}",
                         imported.snapshot.id, imported.snapshot.version, imported.snapshot.role_version_id
                     );
                 }
@@ -267,16 +323,38 @@ async fn main() -> Result<()> {
                     println!("imported {count} seed roles");
                 }
                 RolesCommand::List => {
-                    for role in db::list_roles(&pool).await? {
-                        println!("{} {} {}", role.id, role.version, role.display_name);
+                    for role in db::list_role_records(&pool).await? {
+                        println!("{}", serde_json::to_string(&role)?);
                     }
                 }
                 RolesCommand::Validate { manifest } => {
                     if let Some(path) = manifest {
+                        let mut packet = registry.validation_packet_for_path(&path);
+                        if packet.valid {
+                            match registry.load_for_import(&path) {
+                                Ok(imported) => {
+                                    if let Err(error) = routing::validate_manifest_against_db(&pool, &imported.manifest).await {
+                                        packet.valid = false;
+                                        packet.errors.push(error.to_string());
+                                    }
+                                    if let Err(error) = command_registry::validate_policy_actions_exist(&pool, imported.snapshot.policy.keys().cloned()).await {
+                                        packet.valid = false;
+                                        packet.errors.push(error.to_string());
+                                    }
+                                }
+                                Err(error) => {
+                                    packet.valid = false;
+                                    packet.errors.push(error.to_string());
+                                }
+                            }
+                        }
+                        println!("{}", serde_json::to_string_pretty(&packet)?);
+                        if !packet.valid {
+                            db::append_admin_event(&pool, "role", None, "role.validationFailed", Some("failed"), serde_json::json!({"path": path, "packet": packet})).await?;
+                            anyhow::bail!("role manifest validation failed");
+                        }
                         let imported = registry.load_for_import(&path)?;
-                        routing::validate_manifest_against_db(&pool, &imported.manifest).await?;
-                        command_registry::validate_policy_actions_exist(&pool, imported.snapshot.policy.keys().cloned()).await?;
-                        println!("valid {}", imported.snapshot.id);
+                        db::append_admin_event(&pool, "role", None, "role.validationSucceeded", Some("success"), serde_json::json!({"path": path, "roleId": imported.snapshot.id, "version": imported.snapshot.version})).await?;
                     } else {
                         let paths = registry.manifest_paths()?;
                         let mut imports = Vec::new();
@@ -290,12 +368,44 @@ async fn main() -> Result<()> {
                             routing::validate_routing(&imported.manifest.routing, Some(&pool), &context).await?;
                             command_registry::validate_policy_actions_exist(&pool, imported.snapshot.policy.keys().cloned()).await?;
                         }
-                        println!("valid {} role manifests", imports.len());
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({"valid": true, "count": imports.len()}))?);
+                        db::append_admin_event(&pool, "role", None, "role.validationSucceeded", Some("success"), serde_json::json!({"count": imports.len()})).await?;
                     }
                 }
                 RolesCommand::Show { id } => {
                     let role = db::current_role_snapshot(&pool, &id).await?;
                     println!("{}", serde_json::to_string_pretty(&role)?);
+                }
+                RolesCommand::Versions { id } => {
+                    println!("{}", serde_json::to_string_pretty(&db::role_versions(&pool, &id).await?)?);
+                }
+                RolesCommand::Version { id } => {
+                    println!("{}", serde_json::to_string_pretty(&db::role_version_snapshot(&pool, id).await?)?);
+                }
+                RolesCommand::Activate { id, version_id } => {
+                    let snapshot = db::role_version_snapshot(&pool, version_id).await?;
+                    routing::validate_snapshot_routing_against_db(&pool, &snapshot).await?;
+                    command_registry::validate_policy_actions_exist(&pool, snapshot.policy.keys().cloned()).await?;
+                    db::activate_role_version(&pool, &id, version_id).await?;
+                    println!("activated {id} {version_id}");
+                }
+                RolesCommand::Archive { id } => {
+                    db::archive_role(&pool, &id).await?;
+                    println!("archived {id}");
+                }
+                RolesCommand::Unarchive { id } => {
+                    db::unarchive_role(&pool, &id).await?;
+                    println!("unarchived {id}");
+                }
+                RolesCommand::Export { id, out } => {
+                    let export = db::export_role(&pool, &id).await?;
+                    let text = serde_json::to_string_pretty(&export)?;
+                    if let Some(path) = out {
+                        std::fs::write(&path, text)?;
+                        println!("{}", path.display());
+                    } else {
+                        println!("{text}");
+                    }
                 }
             }
         }

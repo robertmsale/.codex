@@ -150,8 +150,7 @@ printf 'project_owner_command_runs='; sql "select count(*) from command_runs cr 
 
 write_request /tmp/scoped-conflict-request.json add /tmp/scoped-project-seed.json
 CONFLICT_REQ=$(create_internal_request /tmp/scoped-conflict-request.json)
-approve "$CONFLICT_REQ" global '' allow /tmp/scoped-project-seed.json
-CONFLICT_APPLY=$(cargo run --quiet -- command-registry requests apply --session "$ADMIN" "$CONFLICT_REQ" 2>&1 || true)
-printf 'scoped_conflict_apply=%s\n' "$CONFLICT_APPLY" | rg 'scoped command action conflict'
-printf 'scoped_conflict_status='; sql "select application_status from command_registry_requests where id='$CONFLICT_REQ'"
-[[ "$(sql "select application_status from command_registry_requests where id='$CONFLICT_REQ'")" == "pending" ]]
+CONFLICT_DECIDE=$(cargo run --quiet -- command-registry requests decide --session "$ADMIN" "$CONFLICT_REQ" --status approved --final-scope global --final-policy allow --final-command-file /tmp/scoped-project-seed.json 2>&1 || true)
+printf 'scoped_conflict_decide=%s\n' "$CONFLICT_DECIDE" | rg 'scoped command action conflict'
+printf 'scoped_conflict_status='; sql "select approval_status || '/' || application_status from command_registry_requests where id='$CONFLICT_REQ'"
+[[ "$(sql "select approval_status || '/' || application_status from command_registry_requests where id='$CONFLICT_REQ'")" == "pending/pending" ]]

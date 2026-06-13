@@ -113,6 +113,21 @@ pub struct ImportedRoleVersion {
     pub manifest_json: Value,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleValidationPacket {
+    pub valid: bool,
+    pub role_id: Option<String>,
+    pub version: Option<String>,
+    pub prompt_byte_count: usize,
+    pub model_defaults: Option<ModelDefaults>,
+    pub policy_actions: Vec<String>,
+    pub routing_recipients: Vec<String>,
+    pub lifecycle_authority: Option<LifecycleAuthorityMetadata>,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RoleRegistry {
     root: PathBuf,
@@ -177,14 +192,23 @@ impl RoleRegistry {
     pub fn load_for_import(&self, path: &Path) -> Result<ImportedRoleVersion> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("role manifest is not readable: {}", path.display()))?;
-        let manifest_json: Value = serde_json::from_str(&content)
+        let raw_json: Value = serde_json::from_str(&content)
             .with_context(|| format!("role manifest is not valid JSON: {}", path.display()))?;
+        let manifest_json = raw_json.get("manifest").cloned().unwrap_or_else(|| raw_json.clone());
         let manifest: RoleManifest = serde_json::from_value(manifest_json.clone())
             .with_context(|| format!("role manifest schema is invalid: {}", path.display()))?;
         let base = path.parent().unwrap_or(&self.root);
-        self.validate_manifest_with_options(&manifest, base, false)
+        let has_embedded_instruction = raw_json.get("instructionText").and_then(Value::as_str).is_some();
+        self.validate_manifest_with_options(&manifest, base, false, !has_embedded_instruction)
             .with_context(|| format!("invalid role manifest: {}", path.display()))?;
-        let instruction_text = self.resolve_prompt(&manifest, base)?;
+        let instruction_text = if let Some(text) = raw_json.get("instructionText").and_then(Value::as_str) {
+            if text.trim().is_empty() {
+                bail!("prompt instruction body must not be empty in DB role export: {}", path.display());
+            }
+            text.to_string()
+        } else {
+            self.resolve_prompt(&manifest, base)?
+        };
         let role_version_id = Uuid::new_v4();
         let created_at = Utc::now();
         let snapshot = RoleSnapshot {
@@ -205,6 +229,66 @@ impl RoleRegistry {
         Ok(ImportedRoleVersion { snapshot, manifest, manifest_json })
     }
 
+    pub fn validation_packet_for_path(&self, path: &Path) -> RoleValidationPacket {
+        let mut errors = Vec::new();
+        let mut role_id = None;
+        let mut version = None;
+        let mut prompt_byte_count = 0usize;
+        let mut model_defaults = None;
+        let mut policy_actions = Vec::new();
+        let mut routing_recipients = Vec::new();
+        let mut lifecycle_authority = None;
+        match std::fs::read_to_string(path) {
+            Ok(content) => match serde_json::from_str::<Value>(&content) {
+                Ok(raw_json) => {
+                    let manifest_json = raw_json.get("manifest").cloned().unwrap_or(raw_json.clone());
+                    match serde_json::from_value::<RoleManifest>(manifest_json) {
+                        Ok(manifest) => {
+                            role_id = Some(manifest.id.clone());
+                            version = Some(manifest.version.clone());
+                            model_defaults = Some(manifest.model_defaults.clone());
+                            policy_actions = manifest.policy.keys().cloned().collect();
+                            routing_recipients = manifest.routing.allowed_recipients.clone();
+                            if let Some(default) = &manifest.routing.default_recipient {
+                                if !routing_recipients.contains(default) {
+                                    routing_recipients.push(default.clone());
+                                }
+                            }
+                            lifecycle_authority = Some(manifest.lifecycle_authority.clone());
+                            match raw_json.get("instructionText").and_then(Value::as_str) {
+                                Some(text) => prompt_byte_count = text.len(),
+                                None => {
+                                    let base = path.parent().unwrap_or(&self.root);
+                                    if let Ok(text) = self.resolve_prompt(&manifest, base) {
+                                        prompt_byte_count = text.len();
+                                    }
+                                }
+                            }
+                            if let Err(error) = self.load_for_import(path) {
+                                errors.push(error_chain_message(&error));
+                            }
+                        }
+                        Err(error) => errors.push(format!("role manifest schema is invalid: {error}")),
+                    }
+                }
+                Err(error) => errors.push(format!("role manifest is not valid JSON: {error}")),
+            },
+            Err(error) => errors.push(format!("role manifest is not readable: {error}")),
+        }
+        RoleValidationPacket {
+            valid: errors.is_empty(),
+            role_id,
+            version,
+            prompt_byte_count,
+            model_defaults,
+            policy_actions,
+            routing_recipients,
+            lifecycle_authority,
+            errors,
+            warnings: Vec::new(),
+        }
+    }
+
     pub fn validate_all(&self) -> Result<Vec<RoleManifest>> {
         let roles = self.list_manifests()?;
         if roles.is_empty() {
@@ -214,7 +298,7 @@ impl RoleRegistry {
     }
 
     pub fn validate_manifest(&self, manifest: &RoleManifest, base: &Path) -> Result<()> {
-        self.validate_manifest_with_options(manifest, base, false)
+        self.validate_manifest_with_options(manifest, base, false, true)
     }
 
     fn validate_manifest_with_options(
@@ -222,6 +306,7 @@ impl RoleRegistry {
         manifest: &RoleManifest,
         base: &Path,
         allow_registry_command_actions: bool,
+        prompt_required: bool,
     ) -> Result<()> {
         validate_role_id(&manifest.id)?;
         validate_non_empty("version", &manifest.version)?;
@@ -230,8 +315,14 @@ impl RoleRegistry {
         validate_non_empty("modelDefaults.reasoningEffort", &manifest.model_defaults.reasoning_effort)?;
 
         let prompt_path = base.join(&manifest.prompt.path);
-        if !prompt_path.is_file() {
+        if prompt_required && !prompt_path.is_file() {
             bail!("prompt file path does not exist: {}", prompt_path.display());
+        }
+        if prompt_required {
+            let instruction = self.resolve_prompt(manifest, base)?;
+            if instruction.trim().is_empty() {
+                bail!("prompt instruction body must not be empty: {}", prompt_path.display());
+            }
         }
 
         for action in &manifest.capabilities {
@@ -267,6 +358,10 @@ impl RoleRegistry {
         }
         Ok(text)
     }
+}
+
+fn error_chain_message(error: &anyhow::Error) -> String {
+    error.chain().map(ToString::to_string).collect::<Vec<_>>().join(": ")
 }
 
 fn validate_manifest_action(action: &str, allow_registry_command_actions: bool) -> Result<()> {

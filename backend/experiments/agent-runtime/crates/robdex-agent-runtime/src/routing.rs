@@ -36,6 +36,10 @@ pub async fn validate_manifest_against_db(pool: &PgPool, manifest: &RoleManifest
     validate_routing(&manifest.routing, Some(pool), &BTreeSet::new()).await
 }
 
+pub async fn validate_snapshot_routing_against_db(pool: &PgPool, snapshot: &RoleSnapshot) -> Result<()> {
+    validate_routing(&snapshot.routing, Some(pool), &BTreeSet::new()).await
+}
+
 pub async fn validate_routing(
     routing: &RoutingMetadata,
     pool: Option<&PgPool>,

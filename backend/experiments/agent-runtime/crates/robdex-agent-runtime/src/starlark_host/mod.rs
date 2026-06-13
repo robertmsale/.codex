@@ -36,6 +36,7 @@ use crate::command_registry::{self, CommandVersion};
 use crate::lifecycle::{self, TerminalStatus};
 use crate::policy::{PolicyEngine, RuntimeDecision};
 use crate::roles::RoleSnapshot;
+use crate::workflow_memory::{HelpResult, RememberCandidate};
 
 const OUTPUT_LIMIT_BYTES: usize = 12_000;
 
@@ -187,6 +188,8 @@ struct HostKernel {
     root: ExecutionRoot,
     commands: std::collections::BTreeMap<String, CommandVersion>,
     role_snapshot: RoleSnapshot,
+    memory_help_results: Vec<HelpResult>,
+    memory_candidates: RefCell<Vec<RememberCandidate>>,
     output: RefCell<Vec<String>>,
     records: RefCell<Vec<HostRecord>>,
 }
@@ -259,6 +262,14 @@ enum HostRecord {
     ApprovalPause(ApprovalPauseRecord),
     FileMutation(FileMutationRecord),
     PatchRun(PatchRunRecord),
+    WorkflowMemory(WorkflowMemoryRecord),
+}
+
+#[derive(Debug)]
+struct WorkflowMemoryRecord {
+    event_type: String,
+    memory_id: Option<Uuid>,
+    payload: JsonValue,
 }
 
 #[derive(Debug)]
@@ -366,7 +377,18 @@ pub async fn execute_code(
     process_handles.extend(active_process_handles(session_id));
     process_handles.sort();
     process_handles.dedup();
-    let result = evaluate_starlark(session_id, source, root.clone(), role_snapshot.clone(), live_commands, process_handles);
+    let memory_help_results = crate::workflow_memory::help_results_for_latest_prior_script(pool, session_id, script_run_id, 5)
+        .await
+        .unwrap_or_default();
+    let result = evaluate_starlark(
+        session_id,
+        source,
+        root.clone(),
+        role_snapshot.clone(),
+        live_commands,
+        process_handles,
+        memory_help_results,
+    );
     let status = if result.error.is_some() {
         TerminalStatus::Failed
     } else {
@@ -397,6 +419,7 @@ pub async fn execute_code(
         Utc::now(),
     )
     .await?;
+    crate::workflow_memory::index_script(pool, session_id, turn_id, script_run_id, source).await?;
     db::append_event(
         pool,
         session_id,
@@ -411,6 +434,19 @@ pub async fn execute_code(
 
     if status == TerminalStatus::Failed {
         bail!(stderr);
+    }
+
+    for candidate in &result.memory_candidates {
+        crate::workflow_memory::promote_project_memory(
+            pool,
+            session_id,
+            turn_id,
+            script_run_id,
+            source,
+            &candidate.title,
+            &candidate.reason,
+        )
+        .await?;
     }
 
     Ok(ExecuteCodePacket {
@@ -428,13 +464,29 @@ pub async fn execute_code(
 struct EvalResult {
     output: String,
     records: Vec<HostRecord>,
+    memory_candidates: Vec<RememberCandidate>,
     error: Option<String>,
 }
 
-fn evaluate_starlark(session_id: Uuid, source: &str, root: ExecutionRoot, role_snapshot: RoleSnapshot, live_commands: Vec<CommandVersion>, process_handles: Vec<String>) -> EvalResult {
+fn evaluate_starlark(
+    session_id: Uuid,
+    source: &str,
+    root: ExecutionRoot,
+    role_snapshot: RoleSnapshot,
+    live_commands: Vec<CommandVersion>,
+    process_handles: Vec<String>,
+    memory_help_results: Vec<HelpResult>,
+) -> EvalResult {
     let prelude = match command_registry::starlark_prelude(&live_commands, &process_handles) {
         Ok(prelude) => prelude,
-        Err(error) => return EvalResult { output: String::new(), records: Vec::new(), error: Some(error.to_string()) },
+        Err(error) => {
+            return EvalResult {
+                output: String::new(),
+                records: Vec::new(),
+                memory_candidates: Vec::new(),
+                error: Some(error.to_string()),
+            };
+        }
     };
     let script = format!("{prelude}\n{source}");
     let kernel = HostKernel {
@@ -442,6 +494,8 @@ fn evaluate_starlark(session_id: Uuid, source: &str, root: ExecutionRoot, role_s
         root,
         commands: live_commands.into_iter().map(|command| (command.action_id.clone(), command)).collect(),
         role_snapshot,
+        memory_help_results,
+        memory_candidates: RefCell::new(Vec::new()),
         output: RefCell::new(Vec::new()),
         records: RefCell::new(Vec::new()),
     };
@@ -460,9 +514,11 @@ fn evaluate_starlark(session_id: Uuid, source: &str, root: ExecutionRoot, role_s
     let output = kernel.output.borrow().join("\n");
     kernel.cleanup_end_of_turn();
     let records = kernel.records.into_inner();
+    let memory_candidates = kernel.memory_candidates.into_inner();
     EvalResult {
         output,
         records,
+        memory_candidates,
         error,
     }
 }
@@ -472,6 +528,7 @@ fn add_host_builtins(builder: &mut GlobalsBuilder) {
     builder.namespace("patch", patch_builtins);
     builder.namespace_no_docs("__cmd", cmd_dynamic_builtins);
     builder.namespace_no_docs("__proc", proc_dynamic_builtins);
+    builder.namespace("workflow_memory", workflow_memory_builtins);
     struct_builtins(builder);
     output_builtins(builder);
 }
@@ -642,6 +699,38 @@ fn proc_dynamic_builtins(builder: &mut GlobalsBuilder) {
 }
 
 #[starlark_module]
+fn workflow_memory_builtins(builder: &mut GlobalsBuilder) {
+    fn help<'v>(eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).workflow_memory_help()
+    }
+
+    fn remember_when<'v>(
+        condition: bool,
+        title: &'v str,
+        reason: &'v str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<String> {
+        host_kernel(eval).workflow_memory_remember_when(condition, title, reason)
+    }
+
+    fn mark_not_helpful<'v>(
+        id: &'v str,
+        reason: &'v str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<String> {
+        host_kernel(eval).workflow_memory_feedback("workflow_memory.mark_not_helpful", id, json!({"reason": reason}))
+    }
+
+    fn mark_attempted<'v>(
+        id: &'v str,
+        #[starlark(default = true)] variant: bool,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<String> {
+        host_kernel(eval).workflow_memory_feedback("workflow_memory.mark_attempted", id, json!({"variant": variant}))
+    }
+}
+
+#[starlark_module]
 fn output_builtins(builder: &mut GlobalsBuilder) {
     fn output<'v>(value: Value<'v>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<NoneType> {
         host_kernel(eval).output.borrow_mut().push(value.to_string());
@@ -673,6 +762,66 @@ impl HostKernel {
             payload: decision.to_event_payload(),
         }));
         decision
+    }
+
+    fn workflow_memory_help(&self) -> anyhow::Result<String> {
+        let input = json!({"mode": "latestPriorRelevantScript", "limit": self.memory_help_results.len()});
+        let policy = self.decide("workflow_memory.search", input.clone());
+        if !policy.decision.can_execute() {
+            bail!("workflow_memory.help blocked by policy: {}", policy.decision.as_str());
+        }
+        let payload = json!({
+            "input": input,
+            "resultCount": self.memory_help_results.len(),
+            "results": self.memory_help_results,
+        });
+        self.records.borrow_mut().push(HostRecord::WorkflowMemory(WorkflowMemoryRecord {
+            event_type: "workflow_memory.help".to_string(),
+            memory_id: None,
+            payload: payload.clone(),
+        }));
+        Ok(serde_json::to_string(&self.memory_help_results)?)
+    }
+
+    fn workflow_memory_remember_when(&self, condition: bool, title: &str, reason: &str) -> anyhow::Result<String> {
+        if !condition {
+            self.records.borrow_mut().push(HostRecord::WorkflowMemory(WorkflowMemoryRecord {
+                event_type: "workflow_memory.remember_skipped".to_string(),
+                memory_id: None,
+                payload: json!({"condition": false, "title": title}),
+            }));
+            return Ok("remember_when condition false; no candidate recorded".to_string());
+        }
+        let input = json!({"scope": "project", "title": title, "reason": reason});
+        let policy = self.decide("workflow_memory.remember.project", input.clone());
+        if !policy.decision.can_execute() {
+            bail!("workflow_memory.remember_when blocked by policy: {}", policy.decision.as_str());
+        }
+        self.memory_candidates.borrow_mut().push(RememberCandidate {
+            title: title.to_string(),
+            reason: reason.to_string(),
+        });
+        self.records.borrow_mut().push(HostRecord::WorkflowMemory(WorkflowMemoryRecord {
+            event_type: "workflow_memory.remember_candidate".to_string(),
+            memory_id: None,
+            payload: input,
+        }));
+        Ok("remember candidate recorded; it will promote only if this script completes successfully".to_string())
+    }
+
+    fn workflow_memory_feedback(&self, event_type: &str, id: &str, payload: JsonValue) -> anyhow::Result<String> {
+        let memory_id = Uuid::parse_str(id).with_context(|| format!("workflow memory id is not a UUID: {id}"))?;
+        let input = json!({"memoryId": memory_id, "eventType": event_type, "payload": payload});
+        let policy = self.decide("workflow_memory.feedback", input.clone());
+        if !policy.decision.can_execute() {
+            bail!("{event_type} blocked by policy: {}", policy.decision.as_str());
+        }
+        self.records.borrow_mut().push(HostRecord::WorkflowMemory(WorkflowMemoryRecord {
+            event_type: event_type.to_string(),
+            memory_id: Some(memory_id),
+            payload: input,
+        }));
+        Ok(format!("{event_type} recorded for {memory_id}"))
     }
 
     fn run_fs_read(&self, path: &str) -> anyhow::Result<String> {
@@ -2265,6 +2414,18 @@ async fn persist_record(
             )
             .await?;
         }
+        HostRecord::WorkflowMemory(memory) => {
+            crate::workflow_memory::insert_memory_event(
+                pool,
+                session_id,
+                Some(turn_id),
+                Some(script_run_id),
+                memory.memory_id,
+                &memory.event_type,
+                memory.payload.clone(),
+            )
+            .await?;
+        }
     }
     Ok(())
 }
@@ -2360,18 +2521,18 @@ mod tests {
         let other_session = Uuid::new_v4();
         let root = ExecutionRoot::new(".").unwrap();
         let cmd = test_command("yes", &["/usr/bin/yes"], "cmd.yes.run", "yes", "forbid", "continue", Some(Duration::from_millis(500)));
-        let first = evaluate_starlark(session, "h = cmd[\"yes\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), vec![cmd.clone()], vec![]);
+        let first = evaluate_starlark(session, "h = cmd[\"yes\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), vec![cmd.clone()], vec![], Vec::new());
         assert!(first.error.is_none(), "{:?}", first.error);
         let handle = first.output.trim().trim_matches('"').to_string();
         assert!(handle.starts_with("proc_"));
         assert!(first.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.continued")));
 
-        let second = evaluate_starlark(session, &format!("proc[{handle:?}].await_for(mins=0); out = proc[{handle:?}].flush_buffer(); proc[{handle:?}].terminate(); output(out)"), root.clone(), test_role(), vec![cmd.clone()], vec![handle.clone()]);
+        let second = evaluate_starlark(session, &format!("proc[{handle:?}].await_for(mins=0); out = proc[{handle:?}].flush_buffer(); proc[{handle:?}].terminate(); output(out)"), root.clone(), test_role(), vec![cmd.clone()], vec![handle.clone()], Vec::new());
         assert!(second.error.is_none(), "{:?}", second.error);
         assert!(second.output.contains('y'));
         assert!(second.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.terminated")));
 
-        let isolated = evaluate_starlark(other_session, &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle]);
+        let isolated = evaluate_starlark(other_session, &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle], Vec::new());
         assert!(isolated.error.unwrap_or_default().contains("session-only process no longer attached"));
     }
 
@@ -2389,7 +2550,7 @@ second = proc[h].flush_buffer()
 proc[h].terminate()
 output(first + "|second=" + second)
 "#;
-        let result = evaluate_starlark(session, script, root, test_role(), vec![cmd], vec![]);
+        let result = evaluate_starlark(session, script, root, test_role(), vec![cmd], vec![], Vec::new());
         assert!(result.error.is_none(), "{:?}", result.error);
         assert!(result.output.contains("hello-process"));
         assert!(result.output.contains("|second="));
@@ -2400,16 +2561,16 @@ output(first + "|second=" + second)
         let session = Uuid::new_v4();
         let root = ExecutionRoot::new(".").unwrap();
         let cmd = test_command("yes", &["/usr/bin/yes"], "cmd.yes.max.run", "yes_max", "forbid", "continue", Some(Duration::from_millis(100)));
-        let first = evaluate_starlark(session, "h = cmd[\"yes_max\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), vec![cmd.clone()], vec![]);
+        let first = evaluate_starlark(session, "h = cmd[\"yes_max\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), vec![cmd.clone()], vec![], Vec::new());
         assert!(first.error.is_none(), "{:?}", first.error);
         let handle = first.output.trim().trim_matches('"').to_string();
         thread::sleep(Duration::from_millis(250));
-        let second = evaluate_starlark(session, &format!("running = proc[{handle:?}].is_running(); output(str(running))"), root.clone(), test_role(), vec![cmd.clone()], vec![handle.clone()]);
+        let second = evaluate_starlark(session, &format!("running = proc[{handle:?}].is_running(); output(str(running))"), root.clone(), test_role(), vec![cmd.clone()], vec![handle.clone()], Vec::new());
         assert!(second.error.is_none(), "{:?}", second.error);
         assert!(second.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.status == "maxRuntimeExceeded" || process.event == "process.continued")));
 
         PROCESS_MANAGER.lock().unwrap().clear();
-        let detached = evaluate_starlark(session, &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle]);
+        let detached = evaluate_starlark(session, &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle], Vec::new());
         assert!(detached.error.unwrap_or_default().contains("session-only process no longer attached"));
     }
 }

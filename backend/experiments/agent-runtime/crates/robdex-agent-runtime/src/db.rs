@@ -74,6 +74,18 @@ pub async fn reconcile_managed_processes(pool: &PgPool) -> Result<()> {
 }
 
 pub async fn import_role_version(pool: &PgPool, imported: &ImportedRoleVersion) -> Result<()> {
+    import_role_version_with_actor(pool, imported, "seed-import").await
+}
+
+pub async fn role_exists(pool: &PgPool, role_id: &str) -> Result<bool> {
+    Ok(sqlx::query("SELECT EXISTS (SELECT 1 FROM roles WHERE id=$1)")
+        .bind(role_id)
+        .fetch_one(pool)
+        .await?
+        .get::<bool, _>(0))
+}
+
+pub async fn import_role_version_with_actor(pool: &PgPool, imported: &ImportedRoleVersion, actor: &str) -> Result<()> {
     let snapshot = &imported.snapshot;
     let snapshot_value = snapshot_to_value(snapshot)?;
     sqlx::query(
@@ -83,6 +95,8 @@ pub async fn import_role_version(pool: &PgPool, imported: &ImportedRoleVersion) 
         ON CONFLICT (id) DO UPDATE
         SET display_name = EXCLUDED.display_name,
             status = 'active',
+            archived_at = NULL,
+            unarchived_at = now(),
             updated_at = now()
         "#,
     )
@@ -95,9 +109,9 @@ pub async fn import_role_version(pool: &PgPool, imported: &ImportedRoleVersion) 
         r#"
         INSERT INTO role_versions (
             id, role_id, version, display_name, instruction_text, manifest, model_defaults,
-            policy, routing, visibility, lifecycle_authority, snapshot, created_at
+            policy, routing, visibility, lifecycle_authority, snapshot, created_at, created_by
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         "#,
     )
     .bind(snapshot.role_version_id)
@@ -113,6 +127,7 @@ pub async fn import_role_version(pool: &PgPool, imported: &ImportedRoleVersion) 
     .bind(serde_json::to_value(&snapshot.lifecycle_authority)?)
     .bind(&snapshot_value)
     .bind(snapshot.created_at)
+    .bind(actor)
     .execute(pool)
     .await?;
 
@@ -121,6 +136,7 @@ pub async fn import_role_version(pool: &PgPool, imported: &ImportedRoleVersion) 
     .bind(snapshot.role_version_id)
     .execute(pool)
     .await?;
+    append_admin_event(pool, "role", Some(snapshot.role_version_id), "role.imported", Some("active"), json!({"roleId": snapshot.id, "version": snapshot.version, "roleVersionId": snapshot.role_version_id, "actor": actor})).await?;
     Ok(())
 }
 
@@ -140,6 +156,30 @@ pub async fn list_roles(pool: &PgPool) -> Result<Vec<RoleSnapshot>> {
         .collect()
 }
 
+pub async fn list_role_records(pool: &PgPool) -> Result<Vec<Value>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT r.id, r.display_name, r.current_version_id, r.status, r.archived_at, rv.snapshot
+        FROM roles r
+        LEFT JOIN role_versions rv ON rv.id = r.current_version_id
+        ORDER BY r.id ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(|row| {
+        let snapshot: Option<Value> = row.get("snapshot");
+        Ok(json!({
+            "id": row.get::<String,_>("id"),
+            "displayName": row.get::<String,_>("display_name"),
+            "currentVersionId": row.get::<Option<Uuid>,_>("current_version_id"),
+            "status": row.get::<String,_>("status"),
+            "archivedAt": row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("archived_at"),
+            "current": snapshot,
+        }))
+    }).collect()
+}
+
 pub async fn current_role_snapshot(pool: &PgPool, role_id: &str) -> Result<RoleSnapshot> {
     let row = sqlx::query(
         r#"
@@ -153,6 +193,115 @@ pub async fn current_role_snapshot(pool: &PgPool, role_id: &str) -> Result<RoleS
     .fetch_one(pool)
     .await?;
     snapshot_from_value(row.get("snapshot"))
+}
+
+pub async fn role_version_snapshot(pool: &PgPool, version_id: Uuid) -> Result<RoleSnapshot> {
+    let row = sqlx::query("SELECT snapshot FROM role_versions WHERE id=$1")
+        .bind(version_id)
+        .fetch_one(pool)
+        .await?;
+    snapshot_from_value(row.get("snapshot"))
+}
+
+pub async fn role_versions(pool: &PgPool, role_id: &str) -> Result<Vec<Value>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT rv.id, rv.role_id, rv.version, rv.display_name, rv.created_at, rv.created_by, r.current_version_id
+        FROM role_versions rv
+        JOIN roles r ON r.id = rv.role_id
+        WHERE rv.role_id=$1
+        ORDER BY rv.created_at ASC
+        "#,
+    )
+    .bind(role_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|row| {
+        let id: Uuid = row.get("id");
+        let current: Option<Uuid> = row.get("current_version_id");
+        json!({
+            "roleVersionId": id,
+            "roleId": row.get::<String,_>("role_id"),
+            "version": row.get::<String,_>("version"),
+            "displayName": row.get::<String,_>("display_name"),
+            "createdAt": row.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
+            "createdBy": row.get::<String,_>("created_by"),
+            "current": current == Some(id),
+        })
+    }).collect())
+}
+
+pub async fn activate_role_version(pool: &PgPool, role_id: &str, version_id: Uuid) -> Result<()> {
+    let row = sqlx::query("SELECT role_id FROM role_versions WHERE id=$1")
+        .bind(version_id)
+        .fetch_one(pool)
+        .await?;
+    let actual: String = row.get("role_id");
+    if actual != role_id {
+        bail!("role version {version_id} belongs to {actual}, not {role_id}");
+    }
+    let updated = sqlx::query("UPDATE roles SET current_version_id=$2, status='active', archived_at=NULL, unarchived_at=now(), updated_at=now() WHERE id=$1")
+        .bind(role_id)
+        .bind(version_id)
+        .execute(pool)
+        .await?;
+    if updated.rows_affected() != 1 {
+        bail!("role not found: {role_id}");
+    }
+    append_admin_event(pool, "role", Some(version_id), "role.activated", Some("active"), json!({"roleId": role_id, "roleVersionId": version_id})).await?;
+    Ok(())
+}
+
+pub async fn archive_role(pool: &PgPool, role_id: &str) -> Result<()> {
+    let current: Option<Uuid> = sqlx::query("SELECT current_version_id FROM roles WHERE id=$1")
+        .bind(role_id)
+        .fetch_one(pool)
+        .await?
+        .get("current_version_id");
+    let updated = sqlx::query("UPDATE roles SET status='archived', archived_at=now(), updated_at=now() WHERE id=$1")
+        .bind(role_id)
+        .execute(pool)
+        .await?;
+    if updated.rows_affected() != 1 {
+        bail!("role not found: {role_id}");
+    }
+    append_admin_event(pool, "role", current, "role.archived", Some("archived"), json!({"roleId": role_id, "currentVersionId": current})).await?;
+    Ok(())
+}
+
+pub async fn unarchive_role(pool: &PgPool, role_id: &str) -> Result<()> {
+    let current: Option<Uuid> = sqlx::query("SELECT current_version_id FROM roles WHERE id=$1")
+        .bind(role_id)
+        .fetch_one(pool)
+        .await?
+        .get("current_version_id");
+    let updated = sqlx::query("UPDATE roles SET status='active', archived_at=NULL, unarchived_at=now(), updated_at=now() WHERE id=$1 AND current_version_id IS NOT NULL")
+        .bind(role_id)
+        .execute(pool)
+        .await?;
+    if updated.rows_affected() != 1 {
+        bail!("role not found or has no current version: {role_id}");
+    }
+    append_admin_event(pool, "role", current, "role.unarchived", Some("active"), json!({"roleId": role_id, "currentVersionId": current})).await?;
+    Ok(())
+}
+
+pub async fn export_role(pool: &PgPool, role_id: &str) -> Result<Value> {
+    let snapshot = current_role_snapshot(pool, role_id).await?;
+    append_admin_event(pool, "role", Some(snapshot.role_version_id), "role.exported", Some("success"), json!({"roleId": role_id, "roleVersionId": snapshot.role_version_id})).await?;
+    Ok(json!({
+        "format": "robdex-agent-runtime-role-export-v1",
+        "roleId": snapshot.id,
+        "version": snapshot.version,
+        "roleVersionId": snapshot.role_version_id,
+        "instructionText": snapshot.instruction_text,
+        "manifest": snapshot.manifest,
+        "modelDefaults": snapshot.model_defaults,
+        "policy": snapshot.policy,
+        "routing": snapshot.routing,
+        "visibility": snapshot.visibility,
+        "lifecycleAuthority": snapshot.lifecycle_authority,
+    }))
 }
 
 pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot, project_key: Option<&str>, workdir: &str, worktree_root: Option<&str>, title: Option<&str>, name: Option<&str>) -> Result<Uuid> {
@@ -537,6 +686,30 @@ pub async fn append_event(
     )
     .bind(session_id)
     .bind(turn_id)
+    .bind(entity_type)
+    .bind(entity_id)
+    .bind(event_type)
+    .bind(status)
+    .bind(payload)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn append_admin_event(
+    pool: &PgPool,
+    entity_type: &str,
+    entity_id: Option<Uuid>,
+    event_type: &str,
+    status: Option<&str>,
+    payload: Value,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO event_stream (session_id, turn_id, entity_type, entity_id, event_type, status, payload)
+        VALUES (NULL, NULL, $1, $2, $3, $4, $5)
+        "#,
+    )
     .bind(entity_type)
     .bind(entity_id)
     .bind(event_type)
