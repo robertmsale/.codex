@@ -63,6 +63,80 @@ using the same projection crate types. A future Rinf GUI should use the same
 reducer logic on the Rust side before sending already-reduced render state to
 Dart.
 
+## Resident server MVP
+
+The experimental server binary is `robdex-agent-runtime-server`. It is isolated
+from stable Robdex and uses the same Postgres runtime state and runtime
+functions as the CLI. There is no auth or user-session boundary in this slice;
+the intended trust boundary is VPN/network placement.
+
+Run with the conservative default bind:
+
+```sh
+export ROBDEX_AGENT_RUNTIME_DATABASE_URL='postgres://postgres:postgres@127.0.0.1:5432/robdex_agent_runtime'
+cargo run --bin robdex-agent-runtime-server
+```
+
+Override host and port explicitly when placing it behind the VPN boundary:
+
+```sh
+cargo run --bin robdex-agent-runtime-server -- --host 127.0.0.1 --port 8765
+# or
+ROBDEX_AGENT_RUNTIME_SERVER_HOST=127.0.0.1 ROBDEX_AGENT_RUNTIME_SERVER_PORT=8765 cargo run --bin robdex-agent-runtime-server
+```
+
+HTTP JSON routes:
+
+```text
+GET  /health
+GET  /state/snapshot?selectedSessionId=<uuid>
+GET  /sessions
+POST /sessions
+GET  /sessions/{sessionId}
+GET  /sessions/{sessionId}/history
+POST /sessions/{sessionId}/send
+POST /sessions/{sessionId}/close
+POST /sessions/{sessionId}/archive
+POST /sessions/{sessionId}/fork
+```
+
+Create/send example:
+
+```sh
+curl -sS -X POST http://127.0.0.1:8765/sessions \
+  -H 'content-type: application/json' \
+  -d '{"role":"runtime-no-rg","project":"agent-runtime","workdir":"/Users/robertsale/.codex/backend/experiments/agent-runtime"}'
+
+curl -sS -X POST http://127.0.0.1:8765/sessions/<session-id>/send \
+  -H 'content-type: application/json' \
+  -d '{"message":"Use execute_code with exactly this Starlark source: content = fs.read(\"Cargo.toml\"); output({\"smoke\":\"ok\",\"contains_workspace\":\"workspace\" in content})"}'
+```
+
+The send route enforces one active send per session. A concurrent send for the
+same session returns HTTP `409 Conflict` instead of queueing or racing.
+
+WebSocket state stream:
+
+```text
+ws://127.0.0.1:8765/state/ws?after=<watermark>&selectedSessionId=<uuid>
+```
+
+The server sends an initial `hello` message with the current watermark, then
+streams serde-compatible `RuntimeDelta` values derived from Postgres
+`event_stream` rows through the shared projection crate. If the requested
+watermark cannot be continued safely, the server sends an explicit
+`resyncRequired` message. Clients should hydrate with `/state/snapshot` before
+applying deltas and should rehydrate when reducer state reports
+`resyncRequired`.
+
+Minimal live-server smoke with `gpt-5.4-mini` is intentionally separate from
+deterministic validation. Use a throwaway role export/import that sets
+`modelDefaults.model` to `gpt-5.4-mini`, start `robdex-agent-runtime-server`,
+create a session with that role through `POST /sessions`, then send one
+read-only `execute_code` prompt through `POST /sessions/{sessionId}/send`.
+Confirm DB evidence in `turns`, `model_events`, `tool_calls`, `script_runs`,
+and `event_stream`, with `model_events.payload->>'model' = 'gpt-5.4-mini'`.
+
 ## Script output
 
 Starlark scripts emit final tool output only through:

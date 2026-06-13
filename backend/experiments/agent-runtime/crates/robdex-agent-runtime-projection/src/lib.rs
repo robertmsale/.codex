@@ -287,11 +287,17 @@ fn apply_delta_kind(projection: &mut RuntimeProjection, kind: RuntimeDeltaKind) 
         RuntimeDeltaKind::ServerStatus { status } => replace_if_changed(&mut projection.server_status, status),
         RuntimeDeltaKind::SessionUpsert { session } => upsert_by(&mut projection.sessions, session, |item| item.id.as_str()),
         RuntimeDeltaKind::SessionArchive { session_id, archived_at } => {
-            if let Some(session) = projection.sessions.iter_mut().find(|item| item.id == session_id) {
-                let mut changed = false;
-                changed |= replace_if_changed(&mut session.tracked, false);
-                changed |= replace_if_changed(&mut session.archived_at, archived_at);
-                changed
+            if let Some(index) = projection.sessions.iter().position(|item| item.id == session_id) {
+                if projection.sessions[index].status == "open" {
+                    projection.sessions.remove(index);
+                    true
+                } else {
+                    let session = &mut projection.sessions[index];
+                    let mut changed = false;
+                    changed |= replace_if_changed(&mut session.tracked, false);
+                    changed |= replace_if_changed(&mut session.archived_at, archived_at);
+                    changed
+                }
             } else {
                 false
             }
@@ -466,21 +472,43 @@ mod tests {
     }
 
     #[test]
-    fn session_archive_and_close_update_lifecycle_fields() {
+    fn session_archive_removes_open_session_from_list_without_clearing_selected_detail() {
         let mut projection = RuntimeProjection::default();
+        projection.selected_session = Some(SelectedSessionDetail {
+            id: "session-1".to_string(),
+            role_id: Some("role".to_string()),
+            role_version: Some("1".to_string()),
+            project_key: None,
+            workdir: ".".to_string(),
+            worktree_root: None,
+            title: Some("selected".to_string()),
+            name: None,
+            status: "open".to_string(),
+            pending_approval_count: 0,
+            managed_process_count: 0,
+            metadata: Value::Null,
+        });
         projection.apply_delta(delta(1, RuntimeDeltaKind::SessionUpsert { session: session("session-1") }));
         projection.apply_delta(delta(2, RuntimeDeltaKind::SessionArchive {
             session_id: "session-1".to_string(),
             archived_at: Some("archived".to_string()),
         }));
-        projection.apply_delta(delta(3, RuntimeDeltaKind::SessionClose {
+        assert!(projection.sessions.is_empty());
+        assert_eq!(projection.selected_session.as_ref().map(|session| session.id.as_str()), Some("session-1"));
+    }
+
+    #[test]
+    fn session_archive_keeps_non_open_session_consistent_with_snapshot_filter() {
+        let mut projection = RuntimeProjection::default();
+        let mut closed = session("session-1");
+        closed.status = "closed".to_string();
+        projection.apply_delta(delta(1, RuntimeDeltaKind::SessionUpsert { session: closed }));
+        projection.apply_delta(delta(2, RuntimeDeltaKind::SessionArchive {
             session_id: "session-1".to_string(),
-            closed_at: Some("closed".to_string()),
+            archived_at: Some("archived".to_string()),
         }));
         assert!(!projection.sessions[0].tracked);
-        assert_eq!(projection.sessions[0].status, "closed");
         assert_eq!(projection.sessions[0].archived_at.as_deref(), Some("archived"));
-        assert_eq!(projection.sessions[0].closed_at.as_deref(), Some("closed"));
     }
 
     #[test]

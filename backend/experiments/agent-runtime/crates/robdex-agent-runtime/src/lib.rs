@@ -9,5 +9,6 @@ pub mod policy;
 pub mod projection;
 pub mod roles;
 pub mod runtime;
+pub mod server;
 pub mod starlark_host;
 pub mod workflow_memory;

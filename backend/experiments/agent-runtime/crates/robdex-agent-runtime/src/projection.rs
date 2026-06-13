@@ -1,8 +1,8 @@
 use anyhow::Result;
 use robdex_agent_runtime_projection::{
     timeline_by_sequence, timeline_item_id, CommandRegistrySummary, PendingApprovalSummary,
-    RoleSummary, RuntimeProjection, SelectedSessionDetail, ServerStatusProjection, SessionListItem,
-    TimelineItem, WorkflowMemorySummary,
+    RoleSummary, RuntimeDelta, RuntimeDeltaKind, RuntimeProjection, SelectedSessionDetail,
+    ServerStatusProjection, SessionListItem, TimelineItem, WorkflowMemorySummary,
 };
 use serde_json::Value;
 use sqlx::{PgPool, Row};
@@ -43,6 +43,68 @@ pub async fn build_runtime_projection_snapshot(
     };
     projection.timeline = timeline_by_sequence(projection.timeline);
     Ok(projection)
+}
+
+pub async fn build_projection_deltas_after(
+    pool: &PgPool,
+    after: i64,
+    selected_session_id: Option<Uuid>,
+    limit: i64,
+) -> Result<Vec<RuntimeDelta>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT sequence, session_id, turn_id, entity_type, entity_id, event_type, status, payload, created_at
+        FROM event_stream
+        WHERE sequence > $1 AND ($2::uuid IS NULL OR session_id = $2)
+        ORDER BY sequence ASC
+        LIMIT $3
+        "#,
+    )
+    .bind(after)
+    .bind(selected_session_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    let mut deltas = Vec::new();
+    let mut previous = after;
+    for row in rows {
+        let item = timeline_item_from_row(&row);
+        let watermark = item.sequence;
+        deltas.push(RuntimeDelta {
+            watermark,
+            previous_watermark: Some(previous),
+            kind: RuntimeDeltaKind::TimelineAppend { item },
+        });
+        previous = watermark;
+    }
+    Ok(deltas)
+}
+
+pub async fn event_stream_can_continue_after(
+    pool: &PgPool,
+    after: i64,
+    selected_session_id: Option<Uuid>,
+) -> Result<bool> {
+    if after <= 0 {
+        return Ok(false);
+    }
+    let current = current_watermark(pool).await?;
+    if after > current {
+        return Ok(false);
+    }
+    let exists: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1 FROM event_stream
+            WHERE sequence = $1
+        )
+        "#,
+    )
+    .bind(after)
+    .fetch_one(pool)
+    .await?;
+    let _ = selected_session_id;
+    Ok(exists)
 }
 
 async fn current_watermark(pool: &PgPool) -> Result<i64> {
@@ -152,23 +214,27 @@ async fn timeline_items(
     Ok(rows
         .into_iter()
         .map(|row| {
-            let sequence: i64 = row.get("sequence");
-            let payload: Value = row.get("payload");
-            TimelineItem {
-                id: timeline_item_id(sequence),
-                sequence,
-                session_id: optional_uuid(row.get("session_id")),
-                turn_id: optional_uuid(row.get("turn_id")),
-                entity_type: row.get("entity_type"),
-                entity_id: optional_uuid(row.get("entity_id")),
-                event_type: row.get("event_type"),
-                status: row.get("status"),
-                summary: event_summary(&payload),
-                payload,
-                created_at: Some(time(row.get("created_at"))),
-            }
+            timeline_item_from_row(&row)
         })
         .collect())
+}
+
+fn timeline_item_from_row(row: &sqlx::postgres::PgRow) -> TimelineItem {
+    let sequence: i64 = row.get("sequence");
+    let payload: Value = row.get("payload");
+    TimelineItem {
+        id: timeline_item_id(sequence),
+        sequence,
+        session_id: optional_uuid(row.get("session_id")),
+        turn_id: optional_uuid(row.get("turn_id")),
+        entity_type: row.get("entity_type"),
+        entity_id: optional_uuid(row.get("entity_id")),
+        event_type: row.get("event_type"),
+        status: row.get("status"),
+        summary: event_summary(&payload),
+        payload,
+        created_at: Some(time(row.get("created_at"))),
+    }
 }
 
 fn event_summary(payload: &Value) -> Option<String> {

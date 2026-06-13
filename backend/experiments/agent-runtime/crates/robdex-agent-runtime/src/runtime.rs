@@ -11,7 +11,7 @@ use crate::model::{ModelClient, ModelHistoryItem};
 use crate::policy::PolicyEngine;
 use crate::starlark_host::{ExecutionRoot, execute_code};
 
-pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<()> {
+pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<Uuid> {
     let session = db::ensure_session_open(pool, session_id).await?;
     let workdir = session.workdir.clone();
     let role_snapshot = db::session_role_snapshot(pool, session_id).await?;
@@ -157,7 +157,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<()> 
         )
         .await?;
         println!("turn {turn_id} blocked");
-        return Ok(());
+        return Ok(turn_id);
     }
 
     sqlx::query(
@@ -288,5 +288,5 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<()> 
     .await?;
 
     println!("turn {turn_id} {}", status.as_str());
-    Ok(())
+    Ok(turn_id)
 }
