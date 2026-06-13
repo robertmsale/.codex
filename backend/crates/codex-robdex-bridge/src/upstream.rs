@@ -16,9 +16,8 @@ use codex_app_server_adapter::protocol::models::{ContentItem, MessagePhase, Resp
 
 use crate::{
     models::{
-        BRIDGE_TRUNCATION_MARKER, MAX_MESSAGE_TEXT_CHARS, MAX_TOOL_OUTPUT_CHARS,
-        MAX_TRANSPORT_THREAD_MESSAGES_BYTES, RobdexChatMessage, RobdexToolMetadata, ThreadCachePayload,
-        ThreadContextWindowStatus,
+        BRIDGE_TRUNCATION_MARKER, MAX_TOOL_OUTPUT_CHARS, MAX_TRANSPORT_THREAD_MESSAGES_BYTES,
+        RobdexChatMessage, RobdexToolMetadata, ThreadCachePayload, ThreadContextWindowStatus,
     },
     transforms::merge_delta_text,
 };
@@ -1362,7 +1361,7 @@ fn make_message_with_context(
         thread_id,
         turn_id,
         role: role.to_string(),
-        text: truncate_bridge_text(&text, MAX_MESSAGE_TEXT_CHARS),
+        text,
         phase,
         created_at: created_at.unwrap_or_else(unix_now),
         subtitle,
@@ -1391,9 +1390,7 @@ fn sanitize_tool_metadata(tool_metadata: Option<RobdexToolMetadata>) -> Option<R
     tool_metadata.map(|metadata| RobdexToolMetadata {
         kind: metadata.kind,
         status: metadata.status,
-        command: metadata
-            .command
-            .map(|value| truncate_bridge_text(&value, MAX_MESSAGE_TEXT_CHARS)),
+        command: metadata.command,
         output: metadata
             .output
             .map(|value| truncate_bridge_text(&value, MAX_TOOL_OUTPUT_CHARS)),
@@ -1681,6 +1678,42 @@ mod tests {
         let message = &cache.message_cache_by_thread_id["thread-1"][0];
         assert_eq!(message.role, "assistant");
         assert_eq!(message.text, "final status from completed turn");
+    }
+
+    #[test]
+    fn turn_completed_preserves_large_agent_message_without_bridge_truncation() {
+        let mut reducer = RunningStateReducer::default();
+        let mut cache = ThreadCachePayload::default();
+        let large_text = format!(
+            "{{\"overallVerdict\":\"fail\",\"route\":{{\"message\":\"{}\"}}}}",
+            "review detail ".repeat(3_000)
+        );
+
+        let changed = reducer.apply_notification(
+            &ServerNotification::TurnCompleted(TurnCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn: Turn {
+                    id: "turn-1".to_string(),
+                    items: vec![ThreadItem::AgentMessage {
+                        id: "agent-final-1".to_string(),
+                        text: large_text.clone(),
+                        phase: Some(MessagePhase::FinalAnswer),
+                        memory_citation: None,
+                    }],
+                    status: TurnStatus::Completed,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                    error: None,
+                },
+            }),
+            &mut cache,
+        );
+
+        assert!(changed.thread_cache_changed);
+        let message = &cache.message_cache_by_thread_id["thread-1"][0];
+        assert_eq!(message.text, large_text);
+        assert!(!message.text.contains(BRIDGE_TRUNCATION_MARKER));
     }
 
     #[test]

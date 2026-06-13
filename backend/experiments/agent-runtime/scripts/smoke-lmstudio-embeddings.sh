@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${ROBDEX_AGENT_RUNTIME_EMBEDDING_PROVIDER:-disabled}" != "lmstudio" ]]; then
+if [[ "${ROBDEX_AGENT_RUNTIME_EMBEDDING_PROVIDER:-lmstudio}" != "lmstudio" ]]; then
   printf 'Skipping LM Studio smoke: set ROBDEX_AGENT_RUNTIME_EMBEDDING_PROVIDER=lmstudio to opt in.\n'
   exit 0
 fi
 
 BASE_URL="${ROBDEX_AGENT_RUNTIME_EMBEDDING_BASE_URL:-http://localhost:1234}"
-MODEL="${ROBDEX_AGENT_RUNTIME_EMBEDDING_MODEL:-qwen3-embedding-4b-dwq}"
+MODEL="${ROBDEX_AGENT_RUNTIME_EMBEDDING_MODEL:-mlx-community/Qwen3-Embedding-4B-4bit-DWQ}"
 URL="${BASE_URL%/}/v1/embeddings"
 if [[ "${BASE_URL%/}" == */v1 ]]; then
   URL="${BASE_URL%/}/embeddings"

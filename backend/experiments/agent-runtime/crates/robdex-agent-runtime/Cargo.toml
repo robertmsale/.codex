@@ -28,3 +28,4 @@ wait-timeout = "0.2"
 async-trait = "0.1"
 libc = "0.2"
 once_cell = "1"
+robdex-agent-runtime-projection = { path = "../robdex-agent-runtime-projection" }

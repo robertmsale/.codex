@@ -1,5 +1,8 @@
 [workspace]
-members = ["crates/robdex-agent-runtime"]
+members = [
+  "crates/robdex-agent-runtime",
+  "crates/robdex-agent-runtime-projection",
+]
 resolver = "2"
 
 [workspace.package]

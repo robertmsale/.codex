@@ -3835,6 +3835,7 @@ dependencies = [
  "libc",
  "once_cell",
  "reqwest",
+ "robdex-agent-runtime-projection",
  "serde",
  "serde_json",
  "sha2",
@@ -3844,6 +3845,14 @@ dependencies = [
  "tokio",
  "uuid",
  "wait-timeout",
+]
+
+[[package]]
+name = "robdex-agent-runtime-projection"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

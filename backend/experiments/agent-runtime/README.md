@@ -30,6 +30,39 @@ It does not claim to use the full vendored Codex provider/client runtime. All
 direct HTTP, Responses request shaping, Codex auth headers, SSE parsing, and raw
 model response handling must stay inside `model::codex_adapter`.
 
+## Projection-first GUI/server state boundary
+
+The shared GUI-facing state contract lives in the pure Rust crate
+`crates/robdex-agent-runtime-projection`. That crate owns projection structs,
+delta structs, and deterministic reducer logic for future server and Rust/Rinf
+GUI use. It is intentionally limited to serde-compatible data and reducers. It
+must not depend on SQLx, HTTP, WebSocket, runtime execution, Flutter, Rinf,
+model adapters, or process-management code.
+
+The top-level `RuntimeProjection` is the replacement shape for any future
+full-state hydration. A server should hydrate a full snapshot first, then stream
+ordered `RuntimeDelta` values. Both snapshots and deltas carry a monotonic
+watermark derived from runtime event ordering. Reducers reject stale deltas,
+apply repeated entity/event updates idempotently when ids or sequences make that
+safe, preserve timeline ordering, and set explicit `resyncRequired` state when
+they detect a gap or incompatible stream condition.
+
+The projection includes server status, session list items, optional selected
+session detail, timeline/event rows, pending approvals, role summaries, command
+registry summaries, workflow memory summaries, and a top-level watermark.
+Deltas cover session upsert/archive/close, selected-session replacement or
+patch, timeline append, turn/tool/script/process status changes, approval
+upsert/removal, role upsert/archive, command registry upsert/disable, workflow
+memory updates/events, and explicit resync-required signaling.
+
+SQL stays in the runtime crate. Runtime-side snapshot adapters live outside the
+projection crate, under `robdex_agent_runtime::projection`, and map the current
+Postgres schema into the shared projection types. The future VPN-protected
+server should call those adapters to hydrate clients and should stream deltas
+using the same projection crate types. A future Rinf GUI should use the same
+reducer logic on the Rust side before sending already-reduced render state to
+Dart.
+
 ## Script output
 
 Starlark scripts emit final tool output only through:
