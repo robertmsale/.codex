@@ -625,20 +625,16 @@ pub async fn decide_request(
     final_execution_policy: Option<FinalExecutionPolicy>,
     final_command: Option<CommandSeed>,
 ) -> Result<()> {
-    if !matches!(status, "approved" | "denied") { bail!("approval status must be approved or denied"); }
-    if status == "approved" {
-        validate_scope(final_scope.as_ref().ok_or_else(|| anyhow::anyhow!("approved registry request requires final scope"))?)?;
-        validate_execution_policy(final_execution_policy.as_ref().ok_or_else(|| anyhow::anyhow!("approved registry request requires final execution policy"))?)?;
-        validate_seed(final_command.as_ref().ok_or_else(|| anyhow::anyhow!("approved registry request requires final command"))?)?;
-    }
+    let decision = validate_decision(pool, id, status, final_scope, final_execution_policy, final_command).await?;
     authorize_registry_action(pool, session_id, "command_registry.decide", json!({"requestId": id, "status": status}), None).await?;
     let done = sqlx::query("UPDATE command_registry_requests SET approval_status=$2, final_scope=$3, final_execution_policy=$4, final_command=$5, decided_at=now() WHERE id=$1 AND approval_status='pending'")
-        .bind(id).bind(status)
-        .bind(serde_json::to_value(final_scope)?)
-        .bind(serde_json::to_value(final_execution_policy)?)
-        .bind(serde_json::to_value(final_command)?)
+        .bind(id).bind(&decision.status)
+        .bind(serde_json::to_value(&decision.final_scope)?)
+        .bind(serde_json::to_value(&decision.final_execution_policy)?)
+        .bind(serde_json::to_value(&decision.final_command)?)
         .execute(pool).await?.rows_affected();
     if done != 1 { bail!("command registry request is not pending or does not exist: {id}"); }
+    db::append_event(pool, session_id, None, "command_registry_request", Some(id), "command_registry.decided", Some(&decision.status), review_request(pool, id).await?).await?;
     Ok(())
 }
 
@@ -652,7 +648,284 @@ pub async fn show_request(pool: &PgPool, id: Uuid) -> Result<Value> {
     Ok(json!({"id": row.get::<Uuid,_>("id"), "sessionId": row.get::<Option<Uuid>,_>("session_id"), "operation": row.get::<String,_>("operation"), "proposedCommand": row.get::<Value,_>("proposed_command"), "requesterContext": row.get::<Value,_>("requester_context"), "rationale": row.get::<String,_>("rationale"), "recommendedPolicy": row.get::<String,_>("recommended_policy"), "requester": row.get::<String,_>("requester"), "requestedByRole": row.get::<Value,_>("requested_by_role"), "approvalRequestId": row.get::<Option<Uuid>,_>("approval_request_id"), "finalScope": row.get::<Option<Value>,_>("final_scope"), "finalExecutionPolicy": row.get::<Option<Value>,_>("final_execution_policy"), "finalCommand": row.get::<Option<Value>,_>("final_command"), "approvalStatus": row.get::<String,_>("approval_status"), "applicationStatus": row.get::<String,_>("application_status")}))
 }
 
-pub async fn apply_request(pool: &PgPool, session_id: Uuid, id: Uuid) -> Result<()> {
+fn risk_fields(command: &CommandSeed, scope: Option<&RegistryScope>, policy: Option<&FinalExecutionPolicy>) -> Value {
+    json!({
+        "actionId": command.action_id,
+        "scope": scope,
+        "executionPolicy": policy,
+        "binaryName": command.binary_name,
+        "candidatePaths": command.candidate_paths,
+        "argvPrefix": command.argv_prefix,
+        "allowArgsArg": command.allow_args_arg,
+        "allowCwdArg": command.allow_cwd_arg,
+        "cwdPolicy": command.cwd_policy,
+        "defaultCwd": command.default_cwd,
+        "envPolicy": command.env_policy,
+        "forbiddenArgs": command.forbidden_args,
+        "syncAllowed": command.sync_allowed,
+        "asyncAllowed": command.async_allowed,
+        "stdinPolicy": command.stdin_policy,
+        "maxRuntimeMs": command.max_runtime_ms,
+        "minAwaitMs": command.min_await_ms,
+        "maxAwaitMs": command.max_await_ms,
+        "outputBufferBytes": command.output_buffer_bytes,
+        "outputLimitBytes": command.output_limit_bytes,
+        "endOfTurnBehavior": command.end_of_turn_behavior,
+        "mutationClass": command.mutation_class,
+    })
+}
+
+fn diff_value(label: &str, before: Value, after: Value) -> Option<Value> {
+    if before == after {
+        None
+    } else {
+        Some(json!({"field": label, "before": before, "after": after}))
+    }
+}
+
+fn semantic_diff(before_label: &str, before: Option<(&CommandSeed, Option<&RegistryScope>, Option<&FinalExecutionPolicy>)>, after_label: &str, after: Option<(&CommandSeed, Option<&RegistryScope>, Option<&FinalExecutionPolicy>)>) -> Value {
+    let mut changes = Vec::new();
+    let fields = [
+        "actionId", "scope", "executionPolicy", "binaryName", "candidatePaths", "argvPrefix",
+        "allowArgsArg", "allowCwdArg", "cwdPolicy", "defaultCwd", "envPolicy", "forbiddenArgs",
+        "syncAllowed", "asyncAllowed", "stdinPolicy", "maxRuntimeMs", "minAwaitMs", "maxAwaitMs",
+        "outputBufferBytes", "outputLimitBytes", "endOfTurnBehavior", "mutationClass",
+    ];
+    let before_fields = before.map(|(command, scope, policy)| risk_fields(command, scope, policy)).unwrap_or(Value::Null);
+    let after_fields = after.map(|(command, scope, policy)| risk_fields(command, scope, policy)).unwrap_or(Value::Null);
+    for field in fields {
+        let b = before_fields.get(field).cloned().unwrap_or(Value::Null);
+        let a = after_fields.get(field).cloned().unwrap_or(Value::Null);
+        if let Some(change) = diff_value(field, b, a) {
+            changes.push(change);
+        }
+    }
+    json!({"before": before_label, "after": after_label, "changes": changes})
+}
+
+async fn current_registry_state(pool: &PgPool, action_id: &str) -> Result<Vec<Value>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT cd.id, cd.action_id, cd.scope_type, cd.project_key, cd.enabled, cd.current_version_id, cv.config
+        FROM command_definitions cd
+        LEFT JOIN command_versions cv ON cv.id=cd.current_version_id
+        WHERE cd.action_id=$1
+        ORDER BY cd.scope_type, cd.project_key
+        "#,
+    )
+    .bind(action_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|row| json!({
+        "definitionId": row.get::<Uuid,_>("id"),
+        "actionId": row.get::<String,_>("action_id"),
+        "scope": {"type": row.get::<String,_>("scope_type"), "projectKey": row.get::<Option<String>,_>("project_key")},
+        "enabled": row.get::<bool,_>("enabled"),
+        "currentVersionId": row.get::<Option<Uuid>,_>("current_version_id"),
+        "command": row.get::<Option<Value>,_>("config"),
+    })).collect())
+}
+
+async fn request_row(pool: &PgPool, id: Uuid) -> Result<sqlx::postgres::PgRow> {
+    Ok(sqlx::query("SELECT * FROM command_registry_requests WHERE id=$1").bind(id).fetch_one(pool).await?)
+}
+
+pub async fn review_request(pool: &PgPool, id: Uuid) -> Result<Value> {
+    let row = request_row(pool, id).await?;
+    let operation: String = row.get("operation");
+    let proposed: CommandSeed = serde_json::from_value(row.get("proposed_command"))?;
+    let final_command_value: Option<Value> = row.get::<Option<Value>, _>("final_command").filter(|value| !value.is_null());
+    let final_command: Option<CommandSeed> = final_command_value.clone().map(serde_json::from_value).transpose()?;
+    let final_scope_value: Option<Value> = row.get::<Option<Value>, _>("final_scope").filter(|value| !value.is_null());
+    let final_scope: Option<RegistryScope> = final_scope_value.clone().map(serde_json::from_value).transpose()?;
+    let final_policy_value: Option<Value> = row.get::<Option<Value>, _>("final_execution_policy").filter(|value| !value.is_null());
+    let final_policy: Option<FinalExecutionPolicy> = final_policy_value.clone().map(serde_json::from_value).transpose()?;
+    let current = current_registry_state(pool, &proposed.action_id).await?;
+    let current_command: Option<CommandSeed> = current.first().and_then(|value| value.get("command")).cloned().and_then(|value| if value.is_null() { None } else { Some(value) }).map(serde_json::from_value).transpose()?;
+    let session_id: Option<Uuid> = row.get("session_id");
+    let source_session = match session_id {
+        Some(session) => Some(db::show_session(pool, session).await.unwrap_or_else(|error| json!({"error": error.to_string(), "sessionId": session}))),
+        None => None,
+    };
+    let proposed_vs_final = final_command.as_ref().map(|final_command| semantic_diff("proposed", Some((&proposed, None, None)), "final", Some((final_command, final_scope.as_ref(), final_policy.as_ref())))).unwrap_or_else(|| json!({"before":"proposed","after":"final","changes":[],"note":"no final command present"}));
+    let current_vs_final = if matches!(operation.as_str(), "update" | "enable" | "disable") {
+        semantic_diff("current", current_command.as_ref().map(|command| (command, None, None)), "final", final_command.as_ref().map(|command| (command, final_scope.as_ref(), final_policy.as_ref())))
+    } else {
+        json!({"before":"current","after":"final","changes":[],"note":"not required for add operation"})
+    };
+    let approval_status: String = row.get("approval_status");
+    let application_status: String = row.get("application_status");
+    let readiness = json!({
+        "canDecideApproved": final_scope.is_some() && final_policy.is_some() && final_command.is_some(),
+        "canApply": approval_status == "approved" && application_status == "pending" && final_scope.is_some() && final_policy.is_some() && final_command.is_some(),
+        "missing": {
+            "finalScope": final_scope.is_none(),
+            "finalExecutionPolicy": final_policy.is_none(),
+            "finalCommand": final_command.is_none(),
+        }
+    });
+    Ok(json!({
+        "requestId": row.get::<Uuid,_>("id"),
+        "operation": operation,
+        "requester": row.get::<String,_>("requester"),
+        "requesterContext": row.get::<Value,_>("requester_context"),
+        "source": {"sessionId": session_id, "session": source_session, "requestedByRole": row.get::<Value,_>("requested_by_role")},
+        "proposedCommand": row.get::<Value,_>("proposed_command"),
+        "finalCommand": final_command_value,
+        "finalScope": final_scope_value,
+        "finalExecutionPolicy": final_policy_value,
+        "currentRegistryState": current,
+        "status": {"approval": approval_status, "application": application_status, "approvalRequestId": row.get::<Option<Uuid>,_>("approval_request_id")},
+        "readiness": readiness,
+        "risk": {
+            "proposed": risk_fields(&proposed, None, None),
+            "final": final_command.as_ref().map(|command| risk_fields(command, final_scope.as_ref(), final_policy.as_ref())),
+        },
+        "semanticDiff": {
+            "proposedVsFinal": proposed_vs_final,
+            "currentVsFinal": current_vs_final,
+        },
+    }))
+}
+
+pub async fn final_template(pool: &PgPool, id: Uuid) -> Result<Value> {
+    let row = request_row(pool, id).await?;
+    let command: Value = row.get::<Option<Value>, _>("final_command").unwrap_or_else(|| row.get("proposed_command"));
+    Ok(json!({
+        "command": command,
+        "note": "Edit command fields only. Provide final scope and final policy explicitly to command-registry requests decide.",
+    }))
+}
+
+#[derive(Debug)]
+struct DecisionValidation {
+    status: String,
+    final_scope: Option<RegistryScope>,
+    final_execution_policy: Option<FinalExecutionPolicy>,
+    final_command: Option<CommandSeed>,
+    packet: Value,
+}
+
+async fn decision_semantic_diff(
+    pool: &PgPool,
+    operation: &str,
+    proposed: &CommandSeed,
+    final_command: &CommandSeed,
+    final_scope: &RegistryScope,
+    final_policy: &FinalExecutionPolicy,
+) -> Result<Value> {
+    let current = current_registry_state(pool, &final_command.action_id).await?;
+    let current_command: Option<CommandSeed> = current
+        .first()
+        .and_then(|value| value.get("command"))
+        .cloned()
+        .and_then(|value| if value.is_null() { None } else { Some(value) })
+        .map(serde_json::from_value)
+        .transpose()?;
+    let proposed_vs_final = semantic_diff(
+        "proposed",
+        Some((proposed, None, None)),
+        "final",
+        Some((final_command, Some(final_scope), Some(final_policy))),
+    );
+    let current_vs_final = if matches!(operation, "update" | "enable" | "disable") {
+        semantic_diff(
+            "current",
+            current_command.as_ref().map(|command| (command, None, None)),
+            "final",
+            Some((final_command, Some(final_scope), Some(final_policy))),
+        )
+    } else {
+        json!({"before":"current","after":"final","changes":[],"note":"not required for add operation"})
+    };
+    Ok(json!({"proposedVsFinal": proposed_vs_final, "currentVsFinal": current_vs_final}))
+}
+
+async fn validate_decision(
+    pool: &PgPool,
+    id: Uuid,
+    status: &str,
+    final_scope: Option<RegistryScope>,
+    final_execution_policy: Option<FinalExecutionPolicy>,
+    final_command: Option<CommandSeed>,
+) -> Result<DecisionValidation> {
+    if !matches!(status, "approved" | "denied") { bail!("approval status must be approved or denied"); }
+    let row = request_row(pool, id).await?;
+    let operation: String = row.get("operation");
+    let proposed: CommandSeed = serde_json::from_value(row.get("proposed_command"))?;
+    if status == "denied" {
+        return Ok(DecisionValidation {
+            status: status.to_string(),
+            final_scope: None,
+            final_execution_policy: None,
+            final_command: None,
+            packet: json!({"ok": true, "mutation": false, "status": "denied", "requestId": id}),
+        });
+    }
+    let scope = final_scope.ok_or_else(|| anyhow::anyhow!("approved registry request requires final scope"))?;
+    let policy = final_execution_policy.ok_or_else(|| anyhow::anyhow!("approved registry request requires final execution policy"))?;
+    let command = final_command.ok_or_else(|| anyhow::anyhow!("approved registry request requires final command"))?;
+    validate_scope(&scope)?;
+    validate_execution_policy(&policy)?;
+    validate_seed(&command)?;
+    reject_scoped_conflict(pool, &command.action_id, &scope, operation.as_str()).await?;
+    validate_operation_strictness(pool, &operation, &command, &scope).await?;
+    let semantic_diff = decision_semantic_diff(pool, &operation, &proposed, &command, &scope, &policy).await?;
+    let packet = json!({
+        "ok": true,
+        "mutation": false,
+        "requestId": id,
+        "operation": operation,
+        "finalScope": scope,
+        "finalExecutionPolicy": policy,
+        "visibilityImpact": visibility_impact(&scope),
+        "semanticDiff": semantic_diff,
+    });
+    Ok(DecisionValidation {
+        status: status.to_string(),
+        final_scope: Some(scope),
+        final_execution_policy: Some(policy),
+        final_command: Some(command),
+        packet,
+    })
+}
+
+pub async fn preview_decision(pool: &PgPool, id: Uuid, status: &str, final_scope: Option<RegistryScope>, final_execution_policy: Option<FinalExecutionPolicy>, final_command: Option<CommandSeed>) -> Result<Value> {
+    Ok(validate_decision(pool, id, status, final_scope, final_execution_policy, final_command).await?.packet)
+}
+
+fn visibility_impact(scope: &RegistryScope) -> Value {
+    match scope.scope_type.as_str() {
+        "global" => json!({"visibleTo": "all subsequent sessions"}),
+        "project" => json!({"visibleTo": "subsequent matching project sessions", "projectKey": scope.project_key}),
+        _ => json!({"visibleTo": "invalid"}),
+    }
+}
+
+async fn validate_operation_strictness(pool: &PgPool, operation: &str, command: &CommandSeed, scope: &RegistryScope) -> Result<()> {
+    let existing = sqlx::query("SELECT enabled FROM command_definitions WHERE action_id=$1 AND scope_type=$2 AND COALESCE(project_key, '')=COALESCE($3, '')")
+        .bind(&command.action_id)
+        .bind(&scope.scope_type)
+        .bind(&scope.project_key)
+        .fetch_optional(pool)
+        .await?;
+    match operation {
+        "add" if existing.is_some() => bail!("command action already exists: {}", command.action_id),
+        "update" if existing.is_none() => bail!("command action does not exist: {}", command.action_id),
+        "enable" => {
+            let Some(row) = existing else { bail!("command action does not exist: {}", command.action_id); };
+            if row.get::<bool,_>("enabled") { bail!("command enable did not change exactly one disabled row: {}", command.action_id); }
+        }
+        "disable" => {
+            let Some(row) = existing else { bail!("command action does not exist: {}", command.action_id); };
+            if !row.get::<bool,_>("enabled") { bail!("command disable did not change exactly one enabled row: {}", command.action_id); }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn apply_request_inner(pool: &PgPool, session_id: Uuid, id: Uuid) -> Result<Value> {
     let row = sqlx::query("SELECT operation, proposed_command, final_scope, final_execution_policy, final_command, approval_status, application_status, approval_request_id FROM command_registry_requests WHERE id=$1").bind(id).fetch_one(pool).await?;
     if row.get::<String,_>("approval_status") != "approved" { bail!("command registry request must be approved before apply"); }
     if row.get::<String,_>("application_status") != "pending" { bail!("command registry request already applied or failed"); }
@@ -667,6 +940,8 @@ pub async fn apply_request(pool: &PgPool, session_id: Uuid, id: Uuid) -> Result<
     validate_execution_policy(&policy)?;
     let mut command: CommandSeed = serde_json::from_value(row.get::<Option<Value>, _>("final_command")
         .ok_or_else(|| anyhow::anyhow!("approved registry request missing final command"))?)?;
+    let proposed: CommandSeed = serde_json::from_value(row.get("proposed_command"))?;
+    let semantic_diff = decision_semantic_diff(pool, &operation, &proposed, &command, &scope, &policy).await?;
     command.execution_policy = policy.decision.clone();
     reject_scoped_conflict(pool, &command.action_id, &scope, operation.as_str()).await?;
     match operation.as_str() {
@@ -715,6 +990,18 @@ pub async fn apply_request(pool: &PgPool, session_id: Uuid, id: Uuid) -> Result<
         }
         other => bail!("unsupported command registry operation: {other}"),
     }
+    let affected_version = match operation.as_str() {
+        "disable" => Value::Null,
+        _ => sqlx::query("SELECT current_version_id FROM command_definitions WHERE action_id=$1 AND scope_type=$2 AND COALESCE(project_key, '')=COALESCE($3, '')")
+            .bind(&command.action_id)
+            .bind(&scope.scope_type)
+            .bind(&scope.project_key)
+            .fetch_optional(pool)
+            .await?
+            .and_then(|row| row.get::<Option<Uuid>, _>("current_version_id"))
+            .map(|id| json!(id))
+            .unwrap_or(Value::Null),
+    };
     let updated = sqlx::query("UPDATE command_registry_requests SET application_status='applied', applied_at=now() WHERE id=$1 AND application_status='pending'")
         .bind(id)
         .execute(pool)
@@ -722,7 +1009,20 @@ pub async fn apply_request(pool: &PgPool, session_id: Uuid, id: Uuid) -> Result<
     if updated.rows_affected() != 1 {
         bail!("command registry request apply status update failed: {id}");
     }
-    Ok(())
+    Ok(json!({"requestId": id, "operation": operation, "finalScope": scope, "finalExecutionPolicy": policy, "actionId": command.action_id, "affectedCommandVersionId": affected_version, "semanticDiff": semantic_diff}))
+}
+
+pub async fn apply_request(pool: &PgPool, session_id: Uuid, id: Uuid) -> Result<()> {
+    match apply_request_inner(pool, session_id, id).await {
+        Ok(packet) => {
+            db::append_event(pool, session_id, None, "command_registry_request", Some(id), "command_registry.applied", Some("applied"), packet).await?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = db::append_event(pool, session_id, None, "command_registry_request", Some(id), "command_registry.applyFailed", Some("failed"), json!({"requestId": id, "error": error.to_string()})).await;
+            Err(error)
+        }
+    }
 }
 
 async fn reject_scoped_conflict(pool: &PgPool, action_id: &str, scope: &RegistryScope, operation: &str) -> Result<()> {

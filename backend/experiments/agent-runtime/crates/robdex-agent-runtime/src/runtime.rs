@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::Utc;
 use serde_json::json;
 use sqlx::PgPool;
@@ -7,16 +7,26 @@ use uuid::Uuid;
 use crate::{approvals, command_registry, db, routing};
 use crate::lifecycle::{self, TerminalStatus};
 use crate::model::codex_adapter::{bounded_raw_response, concise_response_summary, CodexBackedModelClient};
-use crate::model::ModelClient;
+use crate::model::{ModelClient, ModelHistoryItem};
 use crate::policy::PolicyEngine;
 use crate::starlark_host::{ExecutionRoot, execute_code};
 
-pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str) -> Result<()> {
-    if !db::session_exists(pool, session_id).await? {
-        bail!("session is not tracked: {session_id}");
-    }
+pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<()> {
+    let session = db::ensure_session_open(pool, session_id).await?;
+    let workdir = session.workdir.clone();
     let role_snapshot = db::session_role_snapshot(pool, session_id).await?;
-    let project_key = db::session_project_key(pool, session_id).await?;
+    let project_key = session.project_key.clone();
+    let prior_history = db::reconstructed_history(pool, session_id).await?;
+    let model_history: Vec<ModelHistoryItem> = prior_history
+        .iter()
+        .map(|item| ModelHistoryItem {
+            session_id: item.session_id.to_string(),
+            turn_id: item.turn_id.to_string(),
+            user: item.user.clone(),
+            assistant: item.assistant.clone(),
+            started_at: item.started_at.to_rfc3339(),
+        })
+        .collect();
 
     let turn_id = Uuid::new_v4();
     let turn_started = Utc::now();
@@ -49,7 +59,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
     let execute_code_contract = command_registry::execute_code_contract(&live_commands);
     let request_registry_contract = command_registry::request_tool_contract();
     let model = CodexBackedModelClient::new_with_model(role_snapshot.model_defaults.model.clone())?;
-    let plan = model.request_tool_call(&role_snapshot.instruction_text, &execute_code_contract, &request_registry_contract, message).await?;
+    let plan = model.request_tool_call(&role_snapshot.instruction_text, &model_history, &execute_code_contract, &request_registry_contract, message).await?;
     let model_event_id = Uuid::new_v4();
     sqlx::query(
         r#"
@@ -94,6 +104,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
                 "tools": plan.request_shape.get("tools").and_then(serde_json::Value::as_array).map(Vec::len),
                 "executeCodeContract": execute_code_contract,
                 "requestCommandRegistryChangeContract": request_registry_contract,
+                "history": {"items": prior_history.len(), "source": "reconstructed_session_history"},
             },
             "response": concise_response_summary(&plan.raw_response),
         }),
@@ -179,7 +190,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
     let result = match plan.tool_call.tool_name.as_str() {
         "execute_code" => {
             let source = plan.tool_call.arguments.get("source").and_then(serde_json::Value::as_str).context("execute_code missing source")?;
-            let root = ExecutionRoot::new(workdir).context("invalid execution workdir")?;
+            let root = ExecutionRoot::new(&workdir).context("invalid execution workdir")?;
             execute_code(pool, session_id, turn_id, tool_call_id, source, &root, &role_snapshot)
                 .await
                 .map(|packet| serde_json::to_value(packet).unwrap_or_else(|error| json!({"ok": false, "error": error.to_string()})))
@@ -213,6 +224,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
     let final_response = model
         .submit_tool_result(
             &role_snapshot.instruction_text,
+            &model_history,
             &plan.raw_response,
             &plan.tool_call.call_identity,
             &result_json,
@@ -255,6 +267,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str, workdir: &str)
                     "prefix": role_snapshot.instruction_text.chars().take(80).collect::<String>(),
                 },
                 "inputItems": final_response.request_shape.get("input").and_then(serde_json::Value::as_array).map(Vec::len),
+                "history": {"items": prior_history.len(), "source": "reconstructed_session_history"},
             },
             "response": concise_response_summary(&final_response.raw_response),
         }),

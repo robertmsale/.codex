@@ -31,12 +31,22 @@ pub struct ModelFinalTurn {
     pub raw_response: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelHistoryItem {
+    pub session_id: String,
+    pub turn_id: String,
+    pub user: String,
+    pub assistant: Option<String>,
+    pub started_at: String,
+}
+
 #[async_trait]
 pub trait ModelClient {
-    async fn request_tool_call(&self, role_instructions: &str, execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn>;
+    async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn>;
     async fn submit_tool_result(
         &self,
         role_instructions: &str,
+        history: &[ModelHistoryItem],
         tool_call_response: &Value,
         call_id: &str,
         tool_result: &Value,

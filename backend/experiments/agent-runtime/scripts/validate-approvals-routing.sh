@@ -10,9 +10,9 @@ run cargo run --quiet -- init-db
 run cargo run --quiet -- roles import-seeds
 run cargo run --quiet -- roles validate
 
-ALLOW_SESSION=$(cargo run --quiet -- new-session --role runtime-allow)
-DENY_SESSION=$(cargo run --quiet -- new-session --role runtime-no-rg)
-APPROVAL_SESSION=$(cargo run --quiet -- new-session --role runtime-approval-rg)
+ALLOW_SESSION=$(cargo run --quiet -- sessions new --role runtime-allow)
+DENY_SESSION=$(cargo run --quiet -- sessions new --role runtime-no-rg)
+APPROVAL_SESSION=$(cargo run --quiet -- sessions new --role runtime-approval-rg)
 printf '\n[sessions]\nALLOW_SESSION=%s\nDENY_SESSION=%s\nAPPROVAL_SESSION=%s\n' "$ALLOW_SESSION" "$DENY_SESSION" "$APPROVAL_SESSION"
 
 run cargo run --quiet -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/approval-routing.txt", "approval should pause"); output("approval should not execute")'

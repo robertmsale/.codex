@@ -1,5 +1,6 @@
-use anyhow::Result;
-use serde_json::Value;
+use anyhow::{Context, Result, bail};
+use serde::{Serialize};
+use serde_json::{Value, json};
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use uuid::Uuid;
 
@@ -45,10 +46,26 @@ pub async fn reconcile_managed_processes(pool: &PgPool) -> Result<()> {
             Some(process_id),
             "process.lost",
             Some("lost"),
-            serde_json::json!({
+            json!({
                 "handle": handle,
                 "commandVersionId": command_version_id,
                 "reason": "session-only process is no longer attached after runtime startup",
+            }),
+        )
+        .await?;
+        append_event(
+            pool,
+            session_id,
+            None,
+            "session",
+            Some(session_id),
+            "session.recoveryDegraded",
+            Some("degraded"),
+            json!({
+                "reason": "startup reconciliation found a previously running session-only process with no live runtime owner",
+                "processId": process_id,
+                "handle": handle,
+                "commandVersionId": command_version_id,
             }),
         )
         .await?;
@@ -138,13 +155,13 @@ pub async fn current_role_snapshot(pool: &PgPool, role_id: &str) -> Result<RoleS
     snapshot_from_value(row.get("snapshot"))
 }
 
-pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot, project_key: Option<&str>) -> Result<Uuid> {
+pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot, project_key: Option<&str>, workdir: &str, worktree_root: Option<&str>, title: Option<&str>, name: Option<&str>) -> Result<Uuid> {
     let id = Uuid::new_v4();
     let snapshot_value = snapshot_to_value(role_snapshot)?;
     sqlx::query(
         r#"
-        INSERT INTO sessions (id, status, role_id, role_version, role_snapshot, project_key)
-        VALUES ($1, 'open', $2, $3, $4, $5)
+        INSERT INTO sessions (id, status, role_id, role_version, role_snapshot, project_key, workdir, worktree_root, title, name, tracked, root_session_id, fork_depth)
+        VALUES ($1, 'open', $2, $3, $4, $5, $6, $7, $8, $9, true, $1, 0)
         "#,
     )
         .bind(id)
@@ -152,6 +169,10 @@ pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot, project_ke
         .bind(&role_snapshot.version)
         .bind(&snapshot_value)
         .bind(project_key)
+        .bind(workdir)
+        .bind(worktree_root)
+        .bind(title)
+        .bind(name)
         .execute(pool)
         .await?;
     append_event(
@@ -162,13 +183,17 @@ pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot, project_ke
         Some(id),
         "session.created",
         Some("open"),
-        serde_json::json!({
+        json!({
             "role": {
                 "id": role_snapshot.id,
                 "version": role_snapshot.version,
                 "snapshot": snapshot_value,
             },
             "projectKey": project_key,
+            "workdir": workdir,
+            "worktreeRoot": worktree_root,
+            "title": title,
+            "name": name,
         }),
     )
     .await?;
@@ -202,6 +227,298 @@ pub async fn session_role_snapshot(pool: &PgPool, session_id: Uuid) -> Result<Ro
     snapshot_from_value(value)
 }
 
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionSummary {
+    pub id: Uuid,
+    pub status: String,
+    pub tracked: bool,
+    pub role_id: Option<String>,
+    pub role_version: Option<String>,
+    pub project_key: Option<String>,
+    pub workdir: String,
+    pub worktree_root: Option<String>,
+    pub title: Option<String>,
+    pub name: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub closed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub archived_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub forked_from_session_id: Option<Uuid>,
+    pub forked_from_turn_id: Option<Uuid>,
+    pub root_session_id: Option<Uuid>,
+    pub fork_depth: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryItem {
+    pub session_id: Uuid,
+    pub turn_id: Uuid,
+    pub user: String,
+    pub assistant: Option<String>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub async fn session_record(pool: &PgPool, session_id: Uuid) -> Result<SessionSummary> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, status, tracked, role_id, role_version, project_key, workdir, worktree_root, title, name, created_at,
+               closed_at, archived_at, forked_from_session_id, forked_from_turn_id, root_session_id, fork_depth
+        FROM sessions WHERE id = $1
+        "#,
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .with_context(|| format!("session not found: {session_id}"))?;
+    Ok(SessionSummary {
+        id: row.get("id"),
+        status: row.get("status"),
+        tracked: row.get("tracked"),
+        role_id: row.get("role_id"),
+        role_version: row.get("role_version"),
+        project_key: row.get("project_key"),
+        workdir: row.get("workdir"),
+        worktree_root: row.get("worktree_root"),
+        title: row.get("title"),
+        name: row.get("name"),
+        created_at: row.get("created_at"),
+        closed_at: row.get("closed_at"),
+        archived_at: row.get("archived_at"),
+        forked_from_session_id: row.get("forked_from_session_id"),
+        forked_from_turn_id: row.get("forked_from_turn_id"),
+        root_session_id: row.get("root_session_id"),
+        fork_depth: row.get("fork_depth"),
+    })
+}
+
+pub async fn ensure_session_open(pool: &PgPool, session_id: Uuid) -> Result<SessionSummary> {
+    let session = session_record(pool, session_id).await?;
+    if session.status != "open" {
+        bail!("session {session_id} is not open: {}", session.status);
+    }
+    Ok(session)
+}
+
+pub async fn list_sessions(pool: &PgPool, include_all: bool) -> Result<Vec<SessionSummary>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, status, tracked, role_id, role_version, project_key, workdir, worktree_root, title, name, created_at,
+               closed_at, archived_at, forked_from_session_id, forked_from_turn_id, root_session_id, fork_depth
+        FROM sessions
+        WHERE ($1::bool OR tracked = true)
+        ORDER BY updated_at DESC, created_at DESC
+        "#,
+    )
+    .bind(include_all)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|row| SessionSummary {
+        id: row.get("id"),
+        status: row.get("status"),
+        tracked: row.get("tracked"),
+        role_id: row.get("role_id"),
+        role_version: row.get("role_version"),
+        project_key: row.get("project_key"),
+        workdir: row.get("workdir"),
+        worktree_root: row.get("worktree_root"),
+        title: row.get("title"),
+        name: row.get("name"),
+        created_at: row.get("created_at"),
+        closed_at: row.get("closed_at"),
+        archived_at: row.get("archived_at"),
+        forked_from_session_id: row.get("forked_from_session_id"),
+        forked_from_turn_id: row.get("forked_from_turn_id"),
+        root_session_id: row.get("root_session_id"),
+        fork_depth: row.get("fork_depth"),
+    }).collect())
+}
+
+pub async fn show_session(pool: &PgPool, session_id: Uuid) -> Result<Value> {
+    let session = session_record(pool, session_id).await?;
+    let role = session_role_snapshot(pool, session_id).await?;
+    let pending_approvals: i64 = sqlx::query("SELECT COUNT(*) AS count FROM approval_requests WHERE session_id = $1 AND status = 'pending'")
+        .bind(session_id).fetch_one(pool).await?.get("count");
+    let paused_actions: i64 = sqlx::query("SELECT COUNT(*) AS count FROM paused_actions WHERE session_id = $1 AND status IN ('pendingApproval', 'approved', 'resuming')")
+        .bind(session_id).fetch_one(pool).await?.get("count");
+    let managed_processes: i64 = sqlx::query("SELECT COUNT(*) AS count FROM managed_processes WHERE session_id = $1")
+        .bind(session_id).fetch_one(pool).await?.get("count");
+    let turns: i64 = sqlx::query("SELECT COUNT(*) AS count FROM turns WHERE session_id = $1")
+        .bind(session_id).fetch_one(pool).await?.get("count");
+    Ok(json!({
+        "session": session,
+        "role": {"id": role.id, "version": role.version, "displayName": role.display_name},
+        "lifecycle": {"status": session.status, "tracked": session.tracked, "closedAt": session.closed_at, "archivedAt": session.archived_at},
+        "pendingApprovals": pending_approvals,
+        "pausedActions": paused_actions,
+        "managedProcesses": managed_processes,
+        "turns": turns,
+    }))
+}
+
+pub async fn archive_session(pool: &PgPool, session_id: Uuid) -> Result<()> {
+    let result = sqlx::query("UPDATE sessions SET tracked = false, archived_at = COALESCE(archived_at, now()), updated_at = now() WHERE id = $1")
+        .bind(session_id).execute(pool).await?;
+    if result.rows_affected() != 1 { bail!("session not found: {session_id}"); }
+    append_event(pool, session_id, None, "session", Some(session_id), "session.archived", Some("archived"), json!({"tracked": false})).await?;
+    Ok(())
+}
+
+pub async fn close_session(pool: &PgPool, session_id: Uuid, reason: &str, live_terminated: usize) -> Result<()> {
+    let session = session_record(pool, session_id).await?;
+    if session.status != "open" {
+        bail!("session close blocked: session missing or not open: {session_id}");
+    }
+    let running = sqlx::query(
+        "SELECT id, handle, end_of_session_behavior FROM managed_processes WHERE session_id = $1 AND status = 'running' ORDER BY start_time ASC",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+    let blocked: Vec<Value> = running
+        .iter()
+        .filter_map(|row| {
+            let behavior: String = row.get("end_of_session_behavior");
+            if behavior != "terminate" {
+                Some(json!({"processId": row.get::<Uuid, _>("id"), "handle": row.get::<String, _>("handle"), "endOfSessionBehavior": behavior, "reason": "policy blocks session close while process is running"}))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let terminable = running.len() - blocked.len();
+    if !blocked.is_empty() || live_terminated < terminable {
+        let unowned: Vec<Value> = running
+            .iter()
+            .filter_map(|row| {
+                let behavior: String = row.get("end_of_session_behavior");
+                if behavior == "terminate" {
+                    Some(json!({"processId": row.get::<Uuid, _>("id"), "handle": row.get::<String, _>("handle"), "endOfSessionBehavior": behavior, "reason": "process was not owned and terminated by this runtime close operation"}))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        append_event(pool, session_id, None, "session", Some(session_id), "session.closeBlocked", Some("blocked"), json!({"reason": "running managed processes block session close", "blocked": blocked, "unownedTerminable": unowned, "liveTerminated": live_terminated, "terminableRows": terminable})).await?;
+        bail!("session close blocked by running managed processes: {session_id}");
+    }
+    let db_processes = sqlx::query(
+        "UPDATE managed_processes SET status = 'sessionClosed', end_time = COALESCE(end_time, now()), termination_reason = 'sessionClosed' WHERE session_id = $1 AND status = 'running' AND end_of_session_behavior = 'terminate'",
+    )
+    .bind(session_id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    let result = sqlx::query(
+        "UPDATE sessions SET status = 'closed', closed_at = COALESCE(closed_at, now()), close_reason = $2, updated_at = now() WHERE id = $1 AND status = 'open'",
+    )
+    .bind(session_id)
+    .bind(reason)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() != 1 { bail!("session close blocked: session missing or not open: {session_id}"); }
+    append_event(pool, session_id, None, "session", Some(session_id), "session.closed", Some("closed"), json!({"reason": reason, "liveProcessesTerminated": live_terminated, "processRowsMarked": db_processes})).await?;
+    Ok(())
+}
+
+pub async fn fork_session(pool: &PgPool, source_session_id: Uuid, fork_turn_id: Uuid) -> Result<Uuid> {
+    let source = session_record(pool, source_session_id).await?;
+    let turn_row = sqlx::query("SELECT status FROM turns WHERE id = $1 AND session_id = $2")
+        .bind(fork_turn_id)
+        .bind(source_session_id)
+        .fetch_optional(pool)
+        .await?
+        .with_context(|| format!("fork source turn not found in source session: {fork_turn_id}"))?;
+    let status: String = turn_row.get("status");
+    if status != "completed" { bail!("fork source turn must be completed: {fork_turn_id} status={status}"); }
+    let role_snapshot = session_role_snapshot(pool, source_session_id).await?;
+    let snapshot_value = snapshot_to_value(&role_snapshot)?;
+    let id = Uuid::new_v4();
+    let depth = source.fork_depth + 1;
+    let root = source.root_session_id.unwrap_or(source.id);
+    sqlx::query(
+        r#"
+        INSERT INTO sessions (
+            id, status, role_id, role_version, role_snapshot, project_key, workdir, worktree_root, title, name, tracked,
+            forked_from_session_id, forked_from_turn_id, root_session_id, fork_depth, lineage
+        )
+        VALUES ($1, 'open', $2, $3, $4, $5, $6, $7, $8, $9, true, $10, $11, $12, $13, $14)
+        "#,
+    )
+    .bind(id)
+    .bind(&role_snapshot.id)
+    .bind(&role_snapshot.version)
+    .bind(&snapshot_value)
+    .bind(source.project_key.as_deref())
+    .bind(&source.workdir)
+    .bind(source.worktree_root.as_deref())
+    .bind(source.title.as_deref())
+    .bind(source.name.as_deref())
+    .bind(source_session_id)
+    .bind(fork_turn_id)
+    .bind(root)
+    .bind(depth)
+    .bind(json!({"forkedFromSessionId": source_session_id, "forkedFromTurnId": fork_turn_id, "rootSessionId": root, "forkDepth": depth}))
+    .execute(pool)
+    .await?;
+    append_event(pool, id, None, "session", Some(id), "session.created", Some("open"), json!({"role": {"id": role_snapshot.id, "version": role_snapshot.version}, "projectKey": source.project_key, "workdir": source.workdir, "worktreeRoot": source.worktree_root, "title": source.title, "name": source.name, "fork": true})).await?;
+    append_event(pool, id, Some(fork_turn_id), "session", Some(id), "session.forked", Some("open"), json!({"sourceSessionId": source_session_id, "sourceTurnId": fork_turn_id, "rootSessionId": root, "forkDepth": depth})).await?;
+    Ok(id)
+}
+
+async fn local_completed_history(pool: &PgPool, session_id: Uuid, stop_at_turn: Option<Uuid>) -> Result<Vec<HistoryItem>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT t.id, t.session_id, t.input_text, t.started_at,
+               (SELECT me.payload->>'summary' FROM model_events me WHERE me.turn_id = t.id AND me.event_type = 'final_response' ORDER BY me.ordinal DESC LIMIT 1) AS assistant
+        FROM turns t
+        WHERE t.session_id = $1 AND t.status = 'completed'
+        ORDER BY t.started_at ASC
+        "#,
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+    let mut out = Vec::new();
+    for row in rows {
+        let turn_id: Uuid = row.get("id");
+        out.push(HistoryItem {
+            session_id: row.get("session_id"),
+            turn_id,
+            user: row.get("input_text"),
+            assistant: row.get("assistant"),
+            started_at: row.get("started_at"),
+        });
+        if stop_at_turn == Some(turn_id) { break; }
+    }
+    if stop_at_turn.is_some() && out.last().map(|item| item.turn_id) != stop_at_turn {
+        bail!("completed history does not contain fork boundary {stop_at_turn:?}");
+    }
+    Ok(out)
+}
+
+pub async fn reconstructed_history(pool: &PgPool, session_id: Uuid) -> Result<Vec<HistoryItem>> {
+    let mut chain = Vec::new();
+    let mut cursor = Some(session_id);
+    while let Some(id) = cursor {
+        let session = session_record(pool, id).await?;
+        cursor = session.forked_from_session_id;
+        chain.push(session);
+    }
+    chain.reverse();
+    let mut history = Vec::new();
+    for (idx, session) in chain.iter().enumerate() {
+        let stop = if idx + 1 < chain.len() { chain[idx + 1].forked_from_turn_id } else { None };
+        history.extend(local_completed_history(pool, session.id, stop).await?);
+    }
+    Ok(history)
+}
+
+pub async fn history_json(pool: &PgPool, session_id: Uuid) -> Result<Value> {
+    let session = session_record(pool, session_id).await?;
+    let history = reconstructed_history(pool, session_id).await?;
+    Ok(json!({"session": session, "history": history}))
+}
+
 pub async fn append_event(
     pool: &PgPool,
     session_id: Uuid,
@@ -228,14 +545,6 @@ pub async fn append_event(
     .execute(pool)
     .await?;
     Ok(())
-}
-
-pub async fn session_exists(pool: &PgPool, session_id: Uuid) -> Result<bool> {
-    let row = sqlx::query("SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1)")
-        .bind(session_id)
-        .fetch_one(pool)
-        .await?;
-    Ok(row.get::<bool, _>(0))
 }
 
 pub async fn print_events(pool: &PgPool, session_id: Uuid) -> Result<()> {

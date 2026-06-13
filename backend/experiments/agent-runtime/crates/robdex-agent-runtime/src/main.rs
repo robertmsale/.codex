@@ -15,9 +15,6 @@ struct Cli {
     #[arg(long, env = "ROBDEX_AGENT_RUNTIME_DATABASE_URL", default_value = DEFAULT_DATABASE_URL)]
     database_url: String,
 
-    #[arg(long, default_value = ".")]
-    workdir: String,
-
     #[command(subcommand)]
     command: Command,
 }
@@ -25,11 +22,9 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     InitDb,
-    NewSession {
-        #[arg(long, default_value = DEFAULT_ROLE_ID)]
-        role: String,
-        #[arg(long)]
-        project: Option<String>,
+    Sessions {
+        #[command(subcommand)]
+        command: SessionsCommand,
     },
     Send {
         #[arg(long)]
@@ -52,6 +47,48 @@ enum Command {
     CommandRegistry {
         #[command(subcommand)]
         command: CommandRegistryCommand,
+    },
+}
+
+
+#[derive(Debug, Subcommand)]
+enum SessionsCommand {
+    New {
+        #[arg(long, default_value = DEFAULT_ROLE_ID)]
+        role: String,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, default_value = ".")]
+        workdir: String,
+        #[arg(long)]
+        worktree_root: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    List {
+        #[arg(long)]
+        all: bool,
+    },
+    Show {
+        id: Uuid,
+    },
+    History {
+        id: Uuid,
+    },
+    Close {
+        id: Uuid,
+        #[arg(long, default_value = "closed by operator")]
+        reason: String,
+    },
+    Archive {
+        id: Uuid,
+    },
+    Fork {
+        id: Uuid,
+        #[arg(long = "at-turn")]
+        at_turn: Uuid,
     },
 }
 
@@ -109,6 +146,25 @@ enum CommandRegistryCommand {
 enum CommandRegistryRequestCommand {
     List,
     Show { id: Uuid },
+    Review { id: Uuid },
+    FinalTemplate {
+        id: Uuid,
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    PreviewDecision {
+        id: Uuid,
+        #[arg(long)]
+        status: String,
+        #[arg(long)]
+        final_scope: Option<String>,
+        #[arg(long)]
+        final_project: Option<String>,
+        #[arg(long)]
+        final_policy: Option<String>,
+        #[arg(long)]
+        final_command_file: Option<std::path::PathBuf>,
+    },
     Decide {
         #[arg(long)]
         session: Uuid,
@@ -140,13 +196,39 @@ async fn main() -> Result<()> {
             db::init(&pool).await?;
             println!("initialized experimental Postgres schema");
         }
-        Command::NewSession { role, project } => {
-            let snapshot = db::current_role_snapshot(&pool, &role).await?;
-            let id = db::new_session(&pool, &snapshot, project.as_deref()).await?;
-            println!("{id}");
-        }
+        Command::Sessions { command } => match command {
+            SessionsCommand::New { role, project, workdir, worktree_root, title, name } => {
+                let snapshot = db::current_role_snapshot(&pool, &role).await?;
+                let id = db::new_session(&pool, &snapshot, project.as_deref(), &workdir, worktree_root.as_deref(), title.as_deref(), name.as_deref()).await?;
+                println!("{id}");
+            }
+            SessionsCommand::List { all } => {
+                for session in db::list_sessions(&pool, all).await? {
+                    println!("{}", serde_json::to_string(&session)?);
+                }
+            }
+            SessionsCommand::Show { id } => {
+                println!("{}", serde_json::to_string_pretty(&db::show_session(&pool, id).await?)?);
+            }
+            SessionsCommand::History { id } => {
+                println!("{}", serde_json::to_string_pretty(&db::history_json(&pool, id).await?)?);
+            }
+            SessionsCommand::Close { id, reason } => {
+                let live_terminated = robdex_agent_runtime::starlark_host::terminate_session_processes_for_close(id);
+                db::close_session(&pool, id, &reason, live_terminated).await?;
+                println!("closed {id}");
+            }
+            SessionsCommand::Archive { id } => {
+                db::archive_session(&pool, id).await?;
+                println!("archived {id}");
+            }
+            SessionsCommand::Fork { id, at_turn } => {
+                let forked = db::fork_session(&pool, id, at_turn).await?;
+                println!("{forked}");
+            }
+        },
         Command::Send { session, message } => {
-            runtime::send(&pool, session, &message, &cli.workdir).await?;
+            runtime::send(&pool, session, &message).await?;
         }
         Command::Events { session } => {
             db::print_events(&pool, session).await?;
@@ -254,6 +336,36 @@ async fn main() -> Result<()> {
                 }
                 CommandRegistryRequestCommand::Show { id } => {
                     println!("{}", serde_json::to_string_pretty(&command_registry::show_request(&pool, id).await?)?);
+                }
+                CommandRegistryRequestCommand::Review { id } => {
+                    println!("{}", serde_json::to_string_pretty(&command_registry::review_request(&pool, id).await?)?);
+                }
+                CommandRegistryRequestCommand::FinalTemplate { id, out } => {
+                    let template = command_registry::final_template(&pool, id).await?;
+                    let text = serde_json::to_string_pretty(&template)?;
+                    if let Some(path) = out {
+                        std::fs::write(path, text)?;
+                    } else {
+                        println!("{text}");
+                    }
+                }
+                CommandRegistryRequestCommand::PreviewDecision { id, status, final_scope, final_project, final_policy, final_command_file } => {
+                    let scope = final_scope.map(|scope_type| command_registry::RegistryScope { scope_type, project_key: final_project });
+                    let policy = final_policy
+                        .map(|decision| command_registry::FinalExecutionPolicy { decision, reason: None });
+                    let final_command = match final_command_file {
+                        Some(path) => {
+                            let raw = std::fs::read_to_string(path)?;
+                            let value: serde_json::Value = serde_json::from_str(&raw)?;
+                            if let Some(command) = value.get("command").cloned() {
+                                Some(serde_json::from_value(command)?)
+                            } else {
+                                Some(serde_json::from_value(value)?)
+                            }
+                        }
+                        None => None,
+                    };
+                    println!("{}", serde_json::to_string_pretty(&command_registry::preview_decision(&pool, id, &status, scope, policy, final_command).await?)?);
                 }
                 CommandRegistryRequestCommand::Decide { session, id, status, final_scope, final_project, final_policy, final_command_file } => {
                     let scope = final_scope.map(|scope_type| command_registry::RegistryScope { scope_type, project_key: final_project });

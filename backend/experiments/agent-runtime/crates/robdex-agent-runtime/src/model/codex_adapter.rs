@@ -9,7 +9,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::model::{ModelClient, ModelFinalTurn, ModelToolTurn, ToolCallRequest};
+use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelToolTurn, ToolCallRequest};
 
 const CHATGPT_CODEX_RESPONSES_URL: &str =
     "https://chatgpt.com/backend-api/codex/responses?client_version=0.124.0&source=robdex-agent-runtime";
@@ -204,12 +204,13 @@ pub fn bounded_raw_response(response: &Value) -> Value {
 
 #[async_trait]
 impl ModelClient for CodexBackedModelClient {
-    async fn request_tool_call(&self, role_instructions: &str, execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn> {
+    async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn> {
         let tool = Self::execute_code_tool_schema(execute_code_contract);
         let request_tool = Self::request_command_registry_change_tool_schema(request_registry_contract);
         let instructions = format!(
             "{role_instructions}\n\nChoose exactly one native tool for this turn. Call execute_code when the current Starlark/command interface can satisfy the user. Call request_command_registry_change when progress is blocked by a missing or changed command registry entry. Current execute_code contract:\n{execute_code_contract}\n\nCurrent command registry request contract:\n{request_registry_contract}"
         );
+        let request_input = responses_input_from_history(history, Some(message));
         let request_for_shape = ResponsesApiRequest {
             model: self.model.clone(),
             instructions,
@@ -229,14 +230,10 @@ impl ModelClient for CodexBackedModelClient {
                 "robdex-agent-runtime".to_string(),
             )])),
         };
-        let request_shape = serde_json::to_value(&request_for_shape)?;
         let body = json!({
             "model": self.model,
             "instructions": request_for_shape.instructions,
-            "input": [{
-                "role": "user",
-                "content": [{"type": "input_text", "text": message}]
-            }],
+            "input": request_input,
             "tools": [tool, request_tool],
             "tool_choice": "auto",
             "parallel_tool_calls": false,
@@ -244,6 +241,7 @@ impl ModelClient for CodexBackedModelClient {
             "stream": true,
             "prompt_cache_key": "robdex-agent-runtime-kernel-v1",
         });
+        let request_shape = body.clone();
         let raw_response = self.post_responses(&body).await?;
         let (call_id, tool_name, arguments) = extract_native_tool_call(&raw_response)?;
         Ok(ModelToolTurn {
@@ -263,26 +261,27 @@ impl ModelClient for CodexBackedModelClient {
     async fn submit_tool_result(
         &self,
         role_instructions: &str,
+        history: &[ModelHistoryItem],
         tool_call_response: &Value,
         call_id: &str,
         tool_result: &Value,
     ) -> Result<ModelFinalTurn> {
         let result_text = serde_json::to_string(tool_result)?;
         let function_call_item = find_native_tool_item(tool_call_response, call_id)?;
+        let mut input = responses_input_from_history(history, None);
+        input.push(function_call_item);
+        input.push(json!({
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": result_text
+        }));
         let instructions = format!(
-            "{role_instructions}\n\nSummarize the execute_code tool result concisely."
+            "{role_instructions}\n\nSummarize the tool result concisely using the structured prior messages in the request input."
         );
         let body = json!({
             "model": self.model,
             "instructions": instructions,
-            "input": [
-                function_call_item,
-                {
-                "type": "function_call_output",
-                "call_id": call_id,
-                "output": result_text
-                }
-            ],
+            "input": input,
             "store": false,
             "stream": true,
             "prompt_cache_key": "robdex-agent-runtime-kernel-v1",
@@ -296,6 +295,43 @@ impl ModelClient for CodexBackedModelClient {
             raw_response,
         })
     }
+}
+
+fn responses_input_from_history(history: &[ModelHistoryItem], current_message: Option<&str>) -> Vec<Value> {
+    let mut input = Vec::new();
+    for item in history {
+        input.push(json!({
+            "role": "user",
+            "content": [{"type": "input_text", "text": item.user}],
+            "metadata": {
+                "sessionId": item.session_id,
+                "turnId": item.turn_id,
+                "startedAt": item.started_at,
+                "source": "reconstructed_session_history",
+            }
+        }));
+        if let Some(assistant) = &item.assistant
+            && !assistant.trim().is_empty()
+        {
+            input.push(json!({
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": assistant}],
+                "metadata": {
+                    "sessionId": item.session_id,
+                    "turnId": item.turn_id,
+                    "startedAt": item.started_at,
+                    "source": "reconstructed_session_history",
+                }
+            }));
+        }
+    }
+    if let Some(message) = current_message {
+        input.push(json!({
+            "role": "user",
+            "content": [{"type": "input_text", "text": message}]
+        }));
+    }
+    input
 }
 
 fn read_codex_auth() -> Result<CodexAuthMaterial> {

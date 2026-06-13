@@ -41,6 +41,44 @@ output(value)
 Host API calls return values to the script, but they do not implicitly append to
 the final tool output. This keeps tool result packets deterministic and concise.
 
+## Session lifecycle
+
+A session is the durable agent/thread record. PostgreSQL stores the role
+snapshot, project key, workdir, optional worktree root, title/name metadata,
+lifecycle state, lineage, turns, model events,
+approvals, paused actions, and managed-process records. Runtime memory is
+disposable; sends reconstruct context from PostgreSQL.
+
+Canonical session commands:
+
+```sh
+robdex-agent-runtime sessions new --role <role-id> --project <key> --workdir <path> --worktree-root <path> --title <title> --name <name>
+robdex-agent-runtime sessions list [--all]
+robdex-agent-runtime sessions show <session-id>
+robdex-agent-runtime sessions history <session-id>
+robdex-agent-runtime sessions close <session-id> --reason <text>
+robdex-agent-runtime sessions archive <session-id>
+robdex-agent-runtime sessions fork <session-id> --at-turn <completed-turn-id>
+```
+
+The `worktree_root`, `title`, and `name` fields are explicit session metadata:
+`worktree_root` records the optional owning worktree/root for audit and tooling,
+`title` is user-visible display metadata, and `name` is a stable human-readable
+operator label. `send` uses the stored session workdir and rejects sessions whose status is not
+`open` before creating a turn. Archive is visibility-only: it sets
+`tracked=false` and `archived_at` while preserving direct show/history access and
+leaving rows in place. Close is terminal: it sets `status=closed`, records
+`closed_at`, emits `session.closed`, rejects future sends, terminates any live
+session process handles owned by this runtime, and marks remaining running
+managed-process rows as `sessionClosed`.
+
+Forking is legal only from a completed source turn. A fork creates a new open
+session with inherited role snapshot, project key, workdir, and lineage fields.
+Source rows are not copied. History reconstruction traverses lineage through the
+fork boundary and then appends the fork session's own completed turns. Model
+requests include reconstructed prior user/final-assistant history before the
+current message.
+
 ## Typed command registry
 
 Postgres is the runtime source of truth for concrete `cmd[...]` commands. Rust
@@ -53,9 +91,7 @@ migrations; it does not overwrite, re-enable, or repoint current command
 definitions. Live registry changes must use explicit command-registry requests.
 Command definitions are scoped. `global` commands are visible to subsequent
 sessions in every project. `project` commands are visible only to sessions whose
-stored `project_key` matches the command scope. Session creation accepts
-`new-session --project <key>` and stores that project key so every
-`execute_code` boundary can resolve visible commands deterministically.
+stored `project_key` matches the command scope. Session creation uses `sessions new --project <key> --workdir <path>` and stores that project key and workdir so every send and `execute_code` boundary can resolve visible commands and execute from durable session state deterministically.
 
 The bundled seed import creates:
 
@@ -126,6 +162,9 @@ robdex-agent-runtime command-registry show <action-id>
 robdex-agent-runtime command-registry seed-requests --session <session-id> --mode missing|refresh
 robdex-agent-runtime command-registry requests list
 robdex-agent-runtime command-registry requests show <id>
+robdex-agent-runtime command-registry requests review <id>
+robdex-agent-runtime command-registry requests final-template <id> [--out <json-file>]
+robdex-agent-runtime command-registry requests preview-decision <id> --status approved --final-scope global --final-policy allow --final-command-file <json-file>
 robdex-agent-runtime command-registry requests decide --session <session-id> <id> --status denied
 robdex-agent-runtime command-registry requests decide --session <session-id> <id> --status approved --final-scope global --final-policy allow --final-command-file <json-file>
 robdex-agent-runtime command-registry requests decide --session <session-id> <id> --status approved --final-scope project --final-project <key> --final-policy allow --final-command-file <json-file>
@@ -140,6 +179,16 @@ reviewable registry requests from `command-seeds/`; it does not approve or apply
 them. `--mode missing` requests only absent bundled commands. `--mode refresh`
 requests updates for existing bundled commands and adds for absent bundled
 commands.
+
+Approver ergonomics commands keep decision and application separate while making
+review legible. `requests review` emits a structured packet containing
+requester/source context, proposed/final/current command state, readiness,
+risk-relevant fields, and semantic diff summaries. `requests final-template`
+exports editable final command JSON copied from the proposal; final scope and
+final policy remain explicit `decide` inputs. `requests preview-decision` runs
+the same final scope, final policy, command schema, operation strictness, scoped
+conflict, and visibility-impact validation without mutating approval/application
+status, registry definitions, command versions, or mutation events.
 
 ## Role policy foundation
 
@@ -212,6 +261,6 @@ The cleanup helper refuses destructive cleanup for database names that do not st
 
 ## Session-only managed process surface
 
-Registry command versions carry process policy as data: `syncAllowed`, `asyncAllowed`, `maxRuntimeMs` (`null` means no configured maximum runtime kill), `endOfTurnBehavior`, `stdinPolicy`, await bounds, bounded output buffer bytes, and terminate grace. The model-facing Starlark surface is explicit: `cmd["name"].method(...).sync()` runs synchronously under the command version's max-runtime semantics, and `cmd["name"].method(...).start()` returns an opaque session-only process handle. Process handles are not OS PIDs. The handle API is exposed through `proc[handle]` with `is_running()`, `await_for(mins=N)`, `flush_buffer()`, `terminate()`, and `input(text)`.
+Registry command versions carry process policy as data: `syncAllowed`, `asyncAllowed`, `maxRuntimeMs` (`null` means no configured maximum runtime kill), `endOfTurnBehavior`, `stdinPolicy`, await bounds, bounded output buffer bytes, and terminate grace. Seeded default commands use `maxRuntimeMs: null`; a finite value is an explicit command-specific maximum runtime policy, not a renamed default timeout. The model-facing Starlark surface is explicit: `cmd["name"].method(...).sync()` runs synchronously under the command version's max-runtime semantics, and `cmd["name"].method(...).start()` returns an opaque session-only process handle. Process handles are not OS PIDs. The handle API is exposed through `proc[handle]` with `is_running()`, `await_for(mins=N)`, `flush_buffer()`, `terminate()`, and `input(text)`.
 
-The current experimental CLI executes each `send` as a short-lived runtime process, so handles are session-only runtime objects and startup reconciliation marks any previously `running` rows as `lost` instead of pretending to reattach them. Process metadata is persisted in `managed_processes`; incremental bounded output is persisted in `process_output_chunks` when handles are flushed. Command execution remains policy-controlled: approval-required commands pause before side effects, sync/async permission is checked before execution, stdin is rejected unless explicitly allowed, and command traces retain the exact `command_version_id`.
+The current experimental CLI executes each `send` as a short-lived runtime process. Same-runtime continuation is supported inside a single runtime instance, which is the target persistent server boundary. Across separate CLI invocations, handles are intentionally detached; startup reconciliation marks any previously `running` rows as `lost` instead of pretending to reattach them. Process metadata is persisted in `managed_processes`; incremental bounded output is persisted in `process_output_chunks` when handles are flushed. Command execution remains policy-controlled: approval-required commands pause before side effects, sync/async permission is checked before execution, stdin is rejected unless explicitly allowed, and command traces retain the exact `command_version_id`.

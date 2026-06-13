@@ -23,9 +23,9 @@ run cargo run --quiet -- roles list
 printf '\n[roles show from DB]\n'
 cargo run --quiet -- roles show runtime-allow | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["id"], d["version"], d["displayName"], "instr="+str(len(d["instructionText"])), "model="+d["modelDefaults"]["model"])'
 
-ALLOW_SESSION=$(cargo run --quiet -- new-session --role runtime-allow)
-DENY_SESSION=$(cargo run --quiet -- new-session --role runtime-no-rg)
-APPROVAL_SESSION=$(cargo run --quiet -- new-session --role runtime-approval-rg)
+ALLOW_SESSION=$(cargo run --quiet -- sessions new --role runtime-allow)
+DENY_SESSION=$(cargo run --quiet -- sessions new --role runtime-no-rg)
+APPROVAL_SESSION=$(cargo run --quiet -- sessions new --role runtime-approval-rg)
 printf '\n[sessions]\nALLOW_SESSION=%s\nDENY_SESSION=%s\nAPPROVAL_SESSION=%s\n' "$ALLOW_SESSION" "$DENY_SESSION" "$APPROVAL_SESSION"
 
 printf '\n[session snapshots include instruction text]\n'

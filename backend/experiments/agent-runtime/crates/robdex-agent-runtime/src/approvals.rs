@@ -208,6 +208,34 @@ pub async fn show(pool: &PgPool, id: Uuid) -> Result<Value> {
     .fetch_all(pool)
     .await?;
     value["pausedActions"] = Value::Array(paused.into_iter().map(paused_row_to_json).collect());
+    let registry_requests = sqlx::query(
+        r#"
+        SELECT id, session_id, operation, proposed_command, requester_context, final_scope,
+               final_execution_policy, final_command, approval_status, application_status,
+               requested_by_role
+        FROM command_registry_requests
+        WHERE approval_request_id = $1
+        ORDER BY created_at ASC
+        "#,
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await?;
+    value["commandRegistryRequests"] = Value::Array(registry_requests.into_iter().map(|row| {
+        serde_json::json!({
+            "id": row.get::<Uuid,_>("id"),
+            "sessionId": row.get::<Option<Uuid>,_>("session_id"),
+            "operation": row.get::<String,_>("operation"),
+            "proposedCommand": row.get::<Value,_>("proposed_command"),
+            "requesterContext": row.get::<Value,_>("requester_context"),
+            "finalScope": row.get::<Option<Value>,_>("final_scope"),
+            "finalExecutionPolicy": row.get::<Option<Value>,_>("final_execution_policy"),
+            "finalCommand": row.get::<Option<Value>,_>("final_command"),
+            "approvalStatus": row.get::<String,_>("approval_status"),
+            "applicationStatus": row.get::<String,_>("application_status"),
+            "requestedByRole": row.get::<Value,_>("requested_by_role"),
+        })
+    }).collect());
     Ok(value)
 }
 

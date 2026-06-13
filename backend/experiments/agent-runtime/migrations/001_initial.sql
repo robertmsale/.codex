@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS managed_processes (
     start_time TIMESTAMPTZ NOT NULL DEFAULT now(),
     end_time TIMESTAMPTZ,
     end_of_turn_behavior TEXT NOT NULL,
+    end_of_session_behavior TEXT NOT NULL DEFAULT 'block',
     max_runtime_ms BIGINT,
     termination_reason TEXT,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
@@ -193,6 +194,7 @@ CREATE TABLE IF NOT EXISTS process_output_chunks (
 
 CREATE INDEX IF NOT EXISTS managed_processes_session_handle_idx ON managed_processes(session_id, handle);
 CREATE INDEX IF NOT EXISTS process_output_chunks_process_idx ON process_output_chunks(process_id, chunk_index);
+ALTER TABLE managed_processes ADD COLUMN IF NOT EXISTS end_of_session_behavior TEXT NOT NULL DEFAULT 'block';
 
 CREATE TABLE IF NOT EXISTS command_registry_requests (
     id UUID PRIMARY KEY,
@@ -227,6 +229,20 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_id TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_version TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS project_key TEXT;
+
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS workdir TEXT NOT NULL DEFAULT '.';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS worktree_root TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tracked BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS close_reason TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS forked_from_session_id UUID;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS forked_from_turn_id UUID;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS root_session_id UUID;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS fork_depth INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS lineage JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS roles (
     id TEXT PRIMARY KEY,

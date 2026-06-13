@@ -37,7 +37,7 @@ PY
 run cargo run --quiet -- init-db
 run cargo run --quiet -- roles import-seeds
 
-ADMIN_SESSION=$(cargo run --quiet -- new-session --role runtime-allow)
+ADMIN_SESSION=$(cargo run --quiet -- sessions new --role runtime-allow)
 cat >/tmp/agent-runtime-resume-rg.json <<'JSON'
 {
   "operation": "add",
@@ -75,9 +75,9 @@ REGISTRY_REQUEST=$(create_internal_request /tmp/agent-runtime-resume-rg.json)
 run cargo run --quiet -- command-registry requests decide --session "$ADMIN_SESSION" "$REGISTRY_REQUEST" --status approved --final-scope global --final-policy ownerApproval --final-command-file /tmp/agent-runtime-resume-rg.json
 run cargo run --quiet -- command-registry requests apply --session "$ADMIN_SESSION" "$REGISTRY_REQUEST"
 
-APPROVE_SESSION=$(cargo run --quiet -- new-session --role runtime-allow)
-PENDING_SESSION=$(cargo run --quiet -- new-session --role runtime-allow)
-DENIED_SESSION=$(cargo run --quiet -- new-session --role runtime-allow)
+APPROVE_SESSION=$(cargo run --quiet -- sessions new --role runtime-allow)
+PENDING_SESSION=$(cargo run --quiet -- sessions new --role runtime-allow)
+DENIED_SESSION=$(cargo run --quiet -- sessions new --role runtime-allow)
 printf '\n[sessions]\nAPPROVE_SESSION=%s\nPENDING_SESSION=%s\nDENIED_SESSION=%s\n' "$APPROVE_SESSION" "$PENDING_SESSION" "$DENIED_SESSION"
 
 run cargo run --quiet -- send --session "$APPROVE_SESSION" --message 'Use execute_code with exactly this Starlark source: text = fs.read("Cargo.toml"); matches = cmd["rg_resume_approval"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").sync(); output("approval should pause")'
@@ -100,7 +100,7 @@ set -e
 printf 'second_resume_status=%s\n' "$SECOND_STATUS"
 printf '%s\n' "$SECOND" | rg 'paused action is not resume-ready'
 
-ASYNC_SESSION=$(cargo run --quiet -- new-session --role runtime-allow)
+ASYNC_SESSION=$(cargo run --quiet -- sessions new --role runtime-allow)
 run cargo run --quiet -- send --session "$ASYNC_SESSION" --message 'Use execute_code with exactly this Starlark source: h = cmd["rg_resume_approval"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").start(); output("async approval should pause")'
 ASYNC_APPROVAL=$(sql "select id from approval_requests where session_id='$ASYNC_SESSION' and action_name='cmd.rg.resume_approval' order by created_at desc limit 1")
 ASYNC_PAUSED=$(sql "select id from paused_actions where approval_request_id='$ASYNC_APPROVAL'")

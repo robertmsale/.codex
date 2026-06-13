@@ -42,6 +42,36 @@ const OUTPUT_LIMIT_BYTES: usize = 12_000;
 static PROCESS_MANAGER: Lazy<Mutex<BTreeMap<Uuid, BTreeMap<String, ManagedProcess>>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
 
+pub fn terminate_session_processes_for_close(session_id: Uuid) -> usize {
+    let Ok(mut manager) = PROCESS_MANAGER.lock() else {
+        return 0;
+    };
+    let Some(processes) = manager.get_mut(&session_id) else {
+        return 0;
+    };
+    let mut terminated = 0usize;
+    let mut remove = Vec::new();
+    for (handle, process) in processes.iter_mut() {
+        if process.status == "running" && process.end_of_session_behavior == "terminate" {
+            let _ = process.terminate("sessionClosed", true);
+            terminated += 1;
+            remove.push(handle.clone());
+        }
+    }
+    for handle in remove {
+        processes.remove(&handle);
+    }
+    terminated
+}
+
+fn end_of_session_behavior(command_version: &CommandVersion) -> String {
+    if command_version.end_of_turn_behavior == "terminate" {
+        "terminate".to_string()
+    } else {
+        "block".to_string()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecutionRoot {
     root: PathBuf,
@@ -179,6 +209,7 @@ struct ManagedProcess {
     started: Instant,
     started_at: chrono::DateTime<Utc>,
     status: String,
+    end_of_session_behavior: String,
     termination_reason: Option<String>,
 }
 
@@ -195,6 +226,7 @@ struct ManagedProcessRecord {
     os_pgid: Option<i64>,
     status: String,
     end_of_turn_behavior: String,
+    end_of_session_behavior: String,
     max_runtime_ms: Option<i64>,
     termination_reason: Option<String>,
     event: String,
@@ -456,6 +488,76 @@ fn active_process_handles(session_id: Uuid) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn spawn_max_runtime_supervisor(
+    pool: PgPool,
+    session_id: Uuid,
+    turn_id: Option<Uuid>,
+    process_id: Uuid,
+    handle: String,
+    command_version_id: Uuid,
+    max_runtime_ms: i64,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(max_runtime_ms as u64)).await;
+        let supervised = {
+            let mut manager = PROCESS_MANAGER.lock().ok();
+            manager
+                .as_mut()
+                .and_then(|manager| manager.get_mut(&session_id))
+                .and_then(|processes| processes.get_mut(&handle))
+                .map(|process| {
+                    let _ = process.refresh_status();
+                    if process.status == "running" {
+                        let _ = process.terminate("maxRuntimeExceeded", true);
+                    }
+                    let event = if process.status == "maxRuntimeExceeded" {
+                        "process.maxRuntimeExceeded"
+                    } else {
+                        "process.naturalExit"
+                    };
+                    (process.status.clone(), process.termination_reason.clone(), event.to_string())
+                })
+        };
+        let Some((status, termination_reason, event_type)) = supervised else {
+            return;
+        };
+        let updated = sqlx::query(
+            r#"
+            UPDATE managed_processes
+            SET status = $2,
+                end_time = now(),
+                termination_reason = $3,
+                metadata = metadata || $4
+            WHERE id = $1 AND status = 'running'
+            "#,
+        )
+        .bind(process_id)
+        .bind(&status)
+        .bind(&termination_reason)
+        .bind(json!({"maxRuntimeSupervisor": true, "observedStatus": status}))
+        .execute(&pool)
+        .await;
+        if matches!(updated.as_ref().map(|result| result.rows_affected()), Ok(1)) {
+            let _ = db::append_event(
+                &pool,
+                session_id,
+                turn_id,
+                "process",
+                Some(process_id),
+                &event_type,
+                Some(&status),
+                json!({
+                    "handle": handle,
+                    "commandVersionId": command_version_id,
+                    "maxRuntimeMs": max_runtime_ms,
+                    "recordedBy": "processManagerSupervisor",
+                }),
+            )
+            .await;
+        }
+    });
+}
+
 #[starlark_module]
 fn fs_builtins(builder: &mut GlobalsBuilder) {
     fn read<'v>(path: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
@@ -621,12 +723,6 @@ impl HostKernel {
         command.process_group(0);
         let mut child = command.spawn().with_context(|| format!("failed to start async command: {action}"))?;
         let child_pid = child.id();
-        if let Some(max_runtime) = command_version.max_runtime {
-            thread::spawn(move || {
-                thread::sleep(max_runtime);
-                terminate_process_group(child_pid, 0);
-            });
-        }
         let stdout_buf = Arc::new(Mutex::new(String::new()));
         let stderr_buf = Arc::new(Mutex::new(String::new()));
         let buffer_limit = command_version.output_buffer_bytes;
@@ -680,6 +776,7 @@ impl HostKernel {
             os_pgid: os_pid,
             status: "running".to_string(),
             end_of_turn_behavior: command_version.end_of_turn_behavior.clone(),
+            end_of_session_behavior: end_of_session_behavior(&command_version),
             max_runtime_ms: command_version.max_runtime.map(|d| d.as_millis() as i64),
             termination_reason: None,
             event: "process.started".to_string(),
@@ -707,6 +804,7 @@ impl HostKernel {
             started: Instant::now(),
             started_at,
             status: "running".to_string(),
+            end_of_session_behavior: end_of_session_behavior(&command_version),
             termination_reason: None,
         });
         Ok(handle)
@@ -1165,6 +1263,7 @@ impl ManagedProcess {
             os_pgid: Some(self.child.id() as i64),
             status: self.status.clone(),
             end_of_turn_behavior: self.command_version.end_of_turn_behavior.clone(),
+            end_of_session_behavior: self.end_of_session_behavior.clone(),
             max_runtime_ms: self.command_version.max_runtime.map(|d| d.as_millis() as i64),
             termination_reason: self.termination_reason.clone(),
             event: event.to_string(),
@@ -1488,12 +1587,6 @@ async fn execute_resumed_async_command_with_version(
     let process_id = Uuid::new_v4();
     let mut child = command.spawn().with_context(|| format!("failed to resume async command: {}", command_version.action_id))?;
     let child_pid = child.id();
-    if let Some(max_runtime) = command_version.max_runtime {
-        thread::spawn(move || {
-            thread::sleep(max_runtime);
-            terminate_process_group(child_pid, 0);
-        });
-    }
     let stdout_buf = Arc::new(Mutex::new(String::new()));
     let stderr_buf = Arc::new(Mutex::new(String::new()));
     let buffer_limit = command_version.output_buffer_bytes;
@@ -1551,15 +1644,16 @@ async fn execute_resumed_async_command_with_version(
             started: Instant::now(),
             started_at: Utc::now(),
             status: "running".to_string(),
+            end_of_session_behavior: end_of_session_behavior(&command_version),
             termination_reason: None,
         });
     sqlx::query(
         r#"
         INSERT INTO managed_processes (
             id, handle, session_id, starting_turn_id, command_version_id, binary_name, argv, cwd,
-            os_pid, os_pgid, status, start_time, end_of_turn_behavior, max_runtime_ms, metadata
+            os_pid, os_pgid, status, start_time, end_of_turn_behavior, end_of_session_behavior, max_runtime_ms, metadata
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 'running', now(), $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 'running', now(), $10, $11, $12, $13)
         "#,
     )
     .bind(process_id)
@@ -1572,10 +1666,22 @@ async fn execute_resumed_async_command_with_version(
     .bind(resolved_cwd.display().to_string())
     .bind(child_pid as i64)
     .bind(&command_version.end_of_turn_behavior)
+    .bind(end_of_session_behavior(&command_version))
     .bind(command_version.max_runtime.map(|d| d.as_millis() as i64))
     .bind(json!({"binaryPath": binary_path.display().to_string(), "policyDecision": policy_decision, "resumed": true, "input": input}))
     .execute(pool)
     .await?;
+    if let Some(max_runtime_ms) = command_version.max_runtime.map(|d| d.as_millis() as i64) {
+        spawn_max_runtime_supervisor(
+            pool.clone(),
+            session_id,
+            turn_id,
+            process_id,
+            handle.clone(),
+            command_version.version_id,
+            max_runtime_ms,
+        );
+    }
     db::append_event(pool, session_id, turn_id, "process", Some(process_id), "process.started", Some("running"), json!({"handle": handle, "commandVersionId": command_version.version_id, "binary": command_version.binary_name, "argv": argv, "cwd": resolved_cwd.display().to_string(), "resumed": true})).await?;
     let _ = script_run_id;
     Ok(json!({"processId": process_id, "handle": handle, "status": "running", "executionMode": "start"}))
@@ -1936,9 +2042,9 @@ async fn persist_record(
                 INSERT INTO managed_processes (
                     id, handle, session_id, starting_turn_id, command_version_id, binary_name, argv, cwd,
                     os_pid, os_pgid, status, start_time, end_time, end_of_turn_behavior,
-                    max_runtime_ms, termination_reason, metadata
+                    end_of_session_behavior, max_runtime_ms, termination_reason, metadata
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), CASE WHEN $11 = 'running' THEN NULL ELSE now() END, $12, $13, $14, $15)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), CASE WHEN $11 = 'running' THEN NULL ELSE now() END, $12, $13, $14, $15, $16)
                 ON CONFLICT (handle) DO UPDATE SET
                     status = EXCLUDED.status,
                     end_time = CASE WHEN EXCLUDED.status = 'running' THEN managed_processes.end_time ELSE now() END,
@@ -1958,6 +2064,7 @@ async fn persist_record(
             .bind(process.os_pgid)
             .bind(&process.status)
             .bind(&process.end_of_turn_behavior)
+            .bind(&process.end_of_session_behavior)
             .bind(process.max_runtime_ms)
             .bind(&process.termination_reason)
             .bind(json!({
@@ -1967,6 +2074,19 @@ async fn persist_record(
             }))
             .execute(pool)
             .await?;
+            if process.event == "process.started" && process.status == "running" {
+                if let Some(max_runtime_ms) = process.max_runtime_ms {
+                    spawn_max_runtime_supervisor(
+                        pool.clone(),
+                        session_id,
+                        Some(turn_id),
+                        process.id,
+                        process.handle.clone(),
+                        process.command_version_id,
+                        max_runtime_ms,
+                    );
+                }
+            }
             db::append_event(
                 pool,
                 session_id,
