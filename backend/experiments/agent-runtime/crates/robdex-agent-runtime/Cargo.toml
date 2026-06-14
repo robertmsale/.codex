@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "robdex-agent-runtime-server"
 path = "src/server_main.rs"
 
+[[bin]]
+name = "robdex-agent-runtime-server-smoke-client"
+path = "src/server_smoke_client.rs"
+
 [dependencies]
 anyhow = "1"
 allocative = "=0.3.4"
@@ -27,7 +31,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json"] }
 starlark = { version = "0.13", default-features = false }
 starlark_map = "0.13"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "fs", "io-util", "net", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "fs", "io-util", "net", "sync", "signal"] }
+tokio-tungstenite = "0.27"
 uuid = { version = "1", features = ["v4", "serde"] }
 codex-api = { path = "../../../../vendor/codex/codex-rs/codex-api" }
 wait-timeout = "0.2"
@@ -37,5 +42,4 @@ once_cell = "1"
 robdex-agent-runtime-projection = { path = "../robdex-agent-runtime-projection" }
 
 [dev-dependencies]
-tokio-tungstenite = "0.27"
 tower = { version = "0.5", features = ["util"] }

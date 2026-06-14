@@ -65,6 +65,23 @@ pub fn terminate_session_processes_for_close(session_id: Uuid) -> usize {
     terminated
 }
 
+pub fn terminate_all_runtime_processes(reason: &str) -> usize {
+    let Ok(mut manager) = PROCESS_MANAGER.lock() else {
+        return 0;
+    };
+    let mut terminated = 0usize;
+    for processes in manager.values_mut() {
+        for process in processes.values_mut() {
+            if process.status == "running" {
+                let _ = process.terminate(reason, true);
+                terminated += 1;
+            }
+        }
+    }
+    manager.clear();
+    terminated
+}
+
 fn end_of_session_behavior(command_version: &CommandVersion) -> String {
     if command_version.end_of_turn_behavior == "terminate" {
         "terminate".to_string()
@@ -511,6 +528,7 @@ fn evaluate_starlark(
             };
         }
     };
+    let source = command_registry::normalize_describe_affordances(source, &live_commands);
     let script = format!("{prelude}\n{source}");
     let kernel = HostKernel {
         pool,
@@ -2547,6 +2565,8 @@ mod tests {
         CommandVersion {
             version_id: Uuid::new_v4(),
             definition_id: Uuid::new_v4(),
+            scope_type: "global".to_string(),
+            project_key: None,
             action_id: action.to_string(),
             binary_name: binary_name.to_string(),
             candidate_paths: paths.iter().map(PathBuf::from).collect(),
@@ -2575,6 +2595,59 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn command_describe_affordances_are_visible_in_starlark() {
+        let root = ExecutionRoot::new(".").expect("root");
+        let session = Uuid::new_v4();
+        let cmd = test_command("echo", &["/bin/echo"], "cmd.describe.echo", "echo_tool", "forbid", "terminate", None);
+        let result = evaluate_starlark(
+            test_pool(),
+            session,
+            Uuid::new_v4(),
+            "output(cmd.describe())\noutput(cmd[\"echo_tool\"].describe())\noutput(cmd[\"echo_tool\"].run.describe())",
+            root,
+            test_role(),
+            vec![cmd],
+            vec![],
+        );
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert!(result.output.contains("cmd.describe.echo"));
+        assert!(result.output.contains("echo_tool"));
+        assert!(result.output.contains("sync"));
+        assert!(result.output.contains("stdin"));
+    }
+
+    #[tokio::test]
+    async fn command_discovery_updates_on_next_execute_code_boundary_and_non_visible_fails() {
+        let root = ExecutionRoot::new(".").expect("root");
+        let session = Uuid::new_v4();
+        let source = "output(cmd[\"echo_tool\"].run.describe())";
+        let missing = evaluate_starlark(
+            test_pool(),
+            session,
+            Uuid::new_v4(),
+            source,
+            root.clone(),
+            test_role(),
+            vec![],
+            vec![],
+        );
+        assert!(missing.error.as_deref().unwrap_or_default().to_lowercase().contains("echo_tool"), "{:?}", missing.error);
+        let cmd = test_command("echo", &["/bin/echo"], "cmd.describe.echo", "echo_tool", "forbid", "terminate", None);
+        let visible = evaluate_starlark(
+            test_pool(),
+            session,
+            Uuid::new_v4(),
+            source,
+            root,
+            test_role(),
+            vec![cmd],
+            vec![],
+        );
+        assert!(visible.error.is_none(), "{:?}", visible.error);
+        assert!(visible.output.contains("cmd.describe.echo"));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn continuing_process_is_controllable_later_in_same_runtime_and_isolated_by_session() {
         let session = Uuid::new_v4();
@@ -2600,14 +2673,14 @@ mod tests {
     async fn stdin_allowed_process_accepts_input_and_flush_cursor_advances() {
         let session = Uuid::new_v4();
         let root = ExecutionRoot::new(".").unwrap();
-        let cmd = test_command("cat", &["/bin/cat"], "cmd.cat.run", "cat", "allow", "terminate", Some(Duration::from_secs(2)));
+        let python = std::env::var("PYTHON3").unwrap_or_else(|_| "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3".to_string());
+        let cmd = test_command("python3", &[&python], "cmd.python.stdin", "python", "allow", "terminate", Some(Duration::from_secs(2)));
         let script = r#"
-h = cmd["cat"].run(args=[], cwd=".").start()
+h = cmd["python"].run(args=["-u", "-c", "import sys,time; print(sys.stdin.readline().strip(), flush=True); time.sleep(1)"], cwd=".").start()
 proc[h].input("hello-process\n")
 proc[h].await_for(mins=0)
 first = proc[h].flush_buffer()
 second = proc[h].flush_buffer()
-proc[h].terminate()
 output(first + "|second=" + second)
 "#;
         let result = evaluate_starlark(test_pool(), session, Uuid::new_v4(), script, root, test_role(), vec![cmd], vec![]);

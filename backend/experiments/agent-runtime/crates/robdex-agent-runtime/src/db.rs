@@ -1,8 +1,10 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde::{Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use uuid::Uuid;
+
+use crate::errors::RuntimeDomainError;
 
 use crate::roles::{ImportedRoleVersion, RoleSnapshot, snapshot_from_value, snapshot_to_value};
 
@@ -10,29 +12,44 @@ pub async fn connect(database_url: &str) -> Result<PgPool> {
     Ok(PgPoolOptions::new().max_connections(5).connect(database_url).await?)
 }
 
-pub async fn init(pool: &PgPool) -> Result<()> {
+pub async fn apply_schema(pool: &PgPool) -> Result<()> {
     sqlx::raw_sql(include_str!("../../../migrations/001_initial.sql"))
         .execute(pool)
         .await?;
-    reconcile_managed_processes(pool).await?;
+    Ok(())
+}
+
+pub async fn init(pool: &PgPool) -> Result<()> {
+    apply_schema(pool).await?;
+    let _ = reconcile_managed_processes(pool, "runtimeRestart").await?;
     crate::command_registry::bootstrap_seed_defaults(pool).await?;
     Ok(())
 }
 
-pub async fn reconcile_managed_processes(pool: &PgPool) -> Result<()> {
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProcessReconciliationSummary {
+    pub lost_processes: u64,
+    pub process_events: u64,
+    pub session_events: u64,
+}
+
+pub async fn reconcile_managed_processes(pool: &PgPool, reason: &str) -> Result<ProcessReconciliationSummary> {
     let rows = sqlx::query(
         r#"
         UPDATE managed_processes
         SET status = 'lost',
             end_time = now(),
-            termination_reason = 'runtimeRestart'
+            termination_reason = $1
         WHERE status = 'running'
         RETURNING id, session_id, starting_turn_id, handle, command_version_id
         "#,
     )
+    .bind(reason)
     .fetch_all(pool)
     .await?;
+    let mut summary = ProcessReconciliationSummary::default();
     for row in rows {
+        summary.lost_processes += 1;
         let process_id: Uuid = row.get("id");
         let session_id: Uuid = row.get("session_id");
         let turn_id: Option<Uuid> = row.get("starting_turn_id");
@@ -49,10 +66,12 @@ pub async fn reconcile_managed_processes(pool: &PgPool) -> Result<()> {
             json!({
                 "handle": handle,
                 "commandVersionId": command_version_id,
-                "reason": "session-only process is no longer attached after runtime startup",
+                "reason": reason,
+                "explanation": "session-only process is no longer attached to this runtime instance",
             }),
         )
         .await?;
+        summary.process_events += 1;
         append_event(
             pool,
             session_id,
@@ -62,15 +81,17 @@ pub async fn reconcile_managed_processes(pool: &PgPool) -> Result<()> {
             "session.recoveryDegraded",
             Some("degraded"),
             json!({
-                "reason": "startup reconciliation found a previously running session-only process with no live runtime owner",
+                "reason": reason,
+                "explanation": "reconciliation found a running session-only process with no live runtime owner",
                 "processId": process_id,
                 "handle": handle,
                 "commandVersionId": command_version_id,
             }),
         )
         .await?;
+        summary.session_events += 1;
     }
-    Ok(())
+    Ok(summary)
 }
 
 pub async fn import_role_version(pool: &PgPool, imported: &ImportedRoleVersion) -> Result<()> {
@@ -418,7 +439,10 @@ pub async fn session_record(pool: &PgPool, session_id: Uuid) -> Result<SessionSu
     .bind(session_id)
     .fetch_one(pool)
     .await
-    .with_context(|| format!("session not found: {session_id}"))?;
+    .map_err(|error| match error {
+        sqlx::Error::RowNotFound => RuntimeDomainError::not_found("session", session_id).into(),
+        other => anyhow::Error::from(other),
+    })?;
     Ok(SessionSummary {
         id: row.get("id"),
         status: row.get("status"),
@@ -443,7 +467,7 @@ pub async fn session_record(pool: &PgPool, session_id: Uuid) -> Result<SessionSu
 pub async fn ensure_session_open(pool: &PgPool, session_id: Uuid) -> Result<SessionSummary> {
     let session = session_record(pool, session_id).await?;
     if session.status != "open" {
-        bail!("session {session_id} is not open: {}", session.status);
+        return Err(RuntimeDomainError::conflict(format!("session {session_id} is not open: {}", session.status)).into());
     }
     Ok(session)
 }
@@ -507,7 +531,7 @@ pub async fn show_session(pool: &PgPool, session_id: Uuid) -> Result<Value> {
 pub async fn archive_session(pool: &PgPool, session_id: Uuid) -> Result<()> {
     let result = sqlx::query("UPDATE sessions SET tracked = false, archived_at = COALESCE(archived_at, now()), updated_at = now() WHERE id = $1")
         .bind(session_id).execute(pool).await?;
-    if result.rows_affected() != 1 { bail!("session not found: {session_id}"); }
+    if result.rows_affected() != 1 { return Err(RuntimeDomainError::not_found("session", session_id).into()); }
     append_event(pool, session_id, None, "session", Some(session_id), "session.archived", Some("archived"), json!({"tracked": false})).await?;
     Ok(())
 }
@@ -515,7 +539,7 @@ pub async fn archive_session(pool: &PgPool, session_id: Uuid) -> Result<()> {
 pub async fn close_session(pool: &PgPool, session_id: Uuid, reason: &str, live_terminated: usize) -> Result<()> {
     let session = session_record(pool, session_id).await?;
     if session.status != "open" {
-        bail!("session close blocked: session missing or not open: {session_id}");
+        return Err(RuntimeDomainError::conflict(format!("session close blocked: session missing or not open: {session_id}")).into());
     }
     let running = sqlx::query(
         "SELECT id, handle, end_of_session_behavior FROM managed_processes WHERE session_id = $1 AND status = 'running' ORDER BY start_time ASC",
@@ -548,7 +572,7 @@ pub async fn close_session(pool: &PgPool, session_id: Uuid, reason: &str, live_t
             })
             .collect();
         append_event(pool, session_id, None, "session", Some(session_id), "session.closeBlocked", Some("blocked"), json!({"reason": "running managed processes block session close", "blocked": blocked, "unownedTerminable": unowned, "liveTerminated": live_terminated, "terminableRows": terminable})).await?;
-        bail!("session close blocked by running managed processes: {session_id}");
+        return Err(RuntimeDomainError::conflict(format!("session close blocked by running managed processes: {session_id}")).into());
     }
     let db_processes = sqlx::query(
         "UPDATE managed_processes SET status = 'sessionClosed', end_time = COALESCE(end_time, now()), termination_reason = 'sessionClosed' WHERE session_id = $1 AND status = 'running' AND end_of_session_behavior = 'terminate'",
@@ -564,7 +588,7 @@ pub async fn close_session(pool: &PgPool, session_id: Uuid, reason: &str, live_t
     .bind(reason)
     .execute(pool)
     .await?;
-    if result.rows_affected() != 1 { bail!("session close blocked: session missing or not open: {session_id}"); }
+    if result.rows_affected() != 1 { return Err(RuntimeDomainError::conflict(format!("session close blocked: session missing or not open: {session_id}")).into()); }
     append_event(pool, session_id, None, "session", Some(session_id), "session.closed", Some("closed"), json!({"reason": reason, "liveProcessesTerminated": live_terminated, "processRowsMarked": db_processes})).await?;
     Ok(())
 }
@@ -576,9 +600,9 @@ pub async fn fork_session(pool: &PgPool, source_session_id: Uuid, fork_turn_id: 
         .bind(source_session_id)
         .fetch_optional(pool)
         .await?
-        .with_context(|| format!("fork source turn not found in source session: {fork_turn_id}"))?;
+        .ok_or_else(|| RuntimeDomainError::not_found("turn", fork_turn_id))?;
     let status: String = turn_row.get("status");
-    if status != "completed" { bail!("fork source turn must be completed: {fork_turn_id} status={status}"); }
+    if status != "completed" { return Err(RuntimeDomainError::conflict(format!("fork source turn must be completed: {fork_turn_id} status={status}")).into()); }
     let role_snapshot = session_role_snapshot(pool, source_session_id).await?;
     let snapshot_value = snapshot_to_value(&role_snapshot)?;
     let id = Uuid::new_v4();

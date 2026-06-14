@@ -1,15 +1,73 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{approvals, command_registry, db, routing};
 use crate::lifecycle::{self, TerminalStatus};
 use crate::model::codex_adapter::{bounded_raw_response, concise_response_summary, CodexBackedModelClient};
-use crate::model::{ModelClient, ModelHistoryItem};
+use crate::model::{ModelClient, ModelHistoryItem, RuntimeInputMessage};
 use crate::policy::PolicyEngine;
 use crate::starlark_host::{ExecutionRoot, execute_code};
+
+
+async fn latest_command_context_evidence(pool: &PgPool, session_id: Uuid) -> Result<Option<command_registry::CommandContextEvidence>> {
+    let row: Option<Value> = sqlx::query_scalar(
+        r#"
+        SELECT payload->'commandContext'
+        FROM model_events
+        WHERE session_id=$1
+          AND event_type='assistant_message'
+          AND payload ? 'commandContext'
+        ORDER BY created_at DESC, ordinal DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    row.map(serde_json::from_value).transpose().map_err(anyhow::Error::from)
+}
+
+fn tool_request_summaries(request_shape: &Value) -> Value {
+    let tools = request_shape
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(|tools| {
+            tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "type": tool.get("type").and_then(Value::as_str),
+                        "name": tool.get("name").and_then(Value::as_str),
+                        "strict": tool.get("strict").and_then(Value::as_bool),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!(tools)
+}
+
+fn model_request_evidence(
+    request_shape: &Value,
+    command_context: &command_registry::CommandContextEvidence,
+    runtime_messages: &[RuntimeInputMessage],
+) -> Value {
+    json!({
+        "model": request_shape.get("model").cloned(),
+        "toolChoice": request_shape.get("tool_choice").cloned(),
+        "toolCount": request_shape.get("tools").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "tools": tool_request_summaries(request_shape),
+        "inputItems": request_shape.get("input").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+        "runtimeInputMessages": runtime_messages
+            .iter()
+            .map(|message| json!({"metadata": message.metadata}))
+            .collect::<Vec<_>>(),
+        "commandContext": serde_json::to_value(command_context).unwrap_or(Value::Null),
+    })
+}
 
 pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<Uuid> {
     let session = db::ensure_session_open(pool, session_id).await?;
@@ -56,10 +114,17 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<Uuid
     let _route = routing::decide_route(pool, session_id, Some(turn_id), &role_snapshot).await?;
 
     let live_commands = command_registry::live_visible_commands(pool, &role_snapshot, project_key.as_deref()).await?;
-    let execute_code_contract = command_registry::execute_code_contract(&live_commands);
+    let previous_command_context = latest_command_context_evidence(pool, session_id).await?;
+    let runtime_command_context = command_registry::runtime_command_context_message(&live_commands, previous_command_context.as_ref());
+    let runtime_messages = vec![RuntimeInputMessage {
+        text: runtime_command_context.text.clone(),
+        metadata: runtime_command_context.metadata.clone(),
+    }];
+    let execute_code_contract = command_registry::stable_execute_code_contract();
     let request_registry_contract = command_registry::request_tool_contract();
     let model = CodexBackedModelClient::new_with_model(role_snapshot.model_defaults.model.clone())?;
-    let plan = model.request_tool_call(&role_snapshot.instruction_text, &model_history, &execute_code_contract, &request_registry_contract, message).await?;
+    let plan = model.request_tool_call(&role_snapshot.instruction_text, &model_history, &runtime_messages, &execute_code_contract, &request_registry_contract, message).await?;
+    let request_evidence = model_request_evidence(&plan.request_shape, &runtime_command_context.evidence, &runtime_messages);
     let model_event_id = Uuid::new_v4();
     sqlx::query(
         r#"
@@ -75,8 +140,9 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<Uuid
         "model": plan.model,
         "summary": plan.assistant_summary,
         "tool": plan.tool_call.tool_name,
-        "requestShape": plan.request_shape.clone(),
+        "request": request_evidence,
         "raw": bounded_raw_response(&plan.raw_response),
+        "commandContext": serde_json::to_value(&runtime_command_context.evidence).unwrap_or(Value::Null),
     }))
     .execute(pool)
     .await?;
@@ -105,6 +171,8 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<Uuid
                 "executeCodeContract": execute_code_contract,
                 "requestCommandRegistryChangeContract": request_registry_contract,
                 "history": {"items": prior_history.len(), "source": "reconstructed_session_history"},
+                "commandContext": serde_json::to_value(&runtime_command_context.evidence).unwrap_or(Value::Null),
+                "runtimeInputMessages": [{"source":"runtime_command_context", "metadata": runtime_command_context.metadata.clone()}],
             },
             "response": concise_response_summary(&plan.raw_response),
         }),
@@ -289,4 +357,49 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<Uuid
 
     println!("turn {turn_id} {}", status.as_str());
     Ok(turn_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_request_evidence_excludes_synthetic_catalog_text() {
+        let catalog_text = "Runtime command context cmdctx-test\nVisible commands:\n- cmd.secret.catalog: large synthetic catalog text";
+        let request_shape = json!({
+            "model": "gpt-test",
+            "input": [
+                {"role":"user","content":[{"type":"input_text","text": catalog_text}],"metadata":{"source":"runtime_command_context","commandContextId":"cmdctx-test"}},
+                {"role":"user","content":[{"type":"input_text","text":"ordinary prompt"}]}
+            ],
+            "tools": [
+                {"type":"function","name":"execute_code","description":"stable execute contract","strict":true},
+                {"type":"function","name":"request_command_registry_change","description":"stable registry contract","strict":true}
+            ],
+            "tool_choice": "auto"
+        });
+        let context = command_registry::CommandContextEvidence {
+            id: "cmdctx-test".to_string(),
+            catalog_included: true,
+            visible_count: 1,
+            added_count: 1,
+            removed_count: 0,
+            changed_count: 0,
+            summaries: vec![],
+        };
+        let runtime_messages = vec![RuntimeInputMessage {
+            text: catalog_text.to_string(),
+            metadata: json!({"source":"runtime_command_context","commandContextId":"cmdctx-test"}),
+        }];
+        let evidence = model_request_evidence(&request_shape, &context, &runtime_messages);
+        let evidence_text = serde_json::to_string(&evidence).expect("evidence json");
+        assert!(!evidence_text.contains("large synthetic catalog text"));
+        assert!(!evidence_text.contains("ordinary prompt"));
+        assert_eq!(evidence["model"], "gpt-test");
+        assert_eq!(evidence["toolCount"], 2);
+        assert_eq!(evidence["tools"][0]["name"], "execute_code");
+        assert_eq!(evidence["runtimeInputMessages"][0]["metadata"]["source"], "runtime_command_context");
+        assert_eq!(evidence["commandContext"]["id"], "cmdctx-test");
+        assert_eq!(evidence["commandContext"]["catalogIncluded"], true);
+    }
 }

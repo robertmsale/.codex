@@ -63,12 +63,139 @@ using the same projection crate types. A future Rinf GUI should use the same
 reducer logic on the Rust side before sending already-reduced render state to
 Dart.
 
+### GUI contract
+
+The GUI contract is typed in `robdex-agent-runtime-projection` so Rust/Rinf can
+own runtime state and Dart can render constructor-ready values instead of
+inferring policy from raw JSON. PostgreSQL remains the source of truth.
+Persisted GUI state is derived only from:
+
+- full hydration through `RuntimeProjection`;
+- realtime persisted-state updates through `RuntimeDelta`;
+- reducer-owned local projection mutation through the shared reducer.
+
+Local controller state is deliberately separate from runtime state:
+`GuiControllerState` models connection status, selected session id, selected
+view, in-flight operations, transient typed API errors, pending resync,
+pending rehydrate/reconnect, and draft text inputs. It must not duplicate
+session lifecycle status, approval availability, command visibility, command
+policy, role status, process status, timeline interpretation, or semantic
+operation success. Those facts come from `RuntimeProjection`, `RuntimeDelta`,
+and server operation results. Dart may own widget-local facts only: text-field
+editing mechanics, focus, scroll position, hover/press state, animations, and
+layout.
+
+Operation vocabulary is typed by `GuiOperationRequest`, `GuiOperationResult`,
+`GuiOperationOutcome`, `GuiOperationExpectation`, and `ApiErrorPacket`.
+Operations cover connect, hydrate, rehydrate, disconnect, select session,
+create/send/close/archive/fork session, decide/resume approval, command
+registry list/show/request preview/decide/apply, and workflow-memory feedback.
+Each request reports its expected projection effect:
+
+- `Rehydrate` for initial hydrate and explicit rehydrate;
+- `RehydrateAndReconnect` for selected-session switching;
+- `WaitForDelta` for mutations that should arrive on the WebSocket stream;
+- `DirectResult` for inspection/preview routes;
+- `UpdateLocalState` for local disconnect.
+
+Operation failures use the stable API error packet
+`{ "error": { "code", "message", "details" } }` through `ApiErrorPacket`.
+String-only failures are not the GUI operation contract.
+
+Selected-session switching is a rehydration boundary. A GUI must request a new
+snapshot with `selectedSessionId=<uuid>` and reconnect `/state/ws` with the
+same selected-session identifier after the new snapshot watermark. It must not
+reinterpret an existing projection as if it contains a different selected
+session detail.
+
+Raw JSON payloads remain available only for bounded inspection panes and debug
+evidence. Core GUI control enablement is typed: the approval projection contains pending approvals and approved approvals with resumable paused actions; each approval exposes status, approver kind, `canDecide`, and `canResume` so Dart does not infer approval availability from `status` or raw `inputContext`; command summaries expose
+scope/enabled/version/call-shape fields; command-registry request summaries
+expose `canPreview`, `canDecide`, and `canApply`; roles expose
+status/current version/model; and workflow memory summaries expose
+scope/title/reason/helpfulness.
+
+Proof coverage lives in the projection crate tests and runtime/server tests.
+Run:
+
+```sh
+cargo test -p robdex-agent-runtime-projection
+cargo test
+scripts/smoke-resident-server.sh
+scripts/validate-local-service.sh
+```
+
 ## Resident server MVP
 
 The experimental server binary is `robdex-agent-runtime-server`. It is isolated
 from stable Robdex and uses the same Postgres runtime state and runtime
 functions as the CLI. There is no auth or user-session boundary in this slice;
 the intended trust boundary is VPN/network placement.
+
+### Local developer service script
+
+For local development, use the experiment-local service wrapper. It does not
+install or modify launchd, systemd, supervisor, stable Robdex service tooling,
+or host service configuration.
+
+```sh
+scripts/agent-runtime-service.sh start
+scripts/agent-runtime-service.sh status
+scripts/agent-runtime-service.sh logs
+scripts/agent-runtime-service.sh restart
+scripts/agent-runtime-service.sh stop
+scripts/agent-runtime-service.sh stop --force
+scripts/agent-runtime-service.sh logs --tail
+```
+
+The default service state directory is `.runtime-service` under this experimental
+workspace. Override it with `ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR`. The state
+directory contains:
+
+- `server.pid` for the resident server process;
+- `server.stdout.log` and `server.stderr.log`;
+- `effective-config.json` with the base URL, pid, log paths, policy values,
+  server binary path, and redacted database target;
+- bounded health/status diagnostics created by the scripts.
+
+The wrapper preserves the resident server environment. It honors the same server
+configuration variables documented below, including
+`ROBDEX_AGENT_RUNTIME_DATABASE_URL`, `ROBDEX_AGENT_RUNTIME_SERVER_HOST`,
+`ROBDEX_AGENT_RUNTIME_SERVER_PORT`, `ROBDEX_AGENT_RUNTIME_IDENTITY`, and the
+startup/shutdown policy variables. Set `ROBDEX_AGENT_RUNTIME_SERVER_BIN` to use
+an existing binary; otherwise `start` builds `robdex-agent-runtime-server` when
+`target/debug/robdex-agent-runtime-server` is missing.
+
+`start` launches the server in the background, writes the pid/config/log files,
+polls `GET /health` with a bounded deadline
+(`ROBDEX_AGENT_RUNTIME_SERVICE_HEALTH_DEADLINE_SECONDS`, default `20`), and
+prints the base URL, pid, log paths, config path, and redacted database URL. If
+`server.pid` points at a live process, duplicate `start` is refused. Use the
+documented `restart` path to replace a running local service. If `server.pid` is
+stale, `start` moves it aside with a `.stale.<timestamp>` suffix before
+starting.
+
+`stop` reads `server.pid`, sends a graceful termination signal, waits up to
+`ROBDEX_AGENT_RUNTIME_SERVICE_STOP_DEADLINE_SECONDS` seconds, verifies the
+process is gone, and removes `server.pid`. It does not force-kill unless
+`stop --force` is explicitly passed. `restart` performs `stop` followed by
+`start`, preserving the same graceful shutdown semantics. `status` reports the
+pid-file state, process liveness, stale-pid detection, health endpoint result,
+base URL, redacted database target, and log/config paths. `logs` prints stdout
+and stderr logs; `logs --tail` tails them without requiring an external service
+manager.
+
+Validate the local service wrapper with an isolated Postgres validation database
+and no live model, LM Studio, or embedding-provider calls:
+
+```sh
+scripts/validate-local-service.sh
+```
+
+The validation starts the local service, verifies `status` and `/health`, checks
+startup log evidence, verifies duplicate-start refusal, exercises `logs`,
+restarts and checks the new healthy process, stops the service, verifies the
+process is gone, and drops the isolated validation database.
 
 Run with the conservative default bind:
 
@@ -85,6 +212,57 @@ cargo run --bin robdex-agent-runtime-server -- --host 127.0.0.1 --port 8765
 ROBDEX_AGENT_RUNTIME_SERVER_HOST=127.0.0.1 ROBDEX_AGENT_RUNTIME_SERVER_PORT=8765 cargo run --bin robdex-agent-runtime-server
 ```
 
+Resident server startup is driven by a typed runtime configuration. The server
+connects to Postgres, applies only the configured startup policies, prints a
+single `[server-startup]` JSON report, serves HTTP/WebSocket traffic, handles
+interrupt/termination with graceful shutdown, closes the database pool, and
+prints a `[server-shutdown]` JSON report.
+
+Operational environment variables and matching CLI flags:
+
+```text
+ROBDEX_AGENT_RUNTIME_DATABASE_URL / --database-url
+ROBDEX_AGENT_RUNTIME_SERVER_HOST / --host
+ROBDEX_AGENT_RUNTIME_SERVER_PORT / --port
+ROBDEX_AGENT_RUNTIME_IDENTITY / --runtime-identity
+ROBDEX_AGENT_RUNTIME_SCHEMA_POLICY / --schema-policy
+ROBDEX_AGENT_RUNTIME_SEED_ROLE_POLICY / --seed-role-policy
+ROBDEX_AGENT_RUNTIME_COMMAND_BOOTSTRAP_POLICY / --command-bootstrap-policy
+ROBDEX_AGENT_RUNTIME_PROCESS_RECONCILIATION_POLICY / --process-reconciliation-policy
+ROBDEX_AGENT_RUNTIME_SHUTDOWN_POLICY / --shutdown-policy
+```
+
+Supported startup policy values:
+
+- schema policy: `apply` (default) or `skip`;
+- seed-role policy: `importSeeds` (default) or `skip`;
+- command bootstrap policy: `bootstrapDefaults` (default) or `skip`;
+- process reconciliation policy: `markRunningLost` (default) or `skip`;
+- shutdown policy: `gracefulMarkRunningLost` (default).
+
+The defaults preserve convenient local development behavior: schema creation is
+applied, command seed definitions are bootstrapped idempotently, seed roles are
+imported only when needed, and previously running session-only process rows are
+reconciled. Seed-role startup import is content-idempotent: when a seed role's
+effective content matches the current DB role version, startup does not create a
+new immutable `role_versions` row and does not append a new `role.imported`
+event. A new role version is created only when the seed content changes or the
+role is missing. Those startup mutations are no longer silent; the startup
+report includes the runtime identity, redacted database target, database
+identity, bind address, policy values, `seedRolesImported`,
+`seedRolesUnchanged`, and reconciliation counts.
+
+Session-only managed process handles do not survive runtime restart. On startup
+with `markRunningLost`, any `managed_processes.status = 'running'` rows are set
+to `lost` with `termination_reason = 'runtimeRestart'`. The server also emits
+`process.lost` and `session.recoveryDegraded` event-stream rows for each
+affected process. On interrupt or termination, `gracefulMarkRunningLost` stops
+the HTTP listener, signals active WebSocket state loops with a `serverShutdown` message and close frame, terminates currently
+owned live managed processes where the in-memory runtime can see them, marks
+remaining running process rows as `lost` with `termination_reason =
+'runtimeShutdown'`, emits event evidence through the same reconciliation path,
+closes the database pool, and reports the outcome.
+
 HTTP JSON routes:
 
 ```text
@@ -98,6 +276,31 @@ POST /sessions/{sessionId}/send
 POST /sessions/{sessionId}/close
 POST /sessions/{sessionId}/archive
 POST /sessions/{sessionId}/fork
+GET  /approvals
+GET  /approvals/{approvalId}
+POST /approvals/{approvalId}/decide
+POST /approvals/{approvalId}/resume
+GET  /roles
+GET  /roles/{roleId}
+GET  /roles/{roleId}/versions
+GET  /roles/versions/{versionId}
+POST /roles/{roleId}/activate
+POST /roles/{roleId}/archive
+POST /roles/{roleId}/unarchive
+GET  /roles/{roleId}/export
+GET  /command-registry?sessionId=<uuid>|project=<project-key>
+GET  /command-registry/{actionId}?sessionId=<uuid>|project=<project-key>
+GET  /command-registry/requests
+GET  /command-registry/requests/{requestId}
+GET  /command-registry/requests/{requestId}/review
+GET  /command-registry/requests/{requestId}/final-template
+POST /command-registry/requests/{requestId}/preview-decision
+POST /command-registry/requests/{requestId}/decide
+POST /command-registry/requests/{requestId}/apply
+GET  /workflow-memories?sessionId=<uuid>
+GET  /workflow-memories/{memoryId}?sessionId=<uuid>
+GET  /workflow-memories/{memoryId}/events?sessionId=<uuid>
+POST /workflow-memories/{memoryId}/feedback
 ```
 
 Create/send example:
@@ -114,6 +317,72 @@ curl -sS -X POST http://127.0.0.1:8765/sessions/<session-id>/send \
 
 The send route enforces one active send per session. A concurrent send for the
 same session returns HTTP `409 Conflict` instead of queueing or racing.
+
+Admin HTTP routes are thin JSON wrappers over the existing runtime/database
+functions. Approval routes list pending requests, show one request, record a
+decision, and explicitly resume an approved paused action. Role routes use the
+DB-canonical role APIs for list/show/version inspection, activation,
+archive/unarchive, and DB-backed export; existing sessions keep their immutable
+role snapshots. Command-registry routes expose command/request inspection,
+request review, final-template generation, decision preview, decision, and
+apply while preserving approver-selected final scope/policy. Command list/show
+without a scope query returns the administrative registry view. Supplying
+`sessionId` or `project` selects the scoped runtime-visible command surface:
+global commands plus project commands visible to that session/project only.
+Workflow-memory routes require `sessionId` and validate that a
+memory exists and is project/global visible to that session before listing,
+showing events, or recording bounded `attempted`, `notHelpful`, or `helpful`
+feedback.
+
+Admin examples:
+
+```sh
+curl -sS http://127.0.0.1:8765/approvals
+curl -sS -X POST http://127.0.0.1:8765/approvals/<approval-id>/decide \
+  -H 'content-type: application/json' \
+  -d '{"decision":"approved","reason":"owner approved from GUI"}'
+curl -sS -X POST http://127.0.0.1:8765/approvals/<approval-id>/resume \
+  -H 'content-type: application/json' -d '{}'
+
+curl -sS http://127.0.0.1:8765/roles/runtime-no-rg/export
+curl -sS -X POST http://127.0.0.1:8765/roles/runtime-no-rg/archive \
+  -H 'content-type: application/json' -d '{}'
+
+curl -sS 'http://127.0.0.1:8765/command-registry?sessionId=<session-id>'
+curl -sS 'http://127.0.0.1:8765/command-registry/<action-id>?project=<project-key>'
+curl -sS http://127.0.0.1:8765/command-registry/requests/<request-id>/final-template
+curl -sS -X POST http://127.0.0.1:8765/command-registry/requests/<request-id>/apply \
+  -H 'content-type: application/json' \
+  -d '{"sessionId":"<session-id>"}'
+
+curl -sS 'http://127.0.0.1:8765/workflow-memories?sessionId=<session-id>'
+curl -sS -X POST http://127.0.0.1:8765/workflow-memories/<memory-id>/feedback \
+  -H 'content-type: application/json' \
+  -d '{"sessionId":"<session-id>","feedback":"attempted","payload":{"variant":true}}'
+```
+
+Server API errors use a stable JSON packet for GUI clients:
+
+```json
+{
+  "error": {
+    "code": "not_found",
+    "message": "role not found: runtime-x",
+    "details": { "entity": "role", "id": "runtime-x" }
+  }
+}
+```
+
+The server maps typed runtime/domain errors to stable HTTP categories:
+malformed request bodies to `400 bad_request`, policy or visibility denials to
+`403 forbidden`, missing runtime entities to `404 not_found`, concurrent sends
+and invalid state transitions to `409 conflict`, role or command-registry
+validation failures to `422 validation_failed`, dependency outages to
+`503 unavailable`, and unexpected untyped failures to `500 internal_error` with
+the safe generic message `unexpected server error`. Untyped internal error
+strings are not substring-classified into GUI-facing domain statuses; routes
+must surface domain failures through the typed runtime error layer to expose a
+non-500 category.
 
 WebSocket state stream:
 
@@ -140,13 +409,72 @@ explicit `resyncRequired` message. Clients should hydrate with `/state/snapshot`
 before applying deltas and should rehydrate when reducer state reports
 `resyncRequired`.
 
+
+### GUI state-sync client contract
+
+The runtime crate exposes an isolated Rust state-sync layer at
+`robdex_agent_runtime::gui_sync` for future macOS/iOS Rust/Rinf GUI backends.
+It is independent of Flutter and Rinf. The layer owns `RuntimeSyncConfig`,
+`RuntimeSyncClient`, `RuntimeStateStream`, `SyncOutcome`, and `SyncError` so a
+GUI backend can configure the server base URL, an optional selected session,
+hydrate state, connect to the WebSocket stream, decode server messages, and
+mutate a local `RuntimeProjection`.
+
+The intended client sequence is:
+
+1. Call `RuntimeSyncClient::hydrate()` to fetch `GET /state/snapshot` with the
+   current optional `selectedSessionId`.
+2. Read the snapshot watermark from the local `RuntimeProjection` and open
+   `/state/ws?after=<watermark>` through `connect_after(Some(watermark))`.
+3. Process `hello` as protocol identity/watermark evidence for the runtime.
+4. Process each `delta` by applying exactly one `RuntimeDelta` through the
+   shared `robdex-agent-runtime-projection` reducer. The GUI sync layer does
+   not duplicate reducer behavior.
+5. Treat `resyncRequired` as a terminal stream condition for the current delta
+   stream, expose that a fresh snapshot is required, and call `rehydrate()` to
+   replace local projection state for the current selected session.
+6. Treat `serverShutdown` as a distinct server-lifecycle outcome. It records
+   shutdown detection without mutating or corrupting the local projection.
+
+Selected-session state uses the same path with `selectedSessionId` on both the
+snapshot and WebSocket URLs. Timeline deltas for the selected session append to
+the local timeline while semantic deltas update session/admin summaries through
+the projection reducer. A future GUI should render from the reduced
+`RuntimeProjection` and request a fresh snapshot whenever resync state is set.
+
+Resident server deterministic smoke uses a real
+`robdex-agent-runtime-server` process on a local HTTP/WebSocket listener and an
+isolated validation database. It does not call OpenAI, LM Studio, or embedding
+providers. Run it from this nested workspace:
+
+```sh
+scripts/smoke-resident-server.sh
+```
+
+The harness creates and later drops a validation database through
+`scripts/lib-validation-db.sh`, imports seed roles, builds the resident server
+binary, starts it on `127.0.0.1:<ephemeral-port>`, polls `GET /health` with a
+bounded deadline, exercises representative HTTP admin/session APIs, validates
+structured error packets, opens the WebSocket state stream, verifies `hello`,
+observes a semantic session archive delta, verifies `resyncRequired` for an
+omitted watermark, and stops the server process on success or failure. Override
+`ROBDEX_AGENT_RUNTIME_VALIDATION_ADMIN_DATABASE_URL` when the local Postgres
+maintenance database differs from the default.
+
 Minimal live-server smoke with `gpt-5.4-mini` is intentionally separate from
-deterministic validation. Use a throwaway role export/import that sets
-`modelDefaults.model` to `gpt-5.4-mini`, start `robdex-agent-runtime-server`,
-create a session with that role through `POST /sessions`, then send one
-read-only `execute_code` prompt through `POST /sessions/{sessionId}/send`.
-Confirm DB evidence in `turns`, `model_events`, `tool_calls`, `script_runs`,
-and `event_stream`, with `model_events.payload->>'model' = 'gpt-5.4-mini'`.
+deterministic validation and remains explicitly opt-in. Start
+`robdex-agent-runtime-server`, then run:
+
+```sh
+ROBDEX_AGENT_RUNTIME_LIVE_SERVER_SMOKE=1 scripts/smoke-live-server-gpt54mini.sh
+```
+
+The script imports a throwaway DB role with `modelDefaults.model` set to
+`gpt-5.4-mini`, creates a session through `POST /sessions`, sends one read-only
+`execute_code` prompt through `POST /sessions/{sessionId}/send`, and prints DB
+evidence from `turns`, `model_events`, `tool_calls`, `script_runs`, and
+`event_stream`, including the recorded model/tool/script status and mutation
+event count.
 
 ## Script output
 
@@ -227,11 +555,37 @@ execution policy boundary. Scoped command execution authority comes from the
 stored final execution policy, registry argv/cwd/env/max-runtime/output fields, and
 native kernel protections. `execute_code` queries the enabled current DB command
 versions at every tool boundary, merges global plus matching project commands,
-rejects ambiguous action identifier conflicts before surfacing commands, builds the Starlark `cmd`
-surface from that live registry, and generates
-the model-visible `execute_code` contract from the same live rows. Agents receive
-the current interface directly in the tool schema and prompt; they are not told
-to read README, manifests, or source files to understand command semantics.
+rejects ambiguous action identifier conflicts before surfacing commands, and
+builds the Starlark `cmd` surface from that live registry.
+
+Model-facing native tool schemas are cache-stable. The `execute_code` and
+`request_command_registry_change` tool descriptions describe permanent behavior
+only and do not embed the live visible command list. For each model request, the
+runtime computes a deterministic command context ID from policy-relevant visible
+command data: action id, command version id, scope/project key, Starlark
+object/method, sync/async allowance, args/cwd support, max runtime, stdin
+policy, end-of-turn/end-of-session behavior, output limits, mutation class, and
+concise model description. The visible catalog is sent as a synthetic request
+input message with metadata `source: runtime_command_context`; it is generated
+at request time and is not persisted as ordinary user conversation history. The
+first turn for a command context includes a concise catalog. If the command
+context ID is unchanged from the prior relevant model turn, the runtime sends a
+small unchanged hint. If it changes, the runtime sends the new context ID plus
+added/removed/changed counts and concise command summaries. Model event metadata
+stores command context ID, catalog-included status, visible/added/removed/
+changed counts, and compact command fingerprints for cache debugging without
+copying a large catalog into every event.
+
+Agents should inspect live command details inside `execute_code` when needed:
+`cmd.describe()` returns the visible catalog, `cmd["object"].describe()`
+returns visible methods on one object, and `cmd["object"].method.describe()`
+returns the exact command invocation surface and policy details. Agents should use
+`request_command_registry_change` when a needed command is missing or outdated.
+Discovery output is informational only; actual execution still validates live
+visibility and policy at the `execute_code` boundary, so unavailable commands
+fail when called. Newly approved or inserted commands are visible in the
+synthetic command context and Starlark discovery output on the next model/tool
+boundary without server restart.
 
 Registry-defined command execution remains structured. There is no raw shell:
 commands run only through argv arrays, execution-root cwd enforcement, explicit
@@ -427,6 +781,20 @@ scripts/validate-mutation-actions.sh
 scripts/validate-command-registry.sh
 scripts/validate-role-admin-ux.sh
 scripts/validate-workflow-memory.sh
+```
+
+Server/admin deterministic validation is covered by `cargo test` from this
+nested workspace. It uses migrated temporary Postgres databases and does not
+call a live OpenAI model or LM Studio. The resident server process smoke is:
+
+```sh
+scripts/smoke-resident-server.sh
+```
+
+The live server smoke remains env-gated:
+
+```sh
+ROBDEX_AGENT_RUNTIME_LIVE_SERVER_SMOKE=1 scripts/smoke-live-server-gpt54mini.sh
 ```
 
 Validation database administration defaults to `ROBDEX_AGENT_RUNTIME_VALIDATION_ADMIN_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres`. Override that admin connection only when the same local Postgres server requires a different maintenance database. Do not point validation cleanup at the normal runtime database.

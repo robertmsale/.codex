@@ -32,6 +32,12 @@ pub struct ModelFinalTurn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeInputMessage {
+    pub text: String,
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelHistoryItem {
     pub session_id: String,
     pub turn_id: String,
@@ -42,7 +48,7 @@ pub struct ModelHistoryItem {
 
 #[async_trait]
 pub trait ModelClient {
-    async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn>;
+    async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn>;
     async fn submit_tool_result(
         &self,
         role_instructions: &str,

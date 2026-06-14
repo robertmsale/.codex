@@ -423,27 +423,48 @@ fn event_summary(payload: &Value) -> Option<String> {
 async fn pending_approval_summaries(pool: &PgPool) -> Result<Vec<PendingApprovalSummary>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, session_id, turn_id, action_name, required_approver_kind, status, input_context, created_at
-        FROM approval_requests
-        WHERE status = 'pending'
-        ORDER BY created_at DESC
+        SELECT ar.id, ar.session_id, ar.turn_id, ar.action_name, ar.required_approver_kind, ar.status, ar.input_context, ar.created_at,
+               EXISTS (
+                   SELECT 1 FROM paused_actions pa
+                   WHERE pa.approval_request_id = ar.id
+                     AND pa.status IN ('approved', 'pendingApproval')
+               ) AS has_resumable_action
+        FROM approval_requests ar
+        WHERE ar.status = 'pending'
+           OR (
+               ar.status = 'approved'
+               AND EXISTS (
+                   SELECT 1 FROM paused_actions pa
+                   WHERE pa.approval_request_id = ar.id
+                     AND pa.status IN ('approved', 'pendingApproval')
+               )
+           )
+        ORDER BY ar.created_at DESC
         "#,
     )
     .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|row| PendingApprovalSummary {
+        .map(|row| pending_approval_summary_from_row(row))
+        .collect())
+}
+
+fn pending_approval_summary_from_row(row: sqlx::postgres::PgRow) -> PendingApprovalSummary {
+    let status: String = row.get("status");
+    let has_resumable_action: bool = row.get("has_resumable_action");
+    PendingApprovalSummary {
             id: row.get::<Uuid, _>("id").to_string(),
             session_id: row.get::<Uuid, _>("session_id").to_string(),
             turn_id: optional_uuid(row.get("turn_id")),
             action_name: row.get("action_name"),
             required_approver_kind: row.get("required_approver_kind"),
-            status: row.get("status"),
+            status: status.clone(),
+            can_decide: status == "pending",
+            can_resume: status == "approved" && has_resumable_action,
             input_context: row.get("input_context"),
             created_at: Some(time(row.get("created_at"))),
-        })
-        .collect())
+    }
 }
 
 async fn pending_approval_summary(
@@ -452,24 +473,31 @@ async fn pending_approval_summary(
 ) -> Result<Option<PendingApprovalSummary>> {
     let row = sqlx::query(
         r#"
-        SELECT id, session_id, turn_id, action_name, required_approver_kind, status, input_context, created_at
-        FROM approval_requests
-        WHERE id = $1 AND status = 'pending'
+        SELECT ar.id, ar.session_id, ar.turn_id, ar.action_name, ar.required_approver_kind, ar.status, ar.input_context, ar.created_at,
+               EXISTS (
+                   SELECT 1 FROM paused_actions pa
+                   WHERE pa.approval_request_id = ar.id
+                     AND pa.status IN ('approved', 'pendingApproval')
+               ) AS has_resumable_action
+        FROM approval_requests ar
+        WHERE ar.id = $1
+          AND (
+              ar.status = 'pending'
+              OR (
+                  ar.status = 'approved'
+                  AND EXISTS (
+                      SELECT 1 FROM paused_actions pa
+                      WHERE pa.approval_request_id = ar.id
+                        AND pa.status IN ('approved', 'pendingApproval')
+                  )
+              )
+          )
         "#,
     )
     .bind(approval_id)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|row| PendingApprovalSummary {
-        id: row.get::<Uuid, _>("id").to_string(),
-        session_id: row.get::<Uuid, _>("session_id").to_string(),
-        turn_id: optional_uuid(row.get("turn_id")),
-        action_name: row.get("action_name"),
-        required_approver_kind: row.get("required_approver_kind"),
-        status: row.get("status"),
-        input_context: row.get("input_context"),
-        created_at: Some(time(row.get("created_at"))),
-    }))
+    Ok(row.map(pending_approval_summary_from_row))
 }
 
 async fn role_summaries(pool: &PgPool) -> Result<Vec<RoleSummary>> {
@@ -694,6 +722,7 @@ async fn workflow_memory_summary(
 mod tests {
     use super::*;
     use crate::{db, roles::RoleRegistry};
+    use serde_json::json;
 
     #[tokio::test]
     async fn postgres_backed_snapshot_builds_from_current_schema() {
@@ -736,6 +765,35 @@ mod tests {
                 Some("projection-validation"),
             )
             .await?;
+            let approval_id = Uuid::new_v4();
+            sqlx::query(
+                r#"
+                INSERT INTO approval_requests (
+                    id, session_id, turn_id, action_name, requested_by_role, input_context,
+                    required_approver_kind, status, created_at, completed_at
+                ) VALUES ($1, $2, NULL, 'fs.write', '{}'::jsonb, '{"decision":"approvalRequired"}'::jsonb,
+                    'owner', 'approved', now(), now())
+                "#,
+            )
+            .bind(approval_id)
+            .bind(session_id)
+            .execute(&pool)
+            .await?;
+            sqlx::query(
+                r#"
+                INSERT INTO paused_actions (
+                    id, approval_request_id, session_id, turn_id, tool_call_id, script_run_id,
+                    action_name, action_input, role_snapshot, status, created_at, updated_at
+                ) VALUES ($1, $2, $3, NULL, NULL, NULL, 'fs.write', $4, $5, 'pendingApproval', now(), now())
+                "#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(approval_id)
+            .bind(session_id)
+            .bind(json!({"path":"proof.txt","content":"proof"}))
+            .bind(json!({"id": role.id, "version": role.version, "roleVersionId": role.role_version_id}))
+            .execute(&pool)
+            .await?;
             let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await?;
             anyhow::Ok(snapshot)
         }
@@ -754,5 +812,12 @@ mod tests {
         assert!(!snapshot.roles.is_empty());
         assert!(!snapshot.command_registry.is_empty());
         assert_eq!(snapshot.timeline.len(), 1);
+        let resumable = snapshot
+            .pending_approvals
+            .iter()
+            .find(|approval| approval.status == "approved" && approval.action_name == "fs.write")
+            .expect("approved resumable approval is projected");
+        assert!(!resumable.can_decide);
+        assert!(resumable.can_resume);
     }
 }

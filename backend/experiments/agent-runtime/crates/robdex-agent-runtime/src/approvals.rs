@@ -5,6 +5,7 @@ use serde_json::Value;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use crate::errors::RuntimeDomainError;
 use crate::{db, starlark_host};
 use crate::policy::PolicyResult;
 use crate::roles::RoleSnapshot;
@@ -245,7 +246,7 @@ pub async fn decide(pool: &PgPool, id: Uuid, decision: ApprovalDecision, reason:
         .fetch_one(pool)
         .await?;
     let status: String = request.get("status");
-    validate_decide_status(&status).map_err(|error| anyhow::anyhow!("{error}: {id} status={status}"))?;
+    validate_decide_status(&status).map_err(|error| RuntimeDomainError::conflict(format!("{error}: {id} status={status}")))?;
     let decision_id = Uuid::new_v4();
     let decided_by = serde_json::json!({"kind": "operator-placeholder", "principal": "local-cli"});
     let now = Utc::now();
@@ -270,7 +271,7 @@ pub async fn decide(pool: &PgPool, id: Uuid, decision: ApprovalDecision, reason:
         .execute(pool)
         .await?;
     if updated.rows_affected() != 1 {
-        bail!("approval request terminal update failed for {id}: expected one pending row, updated {}", updated.rows_affected());
+        return Err(RuntimeDomainError::conflict(format!("approval request terminal update failed for {id}: expected one pending row, updated {}", updated.rows_affected())).into());
     }
     let session_id: Uuid = request.get("session_id");
     let turn_id: Option<Uuid> = request.get("turn_id");
@@ -303,7 +304,7 @@ pub async fn resume(pool: &PgPool, approval_id: Uuid) -> Result<()> {
     .await?;
     let request_status: String = request.get("status");
     validate_resume_request_status(&request_status)
-        .map_err(|error| anyhow::anyhow!("{error}: {approval_id} status={request_status}"))?;
+        .map_err(|error| RuntimeDomainError::conflict(format!("{error}: {approval_id} status={request_status}")))?;
     let paused = sqlx::query(
         r#"
         SELECT id, session_id, turn_id, tool_call_id, script_run_id, action_name, action_input, role_snapshot, status
@@ -315,21 +316,21 @@ pub async fn resume(pool: &PgPool, approval_id: Uuid) -> Result<()> {
     .bind(approval_id)
     .fetch_optional(pool)
     .await?
-    .ok_or_else(|| anyhow::anyhow!("approval request has no linked paused action: {approval_id}"))?;
+    .ok_or_else(|| RuntimeDomainError::conflict(format!("approval request has no linked paused action: {approval_id}")))?;
     let paused_id: Uuid = paused.get("id");
     let paused_status: String = paused.get("status");
     validate_resume_paused_status(&paused_status)
-        .map_err(|error| anyhow::anyhow!("{error}: {paused_id} status={paused_status}"))?;
+        .map_err(|error| RuntimeDomainError::conflict(format!("{error}: {paused_id} status={paused_status}")))?;
     let action_name: String = paused.get("action_name");
     if !crate::command_registry::is_registry_command_action(&action_name)
         && !matches!(action_name.as_str(), "fs.write" | "patch.apply")
     {
-        bail!("resume does not support action in this phase: {action_name}");
+        return Err(RuntimeDomainError::conflict(format!("resume does not support action in this phase: {action_name}")).into());
     }
     let session_id: Uuid = paused.get("session_id");
     let turn_id: Option<Uuid> = paused.get("turn_id");
     let script_run_id: Option<Uuid> = paused.get("script_run_id");
-    let script_run_id = script_run_id.ok_or_else(|| anyhow::anyhow!("paused action missing script_run_id"))?;
+    let script_run_id = script_run_id.ok_or_else(|| RuntimeDomainError::conflict("paused action missing script_run_id"))?;
     let action_input: Value = paused.get("action_input");
     let role_snapshot: Value = paused.get("role_snapshot");
     db::append_event(
@@ -351,7 +352,7 @@ pub async fn resume(pool: &PgPool, approval_id: Uuid) -> Result<()> {
     .execute(pool)
     .await?;
     if updated.rows_affected() != 1 {
-        bail!("paused action resume transition failed for {paused_id}: expected one ready row, updated {}", updated.rows_affected());
+        return Err(RuntimeDomainError::conflict(format!("paused action resume transition failed for {paused_id}: expected one ready row, updated {}", updated.rows_affected())).into());
     }
     let policy_decision = serde_json::json!({
         "action": action_name,
@@ -416,7 +417,7 @@ pub async fn resume(pool: &PgPool, approval_id: Uuid) -> Result<()> {
                 serde_json::json!({"approvalRequestId": approval_id, "pausedActionId": paused_id, "error": error_json}),
             )
             .await?;
-            bail!("approval resume failed: {}", error_json);
+            return Err(RuntimeDomainError::conflict(format!("approval resume failed: {error_json}")).into());
         }
     }
 }

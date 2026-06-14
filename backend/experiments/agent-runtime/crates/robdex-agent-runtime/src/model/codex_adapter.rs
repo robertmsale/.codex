@@ -9,7 +9,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelToolTurn, ToolCallRequest};
+use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
 
 const CHATGPT_CODEX_RESPONSES_URL: &str =
     "https://chatgpt.com/backend-api/codex/responses?client_version=0.124.0&source=robdex-agent-runtime";
@@ -55,7 +55,7 @@ impl CodexBackedModelClient {
         })
     }
 
-    fn execute_code_tool_schema(execute_code_contract: &str) -> Value {
+    pub fn execute_code_tool_schema(execute_code_contract: &str) -> Value {
         json!({
             "type": "function",
             "name": "execute_code",
@@ -66,7 +66,7 @@ impl CodexBackedModelClient {
                 "properties": {
                     "source": {
                         "type": "string",
-                        "description": execute_code_contract
+                        "description": "Starlark source to evaluate in the experimental runtime. Use cmd.describe() and per-command .describe() inside Starlark for live command details."
                     }
                 },
                 "required": ["source"]
@@ -75,7 +75,7 @@ impl CodexBackedModelClient {
         })
     }
 
-    fn request_command_registry_change_tool_schema(request_contract: &str) -> Value {
+    pub fn request_command_registry_change_tool_schema(request_contract: &str) -> Value {
         json!({
             "type": "function",
             "name": "request_command_registry_change",
@@ -204,13 +204,13 @@ pub fn bounded_raw_response(response: &Value) -> Value {
 
 #[async_trait]
 impl ModelClient for CodexBackedModelClient {
-    async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn> {
+    async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn> {
         let tool = Self::execute_code_tool_schema(execute_code_contract);
         let request_tool = Self::request_command_registry_change_tool_schema(request_registry_contract);
         let instructions = format!(
-            "{role_instructions}\n\nChoose exactly one native tool for this turn. Call execute_code when the current Starlark/command interface can satisfy the user. Call request_command_registry_change when progress is blocked by a missing or changed command registry entry. Current execute_code contract:\n{execute_code_contract}\n\nCurrent command registry request contract:\n{request_registry_contract}"
+            "{role_instructions}\n\nChoose exactly one native tool for this turn. Call execute_code when the permanent Starlark interface can satisfy the user. Inspect live registered commands with cmd.describe(), cmd[\"object\"].describe(), or cmd[\"object\"].method.describe() inside execute_code when command details are needed. Call request_command_registry_change when progress is blocked by a missing or outdated command registry entry."
         );
-        let request_input = responses_input_from_history(history, Some(message));
+        let request_input = responses_input_from_history(history, runtime_messages, Some(message));
         let request_for_shape = ResponsesApiRequest {
             model: self.model.clone(),
             instructions,
@@ -268,7 +268,7 @@ impl ModelClient for CodexBackedModelClient {
     ) -> Result<ModelFinalTurn> {
         let result_text = serde_json::to_string(tool_result)?;
         let function_call_item = find_native_tool_item(tool_call_response, call_id)?;
-        let mut input = responses_input_from_history(history, None);
+        let mut input = responses_input_from_history(history, &[], None);
         input.push(function_call_item);
         input.push(json!({
             "type": "function_call_output",
@@ -297,7 +297,7 @@ impl ModelClient for CodexBackedModelClient {
     }
 }
 
-fn responses_input_from_history(history: &[ModelHistoryItem], current_message: Option<&str>) -> Vec<Value> {
+pub fn responses_input_from_history(history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], current_message: Option<&str>) -> Vec<Value> {
     let mut input = Vec::new();
     for item in history {
         input.push(json!({
@@ -324,6 +324,13 @@ fn responses_input_from_history(history: &[ModelHistoryItem], current_message: O
                 }
             }));
         }
+    }
+    for runtime_message in runtime_messages {
+        input.push(json!({
+            "role": "user",
+            "content": [{"type": "input_text", "text": runtime_message.text}],
+            "metadata": runtime_message.metadata,
+        }));
     }
     if let Some(message) = current_message {
         input.push(json!({
@@ -477,4 +484,85 @@ fn truncate_string(input: &str, limit: usize) -> (String, bool) {
         end -= 1;
     }
     (input[..end].to_string(), true)
+}
+
+#[cfg(test)]
+mod cache_stable_tests {
+    use super::*;
+
+    fn command(action: &str) -> crate::command_registry::CommandVersion {
+        crate::command_registry::CommandVersion {
+            version_id: uuid::Uuid::new_v4(),
+            definition_id: uuid::Uuid::new_v4(),
+            scope_type: "global".to_string(),
+            project_key: None,
+            action_id: action.to_string(),
+            binary_name: "echo".to_string(),
+            candidate_paths: vec![std::path::PathBuf::from("/bin/echo")],
+            starlark_object: action.replace('.', "_"),
+            starlark_method: "run".to_string(),
+            argv_prefix: vec![],
+            default_cwd: ".".to_string(),
+            cwd_policy: "underExecutionRoot".to_string(),
+            env_policy: "empty".to_string(),
+            max_runtime: None,
+            output_limit: 12000,
+            mutation_class: "readOnly".to_string(),
+            model_description: "test command".to_string(),
+            allow_cwd_arg: true,
+            allow_args_arg: true,
+            forbidden_args: vec![],
+            execution_policy: "allow".to_string(),
+            sync_allowed: true,
+            async_allowed: false,
+            end_of_turn_behavior: "terminate".to_string(),
+            stdin_policy: "forbid".to_string(),
+            min_await_ms: 0,
+            max_await_ms: 60000,
+            output_buffer_bytes: 64000,
+            terminate_grace_ms: 1000,
+        }
+    }
+
+
+    #[test]
+    fn runtime_command_context_input_has_metadata_and_is_not_history() {
+        let history = vec![ModelHistoryItem {
+            session_id: "session-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            user: "ordinary user".to_string(),
+            assistant: Some("ordinary assistant".to_string()),
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+        }];
+        let runtime = vec![RuntimeInputMessage {
+            text: "runtime command context".to_string(),
+            metadata: json!({"source":"runtime_command_context", "commandContextId":"cmdctx-test"}),
+        }];
+        let input = responses_input_from_history(&history, &runtime, Some("current user"));
+        assert_eq!(input.len(), 4);
+        assert_eq!(input[0]["metadata"]["source"], "reconstructed_session_history");
+        assert_eq!(input[1]["metadata"]["source"], "reconstructed_session_history");
+        assert_eq!(input[2]["metadata"]["source"], "runtime_command_context");
+        assert_eq!(input[3]["role"], "user");
+        assert!(input[3].get("metadata").is_none());
+    }
+
+    #[test]
+    fn complete_execute_code_tool_schema_is_identical_across_command_contexts() {
+        let commands_a = vec![command("cmd.schema.one")];
+        let commands_b = vec![command("cmd.schema.one"), command("cmd.schema.two")];
+        let context_a = crate::command_registry::runtime_command_context_message(&commands_a, None);
+        let context_b = crate::command_registry::runtime_command_context_message(&commands_b, Some(&context_a.evidence));
+        let contract = crate::command_registry::stable_execute_code_contract();
+        let schema_a = CodexBackedModelClient::execute_code_tool_schema(&contract);
+        let schema_b = CodexBackedModelClient::execute_code_tool_schema(&contract);
+        assert_eq!(schema_a, schema_b);
+        assert_ne!(context_a.evidence.id, context_b.evidence.id);
+        assert_ne!(context_a.text, context_b.text);
+        assert_eq!(schema_a["description"], contract);
+        let source_description = schema_a["parameters"]["properties"]["source"]["description"].as_str().unwrap();
+        assert!(source_description.contains("Starlark source"));
+        assert!(!source_description.contains("Registry commands available now"));
+        assert!(!source_description.contains("cmd[\""));
+    }
 }

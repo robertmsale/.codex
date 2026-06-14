@@ -1,12 +1,15 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use crate::errors::RuntimeDomainError;
 use crate::roles::RoleSnapshot;
 use crate::policy::{PolicyEngine, RuntimeDecision};
 use crate::{approvals, db};
@@ -78,6 +81,8 @@ fn default_terminate_grace_ms() -> i64 { 1_000 }
 pub struct CommandVersion {
     pub version_id: Uuid,
     pub definition_id: Uuid,
+    pub scope_type: String,
+    pub project_key: Option<String>,
     pub action_id: String,
     pub binary_name: String,
     pub candidate_paths: Vec<PathBuf>,
@@ -175,7 +180,7 @@ async fn add_command(pool: &PgPool, seed: &CommandSeed, created_by: &str, scope:
         .fetch_optional(&mut *tx)
         .await?;
     if existing.is_some() {
-        bail!("command action already exists: {}", seed.action_id);
+        return Err(RuntimeDomainError::conflict(format!("command action already exists: {}", seed.action_id)).into());
     }
     let definition_id = Uuid::new_v4();
     sqlx::query("INSERT INTO command_definitions (id, action_id, scope_type, project_key, enabled, metadata) VALUES ($1, $2, $3, $4, true, '{}'::jsonb)")
@@ -252,20 +257,20 @@ async fn insert_command_version(
 }
 
 fn validate_seed(seed: &CommandSeed) -> Result<()> {
-    if !is_registry_command_action(&seed.action_id) { bail!("command action id must be registry command action: {}", seed.action_id); }
+    if !is_registry_command_action(&seed.action_id) { return Err(RuntimeDomainError::validation_failed(format!("command action id must be registry command action: {}", seed.action_id)).into()); }
     validate_identifier("starlarkObject", &seed.starlark_object)?;
     validate_identifier("starlarkMethod", &seed.starlark_method)?;
-    if seed.binary_name.trim().is_empty() { bail!("binaryName must not be empty"); }
-    if seed.candidate_paths.is_empty() { bail!("candidatePaths must not be empty"); }
-    if seed.cwd_policy != "underExecutionRoot" { bail!("unsupported cwdPolicy: {}", seed.cwd_policy); }
-    if !matches!(seed.env_policy.as_str(), "empty" | "minimalCargo") { bail!("unsupported envPolicy: {}", seed.env_policy); }
+    if seed.binary_name.trim().is_empty() { return Err(RuntimeDomainError::validation_failed("binaryName must not be empty").into()); }
+    if seed.candidate_paths.is_empty() { return Err(RuntimeDomainError::validation_failed("candidatePaths must not be empty").into()); }
+    if seed.cwd_policy != "underExecutionRoot" { return Err(RuntimeDomainError::validation_failed(format!("unsupported cwdPolicy: {}", seed.cwd_policy)).into()); }
+    if !matches!(seed.env_policy.as_str(), "empty" | "minimalCargo") { return Err(RuntimeDomainError::validation_failed(format!("unsupported envPolicy: {}", seed.env_policy)).into()); }
     if let Some(max_runtime_ms) = seed.max_runtime_ms {
-        if max_runtime_ms <= 0 { bail!("maxRuntimeMs must be null or positive"); }
+        if max_runtime_ms <= 0 { return Err(RuntimeDomainError::validation_failed("maxRuntimeMs must be null or positive").into()); }
     }
-    if !matches!(seed.end_of_turn_behavior.as_str(), "terminate" | "continue") { bail!("unsupported endOfTurnBehavior: {}", seed.end_of_turn_behavior); }
-    if !matches!(seed.stdin_policy.as_str(), "forbid" | "allow") { bail!("unsupported stdinPolicy: {}", seed.stdin_policy); }
-    if seed.min_await_ms < 0 || seed.max_await_ms < seed.min_await_ms { bail!("invalid await policy"); }
-    if seed.output_buffer_bytes <= 0 || seed.output_limit_bytes <= 0 { bail!("output limits must be positive"); }
+    if !matches!(seed.end_of_turn_behavior.as_str(), "terminate" | "continue") { return Err(RuntimeDomainError::validation_failed(format!("unsupported endOfTurnBehavior: {}", seed.end_of_turn_behavior)).into()); }
+    if !matches!(seed.stdin_policy.as_str(), "forbid" | "allow") { return Err(RuntimeDomainError::validation_failed(format!("unsupported stdinPolicy: {}", seed.stdin_policy)).into()); }
+    if seed.min_await_ms < 0 || seed.max_await_ms < seed.min_await_ms { return Err(RuntimeDomainError::validation_failed("invalid await policy").into()); }
+    if seed.output_buffer_bytes <= 0 || seed.output_limit_bytes <= 0 { return Err(RuntimeDomainError::validation_failed("output limits must be positive").into()); }
     Ok(())
 }
 
@@ -274,6 +279,8 @@ fn command_version_from_row(row: &sqlx::postgres::PgRow) -> Result<CommandVersio
     Ok(CommandVersion {
         definition_id: row.get("definition_id"),
         version_id: row.get("version_id"),
+        scope_type: row.try_get("scope_type").unwrap_or_else(|_| "global".to_string()),
+        project_key: row.try_get("project_key").unwrap_or(None),
         action_id: row.get("action_id"),
         binary_name: row.get("binary_name"),
         candidate_paths: seed.candidate_paths.into_iter().map(PathBuf::from).collect(),
@@ -306,32 +313,32 @@ fn validate_scope(scope: &RegistryScope) -> Result<()> {
     match scope.scope_type.as_str() {
         "global" => {
             if scope.project_key.is_some() {
-                bail!("global command scope must not include projectKey");
+                return Err(RuntimeDomainError::validation_failed("global command scope must not include projectKey").into());
             }
         }
         "project" => {
             let Some(project_key) = scope.project_key.as_deref() else {
-                bail!("project command scope requires projectKey");
+                return Err(RuntimeDomainError::validation_failed("project command scope requires projectKey").into());
             };
             if project_key.trim().is_empty() {
-                bail!("project command scope requires non-empty projectKey");
+                return Err(RuntimeDomainError::validation_failed("project command scope requires non-empty projectKey").into());
             }
         }
-        other => bail!("unsupported command scope: {other}"),
+        other => return Err(RuntimeDomainError::validation_failed(format!("unsupported command scope: {other}")).into()),
     }
     Ok(())
 }
 
 fn validate_execution_policy(policy: &FinalExecutionPolicy) -> Result<()> {
     if !matches!(policy.decision.as_str(), "allow" | "deny" | "ownerApproval" | "orchestratorApproval") {
-        bail!("unsupported final execution policy decision: {}", policy.decision);
+        return Err(RuntimeDomainError::validation_failed(format!("unsupported final execution policy decision: {}", policy.decision)).into());
     }
     Ok(())
 }
 
 fn validate_identifier(field: &str, value: &str) -> Result<()> {
     if value.is_empty() || !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || value.chars().next().unwrap().is_ascii_digit() {
-        bail!("{field} must be a Starlark identifier: {value}");
+        return Err(RuntimeDomainError::validation_failed(format!("{field} must be a Starlark identifier: {value}")).into());
     }
     Ok(())
 }
@@ -365,7 +372,7 @@ pub async fn live_visible_commands(pool: &PgPool, _snapshot: &RoleSnapshot, proj
 pub async fn command_by_action(pool: &PgPool, action_id: &str) -> Result<CommandVersion> {
     let row = sqlx::query(
         r#"
-        SELECT cd.id AS definition_id, cv.id AS version_id, cv.action_id, cv.binary_name, cv.starlark_object, cv.starlark_method, cv.config, cv.model_description
+        SELECT cd.id AS definition_id, cd.scope_type, cd.project_key, cv.id AS version_id, cv.action_id, cv.binary_name, cv.starlark_object, cv.starlark_method, cv.config, cv.model_description
         FROM command_definitions cd JOIN command_versions cv ON cv.id = cd.current_version_id
         WHERE cd.enabled=true AND cv.action_id=$1
         "#,
@@ -376,21 +383,186 @@ pub async fn command_by_action(pool: &PgPool, action_id: &str) -> Result<Command
 pub async fn command_by_version(pool: &PgPool, version_id: Uuid) -> Result<CommandVersion> {
     let row = sqlx::query(
         r#"
-        SELECT cv.definition_id, cv.id AS version_id, cv.action_id, cv.binary_name, cv.starlark_object, cv.starlark_method, cv.config, cv.model_description
-        FROM command_versions cv
+        SELECT cv.definition_id, cd.scope_type, cd.project_key, cv.id AS version_id, cv.action_id, cv.binary_name, cv.starlark_object, cv.starlark_method, cv.config, cv.model_description
+        FROM command_versions cv JOIN command_definitions cd ON cd.id = cv.definition_id
         WHERE cv.id=$1
         "#,
     ).bind(version_id).fetch_one(pool).await?;
     command_version_from_row(&row)
 }
 
-pub fn execute_code_contract(commands: &[CommandVersion]) -> String {
-    let mut lines = vec![
-        "Evaluate Starlark in the experimental host runtime. Use output(value) to emit final tool output; host calls return script values and do not implicitly become final output. Native APIs: fs.read(path), fs.write(path, content), patch.apply(unified_diff). workflow_memory.help() searches prior relevant scripts in this session and returns concise remembered workflow hints; workflow_memory.remember_when(condition, title, reason) records a project-scoped candidate that promotes only after the full script succeeds; workflow_memory.mark_attempted(id, variant=True) and mark_not_helpful(id, reason) record feedback. Do not auto-promote first/plain attempts: use memory after a failure or after trying a help result. Registry commands return invocation objects: call .sync() for synchronous execution or .start() for a managed async process handle, then use proc[handle].is_running(), proc[handle].await_for(mins=N), proc[handle].flush_buffer(), proc[handle].terminate(), and proc[handle].input(text). Handles are opaque session-only values, not OS PIDs. Registry commands available now:".to_string(),
-    ];
-    for command in commands { lines.push(format!("- {}", command.model_line())); }
-    lines.push("No raw shell, network, arbitrary environment, unregistered binaries, or undocumented command surfaces are available.".to_string());
+pub fn stable_execute_code_contract() -> String {
+    "Evaluate Starlark in the experimental host runtime. Use output(value) to emit final tool output; host calls return script values and do not implicitly become final output. Native APIs: fs.read(path), fs.write(path, content), patch.apply(unified_diff), workflow_memory.help(), workflow_memory.remember_when(condition, title, reason), workflow_memory.mark_attempted(id, variant=True), and workflow_memory.mark_not_helpful(id, reason). Registered commands are accessed through cmd[\"object\"].method(...).sync() for synchronous execution or .start() for a managed async process handle. Inspect available registered commands with cmd.describe(), cmd[\"object\"].describe(), and cmd[\"object\"].method.describe() before using command-specific details. Use proc[handle].is_running(), await_for(mins=N), flush_buffer(), terminate(), and input(text) for managed processes. Handles are opaque session-only values, not OS PIDs. No raw shell, network, arbitrary environment, unregistered binaries, or undocumented command surfaces are available.".to_string()
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandContextSummary {
+    pub action_id: String,
+    pub command_version_id: String,
+    pub scope_type: String,
+    pub project_key: Option<String>,
+    pub starlark_object: String,
+    pub starlark_method: String,
+    pub fingerprint: String,
+    pub model_description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandContextEvidence {
+    pub id: String,
+    pub catalog_included: bool,
+    pub visible_count: usize,
+    pub added_count: usize,
+    pub removed_count: usize,
+    pub changed_count: usize,
+    pub summaries: Vec<CommandContextSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeCommandContextMessage {
+    pub text: String,
+    pub metadata: Value,
+    pub evidence: CommandContextEvidence,
+}
+
+pub fn command_context_id(commands: &[CommandVersion]) -> String {
+    let summaries = command_context_summaries(commands);
+    let canonical = serde_json::to_vec(&summaries).expect("command context summaries serialize");
+    let hash = Sha256::digest(canonical);
+    format!("cmdctx-{hash:x}")
+}
+
+pub fn command_context_summaries(commands: &[CommandVersion]) -> Vec<CommandContextSummary> {
+    let mut summaries = commands.iter().map(|command| {
+        let fingerprint_value = json!({
+            "actionId": command.action_id,
+            "commandVersionId": command.version_id,
+            "scopeType": command.scope_type,
+            "projectKey": command.project_key,
+            "starlarkObject": command.starlark_object,
+            "starlarkMethod": command.starlark_method,
+            "syncAllowed": command.sync_allowed,
+            "asyncAllowed": command.async_allowed,
+            "allowArgsArg": command.allow_args_arg,
+            "allowCwdArg": command.allow_cwd_arg,
+            "maxRuntimeMs": command.max_runtime.map(|duration| duration.as_millis()),
+            "stdinPolicy": command.stdin_policy,
+            "endOfTurnBehavior": command.end_of_turn_behavior,
+            "endOfSessionBehavior": if command.end_of_turn_behavior == "terminate" { "terminate" } else { "block" },
+            "outputLimitBytes": command.output_limit,
+            "outputBufferBytes": command.output_buffer_bytes,
+            "terminateGraceMs": command.terminate_grace_ms,
+            "modelDescription": command.model_description,
+        });
+        let hash = Sha256::digest(serde_json::to_vec(&fingerprint_value).expect("fingerprint serialize"));
+        CommandContextSummary {
+            action_id: command.action_id.clone(),
+            command_version_id: command.version_id.to_string(),
+            scope_type: command.scope_type.clone(),
+            project_key: command.project_key.clone(),
+            starlark_object: command.starlark_object.clone(),
+            starlark_method: command.starlark_method.clone(),
+            fingerprint: format!("{hash:x}"),
+            model_description: command.model_description.clone(),
+        }
+    }).collect::<Vec<_>>();
+    summaries.sort_by(|left, right| left.action_id.cmp(&right.action_id).then(left.scope_type.cmp(&right.scope_type)).then(left.project_key.cmp(&right.project_key)));
+    summaries
+}
+
+pub fn runtime_command_context_message(commands: &[CommandVersion], previous: Option<&CommandContextEvidence>) -> RuntimeCommandContextMessage {
+    let summaries = command_context_summaries(commands);
+    let id = command_context_id(commands);
+    let previous_by_action: BTreeMap<String, &CommandContextSummary> = previous
+        .map(|prior| prior.summaries.iter().map(|summary| (summary.action_id.clone(), summary)).collect())
+        .unwrap_or_default();
+    let current_by_action: BTreeMap<String, &CommandContextSummary> = summaries.iter().map(|summary| (summary.action_id.clone(), summary)).collect();
+    let previous_actions: BTreeSet<String> = previous_by_action.keys().cloned().collect();
+    let current_actions: BTreeSet<String> = current_by_action.keys().cloned().collect();
+    let added = current_actions.difference(&previous_actions).cloned().collect::<Vec<_>>();
+    let removed = previous_actions.difference(&current_actions).cloned().collect::<Vec<_>>();
+    let changed = current_actions
+        .intersection(&previous_actions)
+        .filter(|action| previous_by_action.get(*action).map(|prior| prior.fingerprint.as_str()) != current_by_action.get(*action).map(|now| now.fingerprint.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let unchanged = previous.map(|prior| prior.id == id).unwrap_or(false);
+    let catalog_included = !unchanged;
+    let mut lines = Vec::new();
+    if unchanged {
+        lines.push(format!("Runtime command context unchanged: {id}. Use cmd.describe() or per-command .describe() inside execute_code if command details are needed."));
+    } else if previous.is_some() {
+        lines.push(format!("Runtime command context changed: {id}. visible={} added={} removed={} changed={}. Use cmd.describe() for live details.", summaries.len(), added.len(), removed.len(), changed.len()));
+        if !added.is_empty() { lines.push(format!("Added commands: {}", added.join(", "))); }
+        if !removed.is_empty() { lines.push(format!("Removed commands: {}", removed.join(", "))); }
+        if !changed.is_empty() { lines.push(format!("Changed commands: {}", changed.join(", "))); }
+    } else {
+        lines.push(format!("Runtime command context: {id}. visible={}. Use cmd.describe() for live details and request_command_registry_change when a needed command is missing or outdated.", summaries.len()));
+    }
+    if catalog_included {
+        lines.push("Visible command catalog:".to_string());
+        for summary in &summaries {
+            lines.push(format!("- cmd[\"{}\"].{} action={} version={} scope={} project={} :: {}", summary.starlark_object, summary.starlark_method, summary.action_id, summary.command_version_id, summary.scope_type, summary.project_key.clone().unwrap_or_else(|| "-".to_string()), summary.model_description));
+        }
+    }
+    let evidence = CommandContextEvidence {
+        id: id.clone(),
+        catalog_included,
+        visible_count: summaries.len(),
+        added_count: added.len(),
+        removed_count: removed.len(),
+        changed_count: changed.len(),
+        summaries,
+    };
+    RuntimeCommandContextMessage {
+        text: lines.join("\n"),
+        metadata: json!({"source":"runtime_command_context", "commandContextId": id, "catalogIncluded": catalog_included}),
+        evidence,
+    }
+}
+
+pub fn describe_catalog(commands: &[CommandVersion]) -> String {
+    let mut lines = vec![format!("visible commands: {}", commands.len())];
+    for command in commands {
+        lines.push(format!("cmd[\"{}\"].{} action={} version={} scope={} project={} syncAllowed={} asyncAllowed={} stdinPolicy={} :: {}", command.starlark_object, command.starlark_method, command.action_id, command.version_id, command.scope_type, command.project_key.clone().unwrap_or_else(|| "-".to_string()), command.sync_allowed, command.async_allowed, command.stdin_policy, command.model_description));
+    }
     lines.join("\n")
+}
+
+pub fn describe_object(commands: &[CommandVersion], object: &str) -> String {
+    let object_commands = commands.iter().filter(|command| command.starlark_object == object).cloned().collect::<Vec<_>>();
+    if object_commands.is_empty() {
+        return format!("no visible methods for cmd[\"{object}\"]");
+    }
+    describe_catalog(&object_commands)
+}
+
+pub fn describe_command(command: &CommandVersion) -> String {
+    format!(
+        "actionId={} commandVersionId={} call=cmd[\"{}\"].{}({}{}) syncAllowed={} asyncAllowed={} allowArgsArg={} allowCwdArg={} maxRuntimeMs={:?} stdinPolicy={} endOfTurnBehavior={} endOfSessionBehavior={} outputLimitBytes={} outputBufferBytes={} mutationClass={} modelDescription={}",
+        command.action_id,
+        command.version_id,
+        command.starlark_object,
+        command.starlark_method,
+        if command.allow_args_arg { "args=[...]" } else { "" },
+        if command.allow_cwd_arg { if command.allow_args_arg { ", cwd=\".\"" } else { "cwd=\".\"" } } else { "" },
+        command.sync_allowed,
+        command.async_allowed,
+        command.allow_args_arg,
+        command.allow_cwd_arg,
+        command.max_runtime.map(|duration| duration.as_millis()),
+        command.stdin_policy,
+        command.end_of_turn_behavior,
+        if command.end_of_turn_behavior == "terminate" { "terminate" } else { "block" },
+        command.output_limit,
+        command.output_buffer_bytes,
+        command.mutation_class,
+        command.model_description,
+    )
 }
 
 pub fn request_tool_contract() -> String {
@@ -399,15 +571,32 @@ pub fn request_tool_contract() -> String {
 
 pub fn starlark_prelude(commands: &[CommandVersion], process_handles: &[String]) -> Result<String> {
     use std::collections::BTreeMap;
-    let mut out = String::from("cmd = {}\nproc = {}\ndef __proc_obj(handle):\n    return struct(is_running=lambda: __proc.is_running(handle), await_for=lambda mins=0: __proc.await_for(handle, mins), flush_buffer=lambda: __proc.flush_buffer(handle), terminate=lambda: __proc.terminate(handle), input=lambda text: __proc.input(handle, text))\ndef __cmd_start(action, args, cwd):\n    handle = __cmd.start(action, args, cwd)\n    proc[handle] = __proc_obj(handle)\n    return handle\ndef __cmd_invocation(action, args, cwd):\n    return struct(sync=lambda: __cmd.sync(action, args, cwd), start=lambda: __cmd_start(action, args, cwd))\n");
+    let catalog_description = describe_catalog(commands);
+    let mut out = format!("cmd = {{}}
+proc = {{}}
+def __proc_obj(handle):
+    return struct(is_running=lambda: __proc.is_running(handle), await_for=lambda mins=0: __proc.await_for(handle, mins), flush_buffer=lambda: __proc.flush_buffer(handle), terminate=lambda: __proc.terminate(handle), input=lambda text: __proc.input(handle, text))
+def __cmd_start(action, args, cwd):
+    handle = __cmd.start(action, args, cwd)
+    proc[handle] = __proc_obj(handle)
+    return handle
+def __cmd_invocation(action, args, cwd):
+    return struct(sync=lambda: __cmd.sync(action, args, cwd), start=lambda: __cmd_start(action, args, cwd))
+def cmd_root_describe():
+    return {catalog_description:?}
+");
     for handle in process_handles {
         out.push_str(&format!("proc[{handle:?}] = __proc_obj({handle:?})\n"));
     }
     let mut by_object: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut object_descriptions: BTreeMap<String, String> = BTreeMap::new();
     for command in commands {
         validate_identifier("starlarkObject", &command.starlark_object)?;
         validate_identifier("starlarkMethod", &command.starlark_method)?;
+        object_descriptions.insert(command.starlark_object.clone(), describe_object(commands, &command.starlark_object));
         let fname = format!("__cmd_{}_{}", command.starlark_object, command.starlark_method);
+        let describe_fname = format!("__cmd_{}_{}_describe", command.starlark_object, command.starlark_method);
+        let command_description = describe_command(command);
         let params = match (command.allow_args_arg, command.allow_cwd_arg) {
             (true, true) => "args=[], cwd=\".\"",
             (true, false) => "args=[]",
@@ -416,19 +605,51 @@ pub fn starlark_prelude(commands: &[CommandVersion], process_handles: &[String])
         };
         let args_expr = if command.allow_args_arg { "args" } else { "[]" };
         let cwd_expr = if command.allow_cwd_arg { "cwd".to_string() } else { format!("\"{}\"", command.default_cwd) };
-        out.push_str(&format!("def {fname}({params}):\n    return __cmd_invocation(\"{}\", {args_expr}, {cwd_expr})\n", command.action_id));
+        out.push_str(&format!("def {describe_fname}():\n    return {command_description:?}\ndef {fname}({params}):\n    return __cmd_invocation(\"{}\", {args_expr}, {cwd_expr})\n", command.action_id));
         by_object.entry(command.starlark_object.clone()).or_default().push((command.starlark_method.clone(), fname));
     }
     for (object, methods) in by_object {
-        let fields = methods.into_iter().map(|(method, fname)| format!("{method}={fname}")).collect::<Vec<_>>().join(", ");
-        out.push_str(&format!("cmd[\"{object}\"] = struct({fields})\n"));
+        let describe = object_descriptions.get(&object).cloned().unwrap_or_default();
+        let mut fields = methods.into_iter().map(|(method, fname)| format!("{method}={fname}")).collect::<Vec<_>>();
+        fields.push(format!("describe=lambda: {describe:?}"));
+        out.push_str(&format!("cmd[\"{object}\"] = struct({})\n", fields.join(", ")));
     }
+    out.push_str("cmd[\"describe\"] = cmd_root_describe\n");
     Ok(out)
+}
+
+
+pub fn normalize_describe_affordances(source: &str, commands: &[CommandVersion]) -> String {
+    let mut normalized = source.replace("cmd.describe()", "cmd[\"describe\"]()");
+    for command in commands {
+        let dotted = format!("cmd[\"{}\"].{}.describe()", command.starlark_object, command.starlark_method);
+        let replacement = format!("__cmd_{}_{}_describe()", command.starlark_object, command.starlark_method);
+        normalized = normalized.replace(&dotted, &replacement);
+    }
+    normalized
 }
 
 pub async fn list(pool: &PgPool) -> Result<Vec<Value>> {
     let rows = sqlx::query("SELECT cd.action_id, cd.scope_type, cd.project_key, cd.enabled, cd.current_version_id, cv.config FROM command_definitions cd LEFT JOIN command_versions cv ON cv.id=cd.current_version_id ORDER BY cd.scope_type, cd.project_key, cd.action_id")
         .fetch_all(pool).await?;
+    Ok(rows.into_iter().map(|r| json!({"actionId": r.get::<String,_>("action_id"), "scope": {"type": r.get::<String,_>("scope_type"), "projectKey": r.get::<Option<String>,_>("project_key")}, "enabled": r.get::<bool,_>("enabled"), "currentVersionId": r.get::<Option<Uuid>,_>("current_version_id"), "config": r.get::<Option<Value>,_>("config")})).collect())
+}
+
+
+pub async fn list_visible(pool: &PgPool, project_key: Option<&str>) -> Result<Vec<Value>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT cd.action_id, cd.scope_type, cd.project_key, cd.enabled, cd.current_version_id, cv.config
+        FROM command_definitions cd
+        LEFT JOIN command_versions cv ON cv.id=cd.current_version_id
+        WHERE cd.enabled=true
+          AND (cd.scope_type='global' OR (cd.scope_type='project' AND cd.project_key=$1))
+        ORDER BY cd.scope_type, cd.project_key, cd.action_id
+        "#,
+    )
+    .bind(project_key)
+    .fetch_all(pool)
+    .await?;
     Ok(rows.into_iter().map(|r| json!({"actionId": r.get::<String,_>("action_id"), "scope": {"type": r.get::<String,_>("scope_type"), "projectKey": r.get::<Option<String>,_>("project_key")}, "enabled": r.get::<bool,_>("enabled"), "currentVersionId": r.get::<Option<Uuid>,_>("current_version_id"), "config": r.get::<Option<Value>,_>("config")})).collect())
 }
 
@@ -445,6 +666,27 @@ pub async fn validate_policy_actions_exist(pool: &PgPool, actions: impl Iterator
 pub async fn show(pool: &PgPool, action_id: &str) -> Result<Value> {
     let row = sqlx::query("SELECT cd.id, cd.action_id, cd.scope_type, cd.project_key, cd.enabled, cd.current_version_id, cv.config FROM command_definitions cd LEFT JOIN command_versions cv ON cv.id=cd.current_version_id WHERE cd.action_id=$1 ORDER BY cd.scope_type, cd.project_key LIMIT 1")
         .bind(action_id).fetch_one(pool).await?;
+    Ok(json!({"id": row.get::<Uuid,_>("id"), "actionId": row.get::<String,_>("action_id"), "scope": {"type": row.get::<String,_>("scope_type"), "projectKey": row.get::<Option<String>,_>("project_key")}, "enabled": row.get::<bool,_>("enabled"), "currentVersionId": row.get::<Option<Uuid>,_>("current_version_id"), "config": row.get::<Option<Value>,_>("config")}))
+}
+
+
+pub async fn show_visible(pool: &PgPool, action_id: &str, project_key: Option<&str>) -> Result<Value> {
+    let row = sqlx::query(
+        r#"
+        SELECT cd.id, cd.action_id, cd.scope_type, cd.project_key, cd.enabled, cd.current_version_id, cv.config
+        FROM command_definitions cd
+        LEFT JOIN command_versions cv ON cv.id=cd.current_version_id
+        WHERE cd.action_id=$1
+          AND cd.enabled=true
+          AND (cd.scope_type='global' OR (cd.scope_type='project' AND cd.project_key=$2))
+        ORDER BY cd.scope_type DESC, cd.project_key
+        LIMIT 1
+        "#,
+    )
+    .bind(action_id)
+    .bind(project_key)
+    .fetch_one(pool)
+    .await?;
     Ok(json!({"id": row.get::<Uuid,_>("id"), "actionId": row.get::<String,_>("action_id"), "scope": {"type": row.get::<String,_>("scope_type"), "projectKey": row.get::<Option<String>,_>("project_key")}, "enabled": row.get::<bool,_>("enabled"), "currentVersionId": row.get::<Option<Uuid>,_>("current_version_id"), "config": row.get::<Option<Value>,_>("config")}))
 }
 
@@ -552,7 +794,7 @@ pub async fn create_native_model_request(
 ) -> Result<Uuid> {
     validate_seed(&input.proposed_command)?;
     if !matches!(input.operation.as_str(), "add" | "update" | "disable" | "enable") {
-        bail!("unsupported command registry operation: {}", input.operation);
+        return Err(RuntimeDomainError::validation_failed(format!("unsupported command registry operation: {}", input.operation)).into());
     }
     let id = Uuid::new_v4();
     sqlx::query(
@@ -582,7 +824,7 @@ pub async fn create_native_model_request(
 
 pub async fn create_seed_import_requests(pool: &PgPool, session_id: Uuid, mode: &str) -> Result<Vec<Uuid>> {
     if !matches!(mode, "missing" | "refresh") {
-        bail!("seed import mode must be missing or refresh");
+        return Err(RuntimeDomainError::validation_failed("seed import mode must be missing or refresh").into());
     }
     let mut ids = Vec::new();
     for seed in default_command_seeds()? {
@@ -633,7 +875,7 @@ pub async fn decide_request(
         .bind(serde_json::to_value(&decision.final_execution_policy)?)
         .bind(serde_json::to_value(&decision.final_command)?)
         .execute(pool).await?.rows_affected();
-    if done != 1 { bail!("command registry request is not pending or does not exist: {id}"); }
+    if done != 1 { return Err(RuntimeDomainError::conflict(format!("command registry request is not pending: {id}")).into()); }
     db::append_event(pool, session_id, None, "command_registry_request", Some(id), "command_registry.decided", Some(&decision.status), review_request(pool, id).await?).await?;
     Ok(())
 }
@@ -727,7 +969,14 @@ async fn current_registry_state(pool: &PgPool, action_id: &str) -> Result<Vec<Va
 }
 
 async fn request_row(pool: &PgPool, id: Uuid) -> Result<sqlx::postgres::PgRow> {
-    Ok(sqlx::query("SELECT * FROM command_registry_requests WHERE id=$1").bind(id).fetch_one(pool).await?)
+    Ok(sqlx::query("SELECT * FROM command_registry_requests WHERE id=$1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|error| match error {
+            sqlx::Error::RowNotFound => RuntimeDomainError::not_found("command_registry_request", id).into(),
+            other => anyhow::Error::from(other),
+        })?)
 }
 
 pub async fn review_request(pool: &PgPool, id: Uuid) -> Result<Value> {
@@ -849,7 +1098,7 @@ async fn validate_decision(
     final_execution_policy: Option<FinalExecutionPolicy>,
     final_command: Option<CommandSeed>,
 ) -> Result<DecisionValidation> {
-    if !matches!(status, "approved" | "denied") { bail!("approval status must be approved or denied"); }
+    if !matches!(status, "approved" | "denied") { return Err(RuntimeDomainError::validation_failed("approval status must be approved or denied").into()); }
     let row = request_row(pool, id).await?;
     let operation: String = row.get("operation");
     let proposed: CommandSeed = serde_json::from_value(row.get("proposed_command"))?;
@@ -862,9 +1111,9 @@ async fn validate_decision(
             packet: json!({"ok": true, "mutation": false, "status": "denied", "requestId": id}),
         });
     }
-    let scope = final_scope.ok_or_else(|| anyhow::anyhow!("approved registry request requires final scope"))?;
-    let policy = final_execution_policy.ok_or_else(|| anyhow::anyhow!("approved registry request requires final execution policy"))?;
-    let command = final_command.ok_or_else(|| anyhow::anyhow!("approved registry request requires final command"))?;
+    let scope = final_scope.ok_or_else(|| RuntimeDomainError::validation_failed("approved registry request requires final scope"))?;
+    let policy = final_execution_policy.ok_or_else(|| RuntimeDomainError::validation_failed("approved registry request requires final execution policy"))?;
+    let command = final_command.ok_or_else(|| RuntimeDomainError::validation_failed("approved registry request requires final command"))?;
     validate_scope(&scope)?;
     validate_execution_policy(&policy)?;
     validate_seed(&command)?;
@@ -927,19 +1176,19 @@ async fn validate_operation_strictness(pool: &PgPool, operation: &str, command: 
 
 async fn apply_request_inner(pool: &PgPool, session_id: Uuid, id: Uuid) -> Result<Value> {
     let row = sqlx::query("SELECT operation, proposed_command, final_scope, final_execution_policy, final_command, approval_status, application_status, approval_request_id FROM command_registry_requests WHERE id=$1").bind(id).fetch_one(pool).await?;
-    if row.get::<String,_>("approval_status") != "approved" { bail!("command registry request must be approved before apply"); }
-    if row.get::<String,_>("application_status") != "pending" { bail!("command registry request already applied or failed"); }
+    if row.get::<String,_>("approval_status") != "approved" { return Err(RuntimeDomainError::conflict("command registry request must be approved before apply").into()); }
+    if row.get::<String,_>("application_status") != "pending" { return Err(RuntimeDomainError::conflict("command registry request already applied or failed").into()); }
     let linked_approval_request_id: Option<Uuid> = row.get("approval_request_id");
     authorize_registry_action(pool, session_id, "command_registry.apply", json!({"requestId": id}), linked_approval_request_id).await?;
     let operation: String = row.get("operation");
     let scope: RegistryScope = serde_json::from_value(row.get::<Option<Value>, _>("final_scope")
-        .ok_or_else(|| anyhow::anyhow!("approved registry request missing final scope"))?)?;
+        .ok_or_else(|| RuntimeDomainError::validation_failed("approved registry request missing final scope"))?)?;
     let policy: FinalExecutionPolicy = serde_json::from_value(row.get::<Option<Value>, _>("final_execution_policy")
-        .ok_or_else(|| anyhow::anyhow!("approved registry request missing final execution policy"))?)?;
+        .ok_or_else(|| RuntimeDomainError::validation_failed("approved registry request missing final execution policy"))?)?;
     validate_scope(&scope)?;
     validate_execution_policy(&policy)?;
     let mut command: CommandSeed = serde_json::from_value(row.get::<Option<Value>, _>("final_command")
-        .ok_or_else(|| anyhow::anyhow!("approved registry request missing final command"))?)?;
+        .ok_or_else(|| RuntimeDomainError::validation_failed("approved registry request missing final command"))?)?;
     let proposed: CommandSeed = serde_json::from_value(row.get("proposed_command"))?;
     let semantic_diff = decision_semantic_diff(pool, &operation, &proposed, &command, &scope, &policy).await?;
     command.execution_policy = policy.decision.clone();
@@ -1007,7 +1256,7 @@ async fn apply_request_inner(pool: &PgPool, session_id: Uuid, id: Uuid) -> Resul
         .execute(pool)
         .await?;
     if updated.rows_affected() != 1 {
-        bail!("command registry request apply status update failed: {id}");
+        return Err(RuntimeDomainError::conflict(format!("command registry request apply status update failed: {id}")).into());
     }
     Ok(json!({"requestId": id, "operation": operation, "finalScope": scope, "finalExecutionPolicy": policy, "actionId": command.action_id, "affectedCommandVersionId": affected_version, "semanticDiff": semantic_diff}))
 }
@@ -1036,7 +1285,7 @@ async fn reject_scoped_conflict(pool: &PgPool, action_id: &str, scope: &Registry
             .await?
             .get::<bool, _>(0);
         if global_exists {
-            bail!("scoped command action conflict: global command already visible for {action_id}");
+            return Err(RuntimeDomainError::conflict(format!("scoped command action conflict: global command already visible for {action_id}")).into());
         }
     } else {
         let project_exists = sqlx::query("SELECT EXISTS (SELECT 1 FROM command_definitions WHERE action_id=$1 AND scope_type='project' AND enabled=true)")
@@ -1045,8 +1294,82 @@ async fn reject_scoped_conflict(pool: &PgPool, action_id: &str, scope: &Registry
             .await?
             .get::<bool, _>(0);
         if project_exists {
-            bail!("scoped command action conflict: project command already visible for {action_id}");
+            return Err(RuntimeDomainError::conflict(format!("scoped command action conflict: project command already visible for {action_id}")).into());
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cache_stable_discovery_tests {
+    use super::*;
+
+    fn command(action: &str, object: &str, method: &str, scope_type: &str, project_key: Option<&str>) -> CommandVersion {
+        CommandVersion {
+            version_id: Uuid::new_v4(),
+            definition_id: Uuid::new_v4(),
+            scope_type: scope_type.to_string(),
+            project_key: project_key.map(ToString::to_string),
+            action_id: action.to_string(),
+            binary_name: "echo".to_string(),
+            candidate_paths: vec![PathBuf::from("/bin/echo")],
+            starlark_object: object.to_string(),
+            starlark_method: method.to_string(),
+            argv_prefix: vec![],
+            default_cwd: ".".to_string(),
+            cwd_policy: "underExecutionRoot".to_string(),
+            env_policy: "empty".to_string(),
+            max_runtime: Some(Duration::from_millis(1000)),
+            output_limit: 4096,
+            mutation_class: "readOnly".to_string(),
+            model_description: format!("{action} model description"),
+            allow_cwd_arg: true,
+            allow_args_arg: true,
+            forbidden_args: vec![],
+            execution_policy: "allow".to_string(),
+            sync_allowed: true,
+            async_allowed: true,
+            end_of_turn_behavior: "terminate".to_string(),
+            stdin_policy: "forbid".to_string(),
+            min_await_ms: 0,
+            max_await_ms: 1000,
+            output_buffer_bytes: 2048,
+            terminate_grace_ms: 100,
+        }
+    }
+
+    #[test]
+    fn execute_code_contract_is_stable_while_command_context_changes() {
+        let one = vec![command("cmd.global.one", "global", "run", "global", None)];
+        let two = vec![
+            command("cmd.global.one", "global", "run", "global", None),
+            command("cmd.project.two", "project", "run", "project", Some("alpha")),
+        ];
+        assert_eq!(stable_execute_code_contract(), stable_execute_code_contract());
+        assert_ne!(command_context_id(&one), command_context_id(&two));
+        let first = runtime_command_context_message(&one, None);
+        let changed = runtime_command_context_message(&two, Some(&first.evidence));
+        let unchanged = runtime_command_context_message(&two, Some(&changed.evidence));
+        assert!(first.evidence.catalog_included);
+        assert!(changed.evidence.catalog_included);
+        assert_eq!(changed.evidence.added_count, 1);
+        assert!(!unchanged.evidence.catalog_included);
+        assert!(unchanged.text.contains("unchanged"));
+        assert_eq!(unchanged.metadata["source"], "runtime_command_context");
+    }
+
+    #[test]
+    fn describe_strings_include_policy_relevant_command_surface() {
+        let commands = vec![command("cmd.global.one", "global", "run", "global", None)];
+        let catalog = describe_catalog(&commands);
+        let object = describe_object(&commands, "global");
+        let method = describe_command(&commands[0]);
+        for text in [catalog, object, method] {
+            assert!(text.contains("cmd.global.one"));
+            assert!(text.contains("version") || text.contains("commandVersionId"));
+            assert!(text.contains("sync"));
+            assert!(text.contains("stdin"));
+            assert!(text.contains("model description"));
+        }
+    }
 }

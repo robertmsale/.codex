@@ -6,29 +6,29 @@ validation_setup_database
 run() { printf '\n$ %s\n' "$*"; "$@"; }
 sql() { psql "$ROBDEX_AGENT_RUNTIME_DATABASE_URL" -Atc "$1"; }
 
-run cargo run --quiet -- init-db
-run cargo run --quiet -- roles import-seeds
-run cargo run --quiet -- roles validate
+run cargo run --quiet --bin robdex-agent-runtime -- init-db
+run cargo run --quiet --bin robdex-agent-runtime -- roles import-seeds
+run cargo run --quiet --bin robdex-agent-runtime -- roles validate
 
-ALLOW_SESSION=$(cargo run --quiet -- sessions new --role runtime-allow)
-DENY_SESSION=$(cargo run --quiet -- sessions new --role runtime-no-rg)
-APPROVAL_SESSION=$(cargo run --quiet -- sessions new --role runtime-approval-rg)
+ALLOW_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow)
+DENY_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-no-rg)
+APPROVAL_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-approval-rg)
 printf '\n[sessions]\nALLOW_SESSION=%s\nDENY_SESSION=%s\nAPPROVAL_SESSION=%s\n' "$ALLOW_SESSION" "$DENY_SESSION" "$APPROVAL_SESSION"
 
-run cargo run --quiet -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/approval-routing.txt", "approval should pause"); output("approval should not execute")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/approval-routing.txt", "approval should pause"); output("approval should not execute")'
 APPROVAL_ID=$(sql "select id from approval_requests where session_id='$APPROVAL_SESSION' and action_name='fs.write' order by created_at desc limit 1")
 printf '\n[approval request]\nAPPROVAL_ID=%s\n' "$APPROVAL_ID"
 printf 'pre_decision_counts='; sql "select jsonb_build_object('approvalRequests', count(*) filter (where event_type='approval.requested'), 'commands', count(*) filter (where event_type='command.completed')) from event_stream where session_id='$APPROVAL_SESSION'"
-run cargo run --quiet -- approvals list | (rg "$APPROVAL_ID" || true)
-run cargo run --quiet -- approvals show "$APPROVAL_ID"
-run cargo run --quiet -- approvals decide "$APPROVAL_ID" --decision denied --reason 'validation denial'
+run cargo run --quiet --bin robdex-agent-runtime -- approvals list | (rg "$APPROVAL_ID" || true)
+run cargo run --quiet --bin robdex-agent-runtime -- approvals show "$APPROVAL_ID"
+run cargo run --quiet --bin robdex-agent-runtime -- approvals decide "$APPROVAL_ID" --decision denied --reason 'validation denial'
 printf 'decision_status='; sql "select ar.status || ' decisions=' || count(ad.id) from approval_requests ar left join approval_decisions ad on ad.request_id=ar.id where ar.id='$APPROVAL_ID' group by ar.status"
 printf 'decided_events='; sql "select count(*) from event_stream where session_id='$APPROVAL_SESSION' and event_type='approval.decided' and status='denied'"
 
-run cargo run --quiet -- send --session "$DENY_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/deny-routing.txt", "deny should not execute"); output("deny should not execute")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$DENY_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/deny-routing.txt", "deny should not execute"); output("deny should not execute")'
 printf '\n[deny no approval]\n'; sql "select jsonb_build_object('approvalRequests', count(*) filter (where event_type='approval.requested'), 'denies', count(*) filter (where event_type='policy.decision' and status='deny'), 'commands', count(*) filter (where event_type='command.completed')) from event_stream where session_id='$DENY_SESSION'"
 
-run cargo run --quiet -- send --session "$ALLOW_SESSION" --message 'Use execute_code with exactly this Starlark source: text = fs.read("Cargo.toml"); matches = cmd["rg"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").sync(); output("allow executes")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$ALLOW_SESSION" --message 'Use execute_code with exactly this Starlark source: text = fs.read("Cargo.toml"); matches = cmd["rg"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").sync(); output("allow executes")'
 printf '\n[allow executes]\n'; sql "select jsonb_build_object('allows', count(*) filter (where event_type='policy.decision' and status='allow'), 'commands', count(*) filter (where event_type='command.completed')) from event_stream where session_id='$ALLOW_SESSION'"
 printf '\n[route decisions]\n'; sql "select jsonb_build_object('allowRoute', count(*) filter (where session_id='$ALLOW_SESSION' and event_type='route.decision'), 'denyRoute', count(*) filter (where session_id='$DENY_SESSION' and event_type='route.decision'), 'approvalRoute', count(*) filter (where session_id='$APPROVAL_SESSION' and event_type='route.decision')) from event_stream"
 
@@ -54,11 +54,11 @@ invalid = dict(base, id="runtime-invalid-route", displayName="Runtime Invalid Ro
 (root/'dynamic-route.json').write_text(json.dumps(route, indent=2)+'\n')
 (root/'invalid-route.json').write_text(json.dumps(invalid, indent=2)+'\n')
 PY
-run cargo run --quiet -- roles import "$TMPDIR/dynamic-target.json"
-run cargo run --quiet -- roles import "$TMPDIR/dynamic-route.json"
-printf 'dynamic_route_imported='; cargo run --quiet -- roles show runtime-dynamic-route | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["routing"]["defaultRecipient"]+" allowed="+",".join(d["routing"]["allowedRecipients"]))'
+run cargo run --quiet --bin robdex-agent-runtime -- roles import "$TMPDIR/dynamic-target.json"
+run cargo run --quiet --bin robdex-agent-runtime -- roles import "$TMPDIR/dynamic-route.json"
+printf 'dynamic_route_imported='; cargo run --quiet --bin robdex-agent-runtime -- roles show runtime-dynamic-route | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["routing"]["defaultRecipient"]+" allowed="+",".join(d["routing"]["allowedRecipients"]))'
 set +e
-INVALID_OUTPUT=$(cargo run --quiet -- roles import "$TMPDIR/invalid-route.json" 2>&1)
+INVALID_OUTPUT=$(cargo run --quiet --bin robdex-agent-runtime -- roles import "$TMPDIR/invalid-route.json" 2>&1)
 INVALID_STATUS=$?
 set -e
 printf 'invalid_route_status=%s\n' "$INVALID_STATUS"

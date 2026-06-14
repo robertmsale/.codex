@@ -7,6 +7,7 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::db;
+use crate::errors::RuntimeDomainError;
 
 pub const DEFAULT_DIMENSIONS: usize = 2560;
 
@@ -320,6 +321,112 @@ pub async fn memory_visible_to_session(pool: &PgPool, session_id: Uuid, memory_i
     .fetch_one(pool)
     .await?;
     Ok(count > 0)
+}
+
+pub async fn memory_exists(pool: &PgPool, memory_id: Uuid) -> Result<bool> {
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM workflow_memories WHERE id=$1)")
+        .bind(memory_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(exists)
+}
+
+pub async fn list_visible_memories(pool: &PgPool, session_id: Uuid) -> Result<Vec<Value>> {
+    let project_key = db::session_project_key(pool, session_id).await?;
+    let rows = sqlx::query(
+        r#"
+        SELECT id, session_id, scope_type, project_key, title, reason, summary, helpful_score, promoted_at
+        FROM workflow_memories
+        WHERE scope_type='global' OR (scope_type='project' AND COALESCE(project_key,'')=COALESCE($1,''))
+        ORDER BY promoted_at DESC
+        LIMIT 200
+        "#,
+    )
+    .bind(project_key.as_deref())
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(memory_row_to_json).collect())
+}
+
+pub async fn show_visible_memory(pool: &PgPool, session_id: Uuid, memory_id: Uuid) -> Result<Value> {
+    if !memory_visible_to_session(pool, session_id, memory_id).await? {
+        return Err(RuntimeDomainError::forbidden(format!("workflow memory is not visible to session: {memory_id}"), serde_json::json!({"entity":"workflow_memory","id": memory_id, "sessionId": session_id})).into());
+    }
+    let row = sqlx::query(
+        r#"
+        SELECT id, session_id, scope_type, project_key, title, reason, summary, helpful_score, promoted_at
+        FROM workflow_memories
+        WHERE id=$1
+        "#,
+    )
+    .bind(memory_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(memory_row_to_json(row))
+}
+
+pub async fn list_memory_events(pool: &PgPool, session_id: Uuid, memory_id: Uuid) -> Result<Vec<Value>> {
+    if !memory_visible_to_session(pool, session_id, memory_id).await? {
+        return Err(RuntimeDomainError::forbidden(format!("workflow memory is not visible to session: {memory_id}"), serde_json::json!({"entity":"workflow_memory","id": memory_id, "sessionId": session_id})).into());
+    }
+    let rows = sqlx::query(
+        r#"
+        SELECT id, session_id, turn_id, script_run_id, memory_id, event_type, payload, created_at
+        FROM workflow_memory_events
+        WHERE memory_id=$1
+        ORDER BY created_at ASC
+        "#,
+    )
+    .bind(memory_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(memory_event_row_to_json).collect())
+}
+
+pub async fn record_visible_feedback(
+    pool: &PgPool,
+    session_id: Uuid,
+    memory_id: Uuid,
+    feedback: &str,
+    payload: Value,
+) -> Result<()> {
+    if !memory_visible_to_session(pool, session_id, memory_id).await? {
+        return Err(RuntimeDomainError::forbidden(format!("workflow memory is not visible to session: {memory_id}"), serde_json::json!({"entity":"workflow_memory","id": memory_id, "sessionId": session_id})).into());
+    }
+    let event_type = match feedback {
+        "attempted" => "workflow_memory.mark_attempted",
+        "notHelpful" => "workflow_memory.mark_not_helpful",
+        "helpful" => "workflow_memory.helpful",
+        other => return Err(RuntimeDomainError::validation_failed(format!("unsupported workflow memory feedback: {other}")).into()),
+    };
+    insert_memory_event(pool, session_id, None, None, Some(memory_id), event_type, payload).await
+}
+
+fn memory_row_to_json(row: sqlx::postgres::PgRow) -> Value {
+    json!({
+        "id": row.get::<Uuid, _>("id"),
+        "sessionId": row.get::<Uuid, _>("session_id"),
+        "scopeType": row.get::<String, _>("scope_type"),
+        "projectKey": row.get::<Option<String>, _>("project_key"),
+        "title": row.get::<String, _>("title"),
+        "reason": row.get::<String, _>("reason"),
+        "summary": row.get::<String, _>("summary"),
+        "helpfulScore": row.get::<f64, _>("helpful_score"),
+        "promotedAt": row.get::<chrono::DateTime<chrono::Utc>, _>("promoted_at"),
+    })
+}
+
+fn memory_event_row_to_json(row: sqlx::postgres::PgRow) -> Value {
+    json!({
+        "id": row.get::<Uuid, _>("id"),
+        "sessionId": row.get::<Uuid, _>("session_id"),
+        "turnId": row.get::<Option<Uuid>, _>("turn_id"),
+        "scriptRunId": row.get::<Option<Uuid>, _>("script_run_id"),
+        "memoryId": row.get::<Option<Uuid>, _>("memory_id"),
+        "eventType": row.get::<String, _>("event_type"),
+        "payload": row.get::<Value, _>("payload"),
+        "createdAt": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
+    })
 }
 
 async fn latest_prior_non_memory_script(

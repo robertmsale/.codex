@@ -5,6 +5,33 @@ use serde_json::Value;
 
 pub type Watermark = i64;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiErrorPacket {
+    pub error: ApiErrorBody,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiErrorBody {
+    pub code: String,
+    pub message: String,
+    #[serde(default)]
+    pub details: Value,
+}
+
+impl ApiErrorPacket {
+    pub fn new(code: impl Into<String>, message: impl Into<String>, details: Value) -> Self {
+        Self {
+            error: ApiErrorBody {
+                code: code.into(),
+                message: message.into(),
+                details,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerStatusProjection {
@@ -82,6 +109,8 @@ pub struct PendingApprovalSummary {
     pub action_name: String,
     pub required_approver_kind: String,
     pub status: String,
+    pub can_decide: bool,
+    pub can_resume: bool,
     pub input_context: Value,
     pub created_at: Option<String>,
 }
@@ -148,6 +177,277 @@ pub struct RuntimeProjection {
     pub workflow_memories: Vec<WorkflowMemorySummary>,
     pub resync_required: Option<ResyncRequiredState>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GuiConnectionState {
+    Disconnected,
+    Connecting,
+    Hydrating,
+    Streaming,
+    Reconnecting,
+    ShuttingDown,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GuiSelectedView {
+    Sessions,
+    SessionDetail,
+    Approvals,
+    Roles,
+    CommandRegistry,
+    WorkflowMemory,
+    Operations,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiOperationState {
+    pub operation_id: String,
+    pub operation: GuiOperationName,
+    pub status: GuiOperationStatus,
+    pub target_id: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub error: Option<ApiErrorPacket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiControllerState {
+    pub connection_state: GuiConnectionState,
+    pub selected_session_id: Option<String>,
+    pub selected_view: GuiSelectedView,
+    pub active_operations: Vec<GuiOperationState>,
+    pub transient_errors: Vec<ApiErrorPacket>,
+    pub resync_required: Option<ResyncRequiredState>,
+    pub pending_rehydrate: bool,
+    pub pending_reconnect: bool,
+    pub draft_inputs: BTreeMap<String, String>,
+}
+
+impl Default for GuiControllerState {
+    fn default() -> Self {
+        Self {
+            connection_state: GuiConnectionState::Disconnected,
+            selected_session_id: None,
+            selected_view: GuiSelectedView::Sessions,
+            active_operations: Vec::new(),
+            transient_errors: Vec::new(),
+            resync_required: None,
+            pending_rehydrate: false,
+            pending_reconnect: false,
+            draft_inputs: BTreeMap::new(),
+        }
+    }
+}
+
+impl GuiControllerState {
+    pub fn record_resync_required(&mut self, reason: impl Into<String>, expected_watermark: Option<Watermark>, received_watermark: Option<Watermark>) {
+        self.resync_required = Some(ResyncRequiredState {
+            required: true,
+            reason: reason.into(),
+            expected_watermark,
+            received_watermark,
+        });
+        self.pending_rehydrate = true;
+        self.pending_reconnect = true;
+        self.connection_state = GuiConnectionState::Reconnecting;
+    }
+
+    pub fn select_session(&mut self, session_id: Option<String>) -> GuiOperationExpectation {
+        self.selected_session_id = session_id;
+        self.pending_rehydrate = true;
+        self.pending_reconnect = true;
+        GuiOperationExpectation::RehydrateAndReconnect
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GuiOperationStatus {
+    Pending,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GuiOperationExpectation {
+    WaitForDelta,
+    Rehydrate,
+    RehydrateAndReconnect,
+    UpdateLocalState,
+    DirectResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GuiOperationName {
+    Connect,
+    Hydrate,
+    Rehydrate,
+    Disconnect,
+    SelectSession,
+    CreateSession,
+    SendMessage,
+    CloseSession,
+    ArchiveSession,
+    ForkSession,
+    DecideApproval,
+    ResumeApproval,
+    ListCommandRegistry,
+    ShowCommand,
+    ListCommandRegistryRequests,
+    ShowCommandRegistryRequest,
+    PreviewCommandRegistryRequest,
+    DecideCommandRegistryRequest,
+    ApplyCommandRegistryRequest,
+    WorkflowMemoryFeedback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "operation", content = "request", rename_all = "camelCase")]
+pub enum GuiOperationRequest {
+    Connect { base_url: String, selected_session_id: Option<String> },
+    Hydrate { selected_session_id: Option<String> },
+    Rehydrate { selected_session_id: Option<String> },
+    Disconnect,
+    SelectSession { session_id: Option<String> },
+    CreateSession { role: String, project: Option<String>, workdir: Option<String>, worktree_root: Option<String>, title: Option<String>, name: Option<String> },
+    SendMessage { session_id: String, message: String },
+    CloseSession { session_id: String, reason: Option<String> },
+    ArchiveSession { session_id: String },
+    ForkSession { session_id: String, at_turn: String },
+    DecideApproval { approval_id: String, decision: String, reason: Option<String> },
+    ResumeApproval { approval_id: String },
+    ListCommandRegistry { session_id: Option<String>, project_key: Option<String> },
+    ShowCommand { action_id: String, session_id: Option<String>, project_key: Option<String> },
+    ListCommandRegistryRequests,
+    ShowCommandRegistryRequest { request_id: String },
+    PreviewCommandRegistryRequest { request_id: String, decision: CommandRegistryDecisionInput },
+    DecideCommandRegistryRequest { request_id: String, decision: CommandRegistryDecisionInput },
+    ApplyCommandRegistryRequest { request_id: String, session_id: String },
+    WorkflowMemoryFeedback { memory_id: String, session_id: String, feedback: String, payload: Value },
+}
+
+impl GuiOperationRequest {
+    pub fn name(&self) -> GuiOperationName {
+        match self {
+            Self::Connect { .. } => GuiOperationName::Connect,
+            Self::Hydrate { .. } => GuiOperationName::Hydrate,
+            Self::Rehydrate { .. } => GuiOperationName::Rehydrate,
+            Self::Disconnect => GuiOperationName::Disconnect,
+            Self::SelectSession { .. } => GuiOperationName::SelectSession,
+            Self::CreateSession { .. } => GuiOperationName::CreateSession,
+            Self::SendMessage { .. } => GuiOperationName::SendMessage,
+            Self::CloseSession { .. } => GuiOperationName::CloseSession,
+            Self::ArchiveSession { .. } => GuiOperationName::ArchiveSession,
+            Self::ForkSession { .. } => GuiOperationName::ForkSession,
+            Self::DecideApproval { .. } => GuiOperationName::DecideApproval,
+            Self::ResumeApproval { .. } => GuiOperationName::ResumeApproval,
+            Self::ListCommandRegistry { .. } => GuiOperationName::ListCommandRegistry,
+            Self::ShowCommand { .. } => GuiOperationName::ShowCommand,
+            Self::ListCommandRegistryRequests => GuiOperationName::ListCommandRegistryRequests,
+            Self::ShowCommandRegistryRequest { .. } => GuiOperationName::ShowCommandRegistryRequest,
+            Self::PreviewCommandRegistryRequest { .. } => GuiOperationName::PreviewCommandRegistryRequest,
+            Self::DecideCommandRegistryRequest { .. } => GuiOperationName::DecideCommandRegistryRequest,
+            Self::ApplyCommandRegistryRequest { .. } => GuiOperationName::ApplyCommandRegistryRequest,
+            Self::WorkflowMemoryFeedback { .. } => GuiOperationName::WorkflowMemoryFeedback,
+        }
+    }
+
+    pub fn expected_projection_effect(&self) -> GuiOperationExpectation {
+        match self {
+            Self::Connect { .. } | Self::Hydrate { .. } | Self::Rehydrate { .. } => GuiOperationExpectation::Rehydrate,
+            Self::Disconnect => GuiOperationExpectation::UpdateLocalState,
+            Self::SelectSession { .. } => GuiOperationExpectation::RehydrateAndReconnect,
+            Self::CreateSession { .. }
+            | Self::SendMessage { .. }
+            | Self::CloseSession { .. }
+            | Self::ArchiveSession { .. }
+            | Self::ForkSession { .. }
+            | Self::DecideApproval { .. }
+            | Self::ResumeApproval { .. }
+            | Self::DecideCommandRegistryRequest { .. }
+            | Self::ApplyCommandRegistryRequest { .. }
+            | Self::WorkflowMemoryFeedback { .. } => GuiOperationExpectation::WaitForDelta,
+            Self::ListCommandRegistry { .. }
+            | Self::ShowCommand { .. }
+            | Self::ListCommandRegistryRequests
+            | Self::ShowCommandRegistryRequest { .. }
+            | Self::PreviewCommandRegistryRequest { .. } => GuiOperationExpectation::DirectResult,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandRegistryDecisionInput {
+    pub session_id: Option<String>,
+    pub status: String,
+    pub final_scope: Option<String>,
+    pub final_project: Option<String>,
+    pub final_policy: Option<String>,
+    pub final_command: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandRegistryRequestSummary {
+    pub id: String,
+    pub operation: String,
+    pub action_id: String,
+    pub status: String,
+    pub apply_status: String,
+    pub final_scope_type: Option<String>,
+    pub final_project_key: Option<String>,
+    pub final_policy: Option<String>,
+    pub can_preview: bool,
+    pub can_decide: bool,
+    pub can_apply: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiOperationResult {
+    pub operation_id: String,
+    pub operation: GuiOperationName,
+    pub expectation: GuiOperationExpectation,
+    pub outcome: GuiOperationOutcome,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "status", content = "payload", rename_all = "camelCase")]
+pub enum GuiOperationOutcome {
+    Accepted { entity_id: Option<String> },
+    ProjectionUpdated { watermark: Watermark },
+    DirectValue { value: Value },
+    CommandRegistryRequests { requests: Vec<CommandRegistryRequestSummary> },
+    Error { error: ApiErrorPacket },
+}
+
+pub const DART_FORBIDDEN_RESPONSIBILITIES: &[&str] = &[
+    "sessionLifecycleStatus",
+    "approvalAvailability",
+    "commandVisibility",
+    "commandPolicy",
+    "roleStatus",
+    "processStatus",
+    "timelineInterpretation",
+    "semanticOperationSuccess",
+];
+
+pub const DART_ALLOWED_EPHEMERAL_RESPONSIBILITIES: &[&str] = &[
+    "textFields",
+    "focus",
+    "scrollPosition",
+    "hoverPressState",
+    "animations",
+    "localLayout",
+];
 
 impl Default for RuntimeProjection {
     fn default() -> Self {
@@ -420,6 +720,7 @@ pub fn timeline_by_sequence(items: Vec<TimelineItem>) -> Vec<TimelineItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn session(id: &str) -> SessionListItem {
         SessionListItem {
@@ -559,6 +860,8 @@ mod tests {
             action_name: "fs.write".to_string(),
             required_approver_kind: "owner".to_string(),
             status: "pending".to_string(),
+            can_decide: true,
+            can_resume: false,
             input_context: Value::Null,
             created_at: None,
         };
@@ -672,5 +975,183 @@ mod tests {
             right.apply_delta(delta);
         }
         assert_eq!(left, right);
+    }
+
+    #[test]
+    fn gui_controller_state_is_local_only_and_separate_from_projection() {
+        let mut projection = RuntimeProjection::default();
+        projection.apply_delta(delta(1, RuntimeDeltaKind::SessionUpsert { session: session("session-1") }));
+        let mut local = GuiControllerState::default();
+        local.draft_inputs.insert("session-1".to_string(), "draft message".to_string());
+        local.active_operations.push(GuiOperationState {
+            operation_id: "op-1".to_string(),
+            operation: GuiOperationName::SendMessage,
+            status: GuiOperationStatus::Pending,
+            target_id: Some("session-1".to_string()),
+            started_at: None,
+            completed_at: None,
+            error: None,
+        });
+        let projection_json = serde_json::to_value(&projection).expect("projection json");
+        let local_json = serde_json::to_value(&local).expect("local json");
+        assert!(projection_json.get("draftInputs").is_none());
+        assert!(projection_json.get("activeOperations").is_none());
+        assert_eq!(local_json["draftInputs"]["session-1"], "draft message");
+        assert_eq!(projection.sessions[0].id, "session-1");
+    }
+
+    #[test]
+    fn selected_session_switch_requires_rehydrate_and_reconnect() {
+        let mut local = GuiControllerState::default();
+        let effect = local.select_session(Some("session-2".to_string()));
+        assert_eq!(effect, GuiOperationExpectation::RehydrateAndReconnect);
+        assert_eq!(local.selected_session_id.as_deref(), Some("session-2"));
+        assert!(local.pending_rehydrate);
+        assert!(local.pending_reconnect);
+
+        let request = GuiOperationRequest::SelectSession {
+            session_id: Some("session-2".to_string()),
+        };
+        assert_eq!(request.expected_projection_effect(), GuiOperationExpectation::RehydrateAndReconnect);
+    }
+
+    #[test]
+    fn operation_contracts_serde_and_error_packets_are_typed() {
+        let request = GuiOperationRequest::DecideApproval {
+            approval_id: "approval-1".to_string(),
+            decision: "approved".to_string(),
+            reason: Some("ok".to_string()),
+        };
+        let encoded = serde_json::to_string(&request).expect("request json");
+        let decoded: GuiOperationRequest = serde_json::from_str(&encoded).expect("request decode");
+        assert_eq!(decoded.name(), GuiOperationName::DecideApproval);
+        assert_eq!(decoded.expected_projection_effect(), GuiOperationExpectation::WaitForDelta);
+
+        let error = ApiErrorPacket::new("conflict", "approval already decided", json!({"entity":"approval","id":"approval-1"}));
+        let result = GuiOperationResult {
+            operation_id: "op-approval".to_string(),
+            operation: GuiOperationName::DecideApproval,
+            expectation: GuiOperationExpectation::WaitForDelta,
+            outcome: GuiOperationOutcome::Error { error: error.clone() },
+        };
+        let value = serde_json::to_value(&result).expect("result json");
+        assert_eq!(value["outcome"]["status"], "error");
+        assert_eq!(value["outcome"]["payload"]["error"]["error"]["code"], "conflict");
+        let round_trip: GuiOperationResult = serde_json::from_value(value).expect("result decode");
+        assert_eq!(round_trip, result);
+    }
+
+    #[test]
+    fn resync_required_is_surfaced_to_gui_local_state() {
+        let mut projection = RuntimeProjection::default();
+        projection.apply_delta(delta(1, RuntimeDeltaKind::SessionUpsert { session: session("session-1") }));
+        assert_eq!(projection.apply_delta(delta(3, RuntimeDeltaKind::SessionUpsert { session: session("session-2") })), ApplyOutcome::ResyncRequired);
+        let resync = projection.resync_required.clone().expect("projection resync");
+        let mut local = GuiControllerState::default();
+        local.record_resync_required(resync.reason.clone(), resync.expected_watermark, resync.received_watermark);
+        assert!(local.pending_rehydrate);
+        assert!(local.pending_reconnect);
+        assert_eq!(local.connection_state, GuiConnectionState::Reconnecting);
+        assert_eq!(local.resync_required.as_ref().map(|state| state.reason.as_str()), Some("delta watermark gap detected"));
+    }
+
+    #[test]
+    fn snapshot_plus_deltas_converges_through_reducer() {
+        let mut from_snapshot = RuntimeProjection::default();
+        let deltas = vec![
+            delta(1, RuntimeDeltaKind::SessionUpsert { session: session("session-1") }),
+            delta(2, RuntimeDeltaKind::ApprovalUpsert { approval: PendingApprovalSummary {
+                id: "approval-1".to_string(),
+                session_id: "session-1".to_string(),
+                turn_id: None,
+                action_name: "fs.write".to_string(),
+                required_approver_kind: "owner".to_string(),
+                status: "pending".to_string(),
+                can_decide: true,
+                can_resume: false,
+                input_context: json!({"policy": {"decision": "approvalRequired"}}),
+                created_at: None,
+            }}),
+        ];
+        assert_eq!(from_snapshot.apply_deltas(deltas), ApplyOutcome::Applied);
+
+        let hydrated = RuntimeProjection {
+            watermark: 2,
+            sessions: vec![session("session-1")],
+            pending_approvals: from_snapshot.pending_approvals.clone(),
+            ..RuntimeProjection::default()
+        };
+        assert_eq!(from_snapshot, hydrated);
+    }
+
+    #[test]
+    fn command_registry_request_contract_exposes_gui_enablement_without_policy_inference() {
+        let summary = CommandRegistryRequestSummary {
+            id: "request-1".to_string(),
+            operation: "add".to_string(),
+            action_id: "cmd.rg.run".to_string(),
+            status: "approved".to_string(),
+            apply_status: "pending".to_string(),
+            final_scope_type: Some("global".to_string()),
+            final_project_key: None,
+            final_policy: Some("allow".to_string()),
+            can_preview: false,
+            can_decide: false,
+            can_apply: true,
+        };
+        let result = GuiOperationResult {
+            operation_id: "op-list".to_string(),
+            operation: GuiOperationName::ListCommandRegistryRequests,
+            expectation: GuiOperationExpectation::DirectResult,
+            outcome: GuiOperationOutcome::CommandRegistryRequests { requests: vec![summary.clone()] },
+        };
+        let value = serde_json::to_value(&result).expect("operation result");
+        assert_eq!(value["outcome"]["payload"]["requests"][0]["canApply"], true);
+        assert_eq!(value["outcome"]["payload"]["requests"][0]["finalPolicy"], "allow");
+        assert!(DART_FORBIDDEN_RESPONSIBILITIES.contains(&"commandPolicy"));
+        assert!(DART_FORBIDDEN_RESPONSIBILITIES.contains(&"approvalAvailability"));
+        assert!(DART_ALLOWED_EPHEMERAL_RESPONSIBILITIES.contains(&"textFields"));
+        let decoded: GuiOperationResult = serde_json::from_value(value).expect("decode result");
+        assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn pending_approval_summary_exposes_control_enablement_without_raw_payload_inference() {
+        let approval = PendingApprovalSummary {
+            id: "approval-1".to_string(),
+            session_id: "session-1".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            action_name: "fs.write".to_string(),
+            required_approver_kind: "owner".to_string(),
+            status: "pending".to_string(),
+            can_decide: true,
+            can_resume: false,
+            input_context: json!({
+                "policy": {"decision": "approvalRequired"},
+                "rawDiagnosticOnly": {"nested": ["not", "a", "control", "contract"]}
+            }),
+            created_at: None,
+        };
+        let mut projection = RuntimeProjection::default();
+        projection.apply_delta(delta(1, RuntimeDeltaKind::ApprovalUpsert { approval: approval.clone() }));
+        let value = serde_json::to_value(&projection.pending_approvals[0]).expect("approval json");
+        assert_eq!(value["canDecide"], true);
+        assert_eq!(value["canResume"], false);
+        assert_eq!(value["requiredApproverKind"], "owner");
+        assert!(value.get("inputContext").is_some(), "raw context remains available for inspection panes");
+        assert!(DART_FORBIDDEN_RESPONSIBILITIES.contains(&"approvalAvailability"));
+
+        let decoded: PendingApprovalSummary = serde_json::from_value(value).expect("approval decode");
+        assert_eq!(decoded, approval);
+
+        let resumable = PendingApprovalSummary {
+            status: "approved".to_string(),
+            can_decide: false,
+            can_resume: true,
+            ..approval
+        };
+        let resumable_value = serde_json::to_value(&resumable).expect("resumable approval json");
+        assert_eq!(resumable_value["canDecide"], false);
+        assert_eq!(resumable_value["canResume"], true);
     }
 }
