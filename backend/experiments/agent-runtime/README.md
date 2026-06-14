@@ -123,10 +123,21 @@ ws://127.0.0.1:8765/state/ws?after=<watermark>&selectedSessionId=<uuid>
 
 The server sends an initial `hello` message with the current watermark, then
 streams serde-compatible `RuntimeDelta` values derived from Postgres
-`event_stream` rows through the shared projection crate. If the requested
-watermark cannot be continued safely, the server sends an explicit
-`resyncRequired` message. Clients should hydrate with `/state/snapshot` before
-applying deltas and should rehydrate when reducer state reports
+`event_stream` rows through the shared projection crate. Each event-stream row
+always produces a `TimelineAppend` delta for timeline rendering. The runtime
+server adapter also emits semantic deltas from the same row when the current DB
+state can be mapped to a projection entity: session create/archive/close,
+turn/tool/script/process status, approval pending/removal, role changes,
+command-registry changes, and workflow-memory summaries/events. When one
+event-stream row produces multiple deltas, the server sends them in stable
+order with the same row watermark: timeline append first, then semantic entity
+deltas. Clients must apply all deltas in arrival order with the shared reducer;
+same-watermark semantic deltas are part of the same event row and must not force
+a snapshot refresh.
+
+If the requested watermark cannot be continued safely, the server sends an
+explicit `resyncRequired` message. Clients should hydrate with `/state/snapshot`
+before applying deltas and should rehydrate when reducer state reports
 `resyncRequired`.
 
 Minimal live-server smoke with `gpt-5.4-mini` is intentionally separate from

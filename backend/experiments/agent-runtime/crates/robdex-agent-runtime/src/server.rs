@@ -344,6 +344,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Method, Request};
+    use robdex_agent_runtime_projection::RuntimeProjection;
     use tokio_tungstenite::connect_async;
     use tower::ServiceExt;
 
@@ -400,6 +401,34 @@ mod tests {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("body");
         let value = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).expect("json") };
         (status, value)
+    }
+
+    async fn next_delta(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>) -> RuntimeDelta {
+        loop {
+            let message = ws.next().await.expect("ws next").expect("ws message");
+            let text = message.into_text().expect("text");
+            let value: Value = serde_json::from_str(&text).expect("json");
+            if value["type"] == "delta" {
+                return serde_json::from_value(value["delta"].clone()).expect("runtime delta");
+            }
+        }
+    }
+
+    async fn apply_until<F>(
+        ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        projection: &mut RuntimeProjection,
+        mut predicate: F,
+    ) where
+        F: FnMut(&RuntimeDelta, &RuntimeProjection) -> bool,
+    {
+        for _ in 0..40 {
+            let delta = next_delta(ws).await;
+            projection.apply_delta(delta.clone());
+            if predicate(&delta, projection) {
+                return;
+            }
+        }
+        panic!("predicate was not satisfied by websocket deltas");
     }
 
     #[tokio::test]
@@ -569,6 +598,161 @@ mod tests {
             }
         }
         assert!(saw_created, "websocket did not stream session.created event_stream delta");
+        server.abort();
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn deterministic_websocket_semantic_session_deltas_update_snapshot_projection() {
+        let test_db = validation_db().await;
+        let mut client_projection = projection::build_runtime_projection_snapshot(&test_db.pool, None)
+            .await
+            .expect("initial snapshot");
+        let after = client_projection.watermark;
+        let state = ServerState::new(test_db.pool.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.expect("serve");
+        });
+        let (mut ws, _) = connect_async(format!("ws://{addr}/state/ws?after={after}"))
+            .await
+            .expect("connect ws");
+        let _hello = ws.next().await.expect("hello").expect("hello message");
+
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg")
+            .await
+            .expect("role");
+        let session_id = db::new_session(
+            &test_db.pool,
+            &role,
+            Some("semantic-session"),
+            ".",
+            Some("."),
+            Some("Semantic session"),
+            Some("semantic-session"),
+        )
+        .await
+        .expect("new session");
+
+        let mut saw_timeline_for_create = false;
+        apply_until(&mut ws, &mut client_projection, |delta, projection| {
+            saw_timeline_for_create |= matches!(&delta.kind, RuntimeDeltaKind::TimelineAppend { item } if item.event_type == "session.created" && item.session_id.as_deref() == Some(&session_id.to_string()));
+            projection.sessions.iter().any(|session| session.id == session_id.to_string())
+        })
+        .await;
+        assert!(saw_timeline_for_create);
+
+        db::archive_session(&test_db.pool, session_id).await.expect("archive");
+        apply_until(&mut ws, &mut client_projection, |_delta, projection| {
+            projection.sessions.iter().all(|session| session.id != session_id.to_string())
+        })
+        .await;
+
+        db::close_session(&test_db.pool, session_id, "semantic close", 0)
+            .await
+            .expect("close");
+        apply_until(&mut ws, &mut client_projection, |_delta, projection| {
+            projection
+                .sessions
+                .iter()
+                .any(|session| session.id == session_id.to_string() && session.status == "closed")
+        })
+        .await;
+
+        server.abort();
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn deterministic_websocket_semantic_approval_deltas_update_snapshot_projection() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg")
+            .await
+            .expect("role");
+        let session_id = db::new_session(
+            &test_db.pool,
+            &role,
+            Some("semantic-approval"),
+            ".",
+            Some("."),
+            Some("Semantic approval"),
+            Some("semantic-approval"),
+        )
+        .await
+        .expect("new session");
+        let mut client_projection = projection::build_runtime_projection_snapshot(&test_db.pool, Some(session_id))
+            .await
+            .expect("initial snapshot");
+        let after = client_projection.watermark;
+        let state = ServerState::new(test_db.pool.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.expect("serve");
+        });
+        let (mut ws, _) = connect_async(format!("ws://{addr}/state/ws?after={after}&selectedSessionId={session_id}"))
+            .await
+            .expect("connect ws");
+        let _hello = ws.next().await.expect("hello").expect("hello message");
+
+        let approval_id = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO approval_requests (
+                id, session_id, turn_id, action_name, requested_by_role, input_context,
+                required_approver_kind, status
+            ) VALUES ($1, $2, NULL, 'fs.write', '{}'::jsonb, '{"action":"fs.write"}'::jsonb, 'owner', 'pending')
+            "#,
+        )
+        .bind(approval_id)
+        .bind(session_id)
+        .execute(&test_db.pool)
+        .await
+        .expect("insert approval");
+        db::append_event(
+            &test_db.pool,
+            session_id,
+            None,
+            "approval",
+            Some(approval_id),
+            "approval.requested",
+            Some("pending"),
+            json!({"requestId": approval_id, "action": "fs.write"}),
+        )
+        .await
+        .expect("approval requested event");
+
+        let mut saw_timeline_for_approval = false;
+        apply_until(&mut ws, &mut client_projection, |delta, projection| {
+            saw_timeline_for_approval |= matches!(&delta.kind, RuntimeDeltaKind::TimelineAppend { item } if item.event_type == "approval.requested");
+            projection.pending_approvals.iter().any(|approval| approval.id == approval_id.to_string())
+        })
+        .await;
+        assert!(saw_timeline_for_approval);
+
+        sqlx::query("UPDATE approval_requests SET status = 'denied', completed_at = now() WHERE id = $1")
+            .bind(approval_id)
+            .execute(&test_db.pool)
+            .await
+            .expect("deny approval");
+        db::append_event(
+            &test_db.pool,
+            session_id,
+            None,
+            "approval",
+            Some(approval_id),
+            "approval.decided",
+            Some("denied"),
+            json!({"requestId": approval_id, "decision": "denied"}),
+        )
+        .await
+        .expect("approval decided event");
+        apply_until(&mut ws, &mut client_projection, |_delta, projection| {
+            projection.pending_approvals.iter().all(|approval| approval.id != approval_id.to_string())
+        })
+        .await;
+
         server.abort();
         test_db.cleanup().await;
     }

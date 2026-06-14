@@ -68,16 +68,161 @@ pub async fn build_projection_deltas_after(
     let mut deltas = Vec::new();
     let mut previous = after;
     for row in rows {
-        let item = timeline_item_from_row(&row);
-        let watermark = item.sequence;
-        deltas.push(RuntimeDelta {
-            watermark,
-            previous_watermark: Some(previous),
-            kind: RuntimeDeltaKind::TimelineAppend { item },
-        });
-        previous = watermark;
+        let mut row_deltas = projection_deltas_from_event_row(pool, &row, previous).await?;
+        if let Some(last) = row_deltas.last() {
+            previous = last.watermark;
+        }
+        deltas.append(&mut row_deltas);
     }
     Ok(deltas)
+}
+
+async fn projection_deltas_from_event_row(
+    pool: &PgPool,
+    row: &sqlx::postgres::PgRow,
+    previous: i64,
+) -> Result<Vec<RuntimeDelta>> {
+    let item = timeline_item_from_row(row);
+    let watermark = item.sequence;
+    let entity_id = item.entity_id.clone();
+    let event_type = item.event_type.clone();
+    let status = item.status.clone();
+    let payload = item.payload.clone();
+    let mut deltas = vec![RuntimeDelta {
+        watermark,
+        previous_watermark: Some(previous),
+        kind: RuntimeDeltaKind::TimelineAppend { item: item.clone() },
+    }];
+
+    match event_type.as_str() {
+        "session.created" => {
+            if let Some(id) = uuid_from_option(entity_id.as_deref())
+                && let Some(session) = session_list_item(pool, id).await?
+            {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SessionUpsert { session }));
+            }
+        }
+        "session.archived" => {
+            if let Some(id) = uuid_from_option(entity_id.as_deref()) {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SessionArchive {
+                    session_id: id.to_string(),
+                    archived_at: None,
+                }));
+            }
+        }
+        "session.closed" => {
+            if let Some(id) = uuid_from_option(entity_id.as_deref()) {
+                if let Some(session) = session_list_item(pool, id).await? {
+                    deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SessionUpsert { session }));
+                }
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SessionClose {
+                    session_id: id.to_string(),
+                    closed_at: None,
+                }));
+            }
+        }
+        "turn.started" | "turn.completed" => {
+            if let Some(id) = uuid_from_option(entity_id.as_deref())
+                && let Some(status) = status
+            {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::TurnStatusChanged {
+                    turn_id: id.to_string(),
+                    status,
+                }));
+            }
+        }
+        "tool.started" | "tool.completed" => {
+            if let Some(id) = uuid_from_option(entity_id.as_deref())
+                && let Some(status) = status
+            {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::ToolStatusChanged {
+                    tool_call_id: id.to_string(),
+                    status,
+                }));
+            }
+        }
+        "script.started" | "script.completed" => {
+            if let Some(id) = uuid_from_option(entity_id.as_deref())
+                && let Some(status) = status
+            {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::ScriptStatusChanged {
+                    script_run_id: id.to_string(),
+                    status,
+                }));
+            }
+        }
+        event if event.starts_with("process.") => {
+            if let Some(id) = uuid_from_option(entity_id.as_deref())
+                && let Some(status) = status
+            {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::ProcessStatusChanged {
+                    process_id: id.to_string(),
+                    status,
+                }));
+            }
+        }
+        "approval.requested" => {
+            if let Some(id) = uuid_from_option(entity_id.as_deref())
+                && let Some(approval) = pending_approval_summary(pool, id).await?
+            {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::ApprovalUpsert { approval }));
+            }
+        }
+        "approval.decided" | "approval.resume.started" | "approval.resume.completed" | "approval.resume.failed" => {
+            if let Some(id) = uuid_from_option(entity_id.as_deref()) {
+                match pending_approval_summary(pool, id).await? {
+                    Some(approval) => deltas.push(same_row_delta(watermark, RuntimeDeltaKind::ApprovalUpsert { approval })),
+                    None => deltas.push(same_row_delta(watermark, RuntimeDeltaKind::ApprovalRemove { approval_id: id.to_string() })),
+                }
+            }
+        }
+        "role.created" | "role.updated" | "role.imported" | "role.activated" | "role.unarchived" => {
+            if let Some(role_id) = payload.get("roleId").and_then(Value::as_str)
+                && let Some(role) = role_summary(pool, role_id).await?
+            {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::RoleUpsert { role }));
+            }
+        }
+        "role.archived" => {
+            if let Some(role_id) = payload.get("roleId").and_then(Value::as_str) {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::RoleArchive {
+                    role_id: role_id.to_string(),
+                    archived_at: None,
+                }));
+            }
+        }
+        "command_registry.applied" | "command_registry.decided" | "command_registry.requested" => {
+            if let Some(command) = command_summary_for_event(pool, &payload).await? {
+                if command.enabled {
+                    deltas.push(same_row_delta(watermark, RuntimeDeltaKind::CommandRegistryUpsert { command }));
+                } else {
+                    deltas.push(same_row_delta(watermark, RuntimeDeltaKind::CommandRegistryDisable { command_id: command.id }));
+                }
+            }
+        }
+        event if event.starts_with("workflow_memory.") => {
+            if let Some(id) = uuid_from_option(entity_id.as_deref())
+                && let Some(memory) = workflow_memory_summary(pool, id).await?
+            {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::WorkflowMemoryUpsert { memory }));
+            }
+            deltas.push(same_row_delta(watermark, RuntimeDeltaKind::WorkflowMemoryEvent { item }));
+        }
+        _ => {}
+    }
+    Ok(deltas)
+}
+
+fn same_row_delta(watermark: i64, kind: RuntimeDeltaKind) -> RuntimeDelta {
+    RuntimeDelta {
+        watermark,
+        previous_watermark: None,
+        kind,
+    }
+}
+
+fn uuid_from_option(value: Option<&str>) -> Option<Uuid> {
+    value.and_then(|value| Uuid::parse_str(value).ok())
 }
 
 pub async fn event_stream_can_continue_after(
@@ -143,6 +288,34 @@ async fn session_list_items(pool: &PgPool) -> Result<Vec<SessionListItem>> {
             updated_at: optional_time(Some(row.get("updated_at"))),
         })
         .collect())
+}
+
+async fn session_list_item(pool: &PgPool, session_id: Uuid) -> Result<Option<SessionListItem>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, status, role_id, role_version, project_key, workdir, title, name, tracked,
+               archived_at, closed_at, updated_at
+        FROM sessions
+        WHERE id = $1 AND (tracked = true OR status <> 'open')
+        "#,
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| SessionListItem {
+        id: row.get::<Uuid, _>("id").to_string(),
+        status: row.get("status"),
+        role_id: row.get("role_id"),
+        role_version: row.get("role_version"),
+        project_key: row.get("project_key"),
+        title: row.get("title"),
+        name: row.get("name"),
+        workdir: row.get("workdir"),
+        tracked: row.get("tracked"),
+        archived_at: optional_time(row.get("archived_at")),
+        closed_at: optional_time(row.get("closed_at")),
+        updated_at: optional_time(Some(row.get("updated_at"))),
+    }))
 }
 
 async fn selected_session_detail(
@@ -273,6 +446,32 @@ async fn pending_approval_summaries(pool: &PgPool) -> Result<Vec<PendingApproval
         .collect())
 }
 
+async fn pending_approval_summary(
+    pool: &PgPool,
+    approval_id: Uuid,
+) -> Result<Option<PendingApprovalSummary>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, session_id, turn_id, action_name, required_approver_kind, status, input_context, created_at
+        FROM approval_requests
+        WHERE id = $1 AND status = 'pending'
+        "#,
+    )
+    .bind(approval_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| PendingApprovalSummary {
+        id: row.get::<Uuid, _>("id").to_string(),
+        session_id: row.get::<Uuid, _>("session_id").to_string(),
+        turn_id: optional_uuid(row.get("turn_id")),
+        action_name: row.get("action_name"),
+        required_approver_kind: row.get("required_approver_kind"),
+        status: row.get("status"),
+        input_context: row.get("input_context"),
+        created_at: Some(time(row.get("created_at"))),
+    }))
+}
+
 async fn role_summaries(pool: &PgPool) -> Result<Vec<RoleSummary>> {
     let rows = sqlx::query(
         r#"
@@ -299,6 +498,32 @@ async fn role_summaries(pool: &PgPool) -> Result<Vec<RoleSummary>> {
             }
         })
         .collect())
+}
+
+async fn role_summary(pool: &PgPool, role_id: &str) -> Result<Option<RoleSummary>> {
+    let row = sqlx::query(
+        r#"
+        SELECT r.id, r.display_name, r.current_version_id, r.status, r.archived_at, rv.model_defaults
+        FROM roles r
+        LEFT JOIN role_versions rv ON rv.id = r.current_version_id
+        WHERE r.id = $1
+        "#,
+    )
+    .bind(role_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| {
+        let model_defaults: Option<Value> = row.get("model_defaults");
+        RoleSummary {
+            id: row.get("id"),
+            display_name: row.get("display_name"),
+            current_version_id: optional_uuid(row.get("current_version_id")),
+            status: row.get("status"),
+            model: model_defaults
+                .and_then(|value| value.get("model").and_then(Value::as_str).map(str::to_string)),
+            archived_at: optional_time(row.get("archived_at")),
+        }
+    }))
 }
 
 async fn command_registry_summaries(pool: &PgPool) -> Result<Vec<CommandRegistrySummary>> {
@@ -330,6 +555,84 @@ async fn command_registry_summaries(pool: &PgPool) -> Result<Vec<CommandRegistry
         .collect())
 }
 
+async fn command_summary_for_event(
+    pool: &PgPool,
+    payload: &Value,
+) -> Result<Option<CommandRegistrySummary>> {
+    let definition_id = payload
+        .get("definitionId")
+        .or_else(|| payload.get("commandDefinitionId"))
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok());
+    if let Some(definition_id) = definition_id {
+        return command_registry_summary_by_definition_id(pool, definition_id).await;
+    }
+    let action_id = payload
+        .get("actionId")
+        .or_else(|| payload.pointer("/finalCommand/actionId"))
+        .or_else(|| payload.pointer("/proposedCommand/actionId"))
+        .and_then(Value::as_str);
+    if let Some(action_id) = action_id {
+        return command_registry_summary_by_action_id(pool, action_id).await;
+    }
+    Ok(None)
+}
+
+async fn command_registry_summary_by_definition_id(
+    pool: &PgPool,
+    definition_id: Uuid,
+) -> Result<Option<CommandRegistrySummary>> {
+    let row = sqlx::query(
+        r#"
+        SELECT cd.id, cd.action_id, cd.scope_type, cd.project_key, cd.enabled, cd.current_version_id,
+               cd.updated_at, cv.binary_name, cv.starlark_object, cv.starlark_method
+        FROM command_definitions cd
+        LEFT JOIN command_versions cv ON cv.id = cd.current_version_id
+        WHERE cd.id = $1
+        "#,
+    )
+    .bind(definition_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(command_registry_summary_from_row))
+}
+
+async fn command_registry_summary_by_action_id(
+    pool: &PgPool,
+    action_id: &str,
+) -> Result<Option<CommandRegistrySummary>> {
+    let row = sqlx::query(
+        r#"
+        SELECT cd.id, cd.action_id, cd.scope_type, cd.project_key, cd.enabled, cd.current_version_id,
+               cd.updated_at, cv.binary_name, cv.starlark_object, cv.starlark_method
+        FROM command_definitions cd
+        LEFT JOIN command_versions cv ON cv.id = cd.current_version_id
+        WHERE cd.action_id = $1
+        ORDER BY cd.scope_type ASC, cd.project_key ASC NULLS FIRST
+        LIMIT 1
+        "#,
+    )
+    .bind(action_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(command_registry_summary_from_row))
+}
+
+fn command_registry_summary_from_row(row: sqlx::postgres::PgRow) -> CommandRegistrySummary {
+    CommandRegistrySummary {
+        id: row.get::<Uuid, _>("id").to_string(),
+        action_id: row.get("action_id"),
+        scope_type: row.get("scope_type"),
+        project_key: row.get("project_key"),
+        enabled: row.get("enabled"),
+        current_version_id: optional_uuid(row.get("current_version_id")),
+        binary_name: row.get("binary_name"),
+        starlark_object: row.get("starlark_object"),
+        starlark_method: row.get("starlark_method"),
+        updated_at: optional_time(Some(row.get("updated_at"))),
+    }
+}
+
 async fn workflow_memory_summaries(
     pool: &PgPool,
     selected_session_id: Option<Uuid>,
@@ -359,6 +662,32 @@ async fn workflow_memory_summaries(
             promoted_at: optional_time(Some(row.get("promoted_at"))),
         })
         .collect())
+}
+
+async fn workflow_memory_summary(
+    pool: &PgPool,
+    memory_id: Uuid,
+) -> Result<Option<WorkflowMemorySummary>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, session_id, scope_type, project_key, title, reason, helpful_score, promoted_at
+        FROM workflow_memories
+        WHERE id = $1
+        "#,
+    )
+    .bind(memory_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| WorkflowMemorySummary {
+        id: row.get::<Uuid, _>("id").to_string(),
+        session_id: row.get::<Uuid, _>("session_id").to_string(),
+        scope_type: row.get("scope_type"),
+        project_key: row.get("project_key"),
+        title: row.get("title"),
+        reason: row.get("reason"),
+        helpful_score: row.get("helpful_score"),
+        promoted_at: optional_time(Some(row.get("promoted_at"))),
+    }))
 }
 
 #[cfg(test)]
