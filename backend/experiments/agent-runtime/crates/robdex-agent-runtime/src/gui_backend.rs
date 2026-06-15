@@ -1,0 +1,642 @@
+use robdex_agent_runtime_projection::{
+    ApiErrorPacket, CommandRegistryRequestSummary, GuiConnectionState, GuiControllerState,
+    GuiOperationOutcome, GuiOperationRequest, GuiOperationResult, RuntimeProjection,
+};
+use serde_json::{json, Value};
+use uuid::Uuid;
+
+use crate::gui_sync::{RuntimeStateStream, RuntimeSyncClient, RuntimeSyncConfig, SyncError, SyncOutcome};
+
+pub struct GuiBackendController {
+    http: reqwest::Client,
+    base_url: Option<String>,
+    sync_client: Option<RuntimeSyncClient>,
+    stream: Option<RuntimeStateStream>,
+    stream_handle: Option<GuiStreamControllerHandle>,
+    projection: Option<RuntimeProjection>,
+    controller_state: GuiControllerState,
+    next_operation_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuiStreamControllerHandle {
+    pub url: String,
+    pub after: i64,
+    pub selected_session_id: Option<String>,
+    pub connected: bool,
+}
+
+impl Default for GuiBackendController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GuiBackendController {
+    pub fn new() -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            base_url: None,
+            sync_client: None,
+            stream: None,
+            stream_handle: None,
+            projection: None,
+            controller_state: GuiControllerState::default(),
+            next_operation_id: 1,
+        }
+    }
+
+    pub fn projection(&self) -> Option<&RuntimeProjection> {
+        self.projection.as_ref()
+    }
+
+    pub fn controller_state(&self) -> &GuiControllerState {
+        &self.controller_state
+    }
+
+    pub fn sync_client(&self) -> Option<&RuntimeSyncClient> {
+        self.sync_client.as_ref()
+    }
+
+    pub fn stream_handle(&self) -> Option<&GuiStreamControllerHandle> {
+        self.stream_handle.as_ref()
+    }
+
+    pub async fn dispatch(&mut self, request: GuiOperationRequest) -> GuiOperationResult {
+        let operation_id = self.allocate_operation_id();
+        let operation = request.name();
+        let expectation = request.expected_projection_effect();
+        match self.dispatch_inner(&request).await {
+            Ok(outcome) => GuiOperationResult {
+                operation_id,
+                operation,
+                expectation,
+                outcome,
+            },
+            Err(error) => {
+                self.controller_state.transient_errors.push(error.clone());
+                GuiOperationResult {
+                    operation_id,
+                    operation,
+                    expectation,
+                    outcome: GuiOperationOutcome::Error { error },
+                }
+            }
+        }
+    }
+
+    pub async fn next_stream_outcome(&mut self) -> Result<SyncOutcome, ApiErrorPacket> {
+        let mut stream = self.stream.take().ok_or_else(|| {
+            api_error("conflict", "GUI controller stream is not connected", json!({"operation":"nextStreamOutcome"}))
+        })?;
+        let sync = self.sync_client.as_mut().ok_or_else(|| {
+            api_error("conflict", "GUI controller is not connected", json!({"operation":"nextStreamOutcome"}))
+        })?;
+        let outcome = stream.next_outcome(sync).await.map_err(sync_error_packet)?;
+        self.projection = sync.projection().cloned();
+        self.controller_state = sync.controller_state().clone();
+        match outcome {
+            SyncOutcome::StreamClosed | SyncOutcome::ServerShutdown => {
+                self.stream = None;
+                if let Some(handle) = self.stream_handle.as_mut() {
+                    handle.connected = false;
+                }
+            }
+            _ => {
+                self.stream = Some(stream);
+            }
+        }
+        Ok(outcome)
+    }
+
+    async fn dispatch_inner(&mut self, request: &GuiOperationRequest) -> Result<GuiOperationOutcome, ApiErrorPacket> {
+        match request {
+            GuiOperationRequest::Connect { base_url, selected_session_id } => {
+                self.base_url = Some(base_url.clone());
+                self.replace_sync_client(base_url, selected_session_id.as_deref())?;
+                self.hydrate_current().await
+            }
+            GuiOperationRequest::Hydrate { selected_session_id } => {
+                let base_url = self.required_base_url()?;
+                self.replace_sync_client(&base_url, selected_session_id.as_deref())?;
+                self.hydrate_current().await
+            }
+            GuiOperationRequest::Rehydrate { selected_session_id } => {
+                let base_url = self.required_base_url()?;
+                self.replace_sync_client(&base_url, selected_session_id.as_deref())?;
+                self.hydrate_current().await
+            }
+            GuiOperationRequest::Disconnect => {
+                self.stream = None;
+                self.stream_handle = None;
+                self.sync_client = None;
+                self.projection = None;
+                self.controller_state.connection_state = GuiConnectionState::Disconnected;
+                Ok(GuiOperationOutcome::Accepted { entity_id: None })
+            }
+            GuiOperationRequest::SelectSession { session_id } => {
+                let base_url = self.required_base_url()?;
+                self.controller_state.select_session(session_id.clone());
+                self.replace_sync_client(&base_url, session_id.as_deref())?;
+                self.hydrate_current().await
+            }
+            GuiOperationRequest::CreateSession { .. }
+            | GuiOperationRequest::SendMessage { .. }
+            | GuiOperationRequest::CloseSession { .. }
+            | GuiOperationRequest::ArchiveSession { .. }
+            | GuiOperationRequest::ForkSession { .. }
+            | GuiOperationRequest::DecideApproval { .. }
+            | GuiOperationRequest::ResumeApproval { .. }
+            | GuiOperationRequest::ListCommandRegistry { .. }
+            | GuiOperationRequest::ShowCommand { .. }
+            | GuiOperationRequest::ListCommandRegistryRequests
+            | GuiOperationRequest::ShowCommandRegistryRequest { .. }
+            | GuiOperationRequest::PreviewCommandRegistryRequest { .. }
+            | GuiOperationRequest::DecideCommandRegistryRequest { .. }
+            | GuiOperationRequest::ApplyCommandRegistryRequest { .. }
+            | GuiOperationRequest::WorkflowMemoryFeedback { .. } => self.dispatch_server_operation(request).await,
+        }
+    }
+
+    async fn hydrate_current(&mut self) -> Result<GuiOperationOutcome, ApiErrorPacket> {
+        let (snapshot, stream_url, selected_session_id) = {
+            let sync = self.sync_client.as_mut().ok_or_else(|| {
+                api_error("conflict", "GUI controller is not connected", json!({"operation":"hydrate"}))
+            })?;
+            let snapshot = sync.hydrate().await.map_err(sync_error_packet)?.clone();
+            let watermark = snapshot.watermark;
+            let stream_url = sync.config().websocket_url(Some(watermark)).map_err(sync_error_packet)?;
+            let selected_session_id = sync.config().selected_session_id.map(|id| id.to_string());
+            (snapshot, stream_url, selected_session_id)
+        };
+        let watermark = snapshot.watermark;
+        self.projection = Some(snapshot);
+        self.reconnect_stream(watermark, stream_url, selected_session_id).await?;
+        if let Some(sync) = self.sync_client.as_ref() {
+            self.controller_state = sync.controller_state().clone();
+        }
+        Ok(GuiOperationOutcome::ProjectionUpdated { watermark })
+    }
+
+    async fn reconnect_stream(
+        &mut self,
+        after: i64,
+        stream_url: String,
+        selected_session_id: Option<String>,
+    ) -> Result<(), ApiErrorPacket> {
+        self.stream = None;
+        self.stream_handle = Some(GuiStreamControllerHandle {
+            url: stream_url,
+            after,
+            selected_session_id,
+            connected: false,
+        });
+        let sync = self.sync_client.as_ref().ok_or_else(|| {
+            api_error("conflict", "GUI controller is not connected", json!({"operation":"connectStream"}))
+        })?;
+        let stream = sync.connect_after(Some(after)).await.map_err(sync_error_packet)?;
+        self.stream = Some(stream);
+        if let Some(handle) = self.stream_handle.as_mut() {
+            handle.connected = true;
+        }
+        Ok(())
+    }
+
+    async fn dispatch_server_operation(&mut self, request: &GuiOperationRequest) -> Result<GuiOperationOutcome, ApiErrorPacket> {
+        let base_url = self.required_base_url()?;
+        let mapping = request.api_mapping();
+        let method = mapping.method.as_deref().ok_or_else(|| {
+            api_error("bad_request", "operation has no server route", json!({"operation": format!("{:?}", request.name())}))
+        })?;
+        let route = self.route_for_request(request)?;
+        let url = format!("{}{}", base_url.trim_end_matches('/'), route);
+        let mut builder = match method {
+            "GET" => self.http.get(url),
+            "POST" => self.http.post(url),
+            other => return Err(api_error("internal_error", "unsupported GUI operation HTTP method", json!({"method": other}))),
+        };
+        if method == "POST" {
+            builder = builder.json(&request.to_server_request_json().unwrap_or_else(|| json!({})));
+        }
+        let value = self.send_json(builder).await?;
+        match request {
+            GuiOperationRequest::ListCommandRegistryRequests => {
+                let rows = value.as_array().cloned().unwrap_or_default();
+                let requests = rows
+                    .iter()
+                    .map(CommandRegistryRequestSummary::from_server_value)
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| api_error("internal_error", "invalid command registry request summary response", json!({})))?;
+                Ok(GuiOperationOutcome::CommandRegistryRequests { requests })
+            }
+            GuiOperationRequest::ListCommandRegistry { .. }
+            | GuiOperationRequest::ShowCommand { .. }
+            | GuiOperationRequest::ShowCommandRegistryRequest { .. }
+            | GuiOperationRequest::PreviewCommandRegistryRequest { .. } => Ok(GuiOperationOutcome::DirectValue { value }),
+            GuiOperationRequest::CreateSession { .. } => Ok(GuiOperationOutcome::Accepted {
+                entity_id: value.get("sessionId").and_then(Value::as_str).map(str::to_string),
+            }),
+            GuiOperationRequest::SendMessage { .. } => Ok(GuiOperationOutcome::Accepted {
+                entity_id: value.get("turnId").and_then(Value::as_str).map(str::to_string),
+            }),
+            GuiOperationRequest::ForkSession { .. } => Ok(GuiOperationOutcome::Accepted {
+                entity_id: value.get("sessionId").and_then(Value::as_str).map(str::to_string),
+            }),
+            GuiOperationRequest::DecideApproval { approval_id, .. }
+            | GuiOperationRequest::ResumeApproval { approval_id } => Ok(GuiOperationOutcome::Accepted {
+                entity_id: Some(approval_id.clone()),
+            }),
+            GuiOperationRequest::CloseSession { session_id, .. }
+            | GuiOperationRequest::ArchiveSession { session_id }
+            | GuiOperationRequest::WorkflowMemoryFeedback { memory_id: session_id, .. }
+            | GuiOperationRequest::DecideCommandRegistryRequest { request_id: session_id, .. }
+            | GuiOperationRequest::ApplyCommandRegistryRequest { request_id: session_id, .. } => Ok(GuiOperationOutcome::Accepted {
+                entity_id: Some(session_id.clone()),
+            }),
+            GuiOperationRequest::Connect { .. }
+            | GuiOperationRequest::Hydrate { .. }
+            | GuiOperationRequest::Rehydrate { .. }
+            | GuiOperationRequest::Disconnect
+            | GuiOperationRequest::SelectSession { .. } => unreachable!("local operations handled before server dispatch"),
+        }
+    }
+
+    fn replace_sync_client(&mut self, base_url: &str, selected_session_id: Option<&str>) -> Result<(), ApiErrorPacket> {
+        let mut config = RuntimeSyncConfig::new(base_url);
+        if let Some(session_id) = selected_session_id {
+            let parsed = Uuid::parse_str(session_id).map_err(|error| {
+                api_error("bad_request", "selected session id must be a UUID", json!({"id": session_id, "error": error.to_string()}))
+            })?;
+            config = config.with_selected_session(parsed);
+        }
+        self.sync_client = Some(RuntimeSyncClient::new(config));
+        self.stream = None;
+        self.stream_handle = None;
+        Ok(())
+    }
+
+    fn required_base_url(&self) -> Result<String, ApiErrorPacket> {
+        self.base_url.clone().ok_or_else(|| {
+            api_error("conflict", "GUI controller is not connected", json!({"operation":"connect"}))
+        })
+    }
+
+    fn route_for_request(&self, request: &GuiOperationRequest) -> Result<String, ApiErrorPacket> {
+        Ok(match request {
+            GuiOperationRequest::CreateSession { .. } => "/sessions".to_string(),
+            GuiOperationRequest::SendMessage { session_id, .. } => format!("/sessions/{session_id}/send"),
+            GuiOperationRequest::CloseSession { session_id, .. } => format!("/sessions/{session_id}/close"),
+            GuiOperationRequest::ArchiveSession { session_id } => format!("/sessions/{session_id}/archive"),
+            GuiOperationRequest::ForkSession { session_id, .. } => format!("/sessions/{session_id}/fork"),
+            GuiOperationRequest::DecideApproval { approval_id, .. } => format!("/approvals/{approval_id}/decide"),
+            GuiOperationRequest::ResumeApproval { approval_id } => format!("/approvals/{approval_id}/resume"),
+            GuiOperationRequest::ListCommandRegistry { session_id, project_key } => {
+                let mut params = Vec::new();
+                if let Some(session_id) = session_id {
+                    params.push(format!("sessionId={session_id}"));
+                }
+                if let Some(project_key) = project_key {
+                    params.push(format!("project={project_key}"));
+                }
+                if params.is_empty() {
+                    "/command-registry".to_string()
+                } else {
+                    format!("/command-registry?{}", params.join("&"))
+                }
+            }
+            GuiOperationRequest::ShowCommand { action_id, session_id, project_key } => {
+                let mut params = Vec::new();
+                if let Some(session_id) = session_id {
+                    params.push(format!("sessionId={session_id}"));
+                }
+                if let Some(project_key) = project_key {
+                    params.push(format!("project={project_key}"));
+                }
+                if params.is_empty() {
+                    format!("/command-registry/{action_id}")
+                } else {
+                    format!("/command-registry/{action_id}?{}", params.join("&"))
+                }
+            }
+            GuiOperationRequest::ListCommandRegistryRequests => "/command-registry/requests".to_string(),
+            GuiOperationRequest::ShowCommandRegistryRequest { request_id } => format!("/command-registry/requests/{request_id}"),
+            GuiOperationRequest::PreviewCommandRegistryRequest { request_id, .. } => format!("/command-registry/requests/{request_id}/preview-decision"),
+            GuiOperationRequest::DecideCommandRegistryRequest { request_id, .. } => format!("/command-registry/requests/{request_id}/decide"),
+            GuiOperationRequest::ApplyCommandRegistryRequest { request_id, .. } => format!("/command-registry/requests/{request_id}/apply"),
+            GuiOperationRequest::WorkflowMemoryFeedback { memory_id, .. } => format!("/workflow-memories/{memory_id}/feedback"),
+            GuiOperationRequest::Connect { .. }
+            | GuiOperationRequest::Hydrate { .. }
+            | GuiOperationRequest::Rehydrate { .. }
+            | GuiOperationRequest::Disconnect
+            | GuiOperationRequest::SelectSession { .. } => {
+                return Err(api_error("bad_request", "local GUI operation has no server route", json!({"operation": format!("{:?}", request.name())})));
+            }
+        })
+    }
+
+    async fn send_json(&self, builder: reqwest::RequestBuilder) -> Result<Value, ApiErrorPacket> {
+        let response = builder.send().await.map_err(|error| {
+            api_error("unavailable", "runtime server unavailable", json!({"source":"reqwest", "message": error.to_string()}))
+        })?;
+        let status = response.status();
+        let text = response.text().await.map_err(|error| {
+            api_error("unavailable", "failed to read runtime server response", json!({"source":"reqwest", "message": error.to_string()}))
+        })?;
+        let value = if text.trim().is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&text).map_err(|error| {
+                api_error("internal_error", "runtime server returned invalid JSON", json!({"message": error.to_string()}))
+            })?
+        };
+        if status.is_success() {
+            Ok(value)
+        } else if let Ok(packet) = serde_json::from_value::<ApiErrorPacket>(value.clone()) {
+            Err(packet)
+        } else {
+            Err(api_error("internal_error", "runtime server returned an untyped error", json!({"status": status.as_u16()})))
+        }
+    }
+
+    fn allocate_operation_id(&mut self) -> String {
+        let id = self.next_operation_id;
+        self.next_operation_id += 1;
+        format!("gui-op-{id}")
+    }
+}
+
+fn sync_error_packet(error: SyncError) -> ApiErrorPacket {
+    match error {
+        SyncError::Http(error) => api_error("unavailable", "runtime server HTTP sync failed", json!({"message": error.to_string()})),
+        SyncError::WebSocket(error) => api_error("unavailable", "runtime server WebSocket sync failed", json!({"message": error.to_string()})),
+        SyncError::Json(error) => api_error("internal_error", "runtime server sync JSON decode failed", json!({"message": error.to_string()})),
+        SyncError::Protocol(message) => api_error("internal_error", "runtime server sync protocol error", json!({"message": message})),
+    }
+}
+
+fn api_error(code: impl Into<String>, message: impl Into<String>, details: Value) -> ApiErrorPacket {
+    ApiErrorPacket::new(code, message, details)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::ws::{Message, WebSocketUpgrade};
+    use axum::response::Response;
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+    use futures_util::SinkExt;
+    use robdex_agent_runtime_projection::{
+        ApplyOutcome, CommandRegistryDecisionInput, GuiCommandSeed, GuiFinalExecutionPolicy,
+        GuiOperationExpectation, GuiRegistryScope, RuntimeDelta, RuntimeDeltaKind, ServerStatusProjection,
+        SessionListItem,
+    };
+    use std::net::SocketAddr;
+
+    async fn test_ws(ws: WebSocketUpgrade) -> Response {
+        ws.on_upgrade(|_socket| async move {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        })
+    }
+
+    async fn start_test_server() -> String {
+        let app = Router::new()
+            .route("/state/snapshot", get(|| async {
+                Json(RuntimeProjection {
+                    watermark: 1,
+                    server_status: ServerStatusProjection {
+                        status: "ok".to_string(),
+                        database: "connected".to_string(),
+                        message: None,
+                    },
+                    ..RuntimeProjection::default()
+                })
+            }))
+            .route("/state/ws", get(test_ws))
+            .route("/sessions", post(Json(json!({"sessionId":"session-created"}))))
+            .route("/sessions/session-1/send", post(Json(json!({"sessionId":"session-1","turnId":"turn-1","status":"completed"}))))
+            .route("/command-registry/requests", get(Json(json!([{
+                "id":"request-1",
+                "operation":"add",
+                "proposedCommand":{"actionId":"cmd.rg.audit"},
+                "approvalStatus":"approved",
+                "applicationStatus":"pending",
+                "finalScope":{"scopeType":"global"},
+                "finalExecutionPolicy":{"decision":"allow"}
+            }]))))
+            .route("/command-registry/requests/request-1/preview-decision", post(Json(json!({"ok":true}))))
+            .route("/error", get(Json(json!({"error":{"code":"not_found","message":"missing","details":{"entity":"test"}}}))));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr: SocketAddr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test router");
+        });
+        format!("http://{addr}")
+    }
+
+    async fn start_delta_stream_test_server() -> String {
+        let app = Router::new()
+            .route("/state/snapshot", get(|| async {
+                Json(RuntimeProjection {
+                    watermark: 1,
+                    server_status: ServerStatusProjection {
+                        status: "ok".to_string(),
+                        database: "connected".to_string(),
+                        message: None,
+                    },
+                    ..RuntimeProjection::default()
+                })
+            }))
+            .route("/state/ws", get(|ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(|mut socket| async move {
+                    let delta = RuntimeDelta {
+                        watermark: 2,
+                        previous_watermark: Some(1),
+                        kind: RuntimeDeltaKind::SessionUpsert {
+                            session: SessionListItem {
+                                id: "session-from-websocket".to_string(),
+                                status: "open".to_string(),
+                                role_id: Some("runtime-allow".to_string()),
+                                role_version: Some("1.0.0".to_string()),
+                                project_key: None,
+                                title: None,
+                                name: None,
+                                workdir: ".".to_string(),
+                                tracked: true,
+                                archived_at: None,
+                                closed_at: None,
+                                updated_at: None,
+                            },
+                        },
+                    };
+                    let message = json!({"type":"delta", "delta": serde_json::to_value(delta).expect("delta json")}).to_string();
+                    socket.send(Message::Text(message.into())).await.expect("send delta");
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                })
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr: SocketAddr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve delta stream router");
+        });
+        format!("http://{addr}")
+    }
+
+    fn command_seed() -> GuiCommandSeed {
+        GuiCommandSeed {
+            action_id: "cmd.rg.audit".to_string(),
+            binary_name: "rg".to_string(),
+            candidate_paths: vec!["/usr/bin/rg".to_string()],
+            starlark_object: "rg".to_string(),
+            starlark_method: "run".to_string(),
+            argv_prefix: Vec::new(),
+            default_cwd: ".".to_string(),
+            cwd_policy: "underExecutionRoot".to_string(),
+            env_policy: "empty".to_string(),
+            sync_allowed: true,
+            async_allowed: true,
+            max_runtime_ms: None,
+            end_of_turn_behavior: "terminate".to_string(),
+            stdin_policy: "forbid".to_string(),
+            min_await_ms: 0,
+            max_await_ms: 60000,
+            output_buffer_bytes: 64000,
+            terminate_grace_ms: 1000,
+            output_limit_bytes: 12000,
+            mutation_class: "readOnly".to_string(),
+            model_description: "audit".to_string(),
+            allow_cwd_arg: true,
+            allow_args_arg: true,
+            forbidden_args: Vec::new(),
+            execution_policy: "allow".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn controller_hydrate_connect_disconnect_and_select_session_state_transitions() {
+        let base_url = start_test_server().await;
+        let mut controller = GuiBackendController::new();
+        let connect = controller.dispatch(GuiOperationRequest::Connect {
+            base_url: base_url.clone(),
+            selected_session_id: None,
+        }).await;
+        assert!(matches!(connect.outcome, GuiOperationOutcome::ProjectionUpdated { watermark: 1 }));
+        assert_eq!(controller.controller_state().connection_state, GuiConnectionState::Streaming);
+        assert_eq!(controller.projection().map(|projection| projection.watermark), Some(1));
+        let handle = controller.stream_handle().expect("stream handle after connect");
+        assert!(handle.connected);
+        assert_eq!(handle.after, 1);
+        assert!(handle.url.contains("/state/ws?after=1"));
+        assert!(handle.selected_session_id.is_none());
+
+        let selected = Uuid::new_v4().to_string();
+        let select = controller.dispatch(GuiOperationRequest::SelectSession {
+            session_id: Some(selected.clone()),
+        }).await;
+        assert!(matches!(select.outcome, GuiOperationOutcome::ProjectionUpdated { watermark: 1 }));
+        assert_eq!(controller.controller_state().selected_session_id.as_deref(), Some(selected.as_str()));
+        let selected_handle = controller.stream_handle().expect("stream handle after selected reconnect");
+        assert!(selected_handle.connected);
+        assert_eq!(selected_handle.after, 1);
+        assert_eq!(selected_handle.selected_session_id.as_deref(), Some(selected.as_str()));
+        assert!(selected_handle.url.contains("after=1"));
+        assert!(selected_handle.url.contains(&format!("selectedSessionId={selected}")));
+
+        let disconnect = controller.dispatch(GuiOperationRequest::Disconnect).await;
+        assert!(matches!(disconnect.outcome, GuiOperationOutcome::Accepted { .. }));
+        assert_eq!(controller.controller_state().connection_state, GuiConnectionState::Disconnected);
+        assert!(controller.projection().is_none());
+        assert!(controller.stream_handle().is_none());
+    }
+
+    #[tokio::test]
+    async fn controller_dispatches_server_payloads_and_direct_command_request_summaries() {
+        let base_url = start_test_server().await;
+        let mut controller = GuiBackendController::new();
+        controller.dispatch(GuiOperationRequest::Connect {
+            base_url,
+            selected_session_id: None,
+        }).await;
+
+        let create = controller.dispatch(GuiOperationRequest::CreateSession {
+            role: "runtime-allow".to_string(),
+            project: None,
+            workdir: Some(".".to_string()),
+            worktree_root: None,
+            title: None,
+            name: None,
+        }).await;
+        assert!(matches!(create.outcome, GuiOperationOutcome::Accepted { entity_id: Some(id) } if id == "session-created"));
+
+        let send = controller.dispatch(GuiOperationRequest::SendMessage {
+            session_id: "session-1".to_string(),
+            message: "hello".to_string(),
+        }).await;
+        assert!(matches!(send.outcome, GuiOperationOutcome::Accepted { entity_id: Some(id) } if id == "turn-1"));
+
+        let list = controller.dispatch(GuiOperationRequest::ListCommandRegistryRequests).await;
+        match list.outcome {
+            GuiOperationOutcome::CommandRegistryRequests { requests } => {
+                assert_eq!(requests.len(), 1);
+                assert!(requests[0].can_apply);
+                assert_eq!(requests[0].action_id, "cmd.rg.audit");
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn controller_maps_sync_and_server_errors_to_typed_packets() {
+        let mut controller = GuiBackendController::new();
+        let missing = controller.dispatch(GuiOperationRequest::CreateSession {
+            role: "runtime-allow".to_string(),
+            project: None,
+            workdir: None,
+            worktree_root: None,
+            title: None,
+            name: None,
+        }).await;
+        assert!(matches!(missing.outcome, GuiOperationOutcome::Error { ref error } if error.error.code == "conflict"));
+        assert!(!controller.controller_state().transient_errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn controller_reads_actual_owned_websocket_stream_message() {
+        let base_url = start_delta_stream_test_server().await;
+        let mut controller = GuiBackendController::new();
+        let connect = controller.dispatch(GuiOperationRequest::Connect {
+            base_url,
+            selected_session_id: None,
+        }).await;
+        assert!(matches!(connect.outcome, GuiOperationOutcome::ProjectionUpdated { watermark: 1 }));
+        let handle = controller.stream_handle().expect("stream handle");
+        assert!(handle.connected);
+        assert_eq!(handle.after, 1);
+
+        let outcome = controller.next_stream_outcome().await.expect("next stream outcome");
+        assert!(matches!(outcome, SyncOutcome::DeltaApplied { apply_outcome: ApplyOutcome::Applied, .. }));
+        let projection = controller.projection().expect("projection after stream delta");
+        assert_eq!(projection.watermark, 2);
+        assert!(projection.sessions.iter().any(|session| session.id == "session-from-websocket"));
+        assert_eq!(controller.controller_state().connection_state, GuiConnectionState::Streaming);
+    }
+
+    #[test]
+    fn registry_decision_payload_uses_server_shape() {
+        let request = GuiOperationRequest::PreviewCommandRegistryRequest {
+            request_id: "request-1".to_string(),
+            decision: CommandRegistryDecisionInput {
+                session_id: Some("session-1".to_string()),
+                status: "approved".to_string(),
+                final_scope: Some(GuiRegistryScope { scope_type: "global".to_string(), project_key: None }),
+                final_execution_policy: Some(GuiFinalExecutionPolicy { decision: "allow".to_string(), reason: Some("ok".to_string()) }),
+                final_command: Some(command_seed()),
+            },
+        };
+        let payload = request.to_server_request_json().expect("payload");
+        assert_eq!(payload["finalScope"]["scopeType"], "global");
+        assert_eq!(payload["finalExecutionPolicy"]["decision"], "allow");
+        assert_eq!(payload["finalCommand"]["actionId"], "cmd.rg.audit");
+        assert_eq!(request.expected_projection_effect(), GuiOperationExpectation::DirectResult);
+    }
+}

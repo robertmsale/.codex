@@ -125,6 +125,104 @@ scripts/smoke-resident-server.sh
 scripts/validate-local-service.sh
 ```
 
+#### GUI operation API audit
+
+The durable operation mapping is also encoded in
+`GuiOperationRequest::api_mapping()` and protected by projection crate tests.
+Every operation uses the API error packet
+`{ "error": { "code", "message", "details" } }` when a server route fails.
+
+| GUI operation | Route or local action | Method | Request shape | Response/direct result | Projection effect |
+| --- | --- | --- | --- | --- | --- |
+| `Connect` | local `RuntimeSyncClient::new`, hydrate, then `connect_after` | local | base URL and optional selected session | `GuiControllerState`/`SyncOutcome` | `Rehydrate` |
+| `Hydrate` | `/state/snapshot?selectedSessionId=<optional>` | GET | none | `RuntimeProjection` | `Rehydrate` |
+| `Rehydrate` | `/state/snapshot?selectedSessionId=<optional>` | GET | none | `RuntimeProjection` | `Rehydrate` |
+| `Disconnect` | local stream close and controller state update | local | local controller state | `GuiControllerState` | `UpdateLocalState` |
+| `SelectSession` | local selected-session update, then snapshot and WebSocket reconnect with `selectedSessionId` | local + GET/WS | selected session id | fresh `RuntimeProjection` and stream | `RehydrateAndReconnect` |
+| `CreateSession` | `/sessions` | POST | `{role, project, workdir, worktreeRoot, title, name}` | `{sessionId}` | `WaitForDelta` |
+| `SendMessage` | `/sessions/{sessionId}/send` | POST | `{message}` | `{sessionId, turnId, status}` | `WaitForDelta` |
+| `CloseSession` | `/sessions/{sessionId}/close` | POST | `{reason?}` | `{sessionId, status}` | `WaitForDelta` |
+| `ArchiveSession` | `/sessions/{sessionId}/archive` | POST | `{}` | `{sessionId, tracked}` | `WaitForDelta` |
+| `ForkSession` | `/sessions/{sessionId}/fork` | POST | `{atTurn}` | `{sessionId, forkedFromSessionId, forkedFromTurnId}` | `WaitForDelta` |
+| `DecideApproval` | `/approvals/{approvalId}/decide` | POST | `{decision, reason}`; `reason` is required | `{approvalId, decision}` | `WaitForDelta` |
+| `ResumeApproval` | `/approvals/{approvalId}/resume` | POST | `{}` | `{approvalId, status}` | `WaitForDelta` |
+| `ListCommandRegistry` | `/command-registry?sessionId=<optional>&project=<optional>` | GET | none | command list/detail JSON | `DirectResult` |
+| `ShowCommand` | `/command-registry/{actionId}?sessionId=<optional>&project=<optional>` | GET | none | command detail JSON | `DirectResult` |
+| `ListCommandRegistryRequests` | `/command-registry/requests` | GET | none | map raw rows with `CommandRegistryRequestSummary::from_server_value` | `DirectResult` |
+| `ShowCommandRegistryRequest` | `/command-registry/requests/{requestId}` | GET | none | request detail JSON | `DirectResult` |
+| `PreviewCommandRegistryRequest` | `/command-registry/requests/{requestId}/preview-decision` | POST | `{sessionId?, status, finalScope?, finalExecutionPolicy?, finalCommand?}` | preview packet JSON | `DirectResult` |
+| `DecideCommandRegistryRequest` | `/command-registry/requests/{requestId}/decide` | POST | `{sessionId, status, finalScope?, finalExecutionPolicy?, finalCommand?}` | `{requestId, status}` | `WaitForDelta` |
+| `ApplyCommandRegistryRequest` | `/command-registry/requests/{requestId}/apply` | POST | `{sessionId}` | `{requestId, status}` | `WaitForDelta` |
+| `WorkflowMemoryFeedback` | `/workflow-memories/{memoryId}/feedback` | POST | `{sessionId, feedback, payload}` | `{memoryId, feedback, status}` | `WaitForDelta` |
+
+Resolved audit mismatches:
+
+- `DecideApproval.reason` is required in the GUI contract because the server
+  requires it. The controller must not invent an implicit reason.
+- Command-registry decision input uses the server JSON shape directly:
+  nested `finalScope`, nested `finalExecutionPolicy`, and typed `finalCommand`
+  fields. Dart must not flatten or transform this request ad hoc.
+- Command-registry request rows are converted to
+  `CommandRegistryRequestSummary`, which carries `canPreview`, `canDecide`,
+  and `canApply`. Dart must not infer those controls from raw request internals.
+
+Deferred GUI operations for the first shell:
+
+- Role-admin mutations beyond projection/read inspection are deferred. Server
+  role routes exist, but first-shell GUI state uses projected role summaries and
+  does not expose role create/update/archive/activate operations yet.
+- Workflow-memory inspection uses `RuntimeProjection.workflowMemories` and
+  selected-session/timeline detail. Dedicated memory list/show/events operation
+  intents are deferred; feedback is included because it mutates state.
+
+
+#### Rust/Rinf GUI backend controller boundary
+
+The Rust-side GUI backend boundary for a future Rinf layer is
+`robdex_agent_runtime::gui_backend::GuiBackendController`. This controller owns
+the `RuntimeSyncClient`, the owned WebSocket stream handle, the current hydrated `RuntimeProjection`, the local
+`GuiControllerState`, selected-session state, connection/resync state,
+transient typed errors, and `GuiOperationResult` emission. Dart sends
+`GuiOperationRequest` packets and receives constructor-ready projection,
+controller, and result packets; Dart does not interpret raw HTTP/WebSocket
+protocol details.
+
+The controller has one dispatcher: `GuiBackendController::dispatch`. Local
+operations are handled in Rust:
+
+- `Connect` creates the sync client, hydrates `/state/snapshot`, opens
+  `/state/ws?after=<snapshotWatermark>`, and owns the resulting stream handle.
+- `Hydrate` and `Rehydrate` replace the current `RuntimeProjection` from the
+  server snapshot and reconnect the WebSocket stream after the new watermark.
+- `SelectSession` updates local selected-session state, then rehydrates and
+  reconnects `/state/ws?after=<watermark>&selectedSessionId=<id>` without Dart
+  deciding URL or watermark semantics.
+- `Disconnect` drops the owned stream handle, clears sync/projection state, and
+  marks connection state disconnected.
+
+Server-backed operations use the API mappings encoded on `GuiOperationRequest`
+and the same server JSON shapes documented above. The dispatcher maps server
+and sync failures into `ApiErrorPacket` and returns `GuiOperationOutcome::Error`
+so Dart never parses raw HTTP, WebSocket, SQL, or protocol errors. Direct
+command-registry request lists are reduced into `CommandRegistryRequestSummary`
+inside Rust, preserving typed `canPreview`, `canDecide`, and `canApply` control
+fields.
+
+Realtime server messages are consumed through the controller with
+`GuiBackendController::next_stream_outcome()`, which reads one message from the
+controller-owned WebSocket stream, applies deltas/resync/shutdown through
+`RuntimeSyncClient`, and mirrors the reduced projection/controller state back
+onto the controller. Deltas are applied to the current projection only through
+the shared `RuntimeProjection` reducer. The
+controller does not create a second GUI state path: persisted runtime state
+remains `RuntimeProjection` plus `RuntimeDelta`; `GuiControllerState` remains
+local-only coordination state. Flutter UI implementation remains out of scope.
+
+Proof coverage includes deterministic controller tests for hydrate/connect,
+disconnect, selected-session switching, server-backed payload dispatch, typed
+error mapping, command-registry direct-result summary mapping, and delta
+convergence through the controller.
+
 ## Resident server MVP
 
 The experimental server binary is `robdex-agent-runtime-server`. It is isolated

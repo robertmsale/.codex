@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 pub type Watermark = i64;
 
@@ -321,7 +321,7 @@ pub enum GuiOperationRequest {
     CloseSession { session_id: String, reason: Option<String> },
     ArchiveSession { session_id: String },
     ForkSession { session_id: String, at_turn: String },
-    DecideApproval { approval_id: String, decision: String, reason: Option<String> },
+    DecideApproval { approval_id: String, decision: String, reason: String },
     ResumeApproval { approval_id: String },
     ListCommandRegistry { session_id: Option<String>, project_key: Option<String> },
     ShowCommand { action_id: String, session_id: Option<String>, project_key: Option<String> },
@@ -381,6 +381,101 @@ impl GuiOperationRequest {
             | Self::PreviewCommandRegistryRequest { .. } => GuiOperationExpectation::DirectResult,
         }
     }
+
+    pub fn api_mapping(&self) -> GuiOperationApiMapping {
+        match self {
+            Self::Connect { .. } => local_mapping(self.name(), "RuntimeSyncClient::new + hydrate/connect_after", GuiOperationExpectation::Rehydrate),
+            Self::Hydrate { .. } => http_mapping(self.name(), "GET", "/state/snapshot?selectedSessionId=<optional>", "none", "RuntimeProjection", GuiOperationExpectation::Rehydrate),
+            Self::Rehydrate { .. } => http_mapping(self.name(), "GET", "/state/snapshot?selectedSessionId=<optional>", "none", "RuntimeProjection", GuiOperationExpectation::Rehydrate),
+            Self::Disconnect => local_mapping(self.name(), "close local WebSocket stream and mark disconnected", GuiOperationExpectation::UpdateLocalState),
+            Self::SelectSession { .. } => local_mapping(self.name(), "set selectedSessionId, then GET /state/snapshot and reconnect /state/ws with selectedSessionId", GuiOperationExpectation::RehydrateAndReconnect),
+            Self::CreateSession { .. } => http_mapping(self.name(), "POST", "/sessions", r#"{"role","project","workdir","worktreeRoot","title","name"}"#, r#"{"sessionId"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::SendMessage { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/send", r#"{"message"}"#, r#"{"sessionId","turnId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::CloseSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/close", r#"{"reason"?}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ArchiveSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/archive", "{}", r#"{"sessionId","tracked"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ForkSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/fork", r#"{"atTurn"}"#, r#"{"sessionId","forkedFromSessionId","forkedFromTurnId"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::DecideApproval { .. } => http_mapping(self.name(), "POST", "/approvals/{approvalId}/decide", r#"{"decision","reason"}"#, r#"{"approvalId","decision"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ResumeApproval { .. } => http_mapping(self.name(), "POST", "/approvals/{approvalId}/resume", "{}", r#"{"approvalId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ListCommandRegistry { .. } => http_mapping(self.name(), "GET", "/command-registry?sessionId=<optional>&project=<optional>", "none", "Vec<CommandRegistrySummary/raw command detail>", GuiOperationExpectation::DirectResult),
+            Self::ShowCommand { .. } => http_mapping(self.name(), "GET", "/command-registry/{actionId}?sessionId=<optional>&project=<optional>", "none", "command detail JSON", GuiOperationExpectation::DirectResult),
+            Self::ListCommandRegistryRequests => http_mapping(self.name(), "GET", "/command-registry/requests", "none", "Vec<CommandRegistryRequestSummary> via from_server_value", GuiOperationExpectation::DirectResult),
+            Self::ShowCommandRegistryRequest { .. } => http_mapping(self.name(), "GET", "/command-registry/requests/{requestId}", "none", "command-registry request detail JSON", GuiOperationExpectation::DirectResult),
+            Self::PreviewCommandRegistryRequest { .. } => http_mapping(self.name(), "POST", "/command-registry/requests/{requestId}/preview-decision", "RegistryDecisionInput server JSON", "preview packet JSON", GuiOperationExpectation::DirectResult),
+            Self::DecideCommandRegistryRequest { .. } => http_mapping(self.name(), "POST", "/command-registry/requests/{requestId}/decide", "RegistryDecisionInput server JSON", r#"{"requestId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ApplyCommandRegistryRequest { .. } => http_mapping(self.name(), "POST", "/command-registry/requests/{requestId}/apply", r#"{"sessionId"}"#, r#"{"requestId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::WorkflowMemoryFeedback { .. } => http_mapping(self.name(), "POST", "/workflow-memories/{memoryId}/feedback", r#"{"sessionId","feedback","payload"}"#, r#"{"memoryId","feedback","status"}"#, GuiOperationExpectation::WaitForDelta),
+        }
+    }
+
+    pub fn to_server_request_json(&self) -> Option<Value> {
+        match self {
+            Self::Connect { .. }
+            | Self::Hydrate { .. }
+            | Self::Rehydrate { .. }
+            | Self::Disconnect
+            | Self::SelectSession { .. }
+            | Self::ListCommandRegistry { .. }
+            | Self::ShowCommand { .. }
+            | Self::ListCommandRegistryRequests
+            | Self::ShowCommandRegistryRequest { .. } => None,
+            Self::CreateSession { role, project, workdir, worktree_root, title, name } => Some(json!({
+                "role": role,
+                "project": project,
+                "workdir": workdir,
+                "worktreeRoot": worktree_root,
+                "title": title,
+                "name": name,
+            })),
+            Self::SendMessage { message, .. } => Some(json!({"message": message})),
+            Self::CloseSession { reason, .. } => Some(json!({"reason": reason})),
+            Self::ArchiveSession { .. } | Self::ResumeApproval { .. } => Some(json!({})),
+            Self::ForkSession { at_turn, .. } => Some(json!({"atTurn": at_turn})),
+            Self::DecideApproval { decision, reason, .. } => Some(json!({"decision": decision, "reason": reason})),
+            Self::PreviewCommandRegistryRequest { decision, .. }
+            | Self::DecideCommandRegistryRequest { decision, .. } => Some(serde_json::to_value(decision).expect("registry decision serializes")),
+            Self::ApplyCommandRegistryRequest { session_id, .. } => Some(json!({"sessionId": session_id})),
+            Self::WorkflowMemoryFeedback { session_id, feedback, payload, .. } => Some(json!({"sessionId": session_id, "feedback": feedback, "payload": payload})),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiOperationApiMapping {
+    pub operation: GuiOperationName,
+    pub local_only: bool,
+    pub method: Option<String>,
+    pub route_or_action: String,
+    pub request_shape: String,
+    pub response_shape: String,
+    pub error_shape: String,
+    pub expected_projection_effect: GuiOperationExpectation,
+}
+
+fn http_mapping(operation: GuiOperationName, method: &str, route: &str, request_shape: &str, response_shape: &str, expected_projection_effect: GuiOperationExpectation) -> GuiOperationApiMapping {
+    GuiOperationApiMapping {
+        operation,
+        local_only: false,
+        method: Some(method.to_string()),
+        route_or_action: route.to_string(),
+        request_shape: request_shape.to_string(),
+        response_shape: response_shape.to_string(),
+        error_shape: r#"{"error":{"code","message","details"}}"#.to_string(),
+        expected_projection_effect,
+    }
+}
+
+fn local_mapping(operation: GuiOperationName, action: &str, expected_projection_effect: GuiOperationExpectation) -> GuiOperationApiMapping {
+    GuiOperationApiMapping {
+        operation,
+        local_only: true,
+        method: None,
+        route_or_action: action.to_string(),
+        request_shape: "local controller state".to_string(),
+        response_shape: "GuiControllerState/SyncOutcome".to_string(),
+        error_shape: "ApiErrorPacket or SyncError mapped by controller".to_string(),
+        expected_projection_effect,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -388,10 +483,53 @@ impl GuiOperationRequest {
 pub struct CommandRegistryDecisionInput {
     pub session_id: Option<String>,
     pub status: String,
-    pub final_scope: Option<String>,
-    pub final_project: Option<String>,
-    pub final_policy: Option<String>,
-    pub final_command: Option<Value>,
+    pub final_scope: Option<GuiRegistryScope>,
+    pub final_execution_policy: Option<GuiFinalExecutionPolicy>,
+    pub final_command: Option<GuiCommandSeed>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiRegistryScope {
+    pub scope_type: String,
+    pub project_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiFinalExecutionPolicy {
+    pub decision: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiCommandSeed {
+    pub action_id: String,
+    pub binary_name: String,
+    pub candidate_paths: Vec<String>,
+    pub starlark_object: String,
+    pub starlark_method: String,
+    pub argv_prefix: Vec<String>,
+    pub default_cwd: String,
+    pub cwd_policy: String,
+    pub env_policy: String,
+    pub sync_allowed: bool,
+    pub async_allowed: bool,
+    pub max_runtime_ms: Option<i64>,
+    pub end_of_turn_behavior: String,
+    pub stdin_policy: String,
+    pub min_await_ms: i64,
+    pub max_await_ms: i64,
+    pub output_buffer_bytes: i64,
+    pub terminate_grace_ms: i64,
+    pub output_limit_bytes: i64,
+    pub mutation_class: String,
+    pub model_description: String,
+    pub allow_cwd_arg: bool,
+    pub allow_args_arg: bool,
+    pub forbidden_args: Vec<String>,
+    pub execution_policy: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -408,6 +546,30 @@ pub struct CommandRegistryRequestSummary {
     pub can_preview: bool,
     pub can_decide: bool,
     pub can_apply: bool,
+}
+
+impl CommandRegistryRequestSummary {
+    pub fn from_server_value(value: &Value) -> Option<Self> {
+        let status = value.get("approvalStatus").and_then(Value::as_str)?.to_string();
+        let apply_status = value.get("applicationStatus").and_then(Value::as_str)?.to_string();
+        let proposed = value.get("proposedCommand")?;
+        let final_scope = value.get("finalScope").and_then(|value| if value.is_null() { None } else { Some(value) });
+        let final_policy = value.get("finalExecutionPolicy").and_then(|value| if value.is_null() { None } else { Some(value) });
+        Some(Self {
+            id: value.get("id").and_then(Value::as_str).map(str::to_string)
+                .or_else(|| value.get("id").map(|id| id.to_string().trim_matches('"').to_string()))?,
+            operation: value.get("operation").and_then(Value::as_str)?.to_string(),
+            action_id: proposed.get("actionId").and_then(Value::as_str)?.to_string(),
+            status: status.clone(),
+            apply_status: apply_status.clone(),
+            final_scope_type: final_scope.and_then(|scope| scope.get("scopeType").or_else(|| scope.get("type"))).and_then(Value::as_str).map(str::to_string),
+            final_project_key: final_scope.and_then(|scope| scope.get("projectKey")).and_then(Value::as_str).map(str::to_string),
+            final_policy: final_policy.and_then(|policy| policy.get("decision")).and_then(Value::as_str).map(str::to_string),
+            can_preview: status == "pending",
+            can_decide: status == "pending",
+            can_apply: status == "approved" && apply_status == "pending",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -448,6 +610,8 @@ pub const DART_ALLOWED_EPHEMERAL_RESPONSIBILITIES: &[&str] = &[
     "animations",
     "localLayout",
 ];
+
+pub const GUI_OPERATION_VARIANT_COUNT: usize = 20;
 
 impl Default for RuntimeProjection {
     fn default() -> Self {
@@ -763,6 +927,71 @@ mod tests {
         }
     }
 
+    fn command_seed() -> GuiCommandSeed {
+        GuiCommandSeed {
+            action_id: "cmd.rg.audit".to_string(),
+            binary_name: "rg".to_string(),
+            candidate_paths: vec!["/usr/bin/rg".to_string()],
+            starlark_object: "rg_audit".to_string(),
+            starlark_method: "run".to_string(),
+            argv_prefix: vec!["--files".to_string()],
+            default_cwd: ".".to_string(),
+            cwd_policy: "underExecutionRoot".to_string(),
+            env_policy: "empty".to_string(),
+            sync_allowed: true,
+            async_allowed: true,
+            max_runtime_ms: Some(5000),
+            end_of_turn_behavior: "terminate".to_string(),
+            stdin_policy: "forbid".to_string(),
+            min_await_ms: 0,
+            max_await_ms: 60000,
+            output_buffer_bytes: 64000,
+            terminate_grace_ms: 1000,
+            output_limit_bytes: 12000,
+            mutation_class: "readOnly".to_string(),
+            model_description: "audit command".to_string(),
+            allow_cwd_arg: true,
+            allow_args_arg: true,
+            forbidden_args: Vec::new(),
+            execution_policy: "allow".to_string(),
+        }
+    }
+
+    fn operation_samples() -> Vec<GuiOperationRequest> {
+        vec![
+            GuiOperationRequest::Connect { base_url: "http://127.0.0.1:8765".to_string(), selected_session_id: None },
+            GuiOperationRequest::Hydrate { selected_session_id: None },
+            GuiOperationRequest::Rehydrate { selected_session_id: Some("session-1".to_string()) },
+            GuiOperationRequest::Disconnect,
+            GuiOperationRequest::SelectSession { session_id: Some("session-1".to_string()) },
+            GuiOperationRequest::CreateSession { role: "runtime-allow".to_string(), project: Some("project".to_string()), workdir: Some(".".to_string()), worktree_root: None, title: None, name: None },
+            GuiOperationRequest::SendMessage { session_id: "session-1".to_string(), message: "hello".to_string() },
+            GuiOperationRequest::CloseSession { session_id: "session-1".to_string(), reason: Some("done".to_string()) },
+            GuiOperationRequest::ArchiveSession { session_id: "session-1".to_string() },
+            GuiOperationRequest::ForkSession { session_id: "session-1".to_string(), at_turn: "turn-1".to_string() },
+            GuiOperationRequest::DecideApproval { approval_id: "approval-1".to_string(), decision: "approved".to_string(), reason: "operator approved".to_string() },
+            GuiOperationRequest::ResumeApproval { approval_id: "approval-1".to_string() },
+            GuiOperationRequest::ListCommandRegistry { session_id: Some("session-1".to_string()), project_key: None },
+            GuiOperationRequest::ShowCommand { action_id: "cmd.rg.audit".to_string(), session_id: None, project_key: Some("project".to_string()) },
+            GuiOperationRequest::ListCommandRegistryRequests,
+            GuiOperationRequest::ShowCommandRegistryRequest { request_id: "request-1".to_string() },
+            GuiOperationRequest::PreviewCommandRegistryRequest { request_id: "request-1".to_string(), decision: registry_decision() },
+            GuiOperationRequest::DecideCommandRegistryRequest { request_id: "request-1".to_string(), decision: registry_decision() },
+            GuiOperationRequest::ApplyCommandRegistryRequest { request_id: "request-1".to_string(), session_id: "session-1".to_string() },
+            GuiOperationRequest::WorkflowMemoryFeedback { memory_id: "memory-1".to_string(), session_id: "session-1".to_string(), feedback: "attempted".to_string(), payload: json!({"variant": true}) },
+        ]
+    }
+
+    fn registry_decision() -> CommandRegistryDecisionInput {
+        CommandRegistryDecisionInput {
+            session_id: Some("session-1".to_string()),
+            status: "approved".to_string(),
+            final_scope: Some(GuiRegistryScope { scope_type: "global".to_string(), project_key: None }),
+            final_execution_policy: Some(GuiFinalExecutionPolicy { decision: "allow".to_string(), reason: Some("approved for audit".to_string()) }),
+            final_command: Some(command_seed()),
+        }
+    }
+
     #[test]
     fn session_upsert_is_idempotent() {
         let mut projection = RuntimeProjection::default();
@@ -1020,7 +1249,7 @@ mod tests {
         let request = GuiOperationRequest::DecideApproval {
             approval_id: "approval-1".to_string(),
             decision: "approved".to_string(),
-            reason: Some("ok".to_string()),
+            reason: "ok".to_string(),
         };
         let encoded = serde_json::to_string(&request).expect("request json");
         let decoded: GuiOperationRequest = serde_json::from_str(&encoded).expect("request decode");
@@ -1153,5 +1382,92 @@ mod tests {
         let resumable_value = serde_json::to_value(&resumable).expect("resumable approval json");
         assert_eq!(resumable_value["canDecide"], false);
         assert_eq!(resumable_value["canResume"], true);
+    }
+
+    #[test]
+    fn every_gui_operation_has_api_mapping_and_expected_effect() {
+        let samples = operation_samples();
+        assert_eq!(samples.len(), GUI_OPERATION_VARIANT_COUNT);
+        for request in samples {
+            let mapping = request.api_mapping();
+            assert_eq!(mapping.operation, request.name());
+            assert_eq!(mapping.expected_projection_effect, request.expected_projection_effect());
+            assert!(!mapping.route_or_action.is_empty());
+            assert!(!mapping.request_shape.is_empty());
+            assert!(!mapping.response_shape.is_empty());
+            assert!(!mapping.error_shape.is_empty());
+            match request {
+                GuiOperationRequest::Connect { .. }
+                | GuiOperationRequest::Disconnect
+                | GuiOperationRequest::SelectSession { .. } => {
+                    assert!(mapping.local_only);
+                    assert!(mapping.method.is_none());
+                }
+                _ => {
+                    assert!(!mapping.local_only);
+                    assert!(mapping.method.is_some());
+                    assert!(mapping.error_shape.contains("error"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gui_operation_server_json_matches_unambiguous_server_shapes() {
+        let approval = GuiOperationRequest::DecideApproval {
+            approval_id: "approval-1".to_string(),
+            decision: "approved".to_string(),
+            reason: "explicit reason required by server".to_string(),
+        };
+        assert_eq!(
+            approval.to_server_request_json().expect("approval server json"),
+            json!({"decision":"approved","reason":"explicit reason required by server"})
+        );
+
+        let decision = GuiOperationRequest::DecideCommandRegistryRequest {
+            request_id: "request-1".to_string(),
+            decision: registry_decision(),
+        };
+        let server_json = decision.to_server_request_json().expect("registry decision server json");
+        assert_eq!(server_json["sessionId"], "session-1");
+        assert_eq!(server_json["status"], "approved");
+        assert_eq!(server_json["finalScope"]["scopeType"], "global");
+        assert_eq!(server_json["finalExecutionPolicy"]["decision"], "allow");
+        assert_eq!(server_json["finalCommand"]["actionId"], "cmd.rg.audit");
+        assert!(server_json.get("finalProject").is_none());
+        assert!(server_json.get("finalPolicy").is_none());
+    }
+
+    #[test]
+    fn command_registry_request_summary_maps_raw_server_response_to_control_enablement() {
+        let raw = json!({
+            "id": "request-1",
+            "operation": "add",
+            "proposedCommand": {"actionId": "cmd.rg.audit"},
+            "approvalStatus": "approved",
+            "applicationStatus": "pending",
+            "finalScope": {"scopeType": "project", "projectKey": "alpha"},
+            "finalExecutionPolicy": {"decision": "ownerApproval"}
+        });
+        let summary = CommandRegistryRequestSummary::from_server_value(&raw).expect("summary");
+        assert_eq!(summary.action_id, "cmd.rg.audit");
+        assert_eq!(summary.final_scope_type.as_deref(), Some("project"));
+        assert_eq!(summary.final_project_key.as_deref(), Some("alpha"));
+        assert_eq!(summary.final_policy.as_deref(), Some("ownerApproval"));
+        assert!(!summary.can_preview);
+        assert!(!summary.can_decide);
+        assert!(summary.can_apply);
+
+        let pending = json!({
+            "id": "request-2",
+            "operation": "disable",
+            "proposedCommand": {"actionId": "cmd.rg.audit"},
+            "approvalStatus": "pending",
+            "applicationStatus": "pending"
+        });
+        let pending_summary = CommandRegistryRequestSummary::from_server_value(&pending).expect("pending summary");
+        assert!(pending_summary.can_preview);
+        assert!(pending_summary.can_decide);
+        assert!(!pending_summary.can_apply);
     }
 }

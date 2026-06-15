@@ -4,6 +4,7 @@ pub mod actions;
 pub mod command_registry;
 pub mod db;
 pub mod errors;
+pub mod gui_backend;
 pub mod gui_sync;
 pub mod lifecycle;
 pub mod model;

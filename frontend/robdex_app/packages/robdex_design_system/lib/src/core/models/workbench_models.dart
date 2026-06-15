@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 class WorkspaceSelection {
   const WorkspaceSelection({
     required this.projectId,
@@ -752,12 +754,15 @@ class ChatEntry {
       String value => int.tryParse(value),
       _ => null,
     };
+    final author = json['author'] as String? ?? 'Unknown';
+    final isStreaming = json['isStreaming'] as bool? ?? false;
+    final body = json['body'] as String? ?? '';
     return ChatEntry(
       id: json['id'] as String? ?? '',
-      author: json['author'] as String? ?? 'Unknown',
+      author: author,
       displayLabel: json['displayLabel'] as String? ?? json['author'] as String? ?? 'Unknown',
       timestamp: timestamp,
-      body: json['body'] as String? ?? '',
+      body: body,
       subtitle: json['subtitle'] as String?,
       kind: json['kind'] as String?,
       status: json['status'] as String?,
@@ -770,15 +775,300 @@ class ChatEntry {
       deliveryState: json['deliveryState'] as String?,
       semanticCard: json['semanticCard'] is Map<String, dynamic>
           ? ChatSemanticCard.fromJson(json['semanticCard'] as Map<String, dynamic>)
-          : null,
+          : _semanticCardFromMessageBody(
+              author: author,
+              body: body,
+              isStreaming: isStreaming,
+            ),
       planItems: (json['planItems'] as List<dynamic>? ?? const [])
           .whereType<Map<String, dynamic>>()
           .map(PlanChecklistItem.fromJson)
           .toList(growable: false),
-      isStreaming: json['isStreaming'] as bool? ?? false,
+      isStreaming: isStreaming,
       isTool: json['isTool'] as bool? ?? false,
     );
   }
+}
+
+ChatSemanticCard? _semanticCardFromMessageBody({
+  required String author,
+  required String body,
+  required bool isStreaming,
+}) {
+  if (isStreaming || author.toLowerCase() != 'assistant') {
+    return null;
+  }
+
+  final text = body.trim();
+  if (!text.startsWith('{') || !text.endsWith('}')) {
+    return null;
+  }
+
+  final decoded = () {
+    try {
+      final value = jsonDecode(text);
+      return value is Map<String, dynamic> ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }();
+  if (decoded == null) {
+    return null;
+  }
+
+  final verdictPayload = _asObject(decoded['requirements']) ?? decoded;
+  if (verdictPayload['overallVerdict'] is String &&
+      _asObject(verdictPayload['route']) != null) {
+    return _requirementsVerdictCard(verdictPayload);
+  }
+
+  if (decoded.containsKey('requirements')) {
+    final requirements = decoded['requirements'];
+    if (decoded['summary'] is String && (requirements == null || requirements is Map<String, dynamic>)) {
+      return _requirementsClaimCard(decoded);
+    }
+  }
+
+  if (decoded['finalDisposition'] is String && decoded['summary'] is String) {
+    return _requirementsClaimCard(decoded);
+  }
+
+  if (decoded['response'] is String && decoded.containsKey('currentPlan')) {
+    return _plannerResponseCard(decoded);
+  }
+
+  return null;
+}
+
+Map<String, dynamic>? _asObject(Object? value) {
+  return value is Map<String, dynamic> ? value : null;
+}
+
+ChatSemanticCard _requirementsClaimCard(Map<String, dynamic> payload) {
+  final summary = payload['summary'] as String? ?? '';
+  final disposition = payload['finalDisposition'] as String? ?? 'unknown';
+  final nestedRequirements = _asObject(payload['requirements']);
+  final sourceEntries =
+      nestedRequirements != null
+          ? nestedRequirements.entries.toList()
+          : payload.entries
+              .where(
+                (entry) =>
+                    entry.key != 'summary' &&
+                    entry.key != 'finalDisposition' &&
+                    entry.key != 'requirements' &&
+                    _asObject(entry.value) != null,
+              )
+              .toList();
+  final rows =
+      sourceEntries.whereType<MapEntry<String, dynamic>>().where((entry) {
+        return _asObject(entry.value) != null;
+      }).map((entry) {
+        final value = _asObject(entry.value)!;
+        final claim = value['claim'] as String? ?? 'unknown';
+        final risk = value['risk'] as String? ?? 'unknown';
+        final justification = value['justification'] as String? ?? '';
+        final bullets =
+            (value['evidence'] as List<dynamic>?)
+                ?.whereType<String>()
+                .take(4)
+                .toList() ??
+                <String>[];
+
+        return ChatSemanticRow(
+          key: entry.key,
+          title: entry.key,
+          summary: justification,
+          detail: null,
+          trailingLabel: '${_titleCaseClaim(claim)} · risk $risk',
+          tone: _claimTone(claim),
+          icon: _claimIcon(claim),
+          bullets: bullets,
+        );
+      }).toList(growable: false);
+  final isCommentary =
+      payload.containsKey('requirements') && payload['requirements'] == null;
+  final titleToneIcon =
+      isCommentary
+          ? const <String>['Requirements Commentary', 'secondary', 'notes']
+          : switch (disposition) {
+            'readyForRequirementsReview' => const <String>['Requirements Claim', 'success', 'factCheck'],
+            'blockedNeedsOwnerAction' => const <String>['Requirements Blocked', 'warning', 'warning'],
+            'continueWorkNeeded' => const <String>['Requirements Need Work', 'danger', 'build'],
+            _ when rows.isEmpty => const <String>['Requirements Output', 'secondary', 'rule'],
+            _ => const <String>['Requirements Claim', 'success', 'factCheck'],
+          };
+  return ChatSemanticCard(
+    kind: 'requirementsClaim',
+    title: titleToneIcon[0],
+    summary: summary,
+    statusLabel:
+        isCommentary
+            ? 'commentary'
+            : rows.isEmpty
+            ? null
+            : '${rows.length} ${rows.length == 1 ? 'claim' : 'claims'}',
+    tone: titleToneIcon[1],
+    icon: titleToneIcon[2],
+    rows: rows,
+    plannerOptions: const <PlannerOption>[],
+  );
+}
+
+ChatSemanticCard _requirementsVerdictCard(Map<String, dynamic> payload) {
+  final overall = payload['overallVerdict'] as String? ?? 'unknown';
+  final routeMessage = _asObject(payload['route'])?['message'] as String? ?? '';
+  final rows =
+      payload.entries
+          .where((entry) => entry.key != 'overallVerdict' && entry.key != 'route')
+          .where((entry) => _asObject(entry.value) != null)
+          .map((entry) {
+            final key = entry.key;
+            final value = _asObject(entry.value)!;
+            final verdict = value['verdict'] as String? ?? 'unknown';
+            final reason = value['reason'] as String? ?? '';
+            final evidence = value['evidenceAssessment'] as String? ?? '';
+            final correction = value['requiredCorrection'] as String? ?? '';
+            final bullets = <String>[
+              if (evidence.trim().isNotEmpty) 'Evidence: ${evidence.trim()}',
+              if (correction.trim().isNotEmpty) 'Correction: ${correction.trim()}',
+            ];
+
+            return ChatSemanticRow(
+              key: key,
+              title: key,
+              summary: reason,
+              detail: null,
+              trailingLabel: _titleCaseVerdict(verdict),
+              tone: _verdictTone(verdict),
+              icon: _verdictIcon(verdict),
+              bullets: bullets,
+            );
+          })
+          .where((row) => row.key.isNotEmpty)
+          .toList(growable: false);
+
+  return ChatSemanticCard(
+    kind: 'requirementsVerdict',
+    title: switch (overall) {
+      'pass' => 'Requirements Review Passed',
+      'fail' => 'Requirements Review Failed',
+      'acceptedBlocked' => 'Requirements Review Accepted Blocker',
+      'rejectedBlocked' => 'Requirements Review Rejected Blocker',
+      'needsHumanWaiver' => 'Requirements Review Needs Waiver',
+      _ => 'Requirements Review',
+    },
+    summary: routeMessage,
+    statusLabel: null,
+    tone: _verdictTone(overall),
+    icon: _verdictIcon(overall),
+    rows: rows,
+    plannerOptions: const <PlannerOption>[],
+  );
+}
+
+ChatSemanticCard _plannerResponseCard(Map<String, dynamic> payload) {
+  final clarification = _asObject(payload['clarification']);
+  final options =
+      ((clarification?['options'] as List<dynamic>?) ?? const <dynamic>[]).whereType<Map<String, dynamic>>().map((
+        option,
+      ) {
+        return PlannerOption(
+          label: option['label'] as String? ?? '',
+          description: option['description'] as String? ?? '',
+        );
+      }).toList(growable: false);
+  final question = clarification?['question'] as String? ?? '';
+  final currentPlan = payload['currentPlan'];
+  final title =
+      currentPlan is String && currentPlan.trim().isNotEmpty
+          ? currentPlan.trim()
+          : 'Planner';
+  return ChatSemanticCard(
+    kind: 'plannerResponse',
+    title: title,
+    summary: payload['response'] as String? ?? '',
+    statusLabel: null,
+    tone: 'primary',
+    icon: 'planner',
+    rows:
+        question.trim().isEmpty
+            ? const <ChatSemanticRow>[]
+            : [
+              ChatSemanticRow(
+                key: 'clarification',
+                title: question.trim(),
+                summary: '',
+                tone: 'primary',
+                icon: 'question',
+                detail: null,
+                trailingLabel: null,
+                bullets: const <String>[],
+              ),
+            ],
+    plannerOptions: options,
+  );
+}
+
+String _verdictTone(String value) {
+  return switch (value) {
+    'pass' => 'success',
+    'fail' || 'rejectedBlocked' => 'danger',
+    'acceptedBlocked' || 'needsHumanWaiver' => 'warning',
+    _ => 'secondary',
+  };
+}
+
+String _claimTone(String value) {
+  return switch (value) {
+    'satisfied' => 'success',
+    'notSatisfied' => 'danger',
+    'blocked' => 'warning',
+    'notApplicable' => 'muted',
+    _ => 'secondary',
+  };
+}
+
+String _verdictIcon(String value) {
+  return switch (value) {
+    'pass' => 'verified',
+    'fail' => 'cancel',
+    'acceptedBlocked' => 'warning',
+    'rejectedBlocked' => 'problem',
+    'needsHumanWaiver' => 'gavel',
+    _ => 'review',
+  };
+}
+
+String _claimIcon(String value) {
+  return switch (value) {
+    'satisfied' => 'check',
+    'notSatisfied' => 'cancel',
+    'blocked' => 'warning',
+    'notApplicable' => 'remove',
+    _ => 'dot',
+  };
+}
+
+String _titleCaseVerdict(String value) {
+  return switch (value) {
+    'acceptedBlocked' => 'Accepted blocker',
+    'rejectedBlocked' => 'Rejected blocker',
+    'needsHumanWaiver' => 'Needs waiver',
+    'pass' => 'Pass',
+    'fail' => 'Fail',
+    _ => 'Unknown',
+  };
+}
+
+String _titleCaseClaim(String value) {
+  return switch (value) {
+    'satisfied' => 'Satisfied',
+    'notSatisfied' => 'Not satisfied',
+    'blocked' => 'Blocked',
+    'notApplicable' => 'Not applicable',
+    _ => 'Unknown',
+  };
 }
 
 class ChatSemanticCard {

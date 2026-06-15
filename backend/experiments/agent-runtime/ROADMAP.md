@@ -10,10 +10,9 @@ product specification.
 - **Current milestone:** Build an alternative, PostgreSQL-backed agent runtime
   that can eventually power a macOS/iOS GUI without depending on stable Robdex
   bridge internals.
-- **Current active slice:** GUI contract + proof.
+- **Current active slice:** No active implementation slice; Rust/Rinf GUI backend controller boundary is completed.
 - **Current implementation owner:** Codex Config Operator.
-- **Planner stance:** contract-first, backend/Rust proof first, no Flutter UI
-  implementation until the GUI state/operation boundary is stable.
+- **Planner stance:** Rust owns GUI runtime synchronization, operation dispatch, and durable state decisions; Flutter UI remains out of scope until explicitly assigned.
 
 ## Owner principles
 
@@ -49,6 +48,7 @@ product specification.
 - Workflow memory: `crates/robdex-agent-runtime/src/workflow_memory.rs`
 - Resident operations/startup/shutdown: `crates/robdex-agent-runtime/src/operations.rs`
 - GUI sync client prototype: `crates/robdex-agent-runtime/src/gui_sync.rs`
+- Rust/Rinf GUI backend controller: `crates/robdex-agent-runtime/src/gui_backend.rs`
 - Local service scripts: `scripts/agent-runtime-service.sh` and
   `scripts/validate-local-service.sh`
 - README/user docs: `README.md`
@@ -83,26 +83,25 @@ product specification.
     Starlark `cmd.describe()` affordances.
 25. Validation-script cutover for explicit CLI binary selection and sanitized
     model request evidence.
+26. GUI contract + proof: typed local controller state, operation vocabulary,
+    Dart responsibility boundary, approval/command control enablement, and
+    projection/reducer proof tests.
+27. GUI API gap audit: every `GuiOperationRequest` has a documented and
+    code-backed route/local-action mapping; approval and command-registry
+    request shape mismatches are resolved; role-admin mutations and
+    workflow-memory inspection operation intents are explicitly deferred.
+28. Rust/Rinf GUI backend controller boundary: a Rust-owned dispatcher owns
+    `RuntimeSyncClient`, owned WebSocket stream handle, `RuntimeProjection`,
+    `GuiControllerState`, selected session, connection/resync state, transient
+    errors, operation dispatch, and typed `GuiOperationResult` emission for a future thin Rinf layer. The controller also exposes a public owned-stream polling method for consuming one WebSocket server message at a time through the shared reducer.
 
-## Active slice: GUI contract + proof
+## Active slice
 
-Goal: define the backend/Rust contract that a future Rust/Rinf GUI controller
-and Flutter client will consume.
+No active implementation slice is recorded after completing the Rust/Rinf GUI
+backend controller boundary. The next planner assignment should set a new
+task-specific Requirements packet before additional implementation starts.
 
-Scope:
-
-- Extend or clarify shared GUI contract types.
-- Keep `RuntimeProjection` as the full hydrated source-of-truth UI state.
-- Keep `RuntimeDelta` as the only realtime persisted-state update format.
-- Model local-only GUI/controller state separately from `RuntimeProjection`.
-- Define typed GUI operations/intents and typed outcomes/errors for the first GUI
-  integration boundary.
-- Document Dart responsibilities and forbidden runtime decisions.
-- Add proof tests for serialization, reducer behavior, selected-session switch
-  semantics, operation errors, resync surfacing, and snapshot/WebSocket
-  convergence.
-
-Non-goals:
+Standing non-goals until reassigned:
 
 - No Flutter UI implementation.
 - No stable Robdex production-path changes.
@@ -150,10 +149,13 @@ scripts/smoke-lmstudio-embeddings.sh
 
 ## Deferred / next likely slices
 
-1. Finish GUI contract + proof.
-2. Fill API gaps discovered by the GUI contract.
-3. Service packaging beyond local scripts.
-4. Rust/Rinf GUI backend integration.
+1. Rinf transport binding that forwards Dart packets to `GuiBackendController`
+   without adding Dart-side runtime decisions.
+2. Service packaging beyond local scripts.
+3. Deferred role-admin GUI operation intents if owner moves role mutation into
+   the first GUI shell.
+4. Deferred workflow-memory inspection operation intents if projection/detail
+   state is insufficient for the first GUI shell.
 5. Flutter GUI implementation using design-system-only widgets.
 6. Broader execution expansion only after GUI/runtime lifecycle is stable.
 
@@ -161,8 +163,8 @@ scripts/smoke-lmstudio-embeddings.sh
 
 - The cumulative experimental runtime diff is large; review by slice and rely on
   validation evidence.
-- Projection types can become too raw if GUI-ready summaries are not added where
-  needed.
+- Projection types can become too raw if future GUI slices add controls without
+  typed backend-derived summaries.
 - Operation contracts must not leak durable decision-making into Dart.
 - Command/runtime context must remain cache-stable at the model schema layer.
 - Validation scripts must track intentionally removed fields such as full
