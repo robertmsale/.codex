@@ -218,7 +218,7 @@ product specification.
 
 ## Active slice
 
-Role Admin UI structured editor is implemented: DB-backed role draft validation, create/update immutable versions, activate/archive/unarchive/export routes, role projection/view-model fields, Rust GUI operations, and the design-system Role Admin panel are now in place. The current runtime slice adds PostgreSQL-backed output artifacts and bounded retrieval for execute_code, command runs, and managed-process output as the output-budget foundation for future automatic compaction. Remaining gates are workflow-memory inspection UI, remote/mDNS/iOS discovery, automatic compaction policy, broader execution expansion after GUI/runtime lifecycle is stable, and any owner-approved production Robdex integration. Tokenizer-based accounting is intentionally not part of the output-artifact foundation.
+Role Admin UI structured editor is implemented: DB-backed role draft validation, create/update immutable versions, activate/archive/unarchive/export routes, role projection/view-model fields, Rust GUI operations, and the design-system Role Admin panel are now in place. The current runtime slice adds the compaction kernel on top of PostgreSQL-backed output artifacts: durable compaction checkpoints, checkpoint-rooted reconstruction, manual CLI compaction, deterministic bytes-based request estimation, automatic pre-send compaction, fail-closed thresholds, and fork-aware reconstruction. Remaining gates are workflow-memory inspection UI, remote/mDNS/iOS discovery, broader execution expansion after GUI/runtime lifecycle is stable, and any owner-approved production Robdex integration. Tokenizer-based accounting remains intentionally out of scope.
 
 ## Validation baseline
 

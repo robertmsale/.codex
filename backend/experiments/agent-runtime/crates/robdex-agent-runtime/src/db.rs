@@ -426,6 +426,8 @@ pub struct HistoryItem {
     pub user: String,
     pub assistant: Option<String>,
     pub started_at: chrono::DateTime<chrono::Utc>,
+    pub source: String,
+    pub checkpoint_id: Option<Uuid>,
 }
 
 pub async fn session_record(pool: &PgPool, session_id: Uuid) -> Result<SessionSummary> {
@@ -638,52 +640,8 @@ pub async fn fork_session(pool: &PgPool, source_session_id: Uuid, fork_turn_id: 
     Ok(id)
 }
 
-async fn local_completed_history(pool: &PgPool, session_id: Uuid, stop_at_turn: Option<Uuid>) -> Result<Vec<HistoryItem>> {
-    let rows = sqlx::query(
-        r#"
-        SELECT t.id, t.session_id, t.input_text, t.started_at,
-               (SELECT me.payload->>'summary' FROM model_events me WHERE me.turn_id = t.id AND me.event_type = 'final_response' ORDER BY me.ordinal DESC LIMIT 1) AS assistant
-        FROM turns t
-        WHERE t.session_id = $1 AND t.status = 'completed'
-        ORDER BY t.started_at ASC
-        "#,
-    )
-    .bind(session_id)
-    .fetch_all(pool)
-    .await?;
-    let mut out = Vec::new();
-    for row in rows {
-        let turn_id: Uuid = row.get("id");
-        out.push(HistoryItem {
-            session_id: row.get("session_id"),
-            turn_id,
-            user: row.get("input_text"),
-            assistant: row.get("assistant"),
-            started_at: row.get("started_at"),
-        });
-        if stop_at_turn == Some(turn_id) { break; }
-    }
-    if stop_at_turn.is_some() && out.last().map(|item| item.turn_id) != stop_at_turn {
-        bail!("completed history does not contain fork boundary {stop_at_turn:?}");
-    }
-    Ok(out)
-}
-
 pub async fn reconstructed_history(pool: &PgPool, session_id: Uuid) -> Result<Vec<HistoryItem>> {
-    let mut chain = Vec::new();
-    let mut cursor = Some(session_id);
-    while let Some(id) = cursor {
-        let session = session_record(pool, id).await?;
-        cursor = session.forked_from_session_id;
-        chain.push(session);
-    }
-    chain.reverse();
-    let mut history = Vec::new();
-    for (idx, session) in chain.iter().enumerate() {
-        let stop = if idx + 1 < chain.len() { chain[idx + 1].forked_from_turn_id } else { None };
-        history.extend(local_completed_history(pool, session.id, stop).await?);
-    }
-    Ok(history)
+    crate::compaction::reconstructed_history_after_checkpoint(pool, session_id).await
 }
 
 pub async fn history_json(pool: &PgPool, session_id: Uuid) -> Result<Value> {

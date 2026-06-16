@@ -44,6 +44,8 @@ pub struct ModelHistoryItem {
     pub user: String,
     pub assistant: Option<String>,
     pub started_at: String,
+    pub source: String,
+    pub checkpoint_id: Option<String>,
 }
 
 #[async_trait]

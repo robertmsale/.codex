@@ -223,6 +223,26 @@ CREATE INDEX IF NOT EXISTS execution_output_artifacts_command_idx
 CREATE INDEX IF NOT EXISTS execution_output_artifacts_process_idx
     ON execution_output_artifacts(process_id, stream, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS compaction_checkpoints (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
+    source_start_turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    source_end_turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    compacted_through_turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    compacted_through_event_sequence BIGINT,
+    replacement_context TEXT NOT NULL DEFAULT '',
+    summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+    estimate_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    model_provider_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    failure_info JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS compaction_checkpoints_session_completed_idx
+    ON compaction_checkpoints(session_id, created_at DESC)
+    WHERE status = 'completed';
+
 CREATE TABLE IF NOT EXISTS command_registry_requests (
     id UUID PRIMARY KEY,
     session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,

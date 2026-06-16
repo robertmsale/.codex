@@ -2,6 +2,7 @@ pub mod routing;
 pub mod approvals;
 pub mod actions;
 pub mod command_registry;
+pub mod compaction;
 pub mod db;
 pub mod errors;
 pub mod gui_backend;

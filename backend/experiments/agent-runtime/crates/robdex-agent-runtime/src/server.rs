@@ -794,6 +794,9 @@ async fn state_ws_loop(state: ServerState, query: WsQuery, socket: WebSocket) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compaction;
+    use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
+    use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{Method, Request};
     use crate::gui_sync::{RuntimeSyncClient, RuntimeSyncConfig, SyncOutcome};
@@ -801,6 +804,50 @@ mod tests {
     use tokio_tungstenite::connect_async;
     use tower::ServiceExt;
     use sqlx::Row;
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    #[derive(Default, Clone)]
+    struct FakeModelClient {
+        observed_history: Arc<StdMutex<Vec<Vec<ModelHistoryItem>>>>,
+    }
+
+    #[async_trait]
+    impl ModelClient for FakeModelClient {
+        async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> anyhow::Result<ModelToolTurn> {
+            self.observed_history.lock().expect("history lock").push(history.to_vec());
+            let request_shape = crate::model::codex_adapter::CodexBackedModelClient::request_tool_call_request_shape(
+                "fake-model",
+                role_instructions,
+                history,
+                runtime_messages,
+                execute_code_contract,
+                request_registry_contract,
+                message,
+            );
+            Ok(ModelToolTurn {
+                provider: "fake".to_string(),
+                model: "fake-model".to_string(),
+                assistant_summary: "fake tool call".to_string(),
+                tool_call: ToolCallRequest {
+                    call_identity: "fake-call".to_string(),
+                    tool_name: "execute_code".to_string(),
+                    arguments: json!({"source": "output(\"fake-ok\")"}),
+                },
+                request_shape,
+                raw_response: json!({"output":[{"type":"function_call","name":"execute_code","call_id":"fake-call","arguments":"{\"source\":\"output(\\\"fake-ok\\\")\"}"}]}),
+            })
+        }
+
+        async fn submit_tool_result(&self, role_instructions: &str, history: &[ModelHistoryItem], _tool_call_response: &Value, call_id: &str, tool_result: &Value) -> anyhow::Result<ModelFinalTurn> {
+            Ok(ModelFinalTurn {
+                provider: "fake".to_string(),
+                model: "fake-model".to_string(),
+                final_text: format!("fake final {call_id} {}", tool_result.get("status").and_then(Value::as_str).unwrap_or("unknown")),
+                request_shape: json!({"model":"fake-model","instructions":role_instructions,"history":history,"toolResult":tool_result}),
+                raw_response: json!({"output":[{"type":"message","content":[{"type":"output_text","text":"fake final"}]}]}),
+            })
+        }
+    }
 
     struct TestDb {
         pool: PgPool,
@@ -2069,6 +2116,27 @@ mod tests {
         (turn_id, tool_call_id)
     }
 
+    async fn insert_completed_turn(pool: &PgPool, session_id: Uuid, input: &str, assistant: &str) -> Uuid {
+        let turn_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, completed_at) VALUES ($1,$2,'user',$3,'completed',now())")
+            .bind(turn_id)
+            .bind(session_id)
+            .bind(input)
+            .execute(pool)
+            .await
+            .expect("insert completed turn");
+        sqlx::query("INSERT INTO model_events (id, session_id, turn_id, event_type, payload) VALUES ($1,$2,$3,'final_response',$4)")
+            .bind(Uuid::new_v4())
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(json!({"summary": assistant}))
+            .execute(pool)
+            .await
+            .expect("insert final response");
+        db::append_event(pool, session_id, Some(turn_id), "turn", Some(turn_id), "turn.completed", Some("completed"), json!({"test": true})).await.expect("turn event");
+        turn_id
+    }
+
     fn scoped_command_seed(action_id: &str, object: &str) -> command_registry::CommandSeed {
         let mut value = admin_command_seed(action_id);
         value["starlarkObject"] = json!(object);
@@ -2357,6 +2425,194 @@ output(outputs.stats(artifact))
                 "cross-session retrieval should report session-scoped miss: {packet_text}"
             );
         }
+
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn compaction_reconstruction_uses_checkpoint_plus_post_boundary_turns() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("compact-reconstruct"), ".", Some("."), None, None).await.expect("session");
+        let t1 = insert_completed_turn(&test_db.pool, session_id, "pre-one raw history", "pre-one assistant").await;
+        let t2 = insert_completed_turn(&test_db.pool, session_id, "pre-two raw history", "pre-two assistant").await;
+        let t3 = insert_completed_turn(&test_db.pool, session_id, "post-boundary history", "post assistant").await;
+
+        let checkpoint = compaction::compact_session_through_turn(&test_db.pool, session_id, t2, compaction::CompactionBudget::default()).await.expect("manual compact");
+        assert_eq!(checkpoint.status, "completed");
+        assert_eq!(checkpoint.compacted_through_turn_id, Some(t2));
+        let history = db::reconstructed_history(&test_db.pool, session_id).await.expect("history");
+        assert_eq!(history.len(), 2, "history should contain checkpoint root plus post-boundary turn");
+        assert_eq!(history[0].source, "compaction_checkpoint");
+        assert_eq!(history[0].checkpoint_id, Some(checkpoint.id));
+        assert!(history[0].assistant.as_deref().unwrap_or_default().contains("Runtime compaction checkpoint"));
+        assert_eq!(history[1].turn_id, t3);
+        assert!(!history.iter().any(|item| item.turn_id == t1 || item.user == "pre-one raw history"));
+
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_preserves_audit_rows_and_changes_history() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("compact-audit"), ".", Some("."), Some("Concrete owner active goal"), None).await.expect("session");
+        let t1 = insert_completed_turn(&test_db.pool, session_id, "audit turn one", "assistant one").await;
+        let t2 = insert_completed_turn(&test_db.pool, session_id, "audit turn two", "assistant two").await;
+        db::append_event(&test_db.pool, session_id, Some(t1), "policy", None, "policy.decision", Some("allow"), json!({"action":"tool.execute_code","decision":"allow","reason":"concrete decision"})).await.expect("policy decision");
+        let tool_call_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status) VALUES ($1,$2,$3,'execute_code','compact-script',$4,'completed')")
+            .bind(tool_call_id)
+            .bind(session_id)
+            .bind(t1)
+            .bind(json!({"source":"fs.write(\"src/main.rs\", \"content\")"}))
+            .execute(&test_db.pool)
+            .await
+            .expect("insert tool call");
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, final_output) VALUES ($1,$2,$3,'completed','ok')")
+            .bind(Uuid::new_v4())
+            .bind(tool_call_id)
+            .bind("fs.write(\"src/main.rs\", \"content\")")
+            .execute(&test_db.pool)
+            .await
+            .expect("insert script run");
+        let before_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1").bind(session_id).fetch_one(&test_db.pool).await.expect("turn count");
+        let before_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1").bind(session_id).fetch_one(&test_db.pool).await.expect("event count");
+        let before_model_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM model_events WHERE session_id=$1").bind(session_id).fetch_one(&test_db.pool).await.expect("model count");
+
+        let checkpoint = compaction::compact_session_through_latest_completed_turn(&test_db.pool, session_id, compaction::CompactionBudget::default()).await.expect("compact latest");
+        assert_eq!(checkpoint.compacted_through_turn_id, Some(t2));
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM turns WHERE session_id=$1").bind(session_id).fetch_one(&test_db.pool).await.expect("turn count after"), before_turns);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM model_events WHERE session_id=$1").bind(session_id).fetch_one(&test_db.pool).await.expect("model count after"), before_model_events);
+        let after_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1").bind(session_id).fetch_one(&test_db.pool).await.expect("event count after");
+        assert!(after_events > before_events, "compaction appends event evidence without deleting audit rows");
+        let history = db::reconstructed_history(&test_db.pool, session_id).await.expect("history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].source, "compaction_checkpoint");
+        assert_eq!(history[0].checkpoint_id, Some(checkpoint.id));
+        let context = history[0].assistant.as_deref().unwrap_or_default();
+        assert!(context.contains("Active task goal: Concrete owner active goal"));
+        assert!(context.contains("policy.decision"));
+        assert!(context.contains("concrete decision"));
+        assert!(context.contains("fs.write("));
+        assert!(context.contains("src/main.rs"));
+        assert!(!history[0].assistant.as_deref().unwrap_or_default().contains("raw command output"));
+        assert_ne!(t1, Uuid::nil());
+
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn runtime_send_pre_send_compacts_before_model_dispatch_and_skips_under_threshold() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let over_session = db::new_session(&test_db.pool, &role, Some("runtime-send-over"), ".", Some("."), None, None).await.expect("over session");
+        insert_completed_turn(&test_db.pool, over_session, &"large prior ".repeat(200), "prior assistant").await;
+        let fake_over = FakeModelClient::default();
+        let over_budget = compaction::CompactionBudget { pre_send_threshold: 1, fail_closed_threshold: 200_000, ..Default::default() };
+        crate::runtime::send_with_model_client(&test_db.pool, over_session, "current over", &fake_over, over_budget).await.expect("over send");
+        let observed = fake_over.observed_history.lock().expect("history").clone();
+        assert_eq!(observed.len(), 1);
+        assert!(observed[0].iter().any(|item| item.source == "compaction_checkpoint"), "model dispatch should see checkpoint-rooted history: {:?}", observed[0]);
+        let checkpoints: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM compaction_checkpoints WHERE session_id=$1 AND status='completed'")
+            .bind(over_session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("checkpoint count");
+        assert_eq!(checkpoints, 1);
+
+        let under_session = db::new_session(&test_db.pool, &role, Some("runtime-send-under"), ".", Some("."), None, None).await.expect("under session");
+        insert_completed_turn(&test_db.pool, under_session, "small prior", "small assistant").await;
+        let fake_under = FakeModelClient::default();
+        let under_budget = compaction::CompactionBudget { pre_send_threshold: 200_000, fail_closed_threshold: 210_000, ..Default::default() };
+        crate::runtime::send_with_model_client(&test_db.pool, under_session, "current under", &fake_under, under_budget).await.expect("under send");
+        let observed = fake_under.observed_history.lock().expect("history").clone();
+        assert_eq!(observed.len(), 1);
+        assert!(observed[0].iter().any(|item| item.source == "reconstructed_session_history" && item.user == "small prior"));
+        assert!(!observed[0].iter().any(|item| item.source == "compaction_checkpoint"));
+        let checkpoints: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM compaction_checkpoints WHERE session_id=$1")
+            .bind(under_session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("checkpoint count");
+        assert_eq!(checkpoints, 0);
+
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn runtime_send_fail_closed_after_compaction_without_model_dispatch() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("runtime-send-fail-closed"), ".", Some("."), None, None).await.expect("session");
+        insert_completed_turn(&test_db.pool, session_id, "prior turn before unsafe send", "prior assistant").await;
+        let fake = FakeModelClient::default();
+        let budget = compaction::CompactionBudget { pre_send_threshold: 1, fail_closed_threshold: 1, ..Default::default() };
+        let result = crate::runtime::send_with_model_client(&test_db.pool, session_id, "current unsafe send", &fake, budget).await;
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("fail-closed threshold"));
+        assert!(fake.observed_history.lock().expect("history").is_empty(), "model client must not be dispatched after fail-closed compaction");
+        let checkpoints: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM compaction_checkpoints WHERE session_id=$1 AND status='completed'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("checkpoint count");
+        assert_eq!(checkpoints, 1, "compaction attempted before fail-closed rejection");
+        let turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text='current unsafe send'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("current turn count");
+        assert_eq!(turns, 0, "fail-closed rejection must happen before creating the current running turn");
+
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn compaction_failure_paths_record_failed_checkpoints() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("compact-fail-record"), ".", Some("."), None, None).await.expect("session");
+        let no_turn = compaction::compact_session_through_latest_completed_turn(&test_db.pool, session_id, compaction::CompactionBudget::default()).await;
+        assert!(no_turn.is_err());
+        let failed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM compaction_checkpoints WHERE session_id=$1 AND status='failed' AND failure_info->>'reason' LIKE '%no completed turns%'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("failed no-turn checkpoint");
+        assert_eq!(failed, 1);
+
+        let invalid_turn = Uuid::new_v4();
+        let invalid = compaction::compact_session_through_turn(&test_db.pool, session_id, invalid_turn, compaction::CompactionBudget::default()).await;
+        assert!(invalid.is_err());
+        let failed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM compaction_checkpoints WHERE session_id=$1 AND status='failed' AND failure_info->>'requestedThroughTurnId'=$2 AND failure_info->>'reason' LIKE '%not found%'")
+            .bind(session_id)
+            .bind(invalid_turn.to_string())
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("failed invalid checkpoint");
+        assert_eq!(failed, 1);
+
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn forked_session_reconstruction_honors_compaction_boundaries() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let parent = db::new_session(&test_db.pool, &role, Some("compact-fork-parent"), ".", Some("."), None, None).await.expect("parent");
+        let t1 = insert_completed_turn(&test_db.pool, parent, "parent before fork one", "parent assistant one").await;
+        let t2 = insert_completed_turn(&test_db.pool, parent, "parent fork boundary", "parent assistant two").await;
+        let child = db::fork_session(&test_db.pool, parent, t2).await.expect("fork child");
+        insert_completed_turn(&test_db.pool, child, "child local turn", "child assistant").await;
+        let parent_checkpoint = compaction::compact_session_through_turn(&test_db.pool, parent, t2, compaction::CompactionBudget::default()).await.expect("parent compact");
+        insert_completed_turn(&test_db.pool, parent, "parent after fork not inherited", "parent later").await;
+
+        let child_history = db::reconstructed_history(&test_db.pool, child).await.expect("child history");
+        assert!(child_history.iter().any(|item| item.source == "compaction_checkpoint" && item.checkpoint_id == Some(parent_checkpoint.id)));
+        assert!(child_history.iter().any(|item| item.user == "child local turn"));
+        assert!(!child_history.iter().any(|item| item.user == "parent after fork not inherited"));
+        assert!(!child_history.iter().any(|item| item.turn_id == t1 && item.source == "reconstructed_session_history"));
 
         test_db.cleanup().await;
     }

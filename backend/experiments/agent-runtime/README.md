@@ -827,8 +827,55 @@ output(outputs.stats(artifact))
 Every retrieval helper enforces hard byte/line caps and reports returned,
 omitted, and truncation metadata. The helpers operate on stored artifact ids and
 do not dump unbounded stdout, stderr, or combined streams into model-visible
-responses. This slice is the output-budget foundation required by future
-automatic compaction; it does not implement automatic compaction itself.
+responses. Retrieval is session-scoped: an artifact id alone is not sufficient
+to read output from a different session.
+
+## Compaction checkpoints
+
+Long sessions stop replaying all completed turns once a durable compaction
+checkpoint exists. Checkpoints live in PostgreSQL in
+`compaction_checkpoints`; they record session id, status, source turn/event
+boundary, compacted-through turn, bounded replacement context, estimate
+metadata, model/provider metadata when present, timestamps, and failure
+information. Compaction never deletes or rewrites audit rows: original turns,
+model events, tool calls, script runs, output artifacts, approvals, managed
+processes, and event-stream entries remain queryable.
+
+Manual compaction is available through the CLI:
+
+```bash
+cargo run --quiet --bin robdex-agent-runtime -- compact --session <session-id>
+cargo run --quiet --bin robdex-agent-runtime -- compact --session <session-id> --through-turn <turn-id>
+```
+
+Model reconstruction uses the latest completed checkpoint as a semantic root
+and then appends completed turns after the checkpoint boundary. Forked sessions
+inherit applicable checkpoints only through their fork boundary; they never
+inherit parent turns completed after the fork.
+
+Before a live model request, the runtime estimates model-visible request
+surfaces using deterministic byte accounting over the same JSON/text request
+shape used for dispatch: final instructions, input items, runtime messages,
+tool schemas, and the current user message. The estimate is serialized bytes
+divided by four, plus fixed reserves. `ROBDEX_AGENT_RUNTIME_CONTEXT_BUDGET`,
+`ROBDEX_AGENT_RUNTIME_MAX_OUTPUT_RESERVE`,
+`ROBDEX_AGENT_RUNTIME_PRE_SEND_COMPACTION_THRESHOLD`, and
+`ROBDEX_AGENT_RUNTIME_FAIL_CLOSED_THRESHOLD` override the safe defaults without
+calling a model metadata service. If the pre-send estimate exceeds the
+pre-send threshold, the runtime compacts completed history, rebuilds context,
+rebuilds the same model request shape from checkpoint-rooted history, and
+continues only if the rebuilt estimate is below the fail-closed threshold.
+Compaction failure paths record failed checkpoint rows with `failure_info`
+before returning an error.
+
+Replacement context is bounded model-visible session memory. It marks itself as
+a compaction checkpoint, preserves owner-instruction guidance, active task
+goal, important decisions, touched surfaces, blockers, pending approvals,
+continuing process handles, latest actionable state, and output artifacts by
+handle and bounded metadata. It explicitly keeps command discovery out of
+persisted role instructions or stale command catalogs.
+Tokenizer-specific accounting such as tiktoken remains intentionally out of
+scope.
 
 ## Session lifecycle
 

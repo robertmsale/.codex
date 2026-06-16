@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{approvals, command_registry, db, routing};
+use crate::{approvals, command_registry, compaction, db, routing};
 use crate::lifecycle::{self, TerminalStatus};
 use crate::model::codex_adapter::{bounded_raw_response, concise_response_summary, CodexBackedModelClient};
 use crate::model::{ModelClient, ModelHistoryItem, RuntimeInputMessage};
@@ -69,13 +69,8 @@ fn model_request_evidence(
     })
 }
 
-pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<Uuid> {
-    let session = db::ensure_session_open(pool, session_id).await?;
-    let workdir = session.workdir.clone();
-    let role_snapshot = db::session_role_snapshot(pool, session_id).await?;
-    let project_key = session.project_key.clone();
-    let prior_history = db::reconstructed_history(pool, session_id).await?;
-    let model_history: Vec<ModelHistoryItem> = prior_history
+fn model_history_from_items(history: &[db::HistoryItem]) -> Vec<ModelHistoryItem> {
+    history
         .iter()
         .map(|item| ModelHistoryItem {
             session_id: item.session_id.to_string(),
@@ -83,8 +78,92 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<Uuid
             user: item.user.clone(),
             assistant: item.assistant.clone(),
             started_at: item.started_at.to_rfc3339(),
+            source: item.source.clone(),
+            checkpoint_id: item.checkpoint_id.map(|id| id.to_string()),
         })
-        .collect();
+        .collect()
+}
+
+fn model_tool_request_shape(
+    role_instructions: &str,
+    history: &[db::HistoryItem],
+    runtime_messages: &[RuntimeInputMessage],
+    execute_code_contract: &str,
+    request_registry_contract: &str,
+    message: &str,
+    model: &str,
+) -> Value {
+    CodexBackedModelClient::request_tool_call_request_shape(
+        model,
+        role_instructions,
+        &model_history_from_items(history),
+        runtime_messages,
+        execute_code_contract,
+        request_registry_contract,
+        message,
+    )
+}
+
+pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<Uuid> {
+    let role_snapshot = db::session_role_snapshot(pool, session_id).await?;
+    let model = CodexBackedModelClient::new_with_model(role_snapshot.model_defaults.model.clone())?;
+    send_with_model_client(pool, session_id, message, &model, compaction::CompactionBudget::from_env()).await
+}
+
+pub async fn send_with_model_client<M: ModelClient + Sync>(
+    pool: &PgPool,
+    session_id: Uuid,
+    message: &str,
+    model: &M,
+    budget: compaction::CompactionBudget,
+) -> Result<Uuid> {
+    let session = db::ensure_session_open(pool, session_id).await?;
+    let workdir = session.workdir.clone();
+    let role_snapshot = db::session_role_snapshot(pool, session_id).await?;
+    let project_key = session.project_key.clone();
+    let live_commands = command_registry::live_visible_commands(pool, &role_snapshot, project_key.as_deref()).await?;
+    let previous_command_context = latest_command_context_evidence(pool, session_id).await?;
+    let runtime_command_context = command_registry::runtime_command_context_message(&live_commands, previous_command_context.as_ref());
+    let runtime_messages = vec![RuntimeInputMessage {
+        text: runtime_command_context.text.clone(),
+        metadata: runtime_command_context.metadata.clone(),
+    }];
+    let execute_code_contract = command_registry::stable_execute_code_contract();
+    let request_registry_contract = command_registry::request_tool_contract();
+    let prior_history_before_compaction = db::reconstructed_history(pool, session_id).await?;
+    let pre_send_request_shape = model_tool_request_shape(
+        &role_snapshot.instruction_text,
+        &prior_history_before_compaction,
+        &runtime_messages,
+        &execute_code_contract,
+        &request_registry_contract,
+        message,
+        role_snapshot.model_defaults.model.as_str(),
+    );
+    let pre_send_estimate = compaction::estimate_model_surfaces(&pre_send_request_shape, budget);
+    if pre_send_estimate.total_estimated_tokens > budget.pre_send_threshold {
+        compaction::compact_session_through_latest_completed_turn(pool, session_id, budget).await?;
+        let rebuilt_history = db::reconstructed_history(pool, session_id).await?;
+        let rebuilt_request_shape = model_tool_request_shape(
+            &role_snapshot.instruction_text,
+            &rebuilt_history,
+            &runtime_messages,
+            &execute_code_contract,
+            &request_registry_contract,
+            message,
+            role_snapshot.model_defaults.model.as_str(),
+        );
+        let rebuilt_estimate = compaction::estimate_model_surfaces(&rebuilt_request_shape, budget);
+        if rebuilt_estimate.total_estimated_tokens > budget.fail_closed_threshold {
+            anyhow::bail!(
+                "rebuilt model request estimate {} exceeds fail-closed threshold {}",
+                rebuilt_estimate.total_estimated_tokens,
+                budget.fail_closed_threshold
+            );
+        }
+    }
+    let prior_history = db::reconstructed_history(pool, session_id).await?;
+    let model_history = model_history_from_items(&prior_history);
 
     let turn_id = Uuid::new_v4();
     let turn_started = Utc::now();
@@ -113,16 +192,6 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<Uuid
     .await?;
     let _route = routing::decide_route(pool, session_id, Some(turn_id), &role_snapshot).await?;
 
-    let live_commands = command_registry::live_visible_commands(pool, &role_snapshot, project_key.as_deref()).await?;
-    let previous_command_context = latest_command_context_evidence(pool, session_id).await?;
-    let runtime_command_context = command_registry::runtime_command_context_message(&live_commands, previous_command_context.as_ref());
-    let runtime_messages = vec![RuntimeInputMessage {
-        text: runtime_command_context.text.clone(),
-        metadata: runtime_command_context.metadata.clone(),
-    }];
-    let execute_code_contract = command_registry::stable_execute_code_contract();
-    let request_registry_contract = command_registry::request_tool_contract();
-    let model = CodexBackedModelClient::new_with_model(role_snapshot.model_defaults.model.clone())?;
     let plan = model.request_tool_call(&role_snapshot.instruction_text, &model_history, &runtime_messages, &execute_code_contract, &request_registry_contract, message).await?;
     let request_evidence = model_request_evidence(&plan.request_shape, &runtime_command_context.evidence, &runtime_messages);
     let model_event_id = Uuid::new_v4();

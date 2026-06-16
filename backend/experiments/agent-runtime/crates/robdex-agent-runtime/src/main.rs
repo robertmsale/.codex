@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use uuid::Uuid;
 use std::collections::BTreeSet;
 
-use robdex_agent_runtime::{approvals, command_registry, db, routing, runtime};
+use robdex_agent_runtime::{approvals, command_registry, compaction, db, routing, runtime};
 use robdex_agent_runtime::roles::{DEFAULT_ROLE_ID, RoleRegistry};
 
 const DEFAULT_DATABASE_URL: &str =
@@ -47,6 +47,12 @@ enum Command {
     CommandRegistry {
         #[command(subcommand)]
         command: CommandRegistryCommand,
+    },
+    Compact {
+        #[arg(long)]
+        session: Uuid,
+        #[arg(long = "through-turn")]
+        through_turn: Option<Uuid>,
     },
 }
 
@@ -257,6 +263,15 @@ async fn main() -> Result<()> {
         },
         Command::Send { session, message } => {
             runtime::send(&pool, session, &message).await?;
+        }
+        Command::Compact { session, through_turn } => {
+            let budget = compaction::CompactionBudget::from_env();
+            let checkpoint = if let Some(through_turn) = through_turn {
+                compaction::compact_session_through_turn(&pool, session, through_turn, budget).await?
+            } else {
+                compaction::compact_session_through_latest_completed_turn(&pool, session, budget).await?
+            };
+            println!("{}", serde_json::to_string_pretty(&checkpoint)?);
         }
         Command::Events { session } => {
             db::print_events(&pool, session).await?;

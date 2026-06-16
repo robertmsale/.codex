@@ -137,6 +137,33 @@ impl CodexBackedModelClient {
         })
     }
 
+    pub fn request_tool_call_request_shape(
+        model: &str,
+        role_instructions: &str,
+        history: &[ModelHistoryItem],
+        runtime_messages: &[RuntimeInputMessage],
+        execute_code_contract: &str,
+        request_registry_contract: &str,
+        message: &str,
+    ) -> Value {
+        let tool = Self::execute_code_tool_schema(execute_code_contract);
+        let request_tool = Self::request_command_registry_change_tool_schema(request_registry_contract);
+        let instructions = format!(
+            "{role_instructions}\n\nChoose exactly one native tool for this turn. Call execute_code when the permanent Starlark interface can satisfy the user. Inspect live registered commands with cmd.describe(), cmd[\"object\"].describe(), or cmd[\"object\"].method.describe() inside execute_code when command details are needed. Full command/process output is stored as output artifacts; use outputs.head/tail/slice/search/stats for bounded retrieval instead of dumping large logs. Call request_command_registry_change when progress is blocked by a missing or outdated command registry entry."
+        );
+        json!({
+            "model": model,
+            "instructions": instructions,
+            "input": responses_input_from_history(history, runtime_messages, Some(message)),
+            "tools": [tool, request_tool],
+            "tool_choice": "auto",
+            "parallel_tool_calls": false,
+            "store": false,
+            "stream": true,
+            "prompt_cache_key": "robdex-agent-runtime-kernel-v1",
+        })
+    }
+
     fn request_headers(&self) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -205,15 +232,21 @@ pub fn bounded_raw_response(response: &Value) -> Value {
 #[async_trait]
 impl ModelClient for CodexBackedModelClient {
     async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn> {
+        let body = Self::request_tool_call_request_shape(
+            &self.model,
+            role_instructions,
+            history,
+            runtime_messages,
+            execute_code_contract,
+            request_registry_contract,
+            message,
+        );
+        let request_shape = body.clone();
         let tool = Self::execute_code_tool_schema(execute_code_contract);
         let request_tool = Self::request_command_registry_change_tool_schema(request_registry_contract);
-        let instructions = format!(
-            "{role_instructions}\n\nChoose exactly one native tool for this turn. Call execute_code when the permanent Starlark interface can satisfy the user. Inspect live registered commands with cmd.describe(), cmd[\"object\"].describe(), or cmd[\"object\"].method.describe() inside execute_code when command details are needed. Full command/process output is stored as output artifacts; use outputs.head/tail/slice/search/stats for bounded retrieval instead of dumping large logs. Call request_command_registry_change when progress is blocked by a missing or outdated command registry entry."
-        );
-        let request_input = responses_input_from_history(history, runtime_messages, Some(message));
         let request_for_shape = ResponsesApiRequest {
             model: self.model.clone(),
-            instructions,
+            instructions: body.get("instructions").and_then(Value::as_str).unwrap_or_default().to_string(),
             input: Vec::new(),
             tools: vec![tool.clone(), request_tool.clone()],
             tool_choice: "auto".to_string(),
@@ -230,18 +263,7 @@ impl ModelClient for CodexBackedModelClient {
                 "robdex-agent-runtime".to_string(),
             )])),
         };
-        let body = json!({
-            "model": self.model,
-            "instructions": request_for_shape.instructions,
-            "input": request_input,
-            "tools": [tool, request_tool],
-            "tool_choice": "auto",
-            "parallel_tool_calls": false,
-            "store": false,
-            "stream": true,
-            "prompt_cache_key": "robdex-agent-runtime-kernel-v1",
-        });
-        let request_shape = body.clone();
+        let _ = request_for_shape;
         let raw_response = self.post_responses(&body).await?;
         let (call_id, tool_name, arguments) = extract_native_tool_call(&raw_response)?;
         Ok(ModelToolTurn {
@@ -307,7 +329,8 @@ pub fn responses_input_from_history(history: &[ModelHistoryItem], runtime_messag
                 "sessionId": item.session_id,
                 "turnId": item.turn_id,
                 "startedAt": item.started_at,
-                "source": "reconstructed_session_history",
+                "source": item.source,
+                "checkpointId": item.checkpoint_id,
             }
         }));
         if let Some(assistant) = &item.assistant
@@ -320,7 +343,8 @@ pub fn responses_input_from_history(history: &[ModelHistoryItem], runtime_messag
                     "sessionId": item.session_id,
                     "turnId": item.turn_id,
                     "startedAt": item.started_at,
-                    "source": "reconstructed_session_history",
+                    "source": item.source,
+                    "checkpointId": item.checkpoint_id,
                 }
             }));
         }
@@ -533,6 +557,8 @@ mod cache_stable_tests {
             user: "ordinary user".to_string(),
             assistant: Some("ordinary assistant".to_string()),
             started_at: "2026-01-01T00:00:00Z".to_string(),
+            source: "reconstructed_session_history".to_string(),
+            checkpoint_id: None,
         }];
         let runtime = vec![RuntimeInputMessage {
             text: "runtime command context".to_string(),
