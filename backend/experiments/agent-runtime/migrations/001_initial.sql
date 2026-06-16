@@ -198,6 +198,31 @@ CREATE INDEX IF NOT EXISTS managed_processes_session_handle_idx ON managed_proce
 CREATE INDEX IF NOT EXISTS process_output_chunks_process_idx ON process_output_chunks(process_id, chunk_index);
 ALTER TABLE managed_processes ADD COLUMN IF NOT EXISTS end_of_session_behavior TEXT NOT NULL DEFAULT 'block';
 
+CREATE TABLE IF NOT EXISTS execution_output_artifacts (
+    id UUID PRIMARY KEY,
+    session_id UUID REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    tool_call_id UUID REFERENCES tool_calls(id) ON DELETE SET NULL,
+    script_run_id UUID REFERENCES script_runs(id) ON DELETE SET NULL,
+    command_run_id UUID REFERENCES command_runs(id) ON DELETE SET NULL,
+    process_id UUID REFERENCES managed_processes(id) ON DELETE SET NULL,
+    source_type TEXT NOT NULL,
+    stream TEXT NOT NULL,
+    content TEXT NOT NULL,
+    byte_count BIGINT NOT NULL,
+    line_count BIGINT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS execution_output_artifacts_session_created_idx
+    ON execution_output_artifacts(session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS execution_output_artifacts_script_idx
+    ON execution_output_artifacts(script_run_id, stream);
+CREATE INDEX IF NOT EXISTS execution_output_artifacts_command_idx
+    ON execution_output_artifacts(command_run_id, stream);
+CREATE INDEX IF NOT EXISTS execution_output_artifacts_process_idx
+    ON execution_output_artifacts(process_id, stream, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS command_registry_requests (
     id UUID PRIMARY KEY,
     session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,

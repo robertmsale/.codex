@@ -1,6 +1,9 @@
+import 'package:code_forge/code_forge.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/models/agent_runtime_control_tower_models.dart';
+
+typedef AgentRuntimeRoleVersionAction = void Function(String roleId, String versionId);
 
 class AgentRuntimeControlTower extends StatelessWidget {
   const AgentRuntimeControlTower({
@@ -12,6 +15,13 @@ class AgentRuntimeControlTower extends StatelessWidget {
     required this.onConnectDiscovered,
     required this.onPollStream,
     required this.onDisconnect,
+    this.onRoleValidate,
+    this.onRoleCreate,
+    this.onRoleUpdate,
+    this.onRoleExport,
+    this.onRoleArchive,
+    this.onRoleUnarchive,
+    this.onRoleActivate,
   });
 
   final AgentRuntimeControlTowerData data;
@@ -21,6 +31,13 @@ class AgentRuntimeControlTower extends StatelessWidget {
   final VoidCallback onConnectDiscovered;
   final VoidCallback onPollStream;
   final VoidCallback onDisconnect;
+  final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleValidate;
+  final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleCreate;
+  final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleUpdate;
+  final ValueChanged<String>? onRoleExport;
+  final ValueChanged<String>? onRoleArchive;
+  final ValueChanged<String>? onRoleUnarchive;
+  final AgentRuntimeRoleVersionAction? onRoleActivate;
 
   @override
   Widget build(BuildContext context) {
@@ -127,6 +144,17 @@ class AgentRuntimeControlTower extends StatelessWidget {
                               subtitle: data.detailSubtitle,
                               child: ListView(
                                 children: [
+                                  _RoleAdminPanel(
+                                    data.roleAdmin,
+                                    onValidate: onRoleValidate,
+                                    onCreate: onRoleCreate,
+                                    onUpdate: onRoleUpdate,
+                                    onExport: onRoleExport,
+                                    onArchive: onRoleArchive,
+                                    onUnarchive: onRoleUnarchive,
+                                    onActivate: onRoleActivate,
+                                  ),
+                                  const SizedBox(height: 12),
                                   ...data.controllerFacts.map(_FactRow.new),
                                   const SizedBox(height: 10),
                                   Text(
@@ -358,6 +386,524 @@ class _ActionTile extends StatelessWidget {
       trailing: item.stateText,
       eyebrow: item.kind,
       tone: item.tone,
+    );
+  }
+}
+
+class _RoleAdminPanel extends StatefulWidget {
+  const _RoleAdminPanel(
+    this.roleAdmin, {
+    this.onValidate,
+    this.onCreate,
+    this.onUpdate,
+    this.onExport,
+    this.onArchive,
+    this.onUnarchive,
+    this.onActivate,
+  });
+
+  final AgentRuntimeRoleAdminData roleAdmin;
+  final ValueChanged<AgentRuntimeRoleEditorDraft>? onValidate;
+  final ValueChanged<AgentRuntimeRoleEditorDraft>? onCreate;
+  final ValueChanged<AgentRuntimeRoleEditorDraft>? onUpdate;
+  final ValueChanged<String>? onExport;
+  final ValueChanged<String>? onArchive;
+  final ValueChanged<String>? onUnarchive;
+  final AgentRuntimeRoleVersionAction? onActivate;
+
+  @override
+  State<_RoleAdminPanel> createState() => _RoleAdminPanelState();
+}
+
+class _RoleAdminPanelState extends State<_RoleAdminPanel> {
+  late final TextEditingController _roleIdController;
+  late final TextEditingController _versionController;
+  late final TextEditingController _displayNameController;
+  late final TextEditingController _modelController;
+  late final TextEditingController _reasoningController;
+  late final TextEditingController _capabilitiesController;
+  late final TextEditingController _policyController;
+  late final TextEditingController _routingModeController;
+  late final TextEditingController _defaultRecipientController;
+  late final TextEditingController _allowedRecipientsController;
+  late final TextEditingController _routingReservedController;
+  late final TextEditingController _lifecycleReservedController;
+  late final CodeForgeController _instructionController;
+  bool _listed = true;
+  bool _ownerVisible = true;
+  bool _canSpawnAgents = false;
+  bool _canArchiveAgents = false;
+  String? _loadedDraftKey;
+
+  @override
+  void initState() {
+    super.initState();
+    _roleIdController = TextEditingController();
+    _versionController = TextEditingController();
+    _displayNameController = TextEditingController();
+    _modelController = TextEditingController();
+    _reasoningController = TextEditingController();
+    _capabilitiesController = TextEditingController();
+    _policyController = TextEditingController();
+    _routingModeController = TextEditingController();
+    _defaultRecipientController = TextEditingController();
+    _allowedRecipientsController = TextEditingController();
+    _routingReservedController = TextEditingController();
+    _lifecycleReservedController = TextEditingController();
+    _instructionController = CodeForgeController();
+    _loadDraft(widget.roleAdmin.editorDraft);
+  }
+
+  @override
+  void didUpdateWidget(covariant _RoleAdminPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _loadDraft(widget.roleAdmin.editorDraft);
+  }
+
+  @override
+  void dispose() {
+    _roleIdController.dispose();
+    _versionController.dispose();
+    _displayNameController.dispose();
+    _modelController.dispose();
+    _reasoningController.dispose();
+    _capabilitiesController.dispose();
+    _policyController.dispose();
+    _routingModeController.dispose();
+    _defaultRecipientController.dispose();
+    _allowedRecipientsController.dispose();
+    _routingReservedController.dispose();
+    _lifecycleReservedController.dispose();
+    _instructionController.dispose();
+    super.dispose();
+  }
+
+  void _loadDraft(AgentRuntimeRoleEditorDraft? draft) {
+    final key = draft == null
+        ? '__empty__'
+        : '${draft.roleId}|${draft.version}|${draft.instructionText.hashCode}|${draft.policy.length}|${draft.capabilities.length}';
+    if (_loadedDraftKey == key) {
+      return;
+    }
+    _loadedDraftKey = key;
+    final next = draft ?? const AgentRuntimeRoleEditorDraft(
+      roleId: 'new-runtime-role',
+      version: '1.0.0',
+      displayName: 'New Runtime Role',
+      model: 'gpt-5.4-mini',
+      reasoningEffort: 'medium',
+      instructionText: 'Write role instructions here.',
+      capabilities: ['tool.execute_code'],
+      policy: [AgentRuntimeRolePolicyRow(action: 'tool.execute_code', decision: 'allow')],
+      routingMode: 'direct',
+      routingReservedActions: ['message.send'],
+      defaultRecipient: 'owner',
+      allowedRecipients: ['owner'],
+      listed: true,
+      ownerVisible: true,
+      canSpawnAgents: false,
+      canArchiveAgents: false,
+      lifecycleReservedActions: ['agent.archive'],
+    );
+    _roleIdController.text = next.roleId;
+    _versionController.text = next.version;
+    _displayNameController.text = next.displayName;
+    _modelController.text = next.model;
+    _reasoningController.text = next.reasoningEffort;
+    _instructionController.text = next.instructionText;
+    _capabilitiesController.text = next.capabilities.join('\n');
+    _policyController.text = next.policy.map((row) => '${row.action}=${row.decision}').join('\n');
+    _routingModeController.text = next.routingMode;
+    _defaultRecipientController.text = next.defaultRecipient ?? '';
+    _allowedRecipientsController.text = next.allowedRecipients.join('\n');
+    _routingReservedController.text = next.routingReservedActions.join('\n');
+    _lifecycleReservedController.text = next.lifecycleReservedActions.join('\n');
+    _listed = next.listed;
+    _ownerVisible = next.ownerVisible;
+    _canSpawnAgents = next.canSpawnAgents;
+    _canArchiveAgents = next.canArchiveAgents;
+  }
+
+  AgentRuntimeRoleEditorDraft _editedDraft() {
+    return AgentRuntimeRoleEditorDraft(
+      roleId: _roleIdController.text.trim(),
+      version: _versionController.text.trim(),
+      displayName: _displayNameController.text.trim(),
+      model: _modelController.text.trim(),
+      reasoningEffort: _reasoningController.text.trim(),
+      instructionText: _instructionController.text,
+      capabilities: _lines(_capabilitiesController.text),
+      policy: _policyRows(_policyController.text),
+      routingMode: _routingModeController.text.trim().isEmpty ? 'direct' : _routingModeController.text.trim(),
+      routingReservedActions: _lines(_routingReservedController.text),
+      defaultRecipient: _defaultRecipientController.text.trim().isEmpty ? null : _defaultRecipientController.text.trim(),
+      allowedRecipients: _lines(_allowedRecipientsController.text),
+      listed: _listed,
+      ownerVisible: _ownerVisible,
+      canSpawnAgents: _canSpawnAgents,
+      canArchiveAgents: _canArchiveAgents,
+      lifecycleReservedActions: _lines(_lifecycleReservedController.text),
+    );
+  }
+
+  List<String> _lines(String value) {
+    return value
+        .split(RegExp(r'[\n,]'))
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  List<AgentRuntimeRolePolicyRow> _policyRows(String value) {
+    return value
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .map((line) {
+          final separator = line.contains('=') ? '=' : ':';
+          final parts = line.split(separator);
+          return AgentRuntimeRolePolicyRow(
+            action: parts.first.trim(),
+            decision: parts.length > 1 ? parts.sublist(1).join(separator).trim() : 'deny',
+          );
+        })
+        .toList(growable: false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final roleAdmin = widget.roleAdmin;
+    final detail = roleAdmin.selectedDetail;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F1722),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF26364A)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(roleAdmin.title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 3),
+            Text(roleAdmin.subtitle, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF8FA1B8))),
+            const SizedBox(height: 10),
+            if (roleAdmin.rows.isEmpty)
+              _EmptyState(title: roleAdmin.emptyTitle, body: roleAdmin.emptyText)
+            else ...[
+              ...roleAdmin.rows.take(4).map((row) => Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: _DenseTile(
+                      title: row.title,
+                      subtitle: row.subtitle,
+                      trailing: row.status,
+                      eyebrow: row.id,
+                      tone: row.tone,
+                    ),
+                  )),
+              if (detail != null) ...[
+                const SizedBox(height: 8),
+                _FactRow(AgentRuntimeFact(label: 'Selected role', value: '${detail.displayName} · ${detail.version}')),
+                _FactRow(AgentRuntimeFact(label: 'Model default', value: detail.model)),
+                _FactRow(AgentRuntimeFact(label: 'Capabilities', value: detail.capabilities.length.toString())),
+                _FactRow(AgentRuntimeFact(label: 'Policy entries', value: detail.policy.length.toString())),
+              ],
+              if (roleAdmin.versionRows.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text('Immutable versions', style: theme.textTheme.labelMedium?.copyWith(color: Colors.white70)),
+                const SizedBox(height: 6),
+                ...roleAdmin.versionRows.map(
+                  (version) => Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: _RoleVersionTile(
+                      row: version,
+                      roleId: detail?.id ?? _roleIdController.text.trim(),
+                      onActivate: widget.onActivate,
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 8),
+              _RoleDraftEditor(
+                instructionController: _instructionController,
+                roleIdController: _roleIdController,
+                versionController: _versionController,
+                displayNameController: _displayNameController,
+                modelController: _modelController,
+                reasoningController: _reasoningController,
+                capabilitiesController: _capabilitiesController,
+                policyController: _policyController,
+                routingModeController: _routingModeController,
+                defaultRecipientController: _defaultRecipientController,
+                allowedRecipientsController: _allowedRecipientsController,
+                routingReservedController: _routingReservedController,
+                lifecycleReservedController: _lifecycleReservedController,
+                listed: _listed,
+                ownerVisible: _ownerVisible,
+                canSpawnAgents: _canSpawnAgents,
+                canArchiveAgents: _canArchiveAgents,
+                onListedChanged: (value) => setState(() => _listed = value),
+                onOwnerVisibleChanged: (value) => setState(() => _ownerVisible = value),
+                onCanSpawnAgentsChanged: (value) => setState(() => _canSpawnAgents = value),
+                onCanArchiveAgentsChanged: (value) => setState(() => _canArchiveAgents = value),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  OutlinedButton(onPressed: widget.onValidate == null ? null : () => widget.onValidate!(_editedDraft()), child: const Text('Validate')),
+                  OutlinedButton(onPressed: widget.onCreate == null ? null : () => widget.onCreate!(_editedDraft()), child: const Text('Create')),
+                  OutlinedButton(onPressed: widget.onUpdate == null ? null : () => widget.onUpdate!(_editedDraft()), child: const Text('Update')),
+                  OutlinedButton(onPressed: widget.onExport == null ? null : () => widget.onExport!(_editedDraft().roleId), child: const Text('Export')),
+                  OutlinedButton(onPressed: widget.onArchive == null ? null : () => widget.onArchive!(_editedDraft().roleId), child: const Text('Archive')),
+                  OutlinedButton(onPressed: widget.onUnarchive == null ? null : () => widget.onUnarchive!(_editedDraft().roleId), child: const Text('Unarchive')),
+                ],
+              ),
+              if (roleAdmin.validationErrors.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                ...roleAdmin.validationErrors.map(
+                  (error) => Text(error, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFFFA8B4))),
+                ),
+              ],
+              if (roleAdmin.actionStates.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                ...roleAdmin.actionStates.take(3).map((action) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: _ActionTile(action),
+                    )),
+              ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RoleDraftEditor extends StatelessWidget {
+  const _RoleDraftEditor({
+    required this.instructionController,
+    required this.roleIdController,
+    required this.versionController,
+    required this.displayNameController,
+    required this.modelController,
+    required this.reasoningController,
+    required this.capabilitiesController,
+    required this.policyController,
+    required this.routingModeController,
+    required this.defaultRecipientController,
+    required this.allowedRecipientsController,
+    required this.routingReservedController,
+    required this.lifecycleReservedController,
+    required this.listed,
+    required this.ownerVisible,
+    required this.canSpawnAgents,
+    required this.canArchiveAgents,
+    required this.onListedChanged,
+    required this.onOwnerVisibleChanged,
+    required this.onCanSpawnAgentsChanged,
+    required this.onCanArchiveAgentsChanged,
+  });
+
+  final CodeForgeController instructionController;
+  final TextEditingController roleIdController;
+  final TextEditingController versionController;
+  final TextEditingController displayNameController;
+  final TextEditingController modelController;
+  final TextEditingController reasoningController;
+  final TextEditingController capabilitiesController;
+  final TextEditingController policyController;
+  final TextEditingController routingModeController;
+  final TextEditingController defaultRecipientController;
+  final TextEditingController allowedRecipientsController;
+  final TextEditingController routingReservedController;
+  final TextEditingController lifecycleReservedController;
+  final bool listed;
+  final bool ownerVisible;
+  final bool canSpawnAgents;
+  final bool canArchiveAgents;
+  final ValueChanged<bool> onListedChanged;
+  final ValueChanged<bool> onOwnerVisibleChanged;
+  final ValueChanged<bool> onCanSpawnAgentsChanged;
+  final ValueChanged<bool> onCanArchiveAgentsChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(child: _EditorTextField(label: 'Role id', controller: roleIdController)),
+            const SizedBox(width: 6),
+            Expanded(child: _EditorTextField(label: 'Version', controller: versionController)),
+          ],
+        ),
+        const SizedBox(height: 6),
+        _EditorTextField(label: 'Display name', controller: displayNameController),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Expanded(child: _EditorTextField(label: 'Model default', controller: modelController)),
+            const SizedBox(width: 6),
+            Expanded(child: _EditorTextField(label: 'Reasoning effort', controller: reasoningController)),
+          ],
+        ),
+        const SizedBox(height: 6),
+        _EditorTextField(label: 'Capabilities (one per line)', controller: capabilitiesController, maxLines: 3),
+        const SizedBox(height: 6),
+        _EditorTextField(label: 'Policy decisions (action=decision)', controller: policyController, maxLines: 4),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Expanded(child: _EditorTextField(label: 'Routing mode', controller: routingModeController)),
+            const SizedBox(width: 6),
+            Expanded(child: _EditorTextField(label: 'Default recipient', controller: defaultRecipientController)),
+          ],
+        ),
+        const SizedBox(height: 6),
+        _EditorTextField(label: 'Allowed recipients', controller: allowedRecipientsController, maxLines: 2),
+        const SizedBox(height: 6),
+        _EditorTextField(label: 'Routing reserved actions', controller: routingReservedController, maxLines: 2),
+        const SizedBox(height: 6),
+        _EditorTextField(label: 'Lifecycle reserved actions', controller: lifecycleReservedController, maxLines: 2),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 12,
+          runSpacing: 2,
+          children: [
+            _EditorSwitch(label: 'Listed', value: listed, onChanged: onListedChanged),
+            _EditorSwitch(label: 'Owner visible', value: ownerVisible, onChanged: onOwnerVisibleChanged),
+            _EditorSwitch(label: 'Can spawn agents', value: canSpawnAgents, onChanged: onCanSpawnAgentsChanged),
+            _EditorSwitch(label: 'Can archive agents', value: canArchiveAgents, onChanged: onCanArchiveAgentsChanged),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text('Instruction editor', style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF93A5BC))),
+        const SizedBox(height: 4),
+        SizedBox(
+          height: 120,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: DecoratedBox(
+              decoration: const BoxDecoration(color: Color(0xFF07101A)),
+              child: CodeForge(
+                controller: instructionController,
+                readOnly: false,
+                lineWrap: true,
+                enableGutter: false,
+                enableFolding: false,
+                textStyle: const TextStyle(fontSize: 12, color: Color(0xFFE5EDF8)),
+                innerPadding: const EdgeInsets.all(8),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _EditorTextField extends StatelessWidget {
+  const _EditorTextField({required this.label, required this.controller, this.maxLines = 1});
+
+  final String label;
+  final TextEditingController controller;
+  final int maxLines;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      maxLines: maxLines,
+      minLines: 1,
+      style: const TextStyle(color: Color(0xFFE5EDF8), fontSize: 12),
+      decoration: InputDecoration(
+        labelText: label,
+        isDense: true,
+      ),
+    );
+  }
+}
+
+class _EditorSwitch extends StatelessWidget {
+  const _EditorSwitch({required this.label, required this.value, required this.onChanged});
+
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Switch(value: value, onChanged: onChanged),
+        Text(label, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFFB7C4D8))),
+      ],
+    );
+  }
+}
+
+class _RoleVersionTile extends StatelessWidget {
+  const _RoleVersionTile({
+    required this.row,
+    required this.roleId,
+    this.onActivate,
+  });
+
+  final AgentRuntimeRoleVersionRow row;
+  final String roleId;
+  final AgentRuntimeRoleVersionAction? onActivate;
+
+  bool get _isCurrent => row.status == 'current' || row.status == 'active';
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final createdAt = row.createdAt == null || row.createdAt!.isEmpty ? 'created time unavailable' : row.createdAt!;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0B131E),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _toneColor(_isCurrent ? 'success' : 'info').withValues(alpha: 0.45)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'version ${row.version}',
+                    style: theme.textTheme.bodySmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${row.versionId} · $createdAt',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF8FA1B8)),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            _Chip(label: row.status, tone: _isCurrent ? 'success' : 'info'),
+            const SizedBox(width: 6),
+            OutlinedButton(
+              onPressed: _isCurrent || roleId.isEmpty || onActivate == null ? null : () => onActivate!(roleId, row.versionId),
+              child: const Text('Activate'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

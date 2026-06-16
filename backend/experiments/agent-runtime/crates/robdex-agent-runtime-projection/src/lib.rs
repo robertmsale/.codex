@@ -123,7 +123,104 @@ pub struct RoleSummary {
     pub current_version_id: Option<String>,
     pub status: String,
     pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     pub archived_at: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub instruction_text: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub policy: BTreeMap<String, String>,
+    #[serde(default)]
+    pub routing: Value,
+    #[serde(default)]
+    pub visibility: Value,
+    #[serde(default)]
+    pub lifecycle_authority: Value,
+    #[serde(default)]
+    pub versions: Vec<RoleVersionSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleVersionSummary {
+    pub version_id: String,
+    pub version: String,
+    pub status: String,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleEditorModelDefaults {
+    pub model: String,
+    pub reasoning_effort: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleEditorRoutingMetadata {
+    pub mode: String,
+    pub default_recipient: Option<String>,
+    #[serde(default)]
+    pub allowed_recipients: Vec<String>,
+    #[serde(default)]
+    pub reserved_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleEditorVisibilityMetadata {
+    pub listed: bool,
+    pub owner_visible: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleEditorLifecycleAuthorityMetadata {
+    pub can_spawn_agents: bool,
+    pub can_archive_agents: bool,
+    #[serde(default)]
+    pub reserved_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleEditorDraft {
+    pub id: String,
+    pub version: String,
+    pub display_name: String,
+    pub model_defaults: RoleEditorModelDefaults,
+    pub instruction_text: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub policy: BTreeMap<String, String>,
+    pub routing: RoleEditorRoutingMetadata,
+    pub visibility: RoleEditorVisibilityMetadata,
+    pub lifecycle_authority: RoleEditorLifecycleAuthorityMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleEditorValidationResult {
+    pub valid: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub role_id: Option<String>,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleEditorOptions {
+    pub policy_decisions: Vec<String>,
+    pub routing_modes: Vec<String>,
+    pub default_recipients: Vec<String>,
+    pub known_actions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -308,6 +405,17 @@ pub enum GuiOperationName {
     DecideCommandRegistryRequest,
     ApplyCommandRegistryRequest,
     WorkflowMemoryFeedback,
+    RoleEditorOptions,
+    ValidateRoleDraft,
+    CreateRoleFromDraft,
+    UpdateRoleFromDraft,
+    ShowRoleDetail,
+    ListRoleVersions,
+    ShowRoleVersion,
+    ExportRole,
+    ActivateRoleVersion,
+    ArchiveRole,
+    UnarchiveRole,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -333,6 +441,17 @@ pub enum GuiOperationRequest {
     DecideCommandRegistryRequest { request_id: String, decision: CommandRegistryDecisionInput },
     ApplyCommandRegistryRequest { request_id: String, session_id: String },
     WorkflowMemoryFeedback { memory_id: String, session_id: String, feedback: String, payload: Value },
+    RoleEditorOptions,
+    ValidateRoleDraft { draft: RoleEditorDraft },
+    CreateRoleFromDraft { draft: RoleEditorDraft },
+    UpdateRoleFromDraft { role_id: String, draft: RoleEditorDraft },
+    ShowRoleDetail { role_id: String },
+    ListRoleVersions { role_id: String },
+    ShowRoleVersion { version_id: String },
+    ExportRole { role_id: String },
+    ActivateRoleVersion { role_id: String, version_id: String },
+    ArchiveRole { role_id: String },
+    UnarchiveRole { role_id: String },
 }
 
 impl GuiOperationRequest {
@@ -358,6 +477,17 @@ impl GuiOperationRequest {
             Self::DecideCommandRegistryRequest { .. } => GuiOperationName::DecideCommandRegistryRequest,
             Self::ApplyCommandRegistryRequest { .. } => GuiOperationName::ApplyCommandRegistryRequest,
             Self::WorkflowMemoryFeedback { .. } => GuiOperationName::WorkflowMemoryFeedback,
+            Self::RoleEditorOptions => GuiOperationName::RoleEditorOptions,
+            Self::ValidateRoleDraft { .. } => GuiOperationName::ValidateRoleDraft,
+            Self::CreateRoleFromDraft { .. } => GuiOperationName::CreateRoleFromDraft,
+            Self::UpdateRoleFromDraft { .. } => GuiOperationName::UpdateRoleFromDraft,
+            Self::ShowRoleDetail { .. } => GuiOperationName::ShowRoleDetail,
+            Self::ListRoleVersions { .. } => GuiOperationName::ListRoleVersions,
+            Self::ShowRoleVersion { .. } => GuiOperationName::ShowRoleVersion,
+            Self::ExportRole { .. } => GuiOperationName::ExportRole,
+            Self::ActivateRoleVersion { .. } => GuiOperationName::ActivateRoleVersion,
+            Self::ArchiveRole { .. } => GuiOperationName::ArchiveRole,
+            Self::UnarchiveRole { .. } => GuiOperationName::UnarchiveRole,
         }
     }
 
@@ -375,12 +505,23 @@ impl GuiOperationRequest {
             | Self::ResumeApproval { .. }
             | Self::DecideCommandRegistryRequest { .. }
             | Self::ApplyCommandRegistryRequest { .. }
-            | Self::WorkflowMemoryFeedback { .. } => GuiOperationExpectation::WaitForDelta,
+            | Self::WorkflowMemoryFeedback { .. }
+            | Self::CreateRoleFromDraft { .. }
+            | Self::UpdateRoleFromDraft { .. }
+            | Self::ActivateRoleVersion { .. }
+            | Self::ArchiveRole { .. }
+            | Self::UnarchiveRole { .. } => GuiOperationExpectation::WaitForDelta,
             Self::ListCommandRegistry { .. }
             | Self::ShowCommand { .. }
             | Self::ListCommandRegistryRequests
             | Self::ShowCommandRegistryRequest { .. }
-            | Self::PreviewCommandRegistryRequest { .. } => GuiOperationExpectation::DirectResult,
+            | Self::PreviewCommandRegistryRequest { .. }
+            | Self::RoleEditorOptions
+            | Self::ValidateRoleDraft { .. }
+            | Self::ShowRoleDetail { .. }
+            | Self::ListRoleVersions { .. }
+            | Self::ShowRoleVersion { .. }
+            | Self::ExportRole { .. } => GuiOperationExpectation::DirectResult,
         }
     }
 
@@ -406,6 +547,17 @@ impl GuiOperationRequest {
             Self::DecideCommandRegistryRequest { .. } => http_mapping(self.name(), "POST", "/command-registry/requests/{requestId}/decide", "RegistryDecisionInput server JSON", r#"{"requestId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ApplyCommandRegistryRequest { .. } => http_mapping(self.name(), "POST", "/command-registry/requests/{requestId}/apply", r#"{"sessionId"}"#, r#"{"requestId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::WorkflowMemoryFeedback { .. } => http_mapping(self.name(), "POST", "/workflow-memories/{memoryId}/feedback", r#"{"sessionId","feedback","payload"}"#, r#"{"memoryId","feedback","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::RoleEditorOptions => http_mapping(self.name(), "GET", "/roles/editor/options", "none", "RoleEditorOptions", GuiOperationExpectation::DirectResult),
+            Self::ValidateRoleDraft { .. } => http_mapping(self.name(), "POST", "/roles/editor/validate", "RoleEditorDraft", "RoleEditorValidationResult", GuiOperationExpectation::DirectResult),
+            Self::CreateRoleFromDraft { .. } => http_mapping(self.name(), "POST", "/roles", "RoleEditorDraft", r#"{"roleId","versionId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::UpdateRoleFromDraft { .. } => http_mapping(self.name(), "POST", "/roles/{roleId}/versions", "RoleEditorDraft", r#"{"roleId","versionId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ShowRoleDetail { .. } => http_mapping(self.name(), "GET", "/roles/{roleId}", "none", "RoleSnapshot", GuiOperationExpectation::DirectResult),
+            Self::ListRoleVersions { .. } => http_mapping(self.name(), "GET", "/roles/{roleId}/versions", "none", "Vec<RoleVersion>", GuiOperationExpectation::DirectResult),
+            Self::ShowRoleVersion { .. } => http_mapping(self.name(), "GET", "/roles/versions/{versionId}", "none", "RoleSnapshot", GuiOperationExpectation::DirectResult),
+            Self::ExportRole { .. } => http_mapping(self.name(), "GET", "/roles/{roleId}/export", "none", "Role export manifest", GuiOperationExpectation::DirectResult),
+            Self::ActivateRoleVersion { .. } => http_mapping(self.name(), "POST", "/roles/{roleId}/activate", r#"{"versionId"}"#, r#"{"roleId","versionId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ArchiveRole { .. } => http_mapping(self.name(), "POST", "/roles/{roleId}/archive", "{}", r#"{"roleId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::UnarchiveRole { .. } => http_mapping(self.name(), "POST", "/roles/{roleId}/unarchive", "{}", r#"{"roleId","status"}"#, GuiOperationExpectation::WaitForDelta),
         }
     }
 
@@ -419,7 +571,12 @@ impl GuiOperationRequest {
             | Self::ListCommandRegistry { .. }
             | Self::ShowCommand { .. }
             | Self::ListCommandRegistryRequests
-            | Self::ShowCommandRegistryRequest { .. } => None,
+            | Self::ShowCommandRegistryRequest { .. }
+            | Self::RoleEditorOptions
+            | Self::ShowRoleDetail { .. }
+            | Self::ListRoleVersions { .. }
+            | Self::ShowRoleVersion { .. }
+            | Self::ExportRole { .. } => None,
             Self::CreateSession { role, project, workdir, worktree_root, title, name } => Some(json!({
                 "role": role,
                 "project": project,
@@ -437,6 +594,9 @@ impl GuiOperationRequest {
             | Self::DecideCommandRegistryRequest { decision, .. } => Some(serde_json::to_value(decision).expect("registry decision serializes")),
             Self::ApplyCommandRegistryRequest { session_id, .. } => Some(json!({"sessionId": session_id})),
             Self::WorkflowMemoryFeedback { session_id, feedback, payload, .. } => Some(json!({"sessionId": session_id, "feedback": feedback, "payload": payload})),
+            Self::ValidateRoleDraft { draft } | Self::CreateRoleFromDraft { draft } | Self::UpdateRoleFromDraft { draft, .. } => Some(serde_json::to_value(draft).expect("role draft serializes")),
+            Self::ActivateRoleVersion { version_id, .. } => Some(json!({"versionId": version_id})),
+            Self::ArchiveRole { .. } | Self::UnarchiveRole { .. } => Some(json!({})),
         }
     }
 }
@@ -658,7 +818,7 @@ pub const DART_ALLOWED_EPHEMERAL_RESPONSIBILITIES: &[&str] = &[
     "localLayout",
 ];
 
-pub const GUI_OPERATION_VARIANT_COUNT: usize = 20;
+pub const GUI_OPERATION_VARIANT_COUNT: usize = 31;
 
 impl Default for RuntimeProjection {
     fn default() -> Self {
@@ -1022,6 +1182,36 @@ mod tests {
         }
     }
 
+    fn role_draft(id: &str, version: &str) -> RoleEditorDraft {
+        RoleEditorDraft {
+            id: id.to_string(),
+            version: version.to_string(),
+            display_name: "GUI Role".to_string(),
+            model_defaults: RoleEditorModelDefaults {
+                model: "gpt-5.4-mini".to_string(),
+                reasoning_effort: "medium".to_string(),
+            },
+            instruction_text: "Inline GUI-authored role instructions.".to_string(),
+            capabilities: vec!["tool.execute_code".to_string()],
+            policy: BTreeMap::from([("tool.execute_code".to_string(), "allow".to_string())]),
+            routing: RoleEditorRoutingMetadata {
+                mode: "direct".to_string(),
+                default_recipient: Some("owner".to_string()),
+                allowed_recipients: vec!["owner".to_string()],
+                reserved_actions: vec!["message.send".to_string()],
+            },
+            visibility: RoleEditorVisibilityMetadata {
+                listed: true,
+                owner_visible: true,
+            },
+            lifecycle_authority: RoleEditorLifecycleAuthorityMetadata {
+                can_spawn_agents: false,
+                can_archive_agents: false,
+                reserved_actions: vec!["agent.archive".to_string()],
+            },
+        }
+    }
+
     fn operation_samples() -> Vec<GuiOperationRequest> {
         vec![
             GuiOperationRequest::Connect { base_url: "http://127.0.0.1:8765".to_string(), selected_session_id: None },
@@ -1044,6 +1234,17 @@ mod tests {
             GuiOperationRequest::DecideCommandRegistryRequest { request_id: "request-1".to_string(), decision: registry_decision() },
             GuiOperationRequest::ApplyCommandRegistryRequest { request_id: "request-1".to_string(), session_id: "session-1".to_string() },
             GuiOperationRequest::WorkflowMemoryFeedback { memory_id: "memory-1".to_string(), session_id: "session-1".to_string(), feedback: "attempted".to_string(), payload: json!({"variant": true}) },
+            GuiOperationRequest::RoleEditorOptions,
+            GuiOperationRequest::ValidateRoleDraft { draft: role_draft("gui-role", "1.0.0") },
+            GuiOperationRequest::CreateRoleFromDraft { draft: role_draft("gui-role", "1.0.0") },
+            GuiOperationRequest::UpdateRoleFromDraft { role_id: "gui-role".to_string(), draft: role_draft("gui-role", "1.0.1") },
+            GuiOperationRequest::ShowRoleDetail { role_id: "gui-role".to_string() },
+            GuiOperationRequest::ListRoleVersions { role_id: "gui-role".to_string() },
+            GuiOperationRequest::ShowRoleVersion { version_id: "00000000-0000-0000-0000-000000000001".to_string() },
+            GuiOperationRequest::ExportRole { role_id: "gui-role".to_string() },
+            GuiOperationRequest::ActivateRoleVersion { role_id: "gui-role".to_string(), version_id: "00000000-0000-0000-0000-000000000001".to_string() },
+            GuiOperationRequest::ArchiveRole { role_id: "gui-role".to_string() },
+            GuiOperationRequest::UnarchiveRole { role_id: "gui-role".to_string() },
         ]
     }
 
@@ -1174,7 +1375,21 @@ mod tests {
             current_version_id: Some("version-1".to_string()),
             status: "active".to_string(),
             model: Some("gpt".to_string()),
+            reasoning_effort: Some("medium".to_string()),
             archived_at: None,
+            version: Some("1.0.0".to_string()),
+            instruction_text: Some("instructions".to_string()),
+            capabilities: vec!["tool.execute_code".to_string()],
+            policy: BTreeMap::from([("tool.execute_code".to_string(), "allow".to_string())]),
+            routing: json!({"mode":"direct","defaultRecipient":"owner","allowedRecipients":["owner"],"reservedActions":[]}),
+            visibility: json!({"listed":true,"ownerVisible":true}),
+            lifecycle_authority: json!({"canSpawnAgents":false,"canArchiveAgents":false,"reservedActions":[]}),
+            versions: vec![RoleVersionSummary {
+                version_id: "version-1".to_string(),
+                version: "1.0.0".to_string(),
+                status: "current".to_string(),
+                created_at: None,
+            }],
         }}));
         projection.apply_delta(delta(2, RuntimeDeltaKind::RoleArchive { role_id: "role-1".to_string(), archived_at: Some("now".to_string()) }));
         assert_eq!(projection.roles[0].status, "archived");

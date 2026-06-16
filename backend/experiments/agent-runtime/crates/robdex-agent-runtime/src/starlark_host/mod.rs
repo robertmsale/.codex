@@ -34,6 +34,7 @@ use crate::db;
 use crate::approvals;
 use crate::command_registry::{self, CommandVersion};
 use crate::lifecycle::{self, TerminalStatus};
+use crate::output_artifacts::{self, NewOutputArtifact};
 use crate::policy::{PolicyEngine, RuntimeDecision};
 use crate::roles::RoleSnapshot;
 use crate::workflow_memory::RememberCandidate;
@@ -194,7 +195,7 @@ fn file_state(path: &Path) -> JsonValue {
 pub struct ExecuteCodePacket {
     ok: bool,
     status: String,
-    output: String,
+    output: JsonValue,
     script_run_id: Uuid,
     host_api_calls: usize,
 }
@@ -256,6 +257,7 @@ struct ManagedProcessRecord {
 
 #[derive(Debug)]
 struct ProcessOutputRecord {
+    artifact_id: Uuid,
     process_id: Uuid,
     handle: String,
     stream: String,
@@ -312,6 +314,9 @@ struct CommandRecord {
     id: Uuid,
     host_api_call_id: Uuid,
     command_version_id: Uuid,
+    stdout_artifact_id: Uuid,
+    stderr_artifact_id: Uuid,
+    combined_artifact_id: Uuid,
     binary_name: String,
     binary_path: String,
     argv: Vec<String>,
@@ -418,12 +423,62 @@ pub async fn execute_code(
         persist_record(pool, session_id, turn_id, tool_call_id, script_run_id, record, role_snapshot).await?;
     }
 
-    let (final_output, final_truncated) = truncate_text(&final_output, OUTPUT_LIMIT_BYTES);
-    let (stderr, stderr_truncated) = truncate_text(&stderr, OUTPUT_LIMIT_BYTES);
+    let full_final_output = final_output;
+    let full_stderr = stderr;
+    let final_artifact_id = Uuid::new_v4();
+    let stderr_artifact_id = Uuid::new_v4();
+    let combined_artifact_id = Uuid::new_v4();
+    let final_envelope = output_artifacts::store(pool, NewOutputArtifact {
+        id: final_artifact_id,
+        session_id,
+        turn_id: Some(turn_id),
+        tool_call_id: Some(tool_call_id),
+        script_run_id: Some(script_run_id),
+        command_run_id: None,
+        process_id: None,
+        source_type: "script_run",
+        stream: "stdout",
+        content: &full_final_output,
+        metadata: json!({"role": "finalOutput"}),
+    }).await?;
+    let stderr_envelope = output_artifacts::store(pool, NewOutputArtifact {
+        id: stderr_artifact_id,
+        session_id,
+        turn_id: Some(turn_id),
+        tool_call_id: Some(tool_call_id),
+        script_run_id: Some(script_run_id),
+        command_run_id: None,
+        process_id: None,
+        source_type: "script_run",
+        stream: "stderr",
+        content: &full_stderr,
+        metadata: json!({"role": "scriptError"}),
+    }).await?;
+    let combined = if full_stderr.is_empty() { full_final_output.clone() } else { format!("{}{}", full_final_output, full_stderr) };
+    let combined_envelope = output_artifacts::store(pool, NewOutputArtifact {
+        id: combined_artifact_id,
+        session_id,
+        turn_id: Some(turn_id),
+        tool_call_id: Some(tool_call_id),
+        script_run_id: Some(script_run_id),
+        command_run_id: None,
+        process_id: None,
+        source_type: "script_run",
+        stream: "combined",
+        content: &combined,
+        metadata: json!({"role": "combinedScriptOutput"}),
+    }).await?;
+    let (final_output, final_truncated) = truncate_text(&full_final_output, OUTPUT_LIMIT_BYTES);
+    let (stderr, stderr_truncated) = truncate_text(&full_stderr, OUTPUT_LIMIT_BYTES);
     let script_truncation = json!({
         "finalOutputTruncated": final_truncated,
         "stderrTruncated": stderr_truncated,
         "limitBytes": OUTPUT_LIMIT_BYTES,
+        "artifactIds": {
+            "stdout": final_artifact_id,
+            "stderr": stderr_artifact_id,
+            "combined": combined_artifact_id
+        },
     });
     lifecycle::complete_script_run(
         pool,
@@ -455,43 +510,54 @@ pub async fn execute_code(
         Some(script_run_id),
         "script.completed",
         Some(status.as_str()),
-        json!({"finalOutput": final_output, "stderr": stderr}),
+        json!({
+            "artifacts": {
+                "stdout": final_envelope,
+                "stderr": stderr_envelope,
+                "combined": combined_envelope,
+            },
+            "preview": final_output,
+            "stderrPreview": stderr,
+        }),
     )
     .await?;
 
-    if status == TerminalStatus::Failed {
-        bail!(stderr);
-    }
-
-    for candidate in &result.memory_candidates {
-        if let Err(error) = crate::workflow_memory::promote_project_memory(
-            pool,
-            session_id,
-            turn_id,
-            script_run_id,
-            source,
-            &candidate.title,
-            &candidate.reason,
-        )
-        .await
-        {
-            crate::workflow_memory::record_provider_failure(
+    if status != TerminalStatus::Failed {
+        for candidate in &result.memory_candidates {
+            if let Err(error) = crate::workflow_memory::promote_project_memory(
                 pool,
                 session_id,
-                Some(turn_id),
-                Some(script_run_id),
-                "workflow_memory.promotion_failed",
-                &error.to_string(),
-                json!({"phase": "promotion", "title": candidate.title}),
+                turn_id,
+                script_run_id,
+                source,
+                &candidate.title,
+                &candidate.reason,
             )
-            .await?;
+            .await
+            {
+                crate::workflow_memory::record_provider_failure(
+                    pool,
+                    session_id,
+                    Some(turn_id),
+                    Some(script_run_id),
+                    "workflow_memory.promotion_failed",
+                    &error.to_string(),
+                    json!({"phase": "promotion", "title": candidate.title}),
+                )
+                .await?;
+            }
         }
     }
 
     Ok(ExecuteCodePacket {
-        ok: true,
+        ok: status != TerminalStatus::Failed,
         status: status.as_str().to_string(),
-        output: final_output,
+        output: json!({
+            "artifact": combined_envelope,
+            "stdoutArtifact": final_envelope,
+            "stderrArtifact": stderr_envelope,
+            "message": "Full execute_code output is stored as durable output artifacts. Use outputs.head/tail/slice/search/stats with an artifact id for bounded retrieval.",
+        }),
         script_run_id,
         host_api_calls: records
             .iter()
@@ -571,6 +637,7 @@ fn add_host_builtins(builder: &mut GlobalsBuilder) {
     builder.namespace_no_docs("__cmd", cmd_dynamic_builtins);
     builder.namespace_no_docs("__proc", proc_dynamic_builtins);
     builder.namespace("workflow_memory", workflow_memory_builtins);
+    builder.namespace("outputs", output_artifact_builtins);
     struct_builtins(builder);
     output_builtins(builder);
 }
@@ -775,8 +842,46 @@ fn workflow_memory_builtins(builder: &mut GlobalsBuilder) {
 #[starlark_module]
 fn output_builtins(builder: &mut GlobalsBuilder) {
     fn output<'v>(value: Value<'v>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<NoneType> {
-        host_kernel(eval).output.borrow_mut().push(value.to_string());
+        let text = value.unpack_str().map(ToString::to_string).unwrap_or_else(|| value.to_string());
+        host_kernel(eval).output.borrow_mut().push(text);
         Ok(NoneType)
+    }
+}
+
+#[starlark_module]
+fn output_artifact_builtins(builder: &mut GlobalsBuilder) {
+    fn last<'v>(eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).outputs_last()
+    }
+
+    fn head<'v>(id: &'v str, #[starlark(default = 100)] lines: i32, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).outputs_retrieve(id, "head", Some(lines), None, None, None, None)
+    }
+
+    fn tail<'v>(id: &'v str, #[starlark(default = 100)] lines: i32, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).outputs_retrieve(id, "tail", Some(lines), None, None, None, None)
+    }
+
+    fn slice<'v>(
+        id: &'v str,
+        #[starlark(default = 1)] start_line: i32,
+        #[starlark(default = 100)] end_line: i32,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<String> {
+        host_kernel(eval).outputs_retrieve(id, "slice", None, Some(start_line), Some(end_line), None, None)
+    }
+
+    fn search<'v>(
+        id: &'v str,
+        pattern: &'v str,
+        #[starlark(default = 20)] context: i32,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<String> {
+        host_kernel(eval).outputs_retrieve(id, "search", Some(output_artifacts::DEFAULT_VISIBLE_LINE_LIMIT as i32), None, None, Some(pattern), Some(context))
+    }
+
+    fn stats<'v>(id: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).outputs_retrieve(id, "stats", None, None, None, None, None)
     }
 }
 
@@ -801,6 +906,37 @@ fn block_on_host_future<F: std::future::Future>(future: F) -> F::Output {
 }
 
 impl HostKernel {
+    fn outputs_last(&self) -> anyhow::Result<String> {
+        let id = block_on_host_future(output_artifacts::last_artifact_id(&self.pool, self.session_id))?
+            .ok_or_else(|| anyhow::anyhow!("no output artifacts are available for this session"))?;
+        Ok(id.to_string())
+    }
+
+    fn outputs_retrieve(
+        &self,
+        id: &str,
+        mode: &str,
+        lines: Option<i32>,
+        start_line: Option<i32>,
+        end_line: Option<i32>,
+        pattern: Option<&str>,
+        context: Option<i32>,
+    ) -> anyhow::Result<String> {
+        let artifact_id = Uuid::parse_str(id).with_context(|| format!("invalid output artifact id: {id}"))?;
+        let packet = block_on_host_future(output_artifacts::retrieve(
+            &self.pool,
+            self.session_id,
+            artifact_id,
+            mode,
+            lines.map(|value| value.max(0) as usize),
+            start_line.map(|value| value.max(1) as usize),
+            end_line.map(|value| value.max(1) as usize),
+            pattern,
+            context.map(|value| value.max(0) as usize),
+        ))?;
+        Ok(output_artifacts::retrieval_json(packet))
+    }
+
     fn decide(&self, action: &str, input: JsonValue) -> crate::policy::PolicyResult {
         let decision = PolicyEngine::decide(&self.role_snapshot, action, input);
         self.records.borrow_mut().push(HostRecord::Policy(PolicyDecisionRecord {
@@ -941,7 +1077,6 @@ impl HostKernel {
         let child_pid = child.id();
         let stdout_buf = Arc::new(Mutex::new(String::new()));
         let stderr_buf = Arc::new(Mutex::new(String::new()));
-        let buffer_limit = command_version.output_buffer_bytes;
         if let Some(mut stdout) = child.stdout.take() {
             let target = Arc::clone(&stdout_buf);
             thread::spawn(move || {
@@ -952,8 +1087,7 @@ impl HostKernel {
                         Ok(n) => {
                             if let Ok(mut buffer) = target.lock() {
                                 buffer.push_str(&String::from_utf8_lossy(&chunk[..n]));
-                                enforce_string_buffer_limit(&mut buffer, buffer_limit);
-                            }
+                                    }
                         }
                         Err(_) => break,
                     }
@@ -970,8 +1104,7 @@ impl HostKernel {
                         Ok(n) => {
                             if let Ok(mut buffer) = target.lock() {
                                 buffer.push_str(&String::from_utf8_lossy(&chunk[..n]));
-                                enforce_string_buffer_limit(&mut buffer, buffer_limit);
-                            }
+                                    }
                         }
                         Err(_) => break,
                     }
@@ -1070,17 +1203,23 @@ impl HostKernel {
         let proc = manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)).ok_or_else(|| anyhow::anyhow!("session-only process no longer attached to this runtime session: {handle}"))?;
         let (stdout, stdout_truncated) = proc.take_stdout_since_flush();
         let (stderr, stderr_truncated) = proc.take_stderr_since_flush();
-        if !stdout.is_empty() {
-            self.records.borrow_mut().push(HostRecord::ProcessOutput(ProcessOutputRecord { process_id: proc.id, handle: handle.to_string(), stream: "stdout".to_string(), content: stdout.clone(), truncated: stdout_truncated }));
-        }
-        if !stderr.is_empty() {
-            self.records.borrow_mut().push(HostRecord::ProcessOutput(ProcessOutputRecord { process_id: proc.id, handle: handle.to_string(), stream: "stderr".to_string(), content: stderr.clone(), truncated: stderr_truncated }));
-        }
-        if stdout.is_empty() && stderr.is_empty() {
-            self.records.borrow_mut().push(HostRecord::ProcessOutput(ProcessOutputRecord { process_id: proc.id, handle: handle.to_string(), stream: "stdout".to_string(), content: String::new(), truncated: false }));
-        }
+        let stdout_artifact_id = Uuid::new_v4();
+        let stderr_artifact_id = Uuid::new_v4();
+        let combined_artifact_id = Uuid::new_v4();
+        let combined = format!("{stdout}{stderr}");
+        let stdout_envelope = output_artifacts::envelope_for(stdout_artifact_id, "stdout", &stdout);
+        let stderr_envelope = output_artifacts::envelope_for(stderr_artifact_id, "stderr", &stderr);
+        let combined_envelope = output_artifacts::envelope_for(combined_artifact_id, "combined", &combined);
+        self.records.borrow_mut().push(HostRecord::ProcessOutput(ProcessOutputRecord { artifact_id: stdout_artifact_id, process_id: proc.id, handle: handle.to_string(), stream: "stdout".to_string(), content: stdout.clone(), truncated: stdout_truncated }));
+        self.records.borrow_mut().push(HostRecord::ProcessOutput(ProcessOutputRecord { artifact_id: stderr_artifact_id, process_id: proc.id, handle: handle.to_string(), stream: "stderr".to_string(), content: stderr.clone(), truncated: stderr_truncated }));
+        self.records.borrow_mut().push(HostRecord::ProcessOutput(ProcessOutputRecord { artifact_id: combined_artifact_id, process_id: proc.id, handle: handle.to_string(), stream: "combined".to_string(), content: combined.clone(), truncated: stdout_truncated || stderr_truncated }));
         self.records.borrow_mut().push(HostRecord::ManagedProcess(proc.snapshot_record("process.flushed", json!({"handle": handle, "stdoutBytes": stdout.len(), "stderrBytes": stderr.len()}))));
-        Ok(format!("{stdout}{stderr}"))
+        Ok(json!({
+            "artifact": combined_envelope,
+            "stdoutArtifact": stdout_envelope,
+            "stderrArtifact": stderr_envelope,
+            "message": "Full process output is stored as durable output artifacts. Use outputs.head/tail/slice/search/stats for bounded retrieval."
+        }).to_string())
     }
 
     fn proc_terminate(&self, handle: &str) -> anyhow::Result<String> {
@@ -1246,12 +1385,26 @@ impl HostKernel {
             ),
             Err(error) => ("failed", None, String::new(), error.to_string()),
         };
-        let (stdout, stdout_truncated) = truncate_text(&stdout, command_version.output_limit);
-        let (stderr, stderr_truncated) = truncate_text(&stderr, command_version.output_limit);
+        let full_stdout = stdout;
+        let full_stderr = stderr;
+        let stdout_artifact_id = Uuid::new_v4();
+        let stderr_artifact_id = Uuid::new_v4();
+        let combined_artifact_id = Uuid::new_v4();
+        let stdout_envelope = output_artifacts::envelope_for(stdout_artifact_id, "stdout", &full_stdout);
+        let stderr_envelope = output_artifacts::envelope_for(stderr_artifact_id, "stderr", &full_stderr);
+        let combined = format!("{}{}", full_stdout, full_stderr);
+        let combined_envelope = output_artifacts::envelope_for(combined_artifact_id, "combined", &combined);
+        let (stdout, stdout_truncated) = truncate_text(&full_stdout, command_version.output_limit);
+        let (stderr, stderr_truncated) = truncate_text(&full_stderr, command_version.output_limit);
         let truncation = json!({
             "stdoutTruncated": stdout_truncated,
             "stderrTruncated": stderr_truncated,
             "limitBytes": command_version.output_limit,
+            "artifactIds": {
+                "stdout": stdout_artifact_id,
+                "stderr": stderr_artifact_id,
+                "combined": combined_artifact_id
+            },
         });
         let policy_decision = json!({
             "action": action,
@@ -1266,7 +1419,16 @@ impl HostKernel {
             action: action.to_string(),
             status: status.to_string(),
             input,
-            output: json!({"stdout": stdout, "stderr": stderr, "exitStatus": exit_status}),
+            output: json!({
+                "stdout": stdout,
+                "stderr": stderr,
+                "exitStatus": exit_status,
+                "artifacts": {
+                    "stdout": stdout_envelope,
+                    "stderr": stderr_envelope,
+                    "combined": combined_envelope,
+                }
+            }),
             duration_ms: started.elapsed().as_millis() as i64,
             truncation: truncation.clone(),
         }));
@@ -1274,13 +1436,16 @@ impl HostKernel {
             id: Uuid::new_v4(),
             host_api_call_id,
             command_version_id: command_version.version_id,
+            stdout_artifact_id,
+            stderr_artifact_id,
+            combined_artifact_id,
             binary_name: command_version.binary_name.clone(),
             binary_path,
             argv,
             cwd,
             status: status.to_string(),
-            stdout: stdout.clone(),
-            stderr: stderr.clone(),
+            stdout: full_stdout.clone(),
+            stderr: full_stderr.clone(),
             exit_status,
             max_runtime_ms: command_version.max_runtime.map(|d| d.as_millis() as i64),
             duration_ms: started.elapsed().as_millis() as i64,
@@ -1288,7 +1453,13 @@ impl HostKernel {
             policy_decision,
         }));
         if status == "completed" {
-            Ok(stdout)
+            Ok(json!({
+                "artifact": combined_envelope,
+                "stdoutArtifact": stdout_envelope,
+                "stderrArtifact": stderr_envelope,
+                "exitStatus": exit_status,
+                "message": "Full command output is stored as durable output artifacts. Use outputs.head/tail/slice/search/stats for bounded retrieval."
+            }).to_string())
         } else if status == "maxRuntimeExceeded" {
             bail!("command exceeded maxRuntimeMs")
         } else {
@@ -1449,7 +1620,8 @@ impl ManagedProcess {
         }
         let new = text.get(self.stdout_flush_cursor..).unwrap_or("").to_string();
         self.stdout_flush_cursor = text.len();
-        truncate_text(&new, self.command_version.output_limit)
+        let truncated = new.len() > self.command_version.output_limit;
+        (new, truncated)
     }
 
     fn take_stderr_since_flush(&mut self) -> (String, bool) {
@@ -1463,7 +1635,8 @@ impl ManagedProcess {
         }
         let new = text.get(self.stderr_flush_cursor..).unwrap_or("").to_string();
         self.stderr_flush_cursor = text.len();
-        truncate_text(&new, self.command_version.output_limit)
+        let truncated = new.len() > self.command_version.output_limit;
+        (new, truncated)
     }
 
     fn snapshot_record(&self, event: &str, payload: JsonValue) -> ManagedProcessRecord {
@@ -1732,9 +1905,14 @@ async fn execute_resumed_command_with_version(
         Err(error) => ("failed", None, String::new(), error.to_string()),
     };
     let duration_ms = started.elapsed().as_millis() as i64;
-    let (stdout, stdout_truncated) = truncate_text(&stdout, command_version.output_limit);
-    let (stderr, stderr_truncated) = truncate_text(&stderr, command_version.output_limit);
-    let truncation = json!({"stdoutTruncated": stdout_truncated, "stderrTruncated": stderr_truncated, "limitBytes": command_version.output_limit});
+    let full_stdout = stdout;
+    let full_stderr = stderr;
+    let stdout_artifact_id = Uuid::new_v4();
+    let stderr_artifact_id = Uuid::new_v4();
+    let combined_artifact_id = Uuid::new_v4();
+    let (stdout, stdout_truncated) = truncate_text(&full_stdout, command_version.output_limit);
+    let (stderr, stderr_truncated) = truncate_text(&full_stderr, command_version.output_limit);
+    let truncation = json!({"stdoutTruncated": stdout_truncated, "stderrTruncated": stderr_truncated, "limitBytes": command_version.output_limit, "artifactIds": {"stdout": stdout_artifact_id, "stderr": stderr_artifact_id, "combined": combined_artifact_id}});
     let host_api_call_id = Uuid::new_v4();
     sqlx::query("INSERT INTO host_api_calls (id, script_run_id, api_name, input, status, started_at) VALUES ($1, $2, $3, $4, 'running', $5)")
         .bind(host_api_call_id)
@@ -1757,9 +1935,13 @@ async fn execute_resumed_command_with_version(
         .bind(command_version.version_id)
         .execute(pool)
         .await?;
-    lifecycle::complete_command_run(pool, command_id, TerminalStatus::try_from(status)?, &stdout, &stderr, exit_status, duration_ms, &policy_decision, &truncation, Utc::now()).await?;
-    db::append_event(pool, session_id, turn_id, "command", Some(command_id), "command.completed", Some(status), json!({"binary":command_version.binary_name,"binaryPath":binary_path.display().to_string(),"commandVersionId":command_version.version_id,"argv":argv,"cwd":resolved_cwd.display().to_string(),"status":status,"stdout":stdout,"stderr":stderr,"exitStatus":exit_status,"maxRuntimeMs":command_version.max_runtime.map(|d| d.as_millis() as i64),"durationMs":duration_ms,"truncation":truncation,"policyDecision":policy_decision})).await?;
-    Ok(json!({"commandRunId": command_id, "hostApiCallId": host_api_call_id, "status": status, "stdout": stdout, "stderr": stderr, "exitStatus": exit_status}))
+    lifecycle::complete_command_run(pool, command_id, TerminalStatus::try_from(status)?, &full_stdout, &full_stderr, exit_status, duration_ms, &policy_decision, &truncation, Utc::now()).await?;
+    let stdout_artifact = output_artifacts::store(pool, NewOutputArtifact { id: stdout_artifact_id, session_id, turn_id, tool_call_id: None, script_run_id: Some(script_run_id), command_run_id: Some(command_id), process_id: None, source_type: "command_run", stream: "stdout", content: &full_stdout, metadata: json!({"commandVersionId": command_version.version_id, "resumed": true}) }).await?;
+    let stderr_artifact = output_artifacts::store(pool, NewOutputArtifact { id: stderr_artifact_id, session_id, turn_id, tool_call_id: None, script_run_id: Some(script_run_id), command_run_id: Some(command_id), process_id: None, source_type: "command_run", stream: "stderr", content: &full_stderr, metadata: json!({"commandVersionId": command_version.version_id, "resumed": true}) }).await?;
+    let combined = format!("{}{}", full_stdout, full_stderr);
+    let combined_artifact = output_artifacts::store(pool, NewOutputArtifact { id: combined_artifact_id, session_id, turn_id, tool_call_id: None, script_run_id: Some(script_run_id), command_run_id: Some(command_id), process_id: None, source_type: "command_run", stream: "combined", content: &combined, metadata: json!({"commandVersionId": command_version.version_id, "resumed": true}) }).await?;
+    db::append_event(pool, session_id, turn_id, "command", Some(command_id), "command.completed", Some(status), json!({"binary":command_version.binary_name,"binaryPath":binary_path.display().to_string(),"commandVersionId":command_version.version_id,"argv":argv,"cwd":resolved_cwd.display().to_string(),"status":status,"stdoutPreview":stdout,"stderrPreview":stderr,"exitStatus":exit_status,"maxRuntimeMs":command_version.max_runtime.map(|d| d.as_millis() as i64),"durationMs":duration_ms,"truncation":truncation,"artifacts":{"stdout":stdout_artifact,"stderr":stderr_artifact,"combined":combined_artifact},"policyDecision":policy_decision})).await?;
+    Ok(json!({"commandRunId": command_id, "hostApiCallId": host_api_call_id, "status": status, "artifacts": {"stdout": stdout_artifact, "stderr": stderr_artifact, "combined": combined_artifact}, "exitStatus": exit_status}))
 }
 
 async fn execute_resumed_async_command_with_version(
@@ -1805,7 +1987,6 @@ async fn execute_resumed_async_command_with_version(
     let child_pid = child.id();
     let stdout_buf = Arc::new(Mutex::new(String::new()));
     let stderr_buf = Arc::new(Mutex::new(String::new()));
-    let buffer_limit = command_version.output_buffer_bytes;
     if let Some(mut stdout) = child.stdout.take() {
         let target = Arc::clone(&stdout_buf);
         thread::spawn(move || {
@@ -1815,7 +1996,6 @@ async fn execute_resumed_async_command_with_version(
                     Ok(0) => break,
                     Ok(n) => if let Ok(mut buffer) = target.lock() {
                         buffer.push_str(&String::from_utf8_lossy(&chunk[..n]));
-                        enforce_string_buffer_limit(&mut buffer, buffer_limit);
                     },
                     Err(_) => break,
                 }
@@ -1831,7 +2011,6 @@ async fn execute_resumed_async_command_with_version(
                     Ok(0) => break,
                     Ok(n) => if let Ok(mut buffer) = target.lock() {
                         buffer.push_str(&String::from_utf8_lossy(&chunk[..n]));
-                        enforce_string_buffer_limit(&mut buffer, buffer_limit);
                     },
                     Err(_) => break,
                 }
@@ -2222,6 +2401,48 @@ async fn persist_record(
                 Utc::now(),
             )
             .await?;
+            let stdout_artifact = output_artifacts::store(pool, NewOutputArtifact {
+                id: command.stdout_artifact_id,
+                session_id,
+                turn_id: Some(turn_id),
+                tool_call_id: Some(tool_call_id),
+                script_run_id: Some(script_run_id),
+                command_run_id: Some(command.id),
+                process_id: None,
+                source_type: "command_run",
+                stream: "stdout",
+                content: &command.stdout,
+                metadata: json!({"commandVersionId": command.command_version_id}),
+            }).await?;
+            let stderr_artifact = output_artifacts::store(pool, NewOutputArtifact {
+                id: command.stderr_artifact_id,
+                session_id,
+                turn_id: Some(turn_id),
+                tool_call_id: Some(tool_call_id),
+                script_run_id: Some(script_run_id),
+                command_run_id: Some(command.id),
+                process_id: None,
+                source_type: "command_run",
+                stream: "stderr",
+                content: &command.stderr,
+                metadata: json!({"commandVersionId": command.command_version_id}),
+            }).await?;
+            let combined = format!("{}{}", command.stdout, command.stderr);
+            let combined_artifact = output_artifacts::store(pool, NewOutputArtifact {
+                id: command.combined_artifact_id,
+                session_id,
+                turn_id: Some(turn_id),
+                tool_call_id: Some(tool_call_id),
+                script_run_id: Some(script_run_id),
+                command_run_id: Some(command.id),
+                process_id: None,
+                source_type: "command_run",
+                stream: "combined",
+                content: &combined,
+                metadata: json!({"commandVersionId": command.command_version_id}),
+            }).await?;
+            let (stdout_preview, stdout_preview_truncated) = truncate_text(&command.stdout, OUTPUT_LIMIT_BYTES);
+            let (stderr_preview, stderr_preview_truncated) = truncate_text(&command.stderr, OUTPUT_LIMIT_BYTES);
             db::append_event(
                 pool,
                 session_id,
@@ -2237,12 +2458,14 @@ async fn persist_record(
                     "argv": command.argv,
                     "cwd": command.cwd,
                     "status": command.status,
-                    "stdout": command.stdout,
-                    "stderr": command.stderr,
+                    "stdoutPreview": stdout_preview,
+                    "stderrPreview": stderr_preview,
                     "exitStatus": command.exit_status,
                     "maxRuntimeMs": command.max_runtime_ms,
                     "durationMs": command.duration_ms,
                     "truncation": command.truncation,
+                    "previewTruncation": {"stdout": stdout_preview_truncated, "stderr": stderr_preview_truncated},
+                    "artifacts": {"stdout": stdout_artifact, "stderr": stderr_artifact, "combined": combined_artifact},
                     "policyDecision": command.policy_decision,
                     "processGroupTermination": {
                         "attempted": command.status == "maxRuntimeExceeded",
@@ -2328,6 +2551,19 @@ async fn persist_record(
             .await?;
         }
         HostRecord::ProcessOutput(output) => {
+            let artifact = output_artifacts::store(pool, NewOutputArtifact {
+                id: output.artifact_id,
+                session_id,
+                turn_id: Some(turn_id),
+                tool_call_id: Some(tool_call_id),
+                script_run_id: Some(script_run_id),
+                command_run_id: None,
+                process_id: Some(output.process_id),
+                source_type: "managed_process",
+                stream: &output.stream,
+                content: &output.content,
+                metadata: json!({"handle": output.handle, "chunkTruncated": output.truncated}),
+            }).await?;
             sqlx::query(
                 r#"
                 INSERT INTO process_output_chunks (id, process_id, stream, content, truncated)
@@ -2352,7 +2588,7 @@ async fn persist_record(
                 json!({
                     "handle": output.handle,
                     "stream": output.stream,
-                    "content": output.content,
+                    "artifact": artifact,
                     "truncated": output.truncated,
                 }),
             )
@@ -2506,17 +2742,6 @@ fn truncate_text(input: &str, limit: usize) -> (String, bool) {
         end -= 1;
     }
     (input[..end].to_string(), true)
-}
-
-fn enforce_string_buffer_limit(buffer: &mut String, limit: usize) {
-    if limit == 0 || buffer.len() <= limit {
-        return;
-    }
-    let mut start = buffer.len() - limit;
-    while !buffer.is_char_boundary(start) {
-        start += 1;
-    }
-    buffer.drain(..start);
 }
 
 #[cfg(test)]
@@ -2687,6 +2912,13 @@ output(first + "|second=" + second)
         assert!(result.error.is_none(), "{:?}", result.error);
         assert!(result.output.contains("hello-process"));
         assert!(result.output.contains("|second="));
+        let streams = result.records.iter().filter_map(|record| match record {
+            HostRecord::ProcessOutput(output) => Some(output.stream.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert!(streams.contains(&"stdout"));
+        assert!(streams.contains(&"stderr"));
+        assert!(streams.contains(&"combined"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2702,7 +2934,7 @@ output(first + "|second=" + second)
         assert!(second.error.is_none(), "{:?}", second.error);
         assert!(second.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.status == "maxRuntimeExceeded" || process.event == "process.continued")));
 
-        PROCESS_MANAGER.lock().unwrap().clear();
+        PROCESS_MANAGER.lock().unwrap().remove(&session);
         let detached = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle]);
         assert!(detached.error.unwrap_or_default().contains("session-only process no longer attached"));
     }

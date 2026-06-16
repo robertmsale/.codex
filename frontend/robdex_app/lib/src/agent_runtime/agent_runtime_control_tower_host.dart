@@ -50,6 +50,13 @@ class _AgentRuntimeControlTowerHostState extends State<AgentRuntimeControlTowerH
           onConnectDiscovered: _controller.connectDiscoveredRuntime,
           onPollStream: _controller.pollStreamOnce,
           onDisconnect: _controller.disconnect,
+          onRoleValidate: _controller.validateRoleDraft,
+          onRoleCreate: _controller.createRoleFromDraft,
+          onRoleUpdate: _controller.updateRoleFromDraft,
+          onRoleExport: _controller.exportRole,
+          onRoleArchive: _controller.archiveRole,
+          onRoleUnarchive: _controller.unarchiveRole,
+          onRoleActivate: _controller.activateRoleVersion,
         );
       },
     );

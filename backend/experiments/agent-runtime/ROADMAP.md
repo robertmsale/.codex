@@ -104,10 +104,11 @@ product specification.
 26. GUI contract + proof: typed local controller state, operation vocabulary,
     Dart responsibility boundary, approval/command control enablement, and
     projection/reducer proof tests.
-27. GUI API gap audit: every `GuiOperationRequest` has a documented and
+27. GUI API gap audit: every `GuiOperationRequest` had a documented and
     code-backed route/local-action mapping; approval and command-registry
-    request shape mismatches are resolved; role-admin mutations and
-    workflow-memory inspection operation intents are explicitly deferred.
+    request shape mismatches were resolved. Role-admin GUI operation intents
+    are now implemented by the structured Role Admin editor slice;
+    workflow-memory inspection operation intents remain deferred.
 28. Rust/Rinf GUI backend controller boundary: a Rust-owned dispatcher owns
     `RuntimeSyncClient`, owned WebSocket stream handle, `RuntimeProjection`,
     `GuiControllerState`, selected session, connection/resync state, transient
@@ -217,18 +218,7 @@ product specification.
 
 ## Active slice
 
-No active implementation slice is recorded after completing per-user launchd
-autostart. The next implementable gates are remote/mDNS/iOS discovery and
-deferred role/workflow GUI operation intents if owner brings them into scope.
-
-Standing non-goals until reassigned:
-
-- No additional Flutter UI implementation beyond the current control-tower
-  shell until owner assigns it.
-- No root/system LaunchDaemons, sudo service installation, or stable Robdex
-  service integration.
-- No stable Robdex production-path changes.
-- No fallback state path parallel to PostgreSQL + projection/deltas.
+Role Admin UI structured editor is implemented: DB-backed role draft validation, create/update immutable versions, activate/archive/unarchive/export routes, role projection/view-model fields, Rust GUI operations, and the design-system Role Admin panel are now in place. The current runtime slice adds PostgreSQL-backed output artifacts and bounded retrieval for execute_code, command runs, and managed-process output as the output-budget foundation for future automatic compaction. Remaining gates are workflow-memory inspection UI, remote/mDNS/iOS discovery, automatic compaction policy, broader execution expansion after GUI/runtime lifecycle is stable, and any owner-approved production Robdex integration. Tokenizer-based accounting is intentionally not part of the output-artifact foundation.
 
 ## Validation baseline
 
@@ -274,11 +264,9 @@ scripts/smoke-lmstudio-embeddings.sh
 ## Deferred / next likely slices
 
 1. Remote/mDNS/iOS discovery after the local file bootstrap path is stable.
-2. Deferred role-admin GUI operation intents if owner moves role mutation into
-   the first GUI shell.
-3. Deferred workflow-memory inspection operation intents if projection/detail
-   state is insufficient for the first GUI shell.
-4. Broader execution expansion only after GUI/runtime lifecycle is stable.
+2. Workflow-memory inspection operation intents if projection/detail state is
+   insufficient for the first GUI shell.
+3. Broader execution expansion only after GUI/runtime lifecycle is stable.
 
 ## Current known risks
 

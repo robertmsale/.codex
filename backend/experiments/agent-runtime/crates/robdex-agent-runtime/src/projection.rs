@@ -512,7 +512,17 @@ async fn pending_approval_summary(
 async fn role_summaries(pool: &PgPool) -> Result<Vec<RoleSummary>> {
     let rows = sqlx::query(
         r#"
-        SELECT r.id, r.display_name, r.current_version_id, r.status, r.archived_at, rv.model_defaults
+        SELECT r.id, r.display_name, r.current_version_id, r.status, r.archived_at, rv.snapshot, rv.model_defaults,
+               COALESCE((
+                   SELECT jsonb_agg(jsonb_build_object(
+                       'versionId', rv2.id::text,
+                       'version', rv2.version,
+                       'status', CASE WHEN rv2.id = r.current_version_id THEN 'current' ELSE 'available' END,
+                       'createdAt', rv2.created_at::text
+                   ) ORDER BY rv2.created_at DESC)
+                   FROM role_versions rv2
+                   WHERE rv2.role_id = r.id
+               ), '[]'::jsonb) AS versions
         FROM roles r
         LEFT JOIN role_versions rv ON rv.id = r.current_version_id
         ORDER BY r.id ASC
@@ -524,6 +534,7 @@ async fn role_summaries(pool: &PgPool) -> Result<Vec<RoleSummary>> {
         .into_iter()
         .map(|row| {
             let model_defaults: Option<Value> = row.get("model_defaults");
+            let snapshot: Option<Value> = row.get("snapshot");
             RoleSummary {
                 id: row.get("id"),
                 display_name: row.get("display_name"),
@@ -531,7 +542,31 @@ async fn role_summaries(pool: &PgPool) -> Result<Vec<RoleSummary>> {
                 status: row.get("status"),
                 model: model_defaults
                     .and_then(|value| value.get("model").and_then(Value::as_str).map(str::to_string)),
+                reasoning_effort: snapshot
+                    .as_ref()
+                    .and_then(|value| value.get("modelDefaults").and_then(|defaults| defaults.get("reasoningEffort")).and_then(Value::as_str).map(str::to_string)),
                 archived_at: optional_time(row.get("archived_at")),
+                version: snapshot.as_ref().and_then(|value| value.get("version").and_then(Value::as_str).map(str::to_string)),
+                instruction_text: snapshot.as_ref().and_then(|value| value.get("instructionText").and_then(Value::as_str).map(str::to_string)),
+                capabilities: snapshot
+                    .as_ref()
+                    .and_then(|value| value.get("capabilities").and_then(Value::as_array))
+                    .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .unwrap_or_default(),
+                policy: snapshot
+                    .as_ref()
+                    .and_then(|value| value.get("policy").and_then(Value::as_object))
+                    .map(|policy| {
+                        policy
+                            .iter()
+                            .filter_map(|(action, decision)| decision.as_str().map(|decision| (action.clone(), decision.to_string())))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                routing: snapshot.as_ref().and_then(|value| value.get("routing").cloned()).unwrap_or(Value::Null),
+                visibility: snapshot.as_ref().and_then(|value| value.get("visibility").cloned()).unwrap_or(Value::Null),
+                lifecycle_authority: snapshot.as_ref().and_then(|value| value.get("lifecycleAuthority").cloned()).unwrap_or(Value::Null),
+                versions: serde_json::from_value(row.get::<Value, _>("versions")).unwrap_or_default(),
             }
         })
         .collect())
@@ -540,7 +575,17 @@ async fn role_summaries(pool: &PgPool) -> Result<Vec<RoleSummary>> {
 async fn role_summary(pool: &PgPool, role_id: &str) -> Result<Option<RoleSummary>> {
     let row = sqlx::query(
         r#"
-        SELECT r.id, r.display_name, r.current_version_id, r.status, r.archived_at, rv.model_defaults
+        SELECT r.id, r.display_name, r.current_version_id, r.status, r.archived_at, rv.snapshot, rv.model_defaults,
+               COALESCE((
+                   SELECT jsonb_agg(jsonb_build_object(
+                       'versionId', rv2.id::text,
+                       'version', rv2.version,
+                       'status', CASE WHEN rv2.id = r.current_version_id THEN 'current' ELSE 'available' END,
+                       'createdAt', rv2.created_at::text
+                   ) ORDER BY rv2.created_at DESC)
+                   FROM role_versions rv2
+                   WHERE rv2.role_id = r.id
+               ), '[]'::jsonb) AS versions
         FROM roles r
         LEFT JOIN role_versions rv ON rv.id = r.current_version_id
         WHERE r.id = $1
@@ -551,6 +596,7 @@ async fn role_summary(pool: &PgPool, role_id: &str) -> Result<Option<RoleSummary
     .await?;
     Ok(row.map(|row| {
         let model_defaults: Option<Value> = row.get("model_defaults");
+        let snapshot: Option<Value> = row.get("snapshot");
         RoleSummary {
             id: row.get("id"),
             display_name: row.get("display_name"),
@@ -558,7 +604,31 @@ async fn role_summary(pool: &PgPool, role_id: &str) -> Result<Option<RoleSummary
             status: row.get("status"),
             model: model_defaults
                 .and_then(|value| value.get("model").and_then(Value::as_str).map(str::to_string)),
+            reasoning_effort: snapshot
+                .as_ref()
+                .and_then(|value| value.get("modelDefaults").and_then(|defaults| defaults.get("reasoningEffort")).and_then(Value::as_str).map(str::to_string)),
             archived_at: optional_time(row.get("archived_at")),
+            version: snapshot.as_ref().and_then(|value| value.get("version").and_then(Value::as_str).map(str::to_string)),
+            instruction_text: snapshot.as_ref().and_then(|value| value.get("instructionText").and_then(Value::as_str).map(str::to_string)),
+            capabilities: snapshot
+                .as_ref()
+                .and_then(|value| value.get("capabilities").and_then(Value::as_array))
+                .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .unwrap_or_default(),
+            policy: snapshot
+                .as_ref()
+                .and_then(|value| value.get("policy").and_then(Value::as_object))
+                .map(|policy| {
+                    policy
+                        .iter()
+                        .filter_map(|(action, decision)| decision.as_str().map(|decision| (action.clone(), decision.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            routing: snapshot.as_ref().and_then(|value| value.get("routing").cloned()).unwrap_or(Value::Null),
+            visibility: snapshot.as_ref().and_then(|value| value.get("visibility").cloned()).unwrap_or(Value::Null),
+            lifecycle_authority: snapshot.as_ref().and_then(|value| value.get("lifecycleAuthority").cloned()).unwrap_or(Value::Null),
+            versions: serde_json::from_value(row.get::<Value, _>("versions")).unwrap_or_default(),
         }
     }))
 }

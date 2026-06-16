@@ -6,7 +6,7 @@
 
 use robdex_agent_runtime_projection::{
     ApiErrorPacket, CommandRegistryRequestSummary, GuiConnectionState, GuiControllerState,
-    GuiOperationRequest, GuiOperationResult, PendingApprovalSummary, RuntimeProjection,
+    GuiOperationRequest, GuiOperationResult, PendingApprovalSummary, RoleSummary, RuntimeProjection,
     SessionListItem, TimelineItem,
 };
 use serde::{Deserialize, Serialize};
@@ -111,6 +111,7 @@ pub struct AgentRuntimeControlTowerViewModel {
     pub sessions: Vec<AgentRuntimeControlTowerSessionRow>,
     pub timeline: Vec<AgentRuntimeControlTowerTimelineRow>,
     pub actions: Vec<AgentRuntimeControlTowerActionRow>,
+    pub role_admin: AgentRuntimeRoleAdminView,
     pub controller_facts: Vec<AgentRuntimeControlTowerFact>,
     pub output_log: Vec<String>,
     pub pending_request_count: usize,
@@ -181,6 +182,86 @@ pub struct AgentRuntimeControlTowerBadge {
     pub tone: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeRoleAdminView {
+    pub title: String,
+    pub subtitle: String,
+    pub empty_title: String,
+    pub empty_text: String,
+    pub rows: Vec<AgentRuntimeRoleRow>,
+    pub selected_detail: Option<AgentRuntimeRoleDetail>,
+    pub version_rows: Vec<AgentRuntimeRoleVersionRow>,
+    pub editor_draft: Option<AgentRuntimeRoleEditorDraftView>,
+    pub validation_errors: Vec<String>,
+    pub action_states: Vec<AgentRuntimeControlTowerActionRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeRoleRow {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub status: String,
+    pub tone: String,
+    pub current_version_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeRoleDetail {
+    pub id: String,
+    pub display_name: String,
+    pub version: String,
+    pub model: String,
+    pub status: String,
+    pub instruction_text: String,
+    pub capabilities: Vec<String>,
+    pub policy: Vec<AgentRuntimeRolePolicyRow>,
+    pub routing: Vec<AgentRuntimeControlTowerFact>,
+    pub visibility: Vec<AgentRuntimeControlTowerFact>,
+    pub lifecycle_authority: Vec<AgentRuntimeControlTowerFact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeRolePolicyRow {
+    pub action: String,
+    pub decision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeRoleVersionRow {
+    pub version_id: String,
+    pub version: String,
+    pub status: String,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeRoleEditorDraftView {
+    pub role_id: String,
+    pub version: String,
+    pub display_name: String,
+    pub model: String,
+    pub reasoning_effort: String,
+    pub instruction_text: String,
+    pub capabilities: Vec<String>,
+    pub policy: Vec<AgentRuntimeRolePolicyRow>,
+    pub routing_mode: String,
+    pub routing_reserved_actions: Vec<String>,
+    pub default_recipient: Option<String>,
+    pub allowed_recipients: Vec<String>,
+    pub listed: bool,
+    pub owner_visible: bool,
+    pub can_spawn_agents: bool,
+    pub can_archive_agents: bool,
+    pub lifecycle_reserved_actions: Vec<String>,
+}
+
 impl AgentRuntimeControlTowerViewModel {
     pub fn from_runtime_state(
         base_url: impl Into<String>,
@@ -240,6 +321,7 @@ impl AgentRuntimeControlTowerViewModel {
             sessions,
             timeline,
             actions,
+            role_admin: role_admin_view(projection),
             controller_facts: controller_facts(controller_state),
             output_log: output_log.iter().take(8).cloned().collect(),
             pending_request_count,
@@ -746,6 +828,174 @@ fn command_request_action_row(request: &CommandRegistryRequestSummary) -> AgentR
     }
 }
 
+fn role_admin_view(projection: Option<&RuntimeProjection>) -> AgentRuntimeRoleAdminView {
+    let roles: Vec<RoleSummary> = projection.map(|projection| projection.roles.clone()).unwrap_or_default();
+    let mut rows: Vec<_> = roles.iter().map(role_row).collect();
+    rows.sort_by(|left, right| left.id.cmp(&right.id));
+    let selected = roles
+        .iter()
+        .find(|role| role.status != "archived")
+        .or_else(|| roles.first());
+    let selected_detail = selected.map(role_detail);
+    let editor_draft = selected.map(role_editor_draft);
+    let version_rows = selected.map(role_version_rows).unwrap_or_default();
+    let validation_errors = selected
+        .filter(|role| role.capabilities.len() != role.policy.len())
+        .map(|_| vec!["capabilities must exactly match policy keys".to_string()])
+        .unwrap_or_default();
+    let action_states = selected
+        .map(|role| role_operation_actions(role, validation_errors.is_empty()))
+        .unwrap_or_default();
+    AgentRuntimeRoleAdminView {
+        title: format!("Role Admin ({})", rows.len()),
+        subtitle: "DB-backed immutable role versions".to_string(),
+        empty_title: "No roles projected".to_string(),
+        empty_text: "Hydrate the runtime projection or create a role draft through Rust-owned role operations.".to_string(),
+        rows,
+        selected_detail,
+        version_rows,
+        editor_draft,
+        validation_errors,
+        action_states,
+    }
+}
+
+fn role_row(role: &RoleSummary) -> AgentRuntimeRoleRow {
+    AgentRuntimeRoleRow {
+        id: role.id.clone(),
+        title: role.display_name.clone(),
+        subtitle: format!(
+            "{} · {}",
+            role.version.as_deref().unwrap_or("version unknown"),
+            role.model.as_deref().unwrap_or("model unknown")
+        ),
+        status: role.status.clone(),
+        tone: status_tone(&role.status).to_string(),
+        current_version_id: role.current_version_id.clone(),
+    }
+}
+
+fn role_detail(role: &RoleSummary) -> AgentRuntimeRoleDetail {
+    AgentRuntimeRoleDetail {
+        id: role.id.clone(),
+        display_name: role.display_name.clone(),
+        version: role.version.clone().unwrap_or_else(|| "unknown".to_string()),
+        model: role.model.clone().unwrap_or_else(|| "model unknown".to_string()),
+        status: role.status.clone(),
+        instruction_text: role.instruction_text.clone().unwrap_or_default(),
+        capabilities: role.capabilities.clone(),
+        policy: role
+            .policy
+            .iter()
+            .map(|(action, decision)| AgentRuntimeRolePolicyRow {
+                action: action.clone(),
+                decision: decision.clone(),
+            })
+            .collect(),
+        routing: json_object_facts(&role.routing),
+        visibility: json_object_facts(&role.visibility),
+        lifecycle_authority: json_object_facts(&role.lifecycle_authority),
+    }
+}
+
+fn role_editor_draft(role: &RoleSummary) -> AgentRuntimeRoleEditorDraftView {
+    AgentRuntimeRoleEditorDraftView {
+        role_id: role.id.clone(),
+        version: role.version.clone().unwrap_or_else(|| "1.0.0".to_string()),
+        display_name: role.display_name.clone(),
+        model: role.model.clone().unwrap_or_default(),
+        reasoning_effort: role.reasoning_effort.clone().unwrap_or_else(|| "medium".to_string()),
+        instruction_text: role.instruction_text.clone().unwrap_or_default(),
+        capabilities: role.capabilities.clone(),
+        policy: role.policy.iter().map(|(action, decision)| AgentRuntimeRolePolicyRow { action: action.clone(), decision: decision.clone() }).collect(),
+        routing_mode: role.routing.get("mode").and_then(Value::as_str).unwrap_or("direct").to_string(),
+        routing_reserved_actions: role
+            .routing
+            .get("reservedActions")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default(),
+        default_recipient: role.routing.get("defaultRecipient").and_then(Value::as_str).map(str::to_string),
+        allowed_recipients: role
+            .routing
+            .get("allowedRecipients")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default(),
+        listed: role.visibility.get("listed").and_then(Value::as_bool).unwrap_or(false),
+        owner_visible: role.visibility.get("ownerVisible").and_then(Value::as_bool).unwrap_or(false),
+        can_spawn_agents: role.lifecycle_authority.get("canSpawnAgents").and_then(Value::as_bool).unwrap_or(false),
+        can_archive_agents: role.lifecycle_authority.get("canArchiveAgents").and_then(Value::as_bool).unwrap_or(false),
+        lifecycle_reserved_actions: role
+            .lifecycle_authority
+            .get("reservedActions")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default(),
+    }
+}
+
+fn role_version_rows(role: &RoleSummary) -> Vec<AgentRuntimeRoleVersionRow> {
+    role
+        .versions
+        .iter()
+        .map(|version| AgentRuntimeRoleVersionRow {
+            version_id: version.version_id.clone(),
+            version: version.version.clone(),
+            status: version.status.clone(),
+            created_at: version.created_at.clone(),
+        })
+        .collect()
+}
+
+fn role_operation_actions(role: &RoleSummary, valid: bool) -> Vec<AgentRuntimeControlTowerActionRow> {
+    let mut actions = vec![
+        AgentRuntimeControlTowerActionRow {
+            id: format!("role:{}:validate", role.id),
+            title: "Validate draft".to_string(),
+            subtitle: "Runs canonical role manifest, routing, and command-policy validation".to_string(),
+            kind: "roleAdmin".to_string(),
+            state_text: if valid { "Ready".to_string() } else { "Fix validation errors".to_string() },
+            tone: if valid { "success" } else { "danger" }.to_string(),
+        },
+        AgentRuntimeControlTowerActionRow {
+            id: format!("role:{}:export", role.id),
+            title: "Export current role".to_string(),
+            subtitle: "Returns the DB-backed current manifest plus inline instructions".to_string(),
+            kind: "roleAdmin".to_string(),
+            state_text: "Direct result".to_string(),
+            tone: "info".to_string(),
+        },
+    ];
+    actions.push(AgentRuntimeControlTowerActionRow {
+        id: format!("role:{}:archive", role.id),
+        title: if role.status == "archived" { "Unarchive role" } else { "Archive role" }.to_string(),
+        subtitle: "Mutation waits for projection evidence".to_string(),
+        kind: "roleAdmin".to_string(),
+        state_text: if role.status == "archived" { "Can unarchive" } else { "Can archive" }.to_string(),
+        tone: if role.status == "archived" { "warning" } else { "muted" }.to_string(),
+    });
+    actions
+}
+
+fn json_object_facts(value: &Value) -> Vec<AgentRuntimeControlTowerFact> {
+    value
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .map(|(key, value)| AgentRuntimeControlTowerFact {
+                    label: key.clone(),
+                    value: value
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| value.to_string()),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn session_group_label(session: &SessionListItem) -> String {
     if !session.tracked {
         "Archived".to_string()
@@ -976,8 +1226,10 @@ mod tests {
     use futures_util::SinkExt;
     use robdex_agent_runtime_projection::{
         CommandRegistryRequestSummary, CommandRegistrySummary, GuiConnectionState,
-        GuiOperationOutcome, PendingApprovalSummary, RuntimeDelta, RuntimeDeltaKind,
-        RuntimeProjection, ServerStatusProjection, SessionListItem, TimelineItem,
+        GuiOperationOutcome, PendingApprovalSummary, RoleEditorDraft,
+        RoleEditorLifecycleAuthorityMetadata, RoleEditorModelDefaults, RoleEditorRoutingMetadata,
+        RoleEditorVisibilityMetadata, RoleSummary, RoleVersionSummary, RuntimeDelta,
+        RuntimeDeltaKind, RuntimeProjection, ServerStatusProjection, SessionListItem, TimelineItem,
     };
     use std::net::SocketAddr;
 
@@ -991,6 +1243,7 @@ mod tests {
                         database: "connected".to_string(),
                         message: None,
                     },
+                    roles: vec![test_role_summary()],
                     ..RuntimeProjection::default()
                 })
             }))
@@ -1021,7 +1274,15 @@ mod tests {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 })
             }))
-            .route("/sessions", post(Json(json!({"sessionId":"transport-created-session"}))));
+            .route("/sessions", post(Json(json!({"sessionId":"transport-created-session"}))))
+            .route("/roles/editor/options", get(Json(json!({"policyDecisions":["allow","deny"],"routingModes":["direct"],"defaultRecipients":["owner"],"knownActions":["tool.execute_code"]}))))
+            .route("/roles/editor/validate", post(Json(json!({"valid":true,"errors":[],"warnings":[],"roleId":"gui-role","version":"1.0.0"}))))
+            .route("/roles", post(Json(json!({"roleId":"gui-role","versionId":"role-version-1","status":"created"}))))
+            .route("/roles/gui-role/versions", post(Json(json!({"roleId":"gui-role","versionId":"role-version-2","status":"updated"}))).get(Json(json!([{"roleVersionId":"role-version-1","version":"1.0.0","current":true}]))))
+            .route("/roles/gui-role/export", get(Json(json!({"manifest":{"id":"gui-role"},"instructionText":"inline"}))))
+            .route("/roles/gui-role/activate", post(Json(json!({"roleId":"gui-role","versionId":"role-version-1","status":"active"}))))
+            .route("/roles/gui-role/archive", post(Json(json!({"roleId":"gui-role","status":"archived"}))))
+            .route("/roles/gui-role/unarchive", post(Json(json!({"roleId":"gui-role","status":"active"}))));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr: SocketAddr = listener.local_addr().expect("addr");
         tokio::spawn(async move {
@@ -1034,6 +1295,61 @@ mod tests {
         GuiTransportRequestPacket {
             packet_id: packet_id.to_string(),
             intent,
+        }
+    }
+
+    fn test_role_summary() -> RoleSummary {
+        RoleSummary {
+            id: "gui-role".to_string(),
+            display_name: "GUI Role".to_string(),
+            current_version_id: Some("role-version-1".to_string()),
+            status: "active".to_string(),
+            model: Some("gpt-5.4-mini".to_string()),
+            reasoning_effort: Some("medium".to_string()),
+            archived_at: None,
+            version: Some("1.0.0".to_string()),
+            instruction_text: Some("inline".to_string()),
+            capabilities: vec!["tool.execute_code".to_string()],
+            policy: std::collections::BTreeMap::from([("tool.execute_code".to_string(), "allow".to_string())]),
+            routing: json!({"mode":"direct","defaultRecipient":"owner","allowedRecipients":["owner"]}),
+            visibility: json!({"listed":true,"ownerVisible":true}),
+            lifecycle_authority: json!({"canSpawnAgents":false,"canArchiveAgents":false}),
+            versions: vec![RoleVersionSummary {
+                version_id: "role-version-1".to_string(),
+                version: "1.0.0".to_string(),
+                status: "current".to_string(),
+                created_at: None,
+            }],
+        }
+    }
+
+    fn role_draft() -> RoleEditorDraft {
+        RoleEditorDraft {
+            id: "gui-role".to_string(),
+            version: "1.0.0".to_string(),
+            display_name: "GUI Role".to_string(),
+            model_defaults: RoleEditorModelDefaults {
+                model: "gpt-5.4-mini".to_string(),
+                reasoning_effort: "medium".to_string(),
+            },
+            instruction_text: "inline".to_string(),
+            capabilities: vec!["tool.execute_code".to_string()],
+            policy: std::collections::BTreeMap::from([("tool.execute_code".to_string(), "allow".to_string())]),
+            routing: RoleEditorRoutingMetadata {
+                mode: "direct".to_string(),
+                default_recipient: Some("owner".to_string()),
+                allowed_recipients: vec!["owner".to_string()],
+                reserved_actions: vec!["message.send".to_string()],
+            },
+            visibility: RoleEditorVisibilityMetadata {
+                listed: true,
+                owner_visible: true,
+            },
+            lifecycle_authority: RoleEditorLifecycleAuthorityMetadata {
+                can_spawn_agents: false,
+                can_archive_agents: false,
+                reserved_actions: vec!["agent.archive".to_string()],
+            },
         }
     }
 
@@ -1297,6 +1613,36 @@ mod tests {
                 can_apply: false,
                 apply_label: "Apply unavailable".to_string(),
             }],
+            roles: vec![RoleSummary {
+                id: "runtime-allow".to_string(),
+                display_name: "Runtime Allow".to_string(),
+                current_version_id: Some("role-version-1".to_string()),
+                status: "active".to_string(),
+                model: Some("gpt-5.4-mini".to_string()),
+                reasoning_effort: Some("medium".to_string()),
+                archived_at: None,
+                version: Some("1.0.0".to_string()),
+                instruction_text: Some("Inline role instructions".to_string()),
+                capabilities: vec!["tool.execute_code".to_string()],
+                policy: std::collections::BTreeMap::from([("tool.execute_code".to_string(), "allow".to_string())]),
+                routing: json!({"mode":"direct","defaultRecipient":"owner","allowedRecipients":["owner"],"reservedActions":["message.send"]}),
+                visibility: json!({"listed":true,"ownerVisible":true}),
+                lifecycle_authority: json!({"canSpawnAgents":false,"canArchiveAgents":false,"reservedActions":["agent.archive"]}),
+                versions: vec![
+                    robdex_agent_runtime_projection::RoleVersionSummary {
+                        version_id: "role-version-1".to_string(),
+                        version: "1.0.0".to_string(),
+                        status: "current".to_string(),
+                        created_at: Some("now".to_string()),
+                    },
+                    robdex_agent_runtime_projection::RoleVersionSummary {
+                        version_id: "role-version-0".to_string(),
+                        version: "0.9.0".to_string(),
+                        status: "available".to_string(),
+                        created_at: Some("before".to_string()),
+                    },
+                ],
+            }],
             ..RuntimeProjection::default()
         };
         let controller = GuiControllerState {
@@ -1346,6 +1692,12 @@ mod tests {
         assert!(view.actions.iter().any(|row| row.state_text == "Ready to resume" && row.tone == "success"));
         assert!(view.actions.iter().any(|row| row.kind == "commandRegistryRequest" && row.title == "rg · audit" && row.state_text == "Needs registry decision"));
         assert!(!view.actions.iter().any(|row| row.kind == "commandRegistry"));
+        assert_eq!(view.role_admin.title, "Role Admin (1)");
+        assert_eq!(view.role_admin.rows[0].id, "runtime-allow");
+        assert_eq!(view.role_admin.version_rows.len(), 2);
+        assert_eq!(view.role_admin.selected_detail.as_ref().map(|role| role.instruction_text.as_str()), Some("Inline role instructions"));
+        assert_eq!(view.role_admin.editor_draft.as_ref().map(|draft| draft.capabilities.len()), Some(1));
+        assert!(view.role_admin.action_states.iter().any(|row| row.kind == "roleAdmin" && row.title == "Validate draft"));
         assert!(view.controller_facts.iter().any(|fact| fact.label == "Selected session" && fact.value == "session-1"));
         assert_eq!(view.pending_request_count, 2);
     }
@@ -1452,6 +1804,101 @@ mod tests {
             &packet.output,
             GuiTransportOutput::ControllerState { controller_state }
                 if controller_state["connectionState"] == "disconnected"
+        )));
+    }
+
+    #[tokio::test]
+    async fn transport_dispatches_role_editor_operations() {
+        let base_url = start_transport_test_server().await;
+        let transport = GuiTransportHandle::spawn();
+        let _ = transport
+            .send(packet(
+                "connect-role",
+                GuiTransportRequest::Connect {
+                    base_url,
+                    selected_session_id: None,
+                },
+            ))
+            .await;
+
+        let options = transport
+            .send(packet(
+                "role-options",
+                GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::RoleEditorOptions,
+                },
+            ))
+            .await;
+        assert!(options.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult {
+                result: GuiOperationResult {
+                    outcome: GuiOperationOutcome::DirectValue { value },
+                    ..
+                }
+            } if value["policyDecisions"].is_array()
+        )));
+
+        let validate = transport
+            .send(packet(
+                "role-validate",
+                GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::ValidateRoleDraft { draft: role_draft() },
+                },
+            ))
+            .await;
+        assert!(validate.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult {
+                result: GuiOperationResult {
+                    outcome: GuiOperationOutcome::DirectValue { value },
+                    ..
+                }
+            } if value["valid"] == true
+        )));
+
+        for (packet_id, operation) in [
+            ("role-create", GuiOperationRequest::CreateRoleFromDraft { draft: role_draft() }),
+            ("role-update", GuiOperationRequest::UpdateRoleFromDraft { role_id: "gui-role".to_string(), draft: role_draft() }),
+            ("role-activate", GuiOperationRequest::ActivateRoleVersion { role_id: "gui-role".to_string(), version_id: "role-version-1".to_string() }),
+            ("role-archive", GuiOperationRequest::ArchiveRole { role_id: "gui-role".to_string() }),
+            ("role-unarchive", GuiOperationRequest::UnarchiveRole { role_id: "gui-role".to_string() }),
+        ] {
+            let outputs = transport
+                .send(packet(packet_id, GuiTransportRequest::DispatchOperation { operation }))
+                .await;
+            assert!(outputs.iter().any(|packet| matches!(
+                &packet.output,
+                GuiTransportOutput::OperationResult {
+                    result: GuiOperationResult {
+                        outcome: GuiOperationOutcome::ProjectionUpdated { .. },
+                        ..
+                    }
+                }
+            )));
+            assert!(outputs.iter().any(|packet| matches!(
+                &packet.output,
+                GuiTransportOutput::ControlTowerView { view_model }
+                    if view_model.role_admin.rows.iter().any(|role| role.id == "gui-role")
+            )));
+        }
+
+        let export = transport
+            .send(packet(
+                "role-export",
+                GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::ExportRole { role_id: "gui-role".to_string() },
+                },
+            ))
+            .await;
+        assert!(export.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult {
+                result: GuiOperationResult {
+                    outcome: GuiOperationOutcome::DirectValue { value },
+                    ..
+                }
+            } if value["instructionText"] == "inline"
         )));
     }
 

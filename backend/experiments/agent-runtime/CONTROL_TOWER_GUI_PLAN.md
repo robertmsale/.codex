@@ -70,6 +70,13 @@ remote discovery require a separate owner-approved slice. The current service
 packaging affordance includes per-user script-based packaging and macOS
 LaunchAgent install/load/unload/status commands.
 
+
+## Role Admin implementation record
+
+The control tower now includes a structured Role Admin section. Rust owns role draft semantics, validation dispatch, operation dispatch, projection reduction, and view-model shaping. The `roleAdmin` view-model section contains role rows, selected-role detail, version rows, editable draft content, validation errors, and role operation action states. Dart renders these Rust-shaped values and may keep only widget-local editor text/controller state; validation/create/update/export/activate/archive/unarchive are sent back as typed Rust GUI operations, and version rows expose activation only for non-current immutable versions.
+
+Role create/update uses inline editor `instructionText` and persists it to immutable `role_versions.instruction_text`; the UI never creates prompt files. Server validation reuses canonical role manifest validation, DB routing validation, and command-policy validation. Create/update/activate/archive/unarchive mutations wait for projection/delta evidence, while metadata/options, validation, detail, version, and export operations return direct typed results.
+
 ## Direction
 
 The first shell is an operations control tower, not a chat-first interface.

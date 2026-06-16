@@ -6,6 +6,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
+use robdex_agent_runtime_projection::{
+    RoleEditorDraft, RoleEditorLifecycleAuthorityMetadata, RoleEditorModelDefaults,
+    RoleEditorOptions, RoleEditorRoutingMetadata, RoleEditorValidationResult,
+    RoleEditorVisibilityMetadata,
+};
 
 use crate::actions;
 
@@ -57,6 +62,20 @@ impl ManifestDecision {
             Self::Deny => "deny",
             Self::OwnerApproval => "ownerApproval",
             Self::OrchestratorApproval => "orchestratorApproval",
+        }
+    }
+}
+
+impl TryFrom<&str> for ManifestDecision {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self> {
+        match value {
+            "allow" => Ok(Self::Allow),
+            "deny" => Ok(Self::Deny),
+            "ownerApproval" => Ok(Self::OwnerApproval),
+            "orchestratorApproval" => Ok(Self::OrchestratorApproval),
+            other => bail!("unsupported role policy decision: {other}"),
         }
     }
 }
@@ -394,6 +413,116 @@ pub fn db_display_row(snapshot: &RoleSnapshot) -> Value {
         "lifecycleAuthority": snapshot.lifecycle_authority,
         "createdAt": snapshot.created_at,
     })
+}
+
+pub fn editor_options() -> RoleEditorOptions {
+    RoleEditorOptions {
+        policy_decisions: vec![
+            "allow".to_string(),
+            "deny".to_string(),
+            "ownerApproval".to_string(),
+            "orchestratorApproval".to_string(),
+        ],
+        routing_modes: vec!["direct".to_string()],
+        default_recipients: vec!["owner".to_string(), "orchestrator".to_string()],
+        known_actions: actions::ACTIVE_ACTIONS
+            .iter()
+            .chain(actions::RESERVED_ACTIONS.iter())
+            .map(|action| (*action).to_string())
+            .collect(),
+    }
+}
+
+pub fn imported_role_from_editor_draft(draft: &RoleEditorDraft) -> Result<ImportedRoleVersion> {
+    if draft.instruction_text.trim().is_empty() {
+        bail!("role instructionText must not be empty");
+    }
+    let manifest = editor_draft_manifest(draft)?;
+    let registry = RoleRegistry::from_root(PathBuf::new());
+    registry.validate_manifest_with_options(&manifest, Path::new("."), false, false)?;
+    let manifest_json = serde_json::to_value(&manifest).context("role editor manifest is not serializable")?;
+    let role_version_id = Uuid::new_v4();
+    let created_at = Utc::now();
+    let snapshot = RoleSnapshot {
+        id: manifest.id.clone(),
+        version: manifest.version.clone(),
+        display_name: manifest.display_name.clone(),
+        role_version_id,
+        instruction_text: draft.instruction_text.clone(),
+        model_defaults: manifest.model_defaults.clone(),
+        capabilities: manifest.capabilities.clone(),
+        policy: manifest.policy.clone(),
+        routing: manifest.routing.clone(),
+        visibility: manifest.visibility.clone(),
+        lifecycle_authority: manifest.lifecycle_authority.clone(),
+        manifest: manifest_json.clone(),
+        created_at,
+    };
+    Ok(ImportedRoleVersion { snapshot, manifest, manifest_json })
+}
+
+pub fn validation_result_for_editor_draft(draft: &RoleEditorDraft) -> RoleEditorValidationResult {
+    let mut errors = Vec::new();
+    if let Err(error) = imported_role_from_editor_draft(draft) {
+        errors.push(error_chain_message(&error));
+    }
+    RoleEditorValidationResult {
+        valid: errors.is_empty(),
+        errors,
+        warnings: Vec::new(),
+        role_id: Some(draft.id.clone()),
+        version: Some(draft.version.clone()),
+    }
+}
+
+fn editor_draft_manifest(draft: &RoleEditorDraft) -> Result<RoleManifest> {
+    let mut policy = BTreeMap::new();
+    for (action, decision) in &draft.policy {
+        policy.insert(action.clone(), ManifestDecision::try_from(decision.as_str())?);
+    }
+    Ok(RoleManifest {
+        id: draft.id.clone(),
+        version: draft.version.clone(),
+        display_name: draft.display_name.clone(),
+        prompt: PromptSource { path: "inline://gui-role-editor".to_string() },
+        model_defaults: model_defaults_from_editor(&draft.model_defaults),
+        capabilities: draft.capabilities.clone(),
+        policy,
+        routing: routing_from_editor(&draft.routing),
+        visibility: visibility_from_editor(&draft.visibility),
+        lifecycle_authority: lifecycle_from_editor(&draft.lifecycle_authority),
+    })
+}
+
+fn model_defaults_from_editor(value: &RoleEditorModelDefaults) -> ModelDefaults {
+    ModelDefaults {
+        model: value.model.clone(),
+        reasoning_effort: value.reasoning_effort.clone(),
+    }
+}
+
+fn routing_from_editor(value: &RoleEditorRoutingMetadata) -> RoutingMetadata {
+    RoutingMetadata {
+        mode: value.mode.clone(),
+        default_recipient: value.default_recipient.clone(),
+        allowed_recipients: value.allowed_recipients.clone(),
+        reserved_actions: value.reserved_actions.clone(),
+    }
+}
+
+fn visibility_from_editor(value: &RoleEditorVisibilityMetadata) -> VisibilityMetadata {
+    VisibilityMetadata {
+        listed: value.listed,
+        owner_visible: value.owner_visible,
+    }
+}
+
+fn lifecycle_from_editor(value: &RoleEditorLifecycleAuthorityMetadata) -> LifecycleAuthorityMetadata {
+    LifecycleAuthorityMetadata {
+        can_spawn_agents: value.can_spawn_agents,
+        can_archive_agents: value.can_archive_agents,
+        reserved_actions: value.reserved_actions.clone(),
+    }
 }
 
 fn validate_role_id(id: &str) -> Result<()> {

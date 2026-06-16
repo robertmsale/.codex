@@ -223,6 +223,13 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
         onConnectDiscovered: () {},
         onPollStream: () {},
         onDisconnect: () {},
+        onRoleValidate: (_) {},
+        onRoleCreate: (_) {},
+        onRoleUpdate: (_) {},
+        onRoleExport: (_) {},
+        onRoleArchive: (_) {},
+        onRoleUnarchive: (_) {},
+        onRoleActivate: (_, _) {},
       ),
     );
   }

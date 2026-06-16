@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use robdex_agent_runtime_projection::{RuntimeDelta, RuntimeDeltaKind};
+use robdex_agent_runtime_projection::{RoleEditorDraft, RuntimeDelta, RuntimeDeltaKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -186,9 +186,11 @@ pub fn app(state: ServerState) -> Router {
         .route("/approvals/{approval_id}", get(show_approval))
         .route("/approvals/{approval_id}/decide", post(decide_approval))
         .route("/approvals/{approval_id}/resume", post(resume_approval))
-        .route("/roles", get(list_roles))
+        .route("/roles", get(list_roles).post(create_role_from_draft))
+        .route("/roles/editor/options", get(role_editor_options))
+        .route("/roles/editor/validate", post(validate_role_draft))
         .route("/roles/{role_id}", get(show_role))
-        .route("/roles/{role_id}/versions", get(role_versions))
+        .route("/roles/{role_id}/versions", get(role_versions).post(update_role_from_draft))
         .route("/roles/versions/{version_id}", get(show_role_version))
         .route("/roles/{role_id}/activate", post(activate_role))
         .route("/roles/{role_id}/archive", post(archive_role))
@@ -417,6 +419,68 @@ async fn resume_approval(State(state): State<ServerState>, Path(approval_id): Pa
         .await
         .map_err(|error| map_missing_entity(error, "approval", approval_id))?;
     Ok(Json(json!({"approvalId": approval_id, "status": "resumed"})))
+}
+
+async fn role_editor_options() -> Result<Json<Value>, ApiError> {
+    Ok(Json(serde_json::to_value(crate::roles::editor_options()).map_err(anyhow::Error::from)?))
+}
+
+async fn validate_role_draft(State(state): State<ServerState>, payload: std::result::Result<Json<RoleEditorDraft>, JsonRejection>) -> Result<Json<Value>, ApiError> {
+    let draft = parse_json(payload)?;
+    let result = validate_role_draft_for_server(&state.pool, &draft).await;
+    Ok(Json(serde_json::to_value(result).map_err(anyhow::Error::from)?))
+}
+
+async fn create_role_from_draft(State(state): State<ServerState>, payload: std::result::Result<Json<RoleEditorDraft>, JsonRejection>) -> Result<Json<Value>, ApiError> {
+    let draft = parse_json(payload)?;
+    if db::role_exists(&state.pool, &draft.id).await? {
+        return Err(ApiError::conflict(format!("role already exists: {}", draft.id)));
+    }
+    let imported = imported_validated_role_from_draft(&state.pool, &draft).await?;
+    let role_id = imported.snapshot.id.clone();
+    let version_id = imported.snapshot.role_version_id;
+    db::import_role_version_with_actor(&state.pool, &imported, "gui-role-editor").await?;
+    Ok(Json(json!({"roleId": role_id, "versionId": version_id, "status": "created"})))
+}
+
+async fn update_role_from_draft(State(state): State<ServerState>, Path(role_id): Path<String>, payload: std::result::Result<Json<RoleEditorDraft>, JsonRejection>) -> Result<Json<Value>, ApiError> {
+    let draft = parse_json(payload)?;
+    if draft.id != role_id {
+        return Err(ApiError::from(RuntimeDomainError::validation_failed(format!("role draft id {} does not match route role id {role_id}", draft.id))));
+    }
+    if !db::role_exists(&state.pool, &role_id).await? {
+        return Err(ApiError::not_found("role", &role_id));
+    }
+    let imported = imported_validated_role_from_draft(&state.pool, &draft).await?;
+    let version_id = imported.snapshot.role_version_id;
+    db::import_role_version_with_actor(&state.pool, &imported, "gui-role-editor").await?;
+    Ok(Json(json!({"roleId": role_id, "versionId": version_id, "status": "updated"})))
+}
+
+async fn imported_validated_role_from_draft(pool: &PgPool, draft: &RoleEditorDraft) -> Result<crate::roles::ImportedRoleVersion, ApiError> {
+    let imported = crate::roles::imported_role_from_editor_draft(draft)
+        .map_err(|error| ApiError::from(RuntimeDomainError::validation_failed(error.to_string())))?;
+    routing::validate_snapshot_routing_against_db(pool, &imported.snapshot)
+        .await
+        .map_err(|error| ApiError::from(RuntimeDomainError::validation_failed(error.to_string())))?;
+    command_registry::validate_policy_actions_exist(pool, imported.snapshot.policy.keys().cloned())
+        .await
+        .map_err(|error| ApiError::from(RuntimeDomainError::validation_failed(error.to_string())))?;
+    Ok(imported)
+}
+
+async fn validate_role_draft_for_server(pool: &PgPool, draft: &RoleEditorDraft) -> robdex_agent_runtime_projection::RoleEditorValidationResult {
+    let mut result = crate::roles::validation_result_for_editor_draft(draft);
+    if let Ok(imported) = crate::roles::imported_role_from_editor_draft(draft) {
+        if let Err(error) = routing::validate_snapshot_routing_against_db(pool, &imported.snapshot).await {
+            result.errors.push(error.to_string());
+        }
+        if let Err(error) = command_registry::validate_policy_actions_exist(pool, imported.snapshot.policy.keys().cloned()).await {
+            result.errors.push(error.to_string());
+        }
+    }
+    result.valid = result.errors.is_empty();
+    result
 }
 
 async fn list_roles(State(state): State<ServerState>) -> Result<Json<Value>, ApiError> {
@@ -736,6 +800,7 @@ mod tests {
     use robdex_agent_runtime_projection::{RuntimeDeltaKind, RuntimeProjection};
     use tokio_tungstenite::connect_async;
     use tower::ServiceExt;
+    use sqlx::Row;
 
     struct TestDb {
         pool: PgPool,
@@ -1520,6 +1585,82 @@ mod tests {
         test_db.cleanup().await;
     }
 
+    fn role_editor_draft_json(role_id: &str, version: &str, instruction: &str) -> Value {
+        json!({
+            "id": role_id,
+            "version": version,
+            "displayName": "GUI Runtime Role",
+            "modelDefaults": {"model": "gpt-5.4-mini", "reasoningEffort": "medium"},
+            "instructionText": instruction,
+            "capabilities": ["tool.execute_code"],
+            "policy": {"tool.execute_code": "allow"},
+            "routing": {"mode": "direct", "defaultRecipient": "owner", "allowedRecipients": ["owner"], "reservedActions": ["message.send"]},
+            "visibility": {"listed": true, "ownerVisible": true},
+            "lifecycleAuthority": {"canSpawnAgents": false, "canArchiveAgents": false, "reservedActions": ["agent.archive"]}
+        })
+    }
+
+    #[tokio::test]
+    async fn deterministic_role_editor_api_uses_inline_db_versions_and_canonical_validation() {
+        let test_db = validation_db().await;
+        let router = app(ServerState::new(test_db.pool.clone()));
+        let (status, options) = request_json(router.clone(), Method::GET, "/roles/editor/options", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(options["policyDecisions"].as_array().expect("decisions").iter().any(|value| value == "allow"));
+
+        let draft_v1 = role_editor_draft_json("gui-role", "1.0.0", "inline gui role instructions v1");
+        let (status, validation) = request_json(router.clone(), Method::POST, "/roles/editor/validate", draft_v1.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(validation["valid"], true);
+        let (status, created) = request_json(router.clone(), Method::POST, "/roles", draft_v1).await;
+        assert_eq!(status, StatusCode::OK);
+        let version_v1 = created["versionId"].as_str().expect("created version").to_string();
+        let stored_v1: String = sqlx::query_scalar("SELECT instruction_text FROM role_versions WHERE id=$1")
+            .bind(Uuid::parse_str(&version_v1).expect("version uuid"))
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("stored v1 instruction");
+        assert_eq!(stored_v1, "inline gui role instructions v1");
+
+        let draft_v2 = role_editor_draft_json("gui-role", "1.0.1", "inline gui role instructions v2");
+        let (status, updated) = request_json(router.clone(), Method::POST, "/roles/gui-role/versions", draft_v2).await;
+        assert_eq!(status, StatusCode::OK);
+        let version_v2 = updated["versionId"].as_str().expect("updated version").to_string();
+        assert_ne!(version_v1, version_v2);
+        let version_count: i64 = sqlx::query_scalar("SELECT count(*) FROM role_versions WHERE role_id='gui-role'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("version count");
+        assert_eq!(version_count, 2);
+        let current_instruction: String = sqlx::query_scalar("SELECT rv.instruction_text FROM roles r JOIN role_versions rv ON rv.id=r.current_version_id WHERE r.id='gui-role'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("current instruction");
+        assert_eq!(current_instruction, "inline gui role instructions v2");
+        let (status, _) = request_json(router.clone(), Method::POST, "/roles/gui-role/activate", json!({"versionId": version_v1})).await;
+        assert_eq!(status, StatusCode::OK);
+        let current_version: Uuid = sqlx::query_scalar("SELECT current_version_id FROM roles WHERE id='gui-role'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("current version after rollback activation");
+        assert_eq!(current_version.to_string(), version_v1);
+        let (status, _) = request_json(router.clone(), Method::POST, "/roles/gui-role/archive", json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = request_json(router.clone(), Method::POST, "/roles/gui-role/unarchive", json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let mut invalid = role_editor_draft_json("bad-role", "1.0.0", "instructions");
+        invalid["capabilities"] = json!(["cmd.rg.run"]);
+        invalid["policy"] = json!({"cmd.rg.run": "allow"});
+        let (status, validation) = request_json(router.clone(), Method::POST, "/roles/editor/validate", invalid.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(validation["valid"], false);
+        assert!(validation["errors"].to_string().contains("concrete command actions"));
+        let (status, error) = request_json(router, Method::POST, "/roles", invalid).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_api_error(&error, "validation_failed");
+        test_db.cleanup().await;
+    }
+
     #[tokio::test]
     async fn deterministic_admin_websocket_mutations_update_projection_without_rehydrate() {
         let test_db = validation_db().await;
@@ -1955,8 +2096,10 @@ mod tests {
         let root = starlark_host::ExecutionRoot::new(".").expect("root");
         let project_source = "output(cmd[\"project_cache\"].run.describe())";
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, alpha, project_source).await;
-        let before = starlark_host::execute_code(&test_db.pool, alpha, turn_id, tool_call_id, project_source, &root, &role).await;
-        assert!(before.unwrap_err().to_string().contains("project_cache"));
+        let before = starlark_host::execute_code(&test_db.pool, alpha, turn_id, tool_call_id, project_source, &root, &role).await.expect("failed packet before project command");
+        let before_value = serde_json::to_value(before).expect("before packet");
+        assert_eq!(before_value["status"], "failed");
+        assert!(before_value["output"]["stderrArtifact"]["preview"].as_str().unwrap_or_default().contains("project_cache") || before_value["output"]["stderrArtifact"]["tail"].as_str().unwrap_or_default().contains("project_cache"));
 
         let project_seed = scoped_command_seed("cmd.cache.project", "project_cache");
         apply_registry_seed(&test_db.pool, alpha, project_seed, command_registry::RegistryScope { scope_type: "project".to_string(), project_key: Some("cache-alpha".to_string()) }).await;
@@ -1964,11 +2107,13 @@ mod tests {
         let after = starlark_host::execute_code(&test_db.pool, alpha, turn_id, tool_call_id, project_source, &root, &role).await.expect("execute after project command");
         let after_value = serde_json::to_value(after).expect("after packet");
         assert_eq!(after_value["status"], "completed");
-        assert!(after_value["output"].as_str().unwrap_or_default().contains("cmd.cache.project"));
+        assert!(after_value["output"]["artifact"]["preview"].as_str().unwrap_or_default().contains("cmd.cache.project") || after_value["output"]["artifact"]["tail"].as_str().unwrap_or_default().contains("cmd.cache.project"));
 
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, beta, project_source).await;
-        let non_visible = starlark_host::execute_code(&test_db.pool, beta, turn_id, tool_call_id, project_source, &root, &role).await;
-        assert!(non_visible.unwrap_err().to_string().contains("project_cache"));
+        let non_visible = starlark_host::execute_code(&test_db.pool, beta, turn_id, tool_call_id, project_source, &root, &role).await.expect("non-visible failed packet");
+        let non_visible_value = serde_json::to_value(non_visible).expect("non-visible packet");
+        assert_eq!(non_visible_value["status"], "failed");
+        assert!(non_visible_value["output"]["stderrArtifact"]["preview"].as_str().unwrap_or_default().contains("project_cache") || non_visible_value["output"]["stderrArtifact"]["tail"].as_str().unwrap_or_default().contains("project_cache"));
 
         let global_source = "output(cmd[\"global_cache\"].run.describe())";
         let global_seed = scoped_command_seed("cmd.cache.global", "global_cache");
@@ -1977,7 +2122,242 @@ mod tests {
         let global = starlark_host::execute_code(&test_db.pool, beta, turn_id, tool_call_id, global_source, &root, &role).await.expect("execute global command");
         let global_value = serde_json::to_value(global).expect("global packet");
         assert_eq!(global_value["status"], "completed");
-        assert!(global_value["output"].as_str().unwrap_or_default().contains("cmd.cache.global"));
+        assert!(global_value["output"]["artifact"]["preview"].as_str().unwrap_or_default().contains("cmd.cache.global") || global_value["output"]["artifact"]["tail"].as_str().unwrap_or_default().contains("cmd.cache.global"));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn output_artifacts_store_full_output_and_retrieve_bounded_views() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("output-artifacts"), ".", Some("."), None, None).await.expect("session");
+        let root = starlark_host::ExecutionRoot::new(".").expect("root");
+        let large = (0..900)
+            .map(|i| format!("line-{i:04}-{}", if i == 777 { "needle-output-artifact" } else { "payload" }))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = format!("output({})", serde_json::to_string(&large).expect("source string"));
+        let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, &source).await;
+        let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, &source, &root, &role).await.expect("execute large output");
+        let value = serde_json::to_value(packet).expect("packet");
+        let artifact_id = Uuid::parse_str(value["output"]["artifact"]["artifactId"].as_str().expect("artifact id")).expect("artifact uuid");
+        assert!(value["output"]["artifact"]["truncated"].as_bool().unwrap_or(false));
+        assert!(!value.to_string().contains(&large));
+
+        let row = sqlx::query("SELECT content, byte_count, line_count FROM execution_output_artifacts WHERE id=$1")
+            .bind(artifact_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("artifact row");
+        assert_eq!(row.get::<String, _>("content"), large);
+        assert_eq!(row.get::<i64, _>("byte_count") as usize, large.len());
+        assert_eq!(row.get::<i64, _>("line_count"), 900);
+
+        let retrieval_source = r#"
+artifact = outputs.last()
+output(outputs.head(artifact, lines=3))
+output(outputs.tail(artifact, lines=4))
+output(outputs.slice(artifact, start_line=500, end_line=650))
+output(outputs.search(artifact, "needle-output-artifact", context=2))
+output(outputs.stats(artifact))
+"#;
+        let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, retrieval_source).await;
+        let retrieval = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, retrieval_source, &root, &role).await.expect("retrieve artifact");
+        let retrieval_value = serde_json::to_value(retrieval).expect("retrieval packet");
+        let retrieval_artifact_id = Uuid::parse_str(retrieval_value["output"]["artifact"]["artifactId"].as_str().expect("retrieval artifact")).expect("retrieval uuid");
+        let retrieved_text: String = sqlx::query_scalar("SELECT content FROM execution_output_artifacts WHERE id=$1")
+            .bind(retrieval_artifact_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("retrieved output artifact");
+        let packets: Vec<Value> = retrieved_text
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("retrieval packet json"))
+            .collect();
+        assert_eq!(packets.len(), 5);
+        let head_content = "line-0000-payload\nline-0001-payload\nline-0002-payload";
+        assert_eq!(packets[0]["mode"], "head");
+        assert_eq!(packets[0]["returnedLines"], 3);
+        assert_eq!(packets[0]["returnedBytes"], head_content.len() as u64);
+        assert_eq!(packets[0]["omittedBytes"], (large.len() - head_content.len()) as u64);
+        assert_eq!(packets[0]["omittedLines"], 897);
+        assert_eq!(packets[0]["truncated"], true);
+        assert_eq!(packets[0]["content"], head_content);
+        let tail_content = "line-0896-payload\nline-0897-payload\nline-0898-payload\nline-0899-payload";
+        assert_eq!(packets[1]["mode"], "tail");
+        assert_eq!(packets[1]["returnedLines"], 4);
+        assert_eq!(packets[1]["returnedBytes"], tail_content.len() as u64);
+        assert_eq!(packets[1]["omittedBytes"], (large.len() - tail_content.len()) as u64);
+        assert_eq!(packets[1]["omittedLines"], 896);
+        assert_eq!(packets[1]["truncated"], true);
+        assert_eq!(packets[1]["content"], tail_content);
+        let slice_content = (499..650).map(|i| format!("line-{i:04}-payload")).collect::<Vec<_>>().join("\n");
+        assert_eq!(packets[2]["mode"], "slice");
+        assert_eq!(packets[2]["startLine"], 500);
+        assert_eq!(packets[2]["returnedLines"], 151);
+        assert_eq!(packets[2]["returnedBytes"], slice_content.len() as u64);
+        assert_eq!(packets[2]["omittedBytes"], (large.len() - slice_content.len()) as u64);
+        assert_eq!(packets[2]["omittedLines"], 749);
+        assert_eq!(packets[2]["truncated"], true);
+        assert_eq!(packets[2]["content"], slice_content);
+        let search_content = (775..780)
+            .map(|i| format!("line-{i:04}-{}", if i == 777 { "needle-output-artifact" } else { "payload" }))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(packets[3]["mode"], "search");
+        assert_eq!(packets[3]["matches"], 1);
+        assert_eq!(packets[3]["returnedLines"], 5);
+        assert_eq!(packets[3]["returnedBytes"], search_content.len() as u64);
+        assert_eq!(packets[3]["omittedBytes"], (large.len() - search_content.len()) as u64);
+        assert_eq!(packets[3]["omittedLines"], 895);
+        assert_eq!(packets[3]["truncated"], true);
+        assert_eq!(packets[3]["content"], search_content);
+        assert_eq!(packets[4]["mode"], "stats");
+        assert_eq!(packets[4]["byteCount"].as_u64().unwrap() as usize, large.len());
+        assert_eq!(packets[4]["lineCount"], 900);
+        assert_eq!(packets[4]["estimatedTokens"], (large.len() / 4) as u64);
+        assert_eq!(packets[4]["returnedBytes"], 0);
+        assert_eq!(packets[4]["returnedLines"], 0);
+        assert_eq!(packets[4]["omittedBytes"], large.len() as u64);
+        assert_eq!(packets[4]["omittedLines"], 900);
+        assert_eq!(packets[4]["truncated"], false);
+        assert_eq!(packets[4]["content"], "");
+        assert!(!retrieval_value.to_string().contains(&large));
+
+        let fail_source = format!("output({})\nmissing_symbol", serde_json::to_string(&large).expect("failure source"));
+        let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, &fail_source).await;
+        let failed = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, &fail_source, &root, &role).await.expect("failed execute packet");
+        let failed_value = serde_json::to_value(failed).expect("failed value");
+        assert_eq!(failed_value["ok"], false);
+        assert_eq!(failed_value["status"], "failed");
+        assert!(failed_value["output"]["artifact"]["artifactId"].is_string());
+        assert!(failed_value["output"]["stderrArtifact"]["artifactId"].is_string());
+        assert!(!failed_value.to_string().contains(&large));
+
+        let mut sh_seed = admin_command_seed("cmd.output_artifacts.sh");
+        sh_seed["binaryName"] = json!("sh");
+        sh_seed["candidatePaths"] = json!(["/bin/sh"]);
+        sh_seed["starlarkObject"] = json!("output_sh");
+        sh_seed["argvPrefix"] = json!(["-c"]);
+        let sh_seed: command_registry::CommandSeed = serde_json::from_value(sh_seed).expect("sh seed");
+        apply_registry_seed(&test_db.pool, session_id, sh_seed, command_registry::RegistryScope { scope_type: "global".to_string(), project_key: None }).await;
+        let command_source = r#"output(cmd["output_sh"].run(args=["printf stdout-artifact; printf stderr-artifact >&2"]).sync())"#;
+        let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, command_source).await;
+        let command_packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, command_source, &root, &role).await.expect("command output packet");
+        let command_value = serde_json::to_value(command_packet).expect("command value");
+        assert_eq!(command_value["status"], "completed", "command packet: {command_value}");
+        let command_result_artifact = Uuid::parse_str(command_value["output"]["artifact"]["artifactId"].as_str().expect("command result artifact")).expect("command result artifact id");
+        let command_result: String = sqlx::query_scalar("SELECT content FROM execution_output_artifacts WHERE id=$1")
+            .bind(command_result_artifact)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("command result content");
+        let command_envelope: Value = serde_json::from_str(command_result.trim()).expect("command envelope json");
+        let command_stdout = Uuid::parse_str(command_envelope["stdoutArtifact"]["artifactId"].as_str().expect("stdout artifact id")).expect("stdout uuid");
+        let command_stderr = Uuid::parse_str(command_envelope["stderrArtifact"]["artifactId"].as_str().expect("stderr artifact id")).expect("stderr uuid");
+        let command_combined = Uuid::parse_str(command_envelope["artifact"]["artifactId"].as_str().expect("combined artifact id")).expect("combined uuid");
+        let streams: Vec<(String, String)> = sqlx::query("SELECT stream, content FROM execution_output_artifacts WHERE id = ANY($1) ORDER BY stream")
+            .bind(&[command_stdout, command_stderr, command_combined])
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("command stream artifacts")
+            .into_iter()
+            .map(|row| (row.get("stream"), row.get("content")))
+            .collect();
+        assert_eq!(streams.len(), 3);
+        assert!(streams.contains(&("stdout".to_string(), "stdout-artifact".to_string())));
+        assert!(streams.contains(&("stderr".to_string(), "stderr-artifact".to_string())));
+        assert!(streams.contains(&("combined".to_string(), "stdout-artifactstderr-artifact".to_string())));
+
+        let mut proc_seed = admin_command_seed("cmd.output_artifacts.process");
+        proc_seed["binaryName"] = json!("sh");
+        proc_seed["candidatePaths"] = json!(["/bin/sh"]);
+        proc_seed["starlarkObject"] = json!("process_sh");
+        proc_seed["argvPrefix"] = json!(["-c"]);
+        proc_seed["syncAllowed"] = json!(false);
+        proc_seed["asyncAllowed"] = json!(true);
+        proc_seed["minAwaitMs"] = json!(500);
+        proc_seed["maxAwaitMs"] = json!(2000);
+        proc_seed["outputLimitBytes"] = json!(1000);
+        let proc_seed: command_registry::CommandSeed = serde_json::from_value(proc_seed).expect("process seed");
+        apply_registry_seed(&test_db.pool, session_id, proc_seed, command_registry::RegistryScope { scope_type: "global".to_string(), project_key: None }).await;
+        let stdout_large = (0..1500).map(|i| format!("pout-{i:04}")).collect::<Vec<_>>().join("\n") + "\n";
+        let stderr_large = (0..1400).map(|i| format!("perr-{i:04}")).collect::<Vec<_>>().join("\n") + "\n";
+        let process_shell = "i=0; while [ $i -lt 1500 ]; do printf 'pout-%04d\\n' \"$i\"; i=$((i+1)); done; i=0; while [ $i -lt 1400 ]; do printf 'perr-%04d\\n' \"$i\" >&2; i=$((i+1)); done";
+        let process_source = format!(
+            "h = cmd[\"process_sh\"].run(args=[{}]).start()\nproc[h].await_for(mins=0)\noutput(proc[h].flush_buffer())",
+            serde_json::to_string(process_shell).expect("process shell")
+        );
+        let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, &process_source).await;
+        let process_packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, &process_source, &root, &role).await.expect("process packet");
+        let process_value = serde_json::to_value(process_packet).expect("process value");
+        assert_eq!(process_value["status"], "completed", "process packet: {process_value}");
+        assert!(!process_value.to_string().contains(&stdout_large));
+        let process_result_artifact = Uuid::parse_str(process_value["output"]["artifact"]["artifactId"].as_str().expect("process result artifact")).expect("process result uuid");
+        let process_result: String = sqlx::query_scalar("SELECT content FROM execution_output_artifacts WHERE id=$1")
+            .bind(process_result_artifact)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("process result content");
+        let process_envelope: Value = serde_json::from_str(process_result.trim()).expect("process envelope json");
+        assert_eq!(process_envelope["stdoutArtifact"]["truncated"], true);
+        assert_eq!(process_envelope["stderrArtifact"]["truncated"], true);
+        assert_eq!(process_envelope["artifact"]["truncated"], true);
+        let process_stdout = Uuid::parse_str(process_envelope["stdoutArtifact"]["artifactId"].as_str().expect("process stdout id")).expect("process stdout uuid");
+        let process_stderr = Uuid::parse_str(process_envelope["stderrArtifact"]["artifactId"].as_str().expect("process stderr id")).expect("process stderr uuid");
+        let process_combined = Uuid::parse_str(process_envelope["artifact"]["artifactId"].as_str().expect("process combined id")).expect("process combined uuid");
+        let process_streams: Vec<(String, String)> = sqlx::query("SELECT stream, content FROM execution_output_artifacts WHERE id = ANY($1) ORDER BY stream")
+            .bind(&[process_stdout, process_stderr, process_combined])
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("process stream artifacts")
+            .into_iter()
+            .map(|row| (row.get("stream"), row.get("content")))
+            .collect();
+        assert_eq!(process_streams.len(), 3);
+        assert!(process_streams.contains(&("stdout".to_string(), stdout_large.clone())));
+        assert!(process_streams.contains(&("stderr".to_string(), stderr_large.clone())));
+        assert!(process_streams.contains(&("combined".to_string(), format!("{stdout_large}{stderr_large}"))));
+
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn output_artifact_retrieval_rejects_cross_session_ids() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_a = db::new_session(&test_db.pool, &role, Some("output-owner"), ".", Some("."), None, None).await.expect("session a");
+        let session_b = db::new_session(&test_db.pool, &role, Some("output-intruder"), ".", Some("."), None, None).await.expect("session b");
+        let root = starlark_host::ExecutionRoot::new(".").expect("root");
+        let secret = "session-a-secret-output-line";
+        let source = format!("output({})", serde_json::to_string(secret).expect("source string"));
+        let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_a, &source).await;
+        let packet = starlark_host::execute_code(&test_db.pool, session_a, turn_id, tool_call_id, &source, &root, &role).await.expect("execute owner output");
+        let value = serde_json::to_value(packet).expect("owner packet");
+        let artifact_id = value["output"]["artifact"]["artifactId"].as_str().expect("artifact id");
+        let quoted_artifact_id = serde_json::to_string(artifact_id).expect("quoted artifact id");
+
+        let retrieval_sources = [
+            format!("output(outputs.head({quoted_artifact_id}, lines=1))"),
+            format!("output(outputs.tail({quoted_artifact_id}, lines=1))"),
+            format!("output(outputs.slice({quoted_artifact_id}, start_line=1, end_line=1))"),
+            format!("output(outputs.search({quoted_artifact_id}, \"secret\", context=1))"),
+            format!("output(outputs.stats({quoted_artifact_id}))"),
+        ];
+
+        for retrieval_source in retrieval_sources {
+            let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_b, &retrieval_source).await;
+            let packet = starlark_host::execute_code(&test_db.pool, session_b, turn_id, tool_call_id, &retrieval_source, &root, &role).await.expect("cross-session retrieval packet");
+            let value = serde_json::to_value(packet).expect("cross-session packet");
+            assert_eq!(value["status"], "failed", "cross-session retrieval should fail: {value}");
+            let packet_text = value.to_string();
+            assert!(!packet_text.contains(secret), "cross-session retrieval leaked artifact content: {packet_text}");
+            assert!(
+                packet_text.contains("output artifact not found for current session"),
+                "cross-session retrieval should report session-scoped miss: {packet_text}"
+            );
+        }
+
         test_db.cleanup().await;
     }
 

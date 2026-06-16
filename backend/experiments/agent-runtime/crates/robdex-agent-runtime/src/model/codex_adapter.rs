@@ -208,7 +208,7 @@ impl ModelClient for CodexBackedModelClient {
         let tool = Self::execute_code_tool_schema(execute_code_contract);
         let request_tool = Self::request_command_registry_change_tool_schema(request_registry_contract);
         let instructions = format!(
-            "{role_instructions}\n\nChoose exactly one native tool for this turn. Call execute_code when the permanent Starlark interface can satisfy the user. Inspect live registered commands with cmd.describe(), cmd[\"object\"].describe(), or cmd[\"object\"].method.describe() inside execute_code when command details are needed. Call request_command_registry_change when progress is blocked by a missing or outdated command registry entry."
+            "{role_instructions}\n\nChoose exactly one native tool for this turn. Call execute_code when the permanent Starlark interface can satisfy the user. Inspect live registered commands with cmd.describe(), cmd[\"object\"].describe(), or cmd[\"object\"].method.describe() inside execute_code when command details are needed. Full command/process output is stored as output artifacts; use outputs.head/tail/slice/search/stats for bounded retrieval instead of dumping large logs. Call request_command_registry_change when progress is blocked by a missing or outdated command registry entry."
         );
         let request_input = responses_input_from_history(history, runtime_messages, Some(message));
         let request_for_shape = ResponsesApiRequest {

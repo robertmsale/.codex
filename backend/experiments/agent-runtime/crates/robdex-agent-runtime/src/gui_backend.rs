@@ -154,7 +154,18 @@ impl GuiBackendController {
             | GuiOperationRequest::PreviewCommandRegistryRequest { .. }
             | GuiOperationRequest::DecideCommandRegistryRequest { .. }
             | GuiOperationRequest::ApplyCommandRegistryRequest { .. }
-            | GuiOperationRequest::WorkflowMemoryFeedback { .. } => self.dispatch_server_operation(request).await,
+            | GuiOperationRequest::WorkflowMemoryFeedback { .. }
+            | GuiOperationRequest::RoleEditorOptions
+            | GuiOperationRequest::ValidateRoleDraft { .. }
+            | GuiOperationRequest::CreateRoleFromDraft { .. }
+            | GuiOperationRequest::UpdateRoleFromDraft { .. }
+            | GuiOperationRequest::ShowRoleDetail { .. }
+            | GuiOperationRequest::ListRoleVersions { .. }
+            | GuiOperationRequest::ShowRoleVersion { .. }
+            | GuiOperationRequest::ExportRole { .. }
+            | GuiOperationRequest::ActivateRoleVersion { .. }
+            | GuiOperationRequest::ArchiveRole { .. }
+            | GuiOperationRequest::UnarchiveRole { .. } => self.dispatch_server_operation(request).await,
         }
     }
 
@@ -232,7 +243,13 @@ impl GuiBackendController {
             GuiOperationRequest::ListCommandRegistry { .. }
             | GuiOperationRequest::ShowCommand { .. }
             | GuiOperationRequest::ShowCommandRegistryRequest { .. }
-            | GuiOperationRequest::PreviewCommandRegistryRequest { .. } => Ok(GuiOperationOutcome::DirectValue { value }),
+            | GuiOperationRequest::PreviewCommandRegistryRequest { .. }
+            | GuiOperationRequest::RoleEditorOptions
+            | GuiOperationRequest::ValidateRoleDraft { .. }
+            | GuiOperationRequest::ShowRoleDetail { .. }
+            | GuiOperationRequest::ListRoleVersions { .. }
+            | GuiOperationRequest::ShowRoleVersion { .. }
+            | GuiOperationRequest::ExportRole { .. } => Ok(GuiOperationOutcome::DirectValue { value }),
             GuiOperationRequest::CreateSession { .. } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: value.get("sessionId").and_then(Value::as_str).map(str::to_string),
             }),
@@ -253,6 +270,11 @@ impl GuiBackendController {
             | GuiOperationRequest::ApplyCommandRegistryRequest { request_id: session_id, .. } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: Some(session_id.clone()),
             }),
+            GuiOperationRequest::CreateRoleFromDraft { .. }
+            | GuiOperationRequest::UpdateRoleFromDraft { .. }
+            | GuiOperationRequest::ActivateRoleVersion { .. }
+            | GuiOperationRequest::ArchiveRole { .. }
+            | GuiOperationRequest::UnarchiveRole { .. } => self.hydrate_current().await,
             GuiOperationRequest::Connect { .. }
             | GuiOperationRequest::Hydrate { .. }
             | GuiOperationRequest::Rehydrate { .. }
@@ -324,6 +346,17 @@ impl GuiBackendController {
             GuiOperationRequest::DecideCommandRegistryRequest { request_id, .. } => format!("/command-registry/requests/{request_id}/decide"),
             GuiOperationRequest::ApplyCommandRegistryRequest { request_id, .. } => format!("/command-registry/requests/{request_id}/apply"),
             GuiOperationRequest::WorkflowMemoryFeedback { memory_id, .. } => format!("/workflow-memories/{memory_id}/feedback"),
+            GuiOperationRequest::RoleEditorOptions => "/roles/editor/options".to_string(),
+            GuiOperationRequest::ValidateRoleDraft { .. } => "/roles/editor/validate".to_string(),
+            GuiOperationRequest::CreateRoleFromDraft { .. } => "/roles".to_string(),
+            GuiOperationRequest::UpdateRoleFromDraft { role_id, .. } => format!("/roles/{role_id}/versions"),
+            GuiOperationRequest::ShowRoleDetail { role_id } => format!("/roles/{role_id}"),
+            GuiOperationRequest::ListRoleVersions { role_id } => format!("/roles/{role_id}/versions"),
+            GuiOperationRequest::ShowRoleVersion { version_id } => format!("/roles/versions/{version_id}"),
+            GuiOperationRequest::ExportRole { role_id } => format!("/roles/{role_id}/export"),
+            GuiOperationRequest::ActivateRoleVersion { role_id, .. } => format!("/roles/{role_id}/activate"),
+            GuiOperationRequest::ArchiveRole { role_id } => format!("/roles/{role_id}/archive"),
+            GuiOperationRequest::UnarchiveRole { role_id } => format!("/roles/{role_id}/unarchive"),
             GuiOperationRequest::Connect { .. }
             | GuiOperationRequest::Hydrate { .. }
             | GuiOperationRequest::Rehydrate { .. }
@@ -388,10 +421,12 @@ mod tests {
     use futures_util::SinkExt;
     use robdex_agent_runtime_projection::{
         ApplyOutcome, CommandRegistryDecisionInput, GuiCommandSeed, GuiFinalExecutionPolicy,
-        GuiOperationExpectation, GuiRegistryScope, RuntimeDelta, RuntimeDeltaKind, ServerStatusProjection,
-        SessionListItem,
+        GuiOperationExpectation, GuiRegistryScope, RoleEditorDraft, RoleEditorLifecycleAuthorityMetadata,
+        RoleEditorModelDefaults, RoleEditorRoutingMetadata, RoleEditorVisibilityMetadata, RoleSummary,
+        RoleVersionSummary, RuntimeDelta, RuntimeDeltaKind, ServerStatusProjection, SessionListItem,
     };
     use std::net::SocketAddr;
+    use std::sync::{Arc, Mutex};
 
     async fn test_ws(ws: WebSocketUpgrade) -> Response {
         ws.on_upgrade(|_socket| async move {
@@ -478,6 +513,93 @@ mod tests {
         let addr: SocketAddr = listener.local_addr().expect("addr");
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve delta stream router");
+        });
+        format!("http://{addr}")
+    }
+
+    fn role_draft() -> RoleEditorDraft {
+        RoleEditorDraft {
+            id: "gui-role".to_string(),
+            version: "1.0.0".to_string(),
+            display_name: "GUI Role".to_string(),
+            model_defaults: RoleEditorModelDefaults {
+                model: "gpt-5.4-mini".to_string(),
+                reasoning_effort: "medium".to_string(),
+            },
+            instruction_text: "inline instructions".to_string(),
+            capabilities: vec!["tool.execute_code".to_string()],
+            policy: std::collections::BTreeMap::from([("tool.execute_code".to_string(), "allow".to_string())]),
+            routing: RoleEditorRoutingMetadata {
+                mode: "direct".to_string(),
+                default_recipient: Some("owner".to_string()),
+                allowed_recipients: vec!["owner".to_string()],
+                reserved_actions: vec!["message.send".to_string()],
+            },
+            visibility: RoleEditorVisibilityMetadata {
+                listed: true,
+                owner_visible: true,
+            },
+            lifecycle_authority: RoleEditorLifecycleAuthorityMetadata {
+                can_spawn_agents: false,
+                can_archive_agents: false,
+                reserved_actions: vec!["agent.archive".to_string()],
+            },
+        }
+    }
+
+    async fn start_role_mutation_test_server() -> String {
+        let mutated = Arc::new(Mutex::new(false));
+        let snapshot_mutated = mutated.clone();
+        let post_mutated = mutated.clone();
+        let app = Router::new()
+            .route("/state/snapshot", get(move || {
+                let snapshot_mutated = snapshot_mutated.clone();
+                async move {
+                    let is_mutated = *snapshot_mutated.lock().expect("snapshot state");
+                    Json(RuntimeProjection {
+                        watermark: if is_mutated { 2 } else { 1 },
+                        roles: if is_mutated {
+                            vec![RoleSummary {
+                                id: "gui-role".to_string(),
+                                display_name: "GUI Role".to_string(),
+                                current_version_id: Some("role-version-1".to_string()),
+                                status: "active".to_string(),
+                                model: Some("gpt-5.4-mini".to_string()),
+                                reasoning_effort: Some("medium".to_string()),
+                                archived_at: None,
+                                version: Some("1.0.0".to_string()),
+                                instruction_text: Some("inline instructions".to_string()),
+                                capabilities: vec!["tool.execute_code".to_string()],
+                                policy: std::collections::BTreeMap::from([("tool.execute_code".to_string(), "allow".to_string())]),
+                                routing: json!({"mode":"direct","defaultRecipient":"owner","allowedRecipients":["owner"]}),
+                                visibility: json!({"listed":true,"ownerVisible":true}),
+                                lifecycle_authority: json!({"canSpawnAgents":false,"canArchiveAgents":false}),
+                                versions: vec![RoleVersionSummary {
+                                    version_id: "role-version-1".to_string(),
+                                    version: "1.0.0".to_string(),
+                                    status: "current".to_string(),
+                                    created_at: None,
+                                }],
+                            }]
+                        } else {
+                            Vec::new()
+                        },
+                        ..RuntimeProjection::default()
+                    })
+                }
+            }))
+            .route("/state/ws", get(test_ws))
+            .route("/roles", post(move || {
+                let post_mutated = post_mutated.clone();
+                async move {
+                    *post_mutated.lock().expect("post state") = true;
+                    Json(json!({"roleId":"gui-role","versionId":"role-version-1","status":"created"}))
+                }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr: SocketAddr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve role mutation test router");
         });
         format!("http://{addr}")
     }
@@ -583,6 +705,27 @@ mod tests {
             }
             other => panic!("unexpected outcome: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn role_mutations_wait_for_projection_refresh_evidence() {
+        let base_url = start_role_mutation_test_server().await;
+        let mut controller = GuiBackendController::new();
+        let connect = controller.dispatch(GuiOperationRequest::Connect {
+            base_url,
+            selected_session_id: None,
+        }).await;
+        assert!(matches!(connect.outcome, GuiOperationOutcome::ProjectionUpdated { watermark: 1 }));
+        assert!(controller.projection().expect("initial projection").roles.is_empty());
+
+        let create = controller.dispatch(GuiOperationRequest::CreateRoleFromDraft { draft: role_draft() }).await;
+        assert!(matches!(create.outcome, GuiOperationOutcome::ProjectionUpdated { watermark: 2 }));
+        let projection = controller.projection().expect("post role mutation projection");
+        assert!(projection.roles.iter().any(|role| {
+            role.id == "gui-role"
+                && role.instruction_text.as_deref() == Some("inline instructions")
+                && role.versions.iter().any(|version| version.status == "current")
+        }));
     }
 
     #[tokio::test]

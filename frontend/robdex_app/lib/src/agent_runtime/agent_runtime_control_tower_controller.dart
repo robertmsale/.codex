@@ -7,6 +7,14 @@ import 'package:robdex_design_system/robdex_design_system.dart';
 
 import '../bindings/bindings.dart';
 
+@visibleForTesting
+Map<String, dynamic> agentRuntimeRoleActivateOperationForTest(String roleId, String versionId) {
+  return {
+    'operation': 'activateRoleVersion',
+    'request': {'roleId': roleId, 'versionId': versionId},
+  };
+}
+
 class AgentRuntimeControlTowerController extends ChangeNotifier {
   StreamSubscription<RustSignalPack<AgentRuntimeOutputSignal>>? _subscription;
   final Set<String> _pendingRequestIds = <String>{};
@@ -59,6 +67,59 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
 
   void disconnect() {
     _send('disconnect', {'type': 'disconnect'});
+  }
+
+  void validateRoleDraft(AgentRuntimeRoleEditorDraft draft) {
+    _dispatchOperation('role-validate', {
+      'operation': 'validateRoleDraft',
+      'request': {'draft': draft.toDraftJson()},
+    });
+  }
+
+  void createRoleFromDraft(AgentRuntimeRoleEditorDraft draft) {
+    _dispatchOperation('role-create', {
+      'operation': 'createRoleFromDraft',
+      'request': {'draft': draft.toDraftJson()},
+    });
+  }
+
+  void updateRoleFromDraft(AgentRuntimeRoleEditorDraft draft) {
+    _dispatchOperation('role-update', {
+      'operation': 'updateRoleFromDraft',
+      'request': {'roleId': draft.roleId, 'draft': draft.toDraftJson()},
+    });
+  }
+
+  void exportRole(String roleId) {
+    _dispatchOperation('role-export', {
+      'operation': 'exportRole',
+      'request': {'roleId': roleId},
+    });
+  }
+
+  void archiveRole(String roleId) {
+    _dispatchOperation('role-archive', {
+      'operation': 'archiveRole',
+      'request': {'roleId': roleId},
+    });
+  }
+
+  void unarchiveRole(String roleId) {
+    _dispatchOperation('role-unarchive', {
+      'operation': 'unarchiveRole',
+      'request': {'roleId': roleId},
+    });
+  }
+
+  void activateRoleVersion(String roleId, String versionId) {
+    _dispatchOperation('role-activate', agentRuntimeRoleActivateOperationForTest(roleId, versionId));
+  }
+
+  void _dispatchOperation(String prefix, Map<String, dynamic> operation) {
+    _send(prefix, {
+      'type': 'dispatchOperation',
+      'payload': {'operation': operation},
+    });
   }
 
   void _send(String prefix, Map<String, dynamic> intent) {
@@ -128,6 +189,7 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
         sessions: const [],
         timeline: const [],
         actions: const [],
+        roleAdmin: mockAgentRuntimeRoleAdminEmpty,
         controllerFacts: const [],
         outputLog: const [],
         pendingRequestCount: _pendingRequestIds.length,

@@ -25,6 +25,7 @@ class AgentRuntimeControlTowerData {
     required this.sessions,
     required this.timeline,
     required this.actions,
+    required this.roleAdmin,
     required this.controllerFacts,
     required this.outputLog,
     required this.pendingRequestCount,
@@ -56,6 +57,7 @@ class AgentRuntimeControlTowerData {
   final List<AgentRuntimeSessionItem> sessions;
   final List<AgentRuntimeTimelineItem> timeline;
   final List<AgentRuntimeActionItem> actions;
+  final AgentRuntimeRoleAdminData roleAdmin;
   final List<AgentRuntimeFact> controllerFacts;
   final List<String> outputLog;
   final int pendingRequestCount;
@@ -90,6 +92,9 @@ class AgentRuntimeControlTowerData {
       sessions: _objects(json['sessions']).map(AgentRuntimeSessionItem.fromJson).toList(growable: false),
       timeline: _objects(json['timeline']).map(AgentRuntimeTimelineItem.fromJson).toList(growable: false),
       actions: _objects(json['actions']).map(AgentRuntimeActionItem.fromJson).toList(growable: false),
+      roleAdmin: AgentRuntimeRoleAdminData.fromJson(
+        Map<String, dynamic>.from((json['roleAdmin'] as Map?) ?? const {}),
+      ),
       controllerFacts: _objects(json['controllerFacts']).map(AgentRuntimeFact.fromJson).toList(growable: false),
       outputLog: (json['outputLog'] as List<dynamic>? ?? const []).map((value) => '$value').toList(growable: false),
       pendingRequestCount: (json['pendingRequestCount'] as num?)?.toInt() ?? 0,
@@ -123,6 +128,7 @@ class AgentRuntimeControlTowerData {
     List<AgentRuntimeSessionItem>? sessions,
     List<AgentRuntimeTimelineItem>? timeline,
     List<AgentRuntimeActionItem>? actions,
+    AgentRuntimeRoleAdminData? roleAdmin,
     List<AgentRuntimeFact>? controllerFacts,
     List<String>? outputLog,
     int? pendingRequestCount,
@@ -154,6 +160,7 @@ class AgentRuntimeControlTowerData {
       sessions: sessions ?? this.sessions,
       timeline: timeline ?? this.timeline,
       actions: actions ?? this.actions,
+      roleAdmin: roleAdmin ?? this.roleAdmin,
       controllerFacts: controllerFacts ?? this.controllerFacts,
       outputLog: outputLog ?? this.outputLog,
       pendingRequestCount: pendingRequestCount ?? this.pendingRequestCount,
@@ -327,6 +334,251 @@ class AgentRuntimeFact {
       label: '${json['label'] ?? ''}',
       value: '${json['value'] ?? ''}',
     );
+  }
+}
+
+class AgentRuntimeRoleAdminData {
+  const AgentRuntimeRoleAdminData({
+    required this.title,
+    required this.subtitle,
+    required this.emptyTitle,
+    required this.emptyText,
+    required this.rows,
+    required this.versionRows,
+    required this.validationErrors,
+    required this.actionStates,
+    this.selectedDetail,
+    this.editorDraft,
+  });
+
+  final String title;
+  final String subtitle;
+  final String emptyTitle;
+  final String emptyText;
+  final List<AgentRuntimeRoleRow> rows;
+  final AgentRuntimeRoleDetail? selectedDetail;
+  final List<AgentRuntimeRoleVersionRow> versionRows;
+  final AgentRuntimeRoleEditorDraft? editorDraft;
+  final List<String> validationErrors;
+  final List<AgentRuntimeActionItem> actionStates;
+
+  factory AgentRuntimeRoleAdminData.fromJson(Map<String, dynamic> json) {
+    final selectedDetail = json['selectedDetail'];
+    final editorDraft = json['editorDraft'];
+    return AgentRuntimeRoleAdminData(
+      title: '${json['title'] ?? 'Role Admin'}',
+      subtitle: '${json['subtitle'] ?? 'DB-backed immutable role versions'}',
+      emptyTitle: '${json['emptyTitle'] ?? 'No roles projected'}',
+      emptyText: '${json['emptyText'] ?? 'Hydrate the runtime projection to inspect roles.'}',
+      rows: _objects(json['rows']).map(AgentRuntimeRoleRow.fromJson).toList(growable: false),
+      selectedDetail: selectedDetail is Map ? AgentRuntimeRoleDetail.fromJson(Map<String, dynamic>.from(selectedDetail)) : null,
+      versionRows: _objects(json['versionRows']).map(AgentRuntimeRoleVersionRow.fromJson).toList(growable: false),
+      editorDraft: editorDraft is Map ? AgentRuntimeRoleEditorDraft.fromJson(Map<String, dynamic>.from(editorDraft)) : null,
+      validationErrors: (json['validationErrors'] as List<dynamic>? ?? const []).map((value) => '$value').toList(growable: false),
+      actionStates: _objects(json['actionStates']).map(AgentRuntimeActionItem.fromJson).toList(growable: false),
+    );
+  }
+}
+
+class AgentRuntimeRoleRow {
+  const AgentRuntimeRoleRow({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.status,
+    required this.tone,
+    this.currentVersionId,
+  });
+
+  final String id;
+  final String title;
+  final String subtitle;
+  final String status;
+  final String tone;
+  final String? currentVersionId;
+
+  factory AgentRuntimeRoleRow.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeRoleRow(
+      id: '${json['id'] ?? ''}',
+      title: '${json['title'] ?? json['id'] ?? 'Role'}',
+      subtitle: '${json['subtitle'] ?? ''}',
+      status: '${json['status'] ?? 'unknown'}',
+      tone: '${json['tone'] ?? 'info'}',
+      currentVersionId: json['currentVersionId'] as String?,
+    );
+  }
+}
+
+class AgentRuntimeRoleDetail {
+  const AgentRuntimeRoleDetail({
+    required this.id,
+    required this.displayName,
+    required this.version,
+    required this.model,
+    required this.status,
+    required this.instructionText,
+    required this.capabilities,
+    required this.policy,
+    required this.routing,
+    required this.visibility,
+    required this.lifecycleAuthority,
+  });
+
+  final String id;
+  final String displayName;
+  final String version;
+  final String model;
+  final String status;
+  final String instructionText;
+  final List<String> capabilities;
+  final List<AgentRuntimeRolePolicyRow> policy;
+  final List<AgentRuntimeFact> routing;
+  final List<AgentRuntimeFact> visibility;
+  final List<AgentRuntimeFact> lifecycleAuthority;
+
+  factory AgentRuntimeRoleDetail.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeRoleDetail(
+      id: '${json['id'] ?? ''}',
+      displayName: '${json['displayName'] ?? 'Role'}',
+      version: '${json['version'] ?? 'unknown'}',
+      model: '${json['model'] ?? 'model unknown'}',
+      status: '${json['status'] ?? 'unknown'}',
+      instructionText: '${json['instructionText'] ?? ''}',
+      capabilities: (json['capabilities'] as List<dynamic>? ?? const []).map((value) => '$value').toList(growable: false),
+      policy: _objects(json['policy']).map(AgentRuntimeRolePolicyRow.fromJson).toList(growable: false),
+      routing: _objects(json['routing']).map(AgentRuntimeFact.fromJson).toList(growable: false),
+      visibility: _objects(json['visibility']).map(AgentRuntimeFact.fromJson).toList(growable: false),
+      lifecycleAuthority: _objects(json['lifecycleAuthority']).map(AgentRuntimeFact.fromJson).toList(growable: false),
+    );
+  }
+}
+
+class AgentRuntimeRolePolicyRow {
+  const AgentRuntimeRolePolicyRow({required this.action, required this.decision});
+
+  final String action;
+  final String decision;
+
+  factory AgentRuntimeRolePolicyRow.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeRolePolicyRow(
+      action: '${json['action'] ?? ''}',
+      decision: '${json['decision'] ?? ''}',
+    );
+  }
+}
+
+class AgentRuntimeRoleVersionRow {
+  const AgentRuntimeRoleVersionRow({
+    required this.versionId,
+    required this.version,
+    required this.status,
+    this.createdAt,
+  });
+
+  final String versionId;
+  final String version;
+  final String status;
+  final String? createdAt;
+
+  factory AgentRuntimeRoleVersionRow.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeRoleVersionRow(
+      versionId: '${json['versionId'] ?? ''}',
+      version: '${json['version'] ?? 'unknown'}',
+      status: '${json['status'] ?? 'unknown'}',
+      createdAt: json['createdAt'] as String?,
+    );
+  }
+}
+
+class AgentRuntimeRoleEditorDraft {
+  const AgentRuntimeRoleEditorDraft({
+    required this.roleId,
+    required this.version,
+    required this.displayName,
+    required this.model,
+    required this.reasoningEffort,
+    required this.instructionText,
+    required this.capabilities,
+    required this.policy,
+    required this.routingMode,
+    required this.routingReservedActions,
+    required this.allowedRecipients,
+    required this.listed,
+    required this.ownerVisible,
+    required this.canSpawnAgents,
+    required this.canArchiveAgents,
+    required this.lifecycleReservedActions,
+    this.defaultRecipient,
+  });
+
+  final String roleId;
+  final String version;
+  final String displayName;
+  final String model;
+  final String reasoningEffort;
+  final String instructionText;
+  final List<String> capabilities;
+  final List<AgentRuntimeRolePolicyRow> policy;
+  final String routingMode;
+  final List<String> routingReservedActions;
+  final String? defaultRecipient;
+  final List<String> allowedRecipients;
+  final bool listed;
+  final bool ownerVisible;
+  final bool canSpawnAgents;
+  final bool canArchiveAgents;
+  final List<String> lifecycleReservedActions;
+
+  factory AgentRuntimeRoleEditorDraft.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeRoleEditorDraft(
+      roleId: '${json['roleId'] ?? ''}',
+      version: '${json['version'] ?? ''}',
+      displayName: '${json['displayName'] ?? ''}',
+      model: '${json['model'] ?? ''}',
+      reasoningEffort: '${json['reasoningEffort'] ?? ''}',
+      instructionText: '${json['instructionText'] ?? ''}',
+      capabilities: (json['capabilities'] as List<dynamic>? ?? const []).map((value) => '$value').toList(growable: false),
+      policy: _objects(json['policy']).map(AgentRuntimeRolePolicyRow.fromJson).toList(growable: false),
+      routingMode: '${json['routingMode'] ?? 'direct'}',
+      routingReservedActions: (json['routingReservedActions'] as List<dynamic>? ?? const []).map((value) => '$value').toList(growable: false),
+      defaultRecipient: json['defaultRecipient'] as String?,
+      allowedRecipients: (json['allowedRecipients'] as List<dynamic>? ?? const []).map((value) => '$value').toList(growable: false),
+      listed: json['listed'] == true,
+      ownerVisible: json['ownerVisible'] == true,
+      canSpawnAgents: json['canSpawnAgents'] == true,
+      canArchiveAgents: json['canArchiveAgents'] == true,
+      lifecycleReservedActions: (json['lifecycleReservedActions'] as List<dynamic>? ?? const []).map((value) => '$value').toList(growable: false),
+    );
+  }
+
+  Map<String, Object?> toDraftJson() {
+    return {
+      'id': roleId,
+      'version': version,
+      'displayName': displayName,
+      'modelDefaults': {
+        'model': model,
+        'reasoningEffort': reasoningEffort,
+      },
+      'instructionText': instructionText,
+      'capabilities': capabilities,
+      'policy': {for (final row in policy) row.action: row.decision},
+      'routing': {
+        'mode': routingMode,
+        'defaultRecipient': defaultRecipient,
+        'allowedRecipients': allowedRecipients,
+        'reservedActions': routingReservedActions,
+      },
+      'visibility': {
+        'listed': listed,
+        'ownerVisible': ownerVisible,
+      },
+      'lifecycleAuthority': {
+        'canSpawnAgents': canSpawnAgents,
+        'canArchiveAgents': canArchiveAgents,
+        'reservedActions': lifecycleReservedActions,
+      },
+    };
   }
 }
 

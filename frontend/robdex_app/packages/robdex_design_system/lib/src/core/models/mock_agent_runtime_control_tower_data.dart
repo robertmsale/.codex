@@ -1,5 +1,130 @@
 import 'agent_runtime_control_tower_models.dart';
 
+const mockAgentRuntimeRoleAdminEmpty = AgentRuntimeRoleAdminData(
+  title: 'Role Admin (0)',
+  subtitle: 'DB-backed immutable role versions',
+  emptyTitle: 'No roles projected',
+  emptyText: 'Hydrate the runtime projection to inspect role definitions.',
+  rows: [],
+  versionRows: [],
+  validationErrors: [],
+  actionStates: [],
+);
+
+const mockAgentRuntimeRoleAdminSelected = AgentRuntimeRoleAdminData(
+  title: 'Role Admin (1)',
+  subtitle: 'DB-backed immutable role versions',
+  emptyTitle: 'No roles projected',
+  emptyText: 'Hydrate the runtime projection to inspect role definitions.',
+  rows: [
+    AgentRuntimeRoleRow(
+      id: 'runtime-allow',
+      title: 'Runtime Allow',
+      subtitle: '1.0.0 · gpt-5.4-mini',
+      status: 'active',
+      tone: 'success',
+      currentVersionId: 'role-version-1',
+    ),
+  ],
+  selectedDetail: AgentRuntimeRoleDetail(
+    id: 'runtime-allow',
+    displayName: 'Runtime Allow',
+    version: '1.0.0',
+    model: 'gpt-5.4-mini',
+    status: 'active',
+    instructionText: 'You are the runtime allow role. Inspect commands with cmd.describe().',
+    capabilities: ['tool.execute_code'],
+    policy: [AgentRuntimeRolePolicyRow(action: 'tool.execute_code', decision: 'allow')],
+    routing: [AgentRuntimeFact(label: 'defaultRecipient', value: 'owner')],
+    visibility: [AgentRuntimeFact(label: 'listed', value: 'true')],
+    lifecycleAuthority: [AgentRuntimeFact(label: 'canArchiveAgents', value: 'false')],
+  ),
+  versionRows: [
+    AgentRuntimeRoleVersionRow(versionId: 'role-version-1', version: '1.0.0', status: 'current', createdAt: '2026-06-01T12:00:00Z'),
+    AgentRuntimeRoleVersionRow(versionId: 'role-version-0', version: '0.9.0', status: 'historical', createdAt: '2026-05-20T09:30:00Z'),
+  ],
+  editorDraft: AgentRuntimeRoleEditorDraft(
+    roleId: 'runtime-allow',
+    version: '1.0.0',
+    displayName: 'Runtime Allow',
+    model: 'gpt-5.4-mini',
+    reasoningEffort: 'medium',
+    instructionText: 'You are the runtime allow role. Inspect commands with cmd.describe().',
+    capabilities: ['tool.execute_code'],
+    policy: [AgentRuntimeRolePolicyRow(action: 'tool.execute_code', decision: 'allow')],
+    routingMode: 'direct',
+    routingReservedActions: ['message.send'],
+    defaultRecipient: 'owner',
+    allowedRecipients: ['owner'],
+    listed: true,
+    ownerVisible: true,
+    canSpawnAgents: false,
+    canArchiveAgents: false,
+    lifecycleReservedActions: ['agent.archive'],
+  ),
+  validationErrors: [],
+  actionStates: [
+    AgentRuntimeActionItem(
+      id: 'role:runtime-allow:validate',
+      title: 'Validate draft',
+      subtitle: 'Runs canonical role manifest, routing, and command-policy validation',
+      kind: 'roleAdmin',
+      stateText: 'Ready',
+      tone: 'success',
+    ),
+    AgentRuntimeActionItem(
+      id: 'role:runtime-allow:archive',
+      title: 'Archive role',
+      subtitle: 'Mutation waits for projection evidence',
+      kind: 'roleAdmin',
+      stateText: 'Can archive',
+      tone: 'muted',
+    ),
+  ],
+);
+
+const mockAgentRuntimeRoleAdminInvalid = AgentRuntimeRoleAdminData(
+  title: 'Role Admin (1)',
+  subtitle: 'DB-backed immutable role versions',
+  emptyTitle: 'No roles projected',
+  emptyText: 'Hydrate the runtime projection to inspect role definitions.',
+  rows: [
+    AgentRuntimeRoleRow(id: 'draft-role', title: 'Draft Role', subtitle: '1.0.0 · gpt-5.4-mini', status: 'draft', tone: 'warning'),
+  ],
+  selectedDetail: null,
+  versionRows: [],
+  editorDraft: AgentRuntimeRoleEditorDraft(
+    roleId: 'draft-role',
+    version: '1.0.0',
+    displayName: 'Draft Role',
+    model: 'gpt-5.4-mini',
+    reasoningEffort: 'medium',
+    instructionText: 'Draft role instructions from the structured editor.',
+    capabilities: ['tool.execute_code'],
+    policy: [],
+    routingMode: 'direct',
+    routingReservedActions: ['message.send'],
+    defaultRecipient: 'owner',
+    allowedRecipients: ['owner'],
+    listed: true,
+    ownerVisible: true,
+    canSpawnAgents: false,
+    canArchiveAgents: false,
+    lifecycleReservedActions: ['agent.archive'],
+  ),
+  validationErrors: ['capabilities must exactly match policy keys'],
+  actionStates: [
+    AgentRuntimeActionItem(
+      id: 'role:draft-role:validate',
+      title: 'Validate draft',
+      subtitle: 'Runs canonical role manifest, routing, and command-policy validation',
+      kind: 'roleAdmin',
+      stateText: 'Fix validation errors',
+      tone: 'danger',
+    ),
+  ],
+);
+
 const mockAgentRuntimeDisconnected = AgentRuntimeControlTowerData(
   connectionState: 'disconnected',
   discovery: AgentRuntimeDiscoveryInfo(
@@ -36,6 +161,7 @@ const mockAgentRuntimeDisconnected = AgentRuntimeControlTowerData(
   sessions: [],
   timeline: [],
   actions: [],
+  roleAdmin: mockAgentRuntimeRoleAdminEmpty,
   controllerFacts: [
     AgentRuntimeFact(label: 'Transport', value: 'Rinf JSON packets'),
     AgentRuntimeFact(label: 'Source of truth', value: 'Rust/Postgres'),
@@ -83,6 +209,7 @@ const mockAgentRuntimeConnecting = AgentRuntimeControlTowerData(
   sessions: [],
   timeline: [],
   actions: [],
+  roleAdmin: mockAgentRuntimeRoleAdminEmpty,
   controllerFacts: [
     AgentRuntimeFact(label: 'Pending', value: 'connect-1'),
   ],
@@ -183,6 +310,7 @@ const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
       tone: 'warning',
     ),
   ],
+  roleAdmin: mockAgentRuntimeRoleAdminSelected,
   controllerFacts: [
     AgentRuntimeFact(label: 'Selected session', value: 'session-a'),
     AgentRuntimeFact(label: 'Connection', value: 'streaming'),
@@ -229,6 +357,7 @@ const mockAgentRuntimeError = AgentRuntimeControlTowerData(
   sessions: [],
   timeline: [],
   actions: [],
+  roleAdmin: mockAgentRuntimeRoleAdminInvalid,
   controllerFacts: [
     AgentRuntimeFact(label: 'Error code', value: 'unavailable'),
   ],
@@ -277,6 +406,7 @@ const mockAgentRuntimeEmpty = AgentRuntimeControlTowerData(
   sessions: [],
   timeline: [],
   actions: [],
+  roleAdmin: mockAgentRuntimeRoleAdminEmpty,
   controllerFacts: [
     AgentRuntimeFact(label: 'Connection', value: 'streaming'),
     AgentRuntimeFact(label: 'Action queue', value: 'empty'),

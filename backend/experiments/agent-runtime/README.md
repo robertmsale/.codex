@@ -154,6 +154,17 @@ Every operation uses the API error packet
 | `DecideCommandRegistryRequest` | `/command-registry/requests/{requestId}/decide` | POST | `{sessionId, status, finalScope?, finalExecutionPolicy?, finalCommand?}` | `{requestId, status}` | `WaitForDelta` |
 | `ApplyCommandRegistryRequest` | `/command-registry/requests/{requestId}/apply` | POST | `{sessionId}` | `{requestId, status}` | `WaitForDelta` |
 | `WorkflowMemoryFeedback` | `/workflow-memories/{memoryId}/feedback` | POST | `{sessionId, feedback, payload}` | `{memoryId, feedback, status}` | `WaitForDelta` |
+| `RoleEditorOptions` | `/roles/editor/options` | GET | none | `RoleEditorOptions` | `DirectResult` |
+| `ValidateRoleDraft` | `/roles/editor/validate` | POST | `RoleEditorDraft` with inline `instructionText` | `RoleEditorValidationResult` | `DirectResult` |
+| `CreateRoleFromDraft` | `/roles` | POST | `RoleEditorDraft` | `{roleId, versionId, status}` then projection refresh/delta evidence | `WaitForDelta` |
+| `UpdateRoleFromDraft` | `/roles/{roleId}/versions` | POST | `RoleEditorDraft` | `{roleId, versionId, status}` then projection refresh/delta evidence | `WaitForDelta` |
+| `ShowRoleDetail` | `/roles/{roleId}` | GET | none | `RoleSnapshot` | `DirectResult` |
+| `ListRoleVersions` | `/roles/{roleId}/versions` | GET | none | version rows | `DirectResult` |
+| `ShowRoleVersion` | `/roles/versions/{versionId}` | GET | none | `RoleSnapshot` | `DirectResult` |
+| `ExportRole` | `/roles/{roleId}/export` | GET | none | DB-backed export with inline `instructionText` | `DirectResult` |
+| `ActivateRoleVersion` | `/roles/{roleId}/activate` | POST | `{versionId}` | `{roleId, versionId, status}` then projection refresh/delta evidence | `WaitForDelta` |
+| `ArchiveRole` | `/roles/{roleId}/archive` | POST | `{}` | `{roleId, status}` then projection refresh/delta evidence | `WaitForDelta` |
+| `UnarchiveRole` | `/roles/{roleId}/unarchive` | POST | `{}` | `{roleId, status}` then projection refresh/delta evidence | `WaitForDelta` |
 
 Resolved audit mismatches:
 
@@ -166,14 +177,11 @@ Resolved audit mismatches:
   `CommandRegistryRequestSummary`, which carries `canPreview`, `canDecide`,
   and `canApply`. Dart must not infer those controls from raw request internals.
 
-Deferred GUI operations for the first shell:
+Role Admin GUI operations are implemented: validation/options/detail/export direct results plus create/update/activate/archive/unarchive wait-for-delta mutations. Dart renders Rust-shaped `roleAdmin` view-model fields and sends typed role intents only.
 
-- Role-admin mutations beyond projection/read inspection are deferred. Server
-  role routes exist, but first-shell GUI state uses projected role summaries and
-  does not expose role create/update/archive/activate operations yet.
-- Workflow-memory inspection uses `RuntimeProjection.workflowMemories` and
-  selected-session/timeline detail. Dedicated memory list/show/events operation
-  intents are deferred; feedback is included because it mutates state.
+Remaining deferred GUI operations:
+
+- Workflow-memory inspection uses `RuntimeProjection.workflowMemories` and selected-session/timeline detail. Dedicated memory list/show/events operation intents are deferred; feedback is included because it mutates state.
 
 
 #### Rust/Rinf GUI backend controller boundary
@@ -343,7 +351,7 @@ transport. Reusable visual pieces live in the design-system package under the
 agent-runtime control tower
 component, with Design Lab scenarios for disconnected, connecting, connected,
 error, and empty/no-session states. Remaining gates are remote/mDNS/iOS
-discovery, role-admin mutation UI, workflow-memory inspection UI, and
+discovery, workflow-memory inspection UI, and
 root/system service integration beyond the completed per-user LaunchAgent
 workflow.
 
@@ -790,6 +798,38 @@ output(value)
 Host API calls return values to the script, but they do not implicitly append to
 the final tool output. This keeps tool result packets deterministic and concise.
 
+## Output artifacts and bounded retrieval
+
+The experimental runtime follows a store-everything/show-little output contract.
+Full script output, command stdout/stderr, command combined output, and flushed
+managed-process streams are persisted in PostgreSQL as `execution_output_artifacts`
+with artifact ids, stream names, byte counts, line counts, and cheap
+`bytes / 4` estimated-token metadata. Tokenizer-specific accounting such as
+tiktoken is intentionally not part of this design.
+
+`execute_code`, synchronous `cmd[...]` calls, and managed-process `flush_buffer()`
+return bounded envelopes instead of raw log dumps. Envelopes contain artifact
+handles plus preview/tail excerpts and truncation/omission metadata. Completion
+events and future compaction-visible summaries reference artifact handles and
+bounded excerpts; full output remains in the artifact table.
+
+Agents retrieve stored output intentionally inside Starlark with bounded helpers:
+
+```python
+artifact = outputs.last()
+output(outputs.tail(artifact, lines=200))
+output(outputs.head(artifact, lines=50))
+output(outputs.slice(artifact, start_line=500, end_line=650))
+output(outputs.search(artifact, "error", context=20))
+output(outputs.stats(artifact))
+```
+
+Every retrieval helper enforces hard byte/line caps and reports returned,
+omitted, and truncation metadata. The helpers operate on stored artifact ids and
+do not dump unbounded stdout, stderr, or combined streams into model-visible
+responses. This slice is the output-budget foundation required by future
+automatic compaction; it does not implement automatic compaction itself.
+
 ## Session lifecycle
 
 A session is the durable agent/thread record. PostgreSQL stores the role
@@ -1015,6 +1055,23 @@ Reserved future action names documented but not implemented here:
 - `message.route`
 
 Manifest decision values are `allow`, `deny`, `ownerApproval`, and `orchestratorApproval`. Runtime policy maps approval decisions to `approvalRequired` and does not execute those actions in this task. Missing action policy defaults to deny. Policy is execution authority; `capabilities` are validated to exactly match policy keys so they cannot contradict enforcement. Sessions store immutable role snapshots at creation time; turns use the stored snapshot rather than rereading the latest manifest. The direct Responses adapter receives the model name and instruction text from the session snapshot. Reasoning effort is stored in the DB role version and snapshot but is not applied by the current direct adapter yet.
+
+
+## Role Admin GUI/editor contract
+
+The experimental control tower now includes a structured Role Admin editor. PostgreSQL remains the canonical role source of truth: GUI-created and GUI-updated roles are converted by Rust into canonical role manifests with inline `instructionText`, validated through the same role manifest/routing/command-policy rules as CLI imports, and persisted as immutable rows in `role_versions`. The GUI editor never creates prompt files and never treats seed JSON files as runtime truth.
+
+Server routes added for the editor:
+
+- `GET /roles/editor/options` returns Rust-owned editor metadata such as known actions, decision values, routing modes, and default recipients.
+- `POST /roles/editor/validate` accepts a `RoleEditorDraft` and returns structured validation without mutating the database.
+- `POST /roles` creates a new DB-backed role version from a draft and fails if the role id already exists.
+- `POST /roles/{roleId}/versions` appends a new immutable version from a draft and fails if the role id is absent or mismatched.
+- Existing role inspection/export/version/activate/archive/unarchive routes remain the mutation and rollback surface.
+
+The Rust GUI operation vocabulary includes direct-result role operations for metadata, validation, inspection, version listing, version detail, and export. Create, update, activate, archive, and unarchive operations are wait-for-delta mutations; role changes are visible through `RuntimeProjection.roles` and role semantic deltas. The Rust-owned `AgentRuntimeControlTowerViewModel` exposes a `roleAdmin` section with role rows, selected role detail, version rows, draft summary, validation errors, and role action states. Dart renders those constructor-ready fields and may hold only ephemeral editor/controller text state.
+
+The design-system control-tower panel provides editable controls for role identity, version, display name, model defaults, capabilities, policy decisions, routing/default recipient/allowed recipients/reserved actions, visibility, lifecycle authority, validation feedback, and action buttons. It uses `code_forge` as the actual Markdown instruction editor; edited CodeForge content is included as inline `instructionText` in validate/create/update draft submissions. Static Design Lab/control-tower mock states include empty/disconnected role admin, selected role with versions, editable draft summary, validation errors, and action-ready states.
 
 ## Approval and routing foundation
 

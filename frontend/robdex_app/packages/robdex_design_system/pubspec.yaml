@@ -13,6 +13,7 @@ dependencies:
   file_selector: ^1.0.3
   fl_chart: ^1.1.1
   flutter_markdown_plus: ^1.0.7
+  code_forge: ^10.6.0
   google_fonts: ^6.3.2
   highlight: ^0.7.0
   screen_capturer: ^0.2.3
