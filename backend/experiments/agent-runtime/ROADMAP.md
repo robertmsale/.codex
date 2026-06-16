@@ -10,7 +10,7 @@ product specification.
 - **Current milestone:** Build an alternative, PostgreSQL-backed agent runtime
   that can eventually power a macOS/iOS GUI without depending on stable Robdex
   bridge internals.
-- **Current active slice:** First minimal Flutter-facing control tower shell is completed; launchd and stable backend/supervisor integration have not started.
+- **Current active slice:** Rust-owned control-tower view shaping is completed; launchd and stable backend/supervisor integration have not started.
 - **Current implementation owner:** Codex Config Operator.
 - **Planner stance:** Rust owns GUI runtime synchronization, operation dispatch, and durable state decisions; Flutter UI remains out of scope until explicitly assigned.
 
@@ -50,6 +50,8 @@ product specification.
 - GUI sync client prototype: `crates/robdex-agent-runtime/src/gui_sync.rs`
 - Rust/Rinf GUI backend controller: `crates/robdex-agent-runtime/src/gui_backend.rs`
 - Experimental Rinf-shaped transport proof:
+  `crates/robdex-agent-runtime/src/rinf_transport.rs`
+- Rust-owned control-tower view model:
   `crates/robdex-agent-runtime/src/rinf_transport.rs`
 - Rinf transport binding plan: `RINF_TRANSPORT_BINDING_PLAN.md`
 - Stable hub direct binding files:
@@ -152,17 +154,25 @@ product specification.
     empty states. Dart remains a thin renderer/intent sender; Rust owns
     connection semantics, WebSocket URLs, watermarks, reducer application,
     enablement, and operation outcomes.
+35. Rust-owned control-tower view model: the transport now emits an
+    `AgentRuntimeControlTowerViewModel` with constructor-ready connection
+    labels, base URL, watermark/status labels, session rows, timeline rows,
+    action rows, controller facts, recent output log, pending-request slot, and
+    typed error display text. Dart decodes the Rust-shaped view packet and no
+    longer interprets raw `RuntimeProjection` or `GuiControllerState` JSON to
+    derive control-tower rows, labels, facts, or enablement text.
 
 ## Active slice
 
-No active implementation slice is recorded after completing the first minimal
-Flutter-facing control tower shell. The next implementable gates are richer
+No active implementation slice is recorded after completing Rust-owned
+control-tower view shaping. The next implementable gates are richer
 control-tower UX, service packaging beyond experiment-local scripts, and
 deferred role/workflow GUI operation intents if owner brings them into scope.
 
 Standing non-goals until reassigned:
 
-- No Flutter UI implementation.
+- No additional Flutter UI implementation beyond the minimal control-tower
+  shell until owner assigns it.
 - No launchd/system service installation.
 - No stable Robdex production-path changes.
 - No fallback state path parallel to PostgreSQL + projection/deltas.

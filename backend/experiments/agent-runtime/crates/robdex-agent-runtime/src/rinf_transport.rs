@@ -5,7 +5,9 @@
 //! while keeping runtime state, reduction, and operation decisions inside Rust.
 
 use robdex_agent_runtime_projection::{
-    ApiErrorPacket, GuiOperationRequest, GuiOperationResult,
+    ApiErrorPacket, CommandRegistrySummary, GuiConnectionState, GuiControllerState,
+    GuiOperationRequest, GuiOperationResult, PendingApprovalSummary, RuntimeProjection,
+    SessionListItem, TimelineItem,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -68,6 +70,104 @@ pub enum GuiTransportOutput {
     Error {
         error: ApiErrorPacket,
     },
+    ControlTowerView {
+        view_model: AgentRuntimeControlTowerViewModel,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeControlTowerViewModel {
+    pub connection_state: String,
+    pub base_url: String,
+    pub status_label: String,
+    pub watermark_label: String,
+    pub sessions: Vec<AgentRuntimeControlTowerSessionRow>,
+    pub timeline: Vec<AgentRuntimeControlTowerTimelineRow>,
+    pub actions: Vec<AgentRuntimeControlTowerActionRow>,
+    pub controller_facts: Vec<AgentRuntimeControlTowerFact>,
+    pub output_log: Vec<String>,
+    pub pending_request_count: usize,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeControlTowerSessionRow {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub subtitle: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeControlTowerTimelineRow {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeControlTowerActionRow {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeControlTowerFact {
+    pub label: String,
+    pub value: String,
+}
+
+impl AgentRuntimeControlTowerViewModel {
+    pub fn from_runtime_state(
+        base_url: impl Into<String>,
+        projection: Option<&RuntimeProjection>,
+        controller_state: &GuiControllerState,
+        output_log: &[String],
+        pending_request_count: usize,
+        error_message: Option<String>,
+    ) -> Self {
+        let base_url = base_url.into();
+        let sessions = projection
+            .map(|projection| projection.sessions.iter().map(session_row).collect())
+            .unwrap_or_default();
+        let timeline = projection
+            .map(|projection| projection.timeline.iter().map(timeline_row).collect())
+            .unwrap_or_default();
+        let mut actions: Vec<AgentRuntimeControlTowerActionRow> = projection
+            .map(|projection| {
+                projection
+                    .pending_approvals
+                    .iter()
+                    .map(approval_action_row)
+                    .chain(projection.command_registry.iter().map(command_action_row))
+                    .collect()
+            })
+            .unwrap_or_default();
+        actions.sort_by(|left, right| left.kind.cmp(&right.kind).then(left.id.cmp(&right.id)));
+        Self {
+            connection_state: connection_state_label(&controller_state.connection_state).to_string(),
+            base_url,
+            status_label: status_label(projection),
+            watermark_label: projection
+                .map(|projection| projection.watermark.to_string())
+                .unwrap_or_else(|| "—".to_string()),
+            sessions,
+            timeline,
+            actions,
+            controller_facts: controller_facts(controller_state),
+            output_log: output_log.iter().take(8).cloned().collect(),
+            pending_request_count,
+            error_message,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -139,12 +239,16 @@ impl GuiTransportHandle {
 
 struct GuiTransportRunner {
     controller: GuiBackendController,
+    base_url: String,
+    output_log: Vec<String>,
 }
 
 impl GuiTransportRunner {
     fn new() -> Self {
         Self {
             controller: GuiBackendController::new(),
+            base_url: "http://127.0.0.1:8765".to_string(),
+            output_log: Vec::new(),
         }
     }
 
@@ -155,9 +259,16 @@ impl GuiTransportRunner {
                 for output in &mut outputs {
                     output.request_id = request_id.clone();
                 }
+                self.record_outputs(&outputs);
+                outputs.push(self.control_tower_view_output(request_id, None));
                 outputs
             }
-            Err(error) => vec![error_output(request_id, error)],
+            Err(error) => {
+                let mut outputs = vec![error_output(request_id.clone(), error.clone())];
+                self.record_outputs(&outputs);
+                outputs.push(self.control_tower_view_output(request_id, Some(&error)));
+                outputs
+            }
         }
     }
 
@@ -167,6 +278,7 @@ impl GuiTransportRunner {
                 base_url,
                 selected_session_id,
             } => {
+                self.base_url = base_url.clone();
                 let result = self
                     .controller
                     .dispatch(GuiOperationRequest::Connect {
@@ -231,6 +343,169 @@ impl GuiTransportRunner {
         }
         outputs
     }
+
+    fn control_tower_view_output(&self, request_id: String, error: Option<&ApiErrorPacket>) -> GuiTransportOutputPacket {
+        GuiTransportOutputPacket {
+            request_id,
+            output: GuiTransportOutput::ControlTowerView {
+                view_model: AgentRuntimeControlTowerViewModel::from_runtime_state(
+                    self.base_url.clone(),
+                    self.controller.projection(),
+                    self.controller.controller_state(),
+                    &self.output_log,
+                    0,
+                    error.map(|error| format!("{}: {}", error.error.code, error.error.message)),
+                ),
+            },
+        }
+    }
+
+    fn record_outputs(&mut self, outputs: &[GuiTransportOutputPacket]) {
+        for output in outputs {
+            self.output_log.insert(0, format!("{} · {}", output_type(&output.output), output.request_id));
+        }
+        self.output_log.truncate(8);
+    }
+}
+
+fn output_type(output: &GuiTransportOutput) -> &'static str {
+    match output {
+        GuiTransportOutput::ProjectionSnapshot { .. } => "projectionSnapshot",
+        GuiTransportOutput::ControllerState { .. } => "controllerState",
+        GuiTransportOutput::OperationResult { .. } => "operationResult",
+        GuiTransportOutput::StreamOutcome { .. } => "streamOutcome",
+        GuiTransportOutput::Error { .. } => "error",
+        GuiTransportOutput::ControlTowerView { .. } => "controlTowerView",
+    }
+}
+
+fn session_row(session: &SessionListItem) -> AgentRuntimeControlTowerSessionRow {
+    let title = session
+        .title
+        .as_ref()
+        .or(session.name.as_ref())
+        .cloned()
+        .unwrap_or_else(|| session.id.clone());
+    let role = session
+        .role_id
+        .as_ref()
+        .or(session.role_version.as_ref())
+        .cloned()
+        .unwrap_or_else(|| "runtime role".to_string());
+    let project = session.project_key.as_deref().unwrap_or("no project");
+    AgentRuntimeControlTowerSessionRow {
+        id: session.id.clone(),
+        title,
+        status: session.status.clone(),
+        subtitle: format!("{role} · {project} · {}", session.workdir),
+    }
+}
+
+fn timeline_row(item: &TimelineItem) -> AgentRuntimeControlTowerTimelineRow {
+    AgentRuntimeControlTowerTimelineRow {
+        id: item.id.clone(),
+        title: item.event_type.clone(),
+        subtitle: item
+            .summary
+            .as_ref()
+            .or(item.entity_id.as_ref())
+            .cloned()
+            .unwrap_or_else(|| item.entity_type.clone()),
+        status: item
+            .status
+            .clone()
+            .unwrap_or_else(|| format!("#{}", item.sequence)),
+    }
+}
+
+fn approval_action_row(approval: &PendingApprovalSummary) -> AgentRuntimeControlTowerActionRow {
+    AgentRuntimeControlTowerActionRow {
+        id: approval.id.clone(),
+        title: approval.action_name.clone(),
+        subtitle: format!(
+            "{} · canDecide={} · canResume={}",
+            approval.status, approval.can_decide, approval.can_resume
+        ),
+        kind: "approval".to_string(),
+    }
+}
+
+fn command_action_row(command: &CommandRegistrySummary) -> AgentRuntimeControlTowerActionRow {
+    let name = command
+        .starlark_object
+        .as_ref()
+        .zip(command.starlark_method.as_ref())
+        .map(|(object, method)| format!("cmd.{object}.{method}"))
+        .unwrap_or_else(|| command.action_id.clone());
+    AgentRuntimeControlTowerActionRow {
+        id: command.id.clone(),
+        title: name,
+        subtitle: format!(
+            "{}{} · {}",
+            command.scope_type,
+            command
+                .project_key
+                .as_ref()
+                .map(|project| format!(":{project}"))
+                .unwrap_or_default(),
+            if command.enabled { "enabled" } else { "disabled" }
+        ),
+        kind: "commandRegistry".to_string(),
+    }
+}
+
+fn controller_facts(controller_state: &GuiControllerState) -> Vec<AgentRuntimeControlTowerFact> {
+    vec![
+        AgentRuntimeControlTowerFact {
+            label: "Controller".to_string(),
+            value: connection_state_label(&controller_state.connection_state).to_string(),
+        },
+        AgentRuntimeControlTowerFact {
+            label: "Selected session".to_string(),
+            value: controller_state
+                .selected_session_id
+                .clone()
+                .unwrap_or_else(|| "none".to_string()),
+        },
+        AgentRuntimeControlTowerFact {
+            label: "Pending rehydrate".to_string(),
+            value: controller_state.pending_rehydrate.to_string(),
+        },
+        AgentRuntimeControlTowerFact {
+            label: "Pending reconnect".to_string(),
+            value: controller_state.pending_reconnect.to_string(),
+        },
+    ]
+}
+
+fn status_label(projection: Option<&RuntimeProjection>) -> String {
+    projection
+        .map(|projection| {
+            let mut label = format!(
+                "{} · {}",
+                projection.server_status.status, projection.server_status.database
+            );
+            if let Some(message) = &projection.server_status.message {
+                if !message.trim().is_empty() {
+                    label.push_str(" · ");
+                    label.push_str(message);
+                }
+            }
+            label
+        })
+        .unwrap_or_else(|| "No projection packet".to_string())
+}
+
+fn connection_state_label(state: &GuiConnectionState) -> &'static str {
+    match state {
+        GuiConnectionState::Disconnected => "disconnected",
+        GuiConnectionState::Connecting => "connecting",
+        GuiConnectionState::Hydrating => "hydrating",
+        GuiConnectionState::Streaming => "streaming",
+        GuiConnectionState::Reconnecting => "reconnecting",
+        GuiConnectionState::ShuttingDown => "shuttingDown",
+        GuiConnectionState::Failed => "failed",
+    }
 }
 
 fn stream_outcome_packet(outcome: SyncOutcome) -> Result<GuiStreamOutcomePacket, ApiErrorPacket> {
@@ -284,8 +559,9 @@ mod tests {
     use axum::{Json, Router};
     use futures_util::SinkExt;
     use robdex_agent_runtime_projection::{
-        GuiOperationOutcome, RuntimeDelta, RuntimeDeltaKind, RuntimeProjection, ServerStatusProjection,
-        SessionListItem,
+        CommandRegistrySummary, GuiConnectionState, GuiOperationOutcome, PendingApprovalSummary,
+        RuntimeDelta, RuntimeDeltaKind, RuntimeProjection, ServerStatusProjection, SessionListItem,
+        TimelineItem,
     };
     use std::net::SocketAddr;
 
@@ -368,6 +644,98 @@ mod tests {
         assert_eq!(value["output"]["payload"]["projection"]["watermark"], 7);
     }
 
+    #[test]
+    fn control_tower_view_model_maps_projection_and_controller_to_constructor_ready_rows() {
+        let projection = RuntimeProjection {
+            watermark: 9,
+            server_status: ServerStatusProjection {
+                status: "ok".to_string(),
+                database: "connected".to_string(),
+                message: Some("runtime ready".to_string()),
+            },
+            sessions: vec![SessionListItem {
+                id: "session-1".to_string(),
+                status: "open".to_string(),
+                role_id: Some("runtime-allow".to_string()),
+                role_version: Some("role-version-1".to_string()),
+                project_key: Some("project-a".to_string()),
+                title: Some("Runtime check".to_string()),
+                name: None,
+                workdir: "/tmp/project-a".to_string(),
+                tracked: true,
+                archived_at: None,
+                closed_at: None,
+                updated_at: None,
+            }],
+            timeline: vec![TimelineItem {
+                id: "event-7".to_string(),
+                sequence: 7,
+                session_id: Some("session-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
+                entity_type: "tool".to_string(),
+                entity_id: Some("tool-call-1".to_string()),
+                event_type: "tool.completed".to_string(),
+                status: Some("completed".to_string()),
+                summary: Some("execute_code completed".to_string()),
+                payload: json!({"bounded": true}),
+                created_at: None,
+            }],
+            pending_approvals: vec![PendingApprovalSummary {
+                id: "approval-1".to_string(),
+                session_id: "session-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                action_name: "execute_code".to_string(),
+                required_approver_kind: "owner".to_string(),
+                status: "approved".to_string(),
+                can_decide: false,
+                can_resume: true,
+                input_context: json!({"raw":"bounded"}),
+                created_at: None,
+            }],
+            command_registry: vec![CommandRegistrySummary {
+                id: "cmd-1".to_string(),
+                action_id: "rg_project".to_string(),
+                scope_type: "project".to_string(),
+                project_key: Some("project-a".to_string()),
+                enabled: true,
+                current_version_id: Some("cmd-version-1".to_string()),
+                binary_name: Some("rg".to_string()),
+                starlark_object: Some("rg".to_string()),
+                starlark_method: Some("project".to_string()),
+                updated_at: None,
+            }],
+            ..RuntimeProjection::default()
+        };
+        let controller = GuiControllerState {
+            connection_state: GuiConnectionState::Streaming,
+            selected_session_id: Some("session-1".to_string()),
+            pending_rehydrate: false,
+            pending_reconnect: false,
+            ..GuiControllerState::default()
+        };
+
+        let view = AgentRuntimeControlTowerViewModel::from_runtime_state(
+            "http://127.0.0.1:8765",
+            Some(&projection),
+            &controller,
+            &["operationResult · request-1".to_string()],
+            2,
+            None,
+        );
+
+        assert_eq!(view.connection_state, "streaming");
+        assert_eq!(view.status_label, "ok · connected · runtime ready");
+        assert_eq!(view.watermark_label, "9");
+        assert_eq!(view.sessions[0].title, "Runtime check");
+        assert!(view.sessions[0].subtitle.contains("runtime-allow"));
+        assert_eq!(view.timeline[0].title, "tool.completed");
+        assert_eq!(view.timeline[0].subtitle, "execute_code completed");
+        assert!(view.actions.iter().any(|row| row.kind == "approval" && row.subtitle.contains("canResume=true")));
+        assert!(view.actions.iter().any(|row| row.kind == "commandRegistry" && row.title == "cmd.rg.project"));
+        assert!(view.controller_facts.iter().any(|fact| fact.label == "Selected session" && fact.value == "session-1"));
+        assert_eq!(view.pending_request_count, 2);
+    }
+
     #[tokio::test]
     async fn transport_runner_serializes_controller_access_and_covers_core_intents() {
         let base_url = start_transport_test_server().await;
@@ -399,6 +767,11 @@ mod tests {
             &packet.output,
             GuiTransportOutput::ControllerState { controller_state }
                 if controller_state["connectionState"] == "streaming"
+        )));
+        assert!(connect.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::ControlTowerView { view_model }
+                if view_model.connection_state == "streaming" && view_model.watermark_label == "1"
         )));
 
         let created = transport
@@ -439,6 +812,11 @@ mod tests {
                 controller_state,
             } if projection["watermark"] == 2 && controller_state["connectionState"] == "streaming"
         )));
+        assert!(stream.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::ControlTowerView { view_model }
+                if view_model.sessions.iter().any(|row| row.id == "transport-session-delta")
+        )));
 
         let rehydrate = transport
             .send(packet(
@@ -469,7 +847,7 @@ mod tests {
         let outputs = transport
             .send(packet("stream-before-connect", GuiTransportRequest::PollStreamOnce))
             .await;
-        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs.len(), 2);
         match &outputs[0].output {
             GuiTransportOutput::Error { error } => {
                 assert_eq!(error.error.code, "conflict");
@@ -477,5 +855,10 @@ mod tests {
             }
             other => panic!("expected typed error packet, got {other:?}"),
         }
+        assert!(matches!(
+            &outputs[1].output,
+            GuiTransportOutput::ControlTowerView { view_model }
+                if view_model.error_message.as_deref().is_some_and(|message| message.contains("conflict"))
+        ));
     }
 }

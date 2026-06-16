@@ -10,18 +10,20 @@ fallback GUI state path.
 The first minimal Flutter-facing shell is now implemented. It stays intentionally
 small: Dart sends JSON `GuiTransportRequestPacket` intents over
 `AgentRuntimeRequestSignal`, consumes JSON `GuiTransportOutputPacket` outputs
-from `AgentRuntimeOutputSignal`, and renders packet-derived projection and
-controller state. Dart does not own runtime reducers, watermarks, WebSocket
-URLs, operation success, approval/command enablement, or durable state.
+from `AgentRuntimeOutputSignal`, and renders the Rust-owned
+`AgentRuntimeControlTowerViewModel`. Dart does not derive session rows,
+timeline rows, action rows, controller facts, labels, watermarks, operation
+success, approval/command enablement, or durable state from raw projection or
+controller JSON.
 
 Reusable visual pieces live in
 `frontend/robdex_app/packages/robdex_design_system` and minimal static
 scenarios live in `frontend/robdex_app/packages/design_lab`. The initial shell
 proves disconnected/error state, connect intent, projection/controller packet
-rendering, selected-session timeline visibility when packets contain it, action
-queue rendering from typed projection fields, and explicit stream polling
-through the Rust-owned transport. The richer UX guidance below remains the
-direction for subsequent slices.
+receipt, selected-session timeline visibility when the Rust view model contains
+it, action queue rendering from Rust-shaped action rows, and explicit stream
+polling through the Rust-owned transport. The richer UX guidance below remains
+the direction for subsequent slices.
 
 ## Direction
 
@@ -52,8 +54,9 @@ The first shell uses five stable regions:
    - Scannable session list grouped by operational state: running, blocked,
      needs approval, failed, open/idle, closed, archived when intentionally
      surfaced.
-   - Items expose typed state from `RuntimeProjection`; Dart does not infer
-     status from raw events.
+- Items expose typed state from `RuntimeProjection`; Dart does not infer
+     status from raw events. The first Flutter shell receives these items as
+     Rust-shaped control-tower session rows.
 3. **Center selected-session event stream**
    - Ordered timeline for the selected session: user/model turns, tool calls,
      scripts, process events, approvals, command-registry changes, errors, and
@@ -169,15 +172,16 @@ constructor-ready models and widgets for:
 - bounded payload/detail drawer;
 - disconnected setup panel.
 
-Design-system models must consume Rust/Rinf-provided projection/controller/result
+Design-system models must consume Rust/Rinf-provided control-tower view-model
 packets. They must not duplicate runtime policy, synthesize lifecycle state, or
 parse raw event payloads for control enablement.
 
 ## Dart/Rinf boundary
 
-Rust owns runtime synchronization, operation dispatch, durable decisions, and
-state reduction. Dart receives projection/controller/result packets and sends
-typed `GuiOperationRequest` intents.
+Rust owns runtime synchronization, operation dispatch, durable decisions, state
+reduction, and control-tower view shaping. Dart receives
+`AgentRuntimeControlTowerViewModel` packets plus typed result/error packets and
+sends typed `GuiOperationRequest` intents.
 
 Dart must not decide:
 
@@ -201,8 +205,12 @@ Dart may own widget-local ephemeral facts:
 - local layout.
 
 The Rust boundary must provide constructor-ready or near-constructor-ready
-values through `RuntimeProjection`, `RuntimeDelta`, `GuiControllerState`,
-`GuiOperationRequest`, `GuiOperationResult`, and `ApiErrorPacket`.
+values through `AgentRuntimeControlTowerViewModel`, `RuntimeProjection`,
+`RuntimeDelta`, `GuiControllerState`, `GuiOperationRequest`,
+`GuiOperationResult`, and `ApiErrorPacket`. The Flutter shell must not parse
+raw `RuntimeProjection.sessions`, `RuntimeProjection.timeline`,
+`RuntimeProjection.pendingApprovals`, or command-registry internals to build
+control-tower rows.
 
 ## Visual risk controls
 

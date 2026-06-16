@@ -265,7 +265,9 @@ Rust-to-Dart signals map to `GuiTransportOutputPacket` through
 - `OperationResult` with the typed `GuiOperationResult`;
 - `StreamOutcome` with typed hello/delta/resync/shutdown/closed outcomes plus
   current projection/controller state;
-- `Error` with the stable `ApiErrorPacket`.
+- `Error` with the stable `ApiErrorPacket`;
+- `ControlTowerView` with the Rust-shaped
+  `AgentRuntimeControlTowerViewModel` consumed by the first Flutter shell.
 
 The stable hub creates one long-lived `GuiTransportHandle`, and the transport
 runner owns exactly one `GuiBackendController` inside a single async action
@@ -292,10 +294,20 @@ ids, and latest render packets; Rust remains responsible for service
 connection, WebSocket URLs, watermarks, reducer application, selected-session
 semantics, operation success, and typed errors.
 
-The first shell is deliberately small: discovery/connect input, projection and
-controller packet rendering, selected-session timeline visibility when present,
-an action queue from typed projection fields, explicit disconnected/error
-states, and manual stream polling through the Rust-owned transport. Reusable
+The transport now emits a Rust-owned `AgentRuntimeControlTowerViewModel` output
+for the first control-tower widget. The view model is constructor-ready:
+connection state, base URL, status and watermark labels, session rows, timeline
+rows, action rows, controller facts, recent output log, pending-request slot,
+and typed error display text are shaped in Rust from `RuntimeProjection`,
+`GuiControllerState`, and operation/stream outcomes. Dart decodes this
+Rust-shaped view packet and renders it; Dart no longer interprets raw
+projection or controller JSON to derive rows, labels, facts, or enablement
+text.
+
+The first shell is deliberately small: discovery/connect input, Rust-shaped
+view-model rendering, selected-session timeline visibility when present, an
+action queue from Rust-owned row fields, explicit disconnected/error states,
+and manual stream polling through the Rust-owned transport. Reusable
 visual pieces live in the design-system package under the agent-runtime control
 tower component, with minimal Design Lab scenarios for disconnected,
 connecting, connected, error, and empty states. Remaining gates are richer
