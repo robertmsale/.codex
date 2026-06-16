@@ -5,9 +5,9 @@
 //! while keeping runtime state, reduction, and operation decisions inside Rust.
 
 use robdex_agent_runtime_projection::{
-    ApiErrorPacket, CommandRegistrySummary, GuiConnectionState, GuiControllerState,
-    GuiOperationRequest, GuiOperationResult, PendingApprovalSummary, RuntimeProjection,
-    SessionListItem, TimelineItem,
+    ApiErrorPacket, GuiConnectionState, GuiControllerState, GuiOperationRequest,
+    GuiOperationResult, PendingApprovalSummary, RuntimeProjection, SessionListItem,
+    TimelineItem,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -79,9 +79,26 @@ pub enum GuiTransportOutput {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeControlTowerViewModel {
     pub connection_state: String,
+    pub connection_tone: String,
     pub base_url: String,
     pub status_label: String,
     pub watermark_label: String,
+    pub status_badges: Vec<AgentRuntimeControlTowerBadge>,
+    pub selected_session_label: String,
+    pub sessions_title: String,
+    pub sessions_subtitle: String,
+    pub timeline_title: String,
+    pub timeline_subtitle: String,
+    pub actions_title: String,
+    pub actions_subtitle: String,
+    pub detail_title: String,
+    pub detail_subtitle: String,
+    pub sessions_empty_title: String,
+    pub sessions_empty_text: String,
+    pub timeline_empty_title: String,
+    pub timeline_empty_text: String,
+    pub actions_empty_title: String,
+    pub actions_empty_text: String,
     pub sessions: Vec<AgentRuntimeControlTowerSessionRow>,
     pub timeline: Vec<AgentRuntimeControlTowerTimelineRow>,
     pub actions: Vec<AgentRuntimeControlTowerActionRow>,
@@ -98,6 +115,8 @@ pub struct AgentRuntimeControlTowerSessionRow {
     pub title: String,
     pub status: String,
     pub subtitle: String,
+    pub group_label: String,
+    pub tone: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -107,6 +126,7 @@ pub struct AgentRuntimeControlTowerTimelineRow {
     pub title: String,
     pub subtitle: String,
     pub status: String,
+    pub tone: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -116,6 +136,8 @@ pub struct AgentRuntimeControlTowerActionRow {
     pub title: String,
     pub subtitle: String,
     pub kind: String,
+    pub state_text: String,
+    pub tone: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -123,6 +145,14 @@ pub struct AgentRuntimeControlTowerActionRow {
 pub struct AgentRuntimeControlTowerFact {
     pub label: String,
     pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeControlTowerBadge {
+    pub label: String,
+    pub value: String,
+    pub tone: String,
 }
 
 impl AgentRuntimeControlTowerViewModel {
@@ -147,18 +177,37 @@ impl AgentRuntimeControlTowerViewModel {
                     .pending_approvals
                     .iter()
                     .map(approval_action_row)
-                    .chain(projection.command_registry.iter().map(command_action_row))
                     .collect()
             })
             .unwrap_or_default();
         actions.sort_by(|left, right| left.kind.cmp(&right.kind).then(left.id.cmp(&right.id)));
+        let selected_session_label = selected_session_label(projection, controller_state);
         Self {
             connection_state: connection_state_label(&controller_state.connection_state).to_string(),
+            connection_tone: connection_tone(&controller_state.connection_state).to_string(),
             base_url,
             status_label: status_label(projection),
             watermark_label: projection
                 .map(|projection| projection.watermark.to_string())
                 .unwrap_or_else(|| "—".to_string()),
+            status_badges: status_badges(projection, controller_state, pending_request_count),
+            selected_session_label: selected_session_label.clone(),
+            sessions_title: projection
+                .map(|projection| format!("Sessions ({})", projection.sessions.len()))
+                .unwrap_or_else(|| "Sessions".to_string()),
+            sessions_subtitle: "Grouped by Rust-owned operational state".to_string(),
+            timeline_title: format!("Selected session stream · {selected_session_label}"),
+            timeline_subtitle: "Operations event stream, not a chat transcript".to_string(),
+            actions_title: format!("Action queue ({})", actions.len()),
+            actions_subtitle: "Approvals and resumable runtime work".to_string(),
+            detail_title: "Controller detail".to_string(),
+            detail_subtitle: "Rust-owned controller facts".to_string(),
+            sessions_empty_title: "No sessions".to_string(),
+            sessions_empty_text: "No sessions are visible in the current runtime projection.".to_string(),
+            timeline_empty_title: selected_session_label,
+            timeline_empty_text: "Select a session to hydrate its operations event stream.".to_string(),
+            actions_empty_title: "No action required".to_string(),
+            actions_empty_text: "No approvals or resumable runtime actions need attention.".to_string(),
             sessions,
             timeline,
             actions,
@@ -398,6 +447,8 @@ fn session_row(session: &SessionListItem) -> AgentRuntimeControlTowerSessionRow 
         title,
         status: session.status.clone(),
         subtitle: format!("{role} · {project} · {}", session.workdir),
+        group_label: session_group_label(session),
+        tone: status_tone(&session.status).to_string(),
     }
 }
 
@@ -415,6 +466,7 @@ fn timeline_row(item: &TimelineItem) -> AgentRuntimeControlTowerTimelineRow {
             .status
             .clone()
             .unwrap_or_else(|| format!("#{}", item.sequence)),
+        tone: timeline_tone(item).to_string(),
     }
 }
 
@@ -427,31 +479,119 @@ fn approval_action_row(approval: &PendingApprovalSummary) -> AgentRuntimeControl
             approval.status, approval.can_decide, approval.can_resume
         ),
         kind: "approval".to_string(),
+        state_text: approval_state_text(approval),
+        tone: approval_tone(approval).to_string(),
     }
 }
 
-fn command_action_row(command: &CommandRegistrySummary) -> AgentRuntimeControlTowerActionRow {
-    let name = command
-        .starlark_object
-        .as_ref()
-        .zip(command.starlark_method.as_ref())
-        .map(|(object, method)| format!("cmd.{object}.{method}"))
-        .unwrap_or_else(|| command.action_id.clone());
-    AgentRuntimeControlTowerActionRow {
-        id: command.id.clone(),
-        title: name,
-        subtitle: format!(
-            "{}{} · {}",
-            command.scope_type,
-            command
-                .project_key
-                .as_ref()
-                .map(|project| format!(":{project}"))
-                .unwrap_or_default(),
-            if command.enabled { "enabled" } else { "disabled" }
-        ),
-        kind: "commandRegistry".to_string(),
+fn session_group_label(session: &SessionListItem) -> String {
+    if !session.tracked {
+        "Archived".to_string()
+    } else if session.status == "open" {
+        "Open".to_string()
+    } else if session.status == "closed" {
+        "Closed".to_string()
+    } else {
+        "Attention".to_string()
     }
+}
+
+fn status_tone(status: &str) -> &'static str {
+    match status {
+        "open" | "streaming" | "connected" | "ok" | "completed" => "success",
+        "pending" | "connecting" | "hydrating" | "reconnecting" => "warning",
+        "failed" | "error" | "lost" | "blocked" => "danger",
+        "closed" | "disabled" | "archived" => "muted",
+        _ => "info",
+    }
+}
+
+fn timeline_tone(item: &TimelineItem) -> &'static str {
+    if let Some(status) = &item.status {
+        return status_tone(status);
+    }
+    if item.event_type.contains("error") || item.event_type.contains("failed") {
+        "danger"
+    } else if item.event_type.contains("approval") {
+        "warning"
+    } else if item.event_type.contains("completed") {
+        "success"
+    } else {
+        "info"
+    }
+}
+
+fn approval_state_text(approval: &PendingApprovalSummary) -> String {
+    if approval.can_resume {
+        "Ready to resume".to_string()
+    } else if approval.can_decide {
+        "Needs decision".to_string()
+    } else {
+        format!("Approval {}", approval.status)
+    }
+}
+
+fn approval_tone(approval: &PendingApprovalSummary) -> &'static str {
+    if approval.can_resume {
+        "success"
+    } else if approval.can_decide {
+        "warning"
+    } else {
+        status_tone(&approval.status)
+    }
+}
+
+fn selected_session_label(projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> String {
+    let selected_id = controller_state.selected_session_id.as_deref();
+    projection
+        .and_then(|projection| {
+            selected_id.and_then(|id| {
+                projection
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == id)
+                    .map(|session| session.title.as_deref().or(session.name.as_deref()).unwrap_or(&session.id).to_string())
+            })
+        })
+        .or_else(|| selected_id.map(str::to_string))
+        .unwrap_or_else(|| "none selected".to_string())
+}
+
+fn status_badges(
+    projection: Option<&RuntimeProjection>,
+    controller_state: &GuiControllerState,
+    _pending_request_count: usize,
+) -> Vec<AgentRuntimeControlTowerBadge> {
+    let mut badges = vec![
+        AgentRuntimeControlTowerBadge {
+            label: "Connection".to_string(),
+            value: connection_state_label(&controller_state.connection_state).to_string(),
+            tone: status_tone(connection_state_label(&controller_state.connection_state)).to_string(),
+        },
+    ];
+    if let Some(projection) = projection {
+        badges.push(AgentRuntimeControlTowerBadge {
+            label: "Sessions".to_string(),
+            value: projection.sessions.len().to_string(),
+            tone: if projection.sessions.is_empty() { "muted" } else { "info" }.to_string(),
+        });
+        badges.push(AgentRuntimeControlTowerBadge {
+            label: "Attention".to_string(),
+            value: projection.pending_approvals.len().to_string(),
+            tone: if projection.pending_approvals.is_empty() { "muted" } else { "warning" }.to_string(),
+        });
+        badges.push(AgentRuntimeControlTowerBadge {
+            label: "Command inventory".to_string(),
+            value: projection.command_registry.len().to_string(),
+            tone: if projection.command_registry.is_empty() { "muted" } else { "info" }.to_string(),
+        });
+        badges.push(AgentRuntimeControlTowerBadge {
+            label: "Timeline".to_string(),
+            value: projection.timeline.len().to_string(),
+            tone: if projection.timeline.is_empty() { "muted" } else { "info" }.to_string(),
+        });
+    }
+    badges
 }
 
 fn controller_facts(controller_state: &GuiControllerState) -> Vec<AgentRuntimeControlTowerFact> {
@@ -505,6 +645,15 @@ fn connection_state_label(state: &GuiConnectionState) -> &'static str {
         GuiConnectionState::Reconnecting => "reconnecting",
         GuiConnectionState::ShuttingDown => "shuttingDown",
         GuiConnectionState::Failed => "failed",
+    }
+}
+
+fn connection_tone(state: &GuiConnectionState) -> &'static str {
+    match state {
+        GuiConnectionState::Streaming => "success",
+        GuiConnectionState::Connecting | GuiConnectionState::Hydrating | GuiConnectionState::Reconnecting => "warning",
+        GuiConnectionState::Failed => "danger",
+        GuiConnectionState::Disconnected | GuiConnectionState::ShuttingDown => "muted",
     }
 }
 
@@ -724,14 +873,32 @@ mod tests {
         );
 
         assert_eq!(view.connection_state, "streaming");
+        assert_eq!(view.connection_tone, "success");
         assert_eq!(view.status_label, "ok · connected · runtime ready");
         assert_eq!(view.watermark_label, "9");
+        assert_eq!(view.sessions_title, "Sessions (1)");
+        assert_eq!(view.sessions_subtitle, "Grouped by Rust-owned operational state");
+        assert_eq!(view.timeline_title, "Selected session stream · Runtime check");
+        assert_eq!(view.timeline_subtitle, "Operations event stream, not a chat transcript");
+        assert_eq!(view.actions_title, "Action queue (1)");
+        assert_eq!(view.actions_subtitle, "Approvals and resumable runtime work");
+        assert_eq!(view.detail_subtitle, "Rust-owned controller facts");
+        assert_eq!(view.sessions_empty_title, "No sessions");
+        assert_eq!(view.timeline_empty_title, "Runtime check");
+        assert_eq!(view.actions_empty_title, "No action required");
+        assert!(view.status_badges.iter().any(|badge| badge.label == "Attention" && badge.value == "1"));
+        assert!(view.status_badges.iter().any(|badge| badge.label == "Command inventory" && badge.value == "1"));
+        assert!(!view.status_badges.iter().any(|badge| badge.label == "Pending UI requests"));
         assert_eq!(view.sessions[0].title, "Runtime check");
         assert!(view.sessions[0].subtitle.contains("runtime-allow"));
+        assert_eq!(view.sessions[0].group_label, "Open");
+        assert_eq!(view.sessions[0].tone, "success");
         assert_eq!(view.timeline[0].title, "tool.completed");
         assert_eq!(view.timeline[0].subtitle, "execute_code completed");
+        assert_eq!(view.timeline[0].tone, "success");
         assert!(view.actions.iter().any(|row| row.kind == "approval" && row.subtitle.contains("canResume=true")));
-        assert!(view.actions.iter().any(|row| row.kind == "commandRegistry" && row.title == "cmd.rg.project"));
+        assert!(view.actions.iter().any(|row| row.state_text == "Ready to resume" && row.tone == "success"));
+        assert!(!view.actions.iter().any(|row| row.kind == "commandRegistry"));
         assert!(view.controller_facts.iter().any(|fact| fact.label == "Selected session" && fact.value == "session-1"));
         assert_eq!(view.pending_request_count, 2);
     }

@@ -25,6 +25,25 @@ it, action queue rendering from Rust-shaped action rows, and explicit stream
 polling through the Rust-owned transport. The richer UX guidance below remains
 the direction for subsequent slices.
 
+## Richer UX implementation record
+
+The mounted control tower has been tightened into an operations-first shell
+without changing the transport boundary. Rust now shapes additional
+`AgentRuntimeControlTowerViewModel` fields for the UI: status badges,
+selected-session label, section titles, empty-state copy, session grouping,
+row tones, action state text, and severity tones. The design-system widget
+uses those Rust-shaped fields to render a clearer runtime status strip, denser
+session rail, selected-session event stream, readable action queue, controller
+detail panel, and explicit disconnected/connecting/connected/error/empty
+states. Dart remains a thin renderer and may keep only widget-local pending
+request ids, base URL text, scroll/focus/hover, and similar ephemeral facts.
+Current action rows are limited to real attention items available in the
+projection, currently approvals and approved resumable approvals. Installed or
+enabled command registry entries are inventory, not action queue work; they may
+appear as inventory counts/status detail, and actual command-registry requests
+should enter the action queue only after a typed pending-request source is part
+of the projection/control boundary.
+
 ## Direction
 
 The first shell is an operations control tower, not a chat-first interface.

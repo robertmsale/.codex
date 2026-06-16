@@ -57,9 +57,13 @@ class AgentRuntimeControlTower extends StatelessWidget {
                     SizedBox(
                       width: 260,
                       child: _Panel(
-                        title: 'Sessions',
+                        title: data.sessionsTitle,
+                        subtitle: data.sessionsSubtitle,
                         child: data.sessions.isEmpty
-                            ? const _EmptyText('No sessions in projection')
+                            ? _EmptyState(
+                                title: data.sessionsEmptyTitle,
+                                body: data.sessionsEmptyText,
+                              )
                             : ListView.separated(
                                 itemCount: data.sessions.length,
                                 separatorBuilder: (_, _) => const SizedBox(height: 8),
@@ -70,9 +74,13 @@ class AgentRuntimeControlTower extends StatelessWidget {
                     const SizedBox(width: 12),
                     Expanded(
                       child: _Panel(
-                        title: 'Selected session stream',
+                        title: data.timelineTitle,
+                        subtitle: data.timelineSubtitle,
                         child: data.timeline.isEmpty
-                            ? const _EmptyText('No selected-session timeline in packet')
+                            ? _EmptyState(
+                                title: data.timelineEmptyTitle,
+                                body: data.timelineEmptyText,
+                              )
                             : ListView.separated(
                                 itemCount: data.timeline.length,
                                 separatorBuilder: (_, _) => const Divider(height: 16),
@@ -87,9 +95,13 @@ class AgentRuntimeControlTower extends StatelessWidget {
                         children: [
                           Expanded(
                             child: _Panel(
-                              title: 'Action queue',
+                              title: data.actionsTitle,
+                              subtitle: data.actionsSubtitle,
                               child: data.actions.isEmpty
-                                  ? const _EmptyText('No Rust-projected action items')
+                                  ? _EmptyState(
+                                      title: data.actionsEmptyTitle,
+                                      body: data.actionsEmptyText,
+                                    )
                                   : ListView.separated(
                                       itemCount: data.actions.length,
                                       separatorBuilder: (_, _) => const SizedBox(height: 8),
@@ -100,7 +112,8 @@ class AgentRuntimeControlTower extends StatelessWidget {
                           const SizedBox(height: 12),
                           Expanded(
                             child: _Panel(
-                              title: 'Controller packets',
+                              title: data.detailTitle,
+                              subtitle: data.detailSubtitle,
                               child: ListView(
                                 children: [
                                   ...data.controllerFacts.map(_FactRow.new),
@@ -161,9 +174,16 @@ class _StatusStrip extends StatelessWidget {
             style: theme.textTheme.titleMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
           ),
           const SizedBox(width: 16),
-          _Chip(label: data.connectionState),
+          _Chip(label: data.connectionState, tone: data.connectionTone),
           const SizedBox(width: 8),
-          _Chip(label: 'watermark ${data.watermarkLabel}'),
+          _Chip(label: 'watermark ${data.watermarkLabel}', tone: 'info'),
+          const SizedBox(width: 8),
+          ...data.statusBadges.take(4).map(
+                (badge) => Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: _MetricBadge(badge),
+                ),
+              ),
           const SizedBox(width: 16),
           Expanded(
             child: TextField(
@@ -188,9 +208,10 @@ class _StatusStrip extends StatelessWidget {
 }
 
 class _Panel extends StatelessWidget {
-  const _Panel({required this.title, required this.child});
+  const _Panel({required this.title, required this.child, this.subtitle});
 
   final String title;
+  final String? subtitle;
   final Widget child;
 
   @override
@@ -206,8 +227,13 @@ class _Panel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white)),
-          const SizedBox(height: 10),
+          Text(title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
+          if (subtitle case final subtitle?)
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(subtitle, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF8091A8))),
+            ),
+          const SizedBox(height: 12),
           Expanded(child: child),
         ],
       ),
@@ -222,7 +248,13 @@ class _SessionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _DenseTile(title: item.title, subtitle: item.subtitle, trailing: item.status);
+    return _DenseTile(
+      title: item.title,
+      subtitle: item.subtitle,
+      trailing: item.status,
+      eyebrow: item.groupLabel,
+      tone: item.tone,
+    );
   }
 }
 
@@ -233,7 +265,13 @@ class _TimelineTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _DenseTile(title: item.title, subtitle: item.subtitle, trailing: item.status);
+    return _DenseTile(
+      title: item.title,
+      subtitle: item.subtitle,
+      trailing: item.status,
+      eyebrow: item.status,
+      tone: item.tone,
+    );
   }
 }
 
@@ -244,16 +282,30 @@ class _ActionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _DenseTile(title: item.title, subtitle: item.subtitle, trailing: item.kind);
+    return _DenseTile(
+      title: item.title,
+      subtitle: item.subtitle,
+      trailing: item.stateText,
+      eyebrow: item.kind,
+      tone: item.tone,
+    );
   }
 }
 
 class _DenseTile extends StatelessWidget {
-  const _DenseTile({required this.title, required this.subtitle, required this.trailing});
+  const _DenseTile({
+    required this.title,
+    required this.subtitle,
+    required this.trailing,
+    required this.eyebrow,
+    required this.tone,
+  });
 
   final String title;
   final String subtitle;
   final String trailing;
+  final String eyebrow;
+  final String tone;
 
   @override
   Widget build(BuildContext context) {
@@ -262,15 +314,18 @@ class _DenseTile extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xFF0F1722),
         borderRadius: BorderRadius.circular(10),
+        border: Border(left: BorderSide(color: _toneColor(tone), width: 3)),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(10),
+        padding: const EdgeInsets.fromLTRB(11, 10, 10, 10),
         child: Row(
           children: [
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Text(eyebrow.toUpperCase(), maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.labelSmall?.copyWith(color: _toneColor(tone), letterSpacing: 0.5)),
+                  const SizedBox(height: 3),
                   Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white)),
                   const SizedBox(height: 3),
                   Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF97A6BA))),
@@ -278,7 +333,7 @@ class _DenseTile extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            _Chip(label: trailing),
+            _Chip(label: trailing, tone: tone),
           ],
         ),
       ),
@@ -307,37 +362,100 @@ class _FactRow extends StatelessWidget {
 }
 
 class _Chip extends StatelessWidget {
-  const _Chip({required this.label});
+  const _Chip({required this.label, this.tone = 'info'});
 
   final String label;
+  final String tone;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: const Color(0xFF162235),
+        color: _toneColor(tone).withValues(alpha: 0.14),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: const Color(0xFF31435C)),
+        border: Border.all(color: _toneColor(tone).withValues(alpha: 0.55)),
       ),
-      child: Text(label, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: const Color(0xFFC8D5E6))),
+      child: Text(label, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: const Color(0xFFE5EDF8))),
     );
   }
 }
 
-class _EmptyText extends StatelessWidget {
-  const _EmptyText(this.text);
+class _MetricBadge extends StatelessWidget {
+  const _MetricBadge(this.badge);
 
-  final String text;
+  final AgentRuntimeStatusBadge badge;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0E1622),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _toneColor(badge.tone).withValues(alpha: 0.45)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(badge.label, style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF93A5BC))),
+          const SizedBox(width: 6),
+          Text(badge.value, style: theme.textTheme.labelMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({required this.title, required this.body});
+
+  final String title;
+  final String body;
 
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Text(
-        text,
-        textAlign: TextAlign.center,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFF7E8DA2)),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0F1722),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFF223047)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(color: Colors.white),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              body,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFF7E8DA2)),
+            ),
+          ],
+        ),
       ),
     );
+  }
+}
+
+Color _toneColor(String tone) {
+  switch (tone) {
+    case 'success':
+      return const Color(0xFF4FD18B);
+    case 'warning':
+      return const Color(0xFFE6B450);
+    case 'danger':
+      return const Color(0xFFFF6B7A);
+    case 'muted':
+      return const Color(0xFF6E7F95);
+    default:
+      return const Color(0xFF74B5FF);
   }
 }

@@ -304,14 +304,28 @@ Rust-shaped view packet and renders it; Dart no longer interprets raw
 projection or controller JSON to derive rows, labels, facts, or enablement
 text.
 
-The first shell is deliberately small: discovery/connect input, Rust-shaped
-view-model rendering, selected-session timeline visibility when present, an
-action queue from Rust-owned row fields, explicit disconnected/error states,
-and manual stream polling through the Rust-owned transport. Reusable
-visual pieces live in the design-system package under the agent-runtime control
-tower component, with minimal Design Lab scenarios for disconnected,
-connecting, connected, error, and empty states. Remaining gates are richer
-control-tower UX, role-admin mutation UI, workflow-memory inspection UI,
+The richer control-tower UX slice extends that Rust-owned view model with
+operations-first presentation fields: status badges, selected-session label,
+section titles, empty-state copy, session group labels, row tones, action state
+text, and action/timeline/session severity tones. The design-system control
+tower renders those fields directly to provide a clearer status strip, denser
+session rail, selected-session event stream, readable action queue, controller
+detail panel, and explicit empty/error/loading states. The action queue contains
+only real attention items currently present in the projection, such as pending
+or resumable approvals. Command registry inventory is surfaced as inventory
+count/status detail, not as required action, until typed pending registry
+requests are part of the projection boundary. Dart still sends only Rinf JSON
+packet intents and does not infer durable runtime meaning from raw
+projection/controller internals.
+
+The shell remains focused: discovery/connect input, Rust-shaped view-model
+rendering, selected-session timeline visibility when present, an action queue
+from Rust-owned approval/resume rows, explicit disconnected/error states, and
+manual stream polling through the Rust-owned transport. Reusable visual pieces
+live in the design-system package under the agent-runtime control tower
+component, with Design Lab scenarios for disconnected, connecting, connected,
+error, and empty/no-session states. Remaining gates are role-admin mutation UI,
+workflow-memory inspection UI, command-registry request projection/action rows,
 service packaging beyond local scripts, and launchd/system service
 installation.
 

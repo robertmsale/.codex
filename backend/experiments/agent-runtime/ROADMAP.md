@@ -10,7 +10,7 @@ product specification.
 - **Current milestone:** Build an alternative, PostgreSQL-backed agent runtime
   that can eventually power a macOS/iOS GUI without depending on stable Robdex
   bridge internals.
-- **Current active slice:** Rust-owned control-tower view shaping is completed; launchd and stable backend/supervisor integration have not started.
+- **Current active slice:** Richer operations-first control-tower UX is completed; launchd and stable backend/supervisor integration have not started.
 - **Current implementation owner:** Codex Config Operator.
 - **Planner stance:** Rust owns GUI runtime synchronization, operation dispatch, and durable state decisions; Flutter UI remains out of scope until explicitly assigned.
 
@@ -161,17 +161,30 @@ product specification.
     typed error display text. Dart decodes the Rust-shaped view packet and no
     longer interprets raw `RuntimeProjection` or `GuiControllerState` JSON to
     derive control-tower rows, labels, facts, or enablement text.
+36. Richer operations-first control-tower UX: the Rust-owned view model now
+    carries status badges, selected-session label, section titles, empty-state
+    copy, session group labels, row tones, action state text, and
+    action/timeline/session severity tones. The design-system control tower
+    renders a clearer runtime status strip, better session rail,
+    selected-session event stream, readable action queue, controller/error
+    detail visibility, and disconnected/connecting/connected/error/empty
+    states without adding Dart-side runtime decisions or a Dart network client.
+    Action rows are real attention items, currently approvals/resumable
+    approvals; command registry inventory is surfaced as inventory status/count
+    and is not counted as action-queue work.
 
 ## Active slice
 
-No active implementation slice is recorded after completing Rust-owned
-control-tower view shaping. The next implementable gates are richer
-control-tower UX, service packaging beyond experiment-local scripts, and
-deferred role/workflow GUI operation intents if owner brings them into scope.
+No active implementation slice is recorded after completing the richer
+operations-first control-tower UX slice. The next implementable gates are
+service packaging beyond experiment-local scripts and deferred role/workflow GUI
+operation intents if owner brings them into scope. Command-registry request
+action rows remain gated on adding a typed pending-request source to the
+projection/control boundary.
 
 Standing non-goals until reassigned:
 
-- No additional Flutter UI implementation beyond the minimal control-tower
+- No additional Flutter UI implementation beyond the current control-tower
   shell until owner assigns it.
 - No launchd/system service installation.
 - No stable Robdex production-path changes.
