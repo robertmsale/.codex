@@ -283,9 +283,25 @@ packet to find a base URL, then sends a connect request. After connect,
 watermarks, construct WebSocket URLs, apply reducers, decide approval or command
 availability, or infer operation success.
 
-Remaining gates: Flutter control tower UI, design-system widgets, Design Lab
-scenarios, and launchd/system service installation remain unimplemented until
-the owner assigns those slices.
+The first Flutter-facing control tower shell is implemented as a thin renderer
+over the existing packet carriers. It sends JSON `GuiTransportRequestPacket`
+intents through `AgentRuntimeRequestSignal` and consumes JSON
+`GuiTransportOutputPacket` outputs from `AgentRuntimeOutputSignal`. Dart stores
+only widget/controller-local facts such as the base URL text, pending request
+ids, and latest render packets; Rust remains responsible for service
+connection, WebSocket URLs, watermarks, reducer application, selected-session
+semantics, operation success, and typed errors.
+
+The first shell is deliberately small: discovery/connect input, projection and
+controller packet rendering, selected-session timeline visibility when present,
+an action queue from typed projection fields, explicit disconnected/error
+states, and manual stream polling through the Rust-owned transport. Reusable
+visual pieces live in the design-system package under the agent-runtime control
+tower component, with minimal Design Lab scenarios for disconnected,
+connecting, connected, error, and empty states. Remaining gates are richer
+control-tower UX, role-admin mutation UI, workflow-memory inspection UI,
+service packaging beyond local scripts, and launchd/system service
+installation.
 
 ## Resident server MVP
 

@@ -131,6 +131,21 @@ class RobdexDesignLabHome extends StatelessWidget {
         ),
       );
     }
+    if (surface == 'agentRuntimeDisconnected') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeDisconnected);
+    }
+    if (surface == 'agentRuntimeConnecting') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnecting);
+    }
+    if (surface == 'agentRuntimeConnected') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);
+    }
+    if (surface == 'agentRuntimeError') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeError);
+    }
+    if (surface == 'agentRuntimeEmpty') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeEmpty);
+    }
     return Scaffold(
       body: RobdexShellScreen(
         enableGraphics: true,
@@ -168,6 +183,44 @@ class RobdexDesignLabHome extends StatelessWidget {
           bytesBase64: '',
           contentType: 'image/png',
         ),
+      ),
+    );
+  }
+}
+
+class _AgentRuntimeScenario extends StatefulWidget {
+  const _AgentRuntimeScenario({required this.data});
+
+  final AgentRuntimeControlTowerData data;
+
+  @override
+  State<_AgentRuntimeScenario> createState() => _AgentRuntimeScenarioState();
+}
+
+class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
+  late final TextEditingController _baseUrlController;
+
+  @override
+  void initState() {
+    super.initState();
+    _baseUrlController = TextEditingController(text: widget.data.baseUrl);
+  }
+
+  @override
+  void dispose() {
+    _baseUrlController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: AgentRuntimeControlTower(
+        data: widget.data,
+        baseUrlController: _baseUrlController,
+        onConnect: () {},
+        onPollStream: () {},
+        onDisconnect: () {},
       ),
     );
   }

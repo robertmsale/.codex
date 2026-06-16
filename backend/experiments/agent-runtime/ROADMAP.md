@@ -10,7 +10,7 @@ product specification.
 - **Current milestone:** Build an alternative, PostgreSQL-backed agent runtime
   that can eventually power a macOS/iOS GUI without depending on stable Robdex
   bridge internals.
-- **Current active slice:** Direct stable hub Rinf transport binding is completed; no Flutter implementation, launchd, or stable backend/supervisor integration has started.
+- **Current active slice:** First minimal Flutter-facing control tower shell is completed; launchd and stable backend/supervisor integration have not started.
 - **Current implementation owner:** Codex Config Operator.
 - **Planner stance:** Rust owns GUI runtime synchronization, operation dispatch, and durable state decisions; Flutter UI remains out of scope until explicitly assigned.
 
@@ -143,13 +143,22 @@ product specification.
     Generated Rinf Dart carriers were refreshed for the two stable packet
     signals. Flutter UI, launchd/system service installation, and stable
     backend/supervisor changes remain out of scope.
+34. Flutter-facing control tower first shell: the app now exposes a minimal
+    Agent Runtime control tower that sends JSON `GuiTransportRequestPacket`
+    intents through `AgentRuntimeRequestSignal` and renders JSON
+    `GuiTransportOutputPacket` outputs from `AgentRuntimeOutputSignal`.
+    Reusable shell visuals live in the design-system package with minimal
+    Design Lab scenarios for disconnected, connecting, connected, error, and
+    empty states. Dart remains a thin renderer/intent sender; Rust owns
+    connection semantics, WebSocket URLs, watermarks, reducer application,
+    enablement, and operation outcomes.
 
 ## Active slice
 
-No active implementation slice is recorded after completing the direct stable
-hub Rinf transport binding. The next implementable gates are owner-approved
-Flutter/control-tower UI mounting, design-system/Design Lab scenarios, or
-service packaging beyond experiment-local scripts.
+No active implementation slice is recorded after completing the first minimal
+Flutter-facing control tower shell. The next implementable gates are richer
+control-tower UX, service packaging beyond experiment-local scripts, and
+deferred role/workflow GUI operation intents if owner brings them into scope.
 
 Standing non-goals until reassigned:
 
@@ -200,14 +209,13 @@ scripts/smoke-lmstudio-embeddings.sh
 
 ## Deferred / next likely slices
 
-1. Flutter/control-tower UI using the completed Rust/Rinf transport binding.
-2. Design-system and Design Lab scenarios for the operations control tower.
-3. Service packaging beyond local scripts.
-4. Deferred role-admin GUI operation intents if owner moves role mutation into
+1. Richer control-tower UX beyond the first packet-rendering shell.
+2. Service packaging beyond local scripts.
+3. Deferred role-admin GUI operation intents if owner moves role mutation into
    the first GUI shell.
-5. Deferred workflow-memory inspection operation intents if projection/detail
+4. Deferred workflow-memory inspection operation intents if projection/detail
    state is insufficient for the first GUI shell.
-6. Broader execution expansion only after GUI/runtime lifecycle is stable.
+5. Broader execution expansion only after GUI/runtime lifecycle is stable.
 
 ## Current known risks
 

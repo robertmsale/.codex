@@ -5,6 +5,24 @@ runtime GUI. It is a backend/Rust planning source of truth only. It does not
 implement Flutter UI, Rinf transport, production Robdex behavior, or any
 fallback GUI state path.
 
+## First shell implementation record
+
+The first minimal Flutter-facing shell is now implemented. It stays intentionally
+small: Dart sends JSON `GuiTransportRequestPacket` intents over
+`AgentRuntimeRequestSignal`, consumes JSON `GuiTransportOutputPacket` outputs
+from `AgentRuntimeOutputSignal`, and renders packet-derived projection and
+controller state. Dart does not own runtime reducers, watermarks, WebSocket
+URLs, operation success, approval/command enablement, or durable state.
+
+Reusable visual pieces live in
+`frontend/robdex_app/packages/robdex_design_system` and minimal static
+scenarios live in `frontend/robdex_app/packages/design_lab`. The initial shell
+proves disconnected/error state, connect intent, projection/controller packet
+rendering, selected-session timeline visibility when packets contain it, action
+queue rendering from typed projection fields, and explicit stream polling
+through the Rust-owned transport. The richer UX guidance below remains the
+direction for subsequent slices.
+
 ## Direction
 
 The first shell is an operations control tower, not a chat-first interface.

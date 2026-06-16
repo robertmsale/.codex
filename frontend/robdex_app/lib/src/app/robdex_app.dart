@@ -10,6 +10,7 @@ import 'package:rinf/rinf.dart';
 import 'package:robdex_design_system/robdex_design_system.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../agent_runtime/agent_runtime_control_tower_host.dart';
 import '../bindings/bindings.dart';
 import '../core/state/workbench_controller.dart';
 import '../ide_host_bridge/ide_host_bridge.dart' as ide_host_bridge;
@@ -27,7 +28,42 @@ class RobdexApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Robdex',
       theme: buildRobdexTheme(),
-      home: const RobdexWorkbench(),
+      home: const RobdexHome(),
+    );
+  }
+}
+
+class RobdexHome extends StatefulWidget {
+  const RobdexHome({super.key});
+
+  @override
+  State<RobdexHome> createState() => _RobdexHomeState();
+}
+
+class _RobdexHomeState extends State<RobdexHome> {
+  int _index = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return RobdexModeShell(
+      selectedIndex: _index,
+      onDestinationSelected: (index) => setState(() => _index = index),
+      destinations: const [
+        RobdexModeDestination(
+          icon: Icons.forum_outlined,
+          selectedIcon: Icons.forum,
+          label: 'Workbench',
+        ),
+        RobdexModeDestination(
+          icon: Icons.radar_outlined,
+          selectedIcon: Icons.radar,
+          label: 'Agent Runtime',
+        ),
+      ],
+      children: const [
+        RobdexWorkbench(),
+        AgentRuntimeControlTowerHost(),
+      ],
     );
   }
 }
@@ -3035,6 +3071,7 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
 @visibleForTesting
 class BootstrapEntryPanel extends StatelessWidget {
   const BootstrapEntryPanel({
+    super.key,
     required this.host,
     required this.port,
     required this.isBusy,
