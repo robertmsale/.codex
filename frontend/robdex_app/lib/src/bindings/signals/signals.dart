@@ -14,6 +14,8 @@ import 'package:rinf/rinf.dart';
 export '../serde/serde.dart';
 
 part 'trait_helpers.dart';
+part 'agent_runtime_output_signal.dart';
+part 'agent_runtime_request_signal.dart';
 part 'archive_thread_group_signal.dart';
 part 'archive_thread_signal.dart';
 part 'bridge_task_result_signal.dart';

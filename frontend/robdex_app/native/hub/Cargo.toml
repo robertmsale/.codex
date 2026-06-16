@@ -11,6 +11,7 @@ anyhow = "1"
 js-sys = "0.3.77"
 rinf = "8.10.0"
 robdex-client-core = { path = "../../../../backend/crates/robdex-client-core" }
+robdex-agent-runtime = { path = "../../../../backend/experiments/agent-runtime/crates/robdex-agent-runtime" }
 robdex-protocol = { path = "../../../../backend/crates/robdex-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -20,3 +21,7 @@ wasm-bindgen = "0.2.100"
 
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 portable-pty = "0.8"
+
+[patch.crates-io]
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "132f5b39c862e3a970f731d709608b3e6276d5f6" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "9200079d3b54a1ff51072e24d81fd354f085156f" }

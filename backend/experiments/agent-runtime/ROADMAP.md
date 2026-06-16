@@ -10,7 +10,7 @@ product specification.
 - **Current milestone:** Build an alternative, PostgreSQL-backed agent runtime
   that can eventually power a macOS/iOS GUI without depending on stable Robdex
   bridge internals.
-- **Current active slice:** No active implementation slice; Rust/Rinf GUI backend controller boundary is completed.
+- **Current active slice:** Direct stable hub Rinf transport binding is completed; no Flutter implementation, launchd, or stable backend/supervisor integration has started.
 - **Current implementation owner:** Codex Config Operator.
 - **Planner stance:** Rust owns GUI runtime synchronization, operation dispatch, and durable state decisions; Flutter UI remains out of scope until explicitly assigned.
 
@@ -49,8 +49,19 @@ product specification.
 - Resident operations/startup/shutdown: `crates/robdex-agent-runtime/src/operations.rs`
 - GUI sync client prototype: `crates/robdex-agent-runtime/src/gui_sync.rs`
 - Rust/Rinf GUI backend controller: `crates/robdex-agent-runtime/src/gui_backend.rs`
+- Experimental Rinf-shaped transport proof:
+  `crates/robdex-agent-runtime/src/rinf_transport.rs`
+- Rinf transport binding plan: `RINF_TRANSPORT_BINDING_PLAN.md`
+- Stable hub direct binding files:
+  `frontend/robdex_app/native/hub/Cargo.toml`,
+  `frontend/robdex_app/native/hub/src/signals/agent_runtime.rs`,
+  `frontend/robdex_app/native/hub/src/signals/mod.rs`, and
+  `frontend/robdex_app/native/hub/src/runtime.rs`
+- First-shell GUI planning artifact: `CONTROL_TOWER_GUI_PLAN.md`
 - Local service scripts: `scripts/agent-runtime-service.sh` and
   `scripts/validate-local-service.sh`
+- Local service discovery file: `.runtime-service/discovery.json` by default
+  when the experiment-local service wrapper is used.
 - README/user docs: `README.md`
 
 ## Completed slices
@@ -94,16 +105,56 @@ product specification.
     `RuntimeSyncClient`, owned WebSocket stream handle, `RuntimeProjection`,
     `GuiControllerState`, selected session, connection/resync state, transient
     errors, operation dispatch, and typed `GuiOperationResult` emission for a future thin Rinf layer. The controller also exposes a public owned-stream polling method for consuming one WebSocket server message at a time through the shared reducer.
+29. Control tower GUI plan: first-shell direction is documented as an
+    operations control tower, not a chat-first interface; the artifact defines
+    operational attention jobs, information architecture, screens, runtime
+    states, Dart/Rinf boundaries, visual risk controls, design-system handoff
+    contract, and source-of-truth files. This is planning only and does not
+    start Flutter implementation.
+30. Experimental Rinf transport proof: an experiment-local Rust module defines
+    stable Dart-to-Rust request envelopes and Rust-to-Dart output envelopes for
+    driving `GuiBackendController`, owns exactly one controller through a
+    serialized async action loop, uses JSON-backed projection/controller
+    payloads where schemas should remain stable, maps errors to
+    `ApiErrorPacket`, and proves connect/hydrate, operation dispatch, owned
+    stream polling, typed errors, and disconnect without modifying
+    `frontend/robdex_app` or the stable Rinf hub.
+31. Local discovery service packaging: the experiment-local service wrapper
+    exposes a JSON `discover`/`json-status` contract and persists the same
+    redacted discovery packet to the service state directory for future GUI/Rinf
+    clients. The packet covers service state, base/health/WebSocket URLs,
+    runtime identity when known, pid/liveness, paths, policies, health,
+    diagnostics, and timestamps without adding launchd, supervisor, Flutter,
+    stable hub, or production service integration.
+32. Rinf transport binding plan: the experiment-local planning artifact
+    prepared the direct-binding decision by documenting packet ownership,
+    generated-binding implications, service discovery bootstrap, and Dart
+    thin-transport responsibilities. Slice 33 supersedes the plan's former
+    stable-hub decision gate with the implemented direct dependency binding;
+    remaining gates are Flutter UI, design-system/Design Lab work, and service
+    packaging beyond experiment-local scripts.
+33. Direct stable hub Rinf transport binding: owner selected the direct
+    dependency strategy. The stable hub now depends on the existing
+    experimental runtime crate, exposes JSON-backed
+    `AgentRuntimeRequestSignal`/`AgentRuntimeOutputSignal` carriers, forwards
+    Dart-originated packets to one long-lived Rust-owned `GuiTransportHandle`,
+    emits every `GuiTransportOutputPacket` back to Dart with request-id
+    correlation, and keeps Dart as a thin transport with no runtime decisions.
+    Generated Rinf Dart carriers were refreshed for the two stable packet
+    signals. Flutter UI, launchd/system service installation, and stable
+    backend/supervisor changes remain out of scope.
 
 ## Active slice
 
-No active implementation slice is recorded after completing the Rust/Rinf GUI
-backend controller boundary. The next planner assignment should set a new
-task-specific Requirements packet before additional implementation starts.
+No active implementation slice is recorded after completing the direct stable
+hub Rinf transport binding. The next implementable gates are owner-approved
+Flutter/control-tower UI mounting, design-system/Design Lab scenarios, or
+service packaging beyond experiment-local scripts.
 
 Standing non-goals until reassigned:
 
 - No Flutter UI implementation.
+- No launchd/system service installation.
 - No stable Robdex production-path changes.
 - No fallback state path parallel to PostgreSQL + projection/deltas.
 
@@ -149,14 +200,13 @@ scripts/smoke-lmstudio-embeddings.sh
 
 ## Deferred / next likely slices
 
-1. Rinf transport binding that forwards Dart packets to `GuiBackendController`
-   without adding Dart-side runtime decisions.
-2. Service packaging beyond local scripts.
-3. Deferred role-admin GUI operation intents if owner moves role mutation into
+1. Flutter/control-tower UI using the completed Rust/Rinf transport binding.
+2. Design-system and Design Lab scenarios for the operations control tower.
+3. Service packaging beyond local scripts.
+4. Deferred role-admin GUI operation intents if owner moves role mutation into
    the first GUI shell.
-4. Deferred workflow-memory inspection operation intents if projection/detail
+5. Deferred workflow-memory inspection operation intents if projection/detail
    state is insufficient for the first GUI shell.
-5. Flutter GUI implementation using design-system-only widgets.
 6. Broader execution expansion only after GUI/runtime lifecycle is stable.
 
 ## Current known risks

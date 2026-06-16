@@ -36,6 +36,46 @@ export ROBDEX_AGENT_RUNTIME_SERVICE_HEALTH_DEADLINE_SECONDS="${ROBDEX_AGENT_RUNT
 BASE_URL="http://${ROBDEX_AGENT_RUNTIME_SERVER_HOST}:${ROBDEX_AGENT_RUNTIME_SERVER_PORT}"
 SERVICE="scripts/agent-runtime-service.sh"
 
+json_get() {
+  local path="$1"
+  local expr="$2"
+  python3 - "$path" "$expr" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    value = json.load(fh)
+for part in sys.argv[2].split("."):
+    if part:
+        value = value[part]
+if isinstance(value, bool):
+    print("true" if value else "false")
+elif value is None:
+    print("")
+else:
+    print(value)
+PY
+}
+
+assert_json_eq() {
+  local path="$1"
+  local expr="$2"
+  local expected="$3"
+  local actual
+  actual="$(json_get "$path" "$expr")"
+  if [[ "$actual" != "$expected" ]]; then
+    printf '[service-validation] expected %s=%s in %s, got %s\n' "$expr" "$expected" "$path" "$actual" >&2
+    exit 1
+  fi
+}
+
+assert_no_secret_leak() {
+  local path="$1"
+  if rg -q 'postgres:postgres@|postgresql://[^[:space:]]+:[^*][^@]*@|token|secret' "$path"; then
+    printf '[service-validation] discovery/config output appears to contain an unredacted secret: %s\n' "$path" >&2
+    cat "$path" >&2
+    exit 1
+  fi
+}
+
 printf '[service-validation] database=%s\n' "$ROBDEX_AGENT_RUNTIME_DATABASE_URL"
 printf '[service-validation] state_dir=%s\n' "$SERVICE_STATE_DIR"
 printf '[service-validation] base_url=%s\n' "$BASE_URL"
@@ -62,6 +102,29 @@ if [[ ! -s "$SERVICE_STATE_DIR/effective-config.json" ]]; then
   printf '[service-validation] effective config snapshot missing\n' >&2
   exit 1
 fi
+if [[ ! -s "$SERVICE_STATE_DIR/discovery.json" ]]; then
+  printf '[service-validation] discovery packet missing after start\n' >&2
+  exit 1
+fi
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "serviceState" "running"
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "stateFlags.running" "true"
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "healthResult.ok" "true"
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "baseUrl" "$BASE_URL"
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "healthUrl" "$BASE_URL/health"
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "webSocketUrl" "ws://${ROBDEX_AGENT_RUNTIME_SERVER_HOST}:${ROBDEX_AGENT_RUNTIME_SERVER_PORT}/state/ws"
+assert_no_secret_leak "$SERVICE_STATE_DIR/discovery.json"
+
+printf '[service-validation] discover\n'
+DISCOVER_OUTPUT_FILE="$SERVICE_STATE_DIR/discover-output.json"
+$SERVICE discover >"$DISCOVER_OUTPUT_FILE"
+assert_json_eq "$DISCOVER_OUTPUT_FILE" "serviceState" "running"
+assert_json_eq "$DISCOVER_OUTPUT_FILE" "pidLiveness.alive" "true"
+assert_json_eq "$DISCOVER_OUTPUT_FILE" "paths.discoveryFile" "$SERVICE_STATE_DIR/discovery.json"
+assert_no_secret_leak "$DISCOVER_OUTPUT_FILE"
+if ! cmp -s "$DISCOVER_OUTPUT_FILE" "$SERVICE_STATE_DIR/discovery.json"; then
+  printf '[service-validation] discover output differs from persisted discovery file\n' >&2
+  exit 1
+fi
 
 printf '[service-validation] status\n'
 STATUS_OUTPUT="$($SERVICE status)"
@@ -85,6 +148,7 @@ if ! rg -q 'refusing duplicate start' "$SERVICE_STATE_DIR/duplicate-start.err"; 
   cat "$SERVICE_STATE_DIR/duplicate-start.err" >&2 || true
   exit 1
 fi
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "serviceState" "running"
 
 printf '[service-validation] logs\n'
 LOG_OUTPUT="$($SERVICE logs)"
@@ -109,6 +173,8 @@ if ! curl -fsS "$BASE_URL/health" >"$SERVICE_STATE_DIR/validation-health-after-r
   $SERVICE status >&2 || true
   exit 1
 fi
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "serviceState" "running"
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "pid" "$PID2"
 if kill -0 "$PID1" 2>/dev/null; then
   printf '[service-validation] old pid still alive after restart: %s\n' "$PID1" >&2
   exit 1
@@ -130,5 +196,32 @@ if ! printf '%s\n' "$STOPPED_STATUS" | rg -q '^state=stopped$'; then
   printf '[service-validation] status did not report stopped after stop\n' >&2
   exit 1
 fi
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "serviceState" "stopped"
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "stateFlags.stopped" "true"
+
+printf '[service-validation] stale pid diagnostics\n'
+printf '999999\n' >"$SERVICE_STATE_DIR/server.pid"
+if $SERVICE status >"$SERVICE_STATE_DIR/stale-status.out" 2>"$SERVICE_STATE_DIR/stale-status.err"; then
+  printf '[service-validation] stale pid status unexpectedly succeeded\n' >&2
+  exit 1
+fi
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "serviceState" "stalePid"
+assert_json_eq "$SERVICE_STATE_DIR/discovery.json" "stateFlags.stalePid" "true"
+rm -f "$SERVICE_STATE_DIR/server.pid"
+$SERVICE discover >"$SERVICE_STATE_DIR/stopped-discover.json"
+
+printf '[service-validation] unhealthy diagnostics\n'
+printf '%s\n' "$$" >"$SERVICE_STATE_DIR/server.pid"
+$SERVICE discover >"$SERVICE_STATE_DIR/unhealthy-discover.json"
+assert_json_eq "$SERVICE_STATE_DIR/unhealthy-discover.json" "serviceState" "unhealthy"
+assert_json_eq "$SERVICE_STATE_DIR/unhealthy-discover.json" "stateFlags.unhealthy" "true"
+rm -f "$SERVICE_STATE_DIR/server.pid"
+
+printf '[service-validation] missing config diagnostics\n'
+mv "$SERVICE_STATE_DIR/effective-config.json" "$SERVICE_STATE_DIR/effective-config.json.saved"
+$SERVICE discover >"$SERVICE_STATE_DIR/missing-config-discover.json"
+assert_json_eq "$SERVICE_STATE_DIR/missing-config-discover.json" "serviceState" "missingConfig"
+assert_json_eq "$SERVICE_STATE_DIR/missing-config-discover.json" "stateFlags.missingConfig" "true"
+mv "$SERVICE_STATE_DIR/effective-config.json.saved" "$SERVICE_STATE_DIR/effective-config.json"
 
 printf '[service-validation] deterministic local service validation complete\n'

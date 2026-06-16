@@ -223,6 +223,70 @@ disconnect, selected-session switching, server-backed payload dispatch, typed
 error mapping, command-registry direct-result summary mapping, and delta
 convergence through the controller.
 
+#### Stable hub Rinf transport binding
+
+The experiment-local Rinf-shaped transport proof lives in
+`robdex_agent_runtime::rinf_transport`. The owner selected the direct-dependency
+strategy, and the first stable hub Rust binding now forwards generated Rinf
+signals to that transport path. The binding remains transport-only: it does not
+implement Flutter UI, design-system widgets, Design Lab scenarios, launchd
+installation, or stable Robdex backend/supervisor behavior.
+
+Stable hub files touched by the binding:
+
+- `frontend/robdex_app/native/hub/Cargo.toml`;
+- `frontend/robdex_app/native/hub/Cargo.lock`;
+- `frontend/robdex_app/native/hub/src/signals/agent_runtime.rs`;
+- `frontend/robdex_app/native/hub/src/signals/mod.rs`;
+- `frontend/robdex_app/native/hub/src/runtime.rs`.
+
+Generated Rinf binding files changed by `rinf gen`:
+
+- `frontend/robdex_app/lib/src/bindings/signals/agent_runtime_request_signal.dart`;
+- `frontend/robdex_app/lib/src/bindings/signals/agent_runtime_output_signal.dart`;
+- `frontend/robdex_app/lib/src/bindings/signals/signals.dart`;
+- `frontend/robdex_app/lib/src/bindings/signals/signal_handlers.dart`.
+
+Dart-to-Rust signals map to `GuiTransportRequestPacket` through
+`AgentRuntimeRequestSignal { requestId, packetJson }`:
+
+- `Connect { baseUrl, selectedSessionId }`;
+- `Hydrate { selectedSessionId }`;
+- `Rehydrate { selectedSessionId }`;
+- `DispatchOperation { operation: GuiOperationRequest }`;
+- `PollStreamOnce`;
+- `Disconnect`.
+
+Rust-to-Dart signals map to `GuiTransportOutputPacket` through
+`AgentRuntimeOutputSignal { requestId, outputJson }`:
+
+- `ProjectionSnapshot` with a JSON-backed `RuntimeProjection` payload;
+- `ControllerState` with a JSON-backed `GuiControllerState` payload;
+- `OperationResult` with the typed `GuiOperationResult`;
+- `StreamOutcome` with typed hello/delta/resync/shutdown/closed outcomes plus
+  current projection/controller state;
+- `Error` with the stable `ApiErrorPacket`.
+
+The stable hub creates one long-lived `GuiTransportHandle`, and the transport
+runner owns exactly one `GuiBackendController` inside a single async action
+loop. Dart sends intent packets only; Rust resolves selected-session
+hydration, WebSocket watermark semantics, operation success, projection
+reduction, approval/command/process enablement, and typed errors. Packet
+payloads are JSON-backed where the projection internals are likely to evolve,
+so future Rinf schemas can stay stable while the Rust projection contract
+continues to develop.
+
+Service discovery remains bootstrap input. Dart may read the local discovery
+packet to find a base URL, then sends a connect request. After connect,
+`RuntimeProjection`, `GuiControllerState`, stream outcomes, and
+`GuiOperationResult` packets from Rust are authoritative. Dart must not compute
+watermarks, construct WebSocket URLs, apply reducers, decide approval or command
+availability, or infer operation success.
+
+Remaining gates: Flutter control tower UI, design-system widgets, Design Lab
+scenarios, and launchd/system service installation remain unimplemented until
+the owner assigns those slices.
+
 ## Resident server MVP
 
 The experimental server binary is `robdex-agent-runtime-server`. It is isolated
@@ -239,6 +303,7 @@ or host service configuration.
 ```sh
 scripts/agent-runtime-service.sh start
 scripts/agent-runtime-service.sh status
+scripts/agent-runtime-service.sh discover
 scripts/agent-runtime-service.sh logs
 scripts/agent-runtime-service.sh restart
 scripts/agent-runtime-service.sh stop
@@ -254,6 +319,8 @@ directory contains:
 - `server.stdout.log` and `server.stderr.log`;
 - `effective-config.json` with the base URL, pid, log paths, policy values,
   server binary path, and redacted database target;
+- `discovery.json` with the machine-readable local discovery packet for future
+  GUI/Rinf clients;
 - bounded health/status diagnostics created by the scripts.
 
 The wrapper preserves the resident server environment. It honors the same server
@@ -267,8 +334,8 @@ an existing binary; otherwise `start` builds `robdex-agent-runtime-server` when
 `start` launches the server in the background, writes the pid/config/log files,
 polls `GET /health` with a bounded deadline
 (`ROBDEX_AGENT_RUNTIME_SERVICE_HEALTH_DEADLINE_SECONDS`, default `20`), and
-prints the base URL, pid, log paths, config path, and redacted database URL. If
-`server.pid` points at a live process, duplicate `start` is refused. Use the
+prints the base URL, pid, log paths, config/discovery paths, and redacted
+database URL. If `server.pid` points at a live process, duplicate `start` is refused. Use the
 documented `restart` path to replace a running local service. If `server.pid` is
 stale, `start` moves it aside with a `.stale.<timestamp>` suffix before
 starting.
@@ -283,6 +350,35 @@ base URL, redacted database target, and log/config paths. `logs` prints stdout
 and stderr logs; `logs --tail` tails them without requiring an external service
 manager.
 
+`discover` (alias: `json-status`) is the GUI-oriented status command. It prints
+and persists the same JSON packet at
+`$ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR/discovery.json`. Future GUI/Rinf
+clients can read that stable file without shelling out; shell callers can use
+`discover` when they need a fresh packet. The packet uses redacted database
+targets only and never exposes raw credentials or tokens. It contains:
+
+- `contractVersion`;
+- `serviceState`: `running`, `stopped`, `stalePid`, `unhealthy`, or
+  `missingConfig`;
+- `stateFlags`, including `staleDiscovery` when the previous discovery file was
+  absent or older than service metadata before refresh;
+- `baseUrl`, `healthUrl`, and `webSocketUrl`;
+- `runtimeIdentity` when reported by `/health`;
+- `pid` and `pidLiveness`;
+- `stateDirectory` and `paths` for pid/config/stdout/stderr/discovery files;
+- `databaseTarget.urlRedacted`;
+- `effectivePolicy` values for bind address, schema initialization,
+  seed-role import, command bootstrap, process reconciliation, and shutdown;
+- `healthResult`, `diagnostics`, and relevant timestamps.
+
+Lifecycle commands keep `discovery.json` coherent: `start` writes a running or
+unhealthy packet after health polling, duplicate `start` leaves the running
+packet intact, `status` refreshes the persisted packet while preserving
+human-readable output, `restart` updates it for the new pid, and `stop` writes
+the stopped packet after pid cleanup. Stale pid, unhealthy server, missing
+config, and stale discovery conditions are represented explicitly in the JSON
+without discarding diagnostics.
+
 Validate the local service wrapper with an isolated Postgres validation database
 and no live model, LM Studio, or embedding-provider calls:
 
@@ -291,9 +387,11 @@ scripts/validate-local-service.sh
 ```
 
 The validation starts the local service, verifies `status` and `/health`, checks
-startup log evidence, verifies duplicate-start refusal, exercises `logs`,
-restarts and checks the new healthy process, stops the service, verifies the
-process is gone, and drops the isolated validation database.
+startup log evidence, verifies `discover` output and persisted discovery file
+content, verifies duplicate-start refusal, exercises `logs`, restarts and
+checks the new healthy process, stops the service, verifies stopped discovery,
+checks stale/unhealthy/missing-config diagnostics, verifies the process is gone,
+and drops the isolated validation database.
 
 Run with the conservative default bind:
 

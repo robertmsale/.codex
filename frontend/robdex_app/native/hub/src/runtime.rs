@@ -5,6 +5,9 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
+use robdex_agent_runtime::rinf_transport::{
+    GuiTransportHandle, GuiTransportOutputPacket, GuiTransportRequestPacket,
+};
 use robdex_client_core::{bridge::BridgeEndpoint, LiveSessionEvent, LiveSessionHandle, WorkbenchClient, start_live_session};
 use robdex_protocol::{UiChatEntry, WorkbenchViewData};
 use rinf::{DartSignal, RustSignal};
@@ -13,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio_with_wasm::alias as tokio;
 
 use crate::signals::{
+    AgentRuntimeOutputSignal, AgentRuntimeRequestSignal,
     ArchiveThreadGroupSignal, ArchiveThreadSignal, BridgeTaskResultSignal, ClearProjectHookLogsSignal,
     CreateProjectSignal, CreateThreadGroupSignal, CreateThreadSignal, DecideApprovalSignal,
     DeleteProjectSignal, DeleteThreadGroupSignal,
@@ -195,11 +199,16 @@ enum Action {
     },
     TerminalClose(String),
     TerminalCloseAll,
+    AgentRuntimeRequest {
+        request_id: String,
+        packet_json: String,
+    },
 }
 
 pub async fn run() {
     let (tx, mut rx) = mpsc::unbounded_channel::<Action>();
     spawn_receivers(tx.clone());
+    let agent_runtime_transport = GuiTransportHandle::spawn();
 
     let mut client: Option<WorkbenchClient> = None;
     let mut current_view: Option<WorkbenchViewData> = None;
@@ -217,6 +226,13 @@ pub async fn run() {
                 };
                 if matches!(action, Action::Initialize { .. }) {
                     initialized = true;
+                }
+                if let Action::AgentRuntimeRequest { request_id, packet_json } = action {
+                    let agent_runtime_transport = agent_runtime_transport.clone();
+                    tokio::spawn(async move {
+                        handle_agent_runtime_request(&agent_runtime_transport, request_id, packet_json).await;
+                    });
+                    continue;
                 }
                 apply_optimistic_action(&mut current_view, &action);
                 let show_loading = current_view.is_none();
@@ -882,7 +898,11 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
     spawn_map::<TerminalCloseSignal, _>(tx.clone(), |signal| {
         Action::TerminalClose(signal.message.session_id)
     });
-    spawn_unit::<TerminalCloseAllSignal, _>(tx, || Action::TerminalCloseAll);
+    spawn_unit::<TerminalCloseAllSignal, _>(tx.clone(), || Action::TerminalCloseAll);
+    spawn_map::<AgentRuntimeRequestSignal, _>(tx, |signal| Action::AgentRuntimeRequest {
+        request_id: signal.message.request_id,
+        packet_json: signal.message.packet_json,
+    });
 }
 
 fn non_empty(value: String) -> Option<String> {
@@ -892,6 +912,91 @@ fn non_empty(value: String) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+async fn handle_agent_runtime_request(
+    handle: &GuiTransportHandle,
+    request_id: String,
+    packet_json: String,
+) {
+    let packet = match decode_agent_runtime_packet(&request_id, &packet_json) {
+        Ok(packet) => packet,
+        Err(output_json) => {
+            AgentRuntimeOutputSignal {
+                request_id,
+                output_json,
+            }
+            .send_signal_to_dart();
+            return;
+        }
+    };
+    for output in handle.send(packet).await {
+        emit_agent_runtime_output(output);
+    }
+}
+
+fn decode_agent_runtime_packet(
+    request_id: &str,
+    packet_json: &str,
+) -> std::result::Result<GuiTransportRequestPacket, String> {
+    let packet = serde_json::from_str::<GuiTransportRequestPacket>(packet_json).map_err(|error| {
+        agent_runtime_error_output_json(
+            request_id,
+            "bad_request",
+            "agent runtime packet_json must be a GuiTransportRequestPacket",
+            serde_json::json!({"source":"serde_json", "message": error.to_string()}),
+        )
+    })?;
+    if packet.packet_id != request_id {
+        return Err(agent_runtime_error_output_json(
+            request_id,
+            "bad_request",
+            "agent runtime request_id must match packet_id",
+            serde_json::json!({"requestId": request_id, "packetId": packet.packet_id}),
+        ));
+    }
+    Ok(packet)
+}
+
+fn emit_agent_runtime_output(output: GuiTransportOutputPacket) {
+    let request_id = output.request_id.clone();
+    let output_json = serde_json::to_string(&output).unwrap_or_else(|error| {
+        agent_runtime_error_output_json(
+            &request_id,
+            "internal_error",
+            "failed to encode agent runtime output packet",
+            serde_json::json!({"source":"serde_json", "message": error.to_string()}),
+        )
+    });
+    AgentRuntimeOutputSignal {
+        request_id,
+        output_json,
+    }
+    .send_signal_to_dart();
+}
+
+fn agent_runtime_error_output_json(
+    request_id: &str,
+    code: &str,
+    message: &str,
+    details: serde_json::Value,
+) -> String {
+    serde_json::json!({
+        "requestId": request_id,
+        "output": {
+            "type": "error",
+            "payload": {
+                "error": {
+                    "error": {
+                        "code": code,
+                        "message": message,
+                        "details": details
+                    }
+                }
+            }
+        }
+    })
+    .to_string()
 }
 
 fn spawn_unit<TSignal, F>(tx: mpsc::UnboundedSender<Action>, map: F)
@@ -1605,6 +1710,7 @@ async fn handle_action(
             terminals.close_all();
             current_view_clone(current_view)
         }
+        Action::AgentRuntimeRequest { .. } => current_view_clone(current_view),
     }
 }
 

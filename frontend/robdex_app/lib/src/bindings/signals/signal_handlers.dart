@@ -1,6 +1,15 @@
 part of 'signals.dart';
 
 final assignRustSignal = <String, void Function(Uint8List, Uint8List)>{
+  'AgentRuntimeOutputSignal': (Uint8List messageBytes, Uint8List binary) {
+    final message = AgentRuntimeOutputSignal.bincodeDeserialize(messageBytes);
+    final rustSignal = RustSignalPack(
+      message,
+      binary,
+    );
+    _agentRuntimeOutputSignalStreamController.add(rustSignal);
+    AgentRuntimeOutputSignal.latestRustSignal = rustSignal;
+  },
   'BridgeTaskResultSignal': (Uint8List messageBytes, Uint8List binary) {
     final message = BridgeTaskResultSignal.bincodeDeserialize(messageBytes);
     final rustSignal = RustSignalPack(

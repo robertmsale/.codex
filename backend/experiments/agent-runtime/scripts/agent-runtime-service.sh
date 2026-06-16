@@ -9,10 +9,13 @@ PID_FILE="$STATE_DIR/server.pid"
 STDOUT_LOG="$STATE_DIR/server.stdout.log"
 STDERR_LOG="$STATE_DIR/server.stderr.log"
 CONFIG_FILE="$STATE_DIR/effective-config.json"
+DISCOVERY_FILE="$STATE_DIR/discovery.json"
 HOST="${ROBDEX_AGENT_RUNTIME_SERVER_HOST:-127.0.0.1}"
 PORT="${ROBDEX_AGENT_RUNTIME_SERVER_PORT:-8765}"
 DATABASE_URL="${ROBDEX_AGENT_RUNTIME_DATABASE_URL:-$DEFAULT_DATABASE_URL}"
 BASE_URL="http://${HOST}:${PORT}"
+HEALTH_URL="$BASE_URL/health"
+WEBSOCKET_URL="ws://${HOST}:${PORT}/state/ws"
 HEALTH_DEADLINE_SECONDS="${ROBDEX_AGENT_RUNTIME_SERVICE_HEALTH_DEADLINE_SECONDS:-20}"
 STOP_DEADLINE_SECONDS="${ROBDEX_AGENT_RUNTIME_SERVICE_STOP_DEADLINE_SECONDS:-15}"
 
@@ -82,6 +85,7 @@ config = {
     "pidFile": "$PID_FILE",
     "stdoutLog": "$STDOUT_LOG",
     "stderrLog": "$STDERR_LOG",
+    "discoveryFile": "$DISCOVERY_FILE",
     "schemaPolicy": os.environ.get("ROBDEX_AGENT_RUNTIME_SCHEMA_POLICY", "apply"),
     "seedRolePolicy": os.environ.get("ROBDEX_AGENT_RUNTIME_SEED_ROLE_POLICY", "importSeeds"),
     "commandBootstrapPolicy": os.environ.get("ROBDEX_AGENT_RUNTIME_COMMAND_BOOTSTRAP_POLICY", "bootstrapDefaults"),
@@ -92,6 +96,238 @@ with open(path, "w", encoding="utf-8") as fh:
     json.dump(config, fh, indent=2, sort_keys=True)
     fh.write("\n")
 PY
+}
+
+discovery_packet() {
+  local write_mode="${1:-print}"
+  ensure_state_dir
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_WRITE="$write_mode" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_FILE="$DISCOVERY_FILE" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_CONFIG_FILE="$CONFIG_FILE" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_PID_FILE="$PID_FILE" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_STDOUT_LOG="$STDOUT_LOG" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_STDERR_LOG="$STDERR_LOG" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_STATE_DIR="$STATE_DIR" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_BASE_URL="$BASE_URL" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_HEALTH_URL="$HEALTH_URL" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_WEBSOCKET_URL="$WEBSOCKET_URL" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_DATABASE_URL="$DATABASE_URL" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_HOST="$HOST" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_PORT="$PORT" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_SCHEMA_POLICY="${ROBDEX_AGENT_RUNTIME_SCHEMA_POLICY:-apply}" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_SEED_ROLE_POLICY="${ROBDEX_AGENT_RUNTIME_SEED_ROLE_POLICY:-importSeeds}" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_COMMAND_BOOTSTRAP_POLICY="${ROBDEX_AGENT_RUNTIME_COMMAND_BOOTSTRAP_POLICY:-bootstrapDefaults}" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_PROCESS_RECONCILIATION_POLICY="${ROBDEX_AGENT_RUNTIME_PROCESS_RECONCILIATION_POLICY:-markRunningLost}" \
+  ROBDEX_AGENT_RUNTIME_DISCOVERY_SHUTDOWN_POLICY="${ROBDEX_AGENT_RUNTIME_SHUTDOWN_POLICY:-gracefulMarkRunningLost}" \
+  python3 <<'PY'
+import datetime
+import json
+import os
+import signal
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+def redact(url):
+    parts = urlsplit(url)
+    netloc = parts.netloc
+    if "@" in netloc:
+        userinfo, host = netloc.rsplit("@", 1)
+        if ":" in userinfo:
+            user = userinfo.split(":", 1)[0]
+            netloc = f"{user}:***@{host}"
+        else:
+            netloc = f"{userinfo}@{host}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+def read_pid(path):
+    try:
+        text = Path(path).read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return text
+
+def pid_alive(pid):
+    if not isinstance(pid, int):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+def mtime(path):
+    try:
+        return datetime.datetime.fromtimestamp(Path(path).stat().st_mtime, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    except FileNotFoundError:
+        return None
+
+def health_check(url, should_check):
+    checked_at = now()
+    if not should_check:
+        return {
+            "checked": False,
+            "ok": None,
+            "statusCode": None,
+            "body": None,
+            "error": None,
+            "checkedAt": checked_at,
+        }
+    try:
+        with urllib.request.urlopen(url, timeout=1.5) as response:
+            raw = response.read(131072).decode("utf-8", errors="replace")
+            body = None
+            try:
+                body = json.loads(raw)
+            except json.JSONDecodeError:
+                body = {"raw": raw}
+            return {
+                "checked": True,
+                "ok": 200 <= response.status < 300,
+                "statusCode": response.status,
+                "body": body,
+                "error": None,
+                "checkedAt": checked_at,
+            }
+    except Exception as error:
+        return {
+            "checked": True,
+            "ok": False,
+            "statusCode": None,
+            "body": None,
+            "error": str(error),
+            "checkedAt": checked_at,
+        }
+
+state_dir = os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_STATE_DIR"]
+pid_file = os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_PID_FILE"]
+config_file = os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_CONFIG_FILE"]
+discovery_file = os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_FILE"]
+stdout_log = os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_STDOUT_LOG"]
+stderr_log = os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_STDERR_LOG"]
+health_url = os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_HEALTH_URL"]
+database_url = os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_DATABASE_URL"]
+
+pid = read_pid(pid_file)
+alive = pid_alive(pid)
+pid_file_exists = Path(pid_file).exists()
+config_exists = Path(config_file).exists()
+discovery_exists = Path(discovery_file).exists()
+health = health_check(health_url, alive)
+
+missing_config = not config_exists
+stale_pid = bool(pid_file_exists and pid is not None and not alive)
+running = bool(pid is not None and alive and health["ok"])
+unhealthy = bool(pid is not None and alive and health["ok"] is False)
+stopped = bool(pid is None and not pid_file_exists)
+stale_discovery = False
+if discovery_exists:
+    discovery_mtime = Path(discovery_file).stat().st_mtime
+    if config_exists and discovery_mtime < Path(config_file).stat().st_mtime:
+        stale_discovery = True
+    if pid_file_exists and discovery_mtime < Path(pid_file).stat().st_mtime:
+        stale_discovery = True
+else:
+    stale_discovery = True
+
+if stale_pid:
+    service_state = "stalePid"
+elif unhealthy:
+    service_state = "unhealthy"
+elif running:
+    service_state = "running"
+elif missing_config:
+    service_state = "missingConfig"
+else:
+    service_state = "stopped"
+
+diagnostics = []
+if stopped:
+    diagnostics.append({"code": "stopped", "message": "no pid file is present"})
+if stale_pid:
+    diagnostics.append({"code": "stale_pid", "message": "pid file exists but process is not alive", "pid": pid})
+if unhealthy:
+    diagnostics.append({"code": "unhealthy", "message": "server process is alive but health check failed", "healthError": health["error"]})
+if missing_config:
+    diagnostics.append({"code": "missing_config", "message": "effective configuration snapshot is missing", "path": config_file})
+if stale_discovery:
+    diagnostics.append({"code": "stale_discovery", "message": "discovery file was missing or older than service metadata before this refresh", "path": discovery_file})
+
+runtime_identity = None
+if isinstance(health.get("body"), dict):
+    runtime_identity = health["body"].get("runtimeIdentity") or health["body"].get("runtime_identity")
+
+packet = {
+    "contractVersion": 1,
+    "serviceState": service_state,
+    "stateFlags": {
+        "stopped": stopped,
+        "running": running,
+        "stalePid": stale_pid,
+        "unhealthy": unhealthy,
+        "missingConfig": missing_config,
+        "staleDiscovery": stale_discovery,
+    },
+    "baseUrl": os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_BASE_URL"],
+    "healthUrl": health_url,
+    "webSocketUrl": os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_WEBSOCKET_URL"],
+    "runtimeIdentity": runtime_identity,
+    "pid": pid,
+    "pidLiveness": {
+        "pidFileExists": pid_file_exists,
+        "alive": alive,
+        "checkedAt": health["checkedAt"],
+    },
+    "stateDirectory": state_dir,
+    "paths": {
+        "pidFile": pid_file,
+        "configFile": config_file,
+        "stdoutLog": stdout_log,
+        "stderrLog": stderr_log,
+        "discoveryFile": discovery_file,
+    },
+    "databaseTarget": {
+        "urlRedacted": redact(database_url),
+    },
+    "effectivePolicy": {
+        "bindHost": os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_HOST"],
+        "bindPort": int(os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_PORT"]),
+        "schemaPolicy": os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_SCHEMA_POLICY"],
+        "seedRolePolicy": os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_SEED_ROLE_POLICY"],
+        "commandBootstrapPolicy": os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_COMMAND_BOOTSTRAP_POLICY"],
+        "processReconciliationPolicy": os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_PROCESS_RECONCILIATION_POLICY"],
+        "shutdownPolicy": os.environ["ROBDEX_AGENT_RUNTIME_DISCOVERY_SHUTDOWN_POLICY"],
+    },
+    "healthResult": health,
+    "diagnostics": diagnostics,
+    "timestamps": {
+        "generatedAt": now(),
+        "pidFileModifiedAt": mtime(pid_file),
+        "configFileModifiedAt": mtime(config_file),
+        "discoveryFileModifiedAt": mtime(discovery_file),
+        "stdoutLogModifiedAt": mtime(stdout_log),
+        "stderrLogModifiedAt": mtime(stderr_log),
+    },
+}
+text = json.dumps(packet, indent=2, sort_keys=True) + "\n"
+if os.environ.get("ROBDEX_AGENT_RUNTIME_DISCOVERY_WRITE") == "write":
+    Path(discovery_file).write_text(text, encoding="utf-8")
+sys.stdout.write(text)
+PY
+}
+
+write_discovery() {
+  discovery_packet write >/dev/null
 }
 
 wait_for_health() {
@@ -146,8 +382,10 @@ start_service() {
   printf '%s\n' "$pid" >"$PID_FILE"
   write_config_snapshot "$server_bin" "$pid"
   if ! wait_for_health "$pid"; then
+    write_discovery || true
     return 1
   fi
+  write_discovery
   printf '[agent-runtime-service] started\n'
   printf 'base_url=%s\n' "$BASE_URL"
   printf 'pid=%s\n' "$pid"
@@ -155,6 +393,7 @@ start_service() {
   printf 'stdout_log=%s\n' "$STDOUT_LOG"
   printf 'stderr_log=%s\n' "$STDERR_LOG"
   printf 'config=%s\n' "$CONFIG_FILE"
+  printf 'discovery=%s\n' "$DISCOVERY_FILE"
   printf 'database=%s\n' "$(redact_database_url)"
 }
 
@@ -167,11 +406,13 @@ stop_service() {
   pid="$(pid_from_file || true)"
   if [[ -z "$pid" ]]; then
     printf '[agent-runtime-service] stopped: no pid file at %s\n' "$PID_FILE"
+    write_discovery
     return 0
   fi
   if ! is_running_pid "$pid"; then
     printf '[agent-runtime-service] stale pid file removed: %s pid=%s\n' "$PID_FILE" "$pid"
     rm -f "$PID_FILE"
+    write_discovery
     return 0
   fi
   printf '[agent-runtime-service] stopping pid=%s\n' "$pid"
@@ -179,6 +420,7 @@ stop_service() {
   for ((attempt=1; attempt<=STOP_DEADLINE_SECONDS*10; attempt++)); do
     if ! is_running_pid "$pid"; then
       rm -f "$PID_FILE"
+      write_discovery
       printf '[agent-runtime-service] stopped pid=%s\n' "$pid"
       return 0
     fi
@@ -190,6 +432,7 @@ stop_service() {
     for ((attempt=1; attempt<=50; attempt++)); do
       if ! is_running_pid "$pid"; then
         rm -f "$PID_FILE"
+        write_discovery
         printf '[agent-runtime-service] force stopped pid=%s\n' "$pid"
         return 0
       fi
@@ -230,9 +473,15 @@ status_service() {
   printf 'stdout_log=%s\n' "$STDOUT_LOG"
   printf 'stderr_log=%s\n' "$STDERR_LOG"
   printf 'config=%s\n' "$CONFIG_FILE"
+  printf 'discovery=%s\n' "$DISCOVERY_FILE"
+  write_discovery
   if [[ "$state" == "stale" ]]; then
     return 2
   fi
+}
+
+discover_service() {
+  discovery_packet write
 }
 
 restart_service() {
@@ -262,7 +511,7 @@ logs_service() {
 
 usage() {
   cat <<USAGE
-usage: $0 <start|stop|status|restart|logs> [--force|--tail]
+usage: $0 <start|stop|status|discover|restart|logs> [--force|--tail]
 
 Environment:
   ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR   state directory, default .runtime-service
@@ -278,6 +527,7 @@ case "$command" in
   start) start_service ;;
   stop) shift; stop_service "${1:-}" ;;
   status) status_service ;;
+  discover|json-status) discover_service ;;
   restart) shift; restart_service "${1:-}" ;;
   logs) shift; logs_service "${1:-print}" ;;
   -h|--help|help|"") usage ;;

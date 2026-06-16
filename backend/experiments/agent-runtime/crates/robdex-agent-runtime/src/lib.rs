@@ -11,6 +11,7 @@ pub mod model;
 pub mod operations;
 pub mod policy;
 pub mod projection;
+pub mod rinf_transport;
 pub mod roles;
 pub mod runtime;
 pub mod server;
