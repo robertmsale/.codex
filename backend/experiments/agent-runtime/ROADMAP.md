@@ -237,13 +237,13 @@ scripts/smoke-lmstudio-embeddings.sh
 
 ## Deferred / next likely slices
 
-1. Richer control-tower UX beyond the first packet-rendering shell.
-2. Service packaging beyond local scripts.
-3. Deferred role-admin GUI operation intents if owner moves role mutation into
+1. Service packaging beyond the completed experiment-local service wrapper and
+   discovery scripts.
+2. Deferred role-admin GUI operation intents if owner moves role mutation into
    the first GUI shell.
-4. Deferred workflow-memory inspection operation intents if projection/detail
+3. Deferred workflow-memory inspection operation intents if projection/detail
    state is insufficient for the first GUI shell.
-5. Broader execution expansion only after GUI/runtime lifecycle is stable.
+4. Broader execution expansion only after GUI/runtime lifecycle is stable.
 
 ## Current known risks
 
