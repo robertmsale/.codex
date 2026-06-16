@@ -10,7 +10,7 @@ product specification.
 - **Current milestone:** Build an alternative, PostgreSQL-backed agent runtime
   that can eventually power a macOS/iOS GUI without depending on stable Robdex
   bridge internals.
-- **Current active slice:** Service packaging moved local state/discovery to a canonical per-user location; launchd/autostart and stable backend/supervisor integration have not started.
+- **Current active slice:** Per-user launchd/autostart support is implemented for the experimental Agent Runtime service; stable backend/supervisor integration has not started.
 - **Current implementation owner:** Codex Config Operator.
 - **Planner stance:** Rust owns GUI runtime synchronization, operation dispatch,
   durable state decisions, and control-tower view shaping; Flutter remains a
@@ -201,20 +201,32 @@ product specification.
     `install-user-service`, `package-status`, and `uninstall-user-service` as a
     per-user script-based packaging contract that preserves the existing
     resident server binary/path and discovery packet contracts. Launchd/autostart
-    remains deferred.
+    remained deferred until slice 40.
+40. Launchd autostart: the same service wrapper now supports per-user macOS
+    launchd lifecycle commands: `install-launchd`, `load-launchd`,
+    `unload-launchd`, `uninstall-launchd`, and `launchd-status`. The generated
+    plist lives under `~/Library/LaunchAgents`, targets the existing
+    `scripts/agent-runtime-service.sh start` flow, preserves the canonical or
+    explicitly overridden service state directory, writes launchd logs under the
+    state directory, and keeps the existing discovery/config/pid/package
+    contract authoritative. `launchd-status` and `package-status` distinguish
+    not installed, installed/unloaded, loaded/running, loaded/unhealthy, and
+    stale/unknown from user-domain launchctl state plus service health. No
+    LaunchDaemons, sudo, `/Library/LaunchDaemons`, or root-owned `/var`
+    installation exists.
 
 ## Active slice
 
-No active implementation slice is recorded after completing service packaging.
-The next implementable gates are remote/mDNS/iOS discovery, launchd/autostart
-if owner wants it beyond the script-based per-user package contract, and
+No active implementation slice is recorded after completing per-user launchd
+autostart. The next implementable gates are remote/mDNS/iOS discovery and
 deferred role/workflow GUI operation intents if owner brings them into scope.
 
 Standing non-goals until reassigned:
 
 - No additional Flutter UI implementation beyond the current control-tower
   shell until owner assigns it.
-- No launchd/system service installation.
+- No root/system LaunchDaemons, sudo service installation, or stable Robdex
+  service integration.
 - No stable Robdex production-path changes.
 - No fallback state path parallel to PostgreSQL + projection/deltas.
 
@@ -227,6 +239,7 @@ cargo check
 cargo test
 scripts/smoke-resident-server.sh
 scripts/validate-local-service.sh
+scripts/validate-launchd-packaging.sh
 ```
 
 Run from repo root for whitespace validation:
@@ -261,13 +274,11 @@ scripts/smoke-lmstudio-embeddings.sh
 ## Deferred / next likely slices
 
 1. Remote/mDNS/iOS discovery after the local file bootstrap path is stable.
-2. Launchd/autostart beyond the completed per-user script-based package
-   contract, if owner wants automatic host startup.
-3. Deferred role-admin GUI operation intents if owner moves role mutation into
+2. Deferred role-admin GUI operation intents if owner moves role mutation into
    the first GUI shell.
-4. Deferred workflow-memory inspection operation intents if projection/detail
+3. Deferred workflow-memory inspection operation intents if projection/detail
    state is insufficient for the first GUI shell.
-5. Broader execution expansion only after GUI/runtime lifecycle is stable.
+4. Broader execution expansion only after GUI/runtime lifecycle is stable.
 
 ## Current known risks
 

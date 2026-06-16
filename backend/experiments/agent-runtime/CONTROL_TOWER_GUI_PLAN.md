@@ -67,8 +67,8 @@ not pretend to be connected. Manual base URL entry remains a fallback input.
 
 Remote discovery remains out of scope for the first shell. mDNS/Bonjour and iOS
 remote discovery require a separate owner-approved slice. The current service
-packaging affordance is per-user and script-based; launchd/autostart remains a
-deferred gate.
+packaging affordance includes per-user script-based packaging and macOS
+LaunchAgent install/load/unload/status commands.
 
 ## Direction
 

@@ -231,8 +231,10 @@ The experiment-local Rinf-shaped transport proof lives in
 `robdex_agent_runtime::rinf_transport`. The owner selected the direct-dependency
 strategy, and the first stable hub Rust binding now forwards generated Rinf
 signals to that transport path. Later slices added the control-tower Flutter
-shell and design-system scenarios on top of the same transport. Launchd
-installation and stable Robdex backend/supervisor behavior remain out of scope.
+shell, design-system scenarios, user-scoped service packaging, and per-user
+LaunchAgent install/load/unload/status on top of the same transport. Root/system
+LaunchDaemons, sudo service installation, remote/mDNS/iOS discovery, and stable
+Robdex backend/supervisor behavior remain out of scope.
 
 Stable hub files touched by the binding:
 
@@ -342,7 +344,8 @@ agent-runtime control tower
 component, with Design Lab scenarios for disconnected, connecting, connected,
 error, and empty/no-session states. Remaining gates are remote/mDNS/iOS
 discovery, role-admin mutation UI, workflow-memory inspection UI, and
-launchd/autostart beyond the completed per-user script-based package contract.
+root/system service integration beyond the completed per-user LaunchAgent
+workflow.
 
 ## Resident server MVP
 
@@ -355,8 +358,9 @@ the intended trust boundary is VPN/network placement.
 
 For local development and per-user host packaging, use the Agent Runtime service
 wrapper. It writes state under the canonical user-scoped service directory by
-default. It does not install or modify launchd, systemd, supervisor, stable
-Robdex service tooling, or root-owned host service configuration.
+default. It supports per-user macOS launchd autostart through
+`~/Library/LaunchAgents`; it does not install root-owned LaunchDaemons, use
+sudo, modify systemd/supervisor, or touch stable Robdex service tooling.
 
 ```sh
 scripts/agent-runtime-service.sh start
@@ -371,6 +375,11 @@ scripts/agent-runtime-service.sh default-state-dir
 scripts/agent-runtime-service.sh install-user-service
 scripts/agent-runtime-service.sh package-status
 scripts/agent-runtime-service.sh uninstall-user-service
+scripts/agent-runtime-service.sh install-launchd
+scripts/agent-runtime-service.sh load-launchd
+scripts/agent-runtime-service.sh launchd-status
+scripts/agent-runtime-service.sh unload-launchd
+scripts/agent-runtime-service.sh uninstall-launchd
 ```
 
 The default service state directory is user-scoped and outside the repo:
@@ -453,10 +462,27 @@ the current per-user host packaging affordance beyond ad hoc start/stop calls.
 contract and writes `service-package.json` in the same state directory.
 `package-status` prints that package descriptor or a `notInstalled` packet.
 `uninstall-user-service` stops the wrapper-managed process if present and
-removes the package descriptor. This does not install launchd/autostart yet;
-the descriptor records the per-user launchd label and plist path as a deferred
-owner-approved gate while preserving the existing wrapper and discovery packet
-contract.
+removes the package descriptor.
+
+Per-user launchd autostart is available through `install-launchd`,
+`load-launchd`, `launchd-status`, `unload-launchd`, and `uninstall-launchd`.
+`install-launchd` writes a deterministic plist at
+`~/Library/LaunchAgents/com.robdex.agent-runtime.experimental.plist` by default
+and updates the same `service-package.json` descriptor. The plist runs the
+existing service script with `start`, preserves the canonical or overridden
+`ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR`, writes launchd stdout/stderr under the
+service state directory, and leaves discovery/config/pid/package state owned by
+the existing wrapper. `load-launchd` uses `launchctl bootstrap gui/$(id -u)` and
+fails closed if `launchctl` is unavailable or returns an error; it does not fall
+back to a non-launchd start while claiming launchd is active. `unload-launchd`
+uses `launchctl bootout` and then stops the wrapper-managed server so service
+state remains coherent. `launchd-status` and `package-status` distinguish
+`notInstalled`, `installedUnloaded`, `loadedRunning`, `loadedUnhealthy`, and
+`staleUnknown` from launchctl state plus service health rather than plist file
+presence alone. `uninstall-launchd` unloads, stops, removes the plist, and
+updates package state. Validation does not load the owner's real launchd job;
+manual smoke can run these commands from the experiment workspace when the
+owner wants to enable autostart.
 
 Validate the user-scoped service wrapper and package/discovery contract with an
 isolated Postgres validation database and no live model, LM Studio, or
@@ -464,6 +490,7 @@ embedding-provider calls:
 
 ```sh
 scripts/validate-local-service.sh
+scripts/validate-launchd-packaging.sh
 ```
 
 The validation starts the local service, verifies `status` and `/health`, checks

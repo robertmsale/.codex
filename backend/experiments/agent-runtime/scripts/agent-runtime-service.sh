@@ -19,8 +19,11 @@ STDERR_LOG="$STATE_DIR/server.stderr.log"
 CONFIG_FILE="$STATE_DIR/effective-config.json"
 DISCOVERY_FILE="$STATE_DIR/discovery.json"
 PACKAGE_FILE="$STATE_DIR/service-package.json"
-LAUNCHD_LABEL="com.robdex.agent-runtime.experimental"
+LAUNCHD_LABEL="${ROBDEX_AGENT_RUNTIME_LAUNCHD_LABEL:-com.robdex.agent-runtime.experimental}"
 LAUNCHD_PLIST="$HOME/Library/LaunchAgents/$LAUNCHD_LABEL.plist"
+LAUNCHD_STDOUT_LOG="$STATE_DIR/launchd.stdout.log"
+LAUNCHD_STDERR_LOG="$STATE_DIR/launchd.stderr.log"
+LAUNCHD_DOMAIN="gui/$(id -u)"
 HOST="${ROBDEX_AGENT_RUNTIME_SERVER_HOST:-127.0.0.1}"
 PORT="${ROBDEX_AGENT_RUNTIME_SERVER_PORT:-8765}"
 DATABASE_URL="${ROBDEX_AGENT_RUNTIME_DATABASE_URL:-$DEFAULT_DATABASE_URL}"
@@ -495,15 +498,171 @@ discover_service() {
   discovery_packet write
 }
 
+service_script_path() {
+  printf '%s\n' "$(pwd)/scripts/agent-runtime-service.sh"
+}
+
+launchd_target() {
+  printf '%s/%s\n' "$LAUNCHD_DOMAIN" "$LAUNCHD_LABEL"
+}
+
+launchctl_available() {
+  command -v launchctl >/dev/null 2>&1
+}
+
+launchd_loaded() {
+  launchctl_available && launchctl print "$(launchd_target)" >/dev/null 2>&1
+}
+
+launchd_status_value() {
+  local service_json="$1"
+  if [[ ! -f "$LAUNCHD_PLIST" ]]; then
+    printf '%s\n' "notInstalled"
+  elif ! launchctl_available; then
+    printf '%s\n' "staleUnknown"
+  elif ! launchd_loaded; then
+    printf '%s\n' "installedUnloaded"
+  else
+    local service_state health_ok
+    service_state="$(python3 - "$service_json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    packet = json.load(fh)
+print(packet.get("serviceState") or "")
+PY
+)"
+    health_ok="$(python3 - "$service_json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    packet = json.load(fh)
+ok = (packet.get("healthResult") or {}).get("ok")
+print("true" if ok is True else "false" if ok is False else "")
+PY
+)"
+    if [[ "$service_state" == "running" && "$health_ok" == "true" ]]; then
+      printf '%s\n' "loadedRunning"
+    elif [[ "$service_state" == "unhealthy" || "$health_ok" == "false" ]]; then
+      printf '%s\n' "loadedUnhealthy"
+    else
+      printf '%s\n' "staleUnknown"
+    fi
+  fi
+}
+
+launchd_status_packet() {
+  ensure_state_dir
+  local service_json="$STATE_DIR/launchd-service-state.json"
+  discovery_packet write >"$service_json"
+  local status
+  status="$(launchd_status_value "$service_json")"
+  local loaded="false"
+  launchd_loaded && loaded="true"
+  local loaded_py="False"
+  [[ "$loaded" == "true" ]] && loaded_py="True"
+  local launchctl_path=""
+  if launchctl_available; then
+    launchctl_path="$(command -v launchctl)"
+  fi
+  local launchctl_available_py="False"
+  [[ -n "$launchctl_path" ]] && launchctl_available_py="True"
+  local plist_installed_py="False"
+  [[ -f "$LAUNCHD_PLIST" ]] && plist_installed_py="True"
+  local diagnostic=""
+  if [[ -f "$LAUNCHD_PLIST" && -z "$launchctl_path" ]]; then
+    diagnostic="launchctl is unavailable; load/unload/status cannot verify user-domain state"
+  elif [[ "$status" == "installedUnloaded" ]]; then
+    diagnostic="plist is installed but launchctl does not report the user-domain job as loaded"
+  elif [[ "$status" == "staleUnknown" ]]; then
+    diagnostic="launchd state or service health is not conclusively running"
+  fi
+  python3 - "$service_json" <<PY
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    service = json.load(fh)
+packet = {
+    "contractVersion": 1,
+    "label": "$LAUNCHD_LABEL",
+    "domain": "$LAUNCHD_DOMAIN",
+    "target": "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL",
+    "plistPath": "$LAUNCHD_PLIST",
+    "plistInstalled": $plist_installed_py,
+    "loaded": $loaded_py,
+    "status": "$status",
+    "launchctlAvailable": $launchctl_available_py,
+    "launchctlPath": "$launchctl_path" or None,
+    "stateDirectory": "$STATE_DIR",
+    "discoveryFile": "$DISCOVERY_FILE",
+    "stdoutLog": "$LAUNCHD_STDOUT_LOG",
+    "stderrLog": "$LAUNCHD_STDERR_LOG",
+    "diagnostic": "$diagnostic" or None,
+    "service": {
+        "serviceState": service.get("serviceState"),
+        "healthResult": service.get("healthResult"),
+        "pid": service.get("pid"),
+        "pidLiveness": service.get("pidLiveness"),
+    },
+}
+print(json.dumps(packet, indent=2, sort_keys=True))
+PY
+}
+
+write_launchd_plist() {
+  ensure_state_dir
+  mkdir -p "$(dirname "$LAUNCHD_PLIST")"
+  local script_path
+  script_path="$(service_script_path)"
+  python3 - "$LAUNCHD_PLIST" "$LAUNCHD_LABEL" "$script_path" "$STATE_DIR" "$LAUNCHD_STDOUT_LOG" "$LAUNCHD_STDERR_LOG" "$HOST" "$PORT" <<'PY'
+import os
+import plistlib
+import sys
+plist_path, label, script_path, state_dir, stdout_log, stderr_log, host, port = sys.argv[1:9]
+env = {
+    "ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR": state_dir,
+    "ROBDEX_AGENT_RUNTIME_SERVER_HOST": host,
+    "ROBDEX_AGENT_RUNTIME_SERVER_PORT": port,
+}
+for name in [
+    "ROBDEX_AGENT_RUNTIME_DATABASE_URL",
+    "ROBDEX_AGENT_RUNTIME_SERVER_BIN",
+    "ROBDEX_AGENT_RUNTIME_IDENTITY",
+    "ROBDEX_AGENT_RUNTIME_SCHEMA_POLICY",
+    "ROBDEX_AGENT_RUNTIME_SEED_ROLE_POLICY",
+    "ROBDEX_AGENT_RUNTIME_COMMAND_BOOTSTRAP_POLICY",
+    "ROBDEX_AGENT_RUNTIME_PROCESS_RECONCILIATION_POLICY",
+    "ROBDEX_AGENT_RUNTIME_SHUTDOWN_POLICY",
+]:
+    value = os.environ.get(name)
+    if value:
+        env[name] = value
+packet = {
+    "Label": label,
+    "ProgramArguments": [script_path, "start"],
+    "RunAtLoad": True,
+    "WorkingDirectory": os.getcwd(),
+    "EnvironmentVariables": env,
+    "StandardOutPath": stdout_log,
+    "StandardErrorPath": stderr_log,
+}
+with open(plist_path, "wb") as fh:
+    plistlib.dump(packet, fh, sort_keys=True)
+print(plist_path)
+PY
+}
+
 write_package_descriptor() {
   local server_bin="$1"
   local script_path
-  script_path="$(pwd)/scripts/agent-runtime-service.sh"
+  script_path="$(service_script_path)"
   local redacted_db
   redacted_db="$(redact_database_url)"
+  local launchd_status_json="$STATE_DIR/package-launchd-status.json"
+  launchd_status_packet >"$launchd_status_json"
   python3 - "$PACKAGE_FILE" <<PY
 import json, os, sys
 path = sys.argv[1]
+with open("$launchd_status_json", encoding="utf-8") as fh:
+    launchd = json.load(fh)
 packet = {
     "contractVersion": 1,
     "packageState": "installed",
@@ -516,19 +675,19 @@ packet = {
     "serviceScript": "$script_path",
     "serverBinary": "$server_bin",
     "databaseUrlRedacted": "$redacted_db",
-    "launchd": {
-        "label": "$LAUNCHD_LABEL",
-        "plistPath": "$LAUNCHD_PLIST",
-        "status": "deferred",
-        "reason": "per-user launchd autostart requires a separate owner-approved gate"
-    },
+    "launchd": launchd,
     "commands": {
         "start": "$script_path start",
         "stop": "$script_path stop",
         "restart": "$script_path restart",
         "status": "$script_path status",
         "discover": "$script_path discover",
-        "logs": "$script_path logs"
+        "logs": "$script_path logs",
+        "installLaunchd": "$script_path install-launchd",
+        "loadLaunchd": "$script_path load-launchd",
+        "unloadLaunchd": "$script_path unload-launchd",
+        "uninstallLaunchd": "$script_path uninstall-launchd",
+        "launchdStatus": "$script_path launchd-status"
     },
     "environmentOverride": "ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR",
 }
@@ -539,6 +698,27 @@ print(json.dumps(packet, indent=2, sort_keys=True))
 PY
 }
 
+package_server_bin_no_build() {
+  if [[ -f "$PACKAGE_FILE" ]]; then
+    python3 - "$PACKAGE_FILE" <<'PY'
+import json
+import sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        packet = json.load(fh)
+except FileNotFoundError:
+    packet = {}
+print(packet.get("serverBinary") or "")
+PY
+  elif [[ -n "${ROBDEX_AGENT_RUNTIME_SERVER_BIN:-}" ]]; then
+    printf '%s\n' "$ROBDEX_AGENT_RUNTIME_SERVER_BIN"
+  elif [[ -x target/debug/robdex-agent-runtime-server ]]; then
+    printf '%s\n' "target/debug/robdex-agent-runtime-server"
+  else
+    printf '%s\n' ""
+  fi
+}
+
 install_user_service() {
   ensure_state_dir
   local server_bin
@@ -547,7 +727,11 @@ install_user_service() {
 }
 
 uninstall_user_service() {
-  stop_service "" >/dev/null || true
+  if [[ -f "$LAUNCHD_PLIST" ]]; then
+    uninstall_launchd >/dev/null || true
+  else
+    stop_service "" >/dev/null || true
+  fi
   rm -f "$PACKAGE_FILE"
   discover_service >/dev/null
   printf '[agent-runtime-service] user service package removed: %s\n' "$PACKAGE_FILE"
@@ -555,25 +739,102 @@ uninstall_user_service() {
 
 package_status() {
   ensure_state_dir
+  local launchd_status_json="$STATE_DIR/package-launchd-status.json"
+  launchd_status_packet >"$launchd_status_json"
   if [[ -f "$PACKAGE_FILE" ]]; then
-    cat "$PACKAGE_FILE"
-  else
-    python3 - <<PY
+    python3 - "$PACKAGE_FILE" "$launchd_status_json" <<'PY'
 import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    packet = json.load(fh)
+with open(sys.argv[2], encoding="utf-8") as fh:
+    packet["launchd"] = json.load(fh)
+print(json.dumps(packet, indent=2, sort_keys=True))
+PY
+  else
+    python3 - "$launchd_status_json" <<PY
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    launchd = json.load(fh)
 print(json.dumps({
     "contractVersion": 1,
     "packageState": "notInstalled",
     "stateDirectory": "$STATE_DIR",
     "discoveryFile": "$DISCOVERY_FILE",
     "packageFile": "$PACKAGE_FILE",
-    "launchd": {
-        "label": "$LAUNCHD_LABEL",
-        "plistPath": "$LAUNCHD_PLIST",
-        "status": "deferred"
-    }
+    "launchd": launchd
 }, indent=2, sort_keys=True))
 PY
   fi
+}
+
+install_launchd() {
+  ensure_state_dir
+  install_user_service >/dev/null
+  local plist
+  plist="$(write_launchd_plist)"
+  local server_bin
+  server_bin="$(build_or_locate_server)"
+  write_package_descriptor "$server_bin" >/dev/null
+  printf '[agent-runtime-service] launchd plist installed: %s\n' "$plist" >&2
+  launchd_status_packet
+}
+
+load_launchd() {
+  if ! launchctl_available; then
+    printf '[agent-runtime-service] launchctl is unavailable; refusing to claim launchd active\n' >&2
+    launchd_status_packet >&2 || true
+    return 1
+  fi
+  if [[ ! -f "$LAUNCHD_PLIST" ]]; then
+    install_launchd >/dev/null
+  fi
+  if launchd_loaded; then
+    printf '[agent-runtime-service] launchd already loaded: %s\n' "$(launchd_target)" >&2
+    launchd_status_packet
+    return 0
+  fi
+  if launchctl bootstrap "$LAUNCHD_DOMAIN" "$LAUNCHD_PLIST"; then
+    printf '[agent-runtime-service] launchd loaded: %s\n' "$(launchd_target)" >&2
+    launchd_status_packet
+  else
+    local status=$?
+    printf '[agent-runtime-service] launchctl bootstrap failed for %s\n' "$(launchd_target)" >&2
+    launchd_status_packet >&2 || true
+    return "$status"
+  fi
+}
+
+unload_launchd() {
+  if ! launchctl_available; then
+    printf '[agent-runtime-service] launchctl is unavailable; refusing to claim launchd unloaded\n' >&2
+    launchd_status_packet >&2 || true
+    return 1
+  fi
+  local status=0
+  if [[ -f "$LAUNCHD_PLIST" ]]; then
+    if launchd_loaded; then
+      launchctl bootout "$LAUNCHD_DOMAIN" "$LAUNCHD_PLIST" || status=$?
+    fi
+  fi
+  stop_service "" >/dev/null || status=$?
+  launchd_status_packet
+  return "$status"
+}
+
+uninstall_launchd() {
+  unload_launchd >/dev/null || true
+  rm -f "$LAUNCHD_PLIST"
+  local server_bin
+  server_bin="$(package_server_bin_no_build)"
+  write_package_descriptor "$server_bin" >/dev/null
+  printf '[agent-runtime-service] launchd plist removed: %s\n' "$LAUNCHD_PLIST" >&2
+  launchd_status_packet
+}
+
+launchd_status_service() {
+  launchd_status_packet
 }
 
 restart_service() {
@@ -603,7 +864,7 @@ logs_service() {
 
 usage() {
   cat <<USAGE
-usage: $0 <start|stop|status|discover|json-status|restart|logs|default-state-dir|install-user-service|uninstall-user-service|package-status> [--force|--tail]
+usage: $0 <start|stop|status|discover|json-status|restart|logs|default-state-dir|install-user-service|uninstall-user-service|package-status|install-launchd|load-launchd|unload-launchd|uninstall-launchd|launchd-status> [--force|--tail]
 
 Environment:
   ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR   override state directory, default $(default_state_dir)
@@ -611,6 +872,7 @@ Environment:
   ROBDEX_AGENT_RUNTIME_SERVER_HOST         bind host, default 127.0.0.1
   ROBDEX_AGENT_RUNTIME_SERVER_PORT         bind port, default 8765
   ROBDEX_AGENT_RUNTIME_SERVER_BIN          optional existing server binary
+  ROBDEX_AGENT_RUNTIME_LAUNCHD_LABEL       launchd label, default $LAUNCHD_LABEL
 USAGE
 }
 
@@ -626,6 +888,11 @@ case "$command" in
   install-user-service) install_user_service ;;
   uninstall-user-service) uninstall_user_service ;;
   package-status) package_status ;;
+  install-launchd) install_launchd ;;
+  load-launchd) load_launchd ;;
+  unload-launchd) unload_launchd ;;
+  uninstall-launchd) uninstall_launchd ;;
+  launchd-status) launchd_status_service ;;
   -h|--help|help|"") usage ;;
   *) usage >&2; exit 2 ;;
 esac

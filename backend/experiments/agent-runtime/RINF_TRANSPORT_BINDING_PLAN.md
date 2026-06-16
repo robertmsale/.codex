@@ -3,9 +3,11 @@
 This is the binding record for connecting Dart/Rinf packets to the experimental
 agent runtime `GuiTransportHandle` and `GuiBackendController` path. The owner
 selected the direct-dependency strategy. The first stable hub Rust binding is
-implemented. Later slices mounted the Flutter-facing control-tower shell and
-design-system scenarios on this transport. Launchd installation, service
-supervisor changes, and stable Robdex production behavior remain out of scope.
+implemented. Later slices mounted the Flutter-facing control-tower shell,
+design-system scenarios, user-scoped service packaging, and per-user launchd
+autostart on this transport. Service supervisor changes outside the
+experimental per-user LaunchAgent flow and stable Robdex production behavior
+remain out of scope.
 
 ## Implemented direct-dependency binding
 
@@ -281,10 +283,11 @@ The owner has approved and the implementation has completed:
 
 The following still require explicit owner approval before implementation:
 
-- adding launchd/autostart or host service-manager installation beyond the
-  completed per-user script-based package contract;
+- adding root/system LaunchDaemons, sudo service installation, or host
+  service-manager changes beyond the completed per-user LaunchAgent flow;
 - changing stable Robdex bridge, supervisor, database, or production runtime
   behavior;
+- adding remote/mDNS/iOS discovery;
 - adding broader UI surfaces beyond the current control-tower shell.
 
 ## Dart thin-transport rule
@@ -321,10 +324,10 @@ Rust responsibilities:
 
 Next implementable decisions:
 
-1. Whether to add launchd/autostart beyond the completed per-user script-based
-   package contract.
-2. Whether to add remote/mDNS/iOS discovery.
-3. Whether to add broader UI surfaces beyond the current control-tower shell.
+1. Whether to add remote/mDNS/iOS discovery.
+2. Whether to add broader UI surfaces beyond the current control-tower shell.
+3. Whether to add stable Robdex production service integration.
 
-Launchd/autostart, remote discovery, broader UI, or stable production-service
-Requirements should not be set without explicit owner approval for that slice.
+Remote discovery, broader UI, root/system service installation, or stable
+production-service Requirements should not be set without explicit owner
+approval for that slice.
