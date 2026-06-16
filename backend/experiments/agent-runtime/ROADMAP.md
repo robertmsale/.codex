@@ -10,9 +10,11 @@ product specification.
 - **Current milestone:** Build an alternative, PostgreSQL-backed agent runtime
   that can eventually power a macOS/iOS GUI without depending on stable Robdex
   bridge internals.
-- **Current active slice:** Registry request projection for the control-tower action queue is completed; launchd and stable backend/supervisor integration have not started.
+- **Current active slice:** Service packaging moved local state/discovery to a canonical per-user location; launchd/autostart and stable backend/supervisor integration have not started.
 - **Current implementation owner:** Codex Config Operator.
-- **Planner stance:** Rust owns GUI runtime synchronization, operation dispatch, and durable state decisions; Flutter UI remains out of scope until explicitly assigned.
+- **Planner stance:** Rust owns GUI runtime synchronization, operation dispatch,
+  durable state decisions, and control-tower view shaping; Flutter remains a
+  thin renderer/intent sender.
 
 ## Owner principles
 
@@ -62,8 +64,11 @@ product specification.
 - First-shell GUI planning artifact: `CONTROL_TOWER_GUI_PLAN.md`
 - Local service scripts: `scripts/agent-runtime-service.sh` and
   `scripts/validate-local-service.sh`
-- Local service discovery file: `.runtime-service/discovery.json` by default
-  when the experiment-local service wrapper is used.
+- Local service discovery file:
+  `~/Library/Application Support/Robdex Agent Runtime/service/discovery.json`
+  on macOS, or
+  `${XDG_STATE_HOME:-~/.local/state}/robdex-agent-runtime/service/discovery.json`
+  on non-macOS hosts, unless `ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR` is set.
 - README/user docs: `README.md`
 
 ## Completed slices
@@ -111,8 +116,8 @@ product specification.
     operations control tower, not a chat-first interface; the artifact defines
     operational attention jobs, information architecture, screens, runtime
     states, Dart/Rinf boundaries, visual risk controls, design-system handoff
-    contract, and source-of-truth files. This is planning only and does not
-    start Flutter implementation.
+    contract, and source-of-truth files. Later slices implemented the first
+    Flutter-facing shell against this plan.
 30. Experimental Rinf transport proof: an experiment-local Rust module defines
     stable Dart-to-Rust request envelopes and Rust-to-Dart output envelopes for
     driving `GuiBackendController`, owns exactly one controller through a
@@ -121,20 +126,18 @@ product specification.
     `ApiErrorPacket`, and proves connect/hydrate, operation dispatch, owned
     stream polling, typed errors, and disconnect without modifying
     `frontend/robdex_app` or the stable Rinf hub.
-31. Local discovery service packaging: the experiment-local service wrapper
-    exposes a JSON `discover`/`json-status` contract and persists the same
-    redacted discovery packet to the service state directory for future GUI/Rinf
-    clients. The packet covers service state, base/health/WebSocket URLs,
+31. Local discovery service packaging: the Agent Runtime service wrapper exposes
+    a JSON `discover`/`json-status` contract and persists the same redacted
+    discovery packet to the service state directory for GUI/Rinf bootstrap.
+    The packet covers service state, base/health/WebSocket URLs,
     runtime identity when known, pid/liveness, paths, policies, health,
-    diagnostics, and timestamps without adding launchd, supervisor, Flutter,
+    diagnostics, and timestamps without adding launchd, supervisor,
     stable hub, or production service integration.
 32. Rinf transport binding plan: the experiment-local planning artifact
     prepared the direct-binding decision by documenting packet ownership,
     generated-binding implications, service discovery bootstrap, and Dart
     thin-transport responsibilities. Slice 33 supersedes the plan's former
-    stable-hub decision gate with the implemented direct dependency binding;
-    remaining gates are Flutter UI, design-system/Design Lab work, and service
-    packaging beyond experiment-local scripts.
+    stable-hub decision gate with the implemented direct dependency binding.
 33. Direct stable hub Rinf transport binding: owner selected the direct
     dependency strategy. The stable hub now depends on the existing
     experimental runtime crate, exposes JSON-backed
@@ -143,8 +146,9 @@ product specification.
     emits every `GuiTransportOutputPacket` back to Dart with request-id
     correlation, and keeps Dart as a thin transport with no runtime decisions.
     Generated Rinf Dart carriers were refreshed for the two stable packet
-    signals. Flutter UI, launchd/system service installation, and stable
-    backend/supervisor changes remain out of scope.
+    signals. Later slices mounted the Flutter-facing control tower on this
+    transport. Launchd/system service installation and stable backend/supervisor
+    changes remain out of scope.
 34. Flutter-facing control tower first shell: the app now exposes a minimal
     Agent Runtime control tower that sends JSON `GuiTransportRequestPacket`
     intents through `AgentRuntimeRequestSignal` and renders JSON
@@ -179,13 +183,32 @@ product specification.
     events occur, and the control-tower action queue includes registry request
     rows alongside approval/resume rows. Installed/enabled command inventory
     remains inventory status/count detail, not action work.
+38. File bootstrap discovery: the Rust transport reads the service discovery
+    packet by default, using the same JSON contract produced by
+    `scripts/agent-runtime-service.sh discover` / `json-status`. Rust classifies
+    no-file, stopped, stale-pid, unhealthy, missing-config, stale-discovery,
+    running/healthy, and parse-error states, exposes constructor-ready
+    discovery fields on `AgentRuntimeControlTowerViewModel`, and connects to a
+    running/healthy target through a Rust-owned connect-discovered intent. Dart
+    renders the Rust-shaped state and sends refresh/connect intents only.
+39. Service packaging: the wrapper and Rust bootstrap default now use a
+    canonical user-scoped state directory instead of the experiment workspace:
+    `~/Library/Application Support/Robdex Agent Runtime/service` on macOS, or
+    `${XDG_STATE_HOME:-~/.local/state}/robdex-agent-runtime/service` on
+    non-macOS hosts. The explicit
+    `ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR` override remains for validation and
+    development. The script also exposes `default-state-dir`,
+    `install-user-service`, `package-status`, and `uninstall-user-service` as a
+    per-user script-based packaging contract that preserves the existing
+    resident server binary/path and discovery packet contracts. Launchd/autostart
+    remains deferred.
 
 ## Active slice
 
-No active implementation slice is recorded after completing registry request
-projection/action rows. The next implementable gates are service packaging
-beyond experiment-local scripts and deferred role/workflow GUI operation intents
-if owner brings them into scope.
+No active implementation slice is recorded after completing service packaging.
+The next implementable gates are remote/mDNS/iOS discovery, launchd/autostart
+if owner wants it beyond the script-based per-user package contract, and
+deferred role/workflow GUI operation intents if owner brings them into scope.
 
 Standing non-goals until reassigned:
 
@@ -237,13 +260,14 @@ scripts/smoke-lmstudio-embeddings.sh
 
 ## Deferred / next likely slices
 
-1. Service packaging beyond the completed experiment-local service wrapper and
-   discovery scripts.
-2. Deferred role-admin GUI operation intents if owner moves role mutation into
+1. Remote/mDNS/iOS discovery after the local file bootstrap path is stable.
+2. Launchd/autostart beyond the completed per-user script-based package
+   contract, if owner wants automatic host startup.
+3. Deferred role-admin GUI operation intents if owner moves role mutation into
    the first GUI shell.
-3. Deferred workflow-memory inspection operation intents if projection/detail
+4. Deferred workflow-memory inspection operation intents if projection/detail
    state is insufficient for the first GUI shell.
-4. Broader execution expansion only after GUI/runtime lifecycle is stable.
+5. Broader execution expansion only after GUI/runtime lifecycle is stable.
 
 ## Current known risks
 

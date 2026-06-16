@@ -46,6 +46,8 @@ class _AgentRuntimeControlTowerHostState extends State<AgentRuntimeControlTowerH
           data: _controller.data,
           baseUrlController: _baseUrlController,
           onConnect: () => _controller.connect(_baseUrlController.text),
+          onRefreshDiscovery: _controller.refreshDiscovery,
+          onConnectDiscovered: _controller.connectDiscoveredRuntime,
           onPollStream: _controller.pollStreamOnce,
           onDisconnect: _controller.disconnect,
         );

@@ -4,12 +4,23 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DEFAULT_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/robdex_agent_runtime"
-STATE_DIR="${ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR:-.runtime-service}"
+default_state_dir() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    printf '%s\n' "$HOME/Library/Application Support/Robdex Agent Runtime/service"
+  else
+    printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/robdex-agent-runtime/service"
+  fi
+}
+
+STATE_DIR="${ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR:-$(default_state_dir)}"
 PID_FILE="$STATE_DIR/server.pid"
 STDOUT_LOG="$STATE_DIR/server.stdout.log"
 STDERR_LOG="$STATE_DIR/server.stderr.log"
 CONFIG_FILE="$STATE_DIR/effective-config.json"
 DISCOVERY_FILE="$STATE_DIR/discovery.json"
+PACKAGE_FILE="$STATE_DIR/service-package.json"
+LAUNCHD_LABEL="com.robdex.agent-runtime.experimental"
+LAUNCHD_PLIST="$HOME/Library/LaunchAgents/$LAUNCHD_LABEL.plist"
 HOST="${ROBDEX_AGENT_RUNTIME_SERVER_HOST:-127.0.0.1}"
 PORT="${ROBDEX_AGENT_RUNTIME_SERVER_PORT:-8765}"
 DATABASE_URL="${ROBDEX_AGENT_RUNTIME_DATABASE_URL:-$DEFAULT_DATABASE_URL}"
@@ -484,6 +495,87 @@ discover_service() {
   discovery_packet write
 }
 
+write_package_descriptor() {
+  local server_bin="$1"
+  local script_path
+  script_path="$(pwd)/scripts/agent-runtime-service.sh"
+  local redacted_db
+  redacted_db="$(redact_database_url)"
+  python3 - "$PACKAGE_FILE" <<PY
+import json, os, sys
+path = sys.argv[1]
+packet = {
+    "contractVersion": 1,
+    "packageState": "installed",
+    "stateDirectory": "$STATE_DIR",
+    "discoveryFile": "$DISCOVERY_FILE",
+    "configFile": "$CONFIG_FILE",
+    "pidFile": "$PID_FILE",
+    "stdoutLog": "$STDOUT_LOG",
+    "stderrLog": "$STDERR_LOG",
+    "serviceScript": "$script_path",
+    "serverBinary": "$server_bin",
+    "databaseUrlRedacted": "$redacted_db",
+    "launchd": {
+        "label": "$LAUNCHD_LABEL",
+        "plistPath": "$LAUNCHD_PLIST",
+        "status": "deferred",
+        "reason": "per-user launchd autostart requires a separate owner-approved gate"
+    },
+    "commands": {
+        "start": "$script_path start",
+        "stop": "$script_path stop",
+        "restart": "$script_path restart",
+        "status": "$script_path status",
+        "discover": "$script_path discover",
+        "logs": "$script_path logs"
+    },
+    "environmentOverride": "ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR",
+}
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(packet, fh, indent=2, sort_keys=True)
+    fh.write("\\n")
+print(json.dumps(packet, indent=2, sort_keys=True))
+PY
+}
+
+install_user_service() {
+  ensure_state_dir
+  local server_bin
+  server_bin="$(build_or_locate_server)"
+  write_package_descriptor "$server_bin"
+}
+
+uninstall_user_service() {
+  stop_service "" >/dev/null || true
+  rm -f "$PACKAGE_FILE"
+  discover_service >/dev/null
+  printf '[agent-runtime-service] user service package removed: %s\n' "$PACKAGE_FILE"
+}
+
+package_status() {
+  ensure_state_dir
+  if [[ -f "$PACKAGE_FILE" ]]; then
+    cat "$PACKAGE_FILE"
+  else
+    python3 - <<PY
+import json
+print(json.dumps({
+    "contractVersion": 1,
+    "packageState": "notInstalled",
+    "stateDirectory": "$STATE_DIR",
+    "discoveryFile": "$DISCOVERY_FILE",
+    "packageFile": "$PACKAGE_FILE",
+    "launchd": {
+        "label": "$LAUNCHD_LABEL",
+        "plistPath": "$LAUNCHD_PLIST",
+        "status": "deferred"
+    }
+}, indent=2, sort_keys=True))
+PY
+  fi
+}
+
 restart_service() {
   stop_service "${1:-}"
   start_service
@@ -511,10 +603,10 @@ logs_service() {
 
 usage() {
   cat <<USAGE
-usage: $0 <start|stop|status|discover|restart|logs> [--force|--tail]
+usage: $0 <start|stop|status|discover|json-status|restart|logs|default-state-dir|install-user-service|uninstall-user-service|package-status> [--force|--tail]
 
 Environment:
-  ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR   state directory, default .runtime-service
+  ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR   override state directory, default $(default_state_dir)
   ROBDEX_AGENT_RUNTIME_DATABASE_URL        runtime Postgres URL
   ROBDEX_AGENT_RUNTIME_SERVER_HOST         bind host, default 127.0.0.1
   ROBDEX_AGENT_RUNTIME_SERVER_PORT         bind port, default 8765
@@ -530,6 +622,10 @@ case "$command" in
   discover|json-status) discover_service ;;
   restart) shift; restart_service "${1:-}" ;;
   logs) shift; logs_service "${1:-print}" ;;
+  default-state-dir) default_state_dir ;;
+  install-user-service) install_user_service ;;
+  uninstall-user-service) uninstall_user_service ;;
+  package-status) package_status ;;
   -h|--help|help|"") usage ;;
   *) usage >&2; exit 2 ;;
 esac

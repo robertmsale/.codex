@@ -1,9 +1,10 @@
 # Agent Runtime Control Tower GUI Plan
 
 This planning artifact defines the first shell for the experimental agent
-runtime GUI. It is a backend/Rust planning source of truth only. It does not
-implement Flutter UI, Rinf transport, production Robdex behavior, or any
-fallback GUI state path.
+runtime GUI. It began as the backend/Rust planning source of truth and now also
+records the implemented Flutter-facing control-tower shell, Rust/Rinf transport
+boundary, and service discovery behavior. It does not define production Robdex
+behavior or any fallback GUI state path.
 
 ## First shell implementation record
 
@@ -42,6 +43,32 @@ projection: approvals, approved resumable approvals, and typed pending/actionabl
 command-registry request summaries. Installed or enabled command registry
 entries are inventory, not action queue work; they may appear as inventory
 counts/status detail, but they are not counted as required attention.
+
+## File bootstrap discovery implementation record
+
+The control tower now receives Rust-shaped local discovery fields from the
+experimental transport. Rust reads the canonical user-scoped discovery packet
+by default: `~/Library/Application Support/Robdex Agent Runtime/service/discovery.json`
+on macOS, or
+`${XDG_STATE_HOME:-~/.local/state}/robdex-agent-runtime/service/discovery.json`
+on non-macOS hosts. The packet uses the same JSON contract emitted by
+`scripts/agent-runtime-service.sh discover` / `json-status`. Rust parses and
+classifies the packet, decides whether the local runtime target is connectable,
+and emits constructor-ready discovery state on
+`AgentRuntimeControlTowerViewModel`.
+
+Dart may render the discovered target and send refresh/connect-discovered
+intents. Dart must not read the discovery file, interpret pid/path/health
+fields, decide service health, construct runtime URLs, or apply fallback
+discovery logic. Running and healthy discovery enables a one-step connect using
+the Rust-selected `baseUrl`; stopped, stale-pid, unhealthy, missing-config,
+stale-discovery, missing-file, and parse-error states remain diagnostics and do
+not pretend to be connected. Manual base URL entry remains a fallback input.
+
+Remote discovery remains out of scope for the first shell. mDNS/Bonjour and iOS
+remote discovery require a separate owner-approved slice. The current service
+packaging affordance is per-user and script-based; launchd/autostart remains a
+deferred gate.
 
 ## Direction
 
@@ -283,12 +310,12 @@ Existing app and future UI integration references:
 - Design Lab package:
   `frontend/robdex_app/packages/design_lab`
 
-These frontend paths are references only for this planning slice. They are not
-modified here.
+These frontend paths identify the implemented shell and its source-of-truth
+boundaries.
 
 ## Aesthetic context gate
 
 No `.impeccable.md` design context exists at the repository root or under
-`backend/experiments/agent-runtime` at the time this plan is written. Final
-aesthetic direction must be owner-confirmed before any Flutter implementation
-Requirements are set.
+`backend/experiments/agent-runtime` at the time this plan is maintained. Future
+visual expansion beyond the current control-tower shell requires
+owner-confirmed aesthetic direction before implementation Requirements are set.

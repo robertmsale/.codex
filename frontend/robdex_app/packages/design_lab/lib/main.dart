@@ -219,6 +219,8 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
         data: widget.data,
         baseUrlController: _baseUrlController,
         onConnect: () {},
+        onRefreshDiscovery: () {},
+        onConnectDiscovered: () {},
         onPollStream: () {},
         onDisconnect: () {},
       ),

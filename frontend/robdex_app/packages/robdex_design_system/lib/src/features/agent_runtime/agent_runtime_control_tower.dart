@@ -8,6 +8,8 @@ class AgentRuntimeControlTower extends StatelessWidget {
     required this.data,
     required this.baseUrlController,
     required this.onConnect,
+    required this.onRefreshDiscovery,
+    required this.onConnectDiscovered,
     required this.onPollStream,
     required this.onDisconnect,
   });
@@ -15,6 +17,8 @@ class AgentRuntimeControlTower extends StatelessWidget {
   final AgentRuntimeControlTowerData data;
   final TextEditingController baseUrlController;
   final VoidCallback onConnect;
+  final VoidCallback onRefreshDiscovery;
+  final VoidCallback onConnectDiscovered;
   final VoidCallback onPollStream;
   final VoidCallback onDisconnect;
 
@@ -30,8 +34,15 @@ class AgentRuntimeControlTower extends StatelessWidget {
               data: data,
               baseUrlController: baseUrlController,
               onConnect: onConnect,
+              onRefreshDiscovery: onRefreshDiscovery,
+              onConnectDiscovered: onConnectDiscovered,
               onPollStream: onPollStream,
               onDisconnect: onDisconnect,
+            ),
+            _DiscoveryStrip(
+              discovery: data.discovery,
+              onRefreshDiscovery: onRefreshDiscovery,
+              onConnectDiscovered: onConnectDiscovered,
             ),
             if (data.errorMessage case final error?)
               Container(
@@ -152,6 +163,8 @@ class _StatusStrip extends StatelessWidget {
     required this.data,
     required this.baseUrlController,
     required this.onConnect,
+    required this.onRefreshDiscovery,
+    required this.onConnectDiscovered,
     required this.onPollStream,
     required this.onDisconnect,
   });
@@ -159,6 +172,8 @@ class _StatusStrip extends StatelessWidget {
   final AgentRuntimeControlTowerData data;
   final TextEditingController baseUrlController;
   final VoidCallback onConnect;
+  final VoidCallback onRefreshDiscovery;
+  final VoidCallback onConnectDiscovered;
   final VoidCallback onPollStream;
   final VoidCallback onDisconnect;
 
@@ -201,6 +216,61 @@ class _StatusStrip extends StatelessWidget {
           OutlinedButton(onPressed: onPollStream, child: Text('Poll${data.pendingRequestCount > 0 ? ' (${data.pendingRequestCount})' : ''}')),
           const SizedBox(width: 8),
           TextButton(onPressed: onDisconnect, child: const Text('Disconnect')),
+        ],
+      ),
+    );
+  }
+}
+
+class _DiscoveryStrip extends StatelessWidget {
+  const _DiscoveryStrip({
+    required this.discovery,
+    required this.onRefreshDiscovery,
+    required this.onConnectDiscovered,
+  });
+
+  final AgentRuntimeDiscoveryInfo discovery;
+  final VoidCallback onRefreshDiscovery;
+  final VoidCallback onConnectDiscovered;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0B111A),
+        border: Border.all(color: _toneColor(discovery.tone).withValues(alpha: 0.55)),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          _Chip(label: discovery.state, tone: discovery.tone),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(discovery.title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 3),
+                Text(
+                  '${discovery.message}${discovery.baseUrl == null ? '' : ' · ${discovery.baseUrl}'}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF94A5BC)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          OutlinedButton(onPressed: onRefreshDiscovery, child: const Text('Refresh discovery')),
+          const SizedBox(width: 8),
+          FilledButton(
+            onPressed: discovery.connectable ? onConnectDiscovered : null,
+            child: const Text('Connect discovered'),
+          ),
         ],
       ),
     );

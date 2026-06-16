@@ -216,7 +216,9 @@ onto the controller. Deltas are applied to the current projection only through
 the shared `RuntimeProjection` reducer. The
 controller does not create a second GUI state path: persisted runtime state
 remains `RuntimeProjection` plus `RuntimeDelta`; `GuiControllerState` remains
-local-only coordination state. Flutter UI implementation remains out of scope.
+local-only coordination state. Subsequent slices mounted the Flutter-facing
+control tower as a thin renderer of this Rust-owned state; Flutter does not own
+runtime decisions.
 
 Proof coverage includes deterministic controller tests for hydrate/connect,
 disconnect, selected-session switching, server-backed payload dispatch, typed
@@ -228,9 +230,9 @@ convergence through the controller.
 The experiment-local Rinf-shaped transport proof lives in
 `robdex_agent_runtime::rinf_transport`. The owner selected the direct-dependency
 strategy, and the first stable hub Rust binding now forwards generated Rinf
-signals to that transport path. The binding remains transport-only: it does not
-implement Flutter UI, design-system widgets, Design Lab scenarios, launchd
-installation, or stable Robdex backend/supervisor behavior.
+signals to that transport path. Later slices added the control-tower Flutter
+shell and design-system scenarios on top of the same transport. Launchd
+installation and stable Robdex backend/supervisor behavior remain out of scope.
 
 Stable hub files touched by the binding:
 
@@ -278,9 +280,23 @@ payloads are JSON-backed where the projection internals are likely to evolve,
 so future Rinf schemas can stay stable while the Rust projection contract
 continues to develop.
 
-Service discovery remains bootstrap input. Dart may read the local discovery
-packet to find a base URL, then sends a connect request. After connect,
-`RuntimeProjection`, `GuiControllerState`, stream outcomes, and
+File bootstrap discovery is Rust-owned bootstrap input. The transport reads the
+canonical per-user discovery file by default:
+`~/Library/Application Support/Robdex Agent Runtime/service/discovery.json` on
+macOS, or `${XDG_STATE_HOME:-~/.local/state}/robdex-agent-runtime/service/discovery.json`
+on non-macOS hosts. This is the same packet produced by
+`scripts/agent-runtime-service.sh discover` / `json-status`. Rust classifies
+local service state and emits constructor-ready discovery fields on
+`AgentRuntimeControlTowerViewModel`. Dart may render the
+discovered target and send refresh/connect-discovered intents, but Dart must not
+parse the discovery file, decide health semantics, construct WebSocket URLs, or
+derive service state from pid/path fields. Running/healthy discovery enables a
+one-step Rust-owned connect using the discovered `baseUrl`; stopped, stale pid,
+unhealthy, missing-config, stale-discovery, missing-file, and parse-error states
+remain diagnostics and do not pretend to be connected. Manual base URL entry
+remains available as a fallback input.
+
+After connect, `RuntimeProjection`, `GuiControllerState`, stream outcomes, and
 `GuiOperationResult` packets from Rust are authoritative. Dart must not compute
 watermarks, construct WebSocket URLs, apply reducers, decide approval or command
 availability, or infer operation success.
@@ -324,9 +340,9 @@ disconnected/error states, and manual stream polling through the Rust-owned
 transport. Reusable visual pieces live in the design-system package under the
 agent-runtime control tower
 component, with Design Lab scenarios for disconnected, connecting, connected,
-error, and empty/no-session states. Remaining gates are role-admin mutation UI,
-workflow-memory inspection UI, service packaging beyond local scripts, and
-launchd/system service installation.
+error, and empty/no-session states. Remaining gates are remote/mDNS/iOS
+discovery, role-admin mutation UI, workflow-memory inspection UI, and
+launchd/autostart beyond the completed per-user script-based package contract.
 
 ## Resident server MVP
 
@@ -337,9 +353,10 @@ the intended trust boundary is VPN/network placement.
 
 ### Local developer service script
 
-For local development, use the experiment-local service wrapper. It does not
-install or modify launchd, systemd, supervisor, stable Robdex service tooling,
-or host service configuration.
+For local development and per-user host packaging, use the Agent Runtime service
+wrapper. It writes state under the canonical user-scoped service directory by
+default. It does not install or modify launchd, systemd, supervisor, stable
+Robdex service tooling, or root-owned host service configuration.
 
 ```sh
 scripts/agent-runtime-service.sh start
@@ -350,18 +367,27 @@ scripts/agent-runtime-service.sh restart
 scripts/agent-runtime-service.sh stop
 scripts/agent-runtime-service.sh stop --force
 scripts/agent-runtime-service.sh logs --tail
+scripts/agent-runtime-service.sh default-state-dir
+scripts/agent-runtime-service.sh install-user-service
+scripts/agent-runtime-service.sh package-status
+scripts/agent-runtime-service.sh uninstall-user-service
 ```
 
-The default service state directory is `.runtime-service` under this experimental
-workspace. Override it with `ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR`. The state
-directory contains:
+The default service state directory is user-scoped and outside the repo:
+`~/Library/Application Support/Robdex Agent Runtime/service` on macOS, or
+`${XDG_STATE_HOME:-~/.local/state}/robdex-agent-runtime/service` on non-macOS
+hosts. Override it explicitly with `ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR` for
+tests and development. Validation scripts use temp override directories and do
+not mutate the developer's real service state. The state directory contains:
 
 - `server.pid` for the resident server process;
 - `server.stdout.log` and `server.stderr.log`;
 - `effective-config.json` with the base URL, pid, log paths, policy values,
   server binary path, and redacted database target;
-- `discovery.json` with the machine-readable local discovery packet for future
-  GUI/Rinf clients;
+- `discovery.json` with the machine-readable local discovery packet consumed by
+  the Rust/Rinf bootstrap path;
+- `service-package.json` when the script-based per-user package contract is
+  installed;
 - bounded health/status diagnostics created by the scripts.
 
 The wrapper preserves the resident server environment. It honors the same server
@@ -393,9 +419,10 @@ manager.
 
 `discover` (alias: `json-status`) is the GUI-oriented status command. It prints
 and persists the same JSON packet at
-`$ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR/discovery.json`. Future GUI/Rinf
-clients can read that stable file without shelling out; shell callers can use
-`discover` when they need a fresh packet. The packet uses redacted database
+`$ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR/discovery.json`, or at the canonical
+per-user state directory when no override is set. GUI/Rinf bootstrap uses the
+Rust transport to read that stable file without shelling out; shell callers can
+use `discover` when they need a fresh packet. The packet uses redacted database
 targets only and never exposes raw credentials or tokens. It contains:
 
 - `contractVersion`;
@@ -420,8 +447,20 @@ the stopped packet after pid cleanup. Stale pid, unhealthy server, missing
 config, and stale discovery conditions are represented explicitly in the JSON
 without discarding diagnostics.
 
-Validate the local service wrapper with an isolated Postgres validation database
-and no live model, LM Studio, or embedding-provider calls:
+`install-user-service`, `package-status`, and `uninstall-user-service` provide
+the current per-user host packaging affordance beyond ad hoc start/stop calls.
+`install-user-service` resolves the existing resident server binary/path
+contract and writes `service-package.json` in the same state directory.
+`package-status` prints that package descriptor or a `notInstalled` packet.
+`uninstall-user-service` stops the wrapper-managed process if present and
+removes the package descriptor. This does not install launchd/autostart yet;
+the descriptor records the per-user launchd label and plist path as a deferred
+owner-approved gate while preserving the existing wrapper and discovery packet
+contract.
+
+Validate the user-scoped service wrapper and package/discovery contract with an
+isolated Postgres validation database and no live model, LM Studio, or
+embedding-provider calls:
 
 ```sh
 scripts/validate-local-service.sh

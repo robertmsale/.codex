@@ -11,6 +11,7 @@ use robdex_agent_runtime_projection::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::gui_backend::GuiBackendController;
@@ -26,6 +27,13 @@ pub struct GuiTransportRequestPacket {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "payload", rename_all = "camelCase")]
 pub enum GuiTransportRequest {
+    RefreshDiscovery {
+        discovery_path: Option<String>,
+    },
+    ConnectDiscoveredRuntime {
+        discovery_path: Option<String>,
+        selected_session_id: Option<String>,
+    },
     Connect {
         base_url: String,
         selected_session_id: Option<String>,
@@ -78,6 +86,7 @@ pub enum GuiTransportOutput {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeControlTowerViewModel {
+    pub discovery: AgentRuntimeDiscoveryView,
     pub connection_state: String,
     pub connection_tone: String,
     pub base_url: String,
@@ -106,6 +115,23 @@ pub struct AgentRuntimeControlTowerViewModel {
     pub output_log: Vec<String>,
     pub pending_request_count: usize,
     pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeDiscoveryView {
+    pub state: String,
+    pub tone: String,
+    pub title: String,
+    pub message: String,
+    pub base_url: Option<String>,
+    pub health_url: Option<String>,
+    pub web_socket_url: Option<String>,
+    pub runtime_identity: Option<String>,
+    pub discovery_path: String,
+    pub service_state: Option<String>,
+    pub connectable: bool,
+    pub diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -163,6 +189,7 @@ impl AgentRuntimeControlTowerViewModel {
         output_log: &[String],
         pending_request_count: usize,
         error_message: Option<String>,
+        discovery: &AgentRuntimeDiscoveryView,
     ) -> Self {
         let base_url = base_url.into();
         let sessions = projection
@@ -184,6 +211,7 @@ impl AgentRuntimeControlTowerViewModel {
         actions.sort_by(|left, right| left.kind.cmp(&right.kind).then(left.id.cmp(&right.id)));
         let selected_session_label = selected_session_label(projection, controller_state);
         Self {
+            discovery: discovery.clone(),
             connection_state: connection_state_label(&controller_state.connection_state).to_string(),
             connection_tone: connection_tone(&controller_state.connection_state).to_string(),
             base_url,
@@ -217,6 +245,169 @@ impl AgentRuntimeControlTowerViewModel {
             pending_request_count,
             error_message,
         }
+    }
+}
+
+impl Default for AgentRuntimeDiscoveryView {
+    fn default() -> Self {
+        let discovery_path = default_discovery_path().display().to_string();
+        AgentRuntimeDiscoveryView {
+            state: "notLoaded".to_string(),
+            tone: "muted".to_string(),
+            title: "Discovery not loaded".to_string(),
+            message: "Refresh discovery to inspect the local Agent Runtime service packet.".to_string(),
+            base_url: None,
+            health_url: None,
+            web_socket_url: None,
+            runtime_identity: None,
+            discovery_path,
+            service_state: None,
+            connectable: false,
+            diagnostics: Vec::new(),
+        }
+    }
+}
+
+fn default_discovery_path() -> PathBuf {
+    default_service_state_dir().join("discovery.json")
+}
+
+fn default_service_state_dir() -> PathBuf {
+    if let Ok(state_dir) = std::env::var("ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR") {
+        return PathBuf::from(state_dir);
+    }
+    let home = std::env::var("HOME").ok();
+    let xdg_state_home = std::env::var("XDG_STATE_HOME").ok();
+    canonical_service_state_dir(home.as_deref(), xdg_state_home.as_deref(), std::env::consts::OS)
+}
+
+fn canonical_service_state_dir(home: Option<&str>, xdg_state_home: Option<&str>, os: &str) -> PathBuf {
+    if os == "macos" {
+        return home
+            .map(|home| PathBuf::from(home).join("Library/Application Support/Robdex Agent Runtime/service"))
+            .unwrap_or_else(|| PathBuf::from("Library/Application Support/Robdex Agent Runtime/service"));
+    }
+    xdg_state_home
+        .map(PathBuf::from)
+        .or_else(|| home.map(|home| PathBuf::from(home).join(".local/state")))
+        .unwrap_or_else(|| PathBuf::from(".local/state"))
+        .join("robdex-agent-runtime/service")
+}
+
+fn read_discovery_file(path: &Path) -> AgentRuntimeDiscoveryView {
+    let display = path.display().to_string();
+    match std::fs::read_to_string(path) {
+        Ok(contents) => match serde_json::from_str::<Value>(&contents) {
+            Ok(packet) => classify_discovery_packet(Some(&packet), &display),
+            Err(error) => AgentRuntimeDiscoveryView {
+                state: "parseError".to_string(),
+                tone: "danger".to_string(),
+                title: "Discovery packet cannot be parsed".to_string(),
+                message: "The local service discovery file is malformed JSON.".to_string(),
+                base_url: None,
+                health_url: None,
+                web_socket_url: None,
+                runtime_identity: None,
+                discovery_path: display,
+                service_state: None,
+                connectable: false,
+                diagnostics: vec![error.to_string()],
+            },
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => AgentRuntimeDiscoveryView {
+            state: "noDiscoveryFile".to_string(),
+            tone: "muted".to_string(),
+            title: "No local service discovery file".to_string(),
+            message: "Start or refresh the local Agent Runtime service to create discovery.json.".to_string(),
+            base_url: None,
+            health_url: None,
+            web_socket_url: None,
+            runtime_identity: None,
+            discovery_path: display,
+            service_state: None,
+            connectable: false,
+            diagnostics: vec!["discovery file is missing".to_string()],
+        },
+        Err(error) => AgentRuntimeDiscoveryView {
+            state: "unavailable".to_string(),
+            tone: "danger".to_string(),
+            title: "Discovery file cannot be read".to_string(),
+            message: "Rust could not read the local service discovery file.".to_string(),
+            base_url: None,
+            health_url: None,
+            web_socket_url: None,
+            runtime_identity: None,
+            discovery_path: display,
+            service_state: None,
+            connectable: false,
+            diagnostics: vec![error.to_string()],
+        },
+    }
+}
+
+fn classify_discovery_packet(packet: Option<&Value>, discovery_path: &str) -> AgentRuntimeDiscoveryView {
+    let Some(packet) = packet else {
+        let mut view = AgentRuntimeDiscoveryView::default();
+        view.discovery_path = discovery_path.to_string();
+        return view;
+    };
+    let service_state = packet.get("serviceState").and_then(Value::as_str).map(str::to_string);
+    let flags = packet.get("stateFlags").unwrap_or(&Value::Null);
+    let health = packet.get("healthResult").unwrap_or(&Value::Null);
+    let base_url = packet.get("baseUrl").and_then(Value::as_str).map(str::to_string);
+    let health_url = packet.get("healthUrl").and_then(Value::as_str).map(str::to_string);
+    let web_socket_url = packet.get("webSocketUrl").and_then(Value::as_str).map(str::to_string);
+    let runtime_identity = packet.get("runtimeIdentity").and_then(Value::as_str).map(str::to_string);
+    let flag = |name: &str| flags.get(name).and_then(Value::as_bool).unwrap_or(false);
+    let health_ok = health.get("ok").and_then(Value::as_bool);
+    let diagnostics = packet
+        .get("diagnostics")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let code = item.get("code").and_then(Value::as_str)?;
+                    let message = item.get("message").and_then(Value::as_str).unwrap_or("");
+                    Some(if message.is_empty() { code.to_string() } else { format!("{code}: {message}") })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let (state, tone, title, message) = if flag("stalePid") || service_state.as_deref() == Some("stalePid") {
+        ("stalePid", "danger", "Stale service pid", "The pid file exists but the process is not alive.")
+    } else if flag("unhealthy") || service_state.as_deref() == Some("unhealthy") {
+        ("unhealthy", "danger", "Local runtime is unhealthy", "The service process exists but /health is failing.")
+    } else if flag("missingConfig") || service_state.as_deref() == Some("missingConfig") {
+        ("missingConfig", "warning", "Service config is missing", "The local wrapper has not written an effective configuration snapshot.")
+    } else if flag("staleDiscovery") {
+        ("staleDiscovery", "warning", "Discovery needs refresh", "The discovery packet is older than service metadata.")
+    } else if flag("running") || service_state.as_deref() == Some("running") {
+        if health_ok == Some(true) {
+            ("runningHealthy", "success", "Local runtime ready", "A healthy local Agent Runtime service was discovered.")
+        } else {
+            ("unhealthy", "danger", "Local runtime is unhealthy", "The service is running but health is not confirmed.")
+        }
+    } else if flag("stopped") || service_state.as_deref() == Some("stopped") {
+        ("stopped", "muted", "Local runtime stopped", "The local Agent Runtime service is stopped.")
+    } else {
+        ("unknown", "muted", "Discovery state unknown", "The discovery packet did not match a known local service state.")
+    };
+    let connectable = state == "runningHealthy" && base_url.is_some();
+    AgentRuntimeDiscoveryView {
+        state: state.to_string(),
+        tone: tone.to_string(),
+        title: title.to_string(),
+        message: message.to_string(),
+        base_url,
+        health_url,
+        web_socket_url,
+        runtime_identity,
+        discovery_path: discovery_path.to_string(),
+        service_state,
+        connectable,
+        diagnostics,
     }
 }
 
@@ -291,6 +482,7 @@ struct GuiTransportRunner {
     controller: GuiBackendController,
     base_url: String,
     output_log: Vec<String>,
+    discovery: AgentRuntimeDiscoveryView,
 }
 
 impl GuiTransportRunner {
@@ -299,6 +491,7 @@ impl GuiTransportRunner {
             controller: GuiBackendController::new(),
             base_url: "http://127.0.0.1:8765".to_string(),
             output_log: Vec::new(),
+            discovery: AgentRuntimeDiscoveryView::default(),
         }
     }
 
@@ -324,6 +517,39 @@ impl GuiTransportRunner {
 
     async fn handle_intent(&mut self, intent: GuiTransportRequest) -> Result<Vec<GuiTransportOutputPacket>, ApiErrorPacket> {
         match intent {
+            GuiTransportRequest::RefreshDiscovery { discovery_path } => {
+                self.refresh_discovery(discovery_path);
+                Ok(vec![])
+            }
+            GuiTransportRequest::ConnectDiscoveredRuntime {
+                discovery_path,
+                selected_session_id,
+            } => {
+                self.refresh_discovery(discovery_path);
+                if !self.discovery.connectable {
+                    return Err(ApiErrorPacket::new(
+                        "conflict",
+                        "local discovery target is not connectable",
+                        json!({"discoveryState": self.discovery.state, "discoveryPath": self.discovery.discovery_path}),
+                    ));
+                }
+                let base_url = self.discovery.base_url.clone().ok_or_else(|| {
+                    ApiErrorPacket::new(
+                        "validation_failed",
+                        "connectable discovery target is missing base URL",
+                        json!({"discoveryState": self.discovery.state}),
+                    )
+                })?;
+                self.base_url = base_url.clone();
+                let result = self
+                    .controller
+                    .dispatch(GuiOperationRequest::Connect {
+                        base_url,
+                        selected_session_id,
+                    })
+                    .await;
+                Ok(self.operation_outputs(result))
+            }
             GuiTransportRequest::Connect {
                 base_url,
                 selected_session_id,
@@ -405,9 +631,15 @@ impl GuiTransportRunner {
                     &self.output_log,
                     0,
                     error.map(|error| format!("{}: {}", error.error.code, error.error.message)),
+                    &self.discovery,
                 ),
             },
         }
+    }
+
+    fn refresh_discovery(&mut self, discovery_path: Option<String>) {
+        let path = discovery_path.map(PathBuf::from).unwrap_or_else(default_discovery_path);
+        self.discovery = read_discovery_file(&path);
     }
 
     fn record_outputs(&mut self, outputs: &[GuiTransportOutputPacket]) {
@@ -805,6 +1037,163 @@ mod tests {
         }
     }
 
+    fn discovery_packet(service_state: &str, running: bool, health_ok: Option<bool>) -> Value {
+        json!({
+            "baseUrl": "http://127.0.0.1:8765",
+            "healthUrl": "http://127.0.0.1:8765/health",
+            "webSocketUrl": "ws://127.0.0.1:8765/state/ws",
+            "runtimeIdentity": "runtime-test",
+            "serviceState": service_state,
+            "stateFlags": {
+                "running": running,
+                "stopped": service_state == "stopped",
+                "stalePid": service_state == "stalePid",
+                "unhealthy": service_state == "unhealthy",
+                "missingConfig": service_state == "missingConfig",
+                "staleDiscovery": service_state == "staleDiscovery"
+            },
+            "healthResult": {
+                "checked": running,
+                "ok": health_ok
+            },
+            "diagnostics": [
+                {"code": service_state, "message": "diagnostic"}
+            ]
+        })
+    }
+
+    fn temp_discovery_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "robdex-agent-runtime-discovery-{name}-{}-{}.json",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ))
+    }
+
+    #[test]
+    fn discovery_default_paths_are_user_scoped_and_not_repo_relative() {
+        let mac_state = canonical_service_state_dir(Some("/Users/tester"), None, "macos");
+        assert_eq!(
+            mac_state,
+            PathBuf::from("/Users/tester/Library/Application Support/Robdex Agent Runtime/service")
+        );
+        let linux_state = canonical_service_state_dir(Some("/home/tester"), None, "linux");
+        assert_eq!(linux_state, PathBuf::from("/home/tester/.local/state/robdex-agent-runtime/service"));
+        let xdg_state = canonical_service_state_dir(Some("/home/tester"), Some("/state"), "linux");
+        assert_eq!(xdg_state, PathBuf::from("/state/robdex-agent-runtime/service"));
+
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("workspace path")
+            .to_path_buf();
+        assert!(!mac_state.starts_with(&workspace));
+        assert!(!linux_state.starts_with(&workspace));
+        assert!(!mac_state.to_string_lossy().contains(".runtime-service"));
+    }
+
+    #[test]
+    fn discovery_packets_classify_connectability_and_view_copy() {
+        let running = discovery_packet("running", true, Some(true));
+        let view = classify_discovery_packet(Some(&running), "discovery.json");
+        assert_eq!(view.state, "runningHealthy");
+        assert_eq!(view.tone, "success");
+        assert!(view.connectable);
+        assert_eq!(view.base_url.as_deref(), Some("http://127.0.0.1:8765"));
+
+        let unhealthy = discovery_packet("unhealthy", true, Some(false));
+        let view = classify_discovery_packet(Some(&unhealthy), "discovery.json");
+        assert_eq!(view.state, "unhealthy");
+        assert_eq!(view.tone, "danger");
+        assert!(!view.connectable);
+
+        for (service_state, expected, tone) in [
+            ("missingConfig", "missingConfig", "warning"),
+            ("staleDiscovery", "staleDiscovery", "warning"),
+            ("stalePid", "stalePid", "danger"),
+        ] {
+            let packet = discovery_packet(service_state, false, None);
+            let view = classify_discovery_packet(Some(&packet), "discovery.json");
+            assert_eq!(view.state, expected);
+            assert_eq!(view.tone, tone);
+            assert!(!view.connectable);
+        }
+
+        let control = AgentRuntimeControlTowerViewModel::from_runtime_state(
+            "http://manual.example",
+            None,
+            &GuiControllerState::default(),
+            &[],
+            0,
+            None,
+            &view,
+        );
+        assert_eq!(control.discovery.state, "unhealthy");
+        assert_eq!(control.discovery.title, "Local runtime is unhealthy");
+    }
+
+    #[tokio::test]
+    async fn connect_discovered_runtime_uses_connectable_discovery_base_url() {
+        let base_url = start_transport_test_server().await;
+        let path = temp_discovery_path("connectable");
+        let mut discovery = discovery_packet("running", true, Some(true));
+        discovery["baseUrl"] = json!(base_url);
+        std::fs::write(&path, serde_json::to_string(&discovery).expect("packet")).expect("write packet");
+        let transport = GuiTransportHandle::spawn();
+        let outputs = transport
+            .send(packet(
+                "connect-discovered-1",
+                GuiTransportRequest::ConnectDiscoveredRuntime {
+                    discovery_path: Some(path.display().to_string()),
+                    selected_session_id: None,
+                },
+            ))
+            .await;
+        let _ = std::fs::remove_file(&path);
+        assert!(outputs.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult {
+                result: GuiOperationResult {
+                    outcome: GuiOperationOutcome::ProjectionUpdated { watermark: 1 },
+                    ..
+                }
+            }
+        )));
+        assert!(outputs.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::ControlTowerView { view_model }
+                if view_model.discovery.connectable && view_model.discovery.state == "runningHealthy"
+        )));
+    }
+
+    #[test]
+    fn discovery_file_read_path_covers_missing_malformed_stopped_unhealthy_and_running() {
+        let missing_path = temp_discovery_path("missing");
+        let missing = read_discovery_file(&missing_path);
+        assert_eq!(missing.state, "noDiscoveryFile");
+        assert!(!missing.connectable);
+
+        let malformed_path = temp_discovery_path("malformed");
+        std::fs::write(&malformed_path, "{not-json").expect("write malformed");
+        let malformed = read_discovery_file(&malformed_path);
+        assert_eq!(malformed.state, "parseError");
+        assert!(!malformed.connectable);
+        let _ = std::fs::remove_file(&malformed_path);
+
+        for (name, packet, expected_state, connectable) in [
+            ("stopped", discovery_packet("stopped", false, None), "stopped", false),
+            ("unhealthy", discovery_packet("unhealthy", true, Some(false)), "unhealthy", false),
+            ("running", discovery_packet("running", true, Some(true)), "runningHealthy", true),
+        ] {
+            let path = temp_discovery_path(name);
+            std::fs::write(&path, serde_json::to_string(&packet).expect("packet")).expect("write packet");
+            let view = read_discovery_file(&path);
+            assert_eq!(view.state, expected_state);
+            assert_eq!(view.connectable, connectable);
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     #[tokio::test]
     async fn transport_packets_serialize_with_json_backed_payloads() {
         let request = packet(
@@ -925,6 +1314,7 @@ mod tests {
             &["operationResult · request-1".to_string()],
             2,
             None,
+            &AgentRuntimeDiscoveryView::default(),
         );
 
         assert_eq!(view.connection_state, "streaming");

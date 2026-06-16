@@ -2,6 +2,14 @@ import 'agent_runtime_control_tower_models.dart';
 
 const mockAgentRuntimeDisconnected = AgentRuntimeControlTowerData(
   connectionState: 'disconnected',
+  discovery: AgentRuntimeDiscoveryInfo(
+    state: 'noDiscoveryFile',
+    tone: 'muted',
+    title: 'No local service discovery file',
+    message: 'Start or refresh the local Agent Runtime service to create discovery.json.',
+    discoveryPath: '~/Library/Application Support/Robdex Agent Runtime/service/discovery.json',
+    connectable: false,
+  ),
   connectionTone: 'muted',
   baseUrl: 'http://127.0.0.1:8765',
   statusLabel: 'No runtime connected',
@@ -38,6 +46,17 @@ const mockAgentRuntimeDisconnected = AgentRuntimeControlTowerData(
 
 const mockAgentRuntimeConnecting = AgentRuntimeControlTowerData(
   connectionState: 'connecting',
+  discovery: AgentRuntimeDiscoveryInfo(
+    state: 'runningHealthy',
+    tone: 'success',
+    title: 'Local runtime ready',
+    message: 'A healthy local Agent Runtime service was discovered.',
+    discoveryPath: '~/Library/Application Support/Robdex Agent Runtime/service/discovery.json',
+    connectable: true,
+    baseUrl: 'http://127.0.0.1:8765',
+    healthUrl: 'http://127.0.0.1:8765/health',
+    webSocketUrl: 'ws://127.0.0.1:8765/state/ws',
+  ),
   connectionTone: 'warning',
   baseUrl: 'http://127.0.0.1:8765',
   statusLabel: 'Connecting through Rust transport',
@@ -73,6 +92,18 @@ const mockAgentRuntimeConnecting = AgentRuntimeControlTowerData(
 
 const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
   connectionState: 'streaming',
+  discovery: AgentRuntimeDiscoveryInfo(
+    state: 'runningHealthy',
+    tone: 'success',
+    title: 'Local runtime ready',
+    message: 'A healthy local Agent Runtime service was discovered.',
+    discoveryPath: '~/Library/Application Support/Robdex Agent Runtime/service/discovery.json',
+    connectable: true,
+    baseUrl: 'http://127.0.0.1:8765',
+    healthUrl: 'http://127.0.0.1:8765/health',
+    webSocketUrl: 'ws://127.0.0.1:8765/state/ws',
+    runtimeIdentity: 'agent-runtime-local',
+  ),
   connectionTone: 'success',
   baseUrl: 'http://127.0.0.1:8765',
   statusLabel: 'Runtime healthy',
@@ -162,6 +193,16 @@ const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
 
 const mockAgentRuntimeError = AgentRuntimeControlTowerData(
   connectionState: 'failed',
+  discovery: AgentRuntimeDiscoveryInfo(
+    state: 'unhealthy',
+    tone: 'danger',
+    title: 'Local runtime is unhealthy',
+    message: 'The service process exists but /health is failing.',
+    discoveryPath: '~/Library/Application Support/Robdex Agent Runtime/service/discovery.json',
+    connectable: false,
+    baseUrl: 'http://127.0.0.1:8765',
+    diagnostics: ['unhealthy: server process is alive but health check failed'],
+  ),
   connectionTone: 'danger',
   baseUrl: 'http://127.0.0.1:8765',
   statusLabel: 'Runtime unavailable',
@@ -198,6 +239,15 @@ const mockAgentRuntimeError = AgentRuntimeControlTowerData(
 
 const mockAgentRuntimeEmpty = AgentRuntimeControlTowerData(
   connectionState: 'streaming',
+  discovery: AgentRuntimeDiscoveryInfo(
+    state: 'runningHealthy',
+    tone: 'success',
+    title: 'Local runtime ready',
+    message: 'A healthy local Agent Runtime service was discovered.',
+    discoveryPath: '~/Library/Application Support/Robdex Agent Runtime/service/discovery.json',
+    connectable: true,
+    baseUrl: 'http://127.0.0.1:8765',
+  ),
   connectionTone: 'success',
   baseUrl: 'http://127.0.0.1:8765',
   statusLabel: 'Runtime connected · no sessions',

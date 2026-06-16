@@ -3,8 +3,9 @@
 This is the binding record for connecting Dart/Rinf packets to the experimental
 agent runtime `GuiTransportHandle` and `GuiBackendController` path. The owner
 selected the direct-dependency strategy. The first stable hub Rust binding is
-implemented; Flutter UI, launchd installation, service supervisor changes, and
-stable Robdex production behavior remain out of scope.
+implemented. Later slices mounted the Flutter-facing control-tower shell and
+design-system scenarios on this transport. Launchd installation, service
+supervisor changes, and stable Robdex production behavior remain out of scope.
 
 ## Implemented direct-dependency binding
 
@@ -237,30 +238,32 @@ Shutdown lifetime:
 
 ## Service discovery bootstrap flow
 
-GUI startup should use the local discovery contract added by the
-experiment-local service wrapper when it needs to discover the resident server:
+GUI startup should use the canonical user-scoped local service discovery
+contract when it needs to discover the resident server:
 
-1. Dart or the stable hub reads the configured discovery file path. Default:
-   `backend/experiments/agent-runtime/.runtime-service/discovery.json` for the
-   experiment-local service wrapper.
-2. If the file is absent, Dart shows disconnected setup and asks the user for a
-   base URL or a service start decision. Dart does not install launchd or start
-   host services in this binding.
-3. If present, Dart/hub parses:
-   - `serviceState`;
-   - `baseUrl`;
-   - `healthUrl`;
-   - `webSocketUrl`;
-   - `runtimeIdentity`;
-   - `pidLiveness`;
-   - `healthResult`;
-   - `diagnostics`.
-4. If `serviceState == "running"` and health is ok, Dart sends
-   `GuiTransportRequest::Connect { baseUrl, selectedSessionId: null }`.
-5. If stale, unhealthy, stopped, missing config, or stale discovery is reported,
-   Dart renders those diagnostics and may offer reconnect/refresh. Dart does
-   not infer a runtime target from pid or log paths.
-6. Rust resolves actual hydration, WebSocket connection, watermark, selected
+1. Dart sends `GuiTransportRequest::RefreshDiscovery` when it needs local
+   service status. The request may carry an explicit discovery path; otherwise
+   Rust reads the deterministic default
+   `~/Library/Application Support/Robdex Agent Runtime/service/discovery.json`
+   on macOS, or
+   `${XDG_STATE_HOME:-~/.local/state}/robdex-agent-runtime/service/discovery.json`
+   on non-macOS hosts. This is the same JSON packet produced by
+   `scripts/agent-runtime-service.sh discover` / `json-status`.
+2. Rust parses and classifies the packet inside `GuiTransportHandle`, then emits
+   `AgentRuntimeControlTowerViewModel.discovery` with constructor-ready state,
+   tone, title, message, URLs, runtime identity, connectability, and
+   diagnostics. Dart renders those Rust-shaped fields and does not parse the
+   discovery file or inspect pid/path/health internals.
+3. If the file is absent, malformed, stopped, stale-pid, unhealthy,
+   missing-config, or stale-discovery, Rust marks the discovery target as not
+   connectable. Dart may show manual base URL input as fallback and may send a
+   refresh intent, but it must not infer a runtime target from pid, log, config,
+   health, or path fields.
+4. If Rust classifies the packet as running/healthy and a `baseUrl` is present,
+   Dart may send `GuiTransportRequest::ConnectDiscoveredRuntime`. Rust then
+   refreshes discovery, verifies the target is still connectable, and dispatches
+   the Rust-owned connect/hydrate/WebSocket path using the discovered `baseUrl`.
+5. Rust resolves actual hydration, WebSocket connection, watermark, selected
    session, operation success, and errors through `GuiTransportHandle`.
 
 The binding treats service discovery as bootstrap input only. The runtime
@@ -278,10 +281,11 @@ The owner has approved and the implementation has completed:
 
 The following still require explicit owner approval before implementation:
 
-- adding Flutter UI, Flutter controllers, or design-system widgets;
-- adding launchd/system service installation;
+- adding launchd/autostart or host service-manager installation beyond the
+  completed per-user script-based package contract;
 - changing stable Robdex bridge, supervisor, database, or production runtime
-  behavior.
+  behavior;
+- adding broader UI surfaces beyond the current control-tower shell.
 
 ## Dart thin-transport rule
 
@@ -317,10 +321,10 @@ Rust responsibilities:
 
 Next implementable decisions:
 
-1. Whether to build Flutter control tower UI against the generated packet
-   carriers.
-2. Whether to add design-system widgets and Design Lab scenarios first.
-3. Whether to package the resident server beyond experiment-local scripts.
+1. Whether to add launchd/autostart beyond the completed per-user script-based
+   package contract.
+2. Whether to add remote/mDNS/iOS discovery.
+3. Whether to add broader UI surfaces beyond the current control-tower shell.
 
-No Flutter, design-system, Design Lab, launchd, or stable production-service
-Requirements should be set without explicit owner approval for that slice.
+Launchd/autostart, remote discovery, broader UI, or stable production-service
+Requirements should not be set without explicit owner approval for that slice.

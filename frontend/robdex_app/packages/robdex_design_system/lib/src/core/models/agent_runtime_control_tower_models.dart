@@ -1,6 +1,7 @@
 class AgentRuntimeControlTowerData {
   const AgentRuntimeControlTowerData({
     required this.connectionState,
+    required this.discovery,
     required this.connectionTone,
     required this.baseUrl,
     required this.statusLabel,
@@ -31,6 +32,7 @@ class AgentRuntimeControlTowerData {
   });
 
   final String connectionState;
+  final AgentRuntimeDiscoveryInfo discovery;
   final String connectionTone;
   final String baseUrl;
   final String statusLabel;
@@ -62,6 +64,9 @@ class AgentRuntimeControlTowerData {
   factory AgentRuntimeControlTowerData.fromJson(Map<String, dynamic> json) {
     return AgentRuntimeControlTowerData(
       connectionState: '${json['connectionState'] ?? 'disconnected'}',
+      discovery: AgentRuntimeDiscoveryInfo.fromJson(
+        Map<String, dynamic>.from((json['discovery'] as Map?) ?? const {}),
+      ),
       connectionTone: '${json['connectionTone'] ?? 'muted'}',
       baseUrl: '${json['baseUrl'] ?? ''}',
       statusLabel: '${json['statusLabel'] ?? 'No projection packet'}',
@@ -94,6 +99,7 @@ class AgentRuntimeControlTowerData {
 
   AgentRuntimeControlTowerData copyWith({
     String? connectionState,
+    AgentRuntimeDiscoveryInfo? discovery,
     String? connectionTone,
     String? baseUrl,
     String? statusLabel,
@@ -124,6 +130,7 @@ class AgentRuntimeControlTowerData {
   }) {
     return AgentRuntimeControlTowerData(
       connectionState: connectionState ?? this.connectionState,
+      discovery: discovery ?? this.discovery,
       connectionTone: connectionTone ?? this.connectionTone,
       baseUrl: baseUrl ?? this.baseUrl,
       statusLabel: statusLabel ?? this.statusLabel,
@@ -151,6 +158,53 @@ class AgentRuntimeControlTowerData {
       outputLog: outputLog ?? this.outputLog,
       pendingRequestCount: pendingRequestCount ?? this.pendingRequestCount,
       errorMessage: errorMessage ?? this.errorMessage,
+    );
+  }
+}
+
+class AgentRuntimeDiscoveryInfo {
+  const AgentRuntimeDiscoveryInfo({
+    required this.state,
+    required this.tone,
+    required this.title,
+    required this.message,
+    required this.discoveryPath,
+    required this.connectable,
+    this.baseUrl,
+    this.healthUrl,
+    this.webSocketUrl,
+    this.runtimeIdentity,
+    this.serviceState,
+    this.diagnostics = const [],
+  });
+
+  final String state;
+  final String tone;
+  final String title;
+  final String message;
+  final String discoveryPath;
+  final bool connectable;
+  final String? baseUrl;
+  final String? healthUrl;
+  final String? webSocketUrl;
+  final String? runtimeIdentity;
+  final String? serviceState;
+  final List<String> diagnostics;
+
+  factory AgentRuntimeDiscoveryInfo.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeDiscoveryInfo(
+      state: '${json['state'] ?? 'notLoaded'}',
+      tone: '${json['tone'] ?? 'muted'}',
+      title: '${json['title'] ?? 'Discovery not loaded'}',
+      message: '${json['message'] ?? ''}',
+      discoveryPath: '${json['discoveryPath'] ?? ''}',
+      connectable: json['connectable'] == true,
+      baseUrl: json['baseUrl'] as String?,
+      healthUrl: json['healthUrl'] as String?,
+      webSocketUrl: json['webSocketUrl'] as String?,
+      runtimeIdentity: json['runtimeIdentity'] as String?,
+      serviceState: json['serviceState'] as String?,
+      diagnostics: (json['diagnostics'] as List<dynamic>? ?? const []).map((value) => '$value').toList(growable: false),
     );
   }
 }

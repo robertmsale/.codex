@@ -40,6 +40,19 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
     });
   }
 
+  void refreshDiscovery() {
+    _send('discover', {'type': 'refreshDiscovery'});
+  }
+
+  void connectDiscoveredRuntime() {
+    _send('connect-discovered', {
+      'type': 'connectDiscoveredRuntime',
+      'payload': {
+        'selectedSessionId': null,
+      },
+    });
+  }
+
   void pollStreamOnce() {
     _send('poll', {'type': 'pollStreamOnce'});
   }
@@ -82,6 +95,14 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
 
   AgentRuntimeControlTowerData get _disconnectedViewModel => AgentRuntimeControlTowerData(
         connectionState: 'disconnected',
+        discovery: const AgentRuntimeDiscoveryInfo(
+          state: 'notLoaded',
+          tone: 'muted',
+          title: 'Discovery not loaded',
+          message: 'Refresh discovery to inspect the local Agent Runtime service packet.',
+          discoveryPath: '',
+          connectable: false,
+        ),
         connectionTone: 'muted',
         baseUrl: _baseUrl,
         statusLabel: 'No projection packet',

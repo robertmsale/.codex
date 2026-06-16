@@ -80,6 +80,22 @@ printf '[service-validation] database=%s\n' "$ROBDEX_AGENT_RUNTIME_DATABASE_URL"
 printf '[service-validation] state_dir=%s\n' "$SERVICE_STATE_DIR"
 printf '[service-validation] base_url=%s\n' "$BASE_URL"
 
+DEFAULT_STATE_DIR="$(env -u ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR "$SERVICE" default-state-dir)"
+case "$DEFAULT_STATE_DIR" in
+  "$PWD"/*|"$PWD/.runtime-service"|.runtime-service|*/backend/experiments/agent-runtime/.runtime-service)
+    printf '[service-validation] default state dir is not host-scoped: %s\n' "$DEFAULT_STATE_DIR" >&2
+    exit 1
+    ;;
+esac
+printf '[service-validation] default_state_dir=%s\n' "$DEFAULT_STATE_DIR"
+
+printf '[service-validation] package status\n'
+PACKAGE_STATUS_FILE="$SERVICE_STATE_DIR/package-status.json"
+$SERVICE package-status >"$PACKAGE_STATUS_FILE"
+assert_json_eq "$PACKAGE_STATUS_FILE" "packageState" "notInstalled"
+assert_json_eq "$PACKAGE_STATUS_FILE" "stateDirectory" "$SERVICE_STATE_DIR"
+assert_json_eq "$PACKAGE_STATUS_FILE" "discoveryFile" "$SERVICE_STATE_DIR/discovery.json"
+
 printf '[service-validation] start\n'
 START_OUTPUT="$($SERVICE start)"
 printf '%s\n' "$START_OUTPUT"
