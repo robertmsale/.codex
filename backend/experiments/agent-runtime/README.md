@@ -311,23 +311,22 @@ text, and action/timeline/session severity tones. The design-system control
 tower renders those fields directly to provide a clearer status strip, denser
 session rail, selected-session event stream, readable action queue, controller
 detail panel, and explicit empty/error/loading states. The action queue contains
-only real attention items currently present in the projection, such as pending
-or resumable approvals. Command registry inventory is surfaced as inventory
-count/status detail, not as required action, until typed pending registry
-requests are part of the projection boundary. Dart still sends only Rinf JSON
-packet intents and does not infer durable runtime meaning from raw
-projection/controller internals.
+only real attention items present in the projection: pending/resumable
+approvals and typed pending/actionable command-registry request summaries.
+Command registry inventory is surfaced as inventory count/status detail, not as
+required action. Dart still sends only Rinf JSON packet intents and does not
+infer durable runtime meaning from raw projection/controller internals.
 
 The shell remains focused: discovery/connect input, Rust-shaped view-model
 rendering, selected-session timeline visibility when present, an action queue
-from Rust-owned approval/resume rows, explicit disconnected/error states, and
-manual stream polling through the Rust-owned transport. Reusable visual pieces
-live in the design-system package under the agent-runtime control tower
+from Rust-owned approval/resume and command-registry request rows, explicit
+disconnected/error states, and manual stream polling through the Rust-owned
+transport. Reusable visual pieces live in the design-system package under the
+agent-runtime control tower
 component, with Design Lab scenarios for disconnected, connecting, connected,
 error, and empty/no-session states. Remaining gates are role-admin mutation UI,
-workflow-memory inspection UI, command-registry request projection/action rows,
-service packaging beyond local scripts, and launchd/system service
-installation.
+workflow-memory inspection UI, service packaging beyond local scripts, and
+launchd/system service installation.
 
 ## Resident server MVP
 

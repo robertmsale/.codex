@@ -38,11 +38,10 @@ detail panel, and explicit disconnected/connecting/connected/error/empty
 states. Dart remains a thin renderer and may keep only widget-local pending
 request ids, base URL text, scroll/focus/hover, and similar ephemeral facts.
 Current action rows are limited to real attention items available in the
-projection, currently approvals and approved resumable approvals. Installed or
-enabled command registry entries are inventory, not action queue work; they may
-appear as inventory counts/status detail, and actual command-registry requests
-should enter the action queue only after a typed pending-request source is part
-of the projection/control boundary.
+projection: approvals, approved resumable approvals, and typed pending/actionable
+command-registry request summaries. Installed or enabled command registry
+entries are inventory, not action queue work; they may appear as inventory
+counts/status detail, but they are not counted as required attention.
 
 ## Direction
 

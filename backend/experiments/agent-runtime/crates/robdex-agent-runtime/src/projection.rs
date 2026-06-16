@@ -1,8 +1,9 @@
 use anyhow::Result;
 use robdex_agent_runtime_projection::{
-    timeline_by_sequence, timeline_item_id, CommandRegistrySummary, PendingApprovalSummary,
-    RoleSummary, RuntimeDelta, RuntimeDeltaKind, RuntimeProjection, SelectedSessionDetail,
-    ServerStatusProjection, SessionListItem, TimelineItem, WorkflowMemorySummary,
+    timeline_by_sequence, timeline_item_id, CommandRegistryRequestSummary,
+    CommandRegistrySummary, PendingApprovalSummary, RoleSummary, RuntimeDelta,
+    RuntimeDeltaKind, RuntimeProjection, SelectedSessionDetail, ServerStatusProjection,
+    SessionListItem, TimelineItem, WorkflowMemorySummary,
 };
 use serde_json::Value;
 use sqlx::{PgPool, Row};
@@ -38,6 +39,7 @@ pub async fn build_runtime_projection_snapshot(
         pending_approvals: pending_approval_summaries(pool).await?,
         roles: role_summaries(pool).await?,
         command_registry: command_registry_summaries(pool).await?,
+        command_registry_requests: command_registry_request_summaries(pool).await?,
         workflow_memories: workflow_memory_summaries(pool, selected_session_id).await?,
         resync_required: None,
     };
@@ -192,6 +194,13 @@ async fn projection_deltas_from_event_row(
             }
         }
         "command_registry.applied" | "command_registry.decided" | "command_registry.requested" => {
+            if let Some(request_id) = command_registry_request_id_for_event(&item, &payload)
+                && let Some(request) = command_registry_request_summary(pool, request_id).await?
+            {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::CommandRegistryRequestUpsert { request }));
+            } else if let Some(request_id) = command_registry_request_id_for_event(&item, &payload) {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::CommandRegistryRequestRemove { request_id: request_id.to_string() }));
+            }
             if let Some(command) = command_summary_for_event(pool, &payload).await? {
                 if command.enabled {
                     deltas.push(same_row_delta(watermark, RuntimeDeltaKind::CommandRegistryUpsert { command }));
@@ -661,6 +670,71 @@ fn command_registry_summary_from_row(row: sqlx::postgres::PgRow) -> CommandRegis
     }
 }
 
+async fn command_registry_request_summaries(pool: &PgPool) -> Result<Vec<CommandRegistryRequestSummary>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, operation, proposed_command, approval_status, application_status,
+               final_scope, final_execution_policy
+        FROM command_registry_requests
+        WHERE approval_status = 'pending'
+           OR (approval_status = 'approved' AND application_status = 'pending')
+        ORDER BY created_at DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(command_registry_request_summary_from_row)
+        .collect())
+}
+
+async fn command_registry_request_summary(
+    pool: &PgPool,
+    request_id: Uuid,
+) -> Result<Option<CommandRegistryRequestSummary>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, operation, proposed_command, approval_status, application_status,
+               final_scope, final_execution_policy
+        FROM command_registry_requests
+        WHERE id = $1
+          AND (
+              approval_status = 'pending'
+              OR (approval_status = 'approved' AND application_status = 'pending')
+          )
+        "#,
+    )
+    .bind(request_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(command_registry_request_summary_from_row))
+}
+
+fn command_registry_request_summary_from_row(row: sqlx::postgres::PgRow) -> Option<CommandRegistryRequestSummary> {
+    CommandRegistryRequestSummary::from_server_value(&serde_json::json!({
+        "id": row.get::<Uuid, _>("id"),
+        "operation": row.get::<String, _>("operation"),
+        "proposedCommand": row.get::<Value, _>("proposed_command"),
+        "approvalStatus": row.get::<String, _>("approval_status"),
+        "applicationStatus": row.get::<String, _>("application_status"),
+        "finalScope": row.get::<Option<Value>, _>("final_scope"),
+        "finalExecutionPolicy": row.get::<Option<Value>, _>("final_execution_policy"),
+    }))
+}
+
+fn command_registry_request_id_for_event(item: &TimelineItem, payload: &Value) -> Option<Uuid> {
+    item.entity_id
+        .as_deref()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .or_else(|| {
+            payload
+                .get("requestId")
+                .and_then(Value::as_str)
+                .and_then(|id| Uuid::parse_str(id).ok())
+        })
+}
+
 async fn workflow_memory_summaries(
     pool: &PgPool,
     selected_session_id: Option<Uuid>,
@@ -721,7 +795,7 @@ async fn workflow_memory_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db, roles::RoleRegistry};
+    use crate::{command_registry, db, roles::RoleRegistry};
     use serde_json::json;
 
     #[tokio::test]
@@ -794,6 +868,49 @@ mod tests {
             .bind(json!({"id": role.id, "version": role.version, "roleVersionId": role.role_version_id}))
             .execute(&pool)
             .await?;
+            let registry_request_id = Uuid::new_v4();
+            let proposed_command = serde_json::to_value(command_registry::CommandSeed {
+                action_id: "cmd.projection.request".to_string(),
+                binary_name: "rg".to_string(),
+                candidate_paths: vec!["/usr/bin/rg".to_string()],
+                starlark_object: "rg".to_string(),
+                starlark_method: "projection".to_string(),
+                argv_prefix: Vec::new(),
+                default_cwd: ".".to_string(),
+                cwd_policy: "underExecutionRoot".to_string(),
+                env_policy: "empty".to_string(),
+                sync_allowed: true,
+                async_allowed: false,
+                max_runtime_ms: Some(5000),
+                end_of_turn_behavior: "terminate".to_string(),
+                stdin_policy: "forbid".to_string(),
+                min_await_ms: 0,
+                max_await_ms: 60000,
+                output_buffer_bytes: 64000,
+                terminate_grace_ms: 1000,
+                output_limit_bytes: 12000,
+                mutation_class: "readOnly".to_string(),
+                model_description: "projection request proof".to_string(),
+                allow_cwd_arg: true,
+                allow_args_arg: true,
+                forbidden_args: Vec::new(),
+                execution_policy: "allow".to_string(),
+            })?;
+            sqlx::query(
+                r#"
+                INSERT INTO command_registry_requests (
+                    id, session_id, operation, proposed_command, requester_context,
+                    rationale, recommended_policy, requester, requested_by_role,
+                    approval_status, application_status
+                ) VALUES ($1, $2, 'add', $3, '{}'::jsonb, 'projection proof',
+                    'approver selects final policy', 'test', '{}'::jsonb, 'pending', 'pending')
+                "#,
+            )
+            .bind(registry_request_id)
+            .bind(session_id)
+            .bind(proposed_command)
+            .execute(&pool)
+            .await?;
             let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await?;
             anyhow::Ok(snapshot)
         }
@@ -811,6 +928,15 @@ mod tests {
         assert!(snapshot.selected_session.is_some());
         assert!(!snapshot.roles.is_empty());
         assert!(!snapshot.command_registry.is_empty());
+        let registry_request = snapshot
+            .command_registry_requests
+            .iter()
+            .find(|request| request.action_id == "cmd.projection.request")
+            .expect("pending command-registry request is projected");
+        assert!(registry_request.can_preview);
+        assert!(registry_request.can_decide);
+        assert!(!registry_request.can_apply);
+        assert_eq!(registry_request.state_text, "Needs registry decision");
         assert_eq!(snapshot.timeline.len(), 1);
         let resumable = snapshot
             .pending_approvals

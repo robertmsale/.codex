@@ -5,9 +5,9 @@
 //! while keeping runtime state, reduction, and operation decisions inside Rust.
 
 use robdex_agent_runtime_projection::{
-    ApiErrorPacket, GuiConnectionState, GuiControllerState, GuiOperationRequest,
-    GuiOperationResult, PendingApprovalSummary, RuntimeProjection, SessionListItem,
-    TimelineItem,
+    ApiErrorPacket, CommandRegistryRequestSummary, GuiConnectionState, GuiControllerState,
+    GuiOperationRequest, GuiOperationResult, PendingApprovalSummary, RuntimeProjection,
+    SessionListItem, TimelineItem,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -177,6 +177,7 @@ impl AgentRuntimeControlTowerViewModel {
                     .pending_approvals
                     .iter()
                     .map(approval_action_row)
+                    .chain(projection.command_registry_requests.iter().map(command_request_action_row))
                     .collect()
             })
             .unwrap_or_default();
@@ -199,7 +200,7 @@ impl AgentRuntimeControlTowerViewModel {
             timeline_title: format!("Selected session stream · {selected_session_label}"),
             timeline_subtitle: "Operations event stream, not a chat transcript".to_string(),
             actions_title: format!("Action queue ({})", actions.len()),
-            actions_subtitle: "Approvals and resumable runtime work".to_string(),
+            actions_subtitle: "Approvals, resumable work, and registry requests".to_string(),
             detail_title: "Controller detail".to_string(),
             detail_subtitle: "Rust-owned controller facts".to_string(),
             sessions_empty_title: "No sessions".to_string(),
@@ -207,7 +208,7 @@ impl AgentRuntimeControlTowerViewModel {
             timeline_empty_title: selected_session_label,
             timeline_empty_text: "Select a session to hydrate its operations event stream.".to_string(),
             actions_empty_title: "No action required".to_string(),
-            actions_empty_text: "No approvals or resumable runtime actions need attention.".to_string(),
+            actions_empty_text: "No approvals, resumable actions, or registry requests need attention.".to_string(),
             sessions,
             timeline,
             actions,
@@ -484,6 +485,35 @@ fn approval_action_row(approval: &PendingApprovalSummary) -> AgentRuntimeControl
     }
 }
 
+fn command_request_action_row(request: &CommandRegistryRequestSummary) -> AgentRuntimeControlTowerActionRow {
+    AgentRuntimeControlTowerActionRow {
+        id: request.id.clone(),
+        title: request.action_label.clone(),
+        subtitle: format!(
+            "{} · {} · {}",
+            request.operation,
+            request
+                .scope_summary
+                .as_deref()
+                .unwrap_or("scope pending"),
+            request
+                .policy_summary
+                .as_deref()
+                .unwrap_or("policy pending")
+        ),
+        kind: "commandRegistryRequest".to_string(),
+        state_text: request.state_text.clone(),
+        tone: if request.can_apply {
+            "success"
+        } else if request.can_decide || request.can_preview {
+            "warning"
+        } else {
+            "info"
+        }
+        .to_string(),
+    }
+}
+
 fn session_group_label(session: &SessionListItem) -> String {
     if !session.tracked {
         "Archived".to_string()
@@ -577,8 +607,13 @@ fn status_badges(
         });
         badges.push(AgentRuntimeControlTowerBadge {
             label: "Attention".to_string(),
-            value: projection.pending_approvals.len().to_string(),
-            tone: if projection.pending_approvals.is_empty() { "muted" } else { "warning" }.to_string(),
+            value: (projection.pending_approvals.len() + projection.command_registry_requests.len()).to_string(),
+            tone: if projection.pending_approvals.is_empty() && projection.command_registry_requests.is_empty() { "muted" } else { "warning" }.to_string(),
+        });
+        badges.push(AgentRuntimeControlTowerBadge {
+            label: "Registry requests".to_string(),
+            value: projection.command_registry_requests.len().to_string(),
+            tone: if projection.command_registry_requests.is_empty() { "muted" } else { "warning" }.to_string(),
         });
         badges.push(AgentRuntimeControlTowerBadge {
             label: "Command inventory".to_string(),
@@ -708,9 +743,9 @@ mod tests {
     use axum::{Json, Router};
     use futures_util::SinkExt;
     use robdex_agent_runtime_projection::{
-        CommandRegistrySummary, GuiConnectionState, GuiOperationOutcome, PendingApprovalSummary,
-        RuntimeDelta, RuntimeDeltaKind, RuntimeProjection, ServerStatusProjection, SessionListItem,
-        TimelineItem,
+        CommandRegistryRequestSummary, CommandRegistrySummary, GuiConnectionState,
+        GuiOperationOutcome, PendingApprovalSummary, RuntimeDelta, RuntimeDeltaKind,
+        RuntimeProjection, ServerStatusProjection, SessionListItem, TimelineItem,
     };
     use std::net::SocketAddr;
 
@@ -853,6 +888,26 @@ mod tests {
                 starlark_method: Some("project".to_string()),
                 updated_at: None,
             }],
+            command_registry_requests: vec![CommandRegistryRequestSummary {
+                id: "request-1".to_string(),
+                operation: "add".to_string(),
+                action_id: "cmd.rg.audit".to_string(),
+                action_label: "rg · audit".to_string(),
+                status: "pending".to_string(),
+                state_text: "Needs registry decision".to_string(),
+                apply_status: "pending".to_string(),
+                final_scope_type: None,
+                final_project_key: None,
+                scope_summary: None,
+                final_policy: None,
+                policy_summary: None,
+                can_preview: true,
+                preview_label: "Preview decision".to_string(),
+                can_decide: true,
+                decide_label: "Decide request".to_string(),
+                can_apply: false,
+                apply_label: "Apply unavailable".to_string(),
+            }],
             ..RuntimeProjection::default()
         };
         let controller = GuiControllerState {
@@ -880,13 +935,14 @@ mod tests {
         assert_eq!(view.sessions_subtitle, "Grouped by Rust-owned operational state");
         assert_eq!(view.timeline_title, "Selected session stream · Runtime check");
         assert_eq!(view.timeline_subtitle, "Operations event stream, not a chat transcript");
-        assert_eq!(view.actions_title, "Action queue (1)");
-        assert_eq!(view.actions_subtitle, "Approvals and resumable runtime work");
+        assert_eq!(view.actions_title, "Action queue (2)");
+        assert_eq!(view.actions_subtitle, "Approvals, resumable work, and registry requests");
         assert_eq!(view.detail_subtitle, "Rust-owned controller facts");
         assert_eq!(view.sessions_empty_title, "No sessions");
         assert_eq!(view.timeline_empty_title, "Runtime check");
         assert_eq!(view.actions_empty_title, "No action required");
-        assert!(view.status_badges.iter().any(|badge| badge.label == "Attention" && badge.value == "1"));
+        assert!(view.status_badges.iter().any(|badge| badge.label == "Attention" && badge.value == "2"));
+        assert!(view.status_badges.iter().any(|badge| badge.label == "Registry requests" && badge.value == "1"));
         assert!(view.status_badges.iter().any(|badge| badge.label == "Command inventory" && badge.value == "1"));
         assert!(!view.status_badges.iter().any(|badge| badge.label == "Pending UI requests"));
         assert_eq!(view.sessions[0].title, "Runtime check");
@@ -898,6 +954,7 @@ mod tests {
         assert_eq!(view.timeline[0].tone, "success");
         assert!(view.actions.iter().any(|row| row.kind == "approval" && row.subtitle.contains("canResume=true")));
         assert!(view.actions.iter().any(|row| row.state_text == "Ready to resume" && row.tone == "success"));
+        assert!(view.actions.iter().any(|row| row.kind == "commandRegistryRequest" && row.title == "rg · audit" && row.state_text == "Needs registry decision"));
         assert!(!view.actions.iter().any(|row| row.kind == "commandRegistry"));
         assert!(view.controller_facts.iter().any(|fact| fact.label == "Selected session" && fact.value == "session-1"));
         assert_eq!(view.pending_request_count, 2);

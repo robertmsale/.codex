@@ -174,6 +174,8 @@ pub struct RuntimeProjection {
     pub pending_approvals: Vec<PendingApprovalSummary>,
     pub roles: Vec<RoleSummary>,
     pub command_registry: Vec<CommandRegistrySummary>,
+    #[serde(default)]
+    pub command_registry_requests: Vec<CommandRegistryRequestSummary>,
     pub workflow_memories: Vec<WorkflowMemorySummary>,
     pub resync_required: Option<ResyncRequiredState>,
 }
@@ -538,14 +540,21 @@ pub struct CommandRegistryRequestSummary {
     pub id: String,
     pub operation: String,
     pub action_id: String,
+    pub action_label: String,
     pub status: String,
+    pub state_text: String,
     pub apply_status: String,
     pub final_scope_type: Option<String>,
     pub final_project_key: Option<String>,
+    pub scope_summary: Option<String>,
     pub final_policy: Option<String>,
+    pub policy_summary: Option<String>,
     pub can_preview: bool,
+    pub preview_label: String,
     pub can_decide: bool,
+    pub decide_label: String,
     pub can_apply: bool,
+    pub apply_label: String,
 }
 
 impl CommandRegistryRequestSummary {
@@ -555,21 +564,59 @@ impl CommandRegistryRequestSummary {
         let proposed = value.get("proposedCommand")?;
         let final_scope = value.get("finalScope").and_then(|value| if value.is_null() { None } else { Some(value) });
         let final_policy = value.get("finalExecutionPolicy").and_then(|value| if value.is_null() { None } else { Some(value) });
+        let action_id = proposed.get("actionId").and_then(Value::as_str)?.to_string();
+        let final_scope_type = final_scope.and_then(|scope| scope.get("scopeType").or_else(|| scope.get("type"))).and_then(Value::as_str).map(str::to_string);
+        let final_project_key = final_scope.and_then(|scope| scope.get("projectKey")).and_then(Value::as_str).map(str::to_string);
+        let final_policy = final_policy.and_then(|policy| policy.get("decision")).and_then(Value::as_str).map(str::to_string);
+        let can_preview = status == "pending";
+        let can_decide = status == "pending";
+        let can_apply = status == "approved" && apply_status == "pending";
         Some(Self {
             id: value.get("id").and_then(Value::as_str).map(str::to_string)
                 .or_else(|| value.get("id").map(|id| id.to_string().trim_matches('"').to_string()))?,
             operation: value.get("operation").and_then(Value::as_str)?.to_string(),
-            action_id: proposed.get("actionId").and_then(Value::as_str)?.to_string(),
+            action_label: action_label(&action_id),
+            action_id,
             status: status.clone(),
+            state_text: registry_request_state_text(&status, &apply_status),
             apply_status: apply_status.clone(),
-            final_scope_type: final_scope.and_then(|scope| scope.get("scopeType").or_else(|| scope.get("type"))).and_then(Value::as_str).map(str::to_string),
-            final_project_key: final_scope.and_then(|scope| scope.get("projectKey")).and_then(Value::as_str).map(str::to_string),
-            final_policy: final_policy.and_then(|policy| policy.get("decision")).and_then(Value::as_str).map(str::to_string),
-            can_preview: status == "pending",
-            can_decide: status == "pending",
-            can_apply: status == "approved" && apply_status == "pending",
+            scope_summary: scope_summary(final_scope_type.as_deref(), final_project_key.as_deref()),
+            final_scope_type,
+            final_project_key,
+            policy_summary: final_policy.clone(),
+            final_policy,
+            can_preview,
+            preview_label: if can_preview { "Preview decision".to_string() } else { "Preview unavailable".to_string() },
+            can_decide,
+            decide_label: if can_decide { "Decide request".to_string() } else { "Decision unavailable".to_string() },
+            can_apply,
+            apply_label: if can_apply { "Apply approved request".to_string() } else { "Apply unavailable".to_string() },
         })
     }
+}
+
+fn action_label(action_id: &str) -> String {
+    action_id
+        .strip_prefix("cmd.")
+        .unwrap_or(action_id)
+        .replace('.', " · ")
+}
+
+fn registry_request_state_text(status: &str, apply_status: &str) -> String {
+    if status == "pending" {
+        "Needs registry decision".to_string()
+    } else if status == "approved" && apply_status == "pending" {
+        "Approved · ready to apply".to_string()
+    } else {
+        format!("{status} · {apply_status}")
+    }
+}
+
+fn scope_summary(scope_type: Option<&str>, project_key: Option<&str>) -> Option<String> {
+    scope_type.map(|scope| match (scope, project_key) {
+        ("project", Some(project)) => format!("project:{project}"),
+        (other, _) => other.to_string(),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -624,6 +671,7 @@ impl Default for RuntimeProjection {
             pending_approvals: Vec::new(),
             roles: Vec::new(),
             command_registry: Vec::new(),
+            command_registry_requests: Vec::new(),
             workflow_memories: Vec::new(),
             resync_required: None,
         }
@@ -681,6 +729,8 @@ pub enum RuntimeDeltaKind {
     RoleArchive { role_id: String, archived_at: Option<String> },
     CommandRegistryUpsert { command: CommandRegistrySummary },
     CommandRegistryDisable { command_id: String },
+    CommandRegistryRequestUpsert { request: CommandRegistryRequestSummary },
+    CommandRegistryRequestRemove { request_id: String },
     WorkflowMemoryUpsert { memory: WorkflowMemorySummary },
     WorkflowMemoryEvent { item: TimelineItem },
     ResyncRequired { reason: String },
@@ -804,6 +854,8 @@ fn apply_delta_kind(projection: &mut RuntimeProjection, kind: RuntimeDeltaKind) 
                 false
             }
         }
+        RuntimeDeltaKind::CommandRegistryRequestUpsert { request } => upsert_by(&mut projection.command_registry_requests, request, |item| item.id.as_str()),
+        RuntimeDeltaKind::CommandRegistryRequestRemove { request_id } => remove_by(&mut projection.command_registry_requests, |item| item.id == request_id),
         RuntimeDeltaKind::WorkflowMemoryUpsert { memory } => upsert_by(&mut projection.workflow_memories, memory, |item| item.id.as_str()),
         RuntimeDeltaKind::ResyncRequired { reason } => {
             mark_resync_required(projection, &reason, None, None);
@@ -925,6 +977,19 @@ mod tests {
             previous_watermark: None,
             kind,
         }
+    }
+
+    fn registry_request(id: &str, status: &str, apply_status: &str) -> CommandRegistryRequestSummary {
+        CommandRegistryRequestSummary::from_server_value(&json!({
+            "id": id,
+            "operation": "add",
+            "proposedCommand": {"actionId": "cmd.rg.audit"},
+            "approvalStatus": status,
+            "applicationStatus": apply_status,
+            "finalScope": {"scopeType": "project", "projectKey": "alpha"},
+            "finalExecutionPolicy": {"decision": "ownerApproval"}
+        }))
+        .expect("registry request summary")
     }
 
     fn command_seed() -> GuiCommandSeed {
@@ -1319,14 +1384,21 @@ mod tests {
             id: "request-1".to_string(),
             operation: "add".to_string(),
             action_id: "cmd.rg.run".to_string(),
+            action_label: "rg · run".to_string(),
             status: "approved".to_string(),
+            state_text: "Approved · ready to apply".to_string(),
             apply_status: "pending".to_string(),
             final_scope_type: Some("global".to_string()),
             final_project_key: None,
+            scope_summary: Some("global".to_string()),
             final_policy: Some("allow".to_string()),
+            policy_summary: Some("allow".to_string()),
             can_preview: false,
+            preview_label: "Preview unavailable".to_string(),
             can_decide: false,
+            decide_label: "Decision unavailable".to_string(),
             can_apply: true,
+            apply_label: "Apply approved request".to_string(),
         };
         let result = GuiOperationResult {
             operation_id: "op-list".to_string(),
@@ -1342,6 +1414,39 @@ mod tests {
         assert!(DART_ALLOWED_EPHEMERAL_RESPONSIBILITIES.contains(&"textFields"));
         let decoded: GuiOperationResult = serde_json::from_value(value).expect("decode result");
         assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn command_registry_request_projection_upsert_change_and_remove_is_typed() {
+        let mut projection = RuntimeProjection::default();
+        let pending = registry_request("request-1", "pending", "pending");
+        assert_eq!(
+            projection.apply_delta(delta(1, RuntimeDeltaKind::CommandRegistryRequestUpsert { request: pending.clone() })),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(projection.command_registry_requests, vec![pending.clone()]);
+        assert_eq!(projection.command_registry_requests[0].state_text, "Needs registry decision");
+        assert!(projection.command_registry_requests[0].can_preview);
+        assert!(projection.command_registry_requests[0].can_decide);
+        assert!(!projection.command_registry_requests[0].can_apply);
+
+        let approved = registry_request("request-1", "approved", "pending");
+        assert_eq!(
+            projection.apply_delta(delta(2, RuntimeDeltaKind::CommandRegistryRequestUpsert { request: approved.clone() })),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(projection.command_registry_requests.len(), 1);
+        assert_eq!(projection.command_registry_requests[0].state_text, "Approved · ready to apply");
+        assert!(!projection.command_registry_requests[0].can_decide);
+        assert!(projection.command_registry_requests[0].can_apply);
+        assert_eq!(projection.command_registry_requests[0].scope_summary.as_deref(), Some("project:alpha"));
+        assert_eq!(projection.command_registry_requests[0].policy_summary.as_deref(), Some("ownerApproval"));
+
+        assert_eq!(
+            projection.apply_delta(delta(3, RuntimeDeltaKind::CommandRegistryRequestRemove { request_id: "request-1".to_string() })),
+            ApplyOutcome::Applied
+        );
+        assert!(projection.command_registry_requests.is_empty());
     }
 
     #[test]
@@ -1451,12 +1556,17 @@ mod tests {
         });
         let summary = CommandRegistryRequestSummary::from_server_value(&raw).expect("summary");
         assert_eq!(summary.action_id, "cmd.rg.audit");
+        assert_eq!(summary.action_label, "rg · audit");
+        assert_eq!(summary.state_text, "Approved · ready to apply");
         assert_eq!(summary.final_scope_type.as_deref(), Some("project"));
         assert_eq!(summary.final_project_key.as_deref(), Some("alpha"));
+        assert_eq!(summary.scope_summary.as_deref(), Some("project:alpha"));
         assert_eq!(summary.final_policy.as_deref(), Some("ownerApproval"));
+        assert_eq!(summary.policy_summary.as_deref(), Some("ownerApproval"));
         assert!(!summary.can_preview);
         assert!(!summary.can_decide);
         assert!(summary.can_apply);
+        assert_eq!(summary.apply_label, "Apply approved request");
 
         let pending = json!({
             "id": "request-2",
@@ -1466,8 +1576,11 @@ mod tests {
             "applicationStatus": "pending"
         });
         let pending_summary = CommandRegistryRequestSummary::from_server_value(&pending).expect("pending summary");
+        assert_eq!(pending_summary.state_text, "Needs registry decision");
         assert!(pending_summary.can_preview);
+        assert_eq!(pending_summary.preview_label, "Preview decision");
         assert!(pending_summary.can_decide);
+        assert_eq!(pending_summary.decide_label, "Decide request");
         assert!(!pending_summary.can_apply);
     }
 }

@@ -10,7 +10,7 @@ product specification.
 - **Current milestone:** Build an alternative, PostgreSQL-backed agent runtime
   that can eventually power a macOS/iOS GUI without depending on stable Robdex
   bridge internals.
-- **Current active slice:** Richer operations-first control-tower UX is completed; launchd and stable backend/supervisor integration have not started.
+- **Current active slice:** Registry request projection for the control-tower action queue is completed; launchd and stable backend/supervisor integration have not started.
 - **Current implementation owner:** Codex Config Operator.
 - **Planner stance:** Rust owns GUI runtime synchronization, operation dispatch, and durable state decisions; Flutter UI remains out of scope until explicitly assigned.
 
@@ -172,15 +172,20 @@ product specification.
     Action rows are real attention items, currently approvals/resumable
     approvals; command registry inventory is surfaced as inventory status/count
     and is not counted as action-queue work.
+37. Registry request projection/action rows: `RuntimeProjection` now includes
+    typed pending/actionable command-registry request summaries sourced from
+    `command_registry_requests`, separate from installed command inventory.
+    Snapshot and event deltas upsert/remove those request rows as lifecycle
+    events occur, and the control-tower action queue includes registry request
+    rows alongside approval/resume rows. Installed/enabled command inventory
+    remains inventory status/count detail, not action work.
 
 ## Active slice
 
-No active implementation slice is recorded after completing the richer
-operations-first control-tower UX slice. The next implementable gates are
-service packaging beyond experiment-local scripts and deferred role/workflow GUI
-operation intents if owner brings them into scope. Command-registry request
-action rows remain gated on adding a typed pending-request source to the
-projection/control boundary.
+No active implementation slice is recorded after completing registry request
+projection/action rows. The next implementable gates are service packaging
+beyond experiment-local scripts and deferred role/workflow GUI operation intents
+if owner brings them into scope.
 
 Standing non-goals until reassigned:
 
