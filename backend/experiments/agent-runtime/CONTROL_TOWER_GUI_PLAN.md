@@ -305,6 +305,22 @@ Prefer:
 - clear safe-next-action affordances;
 - explicit empty, resync, shutdown, blocked, and error states.
 
+### Emergency presentation correction record
+
+The mounted Control Tower presentation has been corrected away from the broken
+one-row discovery/status/control strip. Connection and discovery now live in a
+setup screen shown only before a runtime is connected. Once connected, the
+Control Tower shows a compact operations bar and hides the manual URL/profile
+setup affordances until the user disconnects. The setup screen presents one
+state-appropriate primary action, compact local/iCloud/imported discovery
+controls that wrap at narrow widths, and concise bridge loading/failure copy
+instead of raw Flutter/Rust crash cards. Control Tower surfaces use restrained
+radii no larger than 8 and avoid status-chip spam, giant empty rectangles, and
+Connect/Disconnect as simultaneous peer actions for the same target. The
+design-system package owns the CodeForge boundary: native app surfaces use
+`code_forge`, Design Lab/web surfaces use `code_forge_web`, and both clients
+render the same design-system Control Tower component.
+
 ## Source-of-truth files for future implementers
 
 Runtime/backend source of truth:

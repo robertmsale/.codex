@@ -61,7 +61,10 @@ Map<String, dynamic> agentRuntimeWorkflowMemorySelectOperationForTest(String mem
 
 @visibleForTesting
 Map<String, dynamic> agentRuntimeIcloudRefreshIntentForTest() {
-  return {'type': 'refreshIcloudRemoteDiscovery'};
+  return {
+    'type': 'refreshIcloudRemoteDiscovery',
+    'payload': {'profilePath': null},
+  };
 }
 
 @visibleForTesting
@@ -101,23 +104,30 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
   int _serial = 0;
   String _baseUrl = 'http://127.0.0.1:8765';
   AgentRuntimeControlTowerData? _viewModel;
+  String? _bridgeErrorMessage;
 
   AgentRuntimeControlTowerController({
     AgentRuntimeRemoteProfilePicker remoteProfilePicker = pickAgentRuntimeRemoteProfileDocumentPath,
     AgentRuntimeRequestSink? requestSink,
   })  : _remoteProfilePicker = remoteProfilePicker,
         _requestSink = requestSink ?? _sendRequestSignalToRust {
-    _subscription = AgentRuntimeOutputSignal.rustSignalStream.listen(
-      _handleOutput,
-      onError: (Object _) {
-        notifyListeners();
-      },
-    );
+    try {
+      _subscription = AgentRuntimeOutputSignal.rustSignalStream.listen(
+        _handleOutput,
+        onError: (Object _) {
+          _bridgeErrorMessage = 'Agent Runtime bridge is not ready. Restart the app, then refresh discovery.';
+          notifyListeners();
+        },
+      );
+    } catch (_) {
+      _bridgeErrorMessage = 'Agent Runtime bridge is not ready. Restart the app, then refresh discovery.';
+    }
   }
 
   AgentRuntimeControlTowerData get data {
     return (_viewModel ?? _disconnectedViewModel).copyWith(
       pendingRequestCount: _pendingRequestIds.length,
+      errorMessage: _bridgeErrorMessage,
     );
   }
 
@@ -133,7 +143,10 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
   }
 
   void refreshDiscovery() {
-    _send('discover', {'type': 'refreshDiscovery'});
+    _send('discover', {
+      'type': 'refreshDiscovery',
+      'payload': {'discoveryPath': null},
+    });
   }
 
   void connectDiscoveredRuntime() {
@@ -302,13 +315,18 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
     _serial += 1;
     final requestId = 'agent-runtime-$prefix-$_serial';
     _pendingRequestIds.add(requestId);
-    _requestSink(
-      requestId,
-      jsonEncode({
-        'packetId': requestId,
-        'intent': intent,
-      }),
-    );
+    try {
+      _requestSink(
+        requestId,
+        jsonEncode({
+          'packetId': requestId,
+          'intent': intent,
+        }),
+      );
+    } catch (_) {
+      _pendingRequestIds.remove(requestId);
+      _bridgeErrorMessage = 'Agent Runtime bridge is not ready. Restart the app, then refresh discovery.';
+    }
     notifyListeners();
   }
 
@@ -329,6 +347,18 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
         _viewModel = AgentRuntimeControlTowerData.fromJson(
           Map<String, dynamic>.from(viewModel),
         );
+        _bridgeErrorMessage = null;
+      }
+    } else if (type == 'error' && payload is Map<String, dynamic>) {
+      final error = payload['error'];
+      if (error is Map) {
+        final body = error['error'];
+        final source = body is Map ? body : error;
+        final message = source['message'] as String?;
+        final code = source['code'] as String?;
+        _bridgeErrorMessage = message ?? code ?? 'Agent Runtime request failed.';
+      } else {
+        _bridgeErrorMessage = 'Agent Runtime request failed.';
       }
     }
     notifyListeners();

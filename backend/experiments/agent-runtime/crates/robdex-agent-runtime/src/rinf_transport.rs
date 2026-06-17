@@ -26,7 +26,7 @@ pub struct GuiTransportRequestPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", content = "payload", rename_all = "camelCase")]
+#[serde(tag = "type", content = "payload", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum GuiTransportRequest {
     RefreshDiscovery {
         discovery_path: Option<String>,
@@ -74,7 +74,7 @@ pub struct GuiTransportOutputPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", content = "payload", rename_all = "camelCase")]
+#[serde(tag = "type", content = "payload", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum GuiTransportOutput {
     ProjectionSnapshot {
         projection: Value,
@@ -611,6 +611,47 @@ fn remote_profile_base_url(profile: &AgentRuntimeRemoteProfile) -> Result<String
         return Err("remote profile port must be non-zero".to_string());
     }
     Ok(format!("{}://{}:{}", profile.scheme, host, profile.port))
+}
+
+fn normalize_manual_base_url(input: &str) -> Result<String, ApiErrorPacket> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(ApiErrorPacket::new(
+            "validation_failed",
+            "runtime target is empty",
+            json!({"field":"baseUrl"}),
+        ));
+    }
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    };
+    let parsed = reqwest::Url::parse(&candidate).map_err(|error| {
+        ApiErrorPacket::new(
+            "validation_failed",
+            "runtime target must be a host:port or HTTP URL",
+            json!({"field":"baseUrl", "message": error.to_string()}),
+        )
+    })?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(ApiErrorPacket::new(
+            "validation_failed",
+            "runtime target must use http or https",
+            json!({"field":"baseUrl", "scheme": parsed.scheme()}),
+        ));
+    }
+    if parsed.host_str().is_none() {
+        return Err(ApiErrorPacket::new(
+            "validation_failed",
+            "runtime target is missing a host",
+            json!({"field":"baseUrl"}),
+        ));
+    }
+    let mut normalized = parsed;
+    normalized.set_query(None);
+    normalized.set_fragment(None);
+    Ok(normalized.to_string().trim_end_matches('/').to_string())
 }
 
 fn remote_profile_is_stale(updated_at: &str, now: DateTime<Utc>) -> Result<bool, String> {
@@ -1234,6 +1275,7 @@ impl GuiTransportRunner {
                 base_url,
                 selected_session_id,
             } => {
+                let base_url = normalize_manual_base_url(&base_url)?;
                 self.base_url = base_url.clone();
                 let result = self
                     .controller
@@ -2057,6 +2099,75 @@ mod tests {
             packet_id: packet_id.to_string(),
             intent,
         }
+    }
+
+    #[test]
+    fn transport_request_decodes_dart_camel_case_payload_fields() {
+        let connect = serde_json::from_value::<GuiTransportRequestPacket>(json!({
+            "packetId": "connect-1",
+            "intent": {
+                "type": "connect",
+                "payload": {
+                    "baseUrl": "http://127.0.0.1:8765",
+                    "selectedSessionId": null
+                }
+            }
+        }))
+        .expect("decode Dart connect packet");
+        assert_eq!(
+            connect,
+            packet(
+                "connect-1",
+                GuiTransportRequest::Connect {
+                    base_url: "http://127.0.0.1:8765".to_string(),
+                    selected_session_id: None,
+                },
+            )
+        );
+
+        let refresh = serde_json::from_value::<GuiTransportRequestPacket>(json!({
+            "packetId": "discover-1",
+            "intent": {
+                "type": "refreshDiscovery",
+                "payload": {
+                    "discoveryPath": null
+                }
+            }
+        }))
+        .expect("decode Dart discovery packet");
+        assert_eq!(
+            refresh,
+            packet(
+                "discover-1",
+                GuiTransportRequest::RefreshDiscovery {
+                    discovery_path: None,
+                },
+            )
+        );
+    }
+
+    #[test]
+    fn transport_output_encodes_dart_camel_case_payload_fields() {
+        let controller_state = GuiControllerState::default();
+        let output = GuiTransportOutputPacket {
+            request_id: "view-1".to_string(),
+            output: GuiTransportOutput::ControlTowerView {
+                view_model: AgentRuntimeControlTowerViewModel::from_runtime_state(
+                    "http://127.0.0.1:8765",
+                    None,
+                    &controller_state,
+                    &[],
+                    0,
+                    None,
+                    &AgentRuntimeDiscoveryView::default(),
+                    &AgentRuntimeDiscoveryView::not_loaded_remote(),
+                    &AgentRuntimeDiscoveryView::not_loaded_imported(),
+                ),
+            },
+        };
+        let encoded = serde_json::to_value(output).expect("encode output");
+        assert!(encoded["output"]["payload"].get("viewModel").is_some(), "{encoded}");
+        assert!(encoded["output"]["payload"].get("view_model").is_none(), "{encoded}");
     }
 
     fn test_role_summary() -> RoleSummary {
@@ -3022,6 +3133,65 @@ mod tests {
             &packet.output,
             GuiTransportOutput::ControllerState { controller_state }
                 if controller_state["connectionState"] == "disconnected"
+        )));
+    }
+
+    #[tokio::test]
+    async fn manual_connect_accepts_host_port_shorthand() {
+        let base_url = start_transport_test_server().await;
+        let shorthand = base_url.trim_start_matches("http://").to_string();
+        let transport = GuiTransportHandle::spawn();
+
+        let connect = transport
+            .send(packet(
+                "connect-shorthand",
+                GuiTransportRequest::Connect {
+                    base_url: shorthand,
+                    selected_session_id: None,
+                },
+            ))
+            .await;
+
+        assert!(connect.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult {
+                result: GuiOperationResult {
+                    outcome: GuiOperationOutcome::ProjectionUpdated { watermark: 1 },
+                    ..
+                }
+            }
+        )));
+        assert!(connect.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::ControlTowerView { view_model }
+                if view_model.base_url == base_url && view_model.connection_state == "streaming"
+        )));
+    }
+
+    #[tokio::test]
+    async fn manual_connect_rejects_invalid_scheme_with_typed_error() {
+        let transport = GuiTransportHandle::spawn();
+
+        let connect = transport
+            .send(packet(
+                "connect-bad-scheme",
+                GuiTransportRequest::Connect {
+                    base_url: "file:///tmp/runtime".to_string(),
+                    selected_session_id: None,
+                },
+            ))
+            .await;
+
+        assert!(connect.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::Error { error }
+                if error.error.code == "validation_failed"
+                    && error.error.message == "runtime target must use http or https"
+        )));
+        assert!(connect.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::ControlTowerView { view_model }
+                if view_model.error_message.as_deref().is_some_and(|message| message.contains("runtime target must use http or https"))
         )));
     }
 

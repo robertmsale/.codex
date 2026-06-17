@@ -1,7 +1,7 @@
-import 'package:code_forge/code_forge.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/models/agent_runtime_control_tower_models.dart';
+import 'agent_runtime_code_editor.dart';
 
 typedef AgentRuntimeRoleVersionAction = void Function(String roleId, String versionId);
 
@@ -59,175 +59,118 @@ class AgentRuntimeControlTower extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return DecoratedBox(
       decoration: const BoxDecoration(color: Color(0xFF05090F)),
       child: SafeArea(
-        child: Column(
-          children: [
-            _StatusStrip(
-              data: data,
-              baseUrlController: baseUrlController,
-              onConnect: onConnect,
-              onRefreshDiscovery: onRefreshDiscovery,
-              onConnectDiscovered: onConnectDiscovered,
-              onPollStream: onPollStream,
-              onDisconnect: onDisconnect,
-            ),
-            _DiscoveryStrip(
-              discovery: data.discovery,
-              remoteDiscovery: data.remoteDiscovery,
-              importedDiscovery: data.importedRemoteDiscovery,
-              onRefreshDiscovery: onRefreshDiscovery,
-              onConnectDiscovered: onConnectDiscovered,
-              onRefreshIcloudRemoteDiscovery: onRefreshIcloudRemoteDiscovery,
-              onConnectIcloudRemote: onConnectIcloudRemote,
-              onImportRemoteProfile: onImportRemoteProfile,
-              onRefreshImportedRemoteProfile: onRefreshImportedRemoteProfile,
-              onConnectImportedRemoteProfile: onConnectImportedRemoteProfile,
-            ),
-            if (data.errorMessage case final error?)
-              Container(
-                width: double.infinity,
-                margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF3A1217),
-                  border: Border.all(color: const Color(0xFF92323D)),
-                  borderRadius: BorderRadius.circular(10),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final narrow = constraints.maxWidth < 720;
+            final connected = _isConnected(data);
+            if (!connected) {
+              return _RuntimeLoginScreen(
+                data: data,
+                baseUrlController: baseUrlController,
+                onConnect: onConnect,
+                onRefreshDiscovery: onRefreshDiscovery,
+                onConnectDiscovered: onConnectDiscovered,
+                onRefreshIcloudRemoteDiscovery: onRefreshIcloudRemoteDiscovery,
+                onConnectIcloudRemote: onConnectIcloudRemote,
+                onImportRemoteProfile: onImportRemoteProfile,
+                onRefreshImportedRemoteProfile: onRefreshImportedRemoteProfile,
+                onConnectImportedRemoteProfile: onConnectImportedRemoteProfile,
+                errorMessage: data.errorMessage == null ? null : _friendlyError(data.errorMessage!),
+              );
+            }
+            return Column(
+              children: [
+                _RuntimeTopBar(
+                  data: data,
+                  onPollStream: onPollStream,
+                  onDisconnect: onDisconnect,
                 ),
-                child: Text(
-                  error,
-                  style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFFFC9CF)),
-                ),
-              ),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    SizedBox(
-                      width: 260,
-                      child: _Panel(
-                        title: data.sessionsTitle,
-                        subtitle: data.sessionsSubtitle,
-                        child: data.sessions.isEmpty
-                            ? _EmptyState(
-                                title: data.sessionsEmptyTitle,
-                                body: data.sessionsEmptyText,
-                              )
-                            : ListView.separated(
-                                itemCount: data.sessions.length,
-                                separatorBuilder: (_, _) => const SizedBox(height: 8),
-                                itemBuilder: (context, index) => _SessionTile(data.sessions[index]),
-                              ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _Panel(
-                        title: data.timelineTitle,
-                        subtitle: data.timelineSubtitle,
-                        child: data.timeline.isEmpty
-                            ? _EmptyState(
-                                title: data.timelineEmptyTitle,
-                                body: data.timelineEmptyText,
-                              )
-                            : ListView.separated(
-                                itemCount: data.timeline.length,
-                                separatorBuilder: (_, _) => const Divider(height: 16),
-                                itemBuilder: (context, index) => _TimelineTile(data.timeline[index]),
-                              ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    SizedBox(
-                      width: 300,
-                      child: Column(
-                        children: [
-                          Expanded(
-                            child: _Panel(
-                              title: data.actionsTitle,
-                              subtitle: data.actionsSubtitle,
-                              child: data.actions.isEmpty
-                                  ? _EmptyState(
-                                      title: data.actionsEmptyTitle,
-                                      body: data.actionsEmptyText,
-                                    )
-                                  : ListView.separated(
-                                      itemCount: data.actions.length,
-                                      separatorBuilder: (_, _) => const SizedBox(height: 8),
-                                      itemBuilder: (context, index) => _ActionTile(data.actions[index]),
+                if (data.errorMessage case final error?)
+                  _InlineError(message: _friendlyError(error)),
+                Expanded(
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(narrow ? 10 : 14, 0, narrow ? 10 : 14, 12),
+                    child: narrow
+                        ? ListView(
+                            children: [
+                              SizedBox(height: 220, child: _SessionsPanel(data)),
+                              const SizedBox(height: 10),
+                              SizedBox(height: 260, child: _TimelinePanel(data)),
+                              SizedBox(height: 210, child: _ActionsPanel(data)),
+                              const SizedBox(height: 10),
+                              SizedBox(height: 360, child: _DetailsPanel(data,
+                                  onRoleValidate: onRoleValidate,
+                                  onRoleCreate: onRoleCreate,
+                                  onRoleUpdate: onRoleUpdate,
+                                  onRoleExport: onRoleExport,
+                                  onRoleArchive: onRoleArchive,
+                                  onRoleUnarchive: onRoleUnarchive,
+                                  onRoleActivate: onRoleActivate,
+                                  onWorkflowMemorySelect: onWorkflowMemorySelect,
+                                  onWorkflowMemoryAttempted: onWorkflowMemoryAttempted,
+                                  onWorkflowMemoryHelpful: onWorkflowMemoryHelpful,
+                                  onWorkflowMemoryNotHelpful: onWorkflowMemoryNotHelpful)),
+                            ],
+                          )
+                        : Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              SizedBox(width: 260, child: _SessionsPanel(data)),
+                              const SizedBox(width: 10),
+                              Expanded(child: _TimelinePanel(data)),
+                              const SizedBox(width: 10),
+                              SizedBox(
+                                width: 312,
+                                child: Column(
+                                  children: [
+                                    SizedBox(height: 230, child: _ActionsPanel(data)),
+                                    const SizedBox(height: 10),
+                                    Expanded(
+                                      child: _DetailsPanel(data,
+                                          onRoleValidate: onRoleValidate,
+                                          onRoleCreate: onRoleCreate,
+                                          onRoleUpdate: onRoleUpdate,
+                                          onRoleExport: onRoleExport,
+                                          onRoleArchive: onRoleArchive,
+                                          onRoleUnarchive: onRoleUnarchive,
+                                          onRoleActivate: onRoleActivate,
+                                          onWorkflowMemorySelect: onWorkflowMemorySelect,
+                                          onWorkflowMemoryAttempted: onWorkflowMemoryAttempted,
+                                          onWorkflowMemoryHelpful: onWorkflowMemoryHelpful,
+                                          onWorkflowMemoryNotHelpful: onWorkflowMemoryNotHelpful),
                                     ),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          Expanded(
-                            child: _Panel(
-                              title: data.detailTitle,
-                              subtitle: data.detailSubtitle,
-                              child: ListView(
-                                children: [
-                                  _RoleAdminPanel(
-                                    data.roleAdmin,
-                                    onValidate: onRoleValidate,
-                                    onCreate: onRoleCreate,
-                                    onUpdate: onRoleUpdate,
-                                    onExport: onRoleExport,
-                                    onArchive: onRoleArchive,
-                                    onUnarchive: onRoleUnarchive,
-                                    onActivate: onRoleActivate,
-                                  ),
-                                  const SizedBox(height: 12),
-                                  _WorkflowMemoryPanel(
-                                    data.workflowMemory,
-                                    onSelect: onWorkflowMemorySelect,
-                                    onAttempted: onWorkflowMemoryAttempted,
-                                    onHelpful: onWorkflowMemoryHelpful,
-                                    onNotHelpful: onWorkflowMemoryNotHelpful,
-                                  ),
-                                  const SizedBox(height: 12),
-                                  ...data.controllerFacts.map(_FactRow.new),
-                                  const SizedBox(height: 10),
-                                  Text(
-                                    'Recent outputs',
-                                    style: theme.textTheme.labelMedium?.copyWith(color: Colors.white70),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  ...data.outputLog.map(
-                                    (line) => Text(
-                                      line,
-                                      style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF98A6B8)),
-                                    ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
-                            ),
+                            ],
                           ),
-                        ],
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-            ),
-          ],
+              ],
+            );
+          },
         ),
       ),
     );
   }
 }
 
-class _StatusStrip extends StatelessWidget {
-  const _StatusStrip({
+class _RuntimeLoginScreen extends StatelessWidget {
+  const _RuntimeLoginScreen({
     required this.data,
     required this.baseUrlController,
     required this.onConnect,
     required this.onRefreshDiscovery,
     required this.onConnectDiscovered,
-    required this.onPollStream,
-    required this.onDisconnect,
+    required this.onRefreshIcloudRemoteDiscovery,
+    required this.onConnectIcloudRemote,
+    required this.onImportRemoteProfile,
+    required this.onRefreshImportedRemoteProfile,
+    required this.onConnectImportedRemoteProfile,
+    this.errorMessage,
   });
 
   final AgentRuntimeControlTowerData data;
@@ -235,56 +178,181 @@ class _StatusStrip extends StatelessWidget {
   final VoidCallback onConnect;
   final VoidCallback onRefreshDiscovery;
   final VoidCallback onConnectDiscovered;
+  final VoidCallback onRefreshIcloudRemoteDiscovery;
+  final VoidCallback onConnectIcloudRemote;
+  final VoidCallback onImportRemoteProfile;
+  final VoidCallback onRefreshImportedRemoteProfile;
+  final VoidCallback onConnectImportedRemoteProfile;
+  final String? errorMessage;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final narrow = constraints.maxWidth < 640;
+        final primary = data.discovery.connectable
+            ? _HeaderAction(label: 'Connect local runtime', onPressed: onConnectDiscovered, filled: true)
+            : data.remoteDiscovery.connectable
+                ? _HeaderAction(label: 'Connect iCloud profile', onPressed: onConnectIcloudRemote, filled: true)
+                : data.importedRemoteDiscovery.connectable
+                    ? _HeaderAction(label: 'Connect imported profile', onPressed: onConnectImportedRemoteProfile, filled: true)
+                    : _HeaderAction(label: 'Connect to URL', onPressed: onConnect, filled: true);
+        return Center(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.symmetric(horizontal: narrow ? 18 : 36, vertical: 24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 720),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Agent Runtime',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.headlineSmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Connect to a local service or imported remote profile.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyMedium?.copyWith(color: const Color(0xFFA6B6CA)),
+                  ),
+                  const SizedBox(height: 22),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0B111A),
+                      border: Border.all(color: const Color(0xFF243045)),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Padding(
+                      padding: EdgeInsets.all(narrow ? 14 : 18),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Runtime setup',
+                                  style: theme.textTheme.titleSmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                              _StatusDot(label: _loginStatusLabel(data), tone: data.connectionTone),
+                            ],
+                          ),
+                          if (errorMessage case final message?) ...[
+                            const SizedBox(height: 12),
+                            _InlineNotice(message: message, tone: 'danger'),
+                          ],
+                          const SizedBox(height: 14),
+                          _LoginTargetField(baseUrlController: baseUrlController, primary: primary),
+                          const SizedBox(height: 16),
+                          _DiscoveryControls(
+                            discovery: data.discovery,
+                            remoteDiscovery: data.remoteDiscovery,
+                            importedDiscovery: data.importedRemoteDiscovery,
+                            onRefreshDiscovery: onRefreshDiscovery,
+                            onConnectDiscovered: onConnectDiscovered,
+                            onRefreshIcloudRemoteDiscovery: onRefreshIcloudRemoteDiscovery,
+                            onConnectIcloudRemote: onConnectIcloudRemote,
+                            onImportRemoteProfile: onImportRemoteProfile,
+                            onRefreshImportedRemoteProfile: onRefreshImportedRemoteProfile,
+                            onConnectImportedRemoteProfile: onConnectImportedRemoteProfile,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _RuntimeTopBar extends StatelessWidget {
+  const _RuntimeTopBar({
+    required this.data,
+    required this.onPollStream,
+    required this.onDisconnect,
+  });
+
+  final AgentRuntimeControlTowerData data;
   final VoidCallback onPollStream;
   final VoidCallback onDisconnect;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(16),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
       child: Row(
         children: [
-          Text(
-            'Agent Runtime Control Tower',
-            style: theme.textTheme.titleMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(width: 16),
-          _Chip(label: data.connectionState, tone: data.connectionTone),
-          const SizedBox(width: 8),
-          _Chip(label: 'watermark ${data.watermarkLabel}', tone: 'info'),
-          const SizedBox(width: 8),
-          ...data.statusBadges.take(4).map(
-                (badge) => Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: _MetricBadge(badge),
-                ),
-              ),
-          const SizedBox(width: 16),
           Expanded(
-            child: TextField(
-              controller: baseUrlController,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Runtime base URL',
-                isDense: true,
-              ),
+            child: Wrap(
+              spacing: 10,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text(
+                  'Control Tower',
+                  style: theme.textTheme.titleMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
+                ),
+                _StatusDot(label: data.statusLabel, tone: data.connectionTone),
+                if (data.pendingRequestCount > 0) _MutedText('${data.pendingRequestCount} pending'),
+              ],
             ),
           ),
-          const SizedBox(width: 10),
-          FilledButton(onPressed: onConnect, child: const Text('Connect')),
           const SizedBox(width: 8),
-          OutlinedButton(onPressed: onPollStream, child: Text('Poll${data.pendingRequestCount > 0 ? ' (${data.pendingRequestCount})' : ''}')),
-          const SizedBox(width: 8),
-          TextButton(onPressed: onDisconnect, child: const Text('Disconnect')),
+          OutlinedButton(onPressed: onPollStream, child: const Text('Refresh')),
+          const SizedBox(width: 6),
+          OutlinedButton(onPressed: onDisconnect, child: const Text('Disconnect')),
         ],
       ),
     );
   }
 }
 
-class _DiscoveryStrip extends StatelessWidget {
-  const _DiscoveryStrip({
+class _LoginTargetField extends StatelessWidget {
+  const _LoginTargetField({required this.baseUrlController, required this.primary});
+
+  final TextEditingController baseUrlController;
+  final _HeaderAction primary;
+
+  @override
+  Widget build(BuildContext context) {
+    final compact = MediaQuery.sizeOf(context).width < 560;
+    final field = TextField(
+      controller: baseUrlController,
+      style: const TextStyle(color: Colors.white),
+      decoration: const InputDecoration(labelText: 'Runtime URL', helperText: 'Manual fallback when discovery is unavailable'),
+    );
+    if (compact) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          field,
+          const SizedBox(height: 10),
+          primary,
+        ],
+      );
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: field),
+        const SizedBox(width: 10),
+        Padding(padding: const EdgeInsets.only(top: 2), child: primary),
+      ],
+    );
+  }
+}
+
+class _DiscoveryControls extends StatelessWidget {
+  const _DiscoveryControls({
     required this.discovery,
     required this.remoteDiscovery,
     required this.importedDiscovery,
@@ -311,97 +379,413 @@ class _DiscoveryStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0B111A),
-        border: Border.all(color: _toneColor(discovery.tone).withValues(alpha: 0.55)),
-        borderRadius: BorderRadius.circular(14),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Discovery', style: theme.textTheme.labelMedium?.copyWith(color: const Color(0xFF9FB2CB))),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 18,
+          runSpacing: 12,
+          children: [
+            _DiscoveryButton(label: 'Local', info: discovery, onRefresh: onRefreshDiscovery, onConnect: onConnectDiscovered),
+            _DiscoveryButton(label: 'iCloud', info: remoteDiscovery, onRefresh: onRefreshIcloudRemoteDiscovery, onConnect: onConnectIcloudRemote),
+            _DiscoveryButton(
+              label: 'Imported',
+              info: importedDiscovery,
+              onRefresh: onRefreshImportedRemoteProfile,
+              onConnect: onConnectImportedRemoteProfile,
+              leadingAction: OutlinedButton(onPressed: onImportRemoteProfile, child: const Text('Import')),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _DiscoveryButton extends StatelessWidget {
+  const _DiscoveryButton({required this.label, required this.info, required this.onRefresh, required this.onConnect, this.leadingAction});
+
+  final String label;
+  final AgentRuntimeDiscoveryInfo info;
+  final VoidCallback onRefresh;
+  final VoidCallback onConnect;
+  final Widget? leadingAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SizedBox(
+      width: 220,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label, style: theme.textTheme.labelMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 2),
+            Text(
+              _discoveryStateText(info),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(color: _toneColor(info.tone)),
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                ?leadingAction,
+                OutlinedButton(onPressed: onRefresh, child: const Text('Refresh')),
+                FilledButton(onPressed: info.connectable ? onConnect : null, child: const Text('Connect')),
+              ],
+            ),
+          ],
+        ),
       ),
-      child: Row(
+    );
+  }
+}
+
+class _SessionsPanel extends StatelessWidget {
+  const _SessionsPanel(this.data);
+  final AgentRuntimeControlTowerData data;
+  @override
+  Widget build(BuildContext context) => _Panel(
+        title: data.sessionsTitle,
+        subtitle: _cleanSectionCopy(data.sessionsSubtitle),
+        child: data.sessions.isEmpty
+            ? _EmptyState(title: data.sessionsEmptyTitle, body: _cleanSectionCopy(data.sessionsEmptyText))
+            : ListView.separated(
+                itemCount: data.sessions.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 8),
+                itemBuilder: (context, index) => _SessionTile(data.sessions[index]),
+              ),
+      );
+}
+
+class _TimelinePanel extends StatelessWidget {
+  const _TimelinePanel(this.data);
+  final AgentRuntimeControlTowerData data;
+  @override
+  Widget build(BuildContext context) => _Panel(
+        title: data.timelineTitle,
+        subtitle: _cleanSectionCopy(data.timelineSubtitle),
+        child: data.timeline.isEmpty
+            ? _EmptyState(title: data.timelineEmptyTitle, body: _cleanSectionCopy(data.timelineEmptyText))
+            : ListView.separated(
+                itemCount: data.timeline.length,
+                separatorBuilder: (_, _) => const Divider(height: 16),
+                itemBuilder: (context, index) => _TimelineTile(data.timeline[index]),
+              ),
+      );
+}
+
+class _ActionsPanel extends StatelessWidget {
+  const _ActionsPanel(this.data);
+  final AgentRuntimeControlTowerData data;
+  @override
+  Widget build(BuildContext context) => _Panel(
+        title: data.actionsTitle,
+        subtitle: _cleanSectionCopy(data.actionsSubtitle),
+        child: data.actions.isEmpty
+            ? _EmptyState(title: data.actionsEmptyTitle, body: _cleanSectionCopy(data.actionsEmptyText))
+            : ListView.separated(
+                itemCount: data.actions.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 8),
+                itemBuilder: (context, index) => _ActionTile(data.actions[index]),
+              ),
+      );
+}
+
+class _DetailsPanel extends StatelessWidget {
+  const _DetailsPanel(
+    this.data, {
+    this.onRoleValidate,
+    this.onRoleCreate,
+    this.onRoleUpdate,
+    this.onRoleExport,
+    this.onRoleArchive,
+    this.onRoleUnarchive,
+    this.onRoleActivate,
+    this.onWorkflowMemorySelect,
+    this.onWorkflowMemoryAttempted,
+    this.onWorkflowMemoryHelpful,
+    this.onWorkflowMemoryNotHelpful,
+  });
+
+  final AgentRuntimeControlTowerData data;
+  final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleValidate;
+  final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleCreate;
+  final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleUpdate;
+  final ValueChanged<String>? onRoleExport;
+  final ValueChanged<String>? onRoleArchive;
+  final ValueChanged<String>? onRoleUnarchive;
+  final AgentRuntimeRoleVersionAction? onRoleActivate;
+  final ValueChanged<AgentRuntimeWorkflowMemoryRow>? onWorkflowMemorySelect;
+  final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryAttempted;
+  final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryHelpful;
+  final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryNotHelpful;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return _Panel(
+      title: _cleanSectionCopy(data.detailTitle),
+      subtitle: _cleanSectionCopy(data.detailSubtitle),
+      child: ListView(
         children: [
-          _Chip(label: discovery.state, tone: discovery.tone),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(discovery.title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
-                const SizedBox(height: 3),
-                Text(
-                  '${discovery.message}${discovery.baseUrl == null ? '' : ' · ${discovery.baseUrl}'}',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF94A5BC)),
+          _RoleAdminPanel(
+            data.roleAdmin,
+            onValidate: onRoleValidate,
+            onCreate: onRoleCreate,
+            onUpdate: onRoleUpdate,
+            onExport: onRoleExport,
+            onArchive: onRoleArchive,
+            onUnarchive: onRoleUnarchive,
+            onActivate: onRoleActivate,
+          ),
+          const SizedBox(height: 10),
+          _WorkflowMemoryPanel(
+            data.workflowMemory,
+            onSelect: onWorkflowMemorySelect,
+            onAttempted: onWorkflowMemoryAttempted,
+            onHelpful: onWorkflowMemoryHelpful,
+            onNotHelpful: onWorkflowMemoryNotHelpful,
+          ),
+          const SizedBox(height: 10),
+          ...data.controllerFacts.where(_isUserFacingFact).map(_FactRow.new),
+          if (data.outputLog.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text('Recent outputs', style: theme.textTheme.labelMedium?.copyWith(color: Colors.white70)),
+            const SizedBox(height: 6),
+            ...data.outputLog.take(4).map(
+                  (line) => Text(line, maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF98A6B8))),
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          OutlinedButton(onPressed: onRefreshDiscovery, child: const Text('Refresh discovery')),
-          const SizedBox(width: 8),
-          FilledButton(
-            onPressed: discovery.connectable ? onConnectDiscovered : null,
-            child: const Text('Connect local'),
-          ),
-          const SizedBox(width: 12),
-          _Chip(label: remoteDiscovery.state, tone: remoteDiscovery.tone),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(remoteDiscovery.title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
-                const SizedBox(height: 3),
-                Text(
-                  '${remoteDiscovery.message}${remoteDiscovery.baseUrl == null ? '' : ' · ${remoteDiscovery.baseUrl}'}',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF94A5BC)),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          OutlinedButton(onPressed: onRefreshIcloudRemoteDiscovery, child: const Text('Refresh iCloud')),
-          const SizedBox(width: 8),
-          FilledButton(
-            onPressed: remoteDiscovery.connectable ? onConnectIcloudRemote : null,
-            child: const Text('Connect remote'),
-          ),
-          const SizedBox(width: 12),
-          _Chip(label: importedDiscovery.state, tone: importedDiscovery.tone),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(importedDiscovery.title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
-                const SizedBox(height: 3),
-                Text(
-                  '${importedDiscovery.message}${importedDiscovery.lastImportedAt == null ? '' : ' · imported ${importedDiscovery.lastImportedAt}'}${importedDiscovery.baseUrl == null ? '' : ' · ${importedDiscovery.baseUrl}'}',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF94A5BC)),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          OutlinedButton(onPressed: onImportRemoteProfile, child: const Text('Import profile')),
-          const SizedBox(width: 8),
-          OutlinedButton(onPressed: onRefreshImportedRemoteProfile, child: const Text('Refresh imported')),
-          const SizedBox(width: 8),
-          FilledButton(
-            onPressed: importedDiscovery.connectable ? onConnectImportedRemoteProfile : null,
-            child: const Text('Connect imported'),
-          ),
+          ],
         ],
       ),
     );
   }
+}
+
+class _HeaderAction extends StatelessWidget {
+  const _HeaderAction({required this.label, required this.onPressed, required this.filled});
+
+  final String label;
+  final VoidCallback onPressed;
+  final bool filled;
+
+  @override
+  Widget build(BuildContext context) {
+    return filled ? FilledButton(onPressed: onPressed, child: Text(label)) : OutlinedButton(onPressed: onPressed, child: Text(label));
+  }
+}
+
+class _StatusDot extends StatelessWidget {
+  const _StatusDot({required this.label, required this.tone});
+
+  final String label;
+  final String tone;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: _toneColor(tone).withValues(alpha: 0.10),
+        border: Border.all(color: _toneColor(tone).withValues(alpha: 0.45)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(width: 6, height: 6, decoration: BoxDecoration(color: _toneColor(tone), shape: BoxShape.circle)),
+            const SizedBox(width: 5),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 220),
+              child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: const Color(0xFFE5EDF8))),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MutedText extends StatelessWidget {
+  const _MutedText(this.label);
+  final String label;
+  @override
+  Widget build(BuildContext context) => Text(label, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: const Color(0xFF8FA1B8)));
+}
+
+class _InlineError extends StatelessWidget {
+  const _InlineError({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF23131A),
+        border: Border.all(color: const Color(0xFF7C3340)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(message, maxLines: 3, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFFFFC9CF))),
+    );
+  }
+}
+
+class _InlineNotice extends StatelessWidget {
+  const _InlineNotice({required this.message, required this.tone});
+
+  final String message;
+  final String tone;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: _toneColor(tone).withValues(alpha: 0.10),
+        border: Border.all(color: _toneColor(tone).withValues(alpha: 0.40)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Text(
+          message,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFFE5EDF8)),
+        ),
+      ),
+    );
+  }
+}
+
+String _friendlyError(String error) {
+  if (error.contains('flutter_rust_bridge') || error.contains('RustLib') || error.contains('Bad state')) {
+    return 'Agent Runtime bridge is not ready. Restart the app, then refresh discovery.';
+  }
+  if (error.toLowerCase().contains('http') || error.toLowerCase().contains('sync failed')) {
+    return 'Runtime did not respond. Check the service, then refresh discovery.';
+  }
+  return error;
+}
+
+bool _isConnected(AgentRuntimeControlTowerData data) {
+  return data.connectionTone == 'success' || data.connectionState == 'streaming' || data.connectionState == 'connected';
+}
+
+String _loginStatusLabel(AgentRuntimeControlTowerData data) {
+  if (data.connectionState == 'connecting') {
+    return 'Connecting';
+  }
+  if (data.errorMessage != null) {
+    return 'Needs attention';
+  }
+  return 'Not connected';
+}
+
+String _discoveryStateText(AgentRuntimeDiscoveryInfo info) {
+  if (info.connectable) {
+    return 'Ready to connect';
+  }
+  switch (info.state) {
+    case 'notLoaded':
+      return 'Not checked yet';
+    case 'noDiscoveryFile':
+    case 'missingProfile':
+      return 'No profile found';
+    case 'malformedProfile':
+      return 'Profile needs repair';
+    case 'staleProfile':
+    case 'staleDiscovery':
+      return 'Profile is stale';
+    case 'unhealthy':
+    case 'remoteUnhealthy':
+      return 'Health check failed';
+    case 'unreachable':
+    case 'remoteUnreachable':
+      return 'Runtime unreachable';
+    case 'runningHealthy':
+    case 'remoteHealthy':
+      return 'Ready to connect';
+    default:
+      return info.title;
+  }
+}
+
+String _cleanSectionCopy(String value) {
+  return value
+      .replaceAll('Rust-owned ', '')
+      .replaceAll('DB-backed immutable ', '')
+      .replaceAll('execute_code/Starlark memories · ', '')
+      .replaceAll('Grouped by operational state', 'Sessions needing attention')
+      .replaceAll('inspector plus feedback', 'Review saved workflows')
+      .replaceAll('Operations event stream, not a chat transcript', 'Operational events for the selected session')
+      .replaceAll('Hydrate the runtime projection to', 'Connect to')
+      .replaceAll('Connect to hydrate', 'Connect to load')
+      .replaceAll('No runtime action queue is loaded.', 'No runtime actions need attention.')
+      .replaceAll('Controller detail', 'Runtime detail')
+      .replaceAll('controller facts', 'runtime facts')
+      .replaceAll('runtime facts', 'Runtime status')
+      .trim();
+}
+
+bool _isUserFacingFact(AgentRuntimeFact fact) {
+  final text = '${fact.label} ${fact.value}'.toLowerCase();
+  return !text.contains('rinf') &&
+      !text.contains('json packet') &&
+      !text.contains('api') &&
+      !text.contains('debug') &&
+      !text.contains('postgres') &&
+      !text.contains('source of truth');
+}
+
+String _displayCopy(String value) {
+  final next = _cleanSectionCopy(value)
+      .replaceAll('tool.call execute_code', 'Execute code')
+      .replaceAll('tool.call', 'Tool work')
+      .replaceAll('Starlark completed', 'Code run completed')
+      .replaceAll('approval.requested', 'Approval requested')
+      .replaceAll('cmd.rg.audit', 'Command review')
+      .replaceAll('rg · audit', 'Search audit')
+      .replaceAll('ownerApproval', 'Owner approval')
+      .replaceAll('runtime-allow', 'Runtime allow')
+      .replaceAll('Runtime allow · project workspace', 'Project workspace')
+      .replaceAll('project:alpha', 'Project alpha')
+      .replaceAll('add · Project alpha · Owner approval', 'Project approval needed')
+      .replaceAll('project agent-runtime · ', '')
+      .replaceAll('Recover generated API drift', 'Review interface changes')
+      .replaceAll('Recover generated interface drift', 'Review interface changes')
+      .replaceAll('Use bounded output artifacts', 'Use saved output excerpts')
+      .replaceAll('generated packet ids', 'saved identifiers')
+      .replaceAll('API', 'interface')
+      .replaceAll('Dart', 'app')
+      .replaceAll('app bindings', 'the app')
+      .replaceAll('artifact handle', 'saved output')
+      .replaceAll('commandRegistryRequest', 'Registry request')
+      .replaceAll('commandRegistry', 'Registry')
+      .replaceAll('canDecide=true · canResume=false', 'Decision needed')
+      .replaceAll('canDecide=false · canResume=true', 'Ready to resume')
+      .replaceAll('canDecide=false · canResume=false', 'Waiting')
+      .replaceAll(RegExp(r'can[A-Za-z]+=(true|false)( · )?'), '')
+      .replaceAll(RegExp(r'\bcmd\.'), '')
+      .replaceAll(RegExp(r'\btool\.'), '')
+      .replaceAll(RegExp(r'/Users/[^ ]+'), 'project workspace')
+      .replaceAll('Runtime allow · project workspace', 'Project workspace')
+      .replaceAll(RegExp(r'\s+·\s+$'), '')
+      .trim();
+  return next.isEmpty ? 'Waiting' : next;
 }
 
 class _Panel extends StatelessWidget {
@@ -414,13 +798,8 @@ class _Panel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Container(
+    return Padding(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xCC0B111A),
-        border: Border.all(color: const Color(0xFF202B3A)),
-        borderRadius: BorderRadius.circular(14),
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -508,34 +887,28 @@ class _WorkflowMemoryPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final detail = workflowMemory.selectedDetail;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFF0F1722),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF26364A)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(10),
+    return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(workflowMemory.title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
             const SizedBox(height: 3),
-            Text(workflowMemory.subtitle, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF8FA1B8))),
+            Text(_cleanSectionCopy(workflowMemory.subtitle), style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF8FA1B8))),
             const SizedBox(height: 10),
             if (workflowMemory.rows.isEmpty)
-              _EmptyState(title: workflowMemory.emptyTitle, body: workflowMemory.emptyText)
+              _EmptyState(title: workflowMemory.emptyTitle, body: _cleanSectionCopy(workflowMemory.emptyText))
             else ...[
               ...workflowMemory.rows.take(4).map(
                     (row) => Padding(
                       padding: const EdgeInsets.only(bottom: 6),
                       child: InkWell(
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(8),
                         onTap: onSelect == null ? null : () => onSelect!(row),
                         child: _DenseTile(
                           title: row.title,
                           subtitle: row.subtitle,
-                          trailing: row.selected ? 'selected' : row.helpfulScore.toStringAsFixed(2),
+                          trailing: row.selected ? 'selected' : 'available',
                           eyebrow: row.scopeType,
                           tone: row.selected ? 'success' : row.tone,
                         ),
@@ -543,45 +916,6 @@ class _WorkflowMemoryPanel extends StatelessWidget {
                     ),
                   ),
               if (detail != null) ...[
-                const SizedBox(height: 8),
-                _FactRow(AgentRuntimeFact(label: 'Selected memory', value: detail.title)),
-                _FactRow(AgentRuntimeFact(label: 'Scope', value: detail.scopeLabel)),
-                _FactRow(AgentRuntimeFact(label: 'Source session', value: detail.sourceSessionId)),
-                if (detail.sourceScriptRunId != null) _FactRow(AgentRuntimeFact(label: 'Script run', value: detail.sourceScriptRunId!)),
-                _FactRow(AgentRuntimeFact(label: 'Provider/model', value: '${detail.provider ?? 'unknown'} · ${detail.model ?? 'unknown'}')),
-                _FactRow(AgentRuntimeFact(label: 'Vector storage', value: '${detail.dimensions ?? 0} · ${detail.storageType ?? 'unknown'}')),
-                if (detail.sourceHash != null) _FactRow(AgentRuntimeFact(label: 'Source hash', value: detail.sourceHash!)),
-                if (detail.commandFingerprint != null) _FactRow(AgentRuntimeFact(label: 'Command fingerprint', value: detail.commandFingerprint!)),
-                const SizedBox(height: 8),
-                Text('Reason', style: theme.textTheme.labelMedium?.copyWith(color: Colors.white70)),
-                Text(detail.reason, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFB7C4D6))),
-                const SizedBox(height: 8),
-                Text('Summary', style: theme.textTheme.labelMedium?.copyWith(color: Colors.white70)),
-                Text(detail.summary, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFB7C4D6))),
-                const SizedBox(height: 8),
-                Text('Read-only source Starlark', style: theme.textTheme.labelMedium?.copyWith(color: Colors.white70)),
-                const SizedBox(height: 6),
-                SizedBox(
-                  height: 120,
-                  child: _ReadOnlyCodeForge(source: detail.sourceStarlark),
-                ),
-                if (workflowMemory.recentEvents.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Text('Recent events', style: theme.textTheme.labelMedium?.copyWith(color: Colors.white70)),
-                  const SizedBox(height: 6),
-                  ...workflowMemory.recentEvents.map(
-                    (event) => Padding(
-                      padding: const EdgeInsets.only(bottom: 6),
-                      child: _DenseTile(
-                        title: event.title,
-                        subtitle: event.subtitle,
-                        trailing: event.createdAt ?? '',
-                        eyebrow: 'event',
-                        tone: event.tone,
-                      ),
-                    ),
-                  ),
-                ],
                 const SizedBox(height: 8),
                 Wrap(
                   spacing: 6,
@@ -596,32 +930,30 @@ class _WorkflowMemoryPanel extends StatelessWidget {
             ],
           ],
         ),
-      ),
     );
   }
 }
 
-class _ReadOnlyCodeForge extends StatefulWidget {
-  const _ReadOnlyCodeForge({required this.source});
+class _ReadOnlyCodeBlock extends StatefulWidget {
+  const _ReadOnlyCodeBlock({required this.source});
 
   final String source;
 
   @override
-  State<_ReadOnlyCodeForge> createState() => _ReadOnlyCodeForgeState();
+  State<_ReadOnlyCodeBlock> createState() => _ReadOnlyCodeBlockState();
 }
 
-class _ReadOnlyCodeForgeState extends State<_ReadOnlyCodeForge> {
-  late final CodeForgeController _controller;
+class _ReadOnlyCodeBlockState extends State<_ReadOnlyCodeBlock> {
+  late final TextEditingController _controller;
 
   @override
   void initState() {
     super.initState();
-    _controller = CodeForgeController();
-    _controller.text = widget.source;
+    _controller = TextEditingController(text: widget.source);
   }
 
   @override
-  void didUpdateWidget(covariant _ReadOnlyCodeForge oldWidget) {
+  void didUpdateWidget(covariant _ReadOnlyCodeBlock oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.source != widget.source) {
       _controller.text = widget.source;
@@ -639,16 +971,11 @@ class _ReadOnlyCodeForgeState extends State<_ReadOnlyCodeForge> {
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: DecoratedBox(
-        decoration: const BoxDecoration(color: Color(0xFF07101A)),
-        child: CodeForge(
-          controller: _controller,
-          readOnly: true,
-          lineWrap: true,
-          enableGutter: false,
-          enableFolding: false,
-          textStyle: const TextStyle(fontSize: 12, color: Color(0xFFE5EDF8)),
-          innerPadding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF07101A),
+          border: Border.all(color: const Color(0xFF1F2B3A)),
         ),
+        child: AgentRuntimeCodeEditor(controller: _controller, readOnly: true),
       ),
     );
   }
@@ -692,11 +1019,12 @@ class _RoleAdminPanelState extends State<_RoleAdminPanel> {
   late final TextEditingController _allowedRecipientsController;
   late final TextEditingController _routingReservedController;
   late final TextEditingController _lifecycleReservedController;
-  late final CodeForgeController _instructionController;
+  late final TextEditingController _instructionController;
   bool _listed = true;
   bool _ownerVisible = true;
   bool _canSpawnAgents = false;
   bool _canArchiveAgents = false;
+  bool _showEditor = false;
   String? _loadedDraftKey;
 
   @override
@@ -714,7 +1042,7 @@ class _RoleAdminPanelState extends State<_RoleAdminPanel> {
     _allowedRecipientsController = TextEditingController();
     _routingReservedController = TextEditingController();
     _lifecycleReservedController = TextEditingController();
-    _instructionController = CodeForgeController();
+    _instructionController = TextEditingController();
     _loadDraft(widget.roleAdmin.editorDraft);
   }
 
@@ -839,40 +1167,31 @@ class _RoleAdminPanelState extends State<_RoleAdminPanel> {
     final theme = Theme.of(context);
     final roleAdmin = widget.roleAdmin;
     final detail = roleAdmin.selectedDetail;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFF0F1722),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF26364A)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(10),
+    return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(roleAdmin.title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
             const SizedBox(height: 3),
-            Text(roleAdmin.subtitle, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF8FA1B8))),
+            Text(_cleanSectionCopy(roleAdmin.subtitle), style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF8FA1B8))),
             const SizedBox(height: 10),
             if (roleAdmin.rows.isEmpty)
-              _EmptyState(title: roleAdmin.emptyTitle, body: roleAdmin.emptyText)
+              _EmptyState(title: roleAdmin.emptyTitle, body: _cleanSectionCopy(roleAdmin.emptyText))
             else ...[
               ...roleAdmin.rows.take(4).map((row) => Padding(
                     padding: const EdgeInsets.only(bottom: 6),
                     child: _DenseTile(
                       title: row.title,
-                      subtitle: row.subtitle,
+                      subtitle: row.status == 'active' ? 'Current role version' : 'Available role version',
                       trailing: row.status,
-                      eyebrow: row.id,
+                      eyebrow: 'role',
                       tone: row.tone,
                     ),
                   )),
               if (detail != null) ...[
                 const SizedBox(height: 8),
                 _FactRow(AgentRuntimeFact(label: 'Selected role', value: '${detail.displayName} · ${detail.version}')),
-                _FactRow(AgentRuntimeFact(label: 'Model default', value: detail.model)),
-                _FactRow(AgentRuntimeFact(label: 'Capabilities', value: detail.capabilities.length.toString())),
-                _FactRow(AgentRuntimeFact(label: 'Policy entries', value: detail.policy.length.toString())),
               ],
               if (roleAdmin.versionRows.isNotEmpty) ...[
                 const SizedBox(height: 8),
@@ -890,59 +1209,58 @@ class _RoleAdminPanelState extends State<_RoleAdminPanel> {
                 ),
               ],
               const SizedBox(height: 8),
-              _RoleDraftEditor(
-                instructionController: _instructionController,
-                roleIdController: _roleIdController,
-                versionController: _versionController,
-                displayNameController: _displayNameController,
-                modelController: _modelController,
-                reasoningController: _reasoningController,
-                capabilitiesController: _capabilitiesController,
-                policyController: _policyController,
-                routingModeController: _routingModeController,
-                defaultRecipientController: _defaultRecipientController,
-                allowedRecipientsController: _allowedRecipientsController,
-                routingReservedController: _routingReservedController,
-                lifecycleReservedController: _lifecycleReservedController,
-                listed: _listed,
-                ownerVisible: _ownerVisible,
-                canSpawnAgents: _canSpawnAgents,
-                canArchiveAgents: _canArchiveAgents,
-                onListedChanged: (value) => setState(() => _listed = value),
-                onOwnerVisibleChanged: (value) => setState(() => _ownerVisible = value),
-                onCanSpawnAgentsChanged: (value) => setState(() => _canSpawnAgents = value),
-                onCanArchiveAgentsChanged: (value) => setState(() => _canArchiveAgents = value),
+              OutlinedButton(
+                onPressed: () => setState(() => _showEditor = !_showEditor),
+                child: Text(_showEditor ? 'Hide editor' : 'Edit role'),
               ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  OutlinedButton(onPressed: widget.onValidate == null ? null : () => widget.onValidate!(_editedDraft()), child: const Text('Validate')),
-                  OutlinedButton(onPressed: widget.onCreate == null ? null : () => widget.onCreate!(_editedDraft()), child: const Text('Create')),
-                  OutlinedButton(onPressed: widget.onUpdate == null ? null : () => widget.onUpdate!(_editedDraft()), child: const Text('Update')),
-                  OutlinedButton(onPressed: widget.onExport == null ? null : () => widget.onExport!(_editedDraft().roleId), child: const Text('Export')),
-                  OutlinedButton(onPressed: widget.onArchive == null ? null : () => widget.onArchive!(_editedDraft().roleId), child: const Text('Archive')),
-                  OutlinedButton(onPressed: widget.onUnarchive == null ? null : () => widget.onUnarchive!(_editedDraft().roleId), child: const Text('Unarchive')),
-                ],
-              ),
+              if (_showEditor) ...[
+                const SizedBox(height: 8),
+                _RoleDraftEditor(
+                  instructionController: _instructionController,
+                  roleIdController: _roleIdController,
+                  versionController: _versionController,
+                  displayNameController: _displayNameController,
+                  modelController: _modelController,
+                  reasoningController: _reasoningController,
+                  capabilitiesController: _capabilitiesController,
+                  policyController: _policyController,
+                  routingModeController: _routingModeController,
+                  defaultRecipientController: _defaultRecipientController,
+                  allowedRecipientsController: _allowedRecipientsController,
+                  routingReservedController: _routingReservedController,
+                  lifecycleReservedController: _lifecycleReservedController,
+                  listed: _listed,
+                  ownerVisible: _ownerVisible,
+                  canSpawnAgents: _canSpawnAgents,
+                  canArchiveAgents: _canArchiveAgents,
+                  onListedChanged: (value) => setState(() => _listed = value),
+                  onOwnerVisibleChanged: (value) => setState(() => _ownerVisible = value),
+                  onCanSpawnAgentsChanged: (value) => setState(() => _canSpawnAgents = value),
+                  onCanArchiveAgentsChanged: (value) => setState(() => _canArchiveAgents = value),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    OutlinedButton(onPressed: widget.onValidate == null ? null : () => widget.onValidate!(_editedDraft()), child: const Text('Validate')),
+                    OutlinedButton(onPressed: widget.onCreate == null ? null : () => widget.onCreate!(_editedDraft()), child: const Text('Create')),
+                    OutlinedButton(onPressed: widget.onUpdate == null ? null : () => widget.onUpdate!(_editedDraft()), child: const Text('Update')),
+                    OutlinedButton(onPressed: widget.onExport == null ? null : () => widget.onExport!(_editedDraft().roleId), child: const Text('Export')),
+                    OutlinedButton(onPressed: widget.onArchive == null ? null : () => widget.onArchive!(_editedDraft().roleId), child: const Text('Archive')),
+                    OutlinedButton(onPressed: widget.onUnarchive == null ? null : () => widget.onUnarchive!(_editedDraft().roleId), child: const Text('Unarchive')),
+                  ],
+                ),
+              ],
               if (roleAdmin.validationErrors.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 ...roleAdmin.validationErrors.map(
                   (error) => Text(error, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFFFA8B4))),
                 ),
               ],
-              if (roleAdmin.actionStates.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                ...roleAdmin.actionStates.take(3).map((action) => Padding(
-                      padding: const EdgeInsets.only(bottom: 6),
-                      child: _ActionTile(action),
-                    )),
-              ],
             ],
           ],
         ),
-      ),
     );
   }
 }
@@ -972,7 +1290,7 @@ class _RoleDraftEditor extends StatelessWidget {
     required this.onCanArchiveAgentsChanged,
   });
 
-  final CodeForgeController instructionController;
+  final TextEditingController instructionController;
   final TextEditingController roleIdController;
   final TextEditingController versionController;
   final TextEditingController displayNameController;
@@ -1002,7 +1320,7 @@ class _RoleDraftEditor extends StatelessWidget {
       children: [
         Row(
           children: [
-            Expanded(child: _EditorTextField(label: 'Role id', controller: roleIdController)),
+            Expanded(child: _EditorTextField(label: 'Role key', controller: roleIdController)),
             const SizedBox(width: 6),
             Expanded(child: _EditorTextField(label: 'Version', controller: versionController)),
           ],
@@ -1012,15 +1330,15 @@ class _RoleDraftEditor extends StatelessWidget {
         const SizedBox(height: 6),
         Row(
           children: [
-            Expanded(child: _EditorTextField(label: 'Model default', controller: modelController)),
+            Expanded(child: _EditorTextField(label: 'Model', controller: modelController)),
             const SizedBox(width: 6),
             Expanded(child: _EditorTextField(label: 'Reasoning effort', controller: reasoningController)),
           ],
         ),
         const SizedBox(height: 6),
-        _EditorTextField(label: 'Capabilities (one per line)', controller: capabilitiesController, maxLines: 3),
+        _EditorTextField(label: 'Capabilities', controller: capabilitiesController, maxLines: 3),
         const SizedBox(height: 6),
-        _EditorTextField(label: 'Policy decisions (action=decision)', controller: policyController, maxLines: 4),
+        _EditorTextField(label: 'Permission rules', controller: policyController, maxLines: 4),
         const SizedBox(height: 6),
         Row(
           children: [
@@ -1032,9 +1350,9 @@ class _RoleDraftEditor extends StatelessWidget {
         const SizedBox(height: 6),
         _EditorTextField(label: 'Allowed recipients', controller: allowedRecipientsController, maxLines: 2),
         const SizedBox(height: 6),
-        _EditorTextField(label: 'Routing reserved actions', controller: routingReservedController, maxLines: 2),
+        _EditorTextField(label: 'Reserved routing', controller: routingReservedController, maxLines: 2),
         const SizedBox(height: 6),
-        _EditorTextField(label: 'Lifecycle reserved actions', controller: lifecycleReservedController, maxLines: 2),
+        _EditorTextField(label: 'Reserved lifecycle', controller: lifecycleReservedController, maxLines: 2),
         const SizedBox(height: 6),
         Wrap(
           spacing: 12,
@@ -1047,7 +1365,7 @@ class _RoleDraftEditor extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 6),
-        Text('Instruction editor', style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF93A5BC))),
+        Text('Instructions', style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF93A5BC))),
         const SizedBox(height: 4),
         SizedBox(
           height: 120,
@@ -1055,14 +1373,8 @@ class _RoleDraftEditor extends StatelessWidget {
             borderRadius: BorderRadius.circular(8),
             child: DecoratedBox(
               decoration: const BoxDecoration(color: Color(0xFF07101A)),
-              child: CodeForge(
+              child: AgentRuntimeCodeEditor(
                 controller: instructionController,
-                readOnly: false,
-                lineWrap: true,
-                enableGutter: false,
-                enableFolding: false,
-                textStyle: const TextStyle(fontSize: 12, color: Color(0xFFE5EDF8)),
-                innerPadding: const EdgeInsets.all(8),
               ),
             ),
           ),
@@ -1130,14 +1442,8 @@ class _RoleVersionTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final createdAt = row.createdAt == null || row.createdAt!.isEmpty ? 'created time unavailable' : row.createdAt!;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFF0B131E),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: _toneColor(_isCurrent ? 'success' : 'info').withValues(alpha: 0.45)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
+    return Padding(
+        padding: const EdgeInsets.fromLTRB(0, 8, 0, 8),
         child: Row(
           children: [
             Expanded(
@@ -1150,7 +1456,7 @@ class _RoleVersionTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${row.versionId} · $createdAt',
+                    createdAt,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF8FA1B8)),
@@ -1167,7 +1473,6 @@ class _RoleVersionTile extends StatelessWidget {
             ),
           ],
         ),
-      ),
     );
   }
 }
@@ -1190,33 +1495,41 @@ class _DenseTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFF0F1722),
-        borderRadius: BorderRadius.circular(10),
-        border: Border(left: BorderSide(color: _toneColor(tone), width: 3)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(11, 10, 10, 10),
+    final displayTitle = _displayCopy(title);
+    final displaySubtitle = _displayCopy(subtitle);
+    final displayTrailing = _displayCopy(trailing);
+    final displayEyebrow = _displayCopy(eyebrow);
+    return Padding(
+        padding: const EdgeInsets.fromLTRB(0, 9, 0, 9),
         child: Row(
           children: [
+            Container(width: 3, height: 54, color: _toneColor(tone)),
+            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(eyebrow.toUpperCase(), maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.labelSmall?.copyWith(color: _toneColor(tone), letterSpacing: 0.5)),
+                  Text(displayEyebrow.toUpperCase(), maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.labelSmall?.copyWith(color: _toneColor(tone), letterSpacing: 0.5)),
                   const SizedBox(height: 3),
-                  Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white)),
+                  Text(displayTitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white)),
                   const SizedBox(height: 3),
-                  Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF97A6BA))),
+                  Text(displaySubtitle, maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF97A6BA))),
                 ],
               ),
             ),
             const SizedBox(width: 8),
-            _Chip(label: trailing, tone: tone),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 110),
+              child: Text(
+                displayTrailing,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.right,
+                style: theme.textTheme.labelSmall?.copyWith(color: _toneColor(tone), fontWeight: FontWeight.w700),
+              ),
+            ),
           ],
         ),
-      ),
     );
   }
 }
@@ -1233,8 +1546,8 @@ class _FactRow extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
         children: [
-          Expanded(child: Text(fact.label, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF7D8DA3)))),
-          Text(fact.value, style: theme.textTheme.bodySmall?.copyWith(color: Colors.white)),
+          Expanded(child: Text(_displayCopy(fact.label), style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF7D8DA3)))),
+          Flexible(child: Text(_displayCopy(fact.value), textAlign: TextAlign.right, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: Colors.white))),
         ],
       ),
     );
@@ -1253,37 +1566,10 @@ class _Chip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: _toneColor(tone).withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(999),
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(color: _toneColor(tone).withValues(alpha: 0.55)),
       ),
       child: Text(label, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: const Color(0xFFE5EDF8))),
-    );
-  }
-}
-
-class _MetricBadge extends StatelessWidget {
-  const _MetricBadge(this.badge);
-
-  final AgentRuntimeStatusBadge badge;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0E1622),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: _toneColor(badge.tone).withValues(alpha: 0.45)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(badge.label, style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF93A5BC))),
-          const SizedBox(width: 6),
-          Text(badge.value, style: theme.textTheme.labelMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
-        ],
-      ),
     );
   }
 }
@@ -1297,29 +1583,24 @@ class _EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: const Color(0xFF0F1722),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFF223047)),
-        ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              title,
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.labelLarge?.copyWith(color: Colors.white),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              body,
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFF7E8DA2)),
-            ),
-          ],
-        ),
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(color: Colors.white),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                body,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFF7E8DA2)),
+              ),
+            ],
+          ),
       ),
     );
   }

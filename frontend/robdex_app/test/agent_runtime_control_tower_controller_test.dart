@@ -52,10 +52,52 @@ void main() {
   });
 
   test('iCloud remote discovery transport packet shapes are stable JSON intents', () {
-    expect(agentRuntimeIcloudRefreshIntentForTest(), {'type': 'refreshIcloudRemoteDiscovery'});
+    expect(agentRuntimeIcloudRefreshIntentForTest(), {
+      'type': 'refreshIcloudRemoteDiscovery',
+      'payload': {'profilePath': null},
+    });
     expect(agentRuntimeIcloudConnectIntentForTest(), {
       'type': 'connectIcloudRemoteRuntime',
       'payload': {'selectedSessionId': null},
+    });
+  });
+
+  test('local discovery refresh sends Rust decodable payload envelope', () {
+    final sentPackets = <Map<String, dynamic>>[];
+    final controller = AgentRuntimeControlTowerController(
+      requestSink: (requestId, packetJson) {
+        sentPackets.add(jsonDecode(packetJson) as Map<String, dynamic>);
+      },
+    );
+    addTearDown(controller.dispose);
+
+    controller.refreshDiscovery();
+
+    expect(sentPackets, hasLength(1));
+    expect(sentPackets.single['intent'], {
+      'type': 'refreshDiscovery',
+      'payload': {'discoveryPath': null},
+    });
+  });
+
+  test('manual connect sends Rust decodable payload envelope', () {
+    final sentPackets = <Map<String, dynamic>>[];
+    final controller = AgentRuntimeControlTowerController(
+      requestSink: (requestId, packetJson) {
+        sentPackets.add(jsonDecode(packetJson) as Map<String, dynamic>);
+      },
+    );
+    addTearDown(controller.dispose);
+
+    controller.connect('http://127.0.0.1:8765');
+
+    expect(sentPackets, hasLength(1));
+    expect(sentPackets.single['intent'], {
+      'type': 'connect',
+      'payload': {
+        'baseUrl': 'http://127.0.0.1:8765',
+        'selectedSessionId': null,
+      },
     });
   });
 

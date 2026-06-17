@@ -65,6 +65,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "10.6.0"
+  code_forge_web:
+    dependency: transitive
+    description:
+      name: code_forge_web
+      sha256: "6d454a9001de9e4dba748445c0b5ae9e0ad218ea5760f625def7ad00c2fc39aa"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.10.0"
   collection:
     dependency: transitive
     description:
