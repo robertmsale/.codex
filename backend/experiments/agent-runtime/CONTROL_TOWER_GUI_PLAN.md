@@ -1,8 +1,24 @@
-# Agent Runtime Control Tower GUI Plan
+# Agent Runtime Shared Shell GUI Plan
+
+## Generic shell conversion record
+
+The connected Agent Runtime product surface now uses the shared conversation
+shell pattern instead of a dashboard-first operations screen. The shell presents a
+left project/session rail, the shared `ChatTimeline` in the center, the shared
+`ComposerPanel` for selected-session messages, and an operations/detail area for
+Role Admin, Workflow Memory, attention items, and diagnostics. The login/setup
+screen remains the disconnected entry point. Runtime projection, discovery,
+role, workflow-memory, and operation decisions remain Rust-owned; Dart assembles
+the shared shell, sends typed Rinf intents, and keeps only widget-local draft,
+selection, and connection state.
+
+Operations diagnostics are retained as detail content rather than
+the primary connected app shell. New visual work must extend the shared
+conversation-shell contract, not rebuild a parallel dashboard.
 
 This planning artifact defines the first shell for the experimental agent
 runtime GUI. It began as the backend/Rust planning source of truth and now also
-records the implemented Flutter-facing control-tower shell, Rust/Rinf transport
+records the implemented Flutter-facing shared shell, Rust/Rinf transport
 boundary, and service discovery behavior. It does not define production Robdex
 behavior or any fallback GUI state path.
 
@@ -13,40 +29,40 @@ small: Dart sends generated typed Agent Runtime request variants over
 `AgentRuntimeRequestSignal`, consumes generated typed Agent Runtime output
 variants from `AgentRuntimeOutputSignal`, and renders the Rust-owned
 `AgentRuntimeControlTowerViewModel`. Dart does not derive session rows,
-timeline rows, action rows, controller facts, labels, watermarks, operation
+timeline rows, action rows, runtime facts, labels, watermarks, operation
 success, approval/command enablement, or durable state from raw projection or
 controller JSON.
 
 Reusable visual pieces live in
 `frontend/robdex_app/packages/robdex_design_system` and minimal static
 scenarios live in `frontend/robdex_app/packages/design_lab`. The initial shell
-proves disconnected/error state, connect intent, projection/controller packet
+proves disconnected/error state, connect intent, runtime packet
 receipt, selected-session timeline visibility when the Rust view model contains
-it, action queue rendering from Rust-shaped action rows, and explicit stream
+it, attention-item rendering from Rust-shaped action rows, and explicit stream
 polling through the Rust-owned transport. The richer UX guidance below remains
 the direction for subsequent slices.
 
 ## Richer UX implementation record
 
-The mounted control tower has been tightened into an operations-first shell
+The mounted Agent Runtime UI has been tightened into an operations-first shell
 without changing the transport boundary. Rust now shapes additional
 `AgentRuntimeControlTowerViewModel` fields for the UI: status badges,
 selected-session label, section titles, empty-state copy, session grouping,
 row tones, action state text, and severity tones. The design-system widget
 uses those Rust-shaped fields to render a clearer runtime status strip, denser
-session rail, selected-session event stream, readable action queue, controller
+session rail, selected-session activity, readable attention list, runtime
 detail panel, and explicit disconnected/connecting/connected/error/empty
 states. Dart remains a thin renderer and may keep only widget-local pending
 request ids, base URL text, scroll/focus/hover, and similar ephemeral facts.
 Current action rows are limited to real attention items available in the
 projection: approvals, approved resumable approvals, and typed pending/actionable
 command-registry request summaries. Installed or enabled command registry
-entries are inventory, not action queue work; they may appear as inventory
+entries are inventory, not attention work; they may appear as inventory
 counts/status detail, but they are not counted as required attention.
 
 ## File bootstrap discovery implementation record
 
-The control tower now receives Rust-shaped local discovery fields from the
+The Agent Runtime UI now receives Rust-shaped local discovery fields from the
 experimental transport. Rust reads the canonical user-scoped discovery packet
 by default: `~/Library/Application Support/Robdex Agent Runtime/service/discovery.json`
 on macOS, or
@@ -71,14 +87,14 @@ from `~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote
 by default, or from `ROBDEX_AGENT_RUNTIME_ICLOUD_REMOTE_PROFILE_PATH` for tests
 and development. The profile supplies only a host/port/scheme candidate
 (`robertmsale._peer.internal:8765` by default); Rust probes `/health` before
-the Control Tower marks it connectable. The UI shows local discovery and iCloud
+the Agent Runtime UI marks it connectable. The UI shows local discovery and iCloud
 remote profile discovery distinctly. mDNS/Bonjour discovery and iOS profile-sync
 UX remain separate owner-approved slices. The current service packaging
 affordance includes per-user script-based packaging and macOS LaunchAgent
 install/load/unload/status commands.
 
 Document import is implemented as a practical iPhone/macOS bootstrap path
-without Apple iCloud container entitlements. The Control Tower shows an
+without Apple iCloud container entitlements. The Agent Runtime UI shows an
 `Import profile` affordance beside iCloud remote discovery. Dart sends an import
 intent only; Rust validates the selected JSON profile, writes a sanitized
 app-local copy, probes `/health`, and exposes `importedRemoteDiscovery` with
@@ -88,14 +104,14 @@ imported` and `Connect imported` operate on the Rust-owned app-local copy.
 
 ## Role Admin implementation record
 
-The control tower now includes a structured Role Admin section. Rust owns role draft semantics, validation dispatch, operation dispatch, projection reduction, and view-model shaping. The `roleAdmin` view-model section contains role rows, selected-role detail, version rows, editable draft content, validation errors, and role operation action states. Dart renders these Rust-shaped values and may keep only widget-local editor text/controller state; validation/create/update/export/activate/archive/unarchive are sent back as typed Rust GUI operations, and version rows expose activation only for non-current immutable versions.
+The operations detail now includes a structured Role Admin section. Rust owns role draft semantics, validation dispatch, operation dispatch, projection reduction, and view-model shaping. The `roleAdmin` view-model section contains role rows, selected-role detail, version rows, editable draft content, validation errors, and role operation action states. Dart renders these Rust-shaped values and may keep only widget-local editor text/connection state; validation/create/update/export/activate/archive/unarchive are sent back as typed Rust GUI operations, and version rows expose activation only for non-current immutable versions.
 
 Role create/update uses inline editor `instructionText` and persists it to immutable `role_versions.instruction_text`; the UI never creates prompt files. Server validation reuses canonical role manifest validation, DB routing validation, and command-policy validation. Create/update/activate/archive/unarchive mutations wait for projection/delta evidence, while metadata/options, validation, detail, version, and export operations return direct typed results.
 
 ## Direction
 
-The first shell is an operations control tower, not a chat-first interface.
-Conversation remains a detail inside a selected session. The top-level product
+The connected shell is operations-first while still using the shared conversation primitives.
+Conversation is the center workflow once a session is selected. The top-level product
 job is operational attention: the user must immediately see what is running,
 what needs approval, what is blocked, what failed, what changed recently, and
 what action is safe next.
@@ -124,13 +140,13 @@ The first shell uses five stable regions:
 - Items expose typed state from `RuntimeProjection`; Dart does not infer
      status from raw events. The first Flutter shell receives these items as
      Rust-shaped control-tower session rows.
-3. **Center selected-session event stream**
+3. **Center selected-session activity**
    - Ordered timeline for the selected session: user/model turns, tool calls,
      scripts, process events, approvals, command-registry changes, errors, and
      workflow-memory events.
    - This is not a chat transcript first. It is an operations event stream with
      compact progressive detail.
-4. **Right action queue**
+4. **Right attention and operations detail**
    - Pending approvals, resumable approvals, command-registry requests, blocked
      process/session actions, validation failures, and safe next operations.
    - Controls are enabled only by typed backend-derived fields such as
@@ -153,7 +169,7 @@ The first shell uses five stable regions:
 - Shows base URL, selected runtime target, last connection error, and connect
   action.
 - No runtime state is invented. Before hydration, the shell displays only
-  local controller state from `GuiControllerState`.
+  local connection state from `GuiControllerState`.
 
 ### Runtime overview
 
@@ -171,7 +187,7 @@ The first shell uses five stable regions:
 
 ### Approval decision
 
-- Appears in the right action queue and optional detail drawer.
+- Appears in the right attention list and optional detail drawer.
 - Uses typed approval fields: status, approver kind, resumable state,
   `canDecide`, `canResume`, reason requirement, and typed result/error packets.
 - Dart must not infer approval availability from status strings or raw
@@ -235,8 +251,8 @@ constructor-ready models and widgets for:
 
 - runtime status strip;
 - operational session rail item and grouped rail;
-- selected-session event stream row types;
-- action queue item types for approvals, registry requests, process blockers,
+- selected-session activity row types;
+- attention item types for approvals, registry requests, process blockers,
   resync, shutdown, and typed API errors;
 - approval decision panel;
 - command-registry request review panel;
@@ -291,7 +307,7 @@ Avoid:
 - nested panel stacks that hide the operational hierarchy;
 - fake developer fan-fiction data;
 - card, border, and prose overload;
-- default AI-dashboard patterns that make everything look equally important;
+- default metric-board patterns that make everything look equally important;
 - permanent giant inspector panes;
 - chat-first composition that demotes approvals/processes/errors.
 
@@ -307,21 +323,21 @@ Prefer:
 
 ### Emergency presentation correction record
 
-The mounted Control Tower presentation has been corrected away from the broken
+The mounted Agent Runtime presentation has been corrected away from the broken
 one-row discovery/status/control strip. Connection and discovery now live in a
 setup screen shown only before a runtime is connected. Once connected, the
-Control Tower shows a compact operations bar and hides the manual URL/profile
+Agent Runtime shell shows a compact operations bar and hides the manual URL/profile
 setup affordances until the user disconnects. The setup screen presents one
 state-appropriate primary action, compact local/iCloud/imported discovery
 controls that wrap at narrow widths, and concise bridge loading/failure copy
-instead of raw Flutter/Rust crash cards. Control Tower surfaces use restrained
+instead of raw Flutter/Rust crash cards. Agent Runtime surfaces use restrained
 radii no larger than 8 and avoid status-chip spam, giant empty rectangles, and
 Connect/Disconnect as simultaneous peer actions for the same target. The
 design-system package owns the CodeForge boundary: native app surfaces use
 `code_forge`, Design Lab/web surfaces use `code_forge_web`, and both clients
-render the same design-system Control Tower component.
+render the same design-system Agent Runtime component.
 
-## Source-of-truth files for future implementers
+## Source-of-truth files for implementers
 
 Runtime/backend source of truth:
 

@@ -1,9 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:robdex_app/src/agent_runtime/agent_runtime_control_tower_controller.dart';
 import 'package:robdex_app/src/bindings/bindings.dart' as bindings;
+import 'package:robdex_design_system/robdex_design_system.dart';
 
 void main() {
-  test('role activate operation maps role and version ids for Rust transport', () {
+  test('role activate operation maps role and version ids for typed transport', () {
     final operation = agentRuntimeRoleActivateOperationForTest('runtime-allow', 'role-version-0');
 
     expect(operation, isA<bindings.AgentRuntimeGuiOperationActivateRoleVersion>());
@@ -41,7 +42,7 @@ void main() {
       feedback: 'notHelpful',
       payload: const bindings.AgentRuntimeWorkflowMemoryFeedbackPayload(
         source: 'gui.controlTower',
-        reason: 'marked from Control Tower',
+        reason: 'marked from Agent Runtime',
         variant: false,
         hasVariant: false,
       ),
@@ -55,10 +56,10 @@ void main() {
     }
     expect((attempted as bindings.AgentRuntimeGuiOperationWorkflowMemoryFeedback).payload.hasVariant, true);
     expect((helpful as bindings.AgentRuntimeGuiOperationWorkflowMemoryFeedback).feedback, 'helpful');
-    expect((notHelpful as bindings.AgentRuntimeGuiOperationWorkflowMemoryFeedback).payload.reason, 'marked from Control Tower');
+    expect((notHelpful as bindings.AgentRuntimeGuiOperationWorkflowMemoryFeedback).payload.reason, 'marked from Agent Runtime');
   });
 
-  test('workflow memory selection operation maps memory id for Rust transport', () {
+  test('workflow memory selection operation maps memory id for typed transport', () {
     final operation = agentRuntimeWorkflowMemorySelectOperationForTest('memory-2');
 
     expect(operation, isA<bindings.AgentRuntimeGuiOperationSelectWorkflowMemory>());
@@ -102,6 +103,151 @@ void main() {
     final connect = sentRequests.single as bindings.AgentRuntimeRequestConnect;
     expect(connect.baseUrl, 'http://127.0.0.1:8765');
     expect(connect.selectedSessionId, '');
+  });
+
+  test('disconnect sends generated typed signal intent', () {
+    final sentRequests = <bindings.AgentRuntimeRequest>[];
+    final controller = AgentRuntimeControlTowerController(
+      requestSink: (requestId, request) {
+        sentRequests.add(request);
+      },
+    );
+    addTearDown(controller.dispose);
+
+    controller.disconnect();
+
+    expect(sentRequests.single, isA<bindings.AgentRuntimeRequestDisconnect>());
+  });
+
+  test('conversation shell session actions send generated typed operation intents', () {
+    final sentRequests = <bindings.AgentRuntimeRequest>[];
+    final controller = AgentRuntimeControlTowerController(
+      requestSink: (requestId, request) {
+        sentRequests.add(request);
+      },
+    );
+    addTearDown(controller.dispose);
+
+    controller.createSession();
+    controller.selectSession('session-2');
+    controller.sendMessage('session-2', '  hello runtime  ');
+
+    expect(sentRequests, hasLength(3));
+    final create = sentRequests[0] as bindings.AgentRuntimeRequestDispatchOperation;
+    expect(create.operation, isA<bindings.AgentRuntimeGuiOperationCreateSession>());
+    final select = sentRequests[1] as bindings.AgentRuntimeRequestDispatchOperation;
+    expect(select.operation, isA<bindings.AgentRuntimeGuiOperationSelectSession>());
+    expect((select.operation as bindings.AgentRuntimeGuiOperationSelectSession).sessionId, 'session-2');
+    final send = sentRequests[2] as bindings.AgentRuntimeRequestDispatchOperation;
+    expect(send.operation, isA<bindings.AgentRuntimeGuiOperationSendMessage>());
+    final sendMessage = send.operation as bindings.AgentRuntimeGuiOperationSendMessage;
+    expect(sendMessage.sessionId, 'session-2');
+    expect(sendMessage.message, 'hello runtime');
+  });
+
+  test('session close archive and fork use generated typed operation intents', () {
+    final sentRequests = <bindings.AgentRuntimeRequest>[];
+    final controller = AgentRuntimeControlTowerController(
+      requestSink: (requestId, request) {
+        sentRequests.add(request);
+      },
+    );
+    addTearDown(controller.dispose);
+
+    controller.closeSession('session-2');
+    controller.archiveSession('session-2');
+    controller.forkSession('session-2');
+
+    expect(sentRequests, hasLength(3));
+    expect((sentRequests[0] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationCloseSession>());
+    expect((sentRequests[1] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationArchiveSession>());
+    expect((sentRequests[2] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationForkSession>());
+  });
+
+  test('project and settings shell entry points rehydrate through typed runtime state requests', () {
+    final sentRequests = <bindings.AgentRuntimeRequest>[];
+    final controller = AgentRuntimeControlTowerController(
+      requestSink: (requestId, request) {
+        sentRequests.add(request);
+      },
+    );
+    addTearDown(controller.dispose);
+
+    controller.selectProject('runtime');
+    controller.openSettings();
+
+    expect(sentRequests, hasLength(2));
+    expect(sentRequests[0], isA<bindings.AgentRuntimeRequestSelectProject>());
+    expect((sentRequests[0] as bindings.AgentRuntimeRequestSelectProject).projectId, 'runtime');
+    expect(sentRequests[1], isA<bindings.AgentRuntimeRequestHydrate>());
+  });
+
+  test('role admin shell actions send generated typed operations with payloads', () {
+    final sentRequests = <bindings.AgentRuntimeRequest>[];
+    final controller = AgentRuntimeControlTowerController(
+      requestSink: (requestId, request) {
+        sentRequests.add(request);
+      },
+    );
+    addTearDown(controller.dispose);
+    final draft = mockAgentRuntimeRoleAdminSelected.editorDraft!;
+
+    controller.validateRoleDraft(draft);
+    controller.createRoleFromDraft(draft);
+    controller.updateRoleFromDraft(draft);
+    controller.exportRole('runtime-allow');
+    controller.archiveRole('runtime-allow');
+    controller.unarchiveRole('runtime-allow');
+    controller.activateRoleVersion('runtime-allow', 'role-version-1');
+
+    expect(sentRequests, hasLength(7));
+    expect((sentRequests[0] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationValidateRoleDraft>());
+    expect((sentRequests[1] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationCreateRoleFromDraft>());
+    final update = (sentRequests[2] as bindings.AgentRuntimeRequestDispatchOperation).operation as bindings.AgentRuntimeGuiOperationUpdateRoleFromDraft;
+    expect(update.roleId, 'runtime-allow');
+    expect((sentRequests[3] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationExportRole>());
+    expect((sentRequests[4] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationArchiveRole>());
+    expect((sentRequests[5] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationUnarchiveRole>());
+    final activate = (sentRequests[6] as bindings.AgentRuntimeRequestDispatchOperation).operation as bindings.AgentRuntimeGuiOperationActivateRoleVersion;
+    expect(activate.roleId, 'runtime-allow');
+    expect(activate.versionId, 'role-version-1');
+  });
+
+  test('approval and command-registry request actions use generated typed operation intents', () {
+    final sentRequests = <bindings.AgentRuntimeRequest>[];
+    final controller = AgentRuntimeControlTowerController(
+      requestSink: (requestId, request) {
+        sentRequests.add(request);
+      },
+    );
+    addTearDown(controller.dispose);
+    const approval = AgentRuntimeActionItem(
+      id: 'approval-1',
+      title: 'Approval requested',
+      subtitle: '',
+      kind: 'approval',
+      stateText: 'Needs decision',
+      tone: 'warning',
+    );
+    const request = AgentRuntimeActionItem(
+      id: 'registry-request-1',
+      title: 'Registry request',
+      subtitle: '',
+      kind: 'commandRegistryRequest',
+      stateText: 'Needs decision',
+      tone: 'warning',
+    );
+
+    controller.approveAction(approval);
+    controller.resumeApproval(approval);
+    controller.approveCommandRegistryRequest(request, 'session-2');
+    controller.applyCommandRegistryRequest(request, 'session-2');
+
+    expect(sentRequests, hasLength(4));
+    expect((sentRequests[0] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationDecideApproval>());
+    expect((sentRequests[1] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationResumeApproval>());
+    expect((sentRequests[2] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationDecideCommandRegistryRequest>());
+    expect((sentRequests[3] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationApplyCommandRegistryRequest>());
   });
 
   test('imported remote profile typed signals are stable generated intents', () {

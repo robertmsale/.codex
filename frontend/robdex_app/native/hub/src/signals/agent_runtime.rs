@@ -18,6 +18,7 @@ pub enum AgentRuntimeRequest {
     ConnectIcloudRemoteRuntime { profile_path: String, selected_session_id: String },
     ConnectImportedRemoteRuntime { selected_session_id: String },
     Connect { base_url: String, selected_session_id: String },
+    SelectProject { project_id: String },
     Hydrate { selected_session_id: String },
     Rehydrate { selected_session_id: String },
     PollStreamOnce,
@@ -281,7 +282,34 @@ pub struct AgentRuntimeControlTowerViewModel {
     pub pending_request_count: i64,
     pub error_message: String,
     pub has_error_message: bool,
+    pub shell: AgentRuntimeConversationShellViewModel,
 }
+
+#[derive(Clone, Debug, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeConversationShellViewModel {
+    pub projects: Vec<AgentRuntimeShellProjectRow>,
+    pub sessions: Vec<AgentRuntimeSessionRow>,
+    pub selected_session_id: String,
+    pub has_selected_session_id: bool,
+    pub selected_conversation: Vec<AgentRuntimeTimelineRow>,
+    pub dynamic_roles: Vec<AgentRuntimeShellRolePresentation>,
+    pub actions: Vec<AgentRuntimeActionRow>,
+    pub settings: Vec<AgentRuntimeFact>,
+    pub role_management: AgentRuntimeRoleAdminView,
+    pub workflow_memory: AgentRuntimeWorkflowMemoryView,
+    pub command_registry_requests: Vec<AgentRuntimeActionRow>,
+    pub approvals: Vec<AgentRuntimeActionRow>,
+    pub diagnostics: Vec<AgentRuntimeFact>,
+}
+
+#[derive(Clone, Debug, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeShellProjectRow { pub id: String, pub title: String, pub subtitle: String, pub selectable: bool }
+
+#[derive(Clone, Debug, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeShellRolePresentation { pub role_id: String, pub display_label: String, pub short_label: String, pub tone: String, pub description: String }
 
 #[derive(Clone, Debug, Serialize, SignalPiece)]
 #[serde(rename_all = "camelCase")]

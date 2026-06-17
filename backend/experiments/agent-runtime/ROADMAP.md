@@ -53,7 +53,7 @@ product specification.
 - Rust/Rinf GUI backend controller: `crates/robdex-agent-runtime/src/gui_backend.rs`
 - Experimental Rinf-shaped transport proof:
   `crates/robdex-agent-runtime/src/rinf_transport.rs`
-- Rust-owned control-tower view model:
+- Rust-owned Agent Runtime view model:
   `crates/robdex-agent-runtime/src/rinf_transport.rs`
 - Rinf transport binding plan: `RINF_TRANSPORT_BINDING_PLAN.md`
 - Stable hub direct binding files:
@@ -108,7 +108,7 @@ product specification.
     code-backed route/local-action mapping; approval and command-registry
     request shape mismatches were resolved. Role-admin GUI operation intents
     are now implemented by the structured Role Admin editor slice. Workflow
-    Memory Control Tower inspection/feedback is implemented as an inspector
+    Memory operations-detail inspection/feedback is implemented as an inspector
     surface rather than a memory-editing UI.
 28. Rust/Rinf GUI backend controller boundary: a Rust-owned dispatcher owns
     `RuntimeSyncClient`, owned WebSocket stream handle, `RuntimeProjection`,
@@ -160,7 +160,7 @@ product specification.
     empty states. Dart remains a thin renderer/intent sender; Rust owns
     connection semantics, WebSocket URLs, watermarks, reducer application,
     enablement, and operation outcomes.
-35. Rust-owned control-tower view model: the transport now emits an
+35. Rust-owned Agent Runtime view model: the transport now emits an
     `AgentRuntimeControlTowerViewModel` with constructor-ready connection
     labels, base URL, watermark/status labels, session rows, timeline rows,
     action rows, controller facts, recent output log, pending-request slot, and
@@ -172,7 +172,7 @@ product specification.
     copy, session group labels, row tones, action state text, and
     action/timeline/session severity tones. The design-system control tower
     renders a clearer runtime status strip, better session rail,
-    selected-session event stream, readable action queue, controller/error
+    selected-session event stream, readable attention list, runtime/error
     detail visibility, and disconnected/connecting/connected/error/empty
     states without adding Dart-side runtime decisions or a Dart network client.
     Action rows are real attention items, currently approvals/resumable
@@ -182,7 +182,7 @@ product specification.
     typed pending/actionable command-registry request summaries sourced from
     `command_registry_requests`, separate from installed command inventory.
     Snapshot and event deltas upsert/remove those request rows as lifecycle
-    events occur, and the control-tower action queue includes registry request
+    events occur, and the operations attention list includes registry request
     rows alongside approval/resume rows. Installed/enabled command inventory
     remains inventory status/count detail, not action work.
 38. File bootstrap discovery: the Rust transport reads the service discovery
@@ -219,7 +219,7 @@ product specification.
 
 ## Active slice
 
-Role Admin UI structured editor is implemented: DB-backed role draft validation, create/update immutable versions, activate/archive/unarchive/export routes, role projection/view-model fields, Rust GUI operations, and the design-system Role Admin panel are now in place. The compaction kernel is implemented on top of PostgreSQL-backed output artifacts. The current GUI slice adds Workflow Memory Control Tower inspection plus feedback inside the existing Agent Runtime Control Tower: Rust-owned workflow-memory rows/detail/events/source metadata, Rust-owned row selection with deterministic fallback, and session-scoped attempted/helpful/not-helpful actions. iCloud remote profile discovery is implemented as a sync-safe sentinel transport with Rust-owned profile parsing and /health connectability checks. Document-import remote profile UX is implemented as an app-local profile acquisition path: Dart sends import/refresh/connect intents, Rust validates and stores a sanitized profile copy, and /health remains the connectability authority. Remaining gates are mDNS/Bonjour discovery, native iOS file-picker polish beyond the typed import boundary, broader execution expansion after GUI/runtime lifecycle is stable, workflow-memory editing/curation if the owner explicitly scopes it later, and any owner-approved production Robdex integration. Tokenizer-based accounting remains intentionally out of scope.
+Role Admin UI structured editor is implemented: DB-backed role draft validation, create/update immutable versions, activate/archive/unarchive/export routes, role projection/view-model fields, Rust GUI operations, and the design-system Role Admin panel are now in place. The compaction kernel is implemented on top of PostgreSQL-backed output artifacts. Workflow Memory inspection plus feedback is implemented inside the Agent Runtime operations detail surface: Rust-owned workflow-memory rows/detail/events/source metadata, Rust-owned row selection with deterministic fallback, and session-scoped attempted/helpful/not-helpful actions. iCloud remote profile discovery is implemented as a sync-safe sentinel transport with Rust-owned profile parsing and /health connectability checks. Document-import remote profile UX is implemented as an app-local profile acquisition path: Dart sends import/refresh/connect intents, Rust validates and stores a sanitized profile copy, and /health remains the connectability authority. The current shell slice keeps the connected Agent Runtime UI in the shared conversation shell with left project/session rail, center `ChatTimeline`, shared `ComposerPanel`, and operations/detail content. Remaining gates are mDNS/Bonjour discovery, native iOS file-picker polish beyond the typed import boundary, broader execution expansion after GUI/runtime lifecycle is stable, workflow-memory editing/curation if the owner explicitly scopes it later, and any owner-approved production Robdex integration. Tokenizer-based accounting remains intentionally out of scope.
 
 ## Validation baseline
 

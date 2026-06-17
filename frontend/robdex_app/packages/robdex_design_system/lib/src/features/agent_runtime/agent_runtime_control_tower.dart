@@ -31,6 +31,10 @@ class AgentRuntimeControlTower extends StatelessWidget {
     this.onWorkflowMemoryAttempted,
     this.onWorkflowMemoryHelpful,
     this.onWorkflowMemoryNotHelpful,
+    this.onApprovalApprove,
+    this.onApprovalResume,
+    this.onCommandRegistryApprove,
+    this.onCommandRegistryApply,
   });
 
   final AgentRuntimeControlTowerData data;
@@ -56,6 +60,10 @@ class AgentRuntimeControlTower extends StatelessWidget {
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryAttempted;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryHelpful;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryNotHelpful;
+  final ValueChanged<AgentRuntimeActionItem>? onApprovalApprove;
+  final ValueChanged<AgentRuntimeActionItem>? onApprovalResume;
+  final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApprove;
+  final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApply;
 
   @override
   Widget build(BuildContext context) {
@@ -298,7 +306,7 @@ class _RuntimeTopBar extends StatelessWidget {
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Text(
-                  'Control Tower',
+                  'Agent Runtime',
                   style: theme.textTheme.titleMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
                 ),
                 _StatusDot(label: data.statusLabel, tone: data.connectionTone),
@@ -514,6 +522,10 @@ class _DetailsPanel extends StatelessWidget {
     this.onWorkflowMemoryAttempted,
     this.onWorkflowMemoryHelpful,
     this.onWorkflowMemoryNotHelpful,
+    this.onApprovalApprove,
+    this.onApprovalResume,
+    this.onCommandRegistryApprove,
+    this.onCommandRegistryApply,
   });
 
   final AgentRuntimeControlTowerData data;
@@ -528,15 +540,32 @@ class _DetailsPanel extends StatelessWidget {
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryAttempted;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryHelpful;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryNotHelpful;
+  final ValueChanged<AgentRuntimeActionItem>? onApprovalApprove;
+  final ValueChanged<AgentRuntimeActionItem>? onApprovalResume;
+  final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApprove;
+  final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApply;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return _Panel(
       title: _cleanSectionCopy(data.detailTitle),
       subtitle: _cleanSectionCopy(data.detailSubtitle),
       child: ListView(
         children: [
+          if (data.actions.isNotEmpty) ...[
+            Text(data.actionsTitle, style: Theme.of(context).textTheme.labelMedium?.copyWith(color: Colors.white70)),
+            const SizedBox(height: 6),
+            ...data.actions.map(
+              (action) => _ActionTile(
+                action,
+                onApprovalApprove: onApprovalApprove == null ? null : () => onApprovalApprove!(action),
+                onApprovalResume: onApprovalResume == null ? null : () => onApprovalResume!(action),
+                onCommandRegistryApprove: onCommandRegistryApprove == null ? null : () => onCommandRegistryApprove!(action),
+                onCommandRegistryApply: onCommandRegistryApply == null ? null : () => onCommandRegistryApply!(action),
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
           _RoleAdminPanel(
             data.roleAdmin,
             onValidate: onRoleValidate,
@@ -557,16 +586,69 @@ class _DetailsPanel extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           ...data.controllerFacts.where(_isUserFacingFact).map(_FactRow.new),
-          if (data.outputLog.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Text('Recent outputs', style: theme.textTheme.labelMedium?.copyWith(color: Colors.white70)),
-            const SizedBox(height: 6),
-            ...data.outputLog.take(4).map(
-                  (line) => Text(line, maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF98A6B8))),
-                ),
-          ],
         ],
       ),
+    );
+  }
+}
+
+class AgentRuntimeOperationsDetail extends StatelessWidget {
+  const AgentRuntimeOperationsDetail({
+    super.key,
+    required this.data,
+    this.onRoleValidate,
+    this.onRoleCreate,
+    this.onRoleUpdate,
+    this.onRoleExport,
+    this.onRoleArchive,
+    this.onRoleUnarchive,
+    this.onRoleActivate,
+    this.onWorkflowMemorySelect,
+    this.onWorkflowMemoryAttempted,
+    this.onWorkflowMemoryHelpful,
+    this.onWorkflowMemoryNotHelpful,
+    this.onApprovalApprove,
+    this.onApprovalResume,
+    this.onCommandRegistryApprove,
+    this.onCommandRegistryApply,
+  });
+
+  final AgentRuntimeControlTowerData data;
+  final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleValidate;
+  final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleCreate;
+  final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleUpdate;
+  final ValueChanged<String>? onRoleExport;
+  final ValueChanged<String>? onRoleArchive;
+  final ValueChanged<String>? onRoleUnarchive;
+  final AgentRuntimeRoleVersionAction? onRoleActivate;
+  final ValueChanged<AgentRuntimeWorkflowMemoryRow>? onWorkflowMemorySelect;
+  final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryAttempted;
+  final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryHelpful;
+  final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryNotHelpful;
+  final ValueChanged<AgentRuntimeActionItem>? onApprovalApprove;
+  final ValueChanged<AgentRuntimeActionItem>? onApprovalResume;
+  final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApprove;
+  final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApply;
+
+  @override
+  Widget build(BuildContext context) {
+    return _DetailsPanel(
+      data,
+      onRoleValidate: onRoleValidate,
+      onRoleCreate: onRoleCreate,
+      onRoleUpdate: onRoleUpdate,
+      onRoleExport: onRoleExport,
+      onRoleArchive: onRoleArchive,
+      onRoleUnarchive: onRoleUnarchive,
+      onRoleActivate: onRoleActivate,
+      onWorkflowMemorySelect: onWorkflowMemorySelect,
+      onWorkflowMemoryAttempted: onWorkflowMemoryAttempted,
+      onWorkflowMemoryHelpful: onWorkflowMemoryHelpful,
+      onWorkflowMemoryNotHelpful: onWorkflowMemoryNotHelpful,
+      onApprovalApprove: onApprovalApprove,
+      onApprovalResume: onApprovalResume,
+      onCommandRegistryApprove: onCommandRegistryApprove,
+      onCommandRegistryApply: onCommandRegistryApply,
     );
   }
 }
@@ -731,10 +813,10 @@ String _cleanSectionCopy(String value) {
       .replaceAll('execute_code/Starlark memories · ', '')
       .replaceAll('Grouped by operational state', 'Sessions needing attention')
       .replaceAll('inspector plus feedback', 'Review saved workflows')
-      .replaceAll('Operations event stream, not a chat transcript', 'Operational events for the selected session')
+      .replaceAll('Operations event stream, not a chat transcript', 'Recent activity for the selected session')
       .replaceAll('Hydrate the runtime projection to', 'Connect to')
       .replaceAll('Connect to hydrate', 'Connect to load')
-      .replaceAll('No runtime action queue is loaded.', 'No runtime actions need attention.')
+      .replaceAll('No runtime action queue is loaded.', 'No items need attention.')
       .replaceAll('Controller detail', 'Runtime detail')
       .replaceAll('controller facts', 'runtime facts')
       .replaceAll('runtime facts', 'Runtime status')
@@ -748,7 +830,9 @@ bool _isUserFacingFact(AgentRuntimeFact fact) {
       !text.contains('api') &&
       !text.contains('debug') &&
       !text.contains('postgres') &&
-      !text.contains('source of truth');
+      !text.contains('source of truth') &&
+      !text.contains('selected session') &&
+      !text.contains('connection streaming');
 }
 
 String _displayCopy(String value) {
@@ -852,18 +936,46 @@ class _TimelineTile extends StatelessWidget {
 }
 
 class _ActionTile extends StatelessWidget {
-  const _ActionTile(this.item);
+  const _ActionTile(
+    this.item, {
+    this.onApprovalApprove,
+    this.onApprovalResume,
+    this.onCommandRegistryApprove,
+    this.onCommandRegistryApply,
+  });
 
   final AgentRuntimeActionItem item;
+  final VoidCallback? onApprovalApprove;
+  final VoidCallback? onApprovalResume;
+  final VoidCallback? onCommandRegistryApprove;
+  final VoidCallback? onCommandRegistryApply;
 
   @override
   Widget build(BuildContext context) {
-    return _DenseTile(
-      title: item.title,
-      subtitle: item.subtitle,
-      trailing: item.stateText,
-      eyebrow: item.kind,
-      tone: item.tone,
+    final actions = <Widget>[];
+    if (item.kind == 'approval') {
+      actions.add(OutlinedButton(onPressed: onApprovalApprove, child: const Text('Approve')));
+      actions.add(OutlinedButton(onPressed: onApprovalResume, child: const Text('Resume')));
+    } else if (item.kind == 'commandRegistryRequest') {
+      actions.add(OutlinedButton(onPressed: onCommandRegistryApprove, child: const Text('Approve')));
+      actions.add(OutlinedButton(onPressed: onCommandRegistryApply, child: const Text('Apply')));
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _DenseTile(
+          title: item.title,
+          subtitle: item.subtitle,
+          trailing: item.stateText,
+          eyebrow: item.kind,
+          tone: item.tone,
+        ),
+        if (actions.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 8),
+            child: Wrap(spacing: 6, runSpacing: 4, children: actions),
+          ),
+      ],
     );
   }
 }

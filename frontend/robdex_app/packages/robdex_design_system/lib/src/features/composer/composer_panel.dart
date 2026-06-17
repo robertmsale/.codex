@@ -48,6 +48,8 @@ class ComposerPanel extends StatefulWidget {
     this.contextWindowRemainingPercent,
     this.terminalAvailable = false,
     this.onTerminalPressed,
+    this.disabledHint = 'Select a thread to enable the composer.',
+    this.placeholder = 'Message selected thread...',
   });
 
   final bool enabled;
@@ -65,6 +67,8 @@ class ComposerPanel extends StatefulWidget {
   final int? contextWindowRemainingPercent;
   final bool terminalAvailable;
   final VoidCallback? onTerminalPressed;
+  final String disabledHint;
+  final String placeholder;
 
   @override
   State<ComposerPanel> createState() => _ComposerPanelState();
@@ -810,7 +814,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
                             disabledBorder: InputBorder.none,
                             filled: false,
                             isDense: true,
-                            hintText: 'Message selected thread...',
+                            hintText: widget.placeholder,
                             hintStyle: theme.textTheme.bodySmall?.copyWith(
                               fontSize: 11,
                               color: theme.colorScheme.onSurface.withValues(alpha: 0.48),
@@ -967,7 +971,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
             if (!widget.enabled) ...[
               const SizedBox(height: 10),
               Text(
-                'Select a thread to enable the composer.',
+                widget.disabledHint,
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: theme.colorScheme.secondary,
                 ),

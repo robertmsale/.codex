@@ -18,11 +18,12 @@ abstract class AgentRuntimeRequest {
       case 5: return AgentRuntimeRequestConnectIcloudRemoteRuntime.load(deserializer);
       case 6: return AgentRuntimeRequestConnectImportedRemoteRuntime.load(deserializer);
       case 7: return AgentRuntimeRequestConnect.load(deserializer);
-      case 8: return AgentRuntimeRequestHydrate.load(deserializer);
-      case 9: return AgentRuntimeRequestRehydrate.load(deserializer);
-      case 10: return AgentRuntimeRequestPollStreamOnce.load(deserializer);
-      case 11: return AgentRuntimeRequestDisconnect.load(deserializer);
-      case 12: return AgentRuntimeRequestDispatchOperation.load(deserializer);
+      case 8: return AgentRuntimeRequestSelectProject.load(deserializer);
+      case 9: return AgentRuntimeRequestHydrate.load(deserializer);
+      case 10: return AgentRuntimeRequestRehydrate.load(deserializer);
+      case 11: return AgentRuntimeRequestPollStreamOnce.load(deserializer);
+      case 12: return AgentRuntimeRequestDisconnect.load(deserializer);
+      case 13: return AgentRuntimeRequestDispatchOperation.load(deserializer);
       default: throw Exception('Unknown variant index for AgentRuntimeRequest: ' + index.toString());
     }
   }
@@ -535,6 +536,65 @@ class AgentRuntimeRequestConnect extends AgentRuntimeRequest {
 }
 
 @immutable
+class AgentRuntimeRequestSelectProject extends AgentRuntimeRequest {
+  const AgentRuntimeRequestSelectProject({
+    required this.projectId,
+  }) : super();
+
+  static AgentRuntimeRequestSelectProject load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = AgentRuntimeRequestSelectProject(
+      projectId: deserializer.deserializeString(),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final String projectId;
+
+  AgentRuntimeRequestSelectProject copyWith({
+    String? projectId,
+  }) {
+    return AgentRuntimeRequestSelectProject(
+      projectId: projectId ?? this.projectId,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(8);
+    serializer.serializeString(projectId);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is AgentRuntimeRequestSelectProject
+      && projectId == other.projectId;
+  }
+
+  @override
+  int get hashCode => projectId.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'projectId: $projectId'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'AgentRuntimeRequestSelectProject';
+  }
+}
+
+@immutable
 class AgentRuntimeRequestHydrate extends AgentRuntimeRequest {
   const AgentRuntimeRequestHydrate({
     required this.selectedSessionId,
@@ -561,7 +621,7 @@ class AgentRuntimeRequestHydrate extends AgentRuntimeRequest {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(8);
+    serializer.serializeVariantIndex(9);
     serializer.serializeString(selectedSessionId);
     serializer.decreaseContainerDepth();
   }
@@ -620,7 +680,7 @@ class AgentRuntimeRequestRehydrate extends AgentRuntimeRequest {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(9);
+    serializer.serializeVariantIndex(10);
     serializer.serializeString(selectedSessionId);
     serializer.decreaseContainerDepth();
   }
@@ -667,7 +727,7 @@ class AgentRuntimeRequestPollStreamOnce extends AgentRuntimeRequest {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(10);
+    serializer.serializeVariantIndex(11);
     serializer.decreaseContainerDepth();
   }
 
@@ -711,7 +771,7 @@ class AgentRuntimeRequestDisconnect extends AgentRuntimeRequest {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(11);
+    serializer.serializeVariantIndex(12);
     serializer.decreaseContainerDepth();
   }
 
@@ -767,7 +827,7 @@ class AgentRuntimeRequestDispatchOperation extends AgentRuntimeRequest {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(12);
+    serializer.serializeVariantIndex(13);
     operation.serialize(serializer);
     serializer.decreaseContainerDepth();
   }

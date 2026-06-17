@@ -110,7 +110,7 @@ pub async fn send(pool: &PgPool, session_id: Uuid, message: &str) -> Result<Uuid
     send_with_model_client(pool, session_id, message, &model, compaction::CompactionBudget::from_env()).await
 }
 
-pub async fn send_with_model_client<M: ModelClient + Sync>(
+pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
     pool: &PgPool,
     session_id: Uuid,
     message: &str,

@@ -183,8 +183,13 @@ Resolved audit mismatches:
 
 Role Admin GUI operations are implemented: validation/options/detail/export direct results plus create/update/activate/archive/unarchive wait-for-delta mutations. Dart renders Rust-shaped `roleAdmin` view-model fields and sends typed role intents only.
 
-Workflow Memory Control Tower inspection is implemented inside the existing
-Agent Runtime Control Tower. It is an inspector plus feedback surface for
+The mounted Agent Runtime GUI now uses the shared conversation-shell structure:
+left project/session rail, center shared `ChatTimeline`, shared
+`ComposerPanel`, and right-side operations/detail content. The old dashboard is no longer the primary connected workflow; diagnostics,
+Role Admin, and Workflow Memory affordances live in the shared shell detail surface.
+
+Workflow Memory inspection is implemented inside that operations detail surface.
+It is an inspector plus feedback surface for
 execute_code/Starlark workflow memories only: memory rows, selected detail,
 read-only source Starlark, recent help/feedback events, and attempted/helpful/
 not-helpful feedback actions are Rust-shaped and session-scoped. Selecting a row
@@ -192,15 +197,15 @@ updates Rust-owned selected workflow-memory state; Dart renders the selected
 detail returned by Rust and does not choose feedback authority. It does not edit,
 rewrite, delete, hide, promote, recompute embeddings, or curate memories.
 
-Remaining deferred GUI operations:
+Remaining scoped-out GUI operations:
 
 - Workflow-memory editing/curation remains out of scope; the implemented
-  surface is inspection plus feedback only.
+  shell detail surface is inspection plus feedback only.
 
 
 #### Rust/Rinf GUI backend controller boundary
 
-The Rust-side GUI backend boundary for a future Rinf layer is
+The Rust-side GUI backend boundary for a typed Rinf layer is
 `robdex_agent_runtime::gui_backend::GuiBackendController`. This controller owns
 the `RuntimeSyncClient`, the owned WebSocket stream handle, the current hydrated `RuntimeProjection`, the local
 `GuiControllerState`, selected-session state, connection/resync state,
@@ -348,7 +353,7 @@ After connect, `RuntimeProjection`, `GuiControllerState`, stream outcomes, and
 watermarks, construct WebSocket URLs, apply reducers, decide approval or command
 availability, or infer operation success.
 
-The first Flutter-facing control tower shell is implemented as a thin renderer
+The first Flutter-facing shared shell is implemented as a thin renderer
 over the generated typed Rinf carriers. It sends typed
 `AgentRuntimeRequestSignal` request variants and consumes typed
 `AgentRuntimeOutputSignal` output variants. Dart stores
@@ -358,22 +363,21 @@ connection, WebSocket URLs, watermarks, reducer application, selected-session
 semantics, operation success, and typed errors.
 
 The transport now emits a Rust-owned `AgentRuntimeControlTowerViewModel` output
-for the first control-tower widget. The view model is constructor-ready:
+for the shared shell and operations detail. The view model is constructor-ready:
 connection state, base URL, status and watermark labels, session rows, timeline
-rows, action rows, controller facts, recent output log, pending-request slot,
+rows, action rows, runtime facts, recent output log, pending-request slot,
 and typed error display text are shaped in Rust from `RuntimeProjection`,
 `GuiControllerState`, and operation/stream outcomes. Dart decodes this
 Rust-shaped view packet and renders it; Dart no longer interprets raw
 projection or controller JSON to derive rows, labels, facts, or enablement
 text.
 
-The richer control-tower UX slice extends that Rust-owned view model with
+The richer shared-shell UX slice extends that Rust-owned view model with
 operations-first presentation fields: status badges, selected-session label,
 section titles, empty-state copy, session group labels, row tones, action state
-text, and action/timeline/session severity tones. The design-system control
-tower renders those fields directly to provide a clearer status strip, denser
-session rail, selected-session event stream, readable action queue, controller
-detail panel, and explicit empty/error/loading states. The action queue contains
+text, and action/timeline/session severity tones. The design-system shell renders those fields directly to provide a clearer status strip, denser
+session rail, selected-session activity, readable attention list, runtime
+detail panel, and explicit empty/error/loading states. The attention list contains
 only real attention items present in the projection: pending/resumable
 approvals and typed pending/actionable command-registry request summaries.
 Command registry inventory is surfaced as inventory count/status detail, not as
@@ -381,12 +385,12 @@ required action. Dart still sends only generated typed Rinf intents and does not
 infer durable runtime meaning from raw projection/controller internals.
 
 The shell remains focused: discovery/connect input, Rust-shaped view-model
-rendering, selected-session timeline visibility when present, an action queue
+rendering, selected-session timeline visibility when present, an attention list
 from Rust-owned approval/resume and command-registry request rows, explicit
 disconnected/error states, and manual stream polling through the Rust-owned
 transport. Reusable visual pieces live in the design-system package under the
-agent-runtime control tower
-component, with Design Lab scenarios for disconnected, connecting, connected,
+agent-runtime shared shell and operations-detail
+components, with Design Lab scenarios for disconnected, connecting, connected,
 error, empty/no-session, no workflow memories, populated workflow memories, and
 selected workflow-memory detail/feedback states, iCloud remote-profile states,
 and imported app-local profile states for missing, malformed/stale, healthy,
@@ -765,7 +769,7 @@ before applying deltas and should rehydrate when reducer state reports
 ### GUI state-sync client contract
 
 The runtime crate exposes an isolated Rust state-sync layer at
-`robdex_agent_runtime::gui_sync` for future macOS/iOS Rust/Rinf GUI backends.
+`robdex_agent_runtime::gui_sync` for macOS/iOS Rust/Rinf GUI backends.
 It is independent of Flutter and Rinf. The layer owns `RuntimeSyncConfig`,
 `RuntimeSyncClient`, `RuntimeStateStream`, `SyncOutcome`, and `SyncError` so a
 GUI backend can configure the server base URL, an optional selected session,
@@ -791,7 +795,7 @@ The intended client sequence is:
 Selected-session state uses the same path with `selectedSessionId` on both the
 snapshot and WebSocket URLs. Timeline deltas for the selected session append to
 the local timeline while semantic deltas update session/admin summaries through
-the projection reducer. A future GUI should render from the reduced
+the projection reducer. GUI surfaces render from the reduced
 `RuntimeProjection` and request a fresh snapshot whenever resync state is set.
 
 Resident server deterministic smoke uses a real

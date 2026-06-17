@@ -36,7 +36,8 @@ use crate::signals::{
     AgentRuntimeRoleDetail, AgentRuntimeRolePolicyRow, AgentRuntimeRoleVersionRow,
     AgentRuntimeRoleEditorDraftView, AgentRuntimeWorkflowMemoryView,
     AgentRuntimeWorkflowMemoryRow, AgentRuntimeWorkflowMemoryDetail,
-    AgentRuntimeWorkflowMemoryEvent,
+    AgentRuntimeWorkflowMemoryEvent, AgentRuntimeConversationShellViewModel,
+    AgentRuntimeShellProjectRow, AgentRuntimeShellRolePresentation,
     ArchiveThreadGroupSignal, ArchiveThreadSignal, BridgeTaskResultSignal, ClearProjectHookLogsSignal,
     CreateProjectSignal, CreateThreadGroupSignal, CreateThreadSignal, DecideApprovalSignal,
     DeleteProjectSignal, DeleteThreadGroupSignal,
@@ -966,6 +967,9 @@ fn typed_agent_runtime_request_packet(
                 base_url,
                 selected_session_id: non_empty(selected_session_id),
             },
+            AgentRuntimeRequest::SelectProject { project_id } => GuiTransportRequest::SelectProject {
+                project_id,
+            },
             AgentRuntimeRequest::Hydrate { selected_session_id } => GuiTransportRequest::Hydrate {
                 selected_session_id: non_empty(selected_session_id),
             },
@@ -1268,6 +1272,37 @@ fn typed_control_tower_view(view: InternalControlTowerViewModel) -> AgentRuntime
         pending_request_count: view.pending_request_count as i64,
         has_error_message: !error_message.is_empty(),
         error_message,
+        shell: typed_conversation_shell_view(view.shell),
+    }
+}
+
+fn typed_conversation_shell_view(view: robdex_agent_runtime::rinf_transport::AgentRuntimeConversationShellViewModel) -> AgentRuntimeConversationShellViewModel {
+    let selected_session_id = view.selected_session_id.unwrap_or_default();
+    AgentRuntimeConversationShellViewModel {
+        projects: view.projects.into_iter().map(|project| AgentRuntimeShellProjectRow {
+            id: project.id,
+            title: project.title,
+            subtitle: project.subtitle,
+            selectable: project.selectable,
+        }).collect(),
+        sessions: view.sessions.into_iter().map(|row| AgentRuntimeSessionRow { id: row.id, title: row.title, status: row.status, subtitle: row.subtitle, group_label: row.group_label, tone: row.tone }).collect(),
+        has_selected_session_id: !selected_session_id.is_empty(),
+        selected_session_id,
+        selected_conversation: view.selected_conversation.into_iter().map(|row| AgentRuntimeTimelineRow { id: row.id, title: row.title, subtitle: row.subtitle, status: row.status, tone: row.tone }).collect(),
+        dynamic_roles: view.dynamic_roles.into_iter().map(|role| AgentRuntimeShellRolePresentation {
+            role_id: role.role_id,
+            display_label: role.display_label,
+            short_label: role.short_label,
+            tone: role.tone,
+            description: role.description,
+        }).collect(),
+        actions: view.actions.into_iter().map(typed_action_row).collect(),
+        settings: view.settings.into_iter().map(|fact| AgentRuntimeFact { label: fact.label, value: fact.value }).collect(),
+        role_management: typed_role_admin_view(view.role_management),
+        workflow_memory: typed_workflow_memory_view(view.workflow_memory),
+        command_registry_requests: view.command_registry_requests.into_iter().map(typed_action_row).collect(),
+        approvals: view.approvals.into_iter().map(typed_action_row).collect(),
+        diagnostics: view.diagnostics.into_iter().map(|fact| AgentRuntimeFact { label: fact.label, value: fact.value }).collect(),
     }
 }
 
@@ -2271,6 +2306,20 @@ mod agent_runtime_typed_mapping_tests {
             refresh.intent,
             GuiTransportRequest::RefreshDiscovery {
                 discovery_path: None,
+            }
+        );
+
+        let project = typed_agent_runtime_request_packet(
+            "project-1",
+            AgentRuntimeRequest::SelectProject {
+                project_id: "runtime".to_string(),
+            },
+        )
+        .expect("typed project selection maps");
+        assert_eq!(
+            project.intent,
+            GuiTransportRequest::SelectProject {
+                project_id: "runtime".to_string(),
             }
         );
     }

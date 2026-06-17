@@ -863,7 +863,7 @@ pub const DART_ALLOWED_EPHEMERAL_RESPONSIBILITIES: &[&str] = &[
     "localLayout",
 ];
 
-pub const GUI_OPERATION_VARIANT_COUNT: usize = 31;
+pub const GUI_OPERATION_VARIANT_COUNT: usize = 32;
 
 impl Default for RuntimeProjection {
     fn default() -> Self {
@@ -1794,7 +1794,8 @@ mod tests {
             match request {
                 GuiOperationRequest::Connect { .. }
                 | GuiOperationRequest::Disconnect
-                | GuiOperationRequest::SelectSession { .. } => {
+                | GuiOperationRequest::SelectSession { .. }
+                | GuiOperationRequest::SelectWorkflowMemory { .. } => {
                     assert!(mapping.local_only);
                     assert!(mapping.method.is_none());
                 }

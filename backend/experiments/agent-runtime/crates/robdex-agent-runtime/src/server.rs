@@ -21,7 +21,8 @@ use uuid::Uuid;
 
 use crate::roles::DEFAULT_ROLE_ID;
 use crate::errors::{RuntimeDomainError, RuntimeErrorKind};
-use crate::{approvals, command_registry, db, projection, routing, runtime, starlark_host, workflow_memory};
+use crate::model::ModelClient;
+use crate::{approvals, command_registry, compaction, db, projection, routing, runtime, starlark_host, workflow_memory};
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -30,6 +31,7 @@ pub struct ServerState {
     pub active_sends: Arc<Mutex<HashSet<Uuid>>>,
     pub shutdown_tx: watch::Sender<bool>,
     pub shutdown: watch::Receiver<bool>,
+    pub model_client: Option<Arc<dyn ModelClient + Send + Sync>>,
 }
 
 impl ServerState {
@@ -49,6 +51,20 @@ impl ServerState {
             active_sends: Arc::new(Mutex::new(HashSet::new())),
             shutdown_tx,
             shutdown,
+            model_client: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_with_model_client(pool: PgPool, runtime_identity: String, model_client: Arc<dyn ModelClient + Send + Sync>) -> Self {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        Self {
+            pool,
+            runtime_identity,
+            active_sends: Arc::new(Mutex::new(HashSet::new())),
+            shutdown_tx,
+            shutdown: shutdown_rx,
+            model_client: Some(model_client),
         }
     }
 }
@@ -337,7 +353,18 @@ async fn send_message(
             return Err(ApiError::conflict("session already has an active send"));
         }
     }
-    let result = runtime::send(&state.pool, session_id, &request.message).await;
+    let result = if let Some(model) = state.model_client.as_ref() {
+        runtime::send_with_model_client(
+            &state.pool,
+            session_id,
+            &request.message,
+            model.as_ref(),
+            compaction::CompactionBudget::from_env(),
+        )
+        .await
+    } else {
+        runtime::send(&state.pool, session_id, &request.message).await
+    };
     state.active_sends.lock().await.remove(&session_id);
     let turn_id = result?;
     Ok(Json(json!({"sessionId": session_id, "turnId": turn_id, "status": "completed"})))
@@ -800,7 +827,11 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Method, Request};
     use crate::gui_sync::{RuntimeSyncClient, RuntimeSyncConfig, SyncOutcome};
-    use robdex_agent_runtime_projection::{RuntimeDeltaKind, RuntimeProjection};
+    use crate::rinf_transport::{GuiTransportHandle, GuiTransportOutput, GuiTransportRequest, GuiTransportRequestPacket};
+    use robdex_agent_runtime_projection::{
+        GuiConnectionState, GuiControllerState, GuiOperationOutcome, GuiOperationRequest,
+        RuntimeDeltaKind, RuntimeProjection,
+    };
     use tokio_tungstenite::connect_async;
     use tower::ServiceExt;
     use sqlx::Row;
@@ -1131,6 +1162,220 @@ mod tests {
             }
         }
         assert!(saw_created, "websocket did not stream session.created event_stream delta");
+        server.abort();
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn live_ui_smoke_send_response_projects_into_shared_chat_timeline_shape() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg")
+            .await
+            .expect("role");
+        let session_id = db::new_session(
+            &test_db.pool,
+            &role,
+            Some("live-ui-smoke"),
+            ".",
+            Some("."),
+            Some("Live UI smoke"),
+            Some("live-ui-smoke"),
+        )
+        .await
+        .expect("session");
+        let fake = FakeModelClient::default();
+        let turn_id = crate::runtime::send_with_model_client(
+            &test_db.pool,
+            session_id,
+            "Check the runtime health and answer briefly.",
+            &fake,
+            compaction::CompactionBudget::default(),
+        )
+        .await
+        .expect("send");
+        let projection = projection::build_runtime_projection_snapshot(&test_db.pool, Some(session_id))
+            .await
+            .expect("projection");
+        let controller_state = GuiControllerState {
+            connection_state: GuiConnectionState::Streaming,
+            selected_session_id: Some(session_id.to_string()),
+            ..GuiControllerState::default()
+        };
+        let view = crate::rinf_transport::AgentRuntimeControlTowerViewModel::from_runtime_state(
+            "http://127.0.0.1:8765",
+            Some(&projection),
+            &controller_state,
+            &[],
+            0,
+            None,
+            &crate::rinf_transport::AgentRuntimeDiscoveryView::default(),
+            &crate::rinf_transport::AgentRuntimeDiscoveryView::default(),
+            &crate::rinf_transport::AgentRuntimeDiscoveryView::default(),
+        );
+        assert_eq!(view.shell.selected_session_id.as_deref(), Some(session_id.to_string().as_str()));
+        assert!(
+            view.shell
+                .selected_conversation
+                .iter()
+                .any(|row| row.subtitle.contains("fake final fake-call completed")),
+            "response row must be available for shared ChatTimeline rendering: {:?}",
+            view.shell.selected_conversation
+        );
+        println!(
+            "live_ui_smoke session_id={session_id} turn_id={turn_id} chat_timeline_response=\"fake final fake-call completed\" rows={}",
+            view.shell.selected_conversation.len()
+        );
+        let _ = std::fs::create_dir_all("/tmp/agent-runtime-shell-proof");
+        std::fs::write(
+            "/tmp/agent-runtime-shell-proof/live-ui-smoke-response.txt",
+            format!(
+                "session_id={session_id}\nturn_id={turn_id}\nchat_timeline_response=fake final fake-call completed\nrows={}\n",
+                view.shell.selected_conversation.len()
+            ),
+        )
+        .expect("write live ui smoke evidence");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn live_rinf_transport_ui_smoke_connect_create_send_projects_chat_timeline_response() {
+        let test_db = validation_db().await;
+        let state = ServerState::new_with_model_client(
+            test_db.pool.clone(),
+            "live-rinf-ui-smoke".to_string(),
+            Arc::new(FakeModelClient::default()),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.expect("serve");
+        });
+        let base_url = format!("http://{addr}");
+        let transport = GuiTransportHandle::spawn();
+
+        let connect = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "live-smoke-connect".to_string(),
+                intent: GuiTransportRequest::Connect {
+                    base_url: base_url.clone(),
+                    selected_session_id: None,
+                },
+            })
+            .await;
+        assert!(
+            connect.iter().any(|packet| matches!(
+                &packet.output,
+                GuiTransportOutput::OperationResult {
+                    result
+                } if matches!(result.outcome, GuiOperationOutcome::ProjectionUpdated { .. })
+            )),
+            "connect must hydrate through the live transport path: {connect:?}"
+        );
+
+        let created = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "live-smoke-create".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::CreateSession {
+                        role: "runtime-no-rg".to_string(),
+                        project: Some("live-rinf-ui-smoke".to_string()),
+                        workdir: Some(".".to_string()),
+                        worktree_root: Some(".".to_string()),
+                        title: Some("Live Rinf UI smoke".to_string()),
+                        name: Some("live-rinf-ui-smoke".to_string()),
+                    },
+                },
+            })
+            .await;
+        let session_id = created
+            .iter()
+            .find_map(|packet| match &packet.output {
+                GuiTransportOutput::OperationResult { result } => match &result.outcome {
+                    GuiOperationOutcome::Accepted { entity_id: Some(id) } => Some(id.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("created session id");
+
+        let selected = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "live-smoke-select".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::SelectSession {
+                        session_id: Some(session_id.clone()),
+                    },
+                },
+            })
+            .await;
+        assert!(
+            selected.iter().any(|packet| matches!(
+                &packet.output,
+                GuiTransportOutput::ControlTowerView { view_model }
+                    if view_model.shell.selected_session_id.as_deref() == Some(session_id.as_str())
+            )),
+            "selection must flow through the live transport shell view: {selected:?}"
+        );
+
+        let sent = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "live-smoke-send".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::SendMessage {
+                        session_id: session_id.clone(),
+                        message: "Check the runtime health and answer briefly.".to_string(),
+                    },
+                },
+            })
+            .await;
+        let turn_id = sent
+            .iter()
+            .find_map(|packet| match &packet.output {
+                GuiTransportOutput::OperationResult { result } => match &result.outcome {
+                    GuiOperationOutcome::Accepted { entity_id: Some(id) } => Some(id.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("send turn id");
+
+        let rehydrated = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "live-smoke-rehydrate".to_string(),
+                intent: GuiTransportRequest::Rehydrate {
+                    selected_session_id: Some(session_id.clone()),
+                },
+            })
+            .await;
+        let view = rehydrated
+            .iter()
+            .find_map(|packet| match &packet.output {
+                GuiTransportOutput::ControlTowerView { view_model } => Some(view_model),
+                _ => None,
+            })
+            .expect("control tower view after send");
+        assert_eq!(view.shell.selected_session_id.as_deref(), Some(session_id.as_str()));
+        assert!(
+            view.shell
+                .selected_conversation
+                .iter()
+                .any(|row| row.subtitle.contains("fake final fake-call completed")),
+            "live transport response must render through shared ChatTimeline rows: {:?}",
+            view.shell.selected_conversation
+        );
+        println!(
+            "live_rinf_ui_smoke base_url={base_url} session_id={session_id} turn_id={turn_id} chat_timeline_response=\"fake final fake-call completed\" rows={}",
+            view.shell.selected_conversation.len()
+        );
+        let _ = std::fs::create_dir_all("/tmp/agent-runtime-shell-proof");
+        std::fs::write(
+            "/tmp/agent-runtime-shell-proof/live-rinf-ui-smoke-response.txt",
+            format!(
+                "base_url={base_url}\nsession_id={session_id}\nturn_id={turn_id}\nchat_timeline_response=fake final fake-call completed\nrows={}\n",
+                view.shell.selected_conversation.len()
+            ),
+        )
+        .expect("write live rinf ui smoke evidence");
         server.abort();
         test_db.cleanup().await;
     }

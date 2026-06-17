@@ -54,6 +54,44 @@ bindings.AgentRuntimeGuiOperation agentRuntimeWorkflowMemorySelectOperationForTe
 }
 
 @visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeCloseSessionOperationForTest(String sessionId) {
+  return bindings.AgentRuntimeGuiOperationCloseSession(sessionId: sessionId, reason: 'Closed from Agent Runtime shell');
+}
+
+@visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeArchiveSessionOperationForTest(String sessionId) {
+  return bindings.AgentRuntimeGuiOperationArchiveSession(sessionId: sessionId);
+}
+
+@visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeForkSessionOperationForTest(String sessionId) {
+  return bindings.AgentRuntimeGuiOperationForkSession(sessionId: sessionId, atTurn: '');
+}
+
+@visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeApprovalDecisionOperationForTest(String approvalId, String decision) {
+  return bindings.AgentRuntimeGuiOperationDecideApproval(approvalId: approvalId, decision: decision, reason: 'Agent Runtime shell action');
+}
+
+@visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeApprovalResumeOperationForTest(String approvalId) {
+  return bindings.AgentRuntimeGuiOperationResumeApproval(approvalId: approvalId);
+}
+
+@visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryDecisionOperationForTest(String requestId, String sessionId) {
+  return bindings.AgentRuntimeGuiOperationDecideCommandRegistryRequest(
+    requestId: requestId,
+    decision: _defaultRegistryDecision(sessionId, 'approved'),
+  );
+}
+
+@visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryApplyOperationForTest(String requestId, String sessionId) {
+  return bindings.AgentRuntimeGuiOperationApplyCommandRegistryRequest(requestId: requestId, sessionId: sessionId);
+}
+
+@visibleForTesting
 bindings.AgentRuntimeRequest agentRuntimeIcloudRefreshIntentForTest() {
   return const bindings.AgentRuntimeRequestRefreshIcloudRemoteDiscovery(profilePath: '');
 }
@@ -86,6 +124,7 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
   int _serial = 0;
   String _baseUrl = 'http://127.0.0.1:8765';
   AgentRuntimeControlTowerData? _viewModel;
+  ConversationShellData? _shellViewModel;
   String? _bridgeErrorMessage;
 
   AgentRuntimeControlTowerController({
@@ -113,6 +152,8 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
     );
   }
 
+  ConversationShellData? get shellData => _shellViewModel;
+
   void connect(String baseUrl) {
     _baseUrl = baseUrl.trim().isEmpty ? _baseUrl : baseUrl.trim();
     _send('connect', bindings.AgentRuntimeRequestConnect(baseUrl: _baseUrl, selectedSessionId: ''));
@@ -120,6 +161,14 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
 
   void refreshDiscovery() {
     _send('discover', const bindings.AgentRuntimeRequestRefreshDiscovery(discoveryPath: ''));
+  }
+
+  void selectProject(String projectId) {
+    _send('project-select', bindings.AgentRuntimeRequestSelectProject(projectId: projectId));
+  }
+
+  void openSettings() {
+    _send('settings-refresh', const bindings.AgentRuntimeRequestHydrate(selectedSessionId: ''));
   }
 
   void connectDiscoveredRuntime() {
@@ -172,6 +221,71 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
 
   void disconnect() {
     _send('disconnect', const bindings.AgentRuntimeRequestDisconnect());
+  }
+
+  void createSession() {
+    _dispatchOperation(
+      'session-create',
+      const bindings.AgentRuntimeGuiOperationCreateSession(
+        role: 'runtime-allow',
+        project: '',
+        workdir: '',
+        worktreeRoot: '',
+        title: 'New session',
+        name: '',
+      ),
+    );
+  }
+
+  void selectSession(String sessionId) {
+    _dispatchOperation('session-select', bindings.AgentRuntimeGuiOperationSelectSession(sessionId: sessionId));
+  }
+
+  void sendMessage(String sessionId, String message) {
+    if (sessionId.isEmpty || message.trim().isEmpty) {
+      return;
+    }
+    _dispatchOperation(
+      'session-send',
+      bindings.AgentRuntimeGuiOperationSendMessage(sessionId: sessionId, message: message.trim()),
+    );
+  }
+
+  void closeSession(String sessionId) {
+    if (sessionId.isEmpty) {
+      return;
+    }
+    _dispatchOperation('session-close', agentRuntimeCloseSessionOperationForTest(sessionId));
+  }
+
+  void archiveSession(String sessionId) {
+    if (sessionId.isEmpty) {
+      return;
+    }
+    _dispatchOperation('session-archive', agentRuntimeArchiveSessionOperationForTest(sessionId));
+  }
+
+  void forkSession(String sessionId) {
+    if (sessionId.isEmpty) {
+      return;
+    }
+    _dispatchOperation('session-fork', agentRuntimeForkSessionOperationForTest(sessionId));
+  }
+
+  void approveAction(AgentRuntimeActionItem action) {
+    _dispatchOperation('approval-decide', agentRuntimeApprovalDecisionOperationForTest(action.id, 'approved'));
+  }
+
+  void resumeApproval(AgentRuntimeActionItem action) {
+    _dispatchOperation('approval-resume', agentRuntimeApprovalResumeOperationForTest(action.id));
+  }
+
+  void approveCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId) {
+    _dispatchOperation('registry-decide', agentRuntimeCommandRegistryDecisionOperationForTest(action.id, sessionId));
+  }
+
+  void applyCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId) {
+    _dispatchOperation('registry-apply', agentRuntimeCommandRegistryApplyOperationForTest(action.id, sessionId));
   }
 
   void validateRoleDraft(AgentRuntimeRoleEditorDraft draft) {
@@ -261,7 +375,7 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
         feedback: 'notHelpful',
         payload: const bindings.AgentRuntimeWorkflowMemoryFeedbackPayload(
           source: 'gui.controlTower',
-          reason: 'marked from Control Tower',
+          reason: 'marked from Agent Runtime',
           variant: false,
           hasVariant: false,
         ),
@@ -296,6 +410,7 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
     final output = signal.output;
     if (output is bindings.AgentRuntimeOutputControlTowerView) {
       _viewModel = AgentRuntimeControlTowerData.fromJson(_viewModelJson(output.viewModel));
+      _shellViewModel = _shellData(output.viewModel.shell);
       _bridgeErrorMessage = null;
     } else if (output is bindings.AgentRuntimeOutputError) {
       _bridgeErrorMessage = output.error.message.isNotEmpty ? output.error.message : output.error.code;
@@ -309,7 +424,7 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
           state: 'notLoaded',
           tone: 'muted',
           title: 'Discovery not loaded',
-          message: 'Refresh discovery to inspect the local Agent Runtime service packet.',
+          message: 'Refresh discovery to check the local Agent Runtime service.',
           discoveryPath: '',
           connectable: false,
         ),
@@ -327,13 +442,13 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
           state: 'notLoaded',
           tone: 'muted',
           title: 'Imported profile not loaded',
-          message: 'Import a remote profile JSON document; Rust stores an app-local copy and probes /health.',
+          message: 'Import a remote profile document. The app saves a copy and checks health before connecting.',
           discoveryPath: '',
           connectable: false,
         ),
         connectionTone: 'muted',
         baseUrl: _baseUrl,
-        statusLabel: 'No projection packet',
+        statusLabel: 'Not connected',
         watermarkLabel: '—',
         statusBadges: const [
           AgentRuntimeStatusBadge(label: 'Connection', value: 'disconnected', tone: 'muted'),
@@ -341,18 +456,18 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
         selectedSessionLabel: 'none selected',
         sessionsTitle: 'Sessions',
         sessionsSubtitle: '',
-        timelineTitle: 'Selected session stream',
+        timelineTitle: 'Selected session',
         timelineSubtitle: '',
-        actionsTitle: 'Action queue',
+        actionsTitle: 'Attention',
         actionsSubtitle: '',
-        detailTitle: 'Controller detail',
+        detailTitle: 'Runtime detail',
         detailSubtitle: '',
         sessionsEmptyTitle: 'No sessions',
         sessionsEmptyText: 'Connect to hydrate runtime sessions.',
         timelineEmptyTitle: 'No timeline',
-        timelineEmptyText: 'Select a session to inspect its event stream.',
-        actionsEmptyTitle: 'No action queue',
-        actionsEmptyText: 'No runtime action queue is loaded.',
+        timelineEmptyText: 'Create or select a session to see activity.',
+        actionsEmptyTitle: 'No action required',
+        actionsEmptyText: 'No items need attention.',
         sessions: const [],
         timeline: const [],
         actions: const [],
@@ -452,6 +567,90 @@ Map<String, dynamic> _viewModelJson(bindings.AgentRuntimeControlTowerViewModel v
     'pendingRequestCount': view.pendingRequestCount,
     'errorMessage': view.hasErrorMessage ? view.errorMessage : null,
   };
+}
+
+ConversationShellData _shellData(bindings.AgentRuntimeConversationShellViewModel view) {
+  final roles = {for (final role in view.dynamicRoles) role.roleId: role};
+  final selectedSessionId = view.hasSelectedSessionId ? view.selectedSessionId : null;
+  return ConversationShellData(
+    appTitle: 'Agent Runtime',
+    connectionLabel: 'Runtime connected',
+    projects: view.projects
+        .map((project) => ConversationProject(id: project.id, title: project.title, subtitle: project.subtitle))
+        .toList(growable: false),
+    sessions: view.sessions
+        .map((session) {
+          final role = roles[session.groupLabel] ??
+              bindings.AgentRuntimeShellRolePresentation(
+                roleId: session.groupLabel,
+                displayLabel: session.groupLabel,
+                shortLabel: session.groupLabel.isEmpty ? 'AR' : session.groupLabel.substring(0, 1).toUpperCase(),
+                tone: session.tone,
+                description: session.subtitle,
+              );
+          return ConversationSession(
+            id: session.id,
+            title: _runtimeDisplayCopy(session.title),
+            subtitle: _runtimeDisplayCopy(session.subtitle),
+            role: _runtimeDisplayCopy(session.groupLabel),
+            selected: session.id == selectedSessionId,
+            rolePresentation: ConversationRolePresentation(
+              roleId: _runtimeDisplayCopy(role.roleId),
+              displayLabel: _runtimeDisplayCopy(role.displayLabel),
+              shortLabel: role.shortLabel,
+              iconKey: role.roleId,
+              tone: role.tone,
+              statusLabel: _runtimeDisplayCopy(session.status),
+              description: _runtimeDisplayCopy(role.description),
+            ),
+          );
+        })
+        .toList(growable: false),
+    selectedSessionId: selectedSessionId,
+    timelineTitle: selectedSessionId == null ? 'Select a session' : 'Selected session',
+    entries: view.selectedConversation
+        .map((item) => ChatEntry(
+              id: item.id,
+              author: item.tone == 'success' ? 'assistant' : 'system',
+              displayLabel: _runtimeDisplayCopy(item.title),
+              timestamp: null,
+              body: _runtimeDisplayCopy(item.subtitle.isEmpty ? item.status : item.subtitle),
+              subtitle: _runtimeDisplayCopy(item.status),
+              status: _runtimeDisplayCopy(item.status),
+              isTool: item.tone == 'warning',
+            ))
+        .toList(growable: false),
+    composerEnabled: selectedSessionId != null,
+    isRunning: view.selectedConversation.any((entry) => entry.status.toLowerCase().contains('running')),
+    detailTitle: 'Operations',
+    detailSections: [
+      ConversationDetailSection(
+        title: 'Settings',
+        rows: view.settings.map((fact) => ConversationDetailRow(label: fact.label, value: fact.value)).toList(growable: false),
+      ),
+      ConversationDetailSection(
+        title: 'Actions',
+        rows: view.actions.map((action) => ConversationDetailRow(label: action.title, value: action.stateText)).toList(growable: false),
+      ),
+    ],
+    emptyTitle: 'No sessions yet',
+    emptyText: 'Create a session to start working.',
+  );
+}
+
+String _runtimeDisplayCopy(String value) {
+  return value
+      .replaceAll(RegExp(r'/Users/[^ ]+'), 'Project workspace')
+      .replaceAll('tool.call execute_code', 'Execute code')
+      .replaceAll('tool.completed', 'Execute code')
+      .replaceAll('execute_code', 'Code run')
+      .replaceAll('approval.requested', 'Approval requested')
+      .replaceAll('cmd.rg.audit', 'Command review')
+      .replaceAll('rg · audit', 'Search audit')
+      .replaceAll('runtime-allow', 'Runtime allow')
+      .replaceAll('projection', 'runtime')
+      .replaceAll('controller', 'connection')
+      .trim();
 }
 
 Map<String, dynamic> _discoveryJson(bindings.AgentRuntimeDiscoveryView view) => {
@@ -585,3 +784,43 @@ Map<String, dynamic> _workflowMemoryJson(bindings.AgentRuntimeWorkflowMemoryView
       }).toList(growable: false) : const <Map<String, Object?>>[],
       'feedbackActions': view.actionStates.map(_actionJson).toList(growable: false),
     };
+
+bindings.AgentRuntimeCommandRegistryDecisionInput _defaultRegistryDecision(String sessionId, String status) {
+  return bindings.AgentRuntimeCommandRegistryDecisionInput(
+    sessionId: sessionId,
+    status: status,
+    finalScope: const bindings.AgentRuntimeRegistryScope(scopeType: '', projectKey: ''),
+    hasFinalScope: false,
+    finalExecutionPolicy: const bindings.AgentRuntimeFinalExecutionPolicy(decision: '', reason: ''),
+    hasFinalExecutionPolicy: false,
+    finalCommand: const bindings.AgentRuntimeCommandSeed(
+      actionId: '',
+      binaryName: '',
+      candidatePaths: <String>[],
+      starlarkObject: '',
+      starlarkMethod: '',
+      argvPrefix: <String>[],
+      defaultCwd: '',
+      cwdPolicy: '',
+      envPolicy: '',
+      syncAllowed: false,
+      asyncAllowed: false,
+      maxRuntimeMs: 0,
+      hasMaxRuntimeMs: false,
+      endOfTurnBehavior: '',
+      stdinPolicy: '',
+      minAwaitMs: 0,
+      maxAwaitMs: 0,
+      outputBufferBytes: 0,
+      terminateGraceMs: 0,
+      outputLimitBytes: 0,
+      mutationClass: '',
+      modelDescription: '',
+      allowCwdArg: false,
+      allowArgsArg: false,
+      forbiddenArgs: <String>[],
+      executionPolicy: '',
+    ),
+    hasFinalCommand: false,
+  );
+}

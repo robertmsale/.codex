@@ -53,6 +53,9 @@ pub enum GuiTransportRequest {
         base_url: String,
         selected_session_id: Option<String>,
     },
+    SelectProject {
+        project_id: String,
+    },
     Hydrate {
         selected_session_id: Option<String>,
     },
@@ -134,6 +137,7 @@ pub struct AgentRuntimeControlTowerViewModel {
     pub output_log: Vec<String>,
     pub pending_request_count: usize,
     pub error_message: Option<String>,
+    pub shell: AgentRuntimeConversationShellViewModel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -175,6 +179,43 @@ pub struct AgentRuntimeControlTowerTimelineRow {
     pub subtitle: String,
     pub status: String,
     pub tone: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeConversationShellViewModel {
+    pub projects: Vec<AgentRuntimeShellProjectRow>,
+    pub sessions: Vec<AgentRuntimeControlTowerSessionRow>,
+    pub selected_session_id: Option<String>,
+    pub selected_conversation: Vec<AgentRuntimeControlTowerTimelineRow>,
+    pub dynamic_roles: Vec<AgentRuntimeShellRolePresentation>,
+    pub actions: Vec<AgentRuntimeControlTowerActionRow>,
+    pub settings: Vec<AgentRuntimeControlTowerFact>,
+    pub role_management: AgentRuntimeRoleAdminView,
+    pub workflow_memory: AgentRuntimeWorkflowMemoryView,
+    pub command_registry_requests: Vec<AgentRuntimeControlTowerActionRow>,
+    pub approvals: Vec<AgentRuntimeControlTowerActionRow>,
+    pub diagnostics: Vec<AgentRuntimeControlTowerFact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeShellProjectRow {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub selectable: bool,
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeShellRolePresentation {
+    pub role_id: String,
+    pub display_label: String,
+    pub short_label: String,
+    pub tone: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -376,7 +417,14 @@ impl AgentRuntimeControlTowerViewModel {
             .unwrap_or_default();
         actions.sort_by(|left, right| left.kind.cmp(&right.kind).then(left.id.cmp(&right.id)));
         let selected_session_label = selected_session_label(projection, controller_state);
-        Self {
+        let role_admin = role_admin_view(projection);
+        let workflow_memory = workflow_memory_view(
+            projection,
+            controller_state.selected_session_id.as_deref(),
+            controller_state.selected_workflow_memory_id.as_deref(),
+        );
+        let controller_facts = controller_facts(controller_state);
+        let mut view = Self {
             discovery: discovery.clone(),
             remote_discovery: remote_discovery.clone(),
             imported_remote_discovery: imported_remote_discovery.clone(),
@@ -392,34 +440,124 @@ impl AgentRuntimeControlTowerViewModel {
             sessions_title: projection
                 .map(|projection| format!("Sessions ({})", projection.sessions.len()))
                 .unwrap_or_else(|| "Sessions".to_string()),
-            sessions_subtitle: "Grouped by Rust-owned operational state".to_string(),
+            sessions_subtitle: "Sessions needing attention".to_string(),
             timeline_title: format!("Selected session stream · {selected_session_label}"),
-            timeline_subtitle: "Operations event stream, not a chat transcript".to_string(),
+            timeline_subtitle: "Recent session activity".to_string(),
             actions_title: format!("Action queue ({})", actions.len()),
             actions_subtitle: "Approvals, resumable work, and registry requests".to_string(),
             detail_title: "Controller detail".to_string(),
-            detail_subtitle: "Rust-owned controller facts".to_string(),
+            detail_subtitle: "Runtime status".to_string(),
             sessions_empty_title: "No sessions".to_string(),
-            sessions_empty_text: "No sessions are visible in the current runtime projection.".to_string(),
+            sessions_empty_text: "No sessions yet. Create a session to start working.".to_string(),
             timeline_empty_title: selected_session_label,
-            timeline_empty_text: "Select a session to hydrate its operations event stream.".to_string(),
+            timeline_empty_text: "Select a session to inspect recent activity.".to_string(),
             actions_empty_title: "No action required".to_string(),
             actions_empty_text: "No approvals, resumable actions, or registry requests need attention.".to_string(),
             sessions,
             timeline,
             actions,
-            role_admin: role_admin_view(projection),
-            workflow_memory: workflow_memory_view(
-                projection,
-                controller_state.selected_session_id.as_deref(),
-                controller_state.selected_workflow_memory_id.as_deref(),
-            ),
-            controller_facts: controller_facts(controller_state),
+            role_admin,
+            workflow_memory,
+            controller_facts,
             output_log: output_log.iter().take(8).cloned().collect(),
             pending_request_count,
             error_message,
+            shell: AgentRuntimeConversationShellViewModel::empty(),
+        };
+        view.shell = AgentRuntimeConversationShellViewModel::from_control_tower(&view, controller_state);
+        view
+    }
+}
+
+impl AgentRuntimeConversationShellViewModel {
+    fn empty() -> Self {
+        Self {
+            projects: Vec::new(),
+            sessions: Vec::new(),
+            selected_session_id: None,
+            selected_conversation: Vec::new(),
+            dynamic_roles: Vec::new(),
+            actions: Vec::new(),
+            settings: Vec::new(),
+            role_management: role_admin_view(None),
+            workflow_memory: workflow_memory_view(None, None, None),
+            command_registry_requests: Vec::new(),
+            approvals: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
+
+    pub fn from_control_tower(view: &AgentRuntimeControlTowerViewModel, controller_state: &GuiControllerState) -> Self {
+        let selected_session_id = controller_state
+            .selected_session_id
+            .clone()
+            .or_else(|| view.sessions.first().map(|session| session.id.clone()));
+        let dynamic_roles = view
+            .sessions
+            .iter()
+            .map(|session| AgentRuntimeShellRolePresentation {
+                role_id: session.group_label.clone(),
+                display_label: session.group_label.clone(),
+                short_label: shell_role_short_label(&session.group_label),
+                tone: session.tone.clone(),
+                description: session.subtitle.clone(),
+            })
+            .collect();
+        let approvals = view
+            .actions
+            .iter()
+            .filter(|action| action.kind == "approval")
+            .cloned()
+            .collect();
+        let command_registry_requests = view
+            .actions
+            .iter()
+            .filter(|action| action.kind == "commandRegistryRequest")
+            .cloned()
+            .collect();
+        Self {
+            projects: vec![AgentRuntimeShellProjectRow {
+                id: "runtime".to_string(),
+                title: "Runtime".to_string(),
+                subtitle: "Runtime project scope".to_string(),
+                selectable: true,
+                unavailable_reason: None,
+            }],
+            sessions: view.sessions.clone(),
+            selected_session_id,
+            selected_conversation: view.timeline.clone(),
+            dynamic_roles,
+            actions: view.actions.clone(),
+            settings: vec![
+                AgentRuntimeControlTowerFact {
+                    label: "Connection".to_string(),
+                    value: view.connection_state.clone(),
+                },
+                AgentRuntimeControlTowerFact {
+                    label: "Base URL".to_string(),
+                    value: view.base_url.clone(),
+                },
+            ],
+            role_management: view.role_admin.clone(),
+            workflow_memory: view.workflow_memory.clone(),
+            command_registry_requests,
+            approvals,
+            diagnostics: view.controller_facts.clone(),
+        }
+    }
+}
+
+fn shell_role_short_label(value: &str) -> String {
+    let mut initials = value
+        .split_whitespace()
+        .filter_map(|part| part.chars().next())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase();
+    if initials.is_empty() {
+        initials = "AR".to_string();
+    }
+    initials
 }
 
 impl Default for AgentRuntimeDiscoveryView {
@@ -1125,6 +1263,7 @@ struct GuiTransportRunner {
     discovery: AgentRuntimeDiscoveryView,
     remote_discovery: AgentRuntimeDiscoveryView,
     imported_remote_discovery: AgentRuntimeDiscoveryView,
+    selected_project_id: Option<String>,
 }
 
 impl GuiTransportRunner {
@@ -1137,6 +1276,7 @@ impl GuiTransportRunner {
             discovery: AgentRuntimeDiscoveryView::default(),
             remote_discovery: AgentRuntimeDiscoveryView::not_loaded_remote(),
             imported_remote_discovery: AgentRuntimeDiscoveryView::not_loaded_imported(),
+            selected_project_id: None,
         }
     }
 
@@ -1293,6 +1433,10 @@ impl GuiTransportRunner {
                     .await;
                 Ok(self.operation_outputs(result))
             }
+            GuiTransportRequest::SelectProject { project_id } => {
+                self.selected_project_id = Some(project_id);
+                Ok(vec![])
+            }
             GuiTransportRequest::Rehydrate { selected_session_id } => {
                 let result = self
                     .controller
@@ -1343,20 +1487,27 @@ impl GuiTransportRunner {
     }
 
     fn control_tower_view_output(&self, request_id: String, error: Option<&ApiErrorPacket>) -> GuiTransportOutputPacket {
+        let mut view_model = AgentRuntimeControlTowerViewModel::from_runtime_state(
+            self.base_url.clone(),
+            self.controller.projection(),
+            self.controller.controller_state(),
+            &self.output_log,
+            0,
+            error.map(|error| format!("{}: {}", error.error.code, error.error.message)),
+            &self.discovery,
+            &self.remote_discovery,
+            &self.imported_remote_discovery,
+        );
+        if let Some(project_id) = &self.selected_project_id {
+            view_model.shell.settings.push(AgentRuntimeControlTowerFact {
+                label: "Selected project".to_string(),
+                value: project_id.clone(),
+            });
+        }
         GuiTransportOutputPacket {
             request_id,
             output: GuiTransportOutput::ControlTowerView {
-                view_model: AgentRuntimeControlTowerViewModel::from_runtime_state(
-                    self.base_url.clone(),
-                    self.controller.projection(),
-                    self.controller.controller_state(),
-                    &self.output_log,
-                    0,
-                    error.map(|error| format!("{}: {}", error.error.code, error.error.message)),
-                    &self.discovery,
-                    &self.remote_discovery,
-                    &self.imported_remote_discovery,
-                ),
+                view_model,
             },
         }
     }
@@ -1502,7 +1653,7 @@ fn role_admin_view(projection: Option<&RuntimeProjection>) -> AgentRuntimeRoleAd
         title: format!("Role Admin ({})", rows.len()),
         subtitle: "DB-backed immutable role versions".to_string(),
         empty_title: "No roles projected".to_string(),
-        empty_text: "Hydrate the runtime projection or create a role draft through Rust-owned role operations.".to_string(),
+        empty_text: "Connect to inspect role definitions or create a role.".to_string(),
         rows,
         selected_detail,
         version_rows,
@@ -1622,7 +1773,7 @@ fn role_operation_actions(role: &RoleSummary, valid: bool) -> Vec<AgentRuntimeCo
     actions.push(AgentRuntimeControlTowerActionRow {
         id: format!("role:{}:archive", role.id),
         title: if role.status == "archived" { "Unarchive role" } else { "Archive role" }.to_string(),
-        subtitle: "Mutation waits for projection evidence".to_string(),
+        subtitle: "Updates after the runtime confirms the change".to_string(),
         kind: "roleAdmin".to_string(),
         state_text: if role.status == "archived" { "Can unarchive" } else { "Can archive" }.to_string(),
         tone: if role.status == "archived" { "warning" } else { "muted" }.to_string(),
@@ -1653,7 +1804,7 @@ fn workflow_memory_view(
         title: format!("Workflow Memory ({})", rows.len()),
         subtitle: "execute_code/Starlark memories · inspector plus feedback".to_string(),
         empty_title: "No workflow memories".to_string(),
-        empty_text: "No visible Starlark workflow memories are projected for the selected session.".to_string(),
+        empty_text: "No saved workflows are visible for this session.".to_string(),
         selected_memory_id: effective_selected_id,
         rows,
         selected_detail: selected.map(|memory| workflow_memory_detail(memory, selected_session_id)),
@@ -2809,12 +2960,12 @@ mod tests {
         assert_eq!(view.status_label, "ok · connected · runtime ready");
         assert_eq!(view.watermark_label, "9");
         assert_eq!(view.sessions_title, "Sessions (1)");
-        assert_eq!(view.sessions_subtitle, "Grouped by Rust-owned operational state");
+        assert_eq!(view.sessions_subtitle, "Sessions needing attention");
         assert_eq!(view.timeline_title, "Selected session stream · Runtime check");
-        assert_eq!(view.timeline_subtitle, "Operations event stream, not a chat transcript");
+        assert_eq!(view.timeline_subtitle, "Recent session activity");
         assert_eq!(view.actions_title, "Action queue (2)");
         assert_eq!(view.actions_subtitle, "Approvals, resumable work, and registry requests");
-        assert_eq!(view.detail_subtitle, "Rust-owned controller facts");
+        assert_eq!(view.detail_subtitle, "Runtime status");
         assert_eq!(view.sessions_empty_title, "No sessions");
         assert_eq!(view.timeline_empty_title, "Runtime check");
         assert_eq!(view.actions_empty_title, "No action required");
@@ -2848,6 +2999,51 @@ mod tests {
         assert!(view.workflow_memory.recent_events.iter().any(|row| row.title == "workflow_memory.helpful"));
         assert!(view.controller_facts.iter().any(|fact| fact.label == "Selected session" && fact.value == "session-1"));
         assert_eq!(view.pending_request_count, 2);
+
+        let shell = AgentRuntimeConversationShellViewModel::from_control_tower(&view, &controller);
+        assert_eq!(shell.projects[0].id, "runtime");
+        assert!(shell.projects[0].selectable);
+        assert_eq!(shell.selected_session_id.as_deref(), Some("session-1"));
+        assert_eq!(shell.sessions[0].id, "session-1");
+        assert_eq!(shell.selected_conversation[0].id, "event-7");
+        assert_eq!(shell.dynamic_roles[0].role_id, "Open");
+        assert_eq!(shell.dynamic_roles[0].short_label, "O");
+        assert!(shell.approvals.iter().any(|row| row.id == "approval-1"));
+        assert!(shell.command_registry_requests.iter().any(|row| row.id == "request-1"));
+        assert_eq!(shell.workflow_memory.rows.len(), 2);
+        assert_eq!(shell.role_management.rows[0].id, "runtime-allow");
+        assert!(shell.settings.iter().any(|fact| fact.label == "Connection" && fact.value == "streaming"));
+        assert!(shell.diagnostics.iter().any(|fact| fact.label == "Selected session"));
+    }
+
+    #[test]
+    fn dynamic_role_presentation_is_data_driven_not_fixed_codex_enum() {
+        let view = AgentRuntimeControlTowerViewModel {
+            sessions: vec![AgentRuntimeControlTowerSessionRow {
+                id: "session-custom".to_string(),
+                title: "Custom runtime role".to_string(),
+                status: "open".to_string(),
+                subtitle: "Custom role subtitle".to_string(),
+                group_label: "Neon Incident Commander".to_string(),
+                tone: "warning".to_string(),
+            }],
+            ..AgentRuntimeControlTowerViewModel::from_runtime_state(
+                "http://127.0.0.1:8765",
+                None,
+                &GuiControllerState::default(),
+                &[],
+                0,
+                None,
+                &AgentRuntimeDiscoveryView::default(),
+                &AgentRuntimeDiscoveryView::not_loaded_remote(),
+                &AgentRuntimeDiscoveryView::not_loaded_imported(),
+            )
+        };
+        let shell = AgentRuntimeConversationShellViewModel::from_control_tower(&view, &GuiControllerState::default());
+        assert_eq!(shell.dynamic_roles[0].role_id, "Neon Incident Commander");
+        assert_eq!(shell.dynamic_roles[0].display_label, "Neon Incident Commander");
+        assert_eq!(shell.dynamic_roles[0].short_label, "NI");
+        assert_eq!(shell.dynamic_roles[0].tone, "warning");
     }
 
     #[test]

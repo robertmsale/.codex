@@ -49,6 +49,7 @@ class RobdexDesignLabHome extends StatelessWidget {
       ),
       workerMetadata: const WorkerMetadata(threadId: 'config-operator'),
     );
+    final genericWorkbench = _cleanRobdexGenericWorkbench(workbench);
     if (surface == 'stats') {
       return const Scaffold(
         body: Center(
@@ -134,6 +135,62 @@ class RobdexDesignLabHome extends StatelessWidget {
     if (surface == 'agentRuntimeDisconnected') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeDisconnected);
     }
+    if (surface == 'robdexGenericConversationShell') {
+      return ConversationShellScreen(
+        data: workbenchConversationShellData(genericWorkbench),
+        onSessionSelected: (_) {},
+        onCreateSession: () {},
+        onSendMessage: (_) {},
+        onInterrupt: () {},
+        onProjectSelected: (_) {},
+        onSettings: () {},
+      );
+    }
+    if (surface == 'agentRuntimeConnectedEmpty') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeEmpty);
+    }
+    if (surface == 'agentRuntimeSelectedSessionTranscript') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);
+    }
+    if (surface == 'agentRuntimeRoleManagementDetail') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);
+    }
+    if (surface == 'agentRuntimeOperationsDetail') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);
+    }
+    if (surface == 'agentRuntimeDynamicCustomRole') {
+      return _AgentRuntimeScenario(
+        data: mockAgentRuntimeConnected.copyWith(
+          sessions: const [
+            AgentRuntimeSessionItem(
+              id: 'session-custom',
+              title: 'Incident review',
+              status: 'open',
+              subtitle: 'Project workspace',
+              groupLabel: 'Neon Incident Commander',
+              tone: 'warning',
+            ),
+          ],
+        ),
+      );
+    }
+    if (surface == 'agentRuntimeLiveSmoke') {
+      return ConversationShellScreen(
+        data: _agentRuntimeLiveSmokeShellData(),
+        onSessionSelected: (_) {},
+        onCreateSession: () {},
+        onSendMessage: (_) {},
+        onInterrupt: () {},
+        onCloseSession: (_) {},
+        onArchiveSession: (_) {},
+        onForkSession: (_) {},
+        onProjectSelected: (_) {},
+        onSettings: () {},
+      );
+    }
+    if (surface == 'agentRuntimeCompactShell') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);
+    }
     if (surface == 'agentRuntimeConnecting') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnecting);
     }
@@ -188,6 +245,150 @@ class RobdexDesignLabHome extends StatelessWidget {
   }
 }
 
+WorkbenchViewData _cleanRobdexGenericWorkbench(WorkbenchViewData workbench) {
+  return workbench.copyWith(
+    selection: const WorkspaceSelection(
+      projectId: 'project-codex-home',
+      projectRootPath: null,
+      projectOrchestratorThreadId: null,
+      projectOrchestratorName: null,
+      threadId: 'config-operator',
+      threadRole: 'operator',
+      projectName: '.codex',
+      threadName: 'Codex Config Operator',
+      connectionLabel: 'Bridge Connected',
+      isRunning: false,
+    ),
+    threads: const [
+      ThreadItem(
+        id: 'config-operator',
+        title: 'Config Operator',
+        role: 'operator',
+        projectName: '.codex',
+        preview: 'Bridge connected. Ready for owner instructions.',
+        isRunning: false,
+        unreadCount: 0,
+        requirementReview: null,
+      ),
+      ThreadItem(
+        id: 'approval-worker',
+        title: 'Approval Worker',
+        role: 'worker',
+        projectName: '.codex',
+        preview: 'Waiting on owner approval.',
+        isRunning: false,
+        unreadCount: 1,
+        requirementReview: null,
+      ),
+      ThreadItem(
+        id: 'qa-review',
+        title: 'QA Review',
+        role: 'qa',
+        projectName: '.codex',
+        preview: 'Reviewing the latest bridge changes.',
+        isRunning: false,
+        unreadCount: 0,
+        requirementReview: null,
+      ),
+    ],
+    chatEntries: const [
+      ChatEntry(
+        id: 'owner-1',
+        author: 'owner',
+        displayLabel: 'Owner',
+        timestamp: null,
+        body: 'Please keep the bridge stable while this conversation continues.',
+      ),
+      ChatEntry(
+        id: 'operator-1',
+        author: 'operator',
+        displayLabel: 'Config Operator',
+        timestamp: null,
+        body: 'Bridge connection is stable. The selected thread and composer are ready.',
+      ),
+      ChatEntry(
+        id: 'approval-1',
+        author: 'system',
+        displayLabel: 'Approval',
+        timestamp: null,
+        body: 'One command is waiting for owner approval.',
+        status: 'pending',
+        isTool: true,
+      ),
+    ],
+    statusHeadline: 'Bridge connected',
+    statusDetail: 'Live project and session state are synchronized.',
+    composerHint: 'Message selected thread...',
+  );
+}
+
+ConversationShellData _agentRuntimeLiveSmokeShellData() {
+  const sessionId = String.fromEnvironment('AGENT_RUNTIME_LIVE_SMOKE_SESSION_ID', defaultValue: 'live-ui-smoke-session');
+  const turnId = String.fromEnvironment('AGENT_RUNTIME_LIVE_SMOKE_TURN_ID', defaultValue: 'live-ui-smoke-turn');
+  const response = String.fromEnvironment('AGENT_RUNTIME_LIVE_SMOKE_RESPONSE', defaultValue: 'Runtime response rendered.');
+  return const ConversationShellData(
+    appTitle: 'Agent Runtime',
+    connectionLabel: 'Live smoke connected',
+    projects: [ConversationProject(id: 'runtime', title: 'Runtime', subtitle: 'Live smoke')],
+    sessions: [
+      ConversationSession(
+        id: sessionId,
+        title: 'Live smoke session',
+        subtitle: 'Created and selected through runtime smoke',
+        role: 'Runtime',
+        selected: true,
+        rolePresentation: ConversationRolePresentation(
+          roleId: 'runtime',
+          displayLabel: 'Runtime',
+          shortLabel: 'RT',
+          iconKey: 'runtime',
+          tone: 'success',
+          statusLabel: 'Connected',
+          description: 'Live runtime smoke',
+        ),
+      ),
+    ],
+    selectedSessionId: sessionId,
+    timelineTitle: 'Live smoke session',
+    entries: [
+      ChatEntry(
+        id: 'live-smoke-owner',
+        author: 'owner',
+        displayLabel: 'Owner',
+        timestamp: null,
+        body: 'Check the runtime health and answer briefly.',
+      ),
+      ChatEntry(
+        id: turnId,
+        author: 'assistant',
+        displayLabel: 'Runtime response',
+        timestamp: null,
+        body: response,
+      ),
+    ],
+    composerEnabled: true,
+    isRunning: false,
+    detailTitle: 'Smoke proof',
+    detailSections: [
+      ConversationDetailSection(
+        title: 'Live path',
+        rows: [
+          ConversationDetailRow(label: 'Connect', value: 'Completed'),
+          ConversationDetailRow(label: 'Session', value: 'Created and selected'),
+          ConversationDetailRow(label: 'Send', value: 'Completed'),
+          ConversationDetailRow(label: 'Response', value: 'Rendered in ChatTimeline'),
+        ],
+      ),
+    ],
+    emptyTitle: 'No session selected',
+    emptyText: 'Create or select a session.',
+    projectLabel: 'Projects',
+    sessionLabel: 'Sessions',
+    composerPlaceholder: 'Message selected session...',
+    composerDisabledHint: 'Select a session to enable the composer.',
+  );
+}
+
 class _AgentRuntimeScenario extends StatefulWidget {
   const _AgentRuntimeScenario({required this.data});
 
@@ -214,6 +415,39 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
 
   @override
   Widget build(BuildContext context) {
+    if (_hasConnectedRuntime(widget.data)) {
+      final shell = agentRuntimeConversationShellData(widget.data);
+      return ConversationShellScreen(
+        data: shell,
+        onSessionSelected: (_) {},
+        onCreateSession: () {},
+        onSendMessage: (_) {},
+        onInterrupt: () {},
+        onCloseSession: (_) {},
+        onArchiveSession: (_) {},
+        onForkSession: (_) {},
+        onProjectSelected: (_) {},
+        onSettings: () {},
+        detailContent: AgentRuntimeOperationsDetail(
+          data: widget.data,
+          onRoleValidate: (_) {},
+          onRoleCreate: (_) {},
+          onRoleUpdate: (_) {},
+          onRoleExport: (_) {},
+          onRoleArchive: (_) {},
+          onRoleUnarchive: (_) {},
+          onRoleActivate: (_, _) {},
+          onWorkflowMemorySelect: (_) {},
+          onWorkflowMemoryAttempted: (_) {},
+          onWorkflowMemoryHelpful: (_) {},
+          onWorkflowMemoryNotHelpful: (_) {},
+          onApprovalApprove: (_) {},
+          onApprovalResume: (_) {},
+          onCommandRegistryApprove: (_) {},
+          onCommandRegistryApply: (_) {},
+        ),
+      );
+    }
     return Scaffold(
       body: AgentRuntimeControlTower(
         data: widget.data,
@@ -242,6 +476,10 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
       ),
     );
   }
+}
+
+bool _hasConnectedRuntime(AgentRuntimeControlTowerData data) {
+  return data.connectionState != 'disconnected' && data.connectionState != 'connecting' && data.connectionState != 'failed';
 }
 
 

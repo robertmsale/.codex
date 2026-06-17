@@ -39,6 +39,7 @@ class AgentRuntimeControlTowerViewModel {
     required this.pendingRequestCount,
     required this.errorMessage,
     required this.hasErrorMessage,
+    required this.shell,
   });
 
   static AgentRuntimeControlTowerViewModel deserialize(BinaryDeserializer deserializer) {
@@ -78,6 +79,7 @@ class AgentRuntimeControlTowerViewModel {
       pendingRequestCount: deserializer.deserializeInt64(),
       errorMessage: deserializer.deserializeString(),
       hasErrorMessage: deserializer.deserializeBool(),
+      shell: AgentRuntimeConversationShellViewModel.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -126,6 +128,7 @@ class AgentRuntimeControlTowerViewModel {
   final int pendingRequestCount;
   final String errorMessage;
   final bool hasErrorMessage;
+  final AgentRuntimeConversationShellViewModel shell;
 
   AgentRuntimeControlTowerViewModel copyWith({
     AgentRuntimeDiscoveryView? discovery,
@@ -162,6 +165,7 @@ class AgentRuntimeControlTowerViewModel {
     int? pendingRequestCount,
     String? errorMessage,
     bool? hasErrorMessage,
+    AgentRuntimeConversationShellViewModel? shell,
   }) {
     return AgentRuntimeControlTowerViewModel(
       discovery: discovery ?? this.discovery,
@@ -198,6 +202,7 @@ class AgentRuntimeControlTowerViewModel {
       pendingRequestCount: pendingRequestCount ?? this.pendingRequestCount,
       errorMessage: errorMessage ?? this.errorMessage,
       hasErrorMessage: hasErrorMessage ?? this.hasErrorMessage,
+      shell: shell ?? this.shell,
     );
   }
 
@@ -237,6 +242,7 @@ class AgentRuntimeControlTowerViewModel {
     serializer.serializeInt64(pendingRequestCount);
     serializer.serializeString(errorMessage);
     serializer.serializeBool(hasErrorMessage);
+    shell.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -285,7 +291,8 @@ class AgentRuntimeControlTowerViewModel {
       && listEquals(outputLog, other.outputLog)
       && pendingRequestCount == other.pendingRequestCount
       && errorMessage == other.errorMessage
-      && hasErrorMessage == other.hasErrorMessage;
+      && hasErrorMessage == other.hasErrorMessage
+      && shell == other.shell;
   }
 
   @override
@@ -324,6 +331,7 @@ class AgentRuntimeControlTowerViewModel {
         pendingRequestCount,
         errorMessage,
         hasErrorMessage,
+        shell,
       ]);
 
   @override
@@ -365,7 +373,8 @@ class AgentRuntimeControlTowerViewModel {
         'outputLog: $outputLog, '
         'pendingRequestCount: $pendingRequestCount, '
         'errorMessage: $errorMessage, '
-        'hasErrorMessage: $hasErrorMessage'
+        'hasErrorMessage: $hasErrorMessage, '
+        'shell: $shell'
         ')';
       return true;
     }());

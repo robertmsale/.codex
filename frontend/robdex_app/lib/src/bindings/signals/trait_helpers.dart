@@ -97,6 +97,30 @@ class TraitHelpers {
     return List.generate(length, (_) => AgentRuntimeSessionRow.deserialize(deserializer));
   }
 
+  static void serializeVectorAgentRuntimeShellProjectRow(List<AgentRuntimeShellProjectRow> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeShellProjectRow> deserializeVectorAgentRuntimeShellProjectRow(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeShellProjectRow.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeShellRolePresentation(List<AgentRuntimeShellRolePresentation> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeShellRolePresentation> deserializeVectorAgentRuntimeShellRolePresentation(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeShellRolePresentation.deserialize(deserializer));
+  }
+
   static void serializeVectorAgentRuntimeTimelineRow(List<AgentRuntimeTimelineRow> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
