@@ -18,14 +18,14 @@ class AgentRuntimeOutputSignal {
 
   const AgentRuntimeOutputSignal({
     required this.requestId,
-    required this.outputJson,
+    required this.output,
   });
 
   static AgentRuntimeOutputSignal deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = AgentRuntimeOutputSignal(
       requestId: deserializer.deserializeString(),
-      outputJson: deserializer.deserializeString(),
+      output: AgentRuntimeOutput.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -41,22 +41,22 @@ class AgentRuntimeOutputSignal {
   }
 
   final String requestId;
-  final String outputJson;
+  final AgentRuntimeOutput output;
 
   AgentRuntimeOutputSignal copyWith({
     String? requestId,
-    String? outputJson,
+    AgentRuntimeOutput? output,
   }) {
     return AgentRuntimeOutputSignal(
       requestId: requestId ?? this.requestId,
-      outputJson: outputJson ?? this.outputJson,
+      output: output ?? this.output,
     );
   }
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeString(requestId);
-    serializer.serializeString(outputJson);
+    output.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -73,13 +73,13 @@ class AgentRuntimeOutputSignal {
 
     return other is AgentRuntimeOutputSignal
       && requestId == other.requestId
-      && outputJson == other.outputJson;
+      && output == other.output;
   }
 
   @override
   int get hashCode => Object.hash(
         requestId,
-        outputJson,
+        output,
       );
 
   @override
@@ -89,7 +89,7 @@ class AgentRuntimeOutputSignal {
     assert(() {
       fullString = '$runtimeType('
         'requestId: $requestId, '
-        'outputJson: $outputJson'
+        'output: $output'
         ')';
       return true;
     }());

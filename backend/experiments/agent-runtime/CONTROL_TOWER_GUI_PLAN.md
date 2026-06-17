@@ -9,9 +9,9 @@ behavior or any fallback GUI state path.
 ## First shell implementation record
 
 The first minimal Flutter-facing shell is now implemented. It stays intentionally
-small: Dart sends JSON `GuiTransportRequestPacket` intents over
-`AgentRuntimeRequestSignal`, consumes JSON `GuiTransportOutputPacket` outputs
-from `AgentRuntimeOutputSignal`, and renders the Rust-owned
+small: Dart sends generated typed Agent Runtime request variants over
+`AgentRuntimeRequestSignal`, consumes generated typed Agent Runtime output
+variants from `AgentRuntimeOutputSignal`, and renders the Rust-owned
 `AgentRuntimeControlTowerViewModel`. Dart does not derive session rows,
 timeline rows, action rows, controller facts, labels, watermarks, operation
 success, approval/command enablement, or durable state from raw projection or

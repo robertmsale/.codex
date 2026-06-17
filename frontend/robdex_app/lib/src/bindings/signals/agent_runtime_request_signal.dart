@@ -6,14 +6,14 @@ part of 'signals.dart';
 class AgentRuntimeRequestSignal {
   const AgentRuntimeRequestSignal({
     required this.requestId,
-    required this.packetJson,
+    required this.request,
   });
 
   static AgentRuntimeRequestSignal deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = AgentRuntimeRequestSignal(
       requestId: deserializer.deserializeString(),
-      packetJson: deserializer.deserializeString(),
+      request: AgentRuntimeRequest.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -29,22 +29,22 @@ class AgentRuntimeRequestSignal {
   }
 
   final String requestId;
-  final String packetJson;
+  final AgentRuntimeRequest request;
 
   AgentRuntimeRequestSignal copyWith({
     String? requestId,
-    String? packetJson,
+    AgentRuntimeRequest? request,
   }) {
     return AgentRuntimeRequestSignal(
       requestId: requestId ?? this.requestId,
-      packetJson: packetJson ?? this.packetJson,
+      request: request ?? this.request,
     );
   }
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeString(requestId);
-    serializer.serializeString(packetJson);
+    request.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -61,13 +61,13 @@ class AgentRuntimeRequestSignal {
 
     return other is AgentRuntimeRequestSignal
       && requestId == other.requestId
-      && packetJson == other.packetJson;
+      && request == other.request;
   }
 
   @override
   int get hashCode => Object.hash(
         requestId,
-        packetJson,
+        request,
       );
 
   @override
@@ -77,7 +77,7 @@ class AgentRuntimeRequestSignal {
     assert(() {
       fullString = '$runtimeType('
         'requestId: $requestId, '
-        'packetJson: $packetJson'
+        'request: $request'
         ')';
       return true;
     }());

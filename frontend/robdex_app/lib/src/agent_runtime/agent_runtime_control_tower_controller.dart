@@ -1,15 +1,13 @@
 import 'dart:async';
-import 'dart:convert';
-
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:rinf/rinf.dart';
 import 'package:robdex_design_system/robdex_design_system.dart';
 
-import '../bindings/bindings.dart';
+import '../bindings/bindings.dart' as bindings;
 
 typedef AgentRuntimeRemoteProfilePicker = Future<String?> Function();
-typedef AgentRuntimeRequestSink = void Function(String requestId, String packetJson);
+typedef AgentRuntimeRequestSink = void Function(String requestId, bindings.AgentRuntimeRequest request);
 
 Future<String?> pickAgentRuntimeRemoteProfileDocumentPath() async {
   final file = await openFile(
@@ -26,78 +24,62 @@ Future<String?> pickAgentRuntimeRemoteProfileDocumentPath() async {
 }
 
 @visibleForTesting
-Map<String, dynamic> agentRuntimeRoleActivateOperationForTest(String roleId, String versionId) {
-  return {
-    'operation': 'activateRoleVersion',
-    'request': {'roleId': roleId, 'versionId': versionId},
-  };
+bindings.AgentRuntimeGuiOperation agentRuntimeRoleActivateOperationForTest(String roleId, String versionId) {
+  return bindings.AgentRuntimeGuiOperationActivateRoleVersion(roleId: roleId, versionId: versionId);
 }
 
 @visibleForTesting
-Map<String, dynamic> agentRuntimeWorkflowMemoryFeedbackOperationForTest({
+bindings.AgentRuntimeGuiOperation agentRuntimeWorkflowMemoryFeedbackOperationForTest({
   required String memoryId,
   required String sessionId,
   required String feedback,
-  Map<String, dynamic> payload = const {},
+  bindings.AgentRuntimeWorkflowMemoryFeedbackPayload payload = const bindings.AgentRuntimeWorkflowMemoryFeedbackPayload(
+    source: '',
+    reason: '',
+    variant: false,
+    hasVariant: false,
+  ),
 }) {
-  return {
-    'operation': 'workflowMemoryFeedback',
-    'request': {
-      'memoryId': memoryId,
-      'sessionId': sessionId,
-      'feedback': feedback,
-      'payload': payload,
-    },
-  };
+  return bindings.AgentRuntimeGuiOperationWorkflowMemoryFeedback(
+    memoryId: memoryId,
+    sessionId: sessionId,
+    feedback: feedback,
+    payload: payload,
+  );
 }
 
 @visibleForTesting
-Map<String, dynamic> agentRuntimeWorkflowMemorySelectOperationForTest(String memoryId) {
-  return {
-    'operation': 'selectWorkflowMemory',
-    'request': {'memoryId': memoryId},
-  };
+bindings.AgentRuntimeGuiOperation agentRuntimeWorkflowMemorySelectOperationForTest(String memoryId) {
+  return bindings.AgentRuntimeGuiOperationSelectWorkflowMemory(memoryId: memoryId);
 }
 
 @visibleForTesting
-Map<String, dynamic> agentRuntimeIcloudRefreshIntentForTest() {
-  return {
-    'type': 'refreshIcloudRemoteDiscovery',
-    'payload': {'profilePath': null},
-  };
+bindings.AgentRuntimeRequest agentRuntimeIcloudRefreshIntentForTest() {
+  return const bindings.AgentRuntimeRequestRefreshIcloudRemoteDiscovery(profilePath: '');
 }
 
 @visibleForTesting
-Map<String, dynamic> agentRuntimeIcloudConnectIntentForTest() {
-  return {
-    'type': 'connectIcloudRemoteRuntime',
-    'payload': {'selectedSessionId': null},
-  };
+bindings.AgentRuntimeRequest agentRuntimeIcloudConnectIntentForTest() {
+  return const bindings.AgentRuntimeRequestConnectIcloudRemoteRuntime(profilePath: '', selectedSessionId: '');
 }
 
 @visibleForTesting
-Map<String, dynamic> agentRuntimeImportProfileIntentForTest({String? profilePath}) {
-  return {
-    'type': 'importRemoteProfileDocument',
-    'payload': {'profilePath': profilePath},
-  };
+bindings.AgentRuntimeRequest agentRuntimeImportProfileIntentForTest({String? profilePath}) {
+  return bindings.AgentRuntimeRequestImportRemoteProfileDocument(profilePath: profilePath ?? '');
 }
 
 @visibleForTesting
-Map<String, dynamic> agentRuntimeRefreshImportedProfileIntentForTest() {
-  return {'type': 'refreshImportedRemoteProfile'};
+bindings.AgentRuntimeRequest agentRuntimeRefreshImportedProfileIntentForTest() {
+  return const bindings.AgentRuntimeRequestRefreshImportedRemoteProfile();
 }
 
 @visibleForTesting
-Map<String, dynamic> agentRuntimeConnectImportedProfileIntentForTest() {
-  return {
-    'type': 'connectImportedRemoteRuntime',
-    'payload': {'selectedSessionId': null},
-  };
+bindings.AgentRuntimeRequest agentRuntimeConnectImportedProfileIntentForTest() {
+  return const bindings.AgentRuntimeRequestConnectImportedRemoteRuntime(selectedSessionId: '');
 }
 
 class AgentRuntimeControlTowerController extends ChangeNotifier {
-  StreamSubscription<RustSignalPack<AgentRuntimeOutputSignal>>? _subscription;
+  StreamSubscription<RustSignalPack<bindings.AgentRuntimeOutputSignal>>? _subscription;
   final AgentRuntimeRemoteProfilePicker _remoteProfilePicker;
   final AgentRuntimeRequestSink _requestSink;
   final Set<String> _pendingRequestIds = <String>{};
@@ -112,7 +94,7 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
   })  : _remoteProfilePicker = remoteProfilePicker,
         _requestSink = requestSink ?? _sendRequestSignalToRust {
     try {
-      _subscription = AgentRuntimeOutputSignal.rustSignalStream.listen(
+      _subscription = bindings.AgentRuntimeOutputSignal.rustSignalStream.listen(
         _handleOutput,
         onError: (Object _) {
           _bridgeErrorMessage = 'Agent Runtime bridge is not ready. Restart the app, then refresh discovery.';
@@ -133,29 +115,15 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
 
   void connect(String baseUrl) {
     _baseUrl = baseUrl.trim().isEmpty ? _baseUrl : baseUrl.trim();
-    _send('connect', {
-      'type': 'connect',
-      'payload': {
-        'baseUrl': _baseUrl,
-        'selectedSessionId': null,
-      },
-    });
+    _send('connect', bindings.AgentRuntimeRequestConnect(baseUrl: _baseUrl, selectedSessionId: ''));
   }
 
   void refreshDiscovery() {
-    _send('discover', {
-      'type': 'refreshDiscovery',
-      'payload': {'discoveryPath': null},
-    });
+    _send('discover', const bindings.AgentRuntimeRequestRefreshDiscovery(discoveryPath: ''));
   }
 
   void connectDiscoveredRuntime() {
-    _send('connect-discovered', {
-      'type': 'connectDiscoveredRuntime',
-      'payload': {
-        'selectedSessionId': null,
-      },
-    });
+    _send('connect-discovered', const bindings.AgentRuntimeRequestConnectDiscoveredRuntime(discoveryPath: '', selectedSessionId: ''));
   }
 
   void refreshIcloudRemoteDiscovery() {
@@ -199,53 +167,35 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
   }
 
   void pollStreamOnce() {
-    _send('poll', {'type': 'pollStreamOnce'});
+    _send('poll', const bindings.AgentRuntimeRequestPollStreamOnce());
   }
 
   void disconnect() {
-    _send('disconnect', {'type': 'disconnect'});
+    _send('disconnect', const bindings.AgentRuntimeRequestDisconnect());
   }
 
   void validateRoleDraft(AgentRuntimeRoleEditorDraft draft) {
-    _dispatchOperation('role-validate', {
-      'operation': 'validateRoleDraft',
-      'request': {'draft': draft.toDraftJson()},
-    });
+    _dispatchOperation('role-validate', bindings.AgentRuntimeGuiOperationValidateRoleDraft(draft: _typedRoleDraft(draft)));
   }
 
   void createRoleFromDraft(AgentRuntimeRoleEditorDraft draft) {
-    _dispatchOperation('role-create', {
-      'operation': 'createRoleFromDraft',
-      'request': {'draft': draft.toDraftJson()},
-    });
+    _dispatchOperation('role-create', bindings.AgentRuntimeGuiOperationCreateRoleFromDraft(draft: _typedRoleDraft(draft)));
   }
 
   void updateRoleFromDraft(AgentRuntimeRoleEditorDraft draft) {
-    _dispatchOperation('role-update', {
-      'operation': 'updateRoleFromDraft',
-      'request': {'roleId': draft.roleId, 'draft': draft.toDraftJson()},
-    });
+    _dispatchOperation('role-update', bindings.AgentRuntimeGuiOperationUpdateRoleFromDraft(roleId: draft.roleId, draft: _typedRoleDraft(draft)));
   }
 
   void exportRole(String roleId) {
-    _dispatchOperation('role-export', {
-      'operation': 'exportRole',
-      'request': {'roleId': roleId},
-    });
+    _dispatchOperation('role-export', bindings.AgentRuntimeGuiOperationExportRole(roleId: roleId));
   }
 
   void archiveRole(String roleId) {
-    _dispatchOperation('role-archive', {
-      'operation': 'archiveRole',
-      'request': {'roleId': roleId},
-    });
+    _dispatchOperation('role-archive', bindings.AgentRuntimeGuiOperationArchiveRole(roleId: roleId));
   }
 
   void unarchiveRole(String roleId) {
-    _dispatchOperation('role-unarchive', {
-      'operation': 'unarchiveRole',
-      'request': {'roleId': roleId},
-    });
+    _dispatchOperation('role-unarchive', bindings.AgentRuntimeGuiOperationUnarchiveRole(roleId: roleId));
   }
 
   void activateRoleVersion(String roleId, String versionId) {
@@ -267,7 +217,12 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
         memoryId: detail.id,
         sessionId: sessionId,
         feedback: 'attempted',
-        payload: const {'source': 'gui.controlTower', 'variant': true},
+        payload: const bindings.AgentRuntimeWorkflowMemoryFeedbackPayload(
+          source: 'gui.controlTower',
+          reason: '',
+          variant: true,
+          hasVariant: true,
+        ),
       ),
     );
   }
@@ -283,7 +238,12 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
         memoryId: detail.id,
         sessionId: sessionId,
         feedback: 'helpful',
-        payload: const {'source': 'gui.controlTower'},
+        payload: const bindings.AgentRuntimeWorkflowMemoryFeedbackPayload(
+          source: 'gui.controlTower',
+          reason: '',
+          variant: false,
+          hasVariant: false,
+        ),
       ),
     );
   }
@@ -299,30 +259,26 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
         memoryId: detail.id,
         sessionId: sessionId,
         feedback: 'notHelpful',
-        payload: const {'source': 'gui.controlTower', 'reason': 'marked from Control Tower'},
+        payload: const bindings.AgentRuntimeWorkflowMemoryFeedbackPayload(
+          source: 'gui.controlTower',
+          reason: 'marked from Control Tower',
+          variant: false,
+          hasVariant: false,
+        ),
       ),
     );
   }
 
-  void _dispatchOperation(String prefix, Map<String, dynamic> operation) {
-    _send(prefix, {
-      'type': 'dispatchOperation',
-      'payload': {'operation': operation},
-    });
+  void _dispatchOperation(String prefix, bindings.AgentRuntimeGuiOperation operation) {
+    _send(prefix, bindings.AgentRuntimeRequestDispatchOperation(operation: operation));
   }
 
-  void _send(String prefix, Map<String, dynamic> intent) {
+  void _send(String prefix, bindings.AgentRuntimeRequest request) {
     _serial += 1;
     final requestId = 'agent-runtime-$prefix-$_serial';
     _pendingRequestIds.add(requestId);
     try {
-      _requestSink(
-        requestId,
-        jsonEncode({
-          'packetId': requestId,
-          'intent': intent,
-        }),
-      );
+      _requestSink(requestId, request);
     } catch (_) {
       _pendingRequestIds.remove(requestId);
       _bridgeErrorMessage = 'Agent Runtime bridge is not ready. Restart the app, then refresh discovery.';
@@ -330,36 +286,19 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
     notifyListeners();
   }
 
-  static void _sendRequestSignalToRust(String requestId, String packetJson) {
-    AgentRuntimeRequestSignal(requestId: requestId, packetJson: packetJson).sendSignalToRust();
+  static void _sendRequestSignalToRust(String requestId, bindings.AgentRuntimeRequest request) {
+    bindings.AgentRuntimeRequestSignal(requestId: requestId, request: request).sendSignalToRust();
   }
 
-  void _handleOutput(RustSignalPack<AgentRuntimeOutputSignal> pack) {
+  void _handleOutput(RustSignalPack<bindings.AgentRuntimeOutputSignal> pack) {
     final signal = pack.message;
     _pendingRequestIds.remove(signal.requestId);
-    final decoded = jsonDecode(signal.outputJson) as Map<String, dynamic>;
-    final output = decoded['output'] as Map<String, dynamic>? ?? const {};
-    final type = output['type'] as String? ?? 'unknown';
-    final payload = output['payload'];
-    if (type == 'controlTowerView' && payload is Map<String, dynamic>) {
-      final viewModel = payload['viewModel'];
-      if (viewModel is Map) {
-        _viewModel = AgentRuntimeControlTowerData.fromJson(
-          Map<String, dynamic>.from(viewModel),
-        );
-        _bridgeErrorMessage = null;
-      }
-    } else if (type == 'error' && payload is Map<String, dynamic>) {
-      final error = payload['error'];
-      if (error is Map) {
-        final body = error['error'];
-        final source = body is Map ? body : error;
-        final message = source['message'] as String?;
-        final code = source['code'] as String?;
-        _bridgeErrorMessage = message ?? code ?? 'Agent Runtime request failed.';
-      } else {
-        _bridgeErrorMessage = 'Agent Runtime request failed.';
-      }
+    final output = signal.output;
+    if (output is bindings.AgentRuntimeOutputControlTowerView) {
+      _viewModel = AgentRuntimeControlTowerData.fromJson(_viewModelJson(output.viewModel));
+      _bridgeErrorMessage = null;
+    } else if (output is bindings.AgentRuntimeOutputError) {
+      _bridgeErrorMessage = output.error.message.isNotEmpty ? output.error.message : output.error.code;
     }
     notifyListeners();
   }
@@ -430,3 +369,219 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
     super.dispose();
   }
 }
+
+bindings.AgentRuntimeRoleEditorDraft _typedRoleDraft(AgentRuntimeRoleEditorDraft draft) {
+  return bindings.AgentRuntimeRoleEditorDraft(
+    id: draft.roleId,
+    version: draft.version,
+    displayName: draft.displayName,
+    modelDefaults: bindings.AgentRuntimeRoleEditorModelDefaults(
+      model: draft.model,
+      reasoningEffort: draft.reasoningEffort,
+    ),
+    instructionText: draft.instructionText,
+    capabilities: draft.capabilities,
+    policyEntries: draft.policy
+        .map((row) => bindings.AgentRuntimeRolePolicyEntry(key: row.action, value: row.decision))
+        .toList(growable: false),
+    routing: bindings.AgentRuntimeRoleEditorRoutingMetadata(
+      mode: draft.routingMode,
+      defaultRecipient: draft.defaultRecipient ?? '',
+      hasDefaultRecipient: draft.defaultRecipient != null && draft.defaultRecipient!.isNotEmpty,
+      allowedRecipients: draft.allowedRecipients,
+      reservedActions: draft.routingReservedActions,
+    ),
+    visibility: bindings.AgentRuntimeRoleEditorVisibilityMetadata(
+      listed: draft.listed,
+      ownerVisible: draft.ownerVisible,
+    ),
+    lifecycleAuthority: bindings.AgentRuntimeRoleEditorLifecycleAuthorityMetadata(
+      canSpawnAgents: draft.canSpawnAgents,
+      canArchiveAgents: draft.canArchiveAgents,
+      reservedActions: draft.lifecycleReservedActions,
+    ),
+  );
+}
+
+Map<String, dynamic> _viewModelJson(bindings.AgentRuntimeControlTowerViewModel view) {
+  return {
+    'discovery': _discoveryJson(view.discovery),
+    'remoteDiscovery': _discoveryJson(view.remoteDiscovery),
+    'importedRemoteDiscovery': _discoveryJson(view.importedRemoteDiscovery),
+    'connectionState': view.connectionState,
+    'connectionTone': view.connectionTone,
+    'baseUrl': view.baseUrl,
+    'statusLabel': view.statusLabel,
+    'watermarkLabel': view.watermarkLabel,
+    'statusBadges': view.statusBadges.map(_badgeJson).toList(growable: false),
+    'selectedSessionLabel': view.selectedSessionLabel,
+    'sessionsTitle': view.sessionsTitle,
+    'sessionsSubtitle': view.sessionsSubtitle,
+    'timelineTitle': view.timelineTitle,
+    'timelineSubtitle': view.timelineSubtitle,
+    'actionsTitle': view.actionsTitle,
+    'actionsSubtitle': view.actionsSubtitle,
+    'detailTitle': view.detailTitle,
+    'detailSubtitle': view.detailSubtitle,
+    'sessionsEmptyTitle': view.sessionsEmptyTitle,
+    'sessionsEmptyText': view.sessionsEmptyText,
+    'timelineEmptyTitle': view.timelineEmptyTitle,
+    'timelineEmptyText': view.timelineEmptyText,
+    'actionsEmptyTitle': view.actionsEmptyTitle,
+    'actionsEmptyText': view.actionsEmptyText,
+    'sessions': view.sessions.map((row) => {
+          'id': row.id,
+          'title': row.title,
+          'status': row.status,
+          'subtitle': row.subtitle,
+          'groupLabel': row.groupLabel,
+          'tone': row.tone,
+        }).toList(growable: false),
+    'timeline': view.timeline.map((row) => {
+          'id': row.id,
+          'title': row.title,
+          'subtitle': row.subtitle,
+          'status': row.status,
+          'tone': row.tone,
+        }).toList(growable: false),
+    'actions': view.actions.map(_actionJson).toList(growable: false),
+    'roleAdmin': _roleAdminJson(view.roleAdmin),
+    'workflowMemory': _workflowMemoryJson(view.workflowMemory),
+    'controllerFacts': view.controllerFacts.map(_factJson).toList(growable: false),
+    'outputLog': view.outputLog,
+    'pendingRequestCount': view.pendingRequestCount,
+    'errorMessage': view.hasErrorMessage ? view.errorMessage : null,
+  };
+}
+
+Map<String, dynamic> _discoveryJson(bindings.AgentRuntimeDiscoveryView view) => {
+      'sourceType': view.sourceType,
+      'sourcePath': view.sourcePath,
+      'state': view.state,
+      'tone': view.tone,
+      'title': view.title,
+      'message': view.message,
+      'baseUrl': view.hasBaseUrl ? view.baseUrl : null,
+      'healthUrl': view.hasHealthUrl ? view.healthUrl : null,
+      'webSocketUrl': view.hasWebSocketUrl ? view.webSocketUrl : null,
+      'runtimeIdentity': view.hasRuntimeIdentity ? view.runtimeIdentity : null,
+      'discoveryPath': view.discoveryPath,
+      'lastImportedAt': view.hasLastImportedAt ? view.lastImportedAt : null,
+      'serviceState': view.hasServiceState ? view.serviceState : null,
+      'connectable': view.connectable,
+      'diagnostics': view.diagnostics,
+    };
+
+Map<String, dynamic> _factJson(bindings.AgentRuntimeFact fact) => {'label': fact.label, 'value': fact.value};
+Map<String, dynamic> _badgeJson(bindings.AgentRuntimeBadge badge) => {'label': badge.label, 'value': badge.value, 'tone': badge.tone};
+Map<String, dynamic> _actionJson(bindings.AgentRuntimeActionRow row) => {
+      'id': row.id,
+      'title': row.title,
+      'subtitle': row.subtitle,
+      'kind': row.kind,
+      'stateText': row.stateText,
+      'tone': row.tone,
+    };
+
+Map<String, dynamic> _roleAdminJson(bindings.AgentRuntimeRoleAdminView view) => {
+      'title': view.title,
+      'subtitle': view.subtitle,
+      'emptyTitle': view.emptyTitle,
+      'emptyText': view.emptyText,
+      'rows': view.rows.map((row) => {
+            'id': row.id,
+            'title': row.title,
+            'subtitle': row.subtitle,
+            'status': row.status,
+            'tone': row.tone,
+            'currentVersionId': row.currentVersion,
+          }).toList(growable: false),
+      'selectedDetail': view.hasSelectedDetail ? {
+        'id': view.selectedDetail.id,
+        'displayName': view.selectedDetail.displayName,
+        'version': view.selectedDetail.version,
+        'model': view.selectedDetail.modelLabel,
+        'status': view.selectedDetail.status,
+        'instructionText': view.selectedDetail.instructionsPreview,
+        'capabilities': const <String>[],
+        'policy': view.selectedDetail.policyRows.map((row) => {'action': row.label, 'decision': row.value}).toList(growable: false),
+        'routing': <Map<String, String>>[{'label': 'Routing', 'value': view.selectedDetail.routingLabel}],
+        'visibility': <Map<String, String>>[{'label': 'Visibility', 'value': view.selectedDetail.visibilityLabel}],
+        'lifecycleAuthority': <Map<String, String>>[{'label': 'Lifecycle', 'value': view.selectedDetail.lifecycleLabel}],
+      } : null,
+      'versionRows': view.versionRows.map((row) => {
+            'versionId': row.versionId,
+            'version': row.version,
+            'status': row.status,
+            'createdAt': row.createdAt.isEmpty ? null : row.createdAt,
+          }).toList(growable: false),
+      'editorDraft': view.hasEditorDraft ? {
+        'roleId': view.editorDraft.roleId,
+        'version': view.editorDraft.version,
+        'displayName': view.editorDraft.displayName,
+        'model': view.editorDraft.model,
+        'reasoningEffort': view.editorDraft.reasoningEffort,
+        'instructionText': view.editorDraft.instructionText,
+        'capabilities': view.editorDraft.capabilities,
+        'policy': view.editorDraft.policyRows.map((row) => {'action': row.label, 'decision': row.value}).toList(growable: false),
+        'routingMode': view.editorDraft.routingMode,
+        'routingReservedActions': const <String>[],
+        'defaultRecipient': view.editorDraft.defaultRecipient.isEmpty ? null : view.editorDraft.defaultRecipient,
+        'allowedRecipients': view.editorDraft.allowedRecipients,
+        'listed': view.editorDraft.listed,
+        'ownerVisible': view.editorDraft.ownerVisible,
+        'canSpawnAgents': view.editorDraft.canSpawnAgents,
+        'canArchiveAgents': view.editorDraft.canArchiveAgents,
+        'lifecycleReservedActions': const <String>[],
+      } : null,
+      'validationErrors': view.validationErrors,
+      'actionStates': view.actionStates.map(_actionJson).toList(growable: false),
+    };
+
+Map<String, dynamic> _workflowMemoryJson(bindings.AgentRuntimeWorkflowMemoryView view) => {
+      'title': view.title,
+      'subtitle': view.subtitle,
+      'emptyTitle': view.emptyTitle,
+      'emptyText': view.emptyText,
+      'selectedMemoryId': view.hasSelectedDetail ? view.selectedDetail.id : null,
+      'rows': view.rows.map((row) => {
+            'id': row.id,
+            'title': row.title,
+            'subtitle': row.reason,
+            'scopeType': row.scopeLabel,
+            'projectKey': row.hasProjectKey ? row.projectKey : null,
+            'helpfulScore': double.tryParse(row.helpfulScore) ?? 0,
+            'promotedAt': row.hasPromotedAt ? row.promotedAt : null,
+            'sourceSessionId': row.sourceSessionId,
+            'tone': row.tone,
+            'selected': row.isSelected,
+          }).toList(growable: false),
+      'selectedDetail': view.hasSelectedDetail ? {
+        'id': view.selectedDetail.id,
+        'title': view.selectedDetail.title,
+        'reason': view.selectedDetail.reason,
+        'summary': view.selectedDetail.summary,
+        'sourceSessionId': view.selectedDetail.sourceSessionId,
+        'sourceScriptRunId': view.selectedDetail.hasSourceScriptRunId ? view.selectedDetail.sourceScriptRunId : null,
+        'sourceStarlark': view.selectedDetail.sourcePreview,
+        'sourcePreview': view.selectedDetail.sourcePreview,
+        'provider': view.selectedDetail.provider.isEmpty ? null : view.selectedDetail.provider,
+        'model': view.selectedDetail.model.isEmpty ? null : view.selectedDetail.model,
+        'dimensions': int.tryParse(view.selectedDetail.dimensions),
+        'storageType': view.selectedDetail.storageLabel.isEmpty ? null : view.selectedDetail.storageLabel,
+        'sourceHash': view.selectedDetail.sourceHash.isEmpty ? null : view.selectedDetail.sourceHash,
+        'commandFingerprint': view.selectedDetail.commandFingerprint.isEmpty ? null : view.selectedDetail.commandFingerprint,
+        'helpfulScore': double.tryParse(view.selectedDetail.score) ?? 0,
+        'scopeLabel': view.selectedDetail.scopeLabel,
+        'feedbackSessionId': view.selectedDetail.hasFeedbackSessionId ? view.selectedDetail.feedbackSessionId : null,
+        'feedbackEnabled': view.selectedDetail.feedbackEnabled,
+      } : null,
+      'recentEvents': view.hasSelectedDetail ? view.selectedDetail.events.map((event) => {
+        'id': event.id,
+        'title': event.title,
+        'subtitle': event.subtitle,
+        'createdAt': event.createdAt.isEmpty ? null : event.createdAt,
+        'tone': event.tone,
+      }).toList(growable: false) : const <Map<String, Object?>>[],
+      'feedbackActions': view.actionStates.map(_actionJson).toList(growable: false),
+    };

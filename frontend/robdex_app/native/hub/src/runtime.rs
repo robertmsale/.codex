@@ -6,7 +6,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
 use robdex_agent_runtime::rinf_transport::{
-    GuiTransportHandle, GuiTransportOutputPacket, GuiTransportRequestPacket,
+    AgentRuntimeControlTowerViewModel as InternalControlTowerViewModel,
+    AgentRuntimeDiscoveryView as InternalDiscoveryView,
+    AgentRuntimeRoleAdminView as InternalRoleAdminView,
+    AgentRuntimeWorkflowMemoryView as InternalWorkflowMemoryView,
+    GuiStreamOutcomePacket, GuiTransportHandle, GuiTransportOutput, GuiTransportOutputPacket,
+    GuiTransportRequest, GuiTransportRequestPacket,
+};
+use robdex_agent_runtime_projection::{
+    ApiErrorPacket, CommandRegistryDecisionInput, GuiCommandSeed, GuiFinalExecutionPolicy,
+    GuiOperationOutcome, GuiOperationRequest, GuiRegistryScope, RoleEditorDraft,
+    RoleEditorLifecycleAuthorityMetadata, RoleEditorModelDefaults, RoleEditorRoutingMetadata,
+    RoleEditorVisibilityMetadata,
 };
 use robdex_client_core::{bridge::BridgeEndpoint, LiveSessionEvent, LiveSessionHandle, WorkbenchClient, start_live_session};
 use robdex_protocol::{UiChatEntry, WorkbenchViewData};
@@ -16,7 +27,16 @@ use tokio::sync::mpsc;
 use tokio_with_wasm::alias as tokio;
 
 use crate::signals::{
-    AgentRuntimeOutputSignal, AgentRuntimeRequestSignal,
+    AgentRuntimeOutputSignal, AgentRuntimeRequestSignal, AgentRuntimeRequest,
+    AgentRuntimeGuiOperation, AgentRuntimeOutput, AgentRuntimeProjectionSnapshot,
+    AgentRuntimeControllerState, AgentRuntimeOperationResult, AgentRuntimeApiError,
+    AgentRuntimeFact, AgentRuntimeStreamOutcome, AgentRuntimeControlTowerViewModel,
+    AgentRuntimeDiscoveryView, AgentRuntimeSessionRow, AgentRuntimeTimelineRow,
+    AgentRuntimeActionRow, AgentRuntimeBadge, AgentRuntimeRoleAdminView, AgentRuntimeRoleRow,
+    AgentRuntimeRoleDetail, AgentRuntimeRolePolicyRow, AgentRuntimeRoleVersionRow,
+    AgentRuntimeRoleEditorDraftView, AgentRuntimeWorkflowMemoryView,
+    AgentRuntimeWorkflowMemoryRow, AgentRuntimeWorkflowMemoryDetail,
+    AgentRuntimeWorkflowMemoryEvent,
     ArchiveThreadGroupSignal, ArchiveThreadSignal, BridgeTaskResultSignal, ClearProjectHookLogsSignal,
     CreateProjectSignal, CreateThreadGroupSignal, CreateThreadSignal, DecideApprovalSignal,
     DeleteProjectSignal, DeleteThreadGroupSignal,
@@ -201,7 +221,7 @@ enum Action {
     TerminalCloseAll,
     AgentRuntimeRequest {
         request_id: String,
-        packet_json: String,
+        request: AgentRuntimeRequest,
     },
 }
 
@@ -227,10 +247,10 @@ pub async fn run() {
                 if matches!(action, Action::Initialize { .. }) {
                     initialized = true;
                 }
-                if let Action::AgentRuntimeRequest { request_id, packet_json } = action {
+                if let Action::AgentRuntimeRequest { request_id, request } = action {
                     let agent_runtime_transport = agent_runtime_transport.clone();
                     tokio::spawn(async move {
-                        handle_agent_runtime_request(&agent_runtime_transport, request_id, packet_json).await;
+                        handle_agent_runtime_request(&agent_runtime_transport, request_id, request).await;
                     });
                     continue;
                 }
@@ -901,7 +921,7 @@ fn spawn_receivers(tx: mpsc::UnboundedSender<Action>) {
     spawn_unit::<TerminalCloseAllSignal, _>(tx.clone(), || Action::TerminalCloseAll);
     spawn_map::<AgentRuntimeRequestSignal, _>(tx, |signal| Action::AgentRuntimeRequest {
         request_id: signal.message.request_id,
-        packet_json: signal.message.packet_json,
+        request: signal.message.request,
     });
 }
 
@@ -914,17 +934,522 @@ fn non_empty(value: String) -> Option<String> {
     }
 }
 
+fn typed_agent_runtime_request_packet(
+    request_id: &str,
+    request: AgentRuntimeRequest,
+) -> std::result::Result<GuiTransportRequestPacket, ApiErrorPacket> {
+    Ok(GuiTransportRequestPacket {
+        packet_id: request_id.to_string(),
+        intent: match request {
+            AgentRuntimeRequest::RefreshDiscovery { discovery_path } => GuiTransportRequest::RefreshDiscovery {
+                discovery_path: non_empty(discovery_path),
+            },
+            AgentRuntimeRequest::RefreshIcloudRemoteDiscovery { profile_path } => GuiTransportRequest::RefreshIcloudRemoteDiscovery {
+                profile_path: non_empty(profile_path),
+            },
+            AgentRuntimeRequest::ImportRemoteProfileDocument { profile_path } => GuiTransportRequest::ImportRemoteProfileDocument {
+                profile_path: non_empty(profile_path),
+            },
+            AgentRuntimeRequest::RefreshImportedRemoteProfile => GuiTransportRequest::RefreshImportedRemoteProfile,
+            AgentRuntimeRequest::ConnectDiscoveredRuntime { discovery_path, selected_session_id } => GuiTransportRequest::ConnectDiscoveredRuntime {
+                discovery_path: non_empty(discovery_path),
+                selected_session_id: non_empty(selected_session_id),
+            },
+            AgentRuntimeRequest::ConnectIcloudRemoteRuntime { profile_path, selected_session_id } => GuiTransportRequest::ConnectIcloudRemoteRuntime {
+                profile_path: non_empty(profile_path),
+                selected_session_id: non_empty(selected_session_id),
+            },
+            AgentRuntimeRequest::ConnectImportedRemoteRuntime { selected_session_id } => GuiTransportRequest::ConnectImportedRemoteRuntime {
+                selected_session_id: non_empty(selected_session_id),
+            },
+            AgentRuntimeRequest::Connect { base_url, selected_session_id } => GuiTransportRequest::Connect {
+                base_url,
+                selected_session_id: non_empty(selected_session_id),
+            },
+            AgentRuntimeRequest::Hydrate { selected_session_id } => GuiTransportRequest::Hydrate {
+                selected_session_id: non_empty(selected_session_id),
+            },
+            AgentRuntimeRequest::Rehydrate { selected_session_id } => GuiTransportRequest::Rehydrate {
+                selected_session_id: non_empty(selected_session_id),
+            },
+            AgentRuntimeRequest::PollStreamOnce => GuiTransportRequest::PollStreamOnce,
+            AgentRuntimeRequest::Disconnect => GuiTransportRequest::Disconnect,
+            AgentRuntimeRequest::DispatchOperation { operation } => GuiTransportRequest::DispatchOperation {
+                operation: typed_gui_operation(operation)?,
+            },
+        },
+    })
+}
+
+fn typed_gui_operation(operation: AgentRuntimeGuiOperation) -> std::result::Result<GuiOperationRequest, ApiErrorPacket> {
+    Ok(match operation {
+        AgentRuntimeGuiOperation::SelectSession { session_id } => GuiOperationRequest::SelectSession { session_id: non_empty(session_id) },
+        AgentRuntimeGuiOperation::SelectWorkflowMemory { memory_id } => GuiOperationRequest::SelectWorkflowMemory { memory_id: non_empty(memory_id) },
+        AgentRuntimeGuiOperation::CreateSession { role, project, workdir, worktree_root, title, name } => GuiOperationRequest::CreateSession {
+            role,
+            project: non_empty(project),
+            workdir: non_empty(workdir),
+            worktree_root: non_empty(worktree_root),
+            title: non_empty(title),
+            name: non_empty(name),
+        },
+        AgentRuntimeGuiOperation::SendMessage { session_id, message } => GuiOperationRequest::SendMessage { session_id, message },
+        AgentRuntimeGuiOperation::CloseSession { session_id, reason } => GuiOperationRequest::CloseSession { session_id, reason: non_empty(reason) },
+        AgentRuntimeGuiOperation::ArchiveSession { session_id } => GuiOperationRequest::ArchiveSession { session_id },
+        AgentRuntimeGuiOperation::ForkSession { session_id, at_turn } => GuiOperationRequest::ForkSession { session_id, at_turn },
+        AgentRuntimeGuiOperation::DecideApproval { approval_id, decision, reason } => GuiOperationRequest::DecideApproval { approval_id, decision, reason },
+        AgentRuntimeGuiOperation::ResumeApproval { approval_id } => GuiOperationRequest::ResumeApproval { approval_id },
+        AgentRuntimeGuiOperation::ListCommandRegistry { session_id, project_key } => GuiOperationRequest::ListCommandRegistry {
+            session_id: non_empty(session_id),
+            project_key: non_empty(project_key),
+        },
+        AgentRuntimeGuiOperation::ShowCommand { action_id, session_id, project_key } => GuiOperationRequest::ShowCommand {
+            action_id,
+            session_id: non_empty(session_id),
+            project_key: non_empty(project_key),
+        },
+        AgentRuntimeGuiOperation::ListCommandRegistryRequests => GuiOperationRequest::ListCommandRegistryRequests,
+        AgentRuntimeGuiOperation::ShowCommandRegistryRequest { request_id } => GuiOperationRequest::ShowCommandRegistryRequest { request_id },
+        AgentRuntimeGuiOperation::PreviewCommandRegistryRequest { request_id, decision } => GuiOperationRequest::PreviewCommandRegistryRequest {
+            request_id,
+            decision: typed_registry_decision(decision),
+        },
+        AgentRuntimeGuiOperation::DecideCommandRegistryRequest { request_id, decision } => GuiOperationRequest::DecideCommandRegistryRequest {
+            request_id,
+            decision: typed_registry_decision(decision),
+        },
+        AgentRuntimeGuiOperation::ApplyCommandRegistryRequest { request_id, session_id } => GuiOperationRequest::ApplyCommandRegistryRequest { request_id, session_id },
+        AgentRuntimeGuiOperation::WorkflowMemoryFeedback { memory_id, session_id, feedback, payload } => GuiOperationRequest::WorkflowMemoryFeedback {
+            memory_id,
+            session_id,
+            feedback,
+            payload: serde_json::json!({
+                "source": payload.source,
+                "reason": payload.reason,
+                "variant": if payload.has_variant { Some(payload.variant) } else { None },
+            }),
+        },
+        AgentRuntimeGuiOperation::RoleEditorOptions => GuiOperationRequest::RoleEditorOptions,
+        AgentRuntimeGuiOperation::ValidateRoleDraft { draft } => GuiOperationRequest::ValidateRoleDraft { draft: typed_role_draft(draft) },
+        AgentRuntimeGuiOperation::CreateRoleFromDraft { draft } => GuiOperationRequest::CreateRoleFromDraft { draft: typed_role_draft(draft) },
+        AgentRuntimeGuiOperation::UpdateRoleFromDraft { role_id, draft } => GuiOperationRequest::UpdateRoleFromDraft { role_id, draft: typed_role_draft(draft) },
+        AgentRuntimeGuiOperation::ShowRoleDetail { role_id } => GuiOperationRequest::ShowRoleDetail { role_id },
+        AgentRuntimeGuiOperation::ListRoleVersions { role_id } => GuiOperationRequest::ListRoleVersions { role_id },
+        AgentRuntimeGuiOperation::ShowRoleVersion { version_id } => GuiOperationRequest::ShowRoleVersion { version_id },
+        AgentRuntimeGuiOperation::ExportRole { role_id } => GuiOperationRequest::ExportRole { role_id },
+        AgentRuntimeGuiOperation::ActivateRoleVersion { role_id, version_id } => GuiOperationRequest::ActivateRoleVersion { role_id, version_id },
+        AgentRuntimeGuiOperation::ArchiveRole { role_id } => GuiOperationRequest::ArchiveRole { role_id },
+        AgentRuntimeGuiOperation::UnarchiveRole { role_id } => GuiOperationRequest::UnarchiveRole { role_id },
+    })
+}
+
+fn typed_registry_decision(input: crate::signals::AgentRuntimeCommandRegistryDecisionInput) -> CommandRegistryDecisionInput {
+    CommandRegistryDecisionInput {
+        session_id: non_empty(input.session_id),
+        status: input.status,
+        final_scope: input.has_final_scope.then(|| GuiRegistryScope {
+            scope_type: input.final_scope.scope_type,
+            project_key: non_empty(input.final_scope.project_key),
+        }),
+        final_execution_policy: input.has_final_execution_policy.then(|| GuiFinalExecutionPolicy {
+            decision: input.final_execution_policy.decision,
+            reason: non_empty(input.final_execution_policy.reason),
+        }),
+        final_command: input.has_final_command.then(|| GuiCommandSeed {
+            action_id: input.final_command.action_id,
+            binary_name: input.final_command.binary_name,
+            candidate_paths: input.final_command.candidate_paths,
+            starlark_object: input.final_command.starlark_object,
+            starlark_method: input.final_command.starlark_method,
+            argv_prefix: input.final_command.argv_prefix,
+            default_cwd: input.final_command.default_cwd,
+            cwd_policy: input.final_command.cwd_policy,
+            env_policy: input.final_command.env_policy,
+            sync_allowed: input.final_command.sync_allowed,
+            async_allowed: input.final_command.async_allowed,
+            max_runtime_ms: input.final_command.has_max_runtime_ms.then_some(input.final_command.max_runtime_ms),
+            end_of_turn_behavior: input.final_command.end_of_turn_behavior,
+            stdin_policy: input.final_command.stdin_policy,
+            min_await_ms: input.final_command.min_await_ms,
+            max_await_ms: input.final_command.max_await_ms,
+            output_buffer_bytes: input.final_command.output_buffer_bytes,
+            terminate_grace_ms: input.final_command.terminate_grace_ms,
+            output_limit_bytes: input.final_command.output_limit_bytes,
+            mutation_class: input.final_command.mutation_class,
+            model_description: input.final_command.model_description,
+            allow_cwd_arg: input.final_command.allow_cwd_arg,
+            allow_args_arg: input.final_command.allow_args_arg,
+            forbidden_args: input.final_command.forbidden_args,
+            execution_policy: input.final_command.execution_policy,
+        }),
+    }
+}
+
+fn typed_role_draft(input: crate::signals::AgentRuntimeRoleEditorDraft) -> RoleEditorDraft {
+    RoleEditorDraft {
+        id: input.id,
+        version: input.version,
+        display_name: input.display_name,
+        model_defaults: RoleEditorModelDefaults {
+            model: input.model_defaults.model,
+            reasoning_effort: input.model_defaults.reasoning_effort,
+        },
+        instruction_text: input.instruction_text,
+        capabilities: input.capabilities,
+        policy: input.policy_entries.into_iter().map(|entry| (entry.key, entry.value)).collect(),
+        routing: RoleEditorRoutingMetadata {
+            mode: input.routing.mode,
+            default_recipient: input.routing.has_default_recipient.then_some(input.routing.default_recipient),
+            allowed_recipients: input.routing.allowed_recipients,
+            reserved_actions: input.routing.reserved_actions,
+        },
+        visibility: RoleEditorVisibilityMetadata {
+            listed: input.visibility.listed,
+            owner_visible: input.visibility.owner_visible,
+        },
+        lifecycle_authority: RoleEditorLifecycleAuthorityMetadata {
+            can_spawn_agents: input.lifecycle_authority.can_spawn_agents,
+            can_archive_agents: input.lifecycle_authority.can_archive_agents,
+            reserved_actions: input.lifecycle_authority.reserved_actions,
+        },
+    }
+}
+
+fn typed_agent_runtime_output(output: GuiTransportOutputPacket) -> AgentRuntimeOutput {
+    match output.output {
+        GuiTransportOutput::ProjectionSnapshot { projection } => AgentRuntimeOutput::ProjectionSnapshot {
+            projection: projection_snapshot_from_value(&projection),
+        },
+        GuiTransportOutput::ControllerState { controller_state } => AgentRuntimeOutput::ControllerState {
+            controller_state: controller_state_from_value(&controller_state),
+        },
+        GuiTransportOutput::OperationResult { result } => AgentRuntimeOutput::OperationResult {
+            result: typed_operation_result(result),
+        },
+        GuiTransportOutput::StreamOutcome { outcome, projection, controller_state } => AgentRuntimeOutput::StreamOutcome {
+            outcome: typed_stream_outcome(outcome),
+            projection: projection.as_ref().map(projection_snapshot_from_value).unwrap_or_default(),
+            has_projection: projection.is_some(),
+            controller_state: controller_state_from_value(&controller_state),
+        },
+        GuiTransportOutput::Error { error } => AgentRuntimeOutput::Error { error: typed_api_error(error) },
+        GuiTransportOutput::ControlTowerView { view_model } => AgentRuntimeOutput::ControlTowerView {
+            view_model: typed_control_tower_view(view_model),
+        },
+    }
+}
+
+fn projection_snapshot_from_value(value: &serde_json::Value) -> AgentRuntimeProjectionSnapshot {
+    AgentRuntimeProjectionSnapshot {
+        watermark: value.get("watermark").and_then(|value| value.as_i64()).unwrap_or_default(),
+        session_count: value.get("sessions").and_then(|value| value.as_array()).map(|items| items.len() as i64).unwrap_or_default(),
+        timeline_count: value.get("timeline").and_then(|value| value.as_array()).map(|items| items.len() as i64).unwrap_or_default(),
+        action_count: value.get("pendingApprovals").and_then(|value| value.as_array()).map(|items| items.len() as i64).unwrap_or_default(),
+        role_count: value.get("roles").and_then(|value| value.as_array()).map(|items| items.len() as i64).unwrap_or_default(),
+        workflow_memory_count: value.get("workflowMemories").and_then(|value| value.as_array()).map(|items| items.len() as i64).unwrap_or_default(),
+    }
+}
+
+fn controller_state_from_value(value: &serde_json::Value) -> AgentRuntimeControllerState {
+    let selected_session_id = value.get("selectedSessionId").and_then(|value| value.as_str()).unwrap_or_default().to_string();
+    let last_error = value
+        .get("transientErrors")
+        .and_then(|value| value.as_array())
+        .and_then(|items| items.first())
+        .and_then(|value| value.get("error"))
+        .and_then(|value| value.get("message"))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+    AgentRuntimeControllerState {
+        connection_state: value.get("connectionState").and_then(|value| value.as_str()).unwrap_or_default().to_string(),
+        has_selected_session_id: !selected_session_id.is_empty(),
+        selected_session_id,
+        base_url: String::new(),
+        has_last_error: !last_error.is_empty(),
+        last_error,
+    }
+}
+
+fn typed_operation_result(result: robdex_agent_runtime_projection::GuiOperationResult) -> AgentRuntimeOperationResult {
+    let outcome = match result.outcome {
+        GuiOperationOutcome::Accepted { .. } => "accepted",
+        GuiOperationOutcome::ProjectionUpdated { .. } => "projectionUpdated",
+        GuiOperationOutcome::DirectValue { .. } => "directValue",
+        GuiOperationOutcome::CommandRegistryRequests { .. } => "commandRegistryRequests",
+        GuiOperationOutcome::Error { .. } => "error",
+    };
+    AgentRuntimeOperationResult {
+        operation: format!("{:?}", result.operation),
+        outcome: outcome.to_string(),
+        message: format!("{:?}", result.expectation),
+    }
+}
+
+fn typed_stream_outcome(outcome: GuiStreamOutcomePacket) -> AgentRuntimeStreamOutcome {
+    match outcome {
+        GuiStreamOutcomePacket::Hello { watermark, runtime_identity } => {
+            let runtime_identity = runtime_identity.unwrap_or_default();
+            AgentRuntimeStreamOutcome::Hello {
+                watermark,
+                has_runtime_identity: !runtime_identity.is_empty(),
+                runtime_identity,
+            }
+        }
+        GuiStreamOutcomePacket::DeltaApplied { apply_outcome, .. } => AgentRuntimeStreamOutcome::DeltaApplied { apply_outcome },
+        GuiStreamOutcomePacket::ResyncRequired { reason } => {
+            let reason = reason.unwrap_or_default();
+            AgentRuntimeStreamOutcome::ResyncRequired {
+                has_reason: !reason.is_empty(),
+                reason,
+            }
+        }
+        GuiStreamOutcomePacket::ServerShutdown => AgentRuntimeStreamOutcome::ServerShutdown,
+        GuiStreamOutcomePacket::StreamClosed => AgentRuntimeStreamOutcome::StreamClosed,
+    }
+}
+
+fn typed_api_error(error: ApiErrorPacket) -> AgentRuntimeApiError {
+    let details = error
+        .error
+        .details
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .map(|(key, value)| AgentRuntimeFact {
+                    label: key.clone(),
+                    value: value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string()),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    AgentRuntimeApiError {
+        code: error.error.code,
+        message: error.error.message,
+        details,
+    }
+}
+
+fn typed_control_tower_view(view: InternalControlTowerViewModel) -> AgentRuntimeControlTowerViewModel {
+    let error_message = view.error_message.unwrap_or_default();
+    AgentRuntimeControlTowerViewModel {
+        discovery: typed_discovery_view(view.discovery),
+        remote_discovery: typed_discovery_view(view.remote_discovery),
+        imported_remote_discovery: typed_discovery_view(view.imported_remote_discovery),
+        connection_state: view.connection_state,
+        connection_tone: view.connection_tone,
+        base_url: view.base_url,
+        status_label: view.status_label,
+        watermark_label: view.watermark_label,
+        status_badges: view.status_badges.into_iter().map(|badge| AgentRuntimeBadge { label: badge.label, value: badge.value, tone: badge.tone }).collect(),
+        selected_session_label: view.selected_session_label,
+        sessions_title: view.sessions_title,
+        sessions_subtitle: view.sessions_subtitle,
+        timeline_title: view.timeline_title,
+        timeline_subtitle: view.timeline_subtitle,
+        actions_title: view.actions_title,
+        actions_subtitle: view.actions_subtitle,
+        detail_title: view.detail_title,
+        detail_subtitle: view.detail_subtitle,
+        sessions_empty_title: view.sessions_empty_title,
+        sessions_empty_text: view.sessions_empty_text,
+        timeline_empty_title: view.timeline_empty_title,
+        timeline_empty_text: view.timeline_empty_text,
+        actions_empty_title: view.actions_empty_title,
+        actions_empty_text: view.actions_empty_text,
+        sessions: view.sessions.into_iter().map(|row| AgentRuntimeSessionRow { id: row.id, title: row.title, status: row.status, subtitle: row.subtitle, group_label: row.group_label, tone: row.tone }).collect(),
+        timeline: view.timeline.into_iter().map(|row| AgentRuntimeTimelineRow { id: row.id, title: row.title, subtitle: row.subtitle, status: row.status, tone: row.tone }).collect(),
+        actions: view.actions.into_iter().map(typed_action_row).collect(),
+        role_admin: typed_role_admin_view(view.role_admin),
+        workflow_memory: typed_workflow_memory_view(view.workflow_memory),
+        controller_facts: view.controller_facts.into_iter().map(|fact| AgentRuntimeFact { label: fact.label, value: fact.value }).collect(),
+        output_log: view.output_log,
+        pending_request_count: view.pending_request_count as i64,
+        has_error_message: !error_message.is_empty(),
+        error_message,
+    }
+}
+
+fn typed_discovery_view(view: InternalDiscoveryView) -> AgentRuntimeDiscoveryView {
+    let base_url = view.base_url.unwrap_or_default();
+    let health_url = view.health_url.unwrap_or_default();
+    let web_socket_url = view.web_socket_url.unwrap_or_default();
+    let runtime_identity = view.runtime_identity.unwrap_or_default();
+    let last_imported_at = view.last_imported_at.unwrap_or_default();
+    let service_state = view.service_state.unwrap_or_default();
+    AgentRuntimeDiscoveryView {
+        source_type: view.source_type,
+        source_path: view.source_path,
+        state: view.state,
+        tone: view.tone,
+        title: view.title,
+        message: view.message,
+        has_base_url: !base_url.is_empty(),
+        base_url,
+        has_health_url: !health_url.is_empty(),
+        health_url,
+        has_web_socket_url: !web_socket_url.is_empty(),
+        web_socket_url,
+        has_runtime_identity: !runtime_identity.is_empty(),
+        runtime_identity,
+        discovery_path: view.discovery_path,
+        has_last_imported_at: !last_imported_at.is_empty(),
+        last_imported_at,
+        has_service_state: !service_state.is_empty(),
+        service_state,
+        connectable: view.connectable,
+        diagnostics: view.diagnostics,
+    }
+}
+
+fn typed_action_row(row: robdex_agent_runtime::rinf_transport::AgentRuntimeControlTowerActionRow) -> AgentRuntimeActionRow {
+    AgentRuntimeActionRow {
+        id: row.id,
+        title: row.title,
+        subtitle: row.subtitle,
+        kind: row.kind,
+        state_text: row.state_text,
+        tone: row.tone,
+    }
+}
+
+fn typed_role_admin_view(view: InternalRoleAdminView) -> AgentRuntimeRoleAdminView {
+    AgentRuntimeRoleAdminView {
+        title: view.title,
+        subtitle: view.subtitle,
+        empty_title: view.empty_title,
+        empty_text: view.empty_text,
+        rows: view.rows.into_iter().map(|row| AgentRuntimeRoleRow {
+            id: row.id,
+            title: row.title,
+            subtitle: row.subtitle,
+            status: row.status,
+            tone: row.tone,
+            current_version: row.current_version_id.unwrap_or_default(),
+        }).collect(),
+        has_selected_detail: view.selected_detail.is_some(),
+        selected_detail: view.selected_detail.map(|detail| AgentRuntimeRoleDetail {
+            id: detail.id,
+            title: detail.display_name.clone(),
+            display_name: detail.display_name,
+            version: detail.version,
+            status: detail.status,
+            instructions_preview: detail.instruction_text,
+            model_label: detail.model,
+            routing_label: detail.routing.iter().map(|fact| format!("{} {}", fact.label, fact.value)).collect::<Vec<_>>().join(" · "),
+            visibility_label: detail.visibility.iter().map(|fact| format!("{} {}", fact.label, fact.value)).collect::<Vec<_>>().join(" · "),
+            lifecycle_label: detail.lifecycle_authority.iter().map(|fact| format!("{} {}", fact.label, fact.value)).collect::<Vec<_>>().join(" · "),
+            policy_rows: detail.policy.into_iter().map(|row| AgentRuntimeRolePolicyRow { label: row.action, value: row.decision }).collect(),
+        }).unwrap_or_default(),
+        version_rows: view.version_rows.into_iter().map(|row| AgentRuntimeRoleVersionRow {
+            can_activate: row.status != "current",
+            is_current: row.status == "current",
+            version_id: row.version_id,
+            version: row.version,
+            status: row.status,
+            created_at: row.created_at.unwrap_or_default(),
+        }).collect(),
+        has_editor_draft: view.editor_draft.is_some(),
+        editor_draft: view.editor_draft.map(|draft| AgentRuntimeRoleEditorDraftView {
+            role_id: draft.role_id,
+            version: draft.version,
+            display_name: draft.display_name,
+            model: draft.model,
+            reasoning_effort: draft.reasoning_effort,
+            instruction_text: draft.instruction_text,
+            capabilities: draft.capabilities,
+            policy_rows: draft.policy.into_iter().map(|row| AgentRuntimeRolePolicyRow { label: row.action, value: row.decision }).collect(),
+            routing_mode: draft.routing_mode,
+            default_recipient: draft.default_recipient.unwrap_or_default(),
+            allowed_recipients: draft.allowed_recipients,
+            listed: draft.listed,
+            owner_visible: draft.owner_visible,
+            can_spawn_agents: draft.can_spawn_agents,
+            can_archive_agents: draft.can_archive_agents,
+            can_validate: true,
+            can_create: true,
+            can_update: true,
+        }).unwrap_or_default(),
+        validation_errors: view.validation_errors,
+        action_states: view.action_states.into_iter().map(typed_action_row).collect(),
+    }
+}
+
+fn typed_workflow_memory_view(view: InternalWorkflowMemoryView) -> AgentRuntimeWorkflowMemoryView {
+    AgentRuntimeWorkflowMemoryView {
+        title: view.title,
+        subtitle: view.subtitle,
+        empty_title: view.empty_title,
+        empty_text: view.empty_text,
+        rows: view.rows.into_iter().map(|row| {
+            let has_project_key = row.project_key.is_some();
+            let project_key = row.project_key.unwrap_or_default();
+            let has_promoted_at = row.promoted_at.is_some();
+            let promoted_at = row.promoted_at.unwrap_or_default();
+            AgentRuntimeWorkflowMemoryRow {
+            id: row.id,
+            title: row.title,
+            scope_label: row.scope_type,
+            project_key,
+            has_project_key,
+            helpful_score: format!("{:.2}", row.helpful_score),
+            promoted_at,
+            has_promoted_at,
+            source_session_id: row.source_session_id,
+            reason: row.subtitle,
+            tone: row.tone,
+            is_selected: row.selected,
+        }}).collect(),
+        has_selected_detail: view.selected_detail.is_some(),
+        selected_detail: view.selected_detail.map(|detail| {
+            let has_source_script_run_id = detail.source_script_run_id.is_some();
+            let source_script_run_id = detail.source_script_run_id.unwrap_or_default();
+            let has_feedback_session_id = detail.feedback_session_id.is_some();
+            let feedback_session_id = detail.feedback_session_id.unwrap_or_default();
+            AgentRuntimeWorkflowMemoryDetail {
+            id: detail.id,
+            title: detail.title,
+            reason: detail.reason,
+            summary: detail.summary,
+            source_session_id: detail.source_session_id,
+            source_script_run_id,
+            has_source_script_run_id,
+            source_preview: if detail.source_starlark.is_empty() { detail.source_preview } else { detail.source_starlark },
+            provider: detail.provider.unwrap_or_default(),
+            model: detail.model.unwrap_or_default(),
+            dimensions: detail.dimensions.map(|value| value.to_string()).unwrap_or_default(),
+            storage_label: detail.storage_type.unwrap_or_default(),
+            source_hash: detail.source_hash.unwrap_or_default(),
+            command_fingerprint: detail.command_fingerprint.unwrap_or_default(),
+            score: format!("{:.2}", detail.helpful_score),
+            scope_label: detail.scope_label,
+            feedback_enabled: detail.feedback_enabled,
+            feedback_session_id,
+            has_feedback_session_id,
+            events: view.recent_events.into_iter().map(|event| AgentRuntimeWorkflowMemoryEvent {
+                id: event.id,
+                title: event.title,
+                subtitle: event.subtitle,
+                created_at: event.created_at.unwrap_or_default(),
+                tone: event.tone,
+            }).collect(),
+        }}).unwrap_or_default(),
+        action_states: view.feedback_actions.into_iter().map(typed_action_row).collect(),
+    }
+}
+
 async fn handle_agent_runtime_request(
     handle: &GuiTransportHandle,
     request_id: String,
-    packet_json: String,
+    request: AgentRuntimeRequest,
 ) {
-    let packet = match decode_agent_runtime_packet(&request_id, &packet_json) {
+    let packet = match typed_agent_runtime_request_packet(&request_id, request) {
         Ok(packet) => packet,
-        Err(output_json) => {
+        Err(error) => {
             AgentRuntimeOutputSignal {
-                request_id,
-                output_json,
+                request_id: request_id.clone(),
+                output: AgentRuntimeOutput::Error { error: typed_api_error(error) },
             }
             .send_signal_to_dart();
             return;
@@ -935,68 +1460,12 @@ async fn handle_agent_runtime_request(
     }
 }
 
-fn decode_agent_runtime_packet(
-    request_id: &str,
-    packet_json: &str,
-) -> std::result::Result<GuiTransportRequestPacket, String> {
-    let packet = serde_json::from_str::<GuiTransportRequestPacket>(packet_json).map_err(|error| {
-        agent_runtime_error_output_json(
-            request_id,
-            "bad_request",
-            "agent runtime packet_json must be a GuiTransportRequestPacket",
-            serde_json::json!({"source":"serde_json", "message": error.to_string()}),
-        )
-    })?;
-    if packet.packet_id != request_id {
-        return Err(agent_runtime_error_output_json(
-            request_id,
-            "bad_request",
-            "agent runtime request_id must match packet_id",
-            serde_json::json!({"requestId": request_id, "packetId": packet.packet_id}),
-        ));
-    }
-    Ok(packet)
-}
-
 fn emit_agent_runtime_output(output: GuiTransportOutputPacket) {
-    let request_id = output.request_id.clone();
-    let output_json = serde_json::to_string(&output).unwrap_or_else(|error| {
-        agent_runtime_error_output_json(
-            &request_id,
-            "internal_error",
-            "failed to encode agent runtime output packet",
-            serde_json::json!({"source":"serde_json", "message": error.to_string()}),
-        )
-    });
     AgentRuntimeOutputSignal {
-        request_id,
-        output_json,
+        request_id: output.request_id.clone(),
+        output: typed_agent_runtime_output(output),
     }
     .send_signal_to_dart();
-}
-
-fn agent_runtime_error_output_json(
-    request_id: &str,
-    code: &str,
-    message: &str,
-    details: serde_json::Value,
-) -> String {
-    serde_json::json!({
-        "requestId": request_id,
-        "output": {
-            "type": "error",
-            "payload": {
-                "error": {
-                    "error": {
-                        "code": code,
-                        "message": message,
-                        "details": details
-                    }
-                }
-            }
-        }
-    })
-    .to_string()
 }
 
 fn spawn_unit<TSignal, F>(tx: mpsc::UnboundedSender<Action>, map: F)
@@ -1766,4 +2235,139 @@ fn emit_bridge_task_error(request_id: String, task: &str, error: &anyhow::Error)
         error_message: error.to_string(),
     }
     .send_signal_to_dart();
+}
+
+#[cfg(test)]
+mod agent_runtime_typed_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn typed_request_maps_connect_and_discovery_without_json_packet() {
+        let connect = typed_agent_runtime_request_packet(
+            "connect-1",
+            AgentRuntimeRequest::Connect {
+                base_url: "127.0.0.1:8765".to_string(),
+                selected_session_id: String::new(),
+            },
+        )
+        .expect("typed connect maps");
+        assert_eq!(connect.packet_id, "connect-1");
+        assert_eq!(
+            connect.intent,
+            GuiTransportRequest::Connect {
+                base_url: "127.0.0.1:8765".to_string(),
+                selected_session_id: None,
+            }
+        );
+
+        let refresh = typed_agent_runtime_request_packet(
+            "discover-1",
+            AgentRuntimeRequest::RefreshDiscovery {
+                discovery_path: String::new(),
+            },
+        )
+        .expect("typed discovery maps");
+        assert_eq!(
+            refresh.intent,
+            GuiTransportRequest::RefreshDiscovery {
+                discovery_path: None,
+            }
+        );
+    }
+
+    #[test]
+    fn typed_request_maps_role_and_workflow_operations_without_json_envelope() {
+        let role = typed_agent_runtime_request_packet(
+            "role-activate-1",
+            AgentRuntimeRequest::DispatchOperation {
+                operation: AgentRuntimeGuiOperation::ActivateRoleVersion {
+                    role_id: "runtime-allow".to_string(),
+                    version_id: "role-version-1".to_string(),
+                },
+            },
+        )
+        .expect("typed role operation maps");
+        assert_eq!(
+            role.intent,
+            GuiTransportRequest::DispatchOperation {
+                operation: GuiOperationRequest::ActivateRoleVersion {
+                    role_id: "runtime-allow".to_string(),
+                    version_id: "role-version-1".to_string(),
+                },
+            }
+        );
+
+        let feedback = typed_agent_runtime_request_packet(
+            "memory-feedback-1",
+            AgentRuntimeRequest::DispatchOperation {
+                operation: AgentRuntimeGuiOperation::WorkflowMemoryFeedback {
+                    memory_id: "memory-1".to_string(),
+                    session_id: "session-1".to_string(),
+                    feedback: "helpful".to_string(),
+                    payload: crate::signals::AgentRuntimeWorkflowMemoryFeedbackPayload {
+                        source: "gui.controlTower".to_string(),
+                        reason: String::new(),
+                        variant: false,
+                        has_variant: false,
+                    },
+                },
+            },
+        )
+        .expect("typed feedback maps");
+        match feedback.intent {
+            GuiTransportRequest::DispatchOperation {
+                operation: GuiOperationRequest::WorkflowMemoryFeedback { memory_id, session_id, feedback, .. },
+            } => {
+                assert_eq!(memory_id, "memory-1");
+                assert_eq!(session_id, "session-1");
+                assert_eq!(feedback, "helpful");
+            }
+            other => panic!("unexpected mapped operation: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typed_output_maps_error_and_control_tower_view_without_generic_string() {
+        let error = typed_agent_runtime_output(GuiTransportOutputPacket {
+            request_id: "bad-1".to_string(),
+            output: GuiTransportOutput::Error {
+                error: ApiErrorPacket::new(
+                    "bad_request",
+                    "typed failure",
+                    serde_json::json!({"field":"baseUrl"}),
+                ),
+            },
+        });
+        match error {
+            AgentRuntimeOutput::Error { error } => {
+                assert_eq!(error.code, "bad_request");
+                assert_eq!(error.message, "typed failure");
+            }
+            other => panic!("unexpected typed output: {other:?}"),
+        }
+
+        let controller_state = robdex_agent_runtime_projection::GuiControllerState::default();
+        let view_model = InternalControlTowerViewModel::from_runtime_state(
+            "http://127.0.0.1:8765",
+            None,
+            &controller_state,
+            &[],
+            0,
+            None,
+            &InternalDiscoveryView::default(),
+            &InternalDiscoveryView::default(),
+            &InternalDiscoveryView::default(),
+        );
+        let view = typed_agent_runtime_output(GuiTransportOutputPacket {
+            request_id: "view-1".to_string(),
+            output: GuiTransportOutput::ControlTowerView { view_model },
+        });
+        match view {
+            AgentRuntimeOutput::ControlTowerView { view_model } => {
+                assert_eq!(view_model.base_url, "http://127.0.0.1:8765");
+                assert_eq!(view_model.connection_state, "disconnected");
+            }
+            other => panic!("unexpected typed output: {other:?}"),
+        }
+    }
 }

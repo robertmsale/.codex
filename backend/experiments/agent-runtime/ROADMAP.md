@@ -142,19 +142,19 @@ product specification.
     stable-hub decision gate with the implemented direct dependency binding.
 33. Direct stable hub Rinf transport binding: owner selected the direct
     dependency strategy. The stable hub now depends on the existing
-    experimental runtime crate, exposes JSON-backed
-    `AgentRuntimeRequestSignal`/`AgentRuntimeOutputSignal` carriers, forwards
-    Dart-originated packets to one long-lived Rust-owned `GuiTransportHandle`,
-    emits every `GuiTransportOutputPacket` back to Dart with request-id
-    correlation, and keeps Dart as a thin transport with no runtime decisions.
-    Generated Rinf Dart carriers were refreshed for the two stable packet
-    signals. Later slices mounted the Flutter-facing control tower on this
-    transport. Launchd/system service installation and stable backend/supervisor
+    experimental runtime crate, exposes generated typed
+    `AgentRuntimeRequestSignal`/`AgentRuntimeOutputSignal` variants, maps
+    Dart-originated typed intents to one long-lived Rust-owned
+    `GuiTransportHandle`, emits typed output variants back to Dart with
+    request-id correlation, and keeps Dart as a thin transport with no runtime
+    decisions. Generated Rinf Dart carriers were refreshed for the typed
+    Agent Runtime request/output schema. Later slices mounted the
+    Flutter-facing control tower on this transport. Stable backend/supervisor
     changes remain out of scope.
 34. Flutter-facing control tower first shell: the app now exposes a minimal
-    Agent Runtime control tower that sends JSON `GuiTransportRequestPacket`
-    intents through `AgentRuntimeRequestSignal` and renders JSON
-    `GuiTransportOutputPacket` outputs from `AgentRuntimeOutputSignal`.
+    Agent Runtime control tower that sends generated typed intents through
+    `AgentRuntimeRequestSignal` and renders generated typed outputs from
+    `AgentRuntimeOutputSignal`.
     Reusable shell visuals live in the design-system package with minimal
     Design Lab scenarios for disconnected, connecting, connected, error, and
     empty states. Dart remains a thin renderer/intent sender; Rust owns

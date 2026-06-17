@@ -274,36 +274,27 @@ Generated Rinf binding files changed by `rinf gen`:
 - `frontend/robdex_app/lib/src/bindings/signals/signals.dart`;
 - `frontend/robdex_app/lib/src/bindings/signals/signal_handlers.dart`.
 
-Dart-to-Rust signals map to `GuiTransportRequestPacket` through
-`AgentRuntimeRequestSignal { requestId, packetJson }`:
+Dart-to-Rust signals now use generated typed request variants:
+`AgentRuntimeRequestSignal { requestId, request }`. The request enum covers
+connect, disconnect, hydrate, rehydrate, local discovery refresh/connect,
+iCloud remote profile refresh/connect, imported profile import/refresh/connect,
+owned stream polling, and typed GUI operation dispatch. GUI operation variants
+cover sessions, approvals, command-registry operations, Role Admin operations,
+and Workflow Memory selection/feedback.
 
-- `Connect { baseUrl, selectedSessionId }`;
-- `Hydrate { selectedSessionId }`;
-- `Rehydrate { selectedSessionId }`;
-- `DispatchOperation { operation: GuiOperationRequest }`;
-- `PollStreamOnce`;
-- `Disconnect`.
-
-Rust-to-Dart signals map to `GuiTransportOutputPacket` through
-`AgentRuntimeOutputSignal { requestId, outputJson }`:
-
-- `ProjectionSnapshot` with a JSON-backed `RuntimeProjection` payload;
-- `ControllerState` with a JSON-backed `GuiControllerState` payload;
-- `OperationResult` with the typed `GuiOperationResult`;
-- `StreamOutcome` with typed hello/delta/resync/shutdown/closed outcomes plus
-  current projection/controller state;
-- `Error` with the stable `ApiErrorPacket`;
-- `ControlTowerView` with the Rust-shaped
-  `AgentRuntimeControlTowerViewModel` consumed by the first Flutter shell.
+Rust-to-Dart signals now use generated typed output variants:
+`AgentRuntimeOutputSignal { requestId, output }`. Output variants cover
+projection snapshots, controller-state updates, operation results, stream
+outcomes, typed API errors, and the Rust-shaped
+`AgentRuntimeControlTowerViewModel` consumed by the Flutter shell.
 
 The stable hub creates one long-lived `GuiTransportHandle`, and the transport
 runner owns exactly one `GuiBackendController` inside a single async action
-loop. Dart sends intent packets only; Rust resolves selected-session
+loop. Dart sends typed generated intent variants only; Rust resolves selected-session
 hydration, WebSocket watermark semantics, operation success, projection
 reduction, approval/command/process enablement, and typed errors. Packet
-payloads are JSON-backed where the projection internals are likely to evolve,
-so future Rinf schemas can stay stable while the Rust projection contract
-continues to develop.
+payloads are typed at the Rinf boundary; the stable hub performs the only
+request/output mapping into the internal experimental transport structs.
 
 File bootstrap discovery is Rust-owned bootstrap input. The transport reads the
 canonical per-user discovery file by default:
@@ -358,9 +349,9 @@ watermarks, construct WebSocket URLs, apply reducers, decide approval or command
 availability, or infer operation success.
 
 The first Flutter-facing control tower shell is implemented as a thin renderer
-over the existing packet carriers. It sends JSON `GuiTransportRequestPacket`
-intents through `AgentRuntimeRequestSignal` and consumes JSON
-`GuiTransportOutputPacket` outputs from `AgentRuntimeOutputSignal`. Dart stores
+over the generated typed Rinf carriers. It sends typed
+`AgentRuntimeRequestSignal` request variants and consumes typed
+`AgentRuntimeOutputSignal` output variants. Dart stores
 only widget/controller-local facts such as the base URL text, pending request
 ids, and latest render packets; Rust remains responsible for service
 connection, WebSocket URLs, watermarks, reducer application, selected-session
@@ -386,7 +377,7 @@ detail panel, and explicit empty/error/loading states. The action queue contains
 only real attention items present in the projection: pending/resumable
 approvals and typed pending/actionable command-registry request summaries.
 Command registry inventory is surfaced as inventory count/status detail, not as
-required action. Dart still sends only Rinf JSON packet intents and does not
+required action. Dart still sends only generated typed Rinf intents and does not
 infer durable runtime meaning from raw projection/controller internals.
 
 The shell remains focused: discovery/connect input, Rust-shaped view-model

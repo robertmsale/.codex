@@ -1,6 +1,138 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 class TraitHelpers {
+  static void serializeVectorAgentRuntimeActionRow(List<AgentRuntimeActionRow> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeActionRow> deserializeVectorAgentRuntimeActionRow(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeActionRow.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeBadge(List<AgentRuntimeBadge> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeBadge> deserializeVectorAgentRuntimeBadge(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeBadge.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeFact(List<AgentRuntimeFact> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeFact> deserializeVectorAgentRuntimeFact(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeFact.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeRolePolicyEntry(List<AgentRuntimeRolePolicyEntry> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeRolePolicyEntry> deserializeVectorAgentRuntimeRolePolicyEntry(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeRolePolicyEntry.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeRolePolicyRow(List<AgentRuntimeRolePolicyRow> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeRolePolicyRow> deserializeVectorAgentRuntimeRolePolicyRow(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeRolePolicyRow.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeRoleRow(List<AgentRuntimeRoleRow> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeRoleRow> deserializeVectorAgentRuntimeRoleRow(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeRoleRow.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeRoleVersionRow(List<AgentRuntimeRoleVersionRow> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeRoleVersionRow> deserializeVectorAgentRuntimeRoleVersionRow(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeRoleVersionRow.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeSessionRow(List<AgentRuntimeSessionRow> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeSessionRow> deserializeVectorAgentRuntimeSessionRow(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeSessionRow.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeTimelineRow(List<AgentRuntimeTimelineRow> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeTimelineRow> deserializeVectorAgentRuntimeTimelineRow(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeTimelineRow.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeWorkflowMemoryEvent(List<AgentRuntimeWorkflowMemoryEvent> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeWorkflowMemoryEvent> deserializeVectorAgentRuntimeWorkflowMemoryEvent(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeWorkflowMemoryEvent.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeWorkflowMemoryRow(List<AgentRuntimeWorkflowMemoryRow> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeWorkflowMemoryRow> deserializeVectorAgentRuntimeWorkflowMemoryRow(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeWorkflowMemoryRow.deserialize(deserializer));
+  }
+
   static void serializeVectorStr(List<String> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {

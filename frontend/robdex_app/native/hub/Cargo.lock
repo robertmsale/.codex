@@ -2042,6 +2042,7 @@ dependencies = [
  "portable-pty",
  "rinf",
  "robdex-agent-runtime",
+ "robdex-agent-runtime-projection",
  "robdex-client-core",
  "robdex-protocol",
  "serde",

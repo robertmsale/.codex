@@ -12,6 +12,7 @@ js-sys = "0.3.77"
 rinf = "8.10.0"
 robdex-client-core = { path = "../../../../backend/crates/robdex-client-core" }
 robdex-agent-runtime = { path = "../../../../backend/experiments/agent-runtime/crates/robdex-agent-runtime" }
+robdex-agent-runtime-projection = { path = "../../../../backend/experiments/agent-runtime/crates/robdex-agent-runtime-projection" }
 robdex-protocol = { path = "../../../../backend/crates/robdex-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
