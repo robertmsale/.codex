@@ -51,15 +51,15 @@ EXTERNAL SOURCES:
     :path: Flutter/ephemeral/.symlinks/plugins/webview_flutter_wkwebview/darwin
 
 SPEC CHECKSUMS:
-  code_forge: 374e3357ba59ca2ace4b1d6814c943b1d72faf0b
-  desktop_drop: 10a3e6a7fa9dbe350541f2574092fecfa345a07b
-  file_selector_macos: 9e9e068e90ebee155097d00e89ae91edb2374db7
+  code_forge: 14bca13a0e26865b31e28c4041a5e6920631ebbc
+  desktop_drop: 1eeeb9484299585770b6461e4f3d60950e99efa2
+  file_selector_macos: 3e56eaea051180007b900eacb006686fd54da150
   FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
-  rinf: 262f44da111bc09a28138d438caf7b9a29e9b411
-  screen_capturer_macos: 229306903c56767a7c7d3a48167ba303e95c6d29
-  shared_preferences_foundation: 7036424c3d8ec98dfe75ff1667cb0cd531ec82bb
-  url_launcher_macos: f87a979182d112f911de6820aefddaf56ee9fbfd
-  webview_flutter_wkwebview: 8ebf4fded22593026f7dbff1fbff31ea98573c8d
+  rinf: 663682fa60fb16c4c9533f289e1939cc1a59a0a5
+  screen_capturer_macos: e91a66e1eeefd5e4fe068bb1bffc053cc34b63b8
+  shared_preferences_foundation: 5086985c1d43c5ba4d5e69a4e8083a389e2909e6
+  url_launcher_macos: 175a54c831f4375a6cf895875f716ee5af3888ce
+  webview_flutter_wkwebview: 29eb20d43355b48fe7d07113835b9128f84e3af4
 
 PODFILE CHECKSUM: 54d867c82ac51cbd61b565781b9fada492027009
 
