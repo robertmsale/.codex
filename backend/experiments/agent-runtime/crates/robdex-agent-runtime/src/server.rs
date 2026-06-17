@@ -2737,15 +2737,41 @@ output(outputs.stats(artifact))
             "#,
         )
         .bind(memory_id).bind(script_id).bind(session_id).bind(workflow_memory::DEFAULT_DIMENSIONS as i32).bind(vector).execute(&test_db.pool).await.expect("memory");
+        workflow_memory::insert_memory_event(&test_db.pool, session_id, Some(turn_id), Some(script_id), Some(memory_id), "workflow_memory.promoted", json!({"sourceHash":"hash"})).await.expect("memory event");
+
+        let projected = projection::build_runtime_projection_snapshot(&test_db.pool, Some(session_id)).await.expect("projection");
+        assert_eq!(projected.workflow_memories.len(), 1);
+        assert_eq!(projected.workflow_memories[0].id, memory_id.to_string());
+        assert_eq!(projected.workflow_memories[0].source_script_run_id.as_deref(), Some(script_id.to_string().as_str()));
+        assert_eq!(projected.workflow_memories[0].source_starlark.as_deref(), Some("output(\"ok\")"));
+        assert_eq!(projected.workflow_memories[0].provider.as_deref(), Some("deterministic"));
+        assert_eq!(projected.workflow_memories[0].recent_events[0].event_type, "workflow_memory.promoted");
+        let invisible_projected = projection::build_runtime_projection_snapshot(&test_db.pool, Some(other_session_id)).await.expect("other projection");
+        assert!(invisible_projected.workflow_memories.is_empty());
 
         let response = router.clone().oneshot(Request::builder().uri(format!("/workflow-memories?sessionId={session_id}")).body(Body::empty()).expect("request")).await.expect("list");
         assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("list body");
+        let list: Value = serde_json::from_slice(&bytes).expect("list json");
+        assert_eq!(list[0]["id"], memory_id.to_string());
+        assert_eq!(list[0]["sourceScriptRunId"], script_id.to_string());
+        assert_eq!(list[0]["sourcePreview"], "output(\"ok\")");
+        assert_eq!(list[0]["provider"], "deterministic");
+        assert_eq!(list[0]["dimensions"], workflow_memory::DEFAULT_DIMENSIONS as i64);
+        assert_eq!(list[0]["sourceHash"], "hash");
         let response = router.clone().oneshot(Request::builder().uri(format!("/workflow-memories/{memory_id}?sessionId={session_id}")).body(Body::empty()).expect("request")).await.expect("show");
         assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("show body");
+        let show: Value = serde_json::from_slice(&bytes).expect("show json");
+        assert_eq!(show["sourceStarlark"], "output(\"ok\")");
+        assert_eq!(show["commandFingerprint"], "plain");
         let (status, _) = request_json(router.clone(), Method::POST, &format!("/workflow-memories/{memory_id}/feedback"), json!({"sessionId": session_id, "feedback":"attempted", "payload":{"variant":true}})).await;
         assert_eq!(status, StatusCode::OK);
         let response = router.clone().oneshot(Request::builder().uri(format!("/workflow-memories/{memory_id}/events?sessionId={session_id}")).body(Body::empty()).expect("request")).await.expect("events");
         assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("events body");
+        let events: Value = serde_json::from_slice(&bytes).expect("events json");
+        assert!(events.as_array().unwrap().iter().any(|event| event["eventType"] == "workflow_memory.mark_attempted"));
         let response = router
             .oneshot(
                 Request::builder()

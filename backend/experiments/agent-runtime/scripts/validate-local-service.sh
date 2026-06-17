@@ -89,6 +89,17 @@ case "$DEFAULT_STATE_DIR" in
 esac
 printf '[service-validation] default_state_dir=%s\n' "$DEFAULT_STATE_DIR"
 
+printf '[service-validation] iCloud remote profile writer\n'
+ICLOUD_PROFILE="$SERVICE_STATE_DIR/icloud/remote-profile.json"
+ROBDEX_AGENT_RUNTIME_ICLOUD_REMOTE_PROFILE_PATH="$ICLOUD_PROFILE" \
+ROBDEX_AGENT_RUNTIME_REMOTE_PROFILE_HOST_HINT="robertmsale._peer.internal" \
+ROBDEX_AGENT_RUNTIME_REMOTE_PROFILE_PORT="8765" \
+  $SERVICE write-icloud-profile >/dev/null
+assert_json_eq "$ICLOUD_PROFILE" "kind" "robdex.agent-runtime.remote-profile"
+assert_json_eq "$ICLOUD_PROFILE" "hostHint" "robertmsale._peer.internal"
+assert_json_eq "$ICLOUD_PROFILE" "port" "8765"
+assert_no_secret_leak "$ICLOUD_PROFILE"
+
 printf '[service-validation] package status\n'
 PACKAGE_STATUS_FILE="$SERVICE_STATE_DIR/package-status.json"
 $SERVICE package-status >"$PACKAGE_STATUS_FILE"

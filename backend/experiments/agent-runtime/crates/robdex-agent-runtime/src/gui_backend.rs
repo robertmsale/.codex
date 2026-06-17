@@ -140,6 +140,10 @@ impl GuiBackendController {
                 self.replace_sync_client(&base_url, session_id.as_deref())?;
                 self.hydrate_current().await
             }
+            GuiOperationRequest::SelectWorkflowMemory { memory_id } => {
+                self.controller_state.select_workflow_memory(memory_id.clone());
+                Ok(GuiOperationOutcome::Accepted { entity_id: memory_id.clone() })
+            }
             GuiOperationRequest::CreateSession { .. }
             | GuiOperationRequest::SendMessage { .. }
             | GuiOperationRequest::CloseSession { .. }
@@ -279,7 +283,8 @@ impl GuiBackendController {
             | GuiOperationRequest::Hydrate { .. }
             | GuiOperationRequest::Rehydrate { .. }
             | GuiOperationRequest::Disconnect
-            | GuiOperationRequest::SelectSession { .. } => unreachable!("local operations handled before server dispatch"),
+            | GuiOperationRequest::SelectSession { .. }
+            | GuiOperationRequest::SelectWorkflowMemory { .. } => unreachable!("local operations handled before server dispatch"),
         }
     }
 
@@ -361,7 +366,8 @@ impl GuiBackendController {
             | GuiOperationRequest::Hydrate { .. }
             | GuiOperationRequest::Rehydrate { .. }
             | GuiOperationRequest::Disconnect
-            | GuiOperationRequest::SelectSession { .. } => {
+            | GuiOperationRequest::SelectSession { .. }
+            | GuiOperationRequest::SelectWorkflowMemory { .. } => {
                 return Err(api_error("bad_request", "local GUI operation has no server route", json!({"operation": format!("{:?}", request.name())})));
             }
         })

@@ -3,7 +3,7 @@ use robdex_agent_runtime_projection::{
     timeline_by_sequence, timeline_item_id, CommandRegistryRequestSummary,
     CommandRegistrySummary, PendingApprovalSummary, RoleSummary, RuntimeDelta,
     RuntimeDeltaKind, RuntimeProjection, SelectedSessionDetail, ServerStatusProjection,
-    SessionListItem, TimelineItem, WorkflowMemorySummary,
+    SessionListItem, TimelineItem, WorkflowMemoryEventSummary, WorkflowMemorySummary,
 };
 use serde_json::Value;
 use sqlx::{PgPool, Row};
@@ -809,31 +809,31 @@ async fn workflow_memory_summaries(
     pool: &PgPool,
     selected_session_id: Option<Uuid>,
 ) -> Result<Vec<WorkflowMemorySummary>> {
+    let Some(session_id) = selected_session_id else {
+        return Ok(Vec::new());
+    };
+    let project_key = crate::db::session_project_key(pool, session_id).await?;
     let rows = sqlx::query(
         r#"
-        SELECT id, session_id, scope_type, project_key, title, reason, helpful_score, promoted_at
-        FROM workflow_memories
-        WHERE $1::uuid IS NULL OR session_id = $1
-        ORDER BY promoted_at DESC
+        SELECT wm.id, wm.session_id, wm.script_run_id, wm.scope_type, wm.project_key, wm.title, wm.reason,
+               wm.summary, wm.helpful_score, wm.promoted_at, wm.provider, wm.model, wm.dimensions,
+               wm.storage_type, wm.source_hash, wm.command_fingerprint, sr.source
+        FROM workflow_memories wm
+        LEFT JOIN script_runs sr ON sr.id = wm.script_run_id
+        WHERE wm.scope_type='global'
+           OR (wm.scope_type='project' AND COALESCE(wm.project_key,'')=COALESCE($1,''))
+        ORDER BY wm.promoted_at DESC
         LIMIT 200
         "#,
     )
-    .bind(selected_session_id)
+    .bind(project_key.as_deref())
     .fetch_all(pool)
     .await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| WorkflowMemorySummary {
-            id: row.get::<Uuid, _>("id").to_string(),
-            session_id: row.get::<Uuid, _>("session_id").to_string(),
-            scope_type: row.get("scope_type"),
-            project_key: row.get("project_key"),
-            title: row.get("title"),
-            reason: row.get("reason"),
-            helpful_score: row.get("helpful_score"),
-            promoted_at: optional_time(Some(row.get("promoted_at"))),
-        })
-        .collect())
+    let mut memories = Vec::new();
+    for row in rows {
+        memories.push(workflow_memory_summary_from_row(pool, row).await?);
+    }
+    Ok(memories)
 }
 
 async fn workflow_memory_summary(
@@ -842,24 +842,81 @@ async fn workflow_memory_summary(
 ) -> Result<Option<WorkflowMemorySummary>> {
     let row = sqlx::query(
         r#"
-        SELECT id, session_id, scope_type, project_key, title, reason, helpful_score, promoted_at
-        FROM workflow_memories
-        WHERE id = $1
+        SELECT wm.id, wm.session_id, wm.script_run_id, wm.scope_type, wm.project_key, wm.title, wm.reason,
+               wm.summary, wm.helpful_score, wm.promoted_at, wm.provider, wm.model, wm.dimensions,
+               wm.storage_type, wm.source_hash, wm.command_fingerprint, sr.source
+        FROM workflow_memories wm
+        LEFT JOIN script_runs sr ON sr.id = wm.script_run_id
+        WHERE wm.id = $1
         "#,
     )
     .bind(memory_id)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|row| WorkflowMemorySummary {
-        id: row.get::<Uuid, _>("id").to_string(),
+    match row {
+        Some(row) => Ok(Some(workflow_memory_summary_from_row(pool, row).await?)),
+        None => Ok(None),
+    }
+}
+
+async fn workflow_memory_summary_from_row(pool: &PgPool, row: sqlx::postgres::PgRow) -> Result<WorkflowMemorySummary> {
+    let memory_id: Uuid = row.get("id");
+    let source: Option<String> = row.get("source");
+    let recent_events = workflow_memory_recent_events(pool, memory_id).await?;
+    Ok(WorkflowMemorySummary {
+        id: memory_id.to_string(),
         session_id: row.get::<Uuid, _>("session_id").to_string(),
+        source_script_run_id: Some(row.get::<Uuid, _>("script_run_id").to_string()),
         scope_type: row.get("scope_type"),
         project_key: row.get("project_key"),
         title: row.get("title"),
         reason: row.get("reason"),
+        summary: row.get("summary"),
         helpful_score: row.get("helpful_score"),
         promoted_at: optional_time(Some(row.get("promoted_at"))),
-    }))
+        source_preview: bounded_source_preview(source.as_deref().unwrap_or_default()),
+        source_starlark: source,
+        provider: Some(row.get("provider")),
+        model: Some(row.get("model")),
+        dimensions: Some(row.get("dimensions")),
+        storage_type: Some(row.get("storage_type")),
+        source_hash: Some(row.get("source_hash")),
+        command_fingerprint: Some(row.get("command_fingerprint")),
+        recent_events,
+    })
+}
+
+async fn workflow_memory_recent_events(pool: &PgPool, memory_id: Uuid) -> Result<Vec<WorkflowMemoryEventSummary>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, event_type, payload, created_at
+        FROM workflow_memory_events
+        WHERE memory_id=$1
+        ORDER BY created_at DESC
+        LIMIT 8
+        "#,
+    )
+    .bind(memory_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| WorkflowMemoryEventSummary {
+            id: row.get::<Uuid, _>("id").to_string(),
+            event_type: row.get("event_type"),
+            created_at: optional_time(Some(row.get("created_at"))),
+            payload_summary: bounded_source_preview(&row.get::<Value, _>("payload").to_string()),
+        })
+        .collect())
+}
+
+fn bounded_source_preview(source: &str) -> String {
+    let compact = source.trim();
+    if compact.len() <= 900 {
+        compact.to_string()
+    } else {
+        format!("{}…", compact.chars().take(900).collect::<String>())
+    }
 }
 
 #[cfg(test)]

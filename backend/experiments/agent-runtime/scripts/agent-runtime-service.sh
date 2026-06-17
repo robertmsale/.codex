@@ -18,6 +18,14 @@ STDOUT_LOG="$STATE_DIR/server.stdout.log"
 STDERR_LOG="$STATE_DIR/server.stderr.log"
 CONFIG_FILE="$STATE_DIR/effective-config.json"
 DISCOVERY_FILE="$STATE_DIR/discovery.json"
+default_icloud_profile_path() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    printf '%s\n' "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json"
+  else
+    printf '%s\n' "$HOME/.config/robdex-agent-runtime/icloud/Robdex Agent Runtime/remote-profile.json"
+  fi
+}
+ICLOUD_REMOTE_PROFILE_FILE="${ROBDEX_AGENT_RUNTIME_ICLOUD_REMOTE_PROFILE_PATH:-$(default_icloud_profile_path)}"
 PACKAGE_FILE="$STATE_DIR/service-package.json"
 LAUNCHD_LABEL="${ROBDEX_AGENT_RUNTIME_LAUNCHD_LABEL:-com.robdex.agent-runtime.experimental}"
 LAUNCHD_PLIST="$HOME/Library/LaunchAgents/$LAUNCHD_LABEL.plist"
@@ -862,9 +870,44 @@ logs_service() {
   esac
 }
 
+write_icloud_remote_profile() {
+  local profile_path="${1:-$ICLOUD_REMOTE_PROFILE_FILE}"
+  local host_hint="${ROBDEX_AGENT_RUNTIME_REMOTE_PROFILE_HOST_HINT:-robertmsale._peer.internal}"
+  local profile_scheme="${ROBDEX_AGENT_RUNTIME_REMOTE_PROFILE_SCHEME:-http}"
+  local profile_port="${ROBDEX_AGENT_RUNTIME_REMOTE_PROFILE_PORT:-$PORT}"
+  local profile_label="${ROBDEX_AGENT_RUNTIME_REMOTE_PROFILE_LABEL:-Agent Runtime remote}"
+  mkdir -p "$(dirname "$profile_path")"
+  python3 - "$profile_path" "$host_hint" "$profile_port" "$profile_scheme" "$profile_label" <<'PY'
+import datetime
+import json
+import sys
+
+path, host, port, scheme, label = sys.argv[1:6]
+packet = {
+    "kind": "robdex.agent-runtime.remote-profile",
+    "version": 1,
+    "hostHint": host,
+    "port": int(port),
+    "scheme": scheme,
+    "updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+    "label": label,
+    "metadata": {
+        "transport": "icloud-profile",
+        "server": "robdex-agent-runtime-server",
+        "sensitiveData": "none",
+    },
+}
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(packet, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+PY
+  printf '[agent-runtime-service] iCloud remote profile written: %s\n' "$profile_path" >&2
+  printf '%s\n' "$profile_path"
+}
+
 usage() {
   cat <<USAGE
-usage: $0 <start|stop|status|discover|json-status|restart|logs|default-state-dir|install-user-service|uninstall-user-service|package-status|install-launchd|load-launchd|unload-launchd|uninstall-launchd|launchd-status> [--force|--tail]
+usage: $0 <start|stop|status|discover|json-status|restart|logs|default-state-dir|write-icloud-profile|install-user-service|uninstall-user-service|package-status|install-launchd|load-launchd|unload-launchd|uninstall-launchd|launchd-status> [--force|--tail]
 
 Environment:
   ROBDEX_AGENT_RUNTIME_SERVICE_STATE_DIR   override state directory, default $(default_state_dir)
@@ -873,6 +916,8 @@ Environment:
   ROBDEX_AGENT_RUNTIME_SERVER_PORT         bind port, default 8765
   ROBDEX_AGENT_RUNTIME_SERVER_BIN          optional existing server binary
   ROBDEX_AGENT_RUNTIME_LAUNCHD_LABEL       launchd label, default $LAUNCHD_LABEL
+  ROBDEX_AGENT_RUNTIME_ICLOUD_REMOTE_PROFILE_PATH override iCloud profile path
+  ROBDEX_AGENT_RUNTIME_REMOTE_PROFILE_HOST_HINT    remote host hint, default robertmsale._peer.internal
 USAGE
 }
 
@@ -885,6 +930,7 @@ case "$command" in
   restart) shift; restart_service "${1:-}" ;;
   logs) shift; logs_service "${1:-print}" ;;
   default-state-dir) default_state_dir ;;
+  write-icloud-profile) shift; write_icloud_remote_profile "${1:-$ICLOUD_REMOTE_PROFILE_FILE}" ;;
   install-user-service) install_user_service ;;
   uninstall-user-service) uninstall_user_service ;;
   package-status) package_status ;;

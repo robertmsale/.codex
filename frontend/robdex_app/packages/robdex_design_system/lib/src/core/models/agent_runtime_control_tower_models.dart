@@ -2,6 +2,8 @@ class AgentRuntimeControlTowerData {
   const AgentRuntimeControlTowerData({
     required this.connectionState,
     required this.discovery,
+    required this.remoteDiscovery,
+    required this.importedRemoteDiscovery,
     required this.connectionTone,
     required this.baseUrl,
     required this.statusLabel,
@@ -26,6 +28,7 @@ class AgentRuntimeControlTowerData {
     required this.timeline,
     required this.actions,
     required this.roleAdmin,
+    required this.workflowMemory,
     required this.controllerFacts,
     required this.outputLog,
     required this.pendingRequestCount,
@@ -34,6 +37,8 @@ class AgentRuntimeControlTowerData {
 
   final String connectionState;
   final AgentRuntimeDiscoveryInfo discovery;
+  final AgentRuntimeDiscoveryInfo remoteDiscovery;
+  final AgentRuntimeDiscoveryInfo importedRemoteDiscovery;
   final String connectionTone;
   final String baseUrl;
   final String statusLabel;
@@ -58,6 +63,7 @@ class AgentRuntimeControlTowerData {
   final List<AgentRuntimeTimelineItem> timeline;
   final List<AgentRuntimeActionItem> actions;
   final AgentRuntimeRoleAdminData roleAdmin;
+  final AgentRuntimeWorkflowMemoryData workflowMemory;
   final List<AgentRuntimeFact> controllerFacts;
   final List<String> outputLog;
   final int pendingRequestCount;
@@ -68,6 +74,12 @@ class AgentRuntimeControlTowerData {
       connectionState: '${json['connectionState'] ?? 'disconnected'}',
       discovery: AgentRuntimeDiscoveryInfo.fromJson(
         Map<String, dynamic>.from((json['discovery'] as Map?) ?? const {}),
+      ),
+      remoteDiscovery: AgentRuntimeDiscoveryInfo.fromJson(
+        Map<String, dynamic>.from((json['remoteDiscovery'] as Map?) ?? const {}),
+      ),
+      importedRemoteDiscovery: AgentRuntimeDiscoveryInfo.fromJson(
+        Map<String, dynamic>.from((json['importedRemoteDiscovery'] as Map?) ?? const {}),
       ),
       connectionTone: '${json['connectionTone'] ?? 'muted'}',
       baseUrl: '${json['baseUrl'] ?? ''}',
@@ -95,6 +107,9 @@ class AgentRuntimeControlTowerData {
       roleAdmin: AgentRuntimeRoleAdminData.fromJson(
         Map<String, dynamic>.from((json['roleAdmin'] as Map?) ?? const {}),
       ),
+      workflowMemory: AgentRuntimeWorkflowMemoryData.fromJson(
+        Map<String, dynamic>.from((json['workflowMemory'] as Map?) ?? const {}),
+      ),
       controllerFacts: _objects(json['controllerFacts']).map(AgentRuntimeFact.fromJson).toList(growable: false),
       outputLog: (json['outputLog'] as List<dynamic>? ?? const []).map((value) => '$value').toList(growable: false),
       pendingRequestCount: (json['pendingRequestCount'] as num?)?.toInt() ?? 0,
@@ -105,6 +120,8 @@ class AgentRuntimeControlTowerData {
   AgentRuntimeControlTowerData copyWith({
     String? connectionState,
     AgentRuntimeDiscoveryInfo? discovery,
+    AgentRuntimeDiscoveryInfo? remoteDiscovery,
+    AgentRuntimeDiscoveryInfo? importedRemoteDiscovery,
     String? connectionTone,
     String? baseUrl,
     String? statusLabel,
@@ -129,6 +146,7 @@ class AgentRuntimeControlTowerData {
     List<AgentRuntimeTimelineItem>? timeline,
     List<AgentRuntimeActionItem>? actions,
     AgentRuntimeRoleAdminData? roleAdmin,
+    AgentRuntimeWorkflowMemoryData? workflowMemory,
     List<AgentRuntimeFact>? controllerFacts,
     List<String>? outputLog,
     int? pendingRequestCount,
@@ -137,6 +155,8 @@ class AgentRuntimeControlTowerData {
     return AgentRuntimeControlTowerData(
       connectionState: connectionState ?? this.connectionState,
       discovery: discovery ?? this.discovery,
+      remoteDiscovery: remoteDiscovery ?? this.remoteDiscovery,
+      importedRemoteDiscovery: importedRemoteDiscovery ?? this.importedRemoteDiscovery,
       connectionTone: connectionTone ?? this.connectionTone,
       baseUrl: baseUrl ?? this.baseUrl,
       statusLabel: statusLabel ?? this.statusLabel,
@@ -161,6 +181,7 @@ class AgentRuntimeControlTowerData {
       timeline: timeline ?? this.timeline,
       actions: actions ?? this.actions,
       roleAdmin: roleAdmin ?? this.roleAdmin,
+      workflowMemory: workflowMemory ?? this.workflowMemory,
       controllerFacts: controllerFacts ?? this.controllerFacts,
       outputLog: outputLog ?? this.outputLog,
       pendingRequestCount: pendingRequestCount ?? this.pendingRequestCount,
@@ -177,6 +198,9 @@ class AgentRuntimeDiscoveryInfo {
     required this.message,
     required this.discoveryPath,
     required this.connectable,
+    this.sourceType = 'localServiceFile',
+    this.sourcePath = '',
+    this.lastImportedAt,
     this.baseUrl,
     this.healthUrl,
     this.webSocketUrl,
@@ -189,6 +213,9 @@ class AgentRuntimeDiscoveryInfo {
   final String tone;
   final String title;
   final String message;
+  final String sourceType;
+  final String sourcePath;
+  final String? lastImportedAt;
   final String discoveryPath;
   final bool connectable;
   final String? baseUrl;
@@ -204,6 +231,9 @@ class AgentRuntimeDiscoveryInfo {
       tone: '${json['tone'] ?? 'muted'}',
       title: '${json['title'] ?? 'Discovery not loaded'}',
       message: '${json['message'] ?? ''}',
+      sourceType: '${json['sourceType'] ?? 'localServiceFile'}',
+      sourcePath: '${json['sourcePath'] ?? json['discoveryPath'] ?? ''}',
+      lastImportedAt: json['lastImportedAt'] as String?,
       discoveryPath: '${json['discoveryPath'] ?? ''}',
       connectable: json['connectable'] == true,
       baseUrl: json['baseUrl'] as String?,
@@ -333,6 +363,177 @@ class AgentRuntimeFact {
     return AgentRuntimeFact(
       label: '${json['label'] ?? ''}',
       value: '${json['value'] ?? ''}',
+    );
+  }
+}
+
+class AgentRuntimeWorkflowMemoryData {
+  const AgentRuntimeWorkflowMemoryData({
+    required this.title,
+    required this.subtitle,
+    required this.emptyTitle,
+    required this.emptyText,
+    required this.rows,
+    required this.recentEvents,
+    required this.feedbackActions,
+    this.selectedMemoryId,
+    this.selectedDetail,
+  });
+
+  final String title;
+  final String subtitle;
+  final String emptyTitle;
+  final String emptyText;
+  final String? selectedMemoryId;
+  final List<AgentRuntimeWorkflowMemoryRow> rows;
+  final AgentRuntimeWorkflowMemoryDetail? selectedDetail;
+  final List<AgentRuntimeWorkflowMemoryEventRow> recentEvents;
+  final List<AgentRuntimeActionItem> feedbackActions;
+
+  factory AgentRuntimeWorkflowMemoryData.fromJson(Map<String, dynamic> json) {
+    final selectedDetail = json['selectedDetail'];
+    return AgentRuntimeWorkflowMemoryData(
+      title: '${json['title'] ?? 'Workflow Memory'}',
+      subtitle: '${json['subtitle'] ?? 'execute_code/Starlark memories'}',
+      emptyTitle: '${json['emptyTitle'] ?? 'No workflow memories'}',
+      emptyText: '${json['emptyText'] ?? 'No visible workflow memories are projected.'}',
+      selectedMemoryId: json['selectedMemoryId'] as String?,
+      rows: _objects(json['rows']).map(AgentRuntimeWorkflowMemoryRow.fromJson).toList(growable: false),
+      selectedDetail: selectedDetail is Map ? AgentRuntimeWorkflowMemoryDetail.fromJson(Map<String, dynamic>.from(selectedDetail)) : null,
+      recentEvents: _objects(json['recentEvents']).map(AgentRuntimeWorkflowMemoryEventRow.fromJson).toList(growable: false),
+      feedbackActions: _objects(json['feedbackActions']).map(AgentRuntimeActionItem.fromJson).toList(growable: false),
+    );
+  }
+}
+
+class AgentRuntimeWorkflowMemoryRow {
+  const AgentRuntimeWorkflowMemoryRow({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.scopeType,
+    required this.helpfulScore,
+    required this.sourceSessionId,
+    required this.tone,
+    required this.selected,
+    this.projectKey,
+    this.promotedAt,
+  });
+
+  final String id;
+  final String title;
+  final String subtitle;
+  final String scopeType;
+  final String? projectKey;
+  final double helpfulScore;
+  final String? promotedAt;
+  final String sourceSessionId;
+  final String tone;
+  final bool selected;
+
+  factory AgentRuntimeWorkflowMemoryRow.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeWorkflowMemoryRow(
+      id: '${json['id'] ?? ''}',
+      title: '${json['title'] ?? json['id'] ?? 'Workflow memory'}',
+      subtitle: '${json['subtitle'] ?? ''}',
+      scopeType: '${json['scopeType'] ?? 'project'}',
+      projectKey: json['projectKey'] as String?,
+      helpfulScore: (json['helpfulScore'] as num?)?.toDouble() ?? 0,
+      promotedAt: json['promotedAt'] as String?,
+      sourceSessionId: '${json['sourceSessionId'] ?? ''}',
+      tone: '${json['tone'] ?? 'info'}',
+      selected: json['selected'] == true,
+    );
+  }
+}
+
+class AgentRuntimeWorkflowMemoryDetail {
+  const AgentRuntimeWorkflowMemoryDetail({
+    required this.id,
+    required this.title,
+    required this.reason,
+    required this.summary,
+    required this.sourceSessionId,
+    required this.sourceStarlark,
+    required this.sourcePreview,
+    required this.helpfulScore,
+    required this.scopeLabel,
+    required this.feedbackEnabled,
+    this.sourceScriptRunId,
+    this.provider,
+    this.model,
+    this.dimensions,
+    this.storageType,
+    this.sourceHash,
+    this.commandFingerprint,
+    this.feedbackSessionId,
+  });
+
+  final String id;
+  final String title;
+  final String reason;
+  final String summary;
+  final String sourceSessionId;
+  final String? sourceScriptRunId;
+  final String sourceStarlark;
+  final String sourcePreview;
+  final String? provider;
+  final String? model;
+  final int? dimensions;
+  final String? storageType;
+  final String? sourceHash;
+  final String? commandFingerprint;
+  final double helpfulScore;
+  final String scopeLabel;
+  final String? feedbackSessionId;
+  final bool feedbackEnabled;
+
+  factory AgentRuntimeWorkflowMemoryDetail.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeWorkflowMemoryDetail(
+      id: '${json['id'] ?? ''}',
+      title: '${json['title'] ?? 'Workflow memory'}',
+      reason: '${json['reason'] ?? ''}',
+      summary: '${json['summary'] ?? ''}',
+      sourceSessionId: '${json['sourceSessionId'] ?? ''}',
+      sourceScriptRunId: json['sourceScriptRunId'] as String?,
+      sourceStarlark: '${json['sourceStarlark'] ?? json['sourcePreview'] ?? ''}',
+      sourcePreview: '${json['sourcePreview'] ?? ''}',
+      provider: json['provider'] as String?,
+      model: json['model'] as String?,
+      dimensions: (json['dimensions'] as num?)?.toInt(),
+      storageType: json['storageType'] as String?,
+      sourceHash: json['sourceHash'] as String?,
+      commandFingerprint: json['commandFingerprint'] as String?,
+      helpfulScore: (json['helpfulScore'] as num?)?.toDouble() ?? 0,
+      scopeLabel: '${json['scopeLabel'] ?? ''}',
+      feedbackSessionId: json['feedbackSessionId'] as String?,
+      feedbackEnabled: json['feedbackEnabled'] == true,
+    );
+  }
+}
+
+class AgentRuntimeWorkflowMemoryEventRow {
+  const AgentRuntimeWorkflowMemoryEventRow({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.tone,
+    this.createdAt,
+  });
+
+  final String id;
+  final String title;
+  final String subtitle;
+  final String? createdAt;
+  final String tone;
+
+  factory AgentRuntimeWorkflowMemoryEventRow.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeWorkflowMemoryEventRow(
+      id: '${json['id'] ?? ''}',
+      title: '${json['title'] ?? ''}',
+      subtitle: '${json['subtitle'] ?? ''}',
+      createdAt: json['createdAt'] as String?,
+      tone: '${json['tone'] ?? 'info'}',
     );
   }
 }

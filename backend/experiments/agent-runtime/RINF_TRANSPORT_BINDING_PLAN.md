@@ -271,6 +271,35 @@ contract when it needs to discover the resident server:
 The binding treats service discovery as bootstrap input only. The runtime
 projection remains authoritative after connect.
 
+The same transport now exposes iCloud remote profile discovery beside local
+file discovery:
+
+1. Dart sends `GuiTransportRequest::RefreshIcloudRemoteDiscovery`; optional
+   packet input may specify a profile path for deterministic tests. Otherwise
+   Rust reads `ROBDEX_AGENT_RUNTIME_ICLOUD_REMOTE_PROFILE_PATH` or the macOS
+   default `~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json`.
+2. Rust parses the versioned remote profile schema
+   `kind/version/hostHint|hostname/port/scheme/updatedAt/label/metadata`. The
+   default host hint is `robertmsale._peer.internal` and the default port is
+   `8765`.
+3. The profile creates only a candidate remote base URL. Rust probes `/health`
+   before marking `remoteDiscovery.connectable=true`; missing, malformed, stale,
+   unhealthy, and unreachable states remain diagnostics.
+4. Dart may send `GuiTransportRequest::ConnectIcloudRemoteRuntime` only as an
+   intent. Rust refreshes the profile, verifies connectability, and dispatches
+   the same Rust-owned connect/hydrate/WebSocket path. Dart does not parse the
+   profile file or decide health semantics.
+
+Document import is the app-local acquisition path for the same profile JSON.
+Dart may send `GuiTransportRequest::ImportRemoteProfileDocument` with a
+sanctioned profile path supplied by the Flutter file picker; Rust validates the
+untrusted JSON, stores a sanitized app-local copy under the Rust-owned imported
+profile path, and emits `importedRemoteDiscovery`. If the picker path is absent
+or unsupported, Rust returns a typed `ApiErrorPacket` instead of marking import
+successful. Dart may then send `RefreshImportedRemoteProfile` or
+`ConnectImportedRemoteRuntime`; Rust probes `/health` and connects only when the
+stored imported profile is connectable.
+
 ## Remaining owner-approval gates
 
 The owner has approved and the implementation has completed:
@@ -287,7 +316,8 @@ The following still require explicit owner approval before implementation:
   service-manager changes beyond the completed per-user LaunchAgent flow;
 - changing stable Robdex bridge, supervisor, database, or production runtime
   behavior;
-- adding remote/mDNS/iOS discovery;
+- adding mDNS/Bonjour discovery or iOS profile-sync UX beyond the implemented
+  iCloud remote profile sentinel;
 - adding broader UI surfaces beyond the current control-tower shell.
 
 ## Dart thin-transport rule
@@ -324,10 +354,12 @@ Rust responsibilities:
 
 Next implementable decisions:
 
-1. Whether to add remote/mDNS/iOS discovery.
+1. Whether to add mDNS/Bonjour discovery or iOS profile-sync UX beyond the
+   implemented iCloud remote profile sentinel.
 2. Whether to add broader UI surfaces beyond the current control-tower shell.
 3. Whether to add stable Robdex production service integration.
 
-Remote discovery, broader UI, root/system service installation, or stable
+mDNS/Bonjour discovery, iOS profile-sync UX beyond the implemented iCloud
+profile sentinel, broader UI, root/system service installation, or stable
 production-service Requirements should not be set without explicit owner
 approval for that slice.

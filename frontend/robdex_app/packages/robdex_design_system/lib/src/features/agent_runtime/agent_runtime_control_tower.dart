@@ -13,6 +13,11 @@ class AgentRuntimeControlTower extends StatelessWidget {
     required this.onConnect,
     required this.onRefreshDiscovery,
     required this.onConnectDiscovered,
+    required this.onRefreshIcloudRemoteDiscovery,
+    required this.onConnectIcloudRemote,
+    required this.onImportRemoteProfile,
+    required this.onRefreshImportedRemoteProfile,
+    required this.onConnectImportedRemoteProfile,
     required this.onPollStream,
     required this.onDisconnect,
     this.onRoleValidate,
@@ -22,6 +27,10 @@ class AgentRuntimeControlTower extends StatelessWidget {
     this.onRoleArchive,
     this.onRoleUnarchive,
     this.onRoleActivate,
+    this.onWorkflowMemorySelect,
+    this.onWorkflowMemoryAttempted,
+    this.onWorkflowMemoryHelpful,
+    this.onWorkflowMemoryNotHelpful,
   });
 
   final AgentRuntimeControlTowerData data;
@@ -29,6 +38,11 @@ class AgentRuntimeControlTower extends StatelessWidget {
   final VoidCallback onConnect;
   final VoidCallback onRefreshDiscovery;
   final VoidCallback onConnectDiscovered;
+  final VoidCallback onRefreshIcloudRemoteDiscovery;
+  final VoidCallback onConnectIcloudRemote;
+  final VoidCallback onImportRemoteProfile;
+  final VoidCallback onRefreshImportedRemoteProfile;
+  final VoidCallback onConnectImportedRemoteProfile;
   final VoidCallback onPollStream;
   final VoidCallback onDisconnect;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleValidate;
@@ -38,6 +52,10 @@ class AgentRuntimeControlTower extends StatelessWidget {
   final ValueChanged<String>? onRoleArchive;
   final ValueChanged<String>? onRoleUnarchive;
   final AgentRuntimeRoleVersionAction? onRoleActivate;
+  final ValueChanged<AgentRuntimeWorkflowMemoryRow>? onWorkflowMemorySelect;
+  final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryAttempted;
+  final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryHelpful;
+  final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryNotHelpful;
 
   @override
   Widget build(BuildContext context) {
@@ -58,8 +76,15 @@ class AgentRuntimeControlTower extends StatelessWidget {
             ),
             _DiscoveryStrip(
               discovery: data.discovery,
+              remoteDiscovery: data.remoteDiscovery,
+              importedDiscovery: data.importedRemoteDiscovery,
               onRefreshDiscovery: onRefreshDiscovery,
               onConnectDiscovered: onConnectDiscovered,
+              onRefreshIcloudRemoteDiscovery: onRefreshIcloudRemoteDiscovery,
+              onConnectIcloudRemote: onConnectIcloudRemote,
+              onImportRemoteProfile: onImportRemoteProfile,
+              onRefreshImportedRemoteProfile: onRefreshImportedRemoteProfile,
+              onConnectImportedRemoteProfile: onConnectImportedRemoteProfile,
             ),
             if (data.errorMessage case final error?)
               Container(
@@ -153,6 +178,14 @@ class AgentRuntimeControlTower extends StatelessWidget {
                                     onArchive: onRoleArchive,
                                     onUnarchive: onRoleUnarchive,
                                     onActivate: onRoleActivate,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  _WorkflowMemoryPanel(
+                                    data.workflowMemory,
+                                    onSelect: onWorkflowMemorySelect,
+                                    onAttempted: onWorkflowMemoryAttempted,
+                                    onHelpful: onWorkflowMemoryHelpful,
+                                    onNotHelpful: onWorkflowMemoryNotHelpful,
                                   ),
                                   const SizedBox(height: 12),
                                   ...data.controllerFacts.map(_FactRow.new),
@@ -253,13 +286,27 @@ class _StatusStrip extends StatelessWidget {
 class _DiscoveryStrip extends StatelessWidget {
   const _DiscoveryStrip({
     required this.discovery,
+    required this.remoteDiscovery,
+    required this.importedDiscovery,
     required this.onRefreshDiscovery,
     required this.onConnectDiscovered,
+    required this.onRefreshIcloudRemoteDiscovery,
+    required this.onConnectIcloudRemote,
+    required this.onImportRemoteProfile,
+    required this.onRefreshImportedRemoteProfile,
+    required this.onConnectImportedRemoteProfile,
   });
 
   final AgentRuntimeDiscoveryInfo discovery;
+  final AgentRuntimeDiscoveryInfo remoteDiscovery;
+  final AgentRuntimeDiscoveryInfo importedDiscovery;
   final VoidCallback onRefreshDiscovery;
   final VoidCallback onConnectDiscovered;
+  final VoidCallback onRefreshIcloudRemoteDiscovery;
+  final VoidCallback onConnectIcloudRemote;
+  final VoidCallback onImportRemoteProfile;
+  final VoidCallback onRefreshImportedRemoteProfile;
+  final VoidCallback onConnectImportedRemoteProfile;
 
   @override
   Widget build(BuildContext context) {
@@ -297,7 +344,59 @@ class _DiscoveryStrip extends StatelessWidget {
           const SizedBox(width: 8),
           FilledButton(
             onPressed: discovery.connectable ? onConnectDiscovered : null,
-            child: const Text('Connect discovered'),
+            child: const Text('Connect local'),
+          ),
+          const SizedBox(width: 12),
+          _Chip(label: remoteDiscovery.state, tone: remoteDiscovery.tone),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(remoteDiscovery.title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 3),
+                Text(
+                  '${remoteDiscovery.message}${remoteDiscovery.baseUrl == null ? '' : ' · ${remoteDiscovery.baseUrl}'}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF94A5BC)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          OutlinedButton(onPressed: onRefreshIcloudRemoteDiscovery, child: const Text('Refresh iCloud')),
+          const SizedBox(width: 8),
+          FilledButton(
+            onPressed: remoteDiscovery.connectable ? onConnectIcloudRemote : null,
+            child: const Text('Connect remote'),
+          ),
+          const SizedBox(width: 12),
+          _Chip(label: importedDiscovery.state, tone: importedDiscovery.tone),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(importedDiscovery.title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 3),
+                Text(
+                  '${importedDiscovery.message}${importedDiscovery.lastImportedAt == null ? '' : ' · imported ${importedDiscovery.lastImportedAt}'}${importedDiscovery.baseUrl == null ? '' : ' · ${importedDiscovery.baseUrl}'}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF94A5BC)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          OutlinedButton(onPressed: onImportRemoteProfile, child: const Text('Import profile')),
+          const SizedBox(width: 8),
+          OutlinedButton(onPressed: onRefreshImportedRemoteProfile, child: const Text('Refresh imported')),
+          const SizedBox(width: 8),
+          FilledButton(
+            onPressed: importedDiscovery.connectable ? onConnectImportedRemoteProfile : null,
+            child: const Text('Connect imported'),
           ),
         ],
       ),
@@ -386,6 +485,171 @@ class _ActionTile extends StatelessWidget {
       trailing: item.stateText,
       eyebrow: item.kind,
       tone: item.tone,
+    );
+  }
+}
+
+class _WorkflowMemoryPanel extends StatelessWidget {
+  const _WorkflowMemoryPanel(
+    this.workflowMemory, {
+    this.onSelect,
+    this.onAttempted,
+    this.onHelpful,
+    this.onNotHelpful,
+  });
+
+  final AgentRuntimeWorkflowMemoryData workflowMemory;
+  final ValueChanged<AgentRuntimeWorkflowMemoryRow>? onSelect;
+  final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onAttempted;
+  final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onHelpful;
+  final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onNotHelpful;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final detail = workflowMemory.selectedDetail;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F1722),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF26364A)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(workflowMemory.title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 3),
+            Text(workflowMemory.subtitle, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF8FA1B8))),
+            const SizedBox(height: 10),
+            if (workflowMemory.rows.isEmpty)
+              _EmptyState(title: workflowMemory.emptyTitle, body: workflowMemory.emptyText)
+            else ...[
+              ...workflowMemory.rows.take(4).map(
+                    (row) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: onSelect == null ? null : () => onSelect!(row),
+                        child: _DenseTile(
+                          title: row.title,
+                          subtitle: row.subtitle,
+                          trailing: row.selected ? 'selected' : row.helpfulScore.toStringAsFixed(2),
+                          eyebrow: row.scopeType,
+                          tone: row.selected ? 'success' : row.tone,
+                        ),
+                      ),
+                    ),
+                  ),
+              if (detail != null) ...[
+                const SizedBox(height: 8),
+                _FactRow(AgentRuntimeFact(label: 'Selected memory', value: detail.title)),
+                _FactRow(AgentRuntimeFact(label: 'Scope', value: detail.scopeLabel)),
+                _FactRow(AgentRuntimeFact(label: 'Source session', value: detail.sourceSessionId)),
+                if (detail.sourceScriptRunId != null) _FactRow(AgentRuntimeFact(label: 'Script run', value: detail.sourceScriptRunId!)),
+                _FactRow(AgentRuntimeFact(label: 'Provider/model', value: '${detail.provider ?? 'unknown'} · ${detail.model ?? 'unknown'}')),
+                _FactRow(AgentRuntimeFact(label: 'Vector storage', value: '${detail.dimensions ?? 0} · ${detail.storageType ?? 'unknown'}')),
+                if (detail.sourceHash != null) _FactRow(AgentRuntimeFact(label: 'Source hash', value: detail.sourceHash!)),
+                if (detail.commandFingerprint != null) _FactRow(AgentRuntimeFact(label: 'Command fingerprint', value: detail.commandFingerprint!)),
+                const SizedBox(height: 8),
+                Text('Reason', style: theme.textTheme.labelMedium?.copyWith(color: Colors.white70)),
+                Text(detail.reason, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFB7C4D6))),
+                const SizedBox(height: 8),
+                Text('Summary', style: theme.textTheme.labelMedium?.copyWith(color: Colors.white70)),
+                Text(detail.summary, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFB7C4D6))),
+                const SizedBox(height: 8),
+                Text('Read-only source Starlark', style: theme.textTheme.labelMedium?.copyWith(color: Colors.white70)),
+                const SizedBox(height: 6),
+                SizedBox(
+                  height: 120,
+                  child: _ReadOnlyCodeForge(source: detail.sourceStarlark),
+                ),
+                if (workflowMemory.recentEvents.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text('Recent events', style: theme.textTheme.labelMedium?.copyWith(color: Colors.white70)),
+                  const SizedBox(height: 6),
+                  ...workflowMemory.recentEvents.map(
+                    (event) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: _DenseTile(
+                        title: event.title,
+                        subtitle: event.subtitle,
+                        trailing: event.createdAt ?? '',
+                        eyebrow: 'event',
+                        tone: event.tone,
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    OutlinedButton(onPressed: detail.feedbackEnabled && onAttempted != null ? () => onAttempted!(detail) : null, child: const Text('Attempted')),
+                    OutlinedButton(onPressed: detail.feedbackEnabled && onHelpful != null ? () => onHelpful!(detail) : null, child: const Text('Helpful')),
+                    OutlinedButton(onPressed: detail.feedbackEnabled && onNotHelpful != null ? () => onNotHelpful!(detail) : null, child: const Text('Not helpful')),
+                  ],
+                ),
+              ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReadOnlyCodeForge extends StatefulWidget {
+  const _ReadOnlyCodeForge({required this.source});
+
+  final String source;
+
+  @override
+  State<_ReadOnlyCodeForge> createState() => _ReadOnlyCodeForgeState();
+}
+
+class _ReadOnlyCodeForgeState extends State<_ReadOnlyCodeForge> {
+  late final CodeForgeController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = CodeForgeController();
+    _controller.text = widget.source;
+  }
+
+  @override
+  void didUpdateWidget(covariant _ReadOnlyCodeForge oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.source != widget.source) {
+      _controller.text = widget.source;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: DecoratedBox(
+        decoration: const BoxDecoration(color: Color(0xFF07101A)),
+        child: CodeForge(
+          controller: _controller,
+          readOnly: true,
+          lineWrap: true,
+          enableGutter: false,
+          enableFolding: false,
+          textStyle: const TextStyle(fontSize: 12, color: Color(0xFFE5EDF8)),
+          innerPadding: const EdgeInsets.all(8),
+        ),
+      ),
     );
   }
 }

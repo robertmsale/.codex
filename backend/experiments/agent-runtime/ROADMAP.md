@@ -107,8 +107,9 @@ product specification.
 27. GUI API gap audit: every `GuiOperationRequest` had a documented and
     code-backed route/local-action mapping; approval and command-registry
     request shape mismatches were resolved. Role-admin GUI operation intents
-    are now implemented by the structured Role Admin editor slice;
-    workflow-memory inspection operation intents remain deferred.
+    are now implemented by the structured Role Admin editor slice. Workflow
+    Memory Control Tower inspection/feedback is implemented as an inspector
+    surface rather than a memory-editing UI.
 28. Rust/Rinf GUI backend controller boundary: a Rust-owned dispatcher owns
     `RuntimeSyncClient`, owned WebSocket stream handle, `RuntimeProjection`,
     `GuiControllerState`, selected session, connection/resync state, transient
@@ -218,7 +219,7 @@ product specification.
 
 ## Active slice
 
-Role Admin UI structured editor is implemented: DB-backed role draft validation, create/update immutable versions, activate/archive/unarchive/export routes, role projection/view-model fields, Rust GUI operations, and the design-system Role Admin panel are now in place. The current runtime slice adds the compaction kernel on top of PostgreSQL-backed output artifacts: durable compaction checkpoints, checkpoint-rooted reconstruction, manual CLI compaction, deterministic bytes-based request estimation, automatic pre-send compaction, fail-closed thresholds, and fork-aware reconstruction. Remaining gates are workflow-memory inspection UI, remote/mDNS/iOS discovery, broader execution expansion after GUI/runtime lifecycle is stable, and any owner-approved production Robdex integration. Tokenizer-based accounting remains intentionally out of scope.
+Role Admin UI structured editor is implemented: DB-backed role draft validation, create/update immutable versions, activate/archive/unarchive/export routes, role projection/view-model fields, Rust GUI operations, and the design-system Role Admin panel are now in place. The compaction kernel is implemented on top of PostgreSQL-backed output artifacts. The current GUI slice adds Workflow Memory Control Tower inspection plus feedback inside the existing Agent Runtime Control Tower: Rust-owned workflow-memory rows/detail/events/source metadata, Rust-owned row selection with deterministic fallback, and session-scoped attempted/helpful/not-helpful actions. iCloud remote profile discovery is implemented as a sync-safe sentinel transport with Rust-owned profile parsing and /health connectability checks. Document-import remote profile UX is implemented as an app-local profile acquisition path: Dart sends import/refresh/connect intents, Rust validates and stores a sanitized profile copy, and /health remains the connectability authority. Remaining gates are mDNS/Bonjour discovery, native iOS file-picker polish beyond the typed import boundary, broader execution expansion after GUI/runtime lifecycle is stable, workflow-memory editing/curation if the owner explicitly scopes it later, and any owner-approved production Robdex integration. Tokenizer-based accounting remains intentionally out of scope.
 
 ## Validation baseline
 
@@ -263,7 +264,7 @@ scripts/smoke-lmstudio-embeddings.sh
 
 ## Deferred / next likely slices
 
-1. Remote/mDNS/iOS discovery after the local file bootstrap path is stable.
+1. mDNS/Bonjour discovery and native iOS file-picker/profile-sync polish beyond the implemented iCloud profile sentinel plus app-local document-import path.
 2. Workflow-memory inspection operation intents if projection/detail state is
    insufficient for the first GUI shell.
 3. Broader execution expansion only after GUI/runtime lifecycle is stable.

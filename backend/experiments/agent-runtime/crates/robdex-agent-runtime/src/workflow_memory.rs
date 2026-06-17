@@ -335,10 +335,13 @@ pub async fn list_visible_memories(pool: &PgPool, session_id: Uuid) -> Result<Ve
     let project_key = db::session_project_key(pool, session_id).await?;
     let rows = sqlx::query(
         r#"
-        SELECT id, session_id, scope_type, project_key, title, reason, summary, helpful_score, promoted_at
-        FROM workflow_memories
-        WHERE scope_type='global' OR (scope_type='project' AND COALESCE(project_key,'')=COALESCE($1,''))
-        ORDER BY promoted_at DESC
+        SELECT wm.id, wm.session_id, wm.script_run_id, wm.scope_type, wm.project_key, wm.title, wm.reason, wm.summary,
+               wm.provider, wm.model, wm.dimensions, wm.storage_type, wm.source_hash, wm.command_fingerprint,
+               wm.helpful_score, wm.promoted_at, sr.source
+        FROM workflow_memories wm
+        LEFT JOIN script_runs sr ON sr.id = wm.script_run_id
+        WHERE wm.scope_type='global' OR (wm.scope_type='project' AND COALESCE(wm.project_key,'')=COALESCE($1,''))
+        ORDER BY wm.promoted_at DESC
         LIMIT 200
         "#,
     )
@@ -354,9 +357,12 @@ pub async fn show_visible_memory(pool: &PgPool, session_id: Uuid, memory_id: Uui
     }
     let row = sqlx::query(
         r#"
-        SELECT id, session_id, scope_type, project_key, title, reason, summary, helpful_score, promoted_at
-        FROM workflow_memories
-        WHERE id=$1
+        SELECT wm.id, wm.session_id, wm.script_run_id, wm.scope_type, wm.project_key, wm.title, wm.reason, wm.summary,
+               wm.provider, wm.model, wm.dimensions, wm.storage_type, wm.source_hash, wm.command_fingerprint,
+               wm.helpful_score, wm.promoted_at, sr.source
+        FROM workflow_memories wm
+        LEFT JOIN script_runs sr ON sr.id = wm.script_run_id
+        WHERE wm.id=$1
         "#,
     )
     .bind(memory_id)
@@ -403,14 +409,31 @@ pub async fn record_visible_feedback(
 }
 
 fn memory_row_to_json(row: sqlx::postgres::PgRow) -> Value {
+    let source: Option<String> = row.try_get("source").ok();
+    let source_preview = source
+        .as_deref()
+        .map(|source| {
+            let trimmed = source.trim();
+            if trimmed.len() <= 900 { trimmed.to_string() } else { format!("{}…", trimmed.chars().take(900).collect::<String>()) }
+        })
+        .unwrap_or_default();
     json!({
         "id": row.get::<Uuid, _>("id"),
         "sessionId": row.get::<Uuid, _>("session_id"),
+        "sourceScriptRunId": row.try_get::<Uuid, _>("script_run_id").ok(),
         "scopeType": row.get::<String, _>("scope_type"),
         "projectKey": row.get::<Option<String>, _>("project_key"),
         "title": row.get::<String, _>("title"),
         "reason": row.get::<String, _>("reason"),
         "summary": row.get::<String, _>("summary"),
+        "provider": row.try_get::<String, _>("provider").ok(),
+        "model": row.try_get::<String, _>("model").ok(),
+        "dimensions": row.try_get::<i32, _>("dimensions").ok(),
+        "storageType": row.try_get::<String, _>("storage_type").ok(),
+        "sourceHash": row.try_get::<String, _>("source_hash").ok(),
+        "commandFingerprint": row.try_get::<String, _>("command_fingerprint").ok(),
+        "sourcePreview": source_preview,
+        "sourceStarlark": source,
         "helpfulScore": row.get::<f64, _>("helpful_score"),
         "promotedAt": row.get::<chrono::DateTime<chrono::Utc>, _>("promoted_at"),
     })

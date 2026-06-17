@@ -145,3 +145,9 @@ shim/
 installation_id
 .tmp/
 generated_images/
+
+# Root-local Flutter/Dart tooling artifacts created by targeted analysis.
+/.config/
+/.dart-tool/
+/.dartServer/
+/.flutter/

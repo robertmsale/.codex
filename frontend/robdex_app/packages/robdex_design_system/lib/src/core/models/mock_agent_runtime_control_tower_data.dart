@@ -125,6 +125,236 @@ const mockAgentRuntimeRoleAdminInvalid = AgentRuntimeRoleAdminData(
   ],
 );
 
+const mockAgentRuntimeWorkflowMemoryEmpty = AgentRuntimeWorkflowMemoryData(
+  title: 'Workflow Memory (0)',
+  subtitle: 'execute_code/Starlark memories · inspector plus feedback',
+  emptyTitle: 'No workflow memories',
+  emptyText: 'No visible Starlark workflow memories are projected for the selected session.',
+  rows: [],
+  recentEvents: [],
+  feedbackActions: [],
+);
+
+const mockAgentRuntimeWorkflowMemorySelected = AgentRuntimeWorkflowMemoryData(
+  title: 'Workflow Memory (1)',
+  subtitle: 'execute_code/Starlark memories · inspector plus feedback',
+  emptyTitle: 'No workflow memories',
+  emptyText: 'No visible Starlark workflow memories are projected for the selected session.',
+  selectedMemoryId: 'memory-1',
+  rows: [
+    AgentRuntimeWorkflowMemoryRow(
+      id: 'memory-1',
+      title: 'Recover generated API drift',
+      subtitle: 'project agent-runtime · Use generated packet ids before editing Dart bindings.',
+      scopeType: 'project',
+      projectKey: 'agent-runtime',
+      helpfulScore: 0.42,
+      promotedAt: '2026-06-16T10:15:00Z',
+      sourceSessionId: 'session-1',
+      tone: 'info',
+      selected: true,
+    ),
+    AgentRuntimeWorkflowMemoryRow(
+      id: 'memory-2',
+      title: 'Use bounded output artifacts',
+      subtitle: 'project agent-runtime · Retrieve logs by artifact handle.',
+      scopeType: 'project',
+      projectKey: 'agent-runtime',
+      helpfulScore: 0.12,
+      promotedAt: '2026-06-16T10:10:00Z',
+      sourceSessionId: 'session-1',
+      tone: 'info',
+      selected: false,
+    ),
+  ],
+  selectedDetail: AgentRuntimeWorkflowMemoryDetail(
+    id: 'memory-1',
+    title: 'Recover generated API drift',
+    reason: 'Use generated packet ids before editing Dart bindings.',
+    summary: 'When Rinf packets change, regenerate before adapting frontend code.',
+    sourceSessionId: 'session-1',
+    sourceScriptRunId: 'script-run-1',
+    sourceStarlark: 'tips = workflow_memory.help()\\noutput(tips)',
+    sourcePreview: 'tips = workflow_memory.help()\\noutput(tips)',
+    provider: 'deterministic',
+    model: 'workflow-memory-test',
+    dimensions: 2560,
+    storageType: 'halfvec',
+    sourceHash: 'hash-abc',
+    commandFingerprint: 'cmd.describe:v1',
+    helpfulScore: 0.42,
+    scopeLabel: 'project agent-runtime',
+    feedbackSessionId: 'session-1',
+    feedbackEnabled: true,
+  ),
+  recentEvents: [
+    AgentRuntimeWorkflowMemoryEventRow(
+      id: 'event-1',
+      title: 'workflow_memory.promoted',
+      subtitle: '{"sourceHash":"hash-abc"}',
+      createdAt: '2026-06-16T10:15:00Z',
+      tone: 'info',
+    ),
+    AgentRuntimeWorkflowMemoryEventRow(
+      id: 'event-2',
+      title: 'workflow_memory.helpful',
+      subtitle: '{"source":"gui.controlTower"}',
+      createdAt: '2026-06-16T10:25:00Z',
+      tone: 'success',
+    ),
+  ],
+  feedbackActions: [
+    AgentRuntimeActionItem(
+      id: 'workflow-memory:memory-1:attempted',
+      title: 'Mark attempted',
+      subtitle: 'Owner tried this workflow memory',
+      kind: 'workflowMemoryFeedback',
+      stateText: 'Session-scoped feedback',
+      tone: 'warning',
+    ),
+    AgentRuntimeActionItem(
+      id: 'workflow-memory:memory-1:helpful',
+      title: 'Mark helpful',
+      subtitle: 'Owner found this workflow memory useful',
+      kind: 'workflowMemoryFeedback',
+      stateText: 'Session-scoped feedback',
+      tone: 'success',
+    ),
+    AgentRuntimeActionItem(
+      id: 'workflow-memory:memory-1:notHelpful',
+      title: 'Mark not helpful',
+      subtitle: 'Owner found this workflow memory misleading',
+      kind: 'workflowMemoryFeedback',
+      stateText: 'Session-scoped feedback',
+      tone: 'danger',
+    ),
+  ],
+);
+
+const mockAgentRuntimeIcloudRemoteMissing = AgentRuntimeDiscoveryInfo(
+  sourceType: 'iCloudRemoteProfile',
+  sourcePath: '~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json',
+  state: 'missingProfile',
+  tone: 'muted',
+  title: 'No iCloud remote profile',
+  message: 'iCloud sync supplies only a remote profile; refresh it on the server before connecting.',
+  discoveryPath: '~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json',
+  connectable: false,
+);
+
+const mockAgentRuntimeIcloudRemoteMalformed = AgentRuntimeDiscoveryInfo(
+  sourceType: 'iCloudRemoteProfile',
+  sourcePath: '~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json',
+  state: 'malformedProfile',
+  tone: 'danger',
+  title: 'iCloud profile is malformed',
+  message: 'The synced remote profile is not valid Agent Runtime profile JSON.',
+  discoveryPath: '~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json',
+  connectable: false,
+);
+
+const mockAgentRuntimeIcloudRemoteStale = AgentRuntimeDiscoveryInfo(
+  sourceType: 'iCloudRemoteProfile',
+  sourcePath: '~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json',
+  state: 'staleProfile',
+  tone: 'warning',
+  title: 'iCloud remote profile is stale',
+  message: 'The synced profile is older than the allowed freshness window; refresh it on the server before connecting.',
+  discoveryPath: '~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json',
+  connectable: false,
+  baseUrl: 'http://robertmsale._peer.internal:8765',
+  healthUrl: 'http://robertmsale._peer.internal:8765/health',
+);
+
+const mockAgentRuntimeIcloudRemoteHealthy = AgentRuntimeDiscoveryInfo(
+  sourceType: 'iCloudRemoteProfile',
+  sourcePath: '~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json',
+  state: 'remoteHealthy',
+  tone: 'success',
+  title: 'iCloud remote runtime reachable',
+  message: 'iCloud supplied a remote profile and Rust verified /health; the target is connectable.',
+  discoveryPath: '~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json',
+  connectable: true,
+  baseUrl: 'http://robertmsale._peer.internal:8765',
+  healthUrl: 'http://robertmsale._peer.internal:8765/health',
+);
+
+const mockAgentRuntimeIcloudRemoteUnreachable = AgentRuntimeDiscoveryInfo(
+  sourceType: 'iCloudRemoteProfile',
+  sourcePath: '~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json',
+  state: 'remoteUnreachable',
+  tone: 'danger',
+  title: 'iCloud remote runtime unreachable',
+  message: 'The profile exists, but Rust could not verify /health.',
+  discoveryPath: '~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json',
+  connectable: false,
+  baseUrl: 'http://robertmsale._peer.internal:8765',
+  healthUrl: 'http://robertmsale._peer.internal:8765/health',
+);
+
+const mockAgentRuntimeImportedRemoteMissing = AgentRuntimeDiscoveryInfo(
+  sourceType: 'importedRemoteProfile',
+  sourcePath: '~/Library/Application Support/Robdex Agent Runtime/imported-remote-profile/remote-profile.json',
+  state: 'missingProfile',
+  tone: 'muted',
+  title: 'No imported remote profile',
+  message: 'Import a remote profile JSON document; Rust stores an app-local copy and probes /health.',
+  discoveryPath: '~/Library/Application Support/Robdex Agent Runtime/imported-remote-profile/remote-profile.json',
+  connectable: false,
+);
+
+const mockAgentRuntimeImportedRemoteHealthy = AgentRuntimeDiscoveryInfo(
+  sourceType: 'importedRemoteProfile',
+  sourcePath: '~/Library/Application Support/Robdex Agent Runtime/imported-remote-profile/remote-profile.json',
+  state: 'remoteHealthy',
+  tone: 'success',
+  title: 'Imported remote runtime reachable',
+  message: 'Rust validated the imported profile copy and verified /health; the target is connectable.',
+  discoveryPath: '~/Library/Application Support/Robdex Agent Runtime/imported-remote-profile/remote-profile.json',
+  lastImportedAt: '2026-06-16T10:20:00Z',
+  connectable: true,
+  baseUrl: 'http://robertmsale._peer.internal:8765',
+  healthUrl: 'http://robertmsale._peer.internal:8765/health',
+);
+
+const mockAgentRuntimeImportedRemoteStale = AgentRuntimeDiscoveryInfo(
+  sourceType: 'importedRemoteProfile',
+  sourcePath: '~/Library/Application Support/Robdex Agent Runtime/imported-remote-profile/remote-profile.json',
+  state: 'staleProfile',
+  tone: 'warning',
+  title: 'Imported remote profile is stale',
+  message: 'The imported profile is older than the allowed freshness window; import a fresh copy before connecting.',
+  discoveryPath: '~/Library/Application Support/Robdex Agent Runtime/imported-remote-profile/remote-profile.json',
+  lastImportedAt: '2026-06-15T08:00:00Z',
+  connectable: false,
+  baseUrl: 'http://robertmsale._peer.internal:8765',
+);
+
+const mockAgentRuntimeImportedRemoteMalformed = AgentRuntimeDiscoveryInfo(
+  sourceType: 'importedRemoteProfile',
+  sourcePath: '~/Library/Application Support/Robdex Agent Runtime/imported-remote-profile/remote-profile.json',
+  state: 'malformedProfile',
+  tone: 'danger',
+  title: 'Imported profile is malformed',
+  message: 'Rust rejected the imported profile JSON before storing it as a connectable target.',
+  discoveryPath: '~/Library/Application Support/Robdex Agent Runtime/imported-remote-profile/remote-profile.json',
+  connectable: false,
+);
+
+const mockAgentRuntimeImportedRemoteUnreachable = AgentRuntimeDiscoveryInfo(
+  sourceType: 'importedRemoteProfile',
+  sourcePath: '~/Library/Application Support/Robdex Agent Runtime/imported-remote-profile/remote-profile.json',
+  state: 'remoteUnreachable',
+  tone: 'danger',
+  title: 'Imported remote runtime unreachable',
+  message: 'The imported profile copy is valid, but Rust could not verify /health.',
+  discoveryPath: '~/Library/Application Support/Robdex Agent Runtime/imported-remote-profile/remote-profile.json',
+  lastImportedAt: '2026-06-16T10:20:00Z',
+  connectable: false,
+  baseUrl: 'http://robertmsale._peer.internal:8765',
+  healthUrl: 'http://robertmsale._peer.internal:8765/health',
+);
+
 const mockAgentRuntimeDisconnected = AgentRuntimeControlTowerData(
   connectionState: 'disconnected',
   discovery: AgentRuntimeDiscoveryInfo(
@@ -135,6 +365,8 @@ const mockAgentRuntimeDisconnected = AgentRuntimeControlTowerData(
     discoveryPath: '~/Library/Application Support/Robdex Agent Runtime/service/discovery.json',
     connectable: false,
   ),
+  remoteDiscovery: mockAgentRuntimeIcloudRemoteMissing,
+  importedRemoteDiscovery: mockAgentRuntimeImportedRemoteMissing,
   connectionTone: 'muted',
   baseUrl: 'http://127.0.0.1:8765',
   statusLabel: 'No runtime connected',
@@ -162,6 +394,7 @@ const mockAgentRuntimeDisconnected = AgentRuntimeControlTowerData(
   timeline: [],
   actions: [],
   roleAdmin: mockAgentRuntimeRoleAdminEmpty,
+  workflowMemory: mockAgentRuntimeWorkflowMemoryEmpty,
   controllerFacts: [
     AgentRuntimeFact(label: 'Transport', value: 'Rinf JSON packets'),
     AgentRuntimeFact(label: 'Source of truth', value: 'Rust/Postgres'),
@@ -183,6 +416,8 @@ const mockAgentRuntimeConnecting = AgentRuntimeControlTowerData(
     healthUrl: 'http://127.0.0.1:8765/health',
     webSocketUrl: 'ws://127.0.0.1:8765/state/ws',
   ),
+  remoteDiscovery: mockAgentRuntimeIcloudRemoteUnreachable,
+  importedRemoteDiscovery: mockAgentRuntimeImportedRemoteUnreachable,
   connectionTone: 'warning',
   baseUrl: 'http://127.0.0.1:8765',
   statusLabel: 'Connecting through Rust transport',
@@ -210,6 +445,7 @@ const mockAgentRuntimeConnecting = AgentRuntimeControlTowerData(
   timeline: [],
   actions: [],
   roleAdmin: mockAgentRuntimeRoleAdminEmpty,
+  workflowMemory: mockAgentRuntimeWorkflowMemoryEmpty,
   controllerFacts: [
     AgentRuntimeFact(label: 'Pending', value: 'connect-1'),
   ],
@@ -231,6 +467,8 @@ const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
     webSocketUrl: 'ws://127.0.0.1:8765/state/ws',
     runtimeIdentity: 'agent-runtime-local',
   ),
+  remoteDiscovery: mockAgentRuntimeIcloudRemoteHealthy,
+  importedRemoteDiscovery: mockAgentRuntimeImportedRemoteHealthy,
   connectionTone: 'success',
   baseUrl: 'http://127.0.0.1:8765',
   statusLabel: 'Runtime healthy',
@@ -311,6 +549,7 @@ const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
     ),
   ],
   roleAdmin: mockAgentRuntimeRoleAdminSelected,
+  workflowMemory: mockAgentRuntimeWorkflowMemorySelected,
   controllerFacts: [
     AgentRuntimeFact(label: 'Selected session', value: 'session-a'),
     AgentRuntimeFact(label: 'Connection', value: 'streaming'),
@@ -331,6 +570,8 @@ const mockAgentRuntimeError = AgentRuntimeControlTowerData(
     baseUrl: 'http://127.0.0.1:8765',
     diagnostics: ['unhealthy: server process is alive but health check failed'],
   ),
+  remoteDiscovery: mockAgentRuntimeIcloudRemoteMalformed,
+  importedRemoteDiscovery: mockAgentRuntimeImportedRemoteMalformed,
   connectionTone: 'danger',
   baseUrl: 'http://127.0.0.1:8765',
   statusLabel: 'Runtime unavailable',
@@ -358,6 +599,7 @@ const mockAgentRuntimeError = AgentRuntimeControlTowerData(
   timeline: [],
   actions: [],
   roleAdmin: mockAgentRuntimeRoleAdminInvalid,
+  workflowMemory: mockAgentRuntimeWorkflowMemorySelected,
   controllerFacts: [
     AgentRuntimeFact(label: 'Error code', value: 'unavailable'),
   ],
@@ -377,6 +619,8 @@ const mockAgentRuntimeEmpty = AgentRuntimeControlTowerData(
     connectable: true,
     baseUrl: 'http://127.0.0.1:8765',
   ),
+  remoteDiscovery: mockAgentRuntimeIcloudRemoteStale,
+  importedRemoteDiscovery: mockAgentRuntimeImportedRemoteStale,
   connectionTone: 'success',
   baseUrl: 'http://127.0.0.1:8765',
   statusLabel: 'Runtime connected · no sessions',
@@ -407,6 +651,7 @@ const mockAgentRuntimeEmpty = AgentRuntimeControlTowerData(
   timeline: [],
   actions: [],
   roleAdmin: mockAgentRuntimeRoleAdminEmpty,
+  workflowMemory: mockAgentRuntimeWorkflowMemoryEmpty,
   controllerFacts: [
     AgentRuntimeFact(label: 'Connection', value: 'streaming'),
     AgentRuntimeFact(label: 'Action queue', value: 'empty'),

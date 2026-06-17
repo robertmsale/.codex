@@ -243,12 +243,44 @@ pub struct CommandRegistrySummary {
 pub struct WorkflowMemorySummary {
     pub id: String,
     pub session_id: String,
+    #[serde(default)]
+    pub source_script_run_id: Option<String>,
     pub scope_type: String,
     pub project_key: Option<String>,
     pub title: String,
     pub reason: String,
+    #[serde(default)]
+    pub summary: String,
     pub helpful_score: f64,
     pub promoted_at: Option<String>,
+    #[serde(default)]
+    pub source_preview: String,
+    #[serde(default)]
+    pub source_starlark: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub dimensions: Option<i32>,
+    #[serde(default)]
+    pub storage_type: Option<String>,
+    #[serde(default)]
+    pub source_hash: Option<String>,
+    #[serde(default)]
+    pub command_fingerprint: Option<String>,
+    #[serde(default)]
+    pub recent_events: Vec<WorkflowMemoryEventSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowMemoryEventSummary {
+    pub id: String,
+    pub event_type: String,
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub payload_summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -318,6 +350,7 @@ pub struct GuiOperationState {
 pub struct GuiControllerState {
     pub connection_state: GuiConnectionState,
     pub selected_session_id: Option<String>,
+    pub selected_workflow_memory_id: Option<String>,
     pub selected_view: GuiSelectedView,
     pub active_operations: Vec<GuiOperationState>,
     pub transient_errors: Vec<ApiErrorPacket>,
@@ -332,6 +365,7 @@ impl Default for GuiControllerState {
         Self {
             connection_state: GuiConnectionState::Disconnected,
             selected_session_id: None,
+            selected_workflow_memory_id: None,
             selected_view: GuiSelectedView::Sessions,
             active_operations: Vec::new(),
             transient_errors: Vec::new(),
@@ -358,9 +392,15 @@ impl GuiControllerState {
 
     pub fn select_session(&mut self, session_id: Option<String>) -> GuiOperationExpectation {
         self.selected_session_id = session_id;
+        self.selected_workflow_memory_id = None;
         self.pending_rehydrate = true;
         self.pending_reconnect = true;
         GuiOperationExpectation::RehydrateAndReconnect
+    }
+
+    pub fn select_workflow_memory(&mut self, memory_id: Option<String>) -> GuiOperationExpectation {
+        self.selected_workflow_memory_id = memory_id;
+        GuiOperationExpectation::UpdateLocalState
     }
 }
 
@@ -390,6 +430,7 @@ pub enum GuiOperationName {
     Rehydrate,
     Disconnect,
     SelectSession,
+    SelectWorkflowMemory,
     CreateSession,
     SendMessage,
     CloseSession,
@@ -426,6 +467,7 @@ pub enum GuiOperationRequest {
     Rehydrate { selected_session_id: Option<String> },
     Disconnect,
     SelectSession { session_id: Option<String> },
+    SelectWorkflowMemory { memory_id: Option<String> },
     CreateSession { role: String, project: Option<String>, workdir: Option<String>, worktree_root: Option<String>, title: Option<String>, name: Option<String> },
     SendMessage { session_id: String, message: String },
     CloseSession { session_id: String, reason: Option<String> },
@@ -462,6 +504,7 @@ impl GuiOperationRequest {
             Self::Rehydrate { .. } => GuiOperationName::Rehydrate,
             Self::Disconnect => GuiOperationName::Disconnect,
             Self::SelectSession { .. } => GuiOperationName::SelectSession,
+            Self::SelectWorkflowMemory { .. } => GuiOperationName::SelectWorkflowMemory,
             Self::CreateSession { .. } => GuiOperationName::CreateSession,
             Self::SendMessage { .. } => GuiOperationName::SendMessage,
             Self::CloseSession { .. } => GuiOperationName::CloseSession,
@@ -494,7 +537,7 @@ impl GuiOperationRequest {
     pub fn expected_projection_effect(&self) -> GuiOperationExpectation {
         match self {
             Self::Connect { .. } | Self::Hydrate { .. } | Self::Rehydrate { .. } => GuiOperationExpectation::Rehydrate,
-            Self::Disconnect => GuiOperationExpectation::UpdateLocalState,
+            Self::Disconnect | Self::SelectWorkflowMemory { .. } => GuiOperationExpectation::UpdateLocalState,
             Self::SelectSession { .. } => GuiOperationExpectation::RehydrateAndReconnect,
             Self::CreateSession { .. }
             | Self::SendMessage { .. }
@@ -532,6 +575,7 @@ impl GuiOperationRequest {
             Self::Rehydrate { .. } => http_mapping(self.name(), "GET", "/state/snapshot?selectedSessionId=<optional>", "none", "RuntimeProjection", GuiOperationExpectation::Rehydrate),
             Self::Disconnect => local_mapping(self.name(), "close local WebSocket stream and mark disconnected", GuiOperationExpectation::UpdateLocalState),
             Self::SelectSession { .. } => local_mapping(self.name(), "set selectedSessionId, then GET /state/snapshot and reconnect /state/ws with selectedSessionId", GuiOperationExpectation::RehydrateAndReconnect),
+            Self::SelectWorkflowMemory { .. } => local_mapping(self.name(), "set selectedWorkflowMemoryId; Control Tower view model deterministically falls back when unavailable", GuiOperationExpectation::UpdateLocalState),
             Self::CreateSession { .. } => http_mapping(self.name(), "POST", "/sessions", r#"{"role","project","workdir","worktreeRoot","title","name"}"#, r#"{"sessionId"}"#, GuiOperationExpectation::WaitForDelta),
             Self::SendMessage { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/send", r#"{"message"}"#, r#"{"sessionId","turnId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::CloseSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/close", r#"{"reason"?}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
@@ -568,6 +612,7 @@ impl GuiOperationRequest {
             | Self::Rehydrate { .. }
             | Self::Disconnect
             | Self::SelectSession { .. }
+            | Self::SelectWorkflowMemory { .. }
             | Self::ListCommandRegistry { .. }
             | Self::ShowCommand { .. }
             | Self::ListCommandRegistryRequests
@@ -1219,6 +1264,7 @@ mod tests {
             GuiOperationRequest::Rehydrate { selected_session_id: Some("session-1".to_string()) },
             GuiOperationRequest::Disconnect,
             GuiOperationRequest::SelectSession { session_id: Some("session-1".to_string()) },
+            GuiOperationRequest::SelectWorkflowMemory { memory_id: Some("memory-1".to_string()) },
             GuiOperationRequest::CreateSession { role: "runtime-allow".to_string(), project: Some("project".to_string()), workdir: Some(".".to_string()), worktree_root: None, title: None, name: None },
             GuiOperationRequest::SendMessage { session_id: "session-1".to_string(), message: "hello".to_string() },
             GuiOperationRequest::CloseSession { session_id: "session-1".to_string(), reason: Some("done".to_string()) },
@@ -1420,12 +1466,23 @@ mod tests {
         projection.apply_delta(delta(1, RuntimeDeltaKind::WorkflowMemoryUpsert { memory: WorkflowMemorySummary {
             id: "memory-1".to_string(),
             session_id: "session-1".to_string(),
+            source_script_run_id: Some("script-1".to_string()),
             scope_type: "project".to_string(),
             project_key: Some("project".to_string()),
             title: "Memory".to_string(),
             reason: "Useful".to_string(),
+            summary: "Summary".to_string(),
             helpful_score: 1.0,
             promoted_at: None,
+            source_preview: "output(\"hello\")".to_string(),
+            source_starlark: Some("output(\"hello\")".to_string()),
+            provider: Some("provider".to_string()),
+            model: Some("model".to_string()),
+            dimensions: Some(2560),
+            storage_type: Some("halfvec".to_string()),
+            source_hash: Some("hash".to_string()),
+            command_fingerprint: Some("fingerprint".to_string()),
+            recent_events: Vec::new(),
         }}));
         projection.apply_delta(delta(2, RuntimeDeltaKind::WorkflowMemoryEvent { item: event(2, "workflow_memory", "memory-1", "workflow_memory.promoted") }));
         assert_eq!(projection.workflow_memories.len(), 1);
@@ -1492,6 +1549,7 @@ mod tests {
         projection.apply_delta(delta(1, RuntimeDeltaKind::SessionUpsert { session: session("session-1") }));
         let mut local = GuiControllerState::default();
         local.draft_inputs.insert("session-1".to_string(), "draft message".to_string());
+        local.select_workflow_memory(Some("memory-1".to_string()));
         local.active_operations.push(GuiOperationState {
             operation_id: "op-1".to_string(),
             operation: GuiOperationName::SendMessage,
@@ -1504,8 +1562,10 @@ mod tests {
         let projection_json = serde_json::to_value(&projection).expect("projection json");
         let local_json = serde_json::to_value(&local).expect("local json");
         assert!(projection_json.get("draftInputs").is_none());
+        assert!(projection_json.get("selectedWorkflowMemoryId").is_none());
         assert!(projection_json.get("activeOperations").is_none());
         assert_eq!(local_json["draftInputs"]["session-1"], "draft message");
+        assert_eq!(local_json["selectedWorkflowMemoryId"], "memory-1");
         assert_eq!(projection.sessions[0].id, "session-1");
     }
 
@@ -1522,6 +1582,21 @@ mod tests {
             session_id: Some("session-2".to_string()),
         };
         assert_eq!(request.expected_projection_effect(), GuiOperationExpectation::RehydrateAndReconnect);
+    }
+
+    #[test]
+    fn selected_workflow_memory_is_local_controller_state() {
+        let mut local = GuiControllerState::default();
+        let effect = local.select_workflow_memory(Some("memory-2".to_string()));
+        assert_eq!(effect, GuiOperationExpectation::UpdateLocalState);
+        assert_eq!(local.selected_workflow_memory_id.as_deref(), Some("memory-2"));
+
+        let request = GuiOperationRequest::SelectWorkflowMemory {
+            memory_id: Some("memory-2".to_string()),
+        };
+        assert_eq!(request.name(), GuiOperationName::SelectWorkflowMemory);
+        assert_eq!(request.expected_projection_effect(), GuiOperationExpectation::UpdateLocalState);
+        assert!(request.api_mapping().local_only);
     }
 
     #[test]

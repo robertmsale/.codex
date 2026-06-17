@@ -65,10 +65,25 @@ the Rust-selected `baseUrl`; stopped, stale-pid, unhealthy, missing-config,
 stale-discovery, missing-file, and parse-error states remain diagnostics and do
 not pretend to be connected. Manual base URL entry remains a fallback input.
 
-Remote discovery remains out of scope for the first shell. mDNS/Bonjour and iOS
-remote discovery require a separate owner-approved slice. The current service
-packaging affordance includes per-user script-based packaging and macOS
-LaunchAgent install/load/unload/status commands.
+iCloud remote profile discovery is implemented as a second Rust-owned bootstrap
+provider beside the local service file. It reads a sync-safe profile sentinel
+from `~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json`
+by default, or from `ROBDEX_AGENT_RUNTIME_ICLOUD_REMOTE_PROFILE_PATH` for tests
+and development. The profile supplies only a host/port/scheme candidate
+(`robertmsale._peer.internal:8765` by default); Rust probes `/health` before
+the Control Tower marks it connectable. The UI shows local discovery and iCloud
+remote profile discovery distinctly. mDNS/Bonjour discovery and iOS profile-sync
+UX remain separate owner-approved slices. The current service packaging
+affordance includes per-user script-based packaging and macOS LaunchAgent
+install/load/unload/status commands.
+
+Document import is implemented as a practical iPhone/macOS bootstrap path
+without Apple iCloud container entitlements. The Control Tower shows an
+`Import profile` affordance beside iCloud remote discovery. Dart sends an import
+intent only; Rust validates the selected JSON profile, writes a sanitized
+app-local copy, probes `/health`, and exposes `importedRemoteDiscovery` with
+clear no-file, stale/malformed, healthy, and unreachable states. `Refresh
+imported` and `Connect imported` operate on the Rust-owned app-local copy.
 
 
 ## Role Admin implementation record
@@ -124,6 +139,11 @@ The first shell uses five stable regions:
    - Detailed payload inspection, command policy detail, raw bounded event
      payloads, role/version detail, workflow memory detail, and diagnostic
      evidence.
+   - Workflow Memory detail is inspection plus feedback only: Starlark source is
+     read-only, row selection is a Rust-owned controller intent with
+     deterministic fallback to the first visible memory, visibility and feedback
+     authority are Rust-owned, and no memory editing/curation controls are
+     present.
    - It is opened intentionally and is not a permanent giant inspector pane.
 
 ## Screens and surfaces

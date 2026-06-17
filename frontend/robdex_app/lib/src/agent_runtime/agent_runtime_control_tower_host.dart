@@ -48,6 +48,11 @@ class _AgentRuntimeControlTowerHostState extends State<AgentRuntimeControlTowerH
           onConnect: () => _controller.connect(_baseUrlController.text),
           onRefreshDiscovery: _controller.refreshDiscovery,
           onConnectDiscovered: _controller.connectDiscoveredRuntime,
+          onRefreshIcloudRemoteDiscovery: _controller.refreshIcloudRemoteDiscovery,
+          onConnectIcloudRemote: _controller.connectIcloudRemoteRuntime,
+          onImportRemoteProfile: _controller.importRemoteProfileDocument,
+          onRefreshImportedRemoteProfile: _controller.refreshImportedRemoteProfile,
+          onConnectImportedRemoteProfile: _controller.connectImportedRemoteRuntime,
           onPollStream: _controller.pollStreamOnce,
           onDisconnect: _controller.disconnect,
           onRoleValidate: _controller.validateRoleDraft,
@@ -57,6 +62,10 @@ class _AgentRuntimeControlTowerHostState extends State<AgentRuntimeControlTowerH
           onRoleArchive: _controller.archiveRole,
           onRoleUnarchive: _controller.unarchiveRole,
           onRoleActivate: _controller.activateRoleVersion,
+          onWorkflowMemorySelect: _controller.selectWorkflowMemory,
+          onWorkflowMemoryAttempted: _controller.markWorkflowMemoryAttempted,
+          onWorkflowMemoryHelpful: _controller.markWorkflowMemoryHelpful,
+          onWorkflowMemoryNotHelpful: _controller.markWorkflowMemoryNotHelpful,
         );
       },
     );

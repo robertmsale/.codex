@@ -221,6 +221,11 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
         onConnect: () {},
         onRefreshDiscovery: () {},
         onConnectDiscovered: () {},
+        onRefreshIcloudRemoteDiscovery: () {},
+        onConnectIcloudRemote: () {},
+        onImportRemoteProfile: () {},
+        onRefreshImportedRemoteProfile: () {},
+        onConnectImportedRemoteProfile: () {},
         onPollStream: () {},
         onDisconnect: () {},
         onRoleValidate: (_) {},
@@ -230,6 +235,10 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
         onRoleArchive: (_) {},
         onRoleUnarchive: (_) {},
         onRoleActivate: (_, _) {},
+        onWorkflowMemorySelect: (_) {},
+        onWorkflowMemoryAttempted: (_) {},
+        onWorkflowMemoryHelpful: (_) {},
+        onWorkflowMemoryNotHelpful: (_) {},
       ),
     );
   }

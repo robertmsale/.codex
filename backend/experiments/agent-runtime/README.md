@@ -113,7 +113,11 @@ evidence. Core GUI control enablement is typed: the approval projection contains
 scope/enabled/version/call-shape fields; command-registry request summaries
 expose `canPreview`, `canDecide`, and `canApply`; roles expose
 status/current version/model; and workflow memory summaries expose
-scope/title/reason/helpfulness.
+scope/title/reason/summary/helpfulness/source metadata/recent events and
+feedback action state. The selected workflow-memory id is Rust-owned local
+controller state: row selection sends a typed intent, the view model falls back
+deterministically when the selected memory disappears, and feedback actions use
+the selected detail plus the Rust-owned selected/active session id.
 
 Proof coverage lives in the projection crate tests and runtime/server tests.
 Run:
@@ -179,9 +183,19 @@ Resolved audit mismatches:
 
 Role Admin GUI operations are implemented: validation/options/detail/export direct results plus create/update/activate/archive/unarchive wait-for-delta mutations. Dart renders Rust-shaped `roleAdmin` view-model fields and sends typed role intents only.
 
+Workflow Memory Control Tower inspection is implemented inside the existing
+Agent Runtime Control Tower. It is an inspector plus feedback surface for
+execute_code/Starlark workflow memories only: memory rows, selected detail,
+read-only source Starlark, recent help/feedback events, and attempted/helpful/
+not-helpful feedback actions are Rust-shaped and session-scoped. Selecting a row
+updates Rust-owned selected workflow-memory state; Dart renders the selected
+detail returned by Rust and does not choose feedback authority. It does not edit,
+rewrite, delete, hide, promote, recompute embeddings, or curate memories.
+
 Remaining deferred GUI operations:
 
-- Workflow-memory inspection uses `RuntimeProjection.workflowMemories` and selected-session/timeline detail. Dedicated memory list/show/events operation intents are deferred; feedback is included because it mutates state.
+- Workflow-memory editing/curation remains out of scope; the implemented
+  surface is inspection plus feedback only.
 
 
 #### Rust/Rinf GUI backend controller boundary
@@ -241,8 +255,9 @@ strategy, and the first stable hub Rust binding now forwards generated Rinf
 signals to that transport path. Later slices added the control-tower Flutter
 shell, design-system scenarios, user-scoped service packaging, and per-user
 LaunchAgent install/load/unload/status on top of the same transport. Root/system
-LaunchDaemons, sudo service installation, remote/mDNS/iOS discovery, and stable
-Robdex backend/supervisor behavior remain out of scope.
+LaunchDaemons, sudo service installation, mDNS/Bonjour discovery, iOS profile
+sync UX beyond the implemented iCloud profile sentinel, and stable Robdex
+backend/supervisor behavior remain out of scope.
 
 Stable hub files touched by the binding:
 
@@ -306,6 +321,37 @@ unhealthy, missing-config, stale-discovery, missing-file, and parse-error states
 remain diagnostics and do not pretend to be connected. Manual base URL entry
 remains available as a fallback input.
 
+iCloud remote profile discovery is also Rust-owned bootstrap input. The profile
+is a tiny sync-safe sentinel, not live discovery, auth, tunneling, or mDNS:
+`{"kind":"robdex.agent-runtime.remote-profile","version":1,"hostHint","port","scheme","updatedAt","label","metadata"}`.
+The default host hint is `robertmsale._peer.internal`; the default Agent Runtime
+port remains `8765`. Rust resolves the default profile path to
+`~/Library/Mobile Documents/com~apple~CloudDocs/Robdex Agent Runtime/remote-profile.json`
+on macOS, or honors `ROBDEX_AGENT_RUNTIME_ICLOUD_REMOTE_PROFILE_PATH` for tests
+and non-iCloud development. `scripts/agent-runtime-service.sh write-icloud-profile`
+writes the profile without bearer tokens, database URLs, raw credentials, or
+unredacted sensitive paths. The profile only creates a candidate `baseUrl`.
+Rust probes `/health` before marking it connectable and emits distinct
+`remoteDiscovery` state/copy for missing, malformed, stale, unhealthy,
+unreachable, and healthy remote profiles. Dart only sends refresh/connect-remote
+intents and renders Rust-shaped fields.
+
+Document-import remote profile bootstrap is an additional acquisition path for
+the same iCloud profile JSON. The intended phone/macOS flow is: the Mac service
+writes the profile to iCloud Drive with `write-icloud-profile`; the user imports
+that JSON document; Rust treats it as untrusted, validates the schema/version,
+stores a sanitized app-local copy at
+`~/Library/Application Support/Robdex Agent Runtime/imported-remote-profile/remote-profile.json`
+by default, and probes `/health` before `importedRemoteDiscovery` becomes
+connectable. Override the storage path with
+`ROBDEX_AGENT_RUNTIME_IMPORTED_REMOTE_PROFILE_PATH` or the directory with
+`ROBDEX_AGENT_RUNTIME_IMPORTED_REMOTE_PROFILE_DIR` for deterministic tests and
+development. Flutter may initiate the import affordance and pass a sanctioned
+profile path to Rust, but it does not parse the JSON, construct URLs, or decide
+health/connectability. Unsupported native picker paths return a typed Rust error
+instead of pretending import succeeded. The original iCloud-path discovery and
+service-wrapper writer remain intact.
+
 After connect, `RuntimeProjection`, `GuiControllerState`, stream outcomes, and
 `GuiOperationResult` packets from Rust are authoritative. Dart must not compute
 watermarks, construct WebSocket URLs, apply reducers, decide approval or command
@@ -350,10 +396,12 @@ disconnected/error states, and manual stream polling through the Rust-owned
 transport. Reusable visual pieces live in the design-system package under the
 agent-runtime control tower
 component, with Design Lab scenarios for disconnected, connecting, connected,
-error, and empty/no-session states. Remaining gates are remote/mDNS/iOS
-discovery, workflow-memory inspection UI, and
-root/system service integration beyond the completed per-user LaunchAgent
-workflow.
+error, empty/no-session, no workflow memories, populated workflow memories, and
+selected workflow-memory detail/feedback states, iCloud remote-profile states,
+and imported app-local profile states for missing, malformed/stale, healthy,
+and unreachable/unhealthy profiles. Remaining gates are mDNS/Bonjour discovery,
+native iOS file-picker polish beyond the typed import boundary, and root/system
+service integration beyond the completed per-user LaunchAgent workflow.
 
 ## Resident server MVP
 
@@ -374,6 +422,7 @@ sudo, modify systemd/supervisor, or touch stable Robdex service tooling.
 scripts/agent-runtime-service.sh start
 scripts/agent-runtime-service.sh status
 scripts/agent-runtime-service.sh discover
+scripts/agent-runtime-service.sh write-icloud-profile
 scripts/agent-runtime-service.sh logs
 scripts/agent-runtime-service.sh restart
 scripts/agent-runtime-service.sh stop
@@ -492,9 +541,9 @@ updates package state. Validation does not load the owner's real launchd job;
 manual smoke can run these commands from the experiment workspace when the
 owner wants to enable autostart.
 
-Validate the user-scoped service wrapper and package/discovery contract with an
-isolated Postgres validation database and no live model, LM Studio, or
-embedding-provider calls:
+Validate the user-scoped service wrapper, iCloud remote profile writer, and
+package/discovery contract with an isolated Postgres validation database and no
+live model, LM Studio, or embedding-provider calls:
 
 ```sh
 scripts/validate-local-service.sh
@@ -503,7 +552,8 @@ scripts/validate-launchd-packaging.sh
 
 The validation starts the local service, verifies `status` and `/health`, checks
 startup log evidence, verifies `discover` output and persisted discovery file
-content, verifies duplicate-start refusal, exercises `logs`, restarts and
+content, verifies the redacted iCloud remote profile sentinel, verifies
+duplicate-start refusal, exercises `logs`, restarts and
 checks the new healthy process, stops the service, verifies stopped discovery,
 checks stale/unhealthy/missing-config diagnostics, verifies the process is gone,
 and drops the isolated validation database.
