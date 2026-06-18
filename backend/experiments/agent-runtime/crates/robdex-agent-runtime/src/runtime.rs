@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -190,9 +190,21 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
         json!({"input": message}),
     )
     .await?;
-    let _route = routing::decide_route(pool, session_id, Some(turn_id), &role_snapshot).await?;
+    let _route = match routing::decide_route(pool, session_id, Some(turn_id), &role_snapshot).await {
+        Ok(route) => route,
+        Err(error) => {
+            finalize_failed_started_turn(pool, session_id, turn_id, "routing", &error.to_string()).await?;
+            return Err(anyhow::anyhow!("routing failed after turn start: {error}"));
+        }
+    };
 
-    let plan = model.request_tool_call(&role_snapshot.instruction_text, &model_history, &runtime_messages, &execute_code_contract, &request_registry_contract, message).await?;
+    let plan = match model.request_tool_call(&role_snapshot.instruction_text, &model_history, &runtime_messages, &execute_code_contract, &request_registry_contract, message).await {
+        Ok(plan) => plan,
+        Err(error) => {
+            finalize_failed_started_turn(pool, session_id, turn_id, "model_dispatch", &error.to_string()).await?;
+            return Err(anyhow::anyhow!("model dispatch failed after turn start: {error}"));
+        }
+    };
     let request_evidence = model_request_evidence(&plan.request_shape, &runtime_command_context.evidence, &runtime_messages);
     let model_event_id = Uuid::new_v4();
     sqlx::query(
@@ -326,11 +338,16 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
 
     let result = match plan.tool_call.tool_name.as_str() {
         "execute_code" => {
-            let source = plan.tool_call.arguments.get("source").and_then(serde_json::Value::as_str).context("execute_code missing source")?;
-            let root = ExecutionRoot::new(&workdir).context("invalid execution workdir")?;
-            execute_code(pool, session_id, turn_id, tool_call_id, source, &root, &role_snapshot)
-                .await
-                .map(|packet| serde_json::to_value(packet).unwrap_or_else(|error| json!({"ok": false, "error": error.to_string()})))
+            match (
+                plan.tool_call.arguments.get("source").and_then(serde_json::Value::as_str),
+                ExecutionRoot::new(&workdir),
+            ) {
+                (Some(source), Ok(root)) => execute_code(pool, session_id, turn_id, tool_call_id, source, &root, &role_snapshot)
+                    .await
+                    .map(|packet| serde_json::to_value(packet).unwrap_or_else(|error| json!({"ok": false, "error": error.to_string()}))),
+                (None, _) => Err(anyhow::anyhow!("execute_code missing source")),
+                (_, Err(error)) => Err(anyhow::anyhow!("invalid execution workdir: {error}")),
+            }
         }
         "request_command_registry_change" => {
             let input: command_registry::NativeRegistryChangeRequest = serde_json::from_value(plan.tool_call.arguments.clone())?;
@@ -358,7 +375,7 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
         json!({"result": result_json.clone()}),
     )
     .await?;
-    let final_response = model
+    let final_response = match model
         .submit_tool_result(
             &role_snapshot.instruction_text,
             &model_history,
@@ -366,7 +383,14 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
             &plan.tool_call.call_identity,
             &result_json,
         )
-        .await?;
+        .await
+    {
+        Ok(final_response) => final_response,
+        Err(error) => {
+            finalize_failed_started_turn(pool, session_id, turn_id, "model_final_response", &error.to_string()).await?;
+            return Err(anyhow::anyhow!("model final response failed after tool execution: {error}"));
+        }
+    };
     let final_model_event_id = Uuid::new_v4();
     sqlx::query(
         r#"
@@ -428,6 +452,28 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
     Ok(turn_id)
 }
 
+async fn finalize_failed_started_turn(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Uuid,
+    boundary: &str,
+    error: &str,
+) -> Result<()> {
+    lifecycle::complete_turn(pool, turn_id, TerminalStatus::Failed, Utc::now()).await?;
+    db::append_event(
+        pool,
+        session_id,
+        Some(turn_id),
+        "turn",
+        Some(turn_id),
+        "turn.completed",
+        Some("failed"),
+        json!({"boundary": boundary, "error": error}),
+    )
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,5 +516,20 @@ mod tests {
         assert_eq!(evidence["runtimeInputMessages"][0]["metadata"]["source"], "runtime_command_context");
         assert_eq!(evidence["commandContext"]["id"], "cmdctx-test");
         assert_eq!(evidence["commandContext"]["catalogIncluded"], true);
+    }
+
+    #[test]
+    fn outbound_model_request_shape_uses_selected_session_model() {
+        let request_shape = model_tool_request_shape(
+            "role instructions",
+            &[],
+            &[],
+            "execute contract",
+            "registry contract",
+            "send path model proof",
+            "non-default-model-proof",
+        );
+        assert_eq!(request_shape["model"], "non-default-model-proof");
+        println!("selected_model_send_request_model={}", request_shape["model"]);
     }
 }

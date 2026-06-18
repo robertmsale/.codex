@@ -54,6 +54,10 @@ impl GuiBackendController {
         &self.controller_state
     }
 
+    pub fn controller_state_mut(&mut self) -> &mut GuiControllerState {
+        &mut self.controller_state
+    }
+
     pub fn sync_client(&self) -> Option<&RuntimeSyncClient> {
         self.sync_client.as_ref()
     }
@@ -144,7 +148,16 @@ impl GuiBackendController {
                 self.controller_state.select_workflow_memory(memory_id.clone());
                 Ok(GuiOperationOutcome::Accepted { entity_id: memory_id.clone() })
             }
+            GuiOperationRequest::UpdateRuntimeSettings { base_url, selected_project_id } => {
+                if base_url.trim().is_empty() {
+                    return Err(api_error("validation_failed", "runtime settings require a non-empty base URL", json!({"field":"baseUrl"})));
+                }
+                self.base_url = Some(base_url.trim().to_string());
+                self.controller_state.select_project(selected_project_id.clone());
+                Ok(GuiOperationOutcome::Accepted { entity_id: selected_project_id.clone() })
+            }
             GuiOperationRequest::CreateSession { .. }
+            | GuiOperationRequest::UpdateSessionSettings { .. }
             | GuiOperationRequest::SendMessage { .. }
             | GuiOperationRequest::TerminateProcess { .. }
             | GuiOperationRequest::InputProcess { .. }
@@ -260,6 +273,9 @@ impl GuiBackendController {
             GuiOperationRequest::CreateSession { .. } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: value.get("sessionId").and_then(Value::as_str).map(str::to_string),
             }),
+            GuiOperationRequest::UpdateSessionSettings { session_id, .. } => Ok(GuiOperationOutcome::Accepted {
+                entity_id: Some(session_id.clone()),
+            }),
             GuiOperationRequest::SendMessage { .. } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: {
                     let id = value.get("turnId").and_then(Value::as_str).map(str::to_string);
@@ -296,7 +312,8 @@ impl GuiBackendController {
             | GuiOperationRequest::Rehydrate { .. }
             | GuiOperationRequest::Disconnect
             | GuiOperationRequest::SelectSession { .. }
-            | GuiOperationRequest::SelectWorkflowMemory { .. } => unreachable!("local operations handled before server dispatch"),
+            | GuiOperationRequest::SelectWorkflowMemory { .. }
+            | GuiOperationRequest::UpdateRuntimeSettings { .. } => unreachable!("local operations handled before server dispatch"),
         }
     }
 
@@ -323,6 +340,7 @@ impl GuiBackendController {
     fn route_for_request(&self, request: &GuiOperationRequest) -> Result<String, ApiErrorPacket> {
         Ok(match request {
             GuiOperationRequest::CreateSession { .. } => "/sessions".to_string(),
+            GuiOperationRequest::UpdateSessionSettings { session_id, .. } => format!("/sessions/{session_id}/settings"),
             GuiOperationRequest::SendMessage { session_id, .. } => format!("/sessions/{session_id}/send"),
             GuiOperationRequest::TerminateProcess { session_id, handle } => format!("/sessions/{session_id}/processes/{handle}/terminate"),
             GuiOperationRequest::InputProcess { session_id, handle, .. } => format!("/sessions/{session_id}/processes/{handle}/input"),
@@ -382,7 +400,8 @@ impl GuiBackendController {
             | GuiOperationRequest::Rehydrate { .. }
             | GuiOperationRequest::Disconnect
             | GuiOperationRequest::SelectSession { .. }
-            | GuiOperationRequest::SelectWorkflowMemory { .. } => {
+            | GuiOperationRequest::SelectWorkflowMemory { .. }
+            | GuiOperationRequest::UpdateRuntimeSettings { .. } => {
                 return Err(api_error("bad_request", "local GUI operation has no server route", json!({"operation": format!("{:?}", request.name())})));
             }
         })
@@ -704,6 +723,7 @@ mod tests {
         let create = controller.dispatch(GuiOperationRequest::CreateSession {
             role: "runtime-allow".to_string(),
             project: None,
+            model: None,
             workdir: Some(".".to_string()),
             worktree_root: None,
             title: None,
@@ -755,6 +775,7 @@ mod tests {
         let missing = controller.dispatch(GuiOperationRequest::CreateSession {
             role: "runtime-allow".to_string(),
             project: None,
+            model: None,
             workdir: None,
             worktree_root: None,
             title: None,

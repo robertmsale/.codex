@@ -10,7 +10,7 @@ import 'package:rinf/rinf.dart';
 import 'package:robdex_design_system/robdex_design_system.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../agent_runtime/agent_runtime_control_tower_host.dart';
+import '../agent_runtime/agent_runtime_workbench_host.dart';
 import '../bindings/bindings.dart';
 import '../core/state/workbench_controller.dart';
 import '../ide_host_bridge/ide_host_bridge.dart' as ide_host_bridge;
@@ -62,7 +62,7 @@ class _RobdexHomeState extends State<RobdexHome> {
       ],
       children: const [
         RobdexWorkbench(),
-        AgentRuntimeControlTowerHost(),
+        AgentRuntimeWorkbenchHost(),
       ],
     );
   }
@@ -525,16 +525,13 @@ class RobdexWorkbench extends StatefulWidget {
   State<RobdexWorkbench> createState() => _RobdexWorkbenchState();
 }
 
-class _RobdexWorkbenchState extends State<RobdexWorkbench>
-    with SingleTickerProviderStateMixin {
+class _RobdexWorkbenchState extends State<RobdexWorkbench> {
   static const _hostPreferenceKey = 'bridge_host';
   static const _portPreferenceKey = 'bridge_port';
   static const _graphicsEnabledPreferenceKey = 'graphics_enabled';
 
   late final WorkbenchController _controller;
   late final AppLifecycleListener _listener;
-  late final AnimationController _spaceController;
-  late final Future<FragmentProgram?> _nebulaProgramFuture;
   late final Future<FragmentProgram?> _peripheralProgramFuture;
   late final DomMirrorController _domMirrorController;
   late final IntegratedTerminalController _terminalController;
@@ -551,11 +548,6 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   void initState() {
     super.initState();
     _controller = WorkbenchController();
-    _spaceController = AnimationController(
-      vsync: this,
-      duration: const Duration(days: 1),
-    )..repeat();
-    _nebulaProgramFuture = _loadNebulaProgram();
     _peripheralProgramFuture = _loadPeripheralProgram();
     _domMirrorController = DomMirrorController();
     _terminalController = IntegratedTerminalController();
@@ -606,7 +598,6 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
   void dispose() {
     _persistBridgeSettings();
     _listener.dispose();
-    _spaceController.dispose();
     _domMirrorController.dispose();
     _terminalController.dispose();
     _hookToastSubscription?.cancel();
@@ -660,17 +651,6 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
           _graphicsEnabled = graphicsEnabled;
         }
       });
-    }
-  }
-
-  Future<FragmentProgram?> _loadNebulaProgram() async {
-    if (kIsWeb) {
-      return null;
-    }
-    try {
-      return await FragmentProgram.fromAsset('shaders/connection_nebula.frag');
-    } catch (_) {
-      return null;
     }
   }
 
@@ -793,8 +773,6 @@ class _RobdexWorkbenchState extends State<RobdexWorkbench>
               ? _ConnectionStage.connecting
               : _ConnectionStage.idle;
           return _ConnectionScreen(
-            animation: _spaceController,
-            nebulaProgramFuture: _nebulaProgramFuture,
             peripheralProgramFuture: _peripheralProgramFuture,
             graphicsEnabled: _graphicsEnabled,
             stage: stage,
@@ -2614,8 +2592,6 @@ class _WebConnectionScreen extends StatelessWidget {
 
 class _ConnectionScreen extends StatefulWidget {
   const _ConnectionScreen({
-    required this.animation,
-    required this.nebulaProgramFuture,
     required this.peripheralProgramFuture,
     required this.graphicsEnabled,
     required this.stage,
@@ -2629,8 +2605,6 @@ class _ConnectionScreen extends StatefulWidget {
     required this.onGraphicsEnabledChanged,
   });
 
-  final AnimationController animation;
-  final Future<FragmentProgram?> nebulaProgramFuture;
   final Future<FragmentProgram?> peripheralProgramFuture;
   final bool graphicsEnabled;
   final _ConnectionStage stage;
@@ -2666,7 +2640,6 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final isIOS = defaultTargetPlatform == TargetPlatform.iOS;
     final effectsEnabled = widget.graphicsEnabled;
     final reduceMotion =
         MediaQuery.maybeOf(context)?.disableAnimations ??
@@ -2686,62 +2659,17 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          if (!effectsEnabled)
-            const DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Color(0xFF05090F),
-                    Color(0xFF081018),
-                    Color(0xFF0A111A),
-                  ],
-                ),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: effectsEnabled
+                    ? const [Color(0xFF05090F), Color(0xFF081018), Color(0xFF0D1622)]
+                    : const [Color(0xFF05090F), Color(0xFF081018), Color(0xFF0A111A)],
               ),
-            )
-          else if (isIOS)
-            RepaintBoundary(
-              child: CustomPaint(
-                painter: _StarfieldPainter(
-                  animation: widget.animation,
-                  warp: _isBusy ? 1 : 0,
-                  reduceMotion: reduceMotion,
-                ),
-              ),
-            )
-          else
-            Stack(
-              fit: StackFit.expand,
-              children: [
-                _PeripheralVisionLayer(
-                  programFuture: widget.peripheralProgramFuture,
-                  animation: widget.animation,
-                  warp: _isBusy ? 1 : 0,
-                  reduceMotion: reduceMotion,
-                  values: _debugValues,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      _NebulaShaderLayer(
-                        programFuture: widget.nebulaProgramFuture,
-                        animation: widget.animation,
-                        warp: _isBusy ? 1 : 0,
-                      ),
-                      RepaintBoundary(
-                        child: CustomPaint(
-                          painter: _StarfieldPainter(
-                            animation: widget.animation,
-                            warp: _isBusy ? 1 : 0,
-                            reduceMotion: reduceMotion,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
             ),
+          ),
           IgnorePointer(
             child: DecoratedBox(
               decoration: BoxDecoration(
@@ -2818,7 +2746,6 @@ class _ConnectionScreenState extends State<_ConnectionScreen> {
                           Row(
                             children: [
                               _CoreBadge(
-                                animation: widget.animation,
                                 isBusy: _isBusy,
                                 isError: _isError,
                                 reduceMotion: reduceMotion,
@@ -3388,13 +3315,11 @@ class _DebugSlider extends StatelessWidget {
 
 class _CoreBadge extends StatelessWidget {
   const _CoreBadge({
-    required this.animation,
     required this.isBusy,
     required this.isError,
     required this.reduceMotion,
   });
 
-  final AnimationController animation;
   final bool isBusy;
   final bool isError;
   final bool reduceMotion;
@@ -3406,18 +3331,13 @@ class _CoreBadge extends StatelessWidget {
         : isBusy
         ? Theme.of(context).colorScheme.primary
         : Theme.of(context).colorScheme.secondary;
+    const turns = 0.0;
 
     return SizedBox(
       width: 52,
       height: 52,
-      child: AnimatedBuilder(
-        animation: animation,
-        builder: (context, child) {
-          final turns = reduceMotion
-              ? 0.0
-              : (isBusy ? animation.value * 0.16 : animation.value * 0.05);
-          return DecoratedBox(
-            decoration: BoxDecoration(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
@@ -3433,96 +3353,26 @@ class _CoreBadge extends StatelessWidget {
               ),
               border: Border.all(color: color.withValues(alpha: 0.76)),
             ),
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Transform.rotate(
-                  angle: turns * math.pi * 2,
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(color: color.withValues(alpha: 0.5)),
-                    ),
-                  ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Transform.rotate(
+              angle: turns * math.pi * 2,
+              child: Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: color.withValues(alpha: 0.5)),
                 ),
-                Icon(
-                  isError ? Icons.priority_high_rounded : Icons.auto_awesome,
-                  size: 20,
-                  color: color,
-                ),
-              ],
+              ),
             ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _NebulaShaderLayer extends StatefulWidget {
-  const _NebulaShaderLayer({
-    required this.programFuture,
-    required this.animation,
-    required this.warp,
-  });
-
-  final Future<FragmentProgram?> programFuture;
-  final AnimationController animation;
-  final double warp;
-
-  @override
-  State<_NebulaShaderLayer> createState() => _NebulaShaderLayerState();
-}
-
-class _NebulaShaderLayerState extends State<_NebulaShaderLayer> {
-  FragmentShader? _shader;
-
-  @override
-  void initState() {
-    super.initState();
-    _resolveProgram(widget.programFuture);
-  }
-
-  @override
-  void didUpdateWidget(covariant _NebulaShaderLayer oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.programFuture != widget.programFuture) {
-      _shader?.dispose();
-      _shader = null;
-      _resolveProgram(widget.programFuture);
-    }
-  }
-
-  Future<void> _resolveProgram(Future<FragmentProgram?> future) async {
-    final program = await future;
-    if (!mounted || program == null) {
-      return;
-    }
-    setState(() {
-      _shader = program.fragmentShader();
-    });
-  }
-
-  @override
-  void dispose() {
-    _shader?.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final shader = _shader;
-    if (shader == null) {
-      return const SizedBox.expand();
-    }
-    return RepaintBoundary(
-      child: CustomPaint(
-        painter: _NebulaShaderPainter(
-          animation: widget.animation,
-          shader: shader,
-          warp: widget.warp,
+            Icon(
+              isError ? Icons.priority_high_rounded : Icons.auto_awesome,
+              size: 20,
+              color: color,
+            ),
+          ],
         ),
       ),
     );
@@ -3627,195 +3477,6 @@ class _PeripheralVisionLayerState extends State<_PeripheralVisionLayer> {
         );
       },
     );
-  }
-}
-
-class _NebulaShaderPainter extends CustomPainter {
-  const _NebulaShaderPainter({
-    required this.animation,
-    required this.shader,
-    required this.warp,
-  }) : super(repaint: animation);
-
-  final AnimationController animation;
-  final FragmentShader shader;
-  final double warp;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final elapsedSeconds =
-        (animation.lastElapsedDuration?.inMilliseconds ?? 0) / 1000.0;
-    shader.setFloat(0, size.width);
-    shader.setFloat(1, size.height);
-    shader.setFloat(2, elapsedSeconds.toDouble());
-    shader.setFloat(3, warp);
-    canvas.drawRect(Offset.zero & size, Paint()..shader = shader);
-  }
-
-  @override
-  bool shouldRepaint(covariant _NebulaShaderPainter oldDelegate) {
-    return oldDelegate.shader != shader ||
-        oldDelegate.warp != warp ||
-        oldDelegate.animation != animation;
-  }
-}
-
-class _StarfieldPainter extends CustomPainter {
-  const _StarfieldPainter({
-    required this.animation,
-    required this.warp,
-    required this.reduceMotion,
-  }) : super(repaint: animation);
-
-  final AnimationController animation;
-  final double warp;
-  final bool reduceMotion;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final elapsedSeconds = reduceMotion
-        ? 0.0
-        : (animation.lastElapsedDuration?.inMilliseconds ?? 0) / 1000.0;
-    final rect = Offset.zero & size;
-    final background = Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: const [Color(0x1804070B), Color(0x2208111B), Color(0x1403060A)],
-      ).createShader(rect);
-    canvas.drawRect(rect, background);
-
-    final center = Offset(size.width / 2, size.height * 0.45);
-    final glowPaint = Paint()
-      ..shader =
-          RadialGradient(
-            colors: [
-              const Color(0xFF305C9B).withValues(alpha: 0.14 + (0.05 * warp)),
-              const Color(0xFF0A1320).withValues(alpha: 0.04),
-              const Color(0xFF000000).withValues(alpha: 0),
-            ],
-          ).createShader(
-            Rect.fromCircle(
-              center: center,
-              radius: math.max(size.width, size.height) * 0.52,
-            ),
-          );
-    canvas.drawCircle(
-      center,
-      math.max(size.width, size.height) * 0.52,
-      glowPaint,
-    );
-
-    _paintLayer(
-      canvas,
-      size,
-      elapsedSeconds: elapsedSeconds,
-      count: 70,
-      cycleSeconds: 8.5 - (2.0 * warp),
-      radiusScale: 0.55,
-      color: const Color(0x55FFFFFF),
-      trailScale: 10 + (22 * warp),
-    );
-    _paintLayer(
-      canvas,
-      size,
-      elapsedSeconds: elapsedSeconds,
-      count: 44,
-      cycleSeconds: 6.5 - (1.6 * warp),
-      radiusScale: 0.82,
-      color: const Color(0x88A7D8FF),
-      trailScale: 18 + (42 * warp),
-    );
-    _paintLayer(
-      canvas,
-      size,
-      elapsedSeconds: elapsedSeconds,
-      count: 22,
-      cycleSeconds: 5.2 - (1.2 * warp),
-      radiusScale: 1.1,
-      color: const Color(0xCCFFFFFF),
-      trailScale: 32 + (66 * warp),
-    );
-  }
-
-  void _paintLayer(
-    Canvas canvas,
-    Size size, {
-    required double elapsedSeconds,
-    required int count,
-    required double cycleSeconds,
-    required double radiusScale,
-    required Color color,
-    required double trailScale,
-  }) {
-    final center = Offset(size.width / 2, size.height * 0.45);
-    final maxRadius =
-        math.sqrt(size.width * size.width + size.height * size.height) *
-        radiusScale;
-    final paint = Paint()
-      ..strokeCap = StrokeCap.round
-      ..color = color;
-    final glowPaint = Paint()..blendMode = BlendMode.plus;
-    final corePaint = Paint()..blendMode = BlendMode.plus;
-
-    for (var i = 0; i < count; i++) {
-      final seed = i + (radiusScale * 1000).round();
-      final angle = _hash(seed * 37) * math.pi * 2;
-      final spread = 0.58 + (_hash(seed * 17) * 0.72);
-      final phase = _hash(seed * 53);
-      final lifeProgress = (phase + (elapsedSeconds / cycleSeconds)) % 1.0;
-      final eased = math.pow(lifeProgress, 2.35).toDouble();
-      final radius = eased * maxRadius;
-      final vector = Offset(math.cos(angle) * spread, math.sin(angle));
-      final normalized = vector / vector.distance;
-      final point = center + (normalized * radius);
-
-      if (!(-80 <= point.dx &&
-          point.dx <= size.width + 80 &&
-          -80 <= point.dy &&
-          point.dy <= size.height + 80)) {
-        continue;
-      }
-
-      final tail = normalized * (trailScale * lifeProgress);
-      final brightness = 0.2 + (lifeProgress * 0.8);
-      paint
-        ..strokeWidth = 0.6 + (lifeProgress * 2.1)
-        ..color = color.withValues(alpha: 0.1 + (lifeProgress * 0.82));
-      canvas.drawLine(point - tail, point, paint);
-
-      final glowRadius = (0.9 + (lifeProgress * 3.4)) * radiusScale;
-      glowPaint.shader = RadialGradient(
-        colors: [
-          color.withValues(alpha: 0.34 * brightness),
-          color.withValues(alpha: 0.12 * brightness),
-          color.withValues(alpha: 0),
-        ],
-        stops: const [0.0, 0.42, 1.0],
-      ).createShader(Rect.fromCircle(center: point, radius: glowRadius * 2.6));
-      canvas.drawCircle(point, glowRadius * 2.6, glowPaint);
-
-      corePaint.color = Colors.white.withValues(
-        alpha: 0.42 + (lifeProgress * 0.56),
-      );
-      canvas.drawCircle(
-        point,
-        (0.3 + (lifeProgress * 1.15)) * radiusScale,
-        corePaint,
-      );
-    }
-  }
-
-  double _hash(int value) {
-    final raw = math.sin(value * 12.9898) * 43758.5453;
-    return raw - raw.floorToDouble();
-  }
-
-  @override
-  bool shouldRepaint(covariant _StarfieldPainter oldDelegate) {
-    return oldDelegate.warp != warp ||
-        oldDelegate.reduceMotion != reduceMotion ||
-        oldDelegate.animation != animation;
   }
 }
 

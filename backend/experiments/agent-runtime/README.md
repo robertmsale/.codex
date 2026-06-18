@@ -48,8 +48,8 @@ safe, preserve timeline ordering, and set explicit `resyncRequired` state when
 they detect a gap or incompatible stream condition.
 
 The projection includes server status, session list items, optional selected
-session detail, product-shaped chat rows, separate history/event rows, pending approvals, role summaries, command
-registry summaries, workflow memory summaries, and a top-level watermark. Selected-session chat is not populated from raw runtime event names; audit events remain available through History/Diagnostics surfaces.
+session detail, typed selected-session chat entries, separate history/event rows, pending approvals, role summaries, command
+registry summaries, workflow memory summaries, and a top-level watermark. Selected-session chat is backed by turns.input_text, model_events final_response payloads, and tool/script/process/output-artifact records; audit events remain available through History/Diagnostics surfaces.
 Deltas cover session upsert/archive/close, selected-session replacement or
 patch, timeline append, turn/tool/script/process status changes, approval
 upsert/removal, role upsert/archive, command registry upsert/disable, workflow
@@ -183,12 +183,15 @@ Resolved audit mismatches:
 
 Role Admin GUI operations are implemented: validation/options/detail/export direct results plus create/update/activate/archive/unarchive wait-for-delta mutations. Dart renders Rust-shaped `roleAdmin` view-model fields and sends typed role intents only.
 
-The mounted Agent Runtime GUI now uses the shared conversation-shell structure:
-left project/session rail, center shared `ChatTimeline`, shared
-`ComposerPanel`, and right-side operations/detail content. The old dashboard is no longer the primary connected workflow; diagnostics,
-Role Admin, and Workflow Memory affordances live in the shared shell detail surface.
+The mounted Agent Runtime GUI now uses the canonical Robdex Workbench structure:
+brushed-metal left project/session rail, center shared `ChatTimeline`, shared
+`ComposerPanel`, and toolbar-opened modal or sheet surfaces for operations. The
+connected layout must not mount a permanent operations pane. Diagnostics,
+History, Statistics, Settings, Process Manager, Role Admin, Workflow Memory,
+Approvals, Command Registry, and Compaction live behind typed toolbar
+affordances.
 
-Workflow Memory inspection is implemented inside that operations detail surface.
+Workflow Memory inspection is implemented inside that modal operations surface.
 It is an inspector plus feedback surface for
 execute_code/Starlark workflow memories only: memory rows, selected detail,
 read-only source Starlark, recent help/feedback events, and attempted/helpful/
@@ -200,7 +203,7 @@ rewrite, delete, hide, promote, recompute embeddings, or curate memories.
 Remaining scoped-out GUI operations:
 
 - Workflow-memory editing/curation remains out of scope; the implemented
-  shell detail surface is inspection plus feedback only.
+  modal surface is inspection plus feedback only.
 
 
 #### Rust/Rinf GUI backend controller boundary
@@ -244,7 +247,7 @@ the shared `RuntimeProjection` reducer. The
 controller does not create a second GUI state path: persisted runtime state
 remains `RuntimeProjection` plus `RuntimeDelta`; `GuiControllerState` remains
 local-only coordination state. Subsequent slices mounted the Flutter-facing
-control tower as a thin renderer of this Rust-owned state; Flutter does not own
+Workbench shell as a thin renderer of this Rust-owned state; Flutter does not own
 runtime decisions.
 
 Proof coverage includes deterministic controller tests for hydrate/connect,
@@ -257,7 +260,7 @@ convergence through the controller.
 The experiment-local Rinf-shaped transport proof lives in
 `robdex_agent_runtime::rinf_transport`. The owner selected the direct-dependency
 strategy, and the first stable hub Rust binding now forwards generated Rinf
-signals to that transport path. Later slices added the control-tower Flutter
+signals to that transport path. Later slices added the workbench-shell Flutter
 shell, design-system scenarios, user-scoped service packaging, and per-user
 LaunchAgent install/load/unload/status on top of the same transport. Root/system
 LaunchDaemons, sudo service installation, mDNS/Bonjour discovery, iOS profile
@@ -291,7 +294,7 @@ Rust-to-Dart signals now use generated typed output variants:
 `AgentRuntimeOutputSignal { requestId, output }`. Output variants cover
 projection snapshots, controller-state updates, operation results, stream
 outcomes, typed API errors, and the Rust-shaped
-`AgentRuntimeControlTowerViewModel` consumed by the Flutter shell.
+`AgentRuntimeWorkbenchViewModel` consumed by the Flutter shell.
 
 The stable hub creates one long-lived `GuiTransportHandle`, and the transport
 runner owns exactly one `GuiBackendController` inside a single async action
@@ -308,7 +311,7 @@ macOS, or `${XDG_STATE_HOME:-~/.local/state}/robdex-agent-runtime/service/discov
 on non-macOS hosts. This is the same packet produced by
 `scripts/agent-runtime-service.sh discover` / `json-status`. Rust classifies
 local service state and emits constructor-ready discovery fields on
-`AgentRuntimeControlTowerViewModel`. Dart may render the
+`AgentRuntimeWorkbenchViewModel`. Dart may render the
 discovered target and send refresh/connect-discovered intents, but Dart must not
 parse the discovery file, decide health semantics, construct WebSocket URLs, or
 derive service state from pid/path fields. Running/healthy discovery enables a
@@ -362,7 +365,7 @@ ids, and latest render packets; Rust remains responsible for service
 connection, WebSocket URLs, watermarks, reducer application, selected-session
 semantics, operation success, and typed errors.
 
-The transport now emits a Rust-owned `AgentRuntimeControlTowerViewModel` output
+The transport now emits a Rust-owned `AgentRuntimeWorkbenchViewModel` output
 for the shared shell and operations detail. The view model is constructor-ready:
 connection state, base URL, status and watermark labels, session rows, product chat rows, separate history rows, action rows, runtime facts, recent output log, pending-request slot,
 and typed error display text are shaped in Rust from `RuntimeProjection`,
@@ -372,10 +375,10 @@ projection or controller JSON to derive rows, labels, facts, or enablement
 text.
 
 The richer shared-shell UX slice extends that Rust-owned view model with
-operations-first presentation fields: status badges, selected-session label,
+Workbench chat-shell presentation fields: status badges, selected-session label,
 section titles, empty-state copy, session group labels, row tones, action state
 text, and action/timeline/session severity tones. The design-system shell renders those fields directly to provide a clearer status strip, denser
-session rail, selected-session activity, readable attention list, runtime
+session rail, selected-session chat transcript, readable attention list, runtime
 detail panel, and explicit empty/error/loading states. The attention list contains
 only real attention items present in the projection: pending/resumable
 approvals and typed pending/actionable command-registry request summaries.
@@ -792,8 +795,8 @@ The intended client sequence is:
    shutdown detection without mutating or corrupting the local projection.
 
 Selected-session state uses the same path with `selectedSessionId` on both the
-snapshot and WebSocket URLs. Timeline deltas for the selected session append to
-the local timeline while semantic deltas update session/admin summaries through
+snapshot and WebSocket URLs. Runtime audit deltas append to History/Diagnostics;
+selected-session chat remains a typed transcript while semantic deltas update session/admin summaries through
 the projection reducer. GUI surfaces render from the reduced
 `RuntimeProjection` and request a fresh snapshot whenever resync state is set.
 
@@ -885,12 +888,7 @@ information. Compaction never deletes or rewrites audit rows: original turns,
 model events, tool calls, script runs, output artifacts, approvals, managed
 processes, and event-stream entries remain queryable.
 
-Manual compaction is available through the CLI:
-
-```bash
-cargo run --quiet --bin robdex-agent-runtime -- compact --session <session-id>
-cargo run --quiet --bin robdex-agent-runtime -- compact --session <session-id> --through-turn <turn-id>
-```
+Compaction runs through runtime-owned send preflight and preserves the same PostgreSQL audit boundary. The connected Workbench surface displays checkpoint history in the Compaction modal; it does not expose a primary manual compaction button until the typed GUI operation is enabled for completed-turn sessions.
 
 Model reconstruction uses the latest completed checkpoint as a semantic root
 and then appends completed turns after the checkpoint boundary. Forked sessions
@@ -1150,7 +1148,7 @@ Manifest decision values are `allow`, `deny`, `ownerApproval`, and `orchestrator
 
 ## Role Admin GUI/editor contract
 
-The experimental control tower now includes a structured Role Admin editor. PostgreSQL remains the canonical role source of truth: GUI-created and GUI-updated roles are converted by Rust into canonical role manifests with inline `instructionText`, validated through the same role manifest/routing/command-policy rules as CLI imports, and persisted as immutable rows in `role_versions`. The GUI editor never creates prompt files and never treats seed JSON files as runtime truth.
+The experimental Workbench shell now includes a structured Role Admin editor. PostgreSQL remains the canonical role source of truth: GUI-created and GUI-updated roles are converted by Rust into canonical role manifests with inline `instructionText`, validated through the same role manifest/routing/command-policy rules as CLI imports, and persisted as immutable rows in `role_versions`. The GUI editor never creates prompt files and never treats seed JSON files as runtime truth.
 
 Server routes added for the editor:
 
@@ -1160,9 +1158,9 @@ Server routes added for the editor:
 - `POST /roles/{roleId}/versions` appends a new immutable version from a draft and fails if the role id is absent or mismatched.
 - Existing role inspection/export/version/activate/archive/unarchive routes remain the mutation and rollback surface.
 
-The Rust GUI operation vocabulary includes direct-result role operations for metadata, validation, inspection, version listing, version detail, and export. Create, update, activate, archive, and unarchive operations are wait-for-delta mutations; role changes are visible through `RuntimeProjection.roles` and role semantic deltas. The Rust-owned `AgentRuntimeControlTowerViewModel` exposes a `roleAdmin` section with role rows, selected role detail, version rows, draft summary, validation errors, and role action states. Dart renders those constructor-ready fields and may hold only ephemeral editor/controller text state.
+The Rust GUI operation vocabulary includes direct-result role operations for metadata, validation, inspection, version listing, version detail, and export. Create, update, activate, archive, and unarchive operations are wait-for-delta mutations; role changes are visible through `RuntimeProjection.roles` and role semantic deltas. The Rust-owned `AgentRuntimeWorkbenchViewModel` exposes a `roleAdmin` section with role rows, selected role detail, version rows, draft summary, validation errors, and role action states. Dart renders those constructor-ready fields and may hold only ephemeral editor/controller text state.
 
-The design-system control-tower panel provides editable controls for role identity, version, display name, model defaults, capabilities, policy decisions, routing/default recipient/allowed recipients/reserved actions, visibility, lifecycle authority, validation feedback, and action buttons. It uses `code_forge` as the actual Markdown instruction editor; edited CodeForge content is included as inline `instructionText` in validate/create/update draft submissions. Static Design Lab/control-tower mock states include empty/disconnected role admin, selected role with versions, editable draft summary, validation errors, and action-ready states.
+The design-system workbench-shell panel provides editable controls for role identity, version, display name, model defaults, capabilities, policy decisions, routing/default recipient/allowed recipients/reserved actions, visibility, lifecycle authority, validation feedback, and action buttons. It uses `code_forge` as the actual Markdown instruction editor; edited CodeForge content is included as inline `instructionText` in validate/create/update draft submissions. Static Design Lab/workbench-shell mock states include empty/disconnected role admin, selected role with versions, editable draft summary, validation errors, and action-ready states.
 
 ## Approval and routing foundation
 
@@ -1266,9 +1264,9 @@ The current experimental CLI executes each `send` as a short-lived runtime proce
 
 ## Selected chat and history boundary
 
-The connected Agent Runtime shell treats the center panel as product chat, not as an event-stream viewer. Rust shapes selected-session chat rows from user turn input, assistant final responses, and compact tool/result summaries. Raw runtime events such as `role.imported`, `turn.started`, `policy.decision`, `model.final_response`, approval events, command-registry events, workflow-memory events, and compaction events remain audit history and must render in History or Diagnostics detail surfaces.
+The connected Agent Runtime shell treats the center panel as product chat, not as an event-stream viewer. Rust shapes selected-session chat entries from user turn input, assistant final responses, and canonical tool rows. Raw runtime events such as `role.imported`, `turn.started`, `policy.decision`, `model.final_response`, approval events, command-registry events, workflow-memory events, and compaction events remain audit history and must render in History or Diagnostics detail surfaces.
 
-The Rust/Rinf view model keeps those concepts separate: selected chat rows feed the shared `ChatTimeline`; history and operations DTO fields feed the right-side detail surfaces. Dart renders those constructor-ready fields and must not translate raw runtime event names into chat messages.
+The Rust/Rinf view model keeps those concepts separate: typed `AgentRuntimeChatEntry` values feed the shared `ChatTimeline`; history and operations DTO fields feed modal or sheet surfaces. Dart maps each chat entry to `ChatEntry` one-to-one and must not translate raw runtime event names into chat messages.
 
 ## Robdex streaming transport notes
 

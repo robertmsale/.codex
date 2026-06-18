@@ -46,11 +46,15 @@ void main() {
       AgentRuntimeTimelineItem(id: 'chat-1', title: 'Owner', subtitle: 'hello runtime', status: 'sent', tone: 'user'),
       AgentRuntimeTimelineItem(id: 'chat-2', title: 'Assistant', subtitle: 'hello owner', status: 'completed', tone: 'success'),
     ],
+    selectedConversation: const [
+      ChatEntry(id: 'chat-user', author: 'User', displayLabel: 'User', timestamp: null, body: 'hello runtime'),
+      ChatEntry(id: 'chat-assistant', author: 'Assistant', displayLabel: 'Assistant', timestamp: null, body: 'hello user'),
+    ],
   );
 
   final shell = agentRuntimeConversationShellData(data);
 
-  expect(shell.entries.map((entry) => entry.displayLabel), containsAll(<String>['Owner', 'Assistant']));
+  expect(shell.entries.map((entry) => entry.displayLabel), containsAll(<String>['User', 'Assistant']));
   expect(shell.entries.map((entry) => entry.displayLabel), isNot(contains('role.imported')));
   expect(shell.entries.map((entry) => entry.displayLabel), isNot(contains('turn.started')));
   expect(shell.entries.map((entry) => entry.body), isNot(contains('raw role event')));
@@ -151,7 +155,7 @@ void main() {
       await expectVisibleText(title);
     }
     expect(mockAgentRuntimeConnected.operationSurfaces.map((surface) => surface.title), contains('History'));
-    expect(mockAgentRuntimeConnected.operationSurfaces.expand((surface) => surface.rows).map((row) => row.label), contains('role.imported'));
+    expect(mockAgentRuntimeConnected.operationSurfaces.expand((surface) => surface.rows).map((row) => row.label), contains('Role imported'));
   });
 
 }

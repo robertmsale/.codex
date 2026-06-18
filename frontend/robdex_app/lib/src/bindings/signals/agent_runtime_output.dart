@@ -15,7 +15,7 @@ abstract class AgentRuntimeOutput {
       case 2: return AgentRuntimeOutputOperationResult.load(deserializer);
       case 3: return AgentRuntimeOutputStreamOutcome.load(deserializer);
       case 4: return AgentRuntimeOutputError.load(deserializer);
-      case 5: return AgentRuntimeOutputControlTowerView.load(deserializer);
+      case 5: return AgentRuntimeOutputWorkbenchView.load(deserializer);
       default: throw Exception('Unknown variant index for AgentRuntimeOutput: ' + index.toString());
     }
   }
@@ -362,26 +362,26 @@ class AgentRuntimeOutputError extends AgentRuntimeOutput {
 }
 
 @immutable
-class AgentRuntimeOutputControlTowerView extends AgentRuntimeOutput {
-  const AgentRuntimeOutputControlTowerView({
+class AgentRuntimeOutputWorkbenchView extends AgentRuntimeOutput {
+  const AgentRuntimeOutputWorkbenchView({
     required this.viewModel,
   }) : super();
 
-  static AgentRuntimeOutputControlTowerView load(BinaryDeserializer deserializer) {
+  static AgentRuntimeOutputWorkbenchView load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
-    final instance = AgentRuntimeOutputControlTowerView(
-      viewModel: AgentRuntimeControlTowerViewModel.deserialize(deserializer),
+    final instance = AgentRuntimeOutputWorkbenchView(
+      viewModel: AgentRuntimeWorkbenchViewModel.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
   }
 
-  final AgentRuntimeControlTowerViewModel viewModel;
+  final AgentRuntimeWorkbenchViewModel viewModel;
 
-  AgentRuntimeOutputControlTowerView copyWith({
-    AgentRuntimeControlTowerViewModel? viewModel,
+  AgentRuntimeOutputWorkbenchView copyWith({
+    AgentRuntimeWorkbenchViewModel? viewModel,
   }) {
-    return AgentRuntimeOutputControlTowerView(
+    return AgentRuntimeOutputWorkbenchView(
       viewModel: viewModel ?? this.viewModel,
     );
   }
@@ -398,7 +398,7 @@ class AgentRuntimeOutputControlTowerView extends AgentRuntimeOutput {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
 
-    return other is AgentRuntimeOutputControlTowerView
+    return other is AgentRuntimeOutputWorkbenchView
       && viewModel == other.viewModel;
   }
 
@@ -416,6 +416,6 @@ class AgentRuntimeOutputControlTowerView extends AgentRuntimeOutput {
       return true;
     }());
 
-    return fullString ?? 'AgentRuntimeOutputControlTowerView';
+    return fullString ?? 'AgentRuntimeOutputWorkbenchView';
   }
 }

@@ -1,5 +1,7 @@
-class AgentRuntimeControlTowerData {
-  const AgentRuntimeControlTowerData({
+import 'workbench_models.dart';
+
+class AgentRuntimeWorkbenchData {
+  const AgentRuntimeWorkbenchData({
     required this.connectionState,
     required this.discovery,
     required this.remoteDiscovery,
@@ -26,6 +28,7 @@ class AgentRuntimeControlTowerData {
     required this.actionsEmptyText,
     required this.sessions,
     required this.timeline,
+    this.selectedConversation = const [],
     required this.actions,
     required this.roleAdmin,
     required this.workflowMemory,
@@ -62,6 +65,7 @@ class AgentRuntimeControlTowerData {
   final String actionsEmptyText;
   final List<AgentRuntimeSessionItem> sessions;
   final List<AgentRuntimeTimelineItem> timeline;
+  final List<ChatEntry> selectedConversation;
   final List<AgentRuntimeActionItem> actions;
   final AgentRuntimeRoleAdminData roleAdmin;
   final AgentRuntimeWorkflowMemoryData workflowMemory;
@@ -71,8 +75,8 @@ class AgentRuntimeControlTowerData {
   final int pendingRequestCount;
   final String? errorMessage;
 
-  factory AgentRuntimeControlTowerData.fromJson(Map<String, dynamic> json) {
-    return AgentRuntimeControlTowerData(
+  factory AgentRuntimeWorkbenchData.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeWorkbenchData(
       connectionState: '${json['connectionState'] ?? 'disconnected'}',
       discovery: AgentRuntimeDiscoveryInfo.fromJson(
         Map<String, dynamic>.from((json['discovery'] as Map?) ?? const {}),
@@ -105,6 +109,7 @@ class AgentRuntimeControlTowerData {
       actionsEmptyText: '${json['actionsEmptyText'] ?? 'No action items need attention.'}',
       sessions: _objects(json['sessions']).map(AgentRuntimeSessionItem.fromJson).toList(growable: false),
       timeline: _objects(json['timeline']).map(AgentRuntimeTimelineItem.fromJson).toList(growable: false),
+      selectedConversation: _objects(json['selectedConversation']).map((entry) => ChatEntry.fromJson(entry)).toList(growable: false),
       actions: _objects(json['actions']).map(AgentRuntimeActionItem.fromJson).toList(growable: false),
       roleAdmin: AgentRuntimeRoleAdminData.fromJson(
         Map<String, dynamic>.from((json['roleAdmin'] as Map?) ?? const {}),
@@ -120,7 +125,7 @@ class AgentRuntimeControlTowerData {
     );
   }
 
-  AgentRuntimeControlTowerData copyWith({
+  AgentRuntimeWorkbenchData copyWith({
     String? connectionState,
     AgentRuntimeDiscoveryInfo? discovery,
     AgentRuntimeDiscoveryInfo? remoteDiscovery,
@@ -147,6 +152,7 @@ class AgentRuntimeControlTowerData {
     String? actionsEmptyText,
     List<AgentRuntimeSessionItem>? sessions,
     List<AgentRuntimeTimelineItem>? timeline,
+    List<ChatEntry>? selectedConversation,
     List<AgentRuntimeActionItem>? actions,
     AgentRuntimeRoleAdminData? roleAdmin,
     AgentRuntimeWorkflowMemoryData? workflowMemory,
@@ -156,7 +162,7 @@ class AgentRuntimeControlTowerData {
     int? pendingRequestCount,
     String? errorMessage,
   }) {
-    return AgentRuntimeControlTowerData(
+    return AgentRuntimeWorkbenchData(
       connectionState: connectionState ?? this.connectionState,
       discovery: discovery ?? this.discovery,
       remoteDiscovery: remoteDiscovery ?? this.remoteDiscovery,
@@ -183,6 +189,7 @@ class AgentRuntimeControlTowerData {
       actionsEmptyText: actionsEmptyText ?? this.actionsEmptyText,
       sessions: sessions ?? this.sessions,
       timeline: timeline ?? this.timeline,
+      selectedConversation: selectedConversation ?? this.selectedConversation,
       actions: actions ?? this.actions,
       roleAdmin: roleAdmin ?? this.roleAdmin,
       workflowMemory: workflowMemory ?? this.workflowMemory,

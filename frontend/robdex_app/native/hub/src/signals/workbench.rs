@@ -314,7 +314,7 @@ pub struct WorkbenchDiagnosticsSignal {
     pub websocket_payload_bytes_json: String,
     pub native_signal_count: u64,
     pub serialized_payload_bytes: u64,
-    pub dart_full_snapshot_decode_micros: u64,
+    pub full_snapshot_decode_count: u64,
     pub dart_selected_chat_delta_apply_count: u64,
     pub coalesced_stream_update_count: u64,
     pub dropped_intermediate_stream_update_count: u64,

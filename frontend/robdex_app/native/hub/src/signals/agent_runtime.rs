@@ -31,7 +31,9 @@ pub enum AgentRuntimeRequest {
 pub enum AgentRuntimeGuiOperation {
     SelectSession { session_id: String },
     SelectWorkflowMemory { memory_id: String },
-    CreateSession { role: String, project: String, workdir: String, worktree_root: String, title: String, name: String },
+    CreateSession { role: String, project: String, model: String, workdir: String, worktree_root: String, title: String, name: String },
+    UpdateRuntimeSettings { base_url: String, selected_project_id: String },
+    UpdateSessionSettings { session_id: String, project: String, role: String, model: String, workdir: String, worktree_root: String, title: String, name: String, tracked: bool },
     SendMessage { session_id: String, message: String },
     TerminateProcess { session_id: String, handle: String },
     InputProcess { session_id: String, handle: String, text: String },
@@ -197,7 +199,7 @@ pub enum AgentRuntimeOutput {
     OperationResult { result: AgentRuntimeOperationResult },
     StreamOutcome { outcome: AgentRuntimeStreamOutcome, projection: AgentRuntimeProjectionSnapshot, has_projection: bool, controller_state: AgentRuntimeControllerState },
     Error { error: AgentRuntimeApiError },
-    ControlTowerView { view_model: AgentRuntimeControlTowerViewModel },
+    WorkbenchView { view_model: AgentRuntimeWorkbenchViewModel },
 }
 
 #[derive(Clone, Debug, Default, Serialize, SignalPiece)]
@@ -250,7 +252,7 @@ pub struct AgentRuntimeApiError {
 
 #[derive(Clone, Debug, Serialize, SignalPiece)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRuntimeControlTowerViewModel {
+pub struct AgentRuntimeWorkbenchViewModel {
     pub discovery: AgentRuntimeDiscoveryView,
     pub remote_discovery: AgentRuntimeDiscoveryView,
     pub imported_remote_discovery: AgentRuntimeDiscoveryView,
@@ -295,7 +297,7 @@ pub struct AgentRuntimeConversationShellViewModel {
     pub sessions: Vec<AgentRuntimeSessionRow>,
     pub selected_session_id: String,
     pub has_selected_session_id: bool,
-    pub selected_conversation: Vec<AgentRuntimeTimelineRow>,
+    pub selected_conversation: Vec<AgentRuntimeChatEntry>,
     pub dynamic_roles: Vec<AgentRuntimeShellRolePresentation>,
     pub actions: Vec<AgentRuntimeActionRow>,
     pub settings: Vec<AgentRuntimeFact>,
@@ -357,6 +359,26 @@ pub struct AgentRuntimeSessionRow { pub id: String, pub title: String, pub statu
 #[derive(Clone, Debug, Serialize, SignalPiece)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeTimelineRow { pub id: String, pub title: String, pub subtitle: String, pub status: String, pub tone: String }
+#[derive(Clone, Debug, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeChatEntry {
+    pub id: String,
+    pub author: String,
+    pub display_label: String,
+    pub timestamp: String,
+    pub has_timestamp: bool,
+    pub body: String,
+    pub subtitle: String,
+    pub kind: String,
+    pub status: String,
+    pub process_id: String,
+    pub has_process_id: bool,
+    pub command: String,
+    pub output: String,
+    pub delivery_state: String,
+    pub is_streaming: bool,
+    pub is_tool: bool,
+}
 #[derive(Clone, Debug, Serialize, SignalPiece)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeActionRow { pub id: String, pub title: String, pub subtitle: String, pub kind: String, pub state_text: String, pub tone: String }

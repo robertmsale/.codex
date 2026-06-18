@@ -1,23 +1,25 @@
 # Agent Runtime Shared Shell GUI Plan
 
-## Generic shell conversion record
+## Workbench-compatible shell contract
 
-The connected Agent Runtime product surface now uses the shared conversation
-shell pattern instead of a dashboard-first operations screen. The shell presents a
-left project/session rail, the shared `ChatTimeline` in the center, the shared
-`ComposerPanel` for selected-session messages, and an operations/detail area for
-Role Admin, Workflow Memory, attention items, and diagnostics. The login/setup
-screen remains the disconnected entry point. Runtime projection, discovery,
-role, workflow-memory, and operation decisions remain Rust-owned; Dart assembles
-the shared shell, sends typed Rinf intents, and keeps only widget-local draft,
-selection, and connection state.
+The connected Agent Runtime product surface now uses the canonical Robdex
+Workbench pattern as a chat-centered product shell. The shell
+presents a brushed-metal left project/session rail, the shared `ChatTimeline` in
+the center, the shared `ComposerPanel` for selected-session messages, and
+toolbar-opened modal or sheet surfaces for Session, History, Diagnostics,
+Compaction, Statistics, Process Manager, Settings, Role Admin, Workflow Memory,
+Approvals, and Command Registry. The connected layout must not mount a permanent
+operations operations pane. The login/setup screen remains the disconnected entry
+point. Runtime projection, discovery, project, role, model, workflow-memory, and
+operation decisions remain Rust-owned; Dart assembles the shared shell, sends
+typed Rinf intents, and keeps only widget-local draft, selection, and connection
+state.
 
-Operations diagnostics are retained as detail content rather than
-the primary connected app shell. New visual work must extend the shared
-conversation-shell contract, not rebuild a parallel dashboard.
+Operations diagnostics are retained as modal/sheet content rather than the
+primary connected app shell. New visual work must extend the Robdex Workbench
+conversation-shell contract, not rebuild a parallel dashboard, permanent operations pane or diagnostics-first workflow.
 
-This planning artifact defines the first shell for the experimental agent
-runtime GUI. It began as the backend/Rust planning source of truth and now also
+This plan records the current Workbench-compatible Agent Runtime GUI contract. It began as the backend/Rust planning source of truth and now also
 records the implemented Flutter-facing shared shell, Rust/Rinf transport
 boundary, and service discovery behavior. It does not define production Robdex
 behavior or any fallback GUI state path.
@@ -28,7 +30,7 @@ The first minimal Flutter-facing shell is now implemented. It stays intentionall
 small: Dart sends generated typed Agent Runtime request variants over
 `AgentRuntimeRequestSignal`, consumes generated typed Agent Runtime output
 variants from `AgentRuntimeOutputSignal`, and renders the Rust-owned
-`AgentRuntimeControlTowerViewModel`. Dart does not derive session rows,
+`AgentRuntimeWorkbenchViewModel`. Dart does not derive session rows,
 chat rows and separate history rows, action rows, runtime facts, labels, watermarks, operation
 success, approval/command enablement, or durable state from raw projection or
 controller JSON.
@@ -44,13 +46,13 @@ the direction for subsequent slices.
 
 ## Richer UX implementation record
 
-The mounted Agent Runtime UI has been tightened into an operations-first shell
+The mounted Agent Runtime UI has been tightened into an Workbench-compatible chat shell
 without changing the transport boundary. Rust now shapes additional
-`AgentRuntimeControlTowerViewModel` fields for the UI: status badges,
+`AgentRuntimeWorkbenchViewModel` fields for the UI: status badges,
 selected-session label, section titles, empty-state copy, session grouping,
 row tones, action state text, and severity tones. The design-system widget
 uses those Rust-shaped fields to render a clearer runtime status strip, denser
-session rail, selected-session activity, readable attention list, runtime
+session rail, selected-session chat transcript, readable attention list, runtime
 detail panel, and explicit disconnected/connecting/connected/error/empty
 states. Dart remains a thin renderer and may keep only widget-local pending
 request ids, base URL text, scroll/focus/hover, and similar ephemeral facts.
@@ -71,7 +73,7 @@ on non-macOS hosts. The packet uses the same JSON contract emitted by
 `scripts/agent-runtime-service.sh discover` / `json-status`. Rust parses and
 classifies the packet, decides whether the local runtime target is connectable,
 and emits constructor-ready discovery state on
-`AgentRuntimeControlTowerViewModel`.
+`AgentRuntimeWorkbenchViewModel`.
 
 Dart may render the discovered target and send refresh/connect-discovered
 intents. Dart must not read the discovery file, interpret pid/path/health
@@ -110,11 +112,11 @@ Role create/update uses inline editor `instructionText` and persists it to immut
 
 ## Direction
 
-The connected shell is operations-first while still using the shared conversation primitives.
-Conversation is the center workflow once a session is selected. The top-level product
-job is operational attention: the user must immediately see what is running,
-what needs approval, what is blocked, what failed, what changed recently, and
-what action is safe next.
+The connected shell is a chat-first Robdex Workbench product using the shared conversation primitives.
+Conversation is the center workflow once a session is selected. Operational details
+remain available through modal toolbar surfaces so the user can inspect what is
+running, what needs approval, what is blocked, what failed, what changed recently,
+and what action is safe next without replacing the center transcript.
 
 The shell must optimize for command/control over runtime state:
 
@@ -139,10 +141,10 @@ The shell uses stable regions:
      surfaced.
 - Items expose typed state from `RuntimeProjection`; Dart does not infer
      status from raw events. The first Flutter shell receives these items as
-     Rust-shaped control-tower session rows.
-3. **Center selected-session activity**
+     Rust-shaped workbench-shell session rows.
+3. **Center selected-session chat transcript**
    - Product-shaped chat for the selected session: user messages, assistant responses, and compact tool/result summaries.
-   - Runtime audit events, process events, approvals, command-registry changes, errors, and workflow-memory events render in History/Diagnostics or the relevant operations detail surface, not in the center chat transcript.
+   - Runtime audit events, process events, approvals, command-registry changes, errors, and workflow-memory events render in History/Diagnostics or the relevant modal operations surface, not in the center chat transcript.
 4. **Right attention and operations detail**
    - Pending approvals, resumable approvals, command-registry requests, blocked
      process/session actions, validation failures, and safe next operations.
@@ -184,7 +186,7 @@ The shell uses stable regions:
 
 ### Approval decision
 
-- Appears in the right attention list and optional detail drawer.
+- Appears in toolbar-opened operations surfaces.
 - Uses typed approval fields: status, approver kind, resumable state,
   `canDecide`, `canResume`, reason requirement, and typed result/error packets.
 - Dart must not infer approval availability from status strings or raw
@@ -202,7 +204,7 @@ The shell uses stable regions:
 - Shows live/continuing managed process rows, terminal/lost states, max runtime,
   stdin policy, end-of-turn/end-of-session behavior, and output policy.
 - Process status comes from projection/delta state. Dart must not infer process
-  liveness from timeline prose.
+  liveness from typed runtime state.
 
 ### Error, resync, and shutdown handling
 
@@ -248,7 +250,7 @@ constructor-ready models and widgets for:
 
 - runtime status strip;
 - operational session rail item and grouped rail;
-- selected-session activity row types;
+- selected-session chat entry types;
 - attention item types for approvals, registry requests, process blockers,
   resync, shutdown, and typed API errors;
 - approval decision panel;
@@ -257,15 +259,15 @@ constructor-ready models and widgets for:
 - bounded payload/detail drawer;
 - disconnected setup panel.
 
-Design-system models must consume Rust/Rinf-provided control-tower view-model
+Design-system models must consume Rust/Rinf-provided workbench-shell view-model
 packets. They must not duplicate runtime policy, synthesize lifecycle state, or
 parse raw event payloads for control enablement.
 
 ## Dart/Rinf boundary
 
 Rust owns runtime synchronization, operation dispatch, durable decisions, state
-reduction, and control-tower view shaping. Dart receives
-`AgentRuntimeControlTowerViewModel` packets plus typed result/error packets and
+reduction, and workbench-shell view shaping. Dart receives
+`AgentRuntimeWorkbenchViewModel` packets plus typed result/error packets and
 sends typed `GuiOperationRequest` intents.
 
 Dart must not decide:
@@ -290,12 +292,12 @@ Dart may own widget-local ephemeral facts:
 - local layout.
 
 The Rust boundary must provide constructor-ready or near-constructor-ready
-values through `AgentRuntimeControlTowerViewModel`, `RuntimeProjection`,
+values through `AgentRuntimeWorkbenchViewModel`, `RuntimeProjection`,
 `RuntimeDelta`, `GuiControllerState`, `GuiOperationRequest`,
 `GuiOperationResult`, and `ApiErrorPacket`. The Flutter shell must not parse
 raw `RuntimeProjection.sessions`, `RuntimeProjection chat/history fields`,
 `RuntimeProjection.pendingApprovals`, or command-registry internals to build
-control-tower rows.
+workbench-shell rows.
 
 ## Visual risk controls
 
@@ -306,7 +308,7 @@ Avoid:
 - card, border, and prose overload;
 - default metric-board patterns that make everything look equally important;
 - permanent giant inspector panes;
-- chat-first composition that demotes approvals/processes/errors.
+- hiding approvals, processes, or errors from the modal operational surfaces.
 
 Prefer:
 
@@ -373,5 +375,5 @@ boundaries.
 
 No `.impeccable.md` design context exists at the repository root or under
 `backend/experiments/agent-runtime` at the time this plan is maintained. Future
-visual expansion beyond the current control-tower shell requires
+visual expansion beyond the current workbench-shell shell requires
 owner-confirmed aesthetic direction before implementation Requirements are set.

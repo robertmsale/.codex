@@ -10,7 +10,7 @@ class AgentRuntimeOutputSignal {
   /// such as when a widget is disposed.
   static final rustSignalStream =
       _agentRuntimeOutputSignalStreamController.stream.asBroadcastStream();
-
+        
   /// The latest signal value received from Rust.
   /// This is updated every time a new signal is received.
   /// It can be null if no signals have been received yet.

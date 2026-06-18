@@ -33,7 +33,6 @@ CREATE TABLE IF NOT EXISTS turns (
     duration_ms BIGINT,
     truncation JSONB NOT NULL DEFAULT '{}'::jsonb
 );
-
 CREATE TABLE IF NOT EXISTS model_events (
     id UUID PRIMARY KEY,
     session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

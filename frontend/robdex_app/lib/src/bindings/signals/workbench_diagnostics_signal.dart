@@ -21,7 +21,7 @@ class WorkbenchDiagnosticsSignal {
     required this.websocketPayloadBytesJson,
     required this.nativeSignalCount,
     required this.serializedPayloadBytes,
-    required this.dartFullSnapshotDecodeMicros,
+    required this.fullSnapshotDecodeCount,
     required this.dartSelectedChatDeltaApplyCount,
     required this.coalescedStreamUpdateCount,
     required this.droppedIntermediateStreamUpdateCount,
@@ -35,7 +35,7 @@ class WorkbenchDiagnosticsSignal {
       websocketPayloadBytesJson: deserializer.deserializeString(),
       nativeSignalCount: deserializer.deserializeUint64(),
       serializedPayloadBytes: deserializer.deserializeUint64(),
-      dartFullSnapshotDecodeMicros: deserializer.deserializeUint64(),
+      fullSnapshotDecodeCount: deserializer.deserializeUint64(),
       dartSelectedChatDeltaApplyCount: deserializer.deserializeUint64(),
       coalescedStreamUpdateCount: deserializer.deserializeUint64(),
       droppedIntermediateStreamUpdateCount: deserializer.deserializeUint64(),
@@ -58,7 +58,7 @@ class WorkbenchDiagnosticsSignal {
   final String websocketPayloadBytesJson;
   final Uint64 nativeSignalCount;
   final Uint64 serializedPayloadBytes;
-  final Uint64 dartFullSnapshotDecodeMicros;
+  final Uint64 fullSnapshotDecodeCount;
   final Uint64 dartSelectedChatDeltaApplyCount;
   final Uint64 coalescedStreamUpdateCount;
   final Uint64 droppedIntermediateStreamUpdateCount;
@@ -69,7 +69,7 @@ class WorkbenchDiagnosticsSignal {
     String? websocketPayloadBytesJson,
     Uint64? nativeSignalCount,
     Uint64? serializedPayloadBytes,
-    Uint64? dartFullSnapshotDecodeMicros,
+    Uint64? fullSnapshotDecodeCount,
     Uint64? dartSelectedChatDeltaApplyCount,
     Uint64? coalescedStreamUpdateCount,
     Uint64? droppedIntermediateStreamUpdateCount,
@@ -80,7 +80,7 @@ class WorkbenchDiagnosticsSignal {
       websocketPayloadBytesJson: websocketPayloadBytesJson ?? this.websocketPayloadBytesJson,
       nativeSignalCount: nativeSignalCount ?? this.nativeSignalCount,
       serializedPayloadBytes: serializedPayloadBytes ?? this.serializedPayloadBytes,
-      dartFullSnapshotDecodeMicros: dartFullSnapshotDecodeMicros ?? this.dartFullSnapshotDecodeMicros,
+      fullSnapshotDecodeCount: fullSnapshotDecodeCount ?? this.fullSnapshotDecodeCount,
       dartSelectedChatDeltaApplyCount: dartSelectedChatDeltaApplyCount ?? this.dartSelectedChatDeltaApplyCount,
       coalescedStreamUpdateCount: coalescedStreamUpdateCount ?? this.coalescedStreamUpdateCount,
       droppedIntermediateStreamUpdateCount: droppedIntermediateStreamUpdateCount ?? this.droppedIntermediateStreamUpdateCount,
@@ -94,7 +94,7 @@ class WorkbenchDiagnosticsSignal {
     serializer.serializeString(websocketPayloadBytesJson);
     serializer.serializeUint64(nativeSignalCount);
     serializer.serializeUint64(serializedPayloadBytes);
-    serializer.serializeUint64(dartFullSnapshotDecodeMicros);
+    serializer.serializeUint64(fullSnapshotDecodeCount);
     serializer.serializeUint64(dartSelectedChatDeltaApplyCount);
     serializer.serializeUint64(coalescedStreamUpdateCount);
     serializer.serializeUint64(droppedIntermediateStreamUpdateCount);
@@ -118,7 +118,7 @@ class WorkbenchDiagnosticsSignal {
       && websocketPayloadBytesJson == other.websocketPayloadBytesJson
       && nativeSignalCount == other.nativeSignalCount
       && serializedPayloadBytes == other.serializedPayloadBytes
-      && dartFullSnapshotDecodeMicros == other.dartFullSnapshotDecodeMicros
+      && fullSnapshotDecodeCount == other.fullSnapshotDecodeCount
       && dartSelectedChatDeltaApplyCount == other.dartSelectedChatDeltaApplyCount
       && coalescedStreamUpdateCount == other.coalescedStreamUpdateCount
       && droppedIntermediateStreamUpdateCount == other.droppedIntermediateStreamUpdateCount
@@ -131,7 +131,7 @@ class WorkbenchDiagnosticsSignal {
         websocketPayloadBytesJson,
         nativeSignalCount,
         serializedPayloadBytes,
-        dartFullSnapshotDecodeMicros,
+        fullSnapshotDecodeCount,
         dartSelectedChatDeltaApplyCount,
         coalescedStreamUpdateCount,
         droppedIntermediateStreamUpdateCount,
@@ -148,7 +148,7 @@ class WorkbenchDiagnosticsSignal {
         'websocketPayloadBytesJson: $websocketPayloadBytesJson, '
         'nativeSignalCount: $nativeSignalCount, '
         'serializedPayloadBytes: $serializedPayloadBytes, '
-        'dartFullSnapshotDecodeMicros: $dartFullSnapshotDecodeMicros, '
+        'fullSnapshotDecodeCount: $fullSnapshotDecodeCount, '
         'dartSelectedChatDeltaApplyCount: $dartSelectedChatDeltaApplyCount, '
         'coalescedStreamUpdateCount: $coalescedStreamUpdateCount, '
         'droppedIntermediateStreamUpdateCount: $droppedIntermediateStreamUpdateCount, '

@@ -25,6 +25,18 @@ class TraitHelpers {
     return List.generate(length, (_) => AgentRuntimeBadge.deserialize(deserializer));
   }
 
+  static void serializeVectorAgentRuntimeChatEntry(List<AgentRuntimeChatEntry> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeChatEntry> deserializeVectorAgentRuntimeChatEntry(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeChatEntry.deserialize(deserializer));
+  }
+
   static void serializeVectorAgentRuntimeFact(List<AgentRuntimeFact> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {

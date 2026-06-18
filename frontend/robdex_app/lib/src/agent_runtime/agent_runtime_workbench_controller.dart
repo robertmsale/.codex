@@ -93,6 +93,8 @@ bindings.AgentRuntimeGuiOperation agentRuntimeApprovalResumeOperationForTest(Str
   return bindings.AgentRuntimeGuiOperationResumeApproval(approvalId: approvalId);
 }
 
+ChatEntry agentRuntimeChatEntryToChatEntryForTest(bindings.AgentRuntimeChatEntry entry) => _chatEntry(entry);
+
 @visibleForTesting
 bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryDecisionOperationForTest(String requestId, String sessionId) {
   return bindings.AgentRuntimeGuiOperationDecideCommandRegistryRequest(
@@ -131,18 +133,18 @@ bindings.AgentRuntimeRequest agentRuntimeConnectImportedProfileIntentForTest() {
   return const bindings.AgentRuntimeRequestConnectImportedRemoteRuntime(selectedSessionId: '');
 }
 
-class AgentRuntimeControlTowerController extends ChangeNotifier {
+class AgentRuntimeWorkbenchController extends ChangeNotifier {
   StreamSubscription<RustSignalPack<bindings.AgentRuntimeOutputSignal>>? _subscription;
   final AgentRuntimeRemoteProfilePicker _remoteProfilePicker;
   final AgentRuntimeRequestSink _requestSink;
   final Set<String> _pendingRequestIds = <String>{};
   int _serial = 0;
   String _baseUrl = 'http://127.0.0.1:8765';
-  AgentRuntimeControlTowerData? _viewModel;
+  AgentRuntimeWorkbenchData? _viewModel;
   ConversationShellData? _shellViewModel;
   String? _bridgeErrorMessage;
 
-  AgentRuntimeControlTowerController({
+  AgentRuntimeWorkbenchController({
     AgentRuntimeRemoteProfilePicker remoteProfilePicker = pickAgentRuntimeRemoteProfileDocumentPath,
     AgentRuntimeRequestSink? requestSink,
   })  : _remoteProfilePicker = remoteProfilePicker,
@@ -160,7 +162,7 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
     }
   }
 
-  AgentRuntimeControlTowerData get data {
+  AgentRuntimeWorkbenchData get data {
     return (_viewModel ?? _disconnectedViewModel).copyWith(
       pendingRequestCount: _pendingRequestIds.length,
       errorMessage: _bridgeErrorMessage,
@@ -184,6 +186,19 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
 
   void openSettings() {
     _send('settings-refresh', const bindings.AgentRuntimeRequestHydrate(selectedSessionId: ''));
+  }
+
+  void updateRuntimeSettings({
+    required String baseUrl,
+    required String selectedProjectId,
+  }) {
+    _dispatchOperation(
+      'runtime-settings-update',
+      bindings.AgentRuntimeGuiOperationUpdateRuntimeSettings(
+        baseUrl: baseUrl.trim(),
+        selectedProjectId: selectedProjectId.trim(),
+      ),
+    );
   }
 
   void connectDiscoveredRuntime() {
@@ -239,29 +254,66 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
   }
 
   void createSession() {
+    final shell = shellData;
+    final project = shell?.projects.isNotEmpty == true ? shell!.projects.first.id : '';
+    final role = data.roleAdmin.rows.isNotEmpty ? data.roleAdmin.rows.first.id : '';
+    createSessionFromDraft(
+      role: role,
+      project: project,
+      model: '',
+      workdir: '',
+      worktreeRoot: '',
+      title: 'New session',
+      name: '',
+    );
+  }
+
+  void createSessionFromDraft({
+    required String role,
+    required String project,
+    required String model,
+    required String workdir,
+    required String worktreeRoot,
+    required String title,
+    required String name,
+  }) {
     _dispatchOperation(
       'session-create',
-      const bindings.AgentRuntimeGuiOperationCreateSession(
-        role: 'runtime-allow',
-        project: '',
-        workdir: '',
-        worktreeRoot: '',
-        title: 'New session',
-        name: '',
+      bindings.AgentRuntimeGuiOperationCreateSession(
+        role: role.trim(),
+        project: project.trim(),
+        model: model.trim(),
+        workdir: workdir.trim(),
+        worktreeRoot: worktreeRoot.trim(),
+        title: title.trim(),
+        name: name.trim(),
       ),
     );
   }
 
-  void createLiveSmokeSession() {
+  void updateSessionSettings({
+    required String sessionId,
+    required String project,
+    required String role,
+    required String model,
+    required String workdir,
+    required String worktreeRoot,
+    required String title,
+    required String name,
+    required bool tracked,
+  }) {
     _dispatchOperation(
-      'session-create-live-smoke',
-      const bindings.AgentRuntimeGuiOperationCreateSession(
-        role: 'runtime-live-smoke-gpt54mini',
-        project: 'agent-runtime-live-smoke',
-        workdir: '.',
-        worktreeRoot: '',
-        title: 'GUI composer live smoke',
-        name: 'gui-composer-live-smoke',
+      'session-settings-update',
+      bindings.AgentRuntimeGuiOperationUpdateSessionSettings(
+        sessionId: sessionId.trim(),
+        project: project.trim(),
+        role: role.trim(),
+        model: model.trim(),
+        workdir: workdir.trim(),
+        worktreeRoot: worktreeRoot.trim(),
+        title: title.trim(),
+        name: name.trim(),
+        tracked: tracked,
       ),
     );
   }
@@ -385,7 +437,7 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
         sessionId: sessionId,
         feedback: 'attempted',
         payload: const bindings.AgentRuntimeWorkflowMemoryFeedbackPayload(
-          source: 'gui.controlTower',
+          source: 'gui.workbench',
           reason: '',
           variant: true,
           hasVariant: true,
@@ -406,7 +458,7 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
         sessionId: sessionId,
         feedback: 'helpful',
         payload: const bindings.AgentRuntimeWorkflowMemoryFeedbackPayload(
-          source: 'gui.controlTower',
+          source: 'gui.workbench',
           reason: '',
           variant: false,
           hasVariant: false,
@@ -427,7 +479,7 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
         sessionId: sessionId,
         feedback: 'notHelpful',
         payload: const bindings.AgentRuntimeWorkflowMemoryFeedbackPayload(
-          source: 'gui.controlTower',
+          source: 'gui.workbench',
           reason: 'marked from Agent Runtime',
           variant: false,
           hasVariant: false,
@@ -461,8 +513,8 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
     final signal = pack.message;
     _pendingRequestIds.remove(signal.requestId);
     final output = signal.output;
-    if (output is bindings.AgentRuntimeOutputControlTowerView) {
-      _viewModel = AgentRuntimeControlTowerData.fromJson(_viewModelJson(output.viewModel));
+    if (output is bindings.AgentRuntimeOutputWorkbenchView) {
+      _viewModel = _workbenchData(output.viewModel);
       _shellViewModel = _shellData(output.viewModel.shell);
       _bridgeErrorMessage = null;
     } else if (output is bindings.AgentRuntimeOutputError) {
@@ -471,7 +523,7 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
     notifyListeners();
   }
 
-  AgentRuntimeControlTowerData get _disconnectedViewModel => AgentRuntimeControlTowerData(
+  AgentRuntimeWorkbenchData get _disconnectedViewModel => AgentRuntimeWorkbenchData(
         connectionState: 'disconnected',
         discovery: const AgentRuntimeDiscoveryInfo(
           state: 'notLoaded',
@@ -572,56 +624,44 @@ bindings.AgentRuntimeRoleEditorDraft _typedRoleDraft(AgentRuntimeRoleEditorDraft
   );
 }
 
-Map<String, dynamic> _viewModelJson(bindings.AgentRuntimeControlTowerViewModel view) {
-  return {
-    'discovery': _discoveryJson(view.discovery),
-    'remoteDiscovery': _discoveryJson(view.remoteDiscovery),
-    'importedRemoteDiscovery': _discoveryJson(view.importedRemoteDiscovery),
-    'connectionState': view.connectionState,
-    'connectionTone': view.connectionTone,
-    'baseUrl': view.baseUrl,
-    'statusLabel': view.statusLabel,
-    'watermarkLabel': view.watermarkLabel,
-    'statusBadges': view.statusBadges.map(_badgeJson).toList(growable: false),
-    'selectedSessionLabel': view.selectedSessionLabel,
-    'sessionsTitle': view.sessionsTitle,
-    'sessionsSubtitle': view.sessionsSubtitle,
-    'timelineTitle': view.timelineTitle,
-    'timelineSubtitle': view.timelineSubtitle,
-    'actionsTitle': view.actionsTitle,
-    'actionsSubtitle': view.actionsSubtitle,
-    'detailTitle': view.detailTitle,
-    'detailSubtitle': view.detailSubtitle,
-    'sessionsEmptyTitle': view.sessionsEmptyTitle,
-    'sessionsEmptyText': view.sessionsEmptyText,
-    'timelineEmptyTitle': view.timelineEmptyTitle,
-    'timelineEmptyText': view.timelineEmptyText,
-    'actionsEmptyTitle': view.actionsEmptyTitle,
-    'actionsEmptyText': view.actionsEmptyText,
-    'sessions': view.sessions.map((row) => {
-          'id': row.id,
-          'title': row.title,
-          'status': row.status,
-          'subtitle': row.subtitle,
-          'groupLabel': row.groupLabel,
-          'tone': row.tone,
-        }).toList(growable: false),
-    'timeline': view.timeline.map((row) => {
-          'id': row.id,
-          'title': row.title,
-          'subtitle': row.subtitle,
-          'status': row.status,
-          'tone': row.tone,
-        }).toList(growable: false),
-    'actions': view.actions.map(_actionJson).toList(growable: false),
-    'roleAdmin': _roleAdminJson(view.roleAdmin),
-    'workflowMemory': _workflowMemoryJson(view.workflowMemory),
-    'controllerFacts': view.controllerFacts.map(_factJson).toList(growable: false),
-    'operationSurfaces': view.shell.operationSurfaces.map(_operationSurfaceJson).toList(growable: false),
-    'outputLog': view.outputLog,
-    'pendingRequestCount': view.pendingRequestCount,
-    'errorMessage': view.hasErrorMessage ? view.errorMessage : null,
-  };
+AgentRuntimeWorkbenchData _workbenchData(bindings.AgentRuntimeWorkbenchViewModel view) {
+  return AgentRuntimeWorkbenchData(
+    discovery: _discovery(view.discovery),
+    remoteDiscovery: _discovery(view.remoteDiscovery),
+    importedRemoteDiscovery: _discovery(view.importedRemoteDiscovery),
+    connectionState: view.connectionState,
+    connectionTone: view.connectionTone,
+    baseUrl: view.baseUrl,
+    statusLabel: view.statusLabel,
+    watermarkLabel: view.watermarkLabel,
+    statusBadges: view.statusBadges.map(_badge).toList(growable: false),
+    selectedSessionLabel: view.selectedSessionLabel,
+    sessionsTitle: view.sessionsTitle,
+    sessionsSubtitle: view.sessionsSubtitle,
+    timelineTitle: view.timelineTitle,
+    timelineSubtitle: view.timelineSubtitle,
+    actionsTitle: view.actionsTitle,
+    actionsSubtitle: view.actionsSubtitle,
+    detailTitle: view.detailTitle,
+    detailSubtitle: view.detailSubtitle,
+    sessionsEmptyTitle: view.sessionsEmptyTitle,
+    sessionsEmptyText: view.sessionsEmptyText,
+    timelineEmptyTitle: view.timelineEmptyTitle,
+    timelineEmptyText: view.timelineEmptyText,
+    actionsEmptyTitle: view.actionsEmptyTitle,
+    actionsEmptyText: view.actionsEmptyText,
+    sessions: view.sessions.map(_session).toList(growable: false),
+    timeline: view.timeline.map(_timelineRow).toList(growable: false),
+    selectedConversation: view.shell.selectedConversation.map(_chatEntry).toList(growable: false),
+    actions: view.actions.map(_action).toList(growable: false),
+    roleAdmin: _roleAdmin(view.roleAdmin),
+    workflowMemory: _workflowMemory(view.workflowMemory),
+    controllerFacts: view.controllerFacts.map(_fact).toList(growable: false),
+    operationSurfaces: view.shell.operationSurfaces.map(_operationSurface).toList(growable: false),
+    outputLog: view.outputLog,
+    pendingRequestCount: view.pendingRequestCount,
+    errorMessage: view.hasErrorMessage ? view.errorMessage : null,
+  );
 }
 
 ConversationShellData _shellData(bindings.AgentRuntimeConversationShellViewModel view) {
@@ -664,19 +704,10 @@ ConversationShellData _shellData(bindings.AgentRuntimeConversationShellViewModel
     selectedSessionId: selectedSessionId,
     timelineTitle: selectedSessionId == null ? 'Select a session' : 'Selected session',
     entries: view.selectedConversation
-        .map((item) => ChatEntry(
-              id: item.id,
-              author: _chatAuthor(item),
-              displayLabel: _runtimeDisplayCopy(item.title),
-              timestamp: null,
-              body: _runtimeDisplayCopy(item.subtitle.isEmpty ? item.status : item.subtitle),
-              subtitle: _runtimeDisplayCopy(item.status),
-              status: _runtimeDisplayCopy(item.status),
-              isTool: item.tone == 'warning',
-            ))
+        .map(_chatEntry)
         .toList(growable: false),
     composerEnabled: selectedSessionId != null,
-    isRunning: view.selectedConversation.any((entry) => entry.status.toLowerCase().contains('running')),
+    isRunning: view.selectedConversation.any((entry) => entry.isStreaming || entry.status.toLowerCase().contains('running')),
     detailTitle: 'Operations',
     detailSections: view.operationSurfaces
         .map((surface) => ConversationDetailSection(
@@ -692,12 +723,23 @@ ConversationShellData _shellData(bindings.AgentRuntimeConversationShellViewModel
   );
 }
 
-
-String _chatAuthor(bindings.AgentRuntimeTimelineRow item) {
-  if (item.tone == 'user') return 'owner';
-  if (item.tone == 'success') return 'assistant';
-  if (item.tone == 'warning') return 'tool';
-  return 'system';
+ChatEntry _chatEntry(bindings.AgentRuntimeChatEntry entry) {
+  return ChatEntry(
+    id: entry.id,
+    author: entry.author,
+    displayLabel: entry.displayLabel,
+    timestamp: entry.hasTimestamp ? DateTime.tryParse(entry.timestamp)?.millisecondsSinceEpoch : null,
+    body: entry.body,
+    subtitle: entry.subtitle,
+    kind: entry.kind,
+    status: entry.status,
+    processId: entry.hasProcessId ? entry.processId : null,
+    command: entry.command,
+    output: entry.output,
+    deliveryState: entry.deliveryState,
+    isStreaming: entry.isStreaming,
+    isTool: entry.isTool,
+  );
 }
 
 String _runtimeDisplayCopy(String value) {
@@ -715,144 +757,198 @@ String _runtimeDisplayCopy(String value) {
       .trim();
 }
 
-Map<String, dynamic> _discoveryJson(bindings.AgentRuntimeDiscoveryView view) => {
-      'sourceType': view.sourceType,
-      'sourcePath': view.sourcePath,
-      'state': view.state,
-      'tone': view.tone,
-      'title': view.title,
-      'message': view.message,
-      'baseUrl': view.hasBaseUrl ? view.baseUrl : null,
-      'healthUrl': view.hasHealthUrl ? view.healthUrl : null,
-      'webSocketUrl': view.hasWebSocketUrl ? view.webSocketUrl : null,
-      'runtimeIdentity': view.hasRuntimeIdentity ? view.runtimeIdentity : null,
-      'discoveryPath': view.discoveryPath,
-      'lastImportedAt': view.hasLastImportedAt ? view.lastImportedAt : null,
-      'serviceState': view.hasServiceState ? view.serviceState : null,
-      'connectable': view.connectable,
-      'diagnostics': view.diagnostics,
-    };
+AgentRuntimeDiscoveryInfo _discovery(bindings.AgentRuntimeDiscoveryView view) => AgentRuntimeDiscoveryInfo(
+      state: view.state,
+      tone: view.tone,
+      title: view.title,
+      message: view.message,
+      sourceType: view.sourceType,
+      sourcePath: view.sourcePath,
+      lastImportedAt: view.hasLastImportedAt ? view.lastImportedAt : null,
+      discoveryPath: view.discoveryPath,
+      connectable: view.connectable,
+      baseUrl: view.hasBaseUrl ? view.baseUrl : null,
+      healthUrl: view.hasHealthUrl ? view.healthUrl : null,
+      webSocketUrl: view.hasWebSocketUrl ? view.webSocketUrl : null,
+      runtimeIdentity: view.hasRuntimeIdentity ? view.runtimeIdentity : null,
+      serviceState: view.hasServiceState ? view.serviceState : null,
+      diagnostics: view.diagnostics,
+    );
 
-Map<String, dynamic> _factJson(bindings.AgentRuntimeFact fact) => {'label': fact.label, 'value': fact.value};
-Map<String, dynamic> _operationSurfaceJson(bindings.AgentRuntimeOperationSurface surface) => {
-      'surfaceId': surface.surfaceId,
-      'title': surface.title,
-      'subtitle': surface.subtitle,
-      'rows': surface.rows.map(_factJson).toList(growable: false),
-      'actions': surface.actions.map(_actionJson).toList(growable: false),
-    };
-Map<String, dynamic> _badgeJson(bindings.AgentRuntimeBadge badge) => {'label': badge.label, 'value': badge.value, 'tone': badge.tone};
-Map<String, dynamic> _actionJson(bindings.AgentRuntimeActionRow row) => {
-      'id': row.id,
-      'title': row.title,
-      'subtitle': row.subtitle,
-      'kind': row.kind,
-      'stateText': row.stateText,
-      'tone': row.tone,
-    };
+AgentRuntimeFact _fact(bindings.AgentRuntimeFact fact) => AgentRuntimeFact(label: fact.label, value: _humanRuntimeLabel(fact.value));
 
-Map<String, dynamic> _roleAdminJson(bindings.AgentRuntimeRoleAdminView view) => {
-      'title': view.title,
-      'subtitle': view.subtitle,
-      'emptyTitle': view.emptyTitle,
-      'emptyText': view.emptyText,
-      'rows': view.rows.map((row) => {
-            'id': row.id,
-            'title': row.title,
-            'subtitle': row.subtitle,
-            'status': row.status,
-            'tone': row.tone,
-            'currentVersionId': row.currentVersion,
-          }).toList(growable: false),
-      'selectedDetail': view.hasSelectedDetail ? {
-        'id': view.selectedDetail.id,
-        'displayName': view.selectedDetail.displayName,
-        'version': view.selectedDetail.version,
-        'model': view.selectedDetail.modelLabel,
-        'status': view.selectedDetail.status,
-        'instructionText': view.selectedDetail.instructionsPreview,
-        'capabilities': const <String>[],
-        'policy': view.selectedDetail.policyRows.map((row) => {'action': row.label, 'decision': row.value}).toList(growable: false),
-        'routing': <Map<String, String>>[{'label': 'Routing', 'value': view.selectedDetail.routingLabel}],
-        'visibility': <Map<String, String>>[{'label': 'Visibility', 'value': view.selectedDetail.visibilityLabel}],
-        'lifecycleAuthority': <Map<String, String>>[{'label': 'Lifecycle', 'value': view.selectedDetail.lifecycleLabel}],
-      } : null,
-      'versionRows': view.versionRows.map((row) => {
-            'versionId': row.versionId,
-            'version': row.version,
-            'status': row.status,
-            'createdAt': row.createdAt.isEmpty ? null : row.createdAt,
-          }).toList(growable: false),
-      'editorDraft': view.hasEditorDraft ? {
-        'roleId': view.editorDraft.roleId,
-        'version': view.editorDraft.version,
-        'displayName': view.editorDraft.displayName,
-        'model': view.editorDraft.model,
-        'reasoningEffort': view.editorDraft.reasoningEffort,
-        'instructionText': view.editorDraft.instructionText,
-        'capabilities': view.editorDraft.capabilities,
-        'policy': view.editorDraft.policyRows.map((row) => {'action': row.label, 'decision': row.value}).toList(growable: false),
-        'routingMode': view.editorDraft.routingMode,
-        'routingReservedActions': const <String>[],
-        'defaultRecipient': view.editorDraft.defaultRecipient.isEmpty ? null : view.editorDraft.defaultRecipient,
-        'allowedRecipients': view.editorDraft.allowedRecipients,
-        'listed': view.editorDraft.listed,
-        'ownerVisible': view.editorDraft.ownerVisible,
-        'canSpawnAgents': view.editorDraft.canSpawnAgents,
-        'canArchiveAgents': view.editorDraft.canArchiveAgents,
-        'lifecycleReservedActions': const <String>[],
-      } : null,
-      'validationErrors': view.validationErrors,
-      'actionStates': view.actionStates.map(_actionJson).toList(growable: false),
-    };
+AgentRuntimeOperationSurface _operationSurface(bindings.AgentRuntimeOperationSurface surface) => AgentRuntimeOperationSurface(
+      surfaceId: surface.surfaceId,
+      title: surface.title,
+      subtitle: surface.subtitle,
+      rows: surface.rows.map(_fact).toList(growable: false),
+      actions: surface.actions.map(_action).toList(growable: false),
+    );
 
-Map<String, dynamic> _workflowMemoryJson(bindings.AgentRuntimeWorkflowMemoryView view) => {
-      'title': view.title,
-      'subtitle': view.subtitle,
-      'emptyTitle': view.emptyTitle,
-      'emptyText': view.emptyText,
-      'selectedMemoryId': view.hasSelectedDetail ? view.selectedDetail.id : null,
-      'rows': view.rows.map((row) => {
-            'id': row.id,
-            'title': row.title,
-            'subtitle': row.reason,
-            'scopeType': row.scopeLabel,
-            'projectKey': row.hasProjectKey ? row.projectKey : null,
-            'helpfulScore': double.tryParse(row.helpfulScore) ?? 0,
-            'promotedAt': row.hasPromotedAt ? row.promotedAt : null,
-            'sourceSessionId': row.sourceSessionId,
-            'tone': row.tone,
-            'selected': row.isSelected,
-          }).toList(growable: false),
-      'selectedDetail': view.hasSelectedDetail ? {
-        'id': view.selectedDetail.id,
-        'title': view.selectedDetail.title,
-        'reason': view.selectedDetail.reason,
-        'summary': view.selectedDetail.summary,
-        'sourceSessionId': view.selectedDetail.sourceSessionId,
-        'sourceScriptRunId': view.selectedDetail.hasSourceScriptRunId ? view.selectedDetail.sourceScriptRunId : null,
-        'sourceStarlark': view.selectedDetail.sourcePreview,
-        'sourcePreview': view.selectedDetail.sourcePreview,
-        'provider': view.selectedDetail.provider.isEmpty ? null : view.selectedDetail.provider,
-        'model': view.selectedDetail.model.isEmpty ? null : view.selectedDetail.model,
-        'dimensions': int.tryParse(view.selectedDetail.dimensions),
-        'storageType': view.selectedDetail.storageLabel.isEmpty ? null : view.selectedDetail.storageLabel,
-        'sourceHash': view.selectedDetail.sourceHash.isEmpty ? null : view.selectedDetail.sourceHash,
-        'commandFingerprint': view.selectedDetail.commandFingerprint.isEmpty ? null : view.selectedDetail.commandFingerprint,
-        'helpfulScore': double.tryParse(view.selectedDetail.score) ?? 0,
-        'scopeLabel': view.selectedDetail.scopeLabel,
-        'feedbackSessionId': view.selectedDetail.hasFeedbackSessionId ? view.selectedDetail.feedbackSessionId : null,
-        'feedbackEnabled': view.selectedDetail.feedbackEnabled,
-      } : null,
-      'recentEvents': view.hasSelectedDetail ? view.selectedDetail.events.map((event) => {
-        'id': event.id,
-        'title': event.title,
-        'subtitle': event.subtitle,
-        'createdAt': event.createdAt.isEmpty ? null : event.createdAt,
-        'tone': event.tone,
-      }).toList(growable: false) : const <Map<String, Object?>>[],
-      'feedbackActions': view.actionStates.map(_actionJson).toList(growable: false),
-    };
+AgentRuntimeStatusBadge _badge(bindings.AgentRuntimeBadge badge) => AgentRuntimeStatusBadge(label: badge.label, value: badge.value, tone: badge.tone);
+
+AgentRuntimeActionItem _action(bindings.AgentRuntimeActionRow row) => AgentRuntimeActionItem(
+      id: row.id,
+      title: _humanRuntimeLabel(row.title),
+      subtitle: _humanRuntimeLabel(row.subtitle),
+      kind: row.kind,
+      stateText: _humanRuntimeLabel(row.stateText),
+      tone: row.tone,
+    );
+
+AgentRuntimeSessionItem _session(bindings.AgentRuntimeSessionRow row) => AgentRuntimeSessionItem(
+      id: row.id,
+      title: row.title,
+      status: row.status,
+      subtitle: _runtimeDisplayCopy(row.subtitle),
+      groupLabel: _runtimeDisplayCopy(row.groupLabel),
+      tone: row.tone,
+    );
+
+AgentRuntimeTimelineItem _timelineRow(bindings.AgentRuntimeTimelineRow row) => AgentRuntimeTimelineItem(
+      id: row.id,
+      title: _humanRuntimeLabel(row.title),
+      subtitle: _humanRuntimeLabel(row.subtitle),
+      status: _humanRuntimeLabel(row.status),
+      tone: row.tone,
+    );
+
+AgentRuntimeRoleAdminData _roleAdmin(bindings.AgentRuntimeRoleAdminView view) => AgentRuntimeRoleAdminData(
+      title: view.title,
+      subtitle: view.subtitle,
+      emptyTitle: view.emptyTitle,
+      emptyText: view.emptyText,
+      rows: view.rows.map(_roleRow).toList(growable: false),
+      selectedDetail: view.hasSelectedDetail ? _roleDetail(view.selectedDetail) : null,
+      versionRows: view.versionRows.map((row) => AgentRuntimeRoleVersionRow(
+            versionId: row.versionId,
+            version: row.version,
+            status: row.status,
+            createdAt: row.createdAt.isEmpty ? null : row.createdAt,
+          )).toList(growable: false),
+      editorDraft: view.hasEditorDraft ? _roleEditorDraft(view.editorDraft) : null,
+      validationErrors: view.validationErrors,
+      actionStates: view.actionStates.map(_action).toList(growable: false),
+    );
+
+AgentRuntimeRoleRow _roleRow(bindings.AgentRuntimeRoleRow row) => AgentRuntimeRoleRow(
+      id: row.id,
+      title: row.title,
+      subtitle: row.subtitle,
+      status: row.status,
+      tone: row.tone,
+      currentVersionId: row.currentVersion,
+    );
+
+AgentRuntimeRoleDetail _roleDetail(bindings.AgentRuntimeRoleDetail detail) => AgentRuntimeRoleDetail(
+      id: detail.id,
+      displayName: detail.displayName,
+      version: detail.version,
+      model: detail.modelLabel,
+      status: detail.status,
+      instructionText: detail.instructionsPreview,
+      capabilities: const <String>[],
+      policy: detail.policyRows.map((row) => AgentRuntimeRolePolicyRow(action: row.label, decision: row.value)).toList(growable: false),
+      routing: [AgentRuntimeFact(label: 'Routing', value: detail.routingLabel)],
+      visibility: [AgentRuntimeFact(label: 'Visibility', value: detail.visibilityLabel)],
+      lifecycleAuthority: [AgentRuntimeFact(label: 'Lifecycle', value: detail.lifecycleLabel)],
+    );
+
+AgentRuntimeRoleEditorDraft _roleEditorDraft(bindings.AgentRuntimeRoleEditorDraftView draft) => AgentRuntimeRoleEditorDraft(
+      roleId: draft.roleId,
+      version: draft.version,
+      displayName: draft.displayName,
+      model: draft.model,
+      reasoningEffort: draft.reasoningEffort,
+      instructionText: draft.instructionText,
+      capabilities: draft.capabilities,
+      policy: draft.policyRows.map((row) => AgentRuntimeRolePolicyRow(action: row.label, decision: row.value)).toList(growable: false),
+      routingMode: draft.routingMode,
+      routingReservedActions: const <String>[],
+      defaultRecipient: draft.defaultRecipient.isEmpty ? null : draft.defaultRecipient,
+      allowedRecipients: draft.allowedRecipients,
+      listed: draft.listed,
+      ownerVisible: draft.ownerVisible,
+      canSpawnAgents: draft.canSpawnAgents,
+      canArchiveAgents: draft.canArchiveAgents,
+      lifecycleReservedActions: const <String>[],
+    );
+
+AgentRuntimeWorkflowMemoryData _workflowMemory(bindings.AgentRuntimeWorkflowMemoryView view) => AgentRuntimeWorkflowMemoryData(
+      title: view.title,
+      subtitle: view.subtitle,
+      emptyTitle: view.emptyTitle,
+      emptyText: view.emptyText,
+      selectedMemoryId: view.hasSelectedDetail ? view.selectedDetail.id : null,
+      rows: view.rows.map(_workflowMemoryRow).toList(growable: false),
+      selectedDetail: view.hasSelectedDetail ? _workflowMemoryDetail(view.selectedDetail) : null,
+      recentEvents: view.hasSelectedDetail ? view.selectedDetail.events.map(_workflowMemoryEvent).toList(growable: false) : const <AgentRuntimeWorkflowMemoryEventRow>[],
+      feedbackActions: view.actionStates.map(_action).toList(growable: false),
+    );
+
+AgentRuntimeWorkflowMemoryRow _workflowMemoryRow(bindings.AgentRuntimeWorkflowMemoryRow row) => AgentRuntimeWorkflowMemoryRow(
+      id: row.id,
+      title: row.title,
+      subtitle: row.reason,
+      scopeType: row.scopeLabel,
+      projectKey: row.hasProjectKey ? row.projectKey : null,
+      helpfulScore: double.tryParse(row.helpfulScore) ?? 0,
+      promotedAt: row.hasPromotedAt ? row.promotedAt : null,
+      sourceSessionId: row.sourceSessionId,
+      tone: row.tone,
+      selected: row.isSelected,
+    );
+
+AgentRuntimeWorkflowMemoryDetail _workflowMemoryDetail(bindings.AgentRuntimeWorkflowMemoryDetail detail) => AgentRuntimeWorkflowMemoryDetail(
+      id: detail.id,
+      title: detail.title,
+      reason: detail.reason,
+      summary: detail.summary,
+      sourceSessionId: detail.sourceSessionId,
+      sourceScriptRunId: detail.hasSourceScriptRunId ? detail.sourceScriptRunId : null,
+      sourceStarlark: detail.sourcePreview,
+      sourcePreview: detail.sourcePreview,
+      provider: detail.provider.isEmpty ? null : detail.provider,
+      model: detail.model.isEmpty ? null : detail.model,
+      dimensions: int.tryParse(detail.dimensions),
+      storageType: detail.storageLabel.isEmpty ? null : detail.storageLabel,
+      sourceHash: detail.sourceHash.isEmpty ? null : detail.sourceHash,
+      commandFingerprint: detail.commandFingerprint.isEmpty ? null : detail.commandFingerprint,
+      helpfulScore: double.tryParse(detail.score) ?? 0,
+      scopeLabel: detail.scopeLabel,
+      feedbackSessionId: detail.hasFeedbackSessionId ? detail.feedbackSessionId : null,
+      feedbackEnabled: detail.feedbackEnabled,
+    );
+
+AgentRuntimeWorkflowMemoryEventRow _workflowMemoryEvent(bindings.AgentRuntimeWorkflowMemoryEvent event) => AgentRuntimeWorkflowMemoryEventRow(
+      id: event.id,
+      title: _humanRuntimeLabel(event.title),
+      subtitle: _humanRuntimeLabel(event.subtitle),
+      createdAt: event.createdAt.isEmpty ? null : event.createdAt,
+      tone: event.tone,
+    );
+
+String _humanRuntimeLabel(String value) {
+  return value
+      .replaceAll('role.imported', 'Role imported')
+      .replaceAll('session.created', 'Session created')
+      .replaceAll('turn.started', 'Turn started')
+      .replaceAll('turn.completed', 'Turn completed')
+      .replaceAll('route.decision', 'Route selected')
+      .replaceAll('policy.decision', 'Policy decision')
+      .replaceAll('model.tool_call', 'Tool requested')
+      .replaceAll('model.final_response', 'Assistant response')
+      .replaceAll('tool.started', 'Tool started')
+      .replaceAll('tool.completed', 'Tool completed')
+      .replaceAll('script.started', 'Script started')
+      .replaceAll('script.completed', 'Script completed')
+      .replaceAll('host_api.completed', 'Host action completed')
+      .replaceAll('workflow_memory.', 'Workflow memory ')
+      .replaceAll('command_registry.', 'Command registry ')
+      .replaceAll('approval.', 'Approval ')
+      .replaceAll('compaction.', 'Compaction ')
+      .trim();
+}
 
 bindings.AgentRuntimeCommandRegistryDecisionInput _defaultRegistryDecision(String sessionId, String status) {
   return bindings.AgentRuntimeCommandRegistryDecisionInput(

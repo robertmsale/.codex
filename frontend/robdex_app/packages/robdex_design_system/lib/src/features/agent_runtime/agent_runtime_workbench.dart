@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 
-import '../../core/models/agent_runtime_control_tower_models.dart';
+import '../../core/models/agent_runtime_workbench_models.dart';
 import 'agent_runtime_code_editor.dart';
 
 typedef AgentRuntimeRoleVersionAction = void Function(String roleId, String versionId);
 
-class AgentRuntimeControlTower extends StatelessWidget {
-  const AgentRuntimeControlTower({
+class AgentRuntimeWorkbench extends StatelessWidget {
+  const AgentRuntimeWorkbench({
     super.key,
     required this.data,
     required this.baseUrlController,
@@ -43,7 +43,7 @@ class AgentRuntimeControlTower extends StatelessWidget {
     this.onCommandRegistryApply,
   });
 
-  final AgentRuntimeControlTowerData data;
+  final AgentRuntimeWorkbenchData data;
   final TextEditingController baseUrlController;
   final VoidCallback onConnect;
   final VoidCallback onRefreshDiscovery;
@@ -205,7 +205,7 @@ class _RuntimeLoginScreen extends StatelessWidget {
     this.errorMessage,
   });
 
-  final AgentRuntimeControlTowerData data;
+  final AgentRuntimeWorkbenchData data;
   final TextEditingController baseUrlController;
   final VoidCallback onConnect;
   final VoidCallback onRefreshDiscovery;
@@ -312,7 +312,7 @@ class _RuntimeTopBar extends StatelessWidget {
     required this.onDisconnect,
   });
 
-  final AgentRuntimeControlTowerData data;
+  final AgentRuntimeWorkbenchData data;
   final VoidCallback onPollStream;
   final VoidCallback onDisconnect;
 
@@ -483,7 +483,7 @@ class _DiscoveryButton extends StatelessWidget {
 
 class _SessionsPanel extends StatelessWidget {
   const _SessionsPanel(this.data);
-  final AgentRuntimeControlTowerData data;
+  final AgentRuntimeWorkbenchData data;
   @override
   Widget build(BuildContext context) => _Panel(
         title: data.sessionsTitle,
@@ -500,7 +500,7 @@ class _SessionsPanel extends StatelessWidget {
 
 class _TimelinePanel extends StatelessWidget {
   const _TimelinePanel(this.data);
-  final AgentRuntimeControlTowerData data;
+  final AgentRuntimeWorkbenchData data;
   @override
   Widget build(BuildContext context) => _Panel(
         title: data.timelineTitle,
@@ -517,7 +517,7 @@ class _TimelinePanel extends StatelessWidget {
 
 class _ActionsPanel extends StatelessWidget {
   const _ActionsPanel(this.data);
-  final AgentRuntimeControlTowerData data;
+  final AgentRuntimeWorkbenchData data;
   @override
   Widget build(BuildContext context) => _Panel(
         title: data.actionsTitle,
@@ -559,7 +559,7 @@ class _DetailsPanel extends StatelessWidget {
     this.onCommandRegistryApply,
   });
 
-  final AgentRuntimeControlTowerData data;
+  final AgentRuntimeWorkbenchData data;
   final String? focusSurfaceId;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleValidate;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleCreate;
@@ -735,7 +735,7 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
     this.onCommandRegistryApply,
   });
 
-  final AgentRuntimeControlTowerData data;
+  final AgentRuntimeWorkbenchData data;
   final String? focusSurfaceId;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleValidate;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleCreate;
@@ -957,11 +957,11 @@ String _friendlyError(String error) {
   return error;
 }
 
-bool _isConnected(AgentRuntimeControlTowerData data) {
+bool _isConnected(AgentRuntimeWorkbenchData data) {
   return data.connectionTone == 'success' || data.connectionState == 'streaming' || data.connectionState == 'connected';
 }
 
-String _loginStatusLabel(AgentRuntimeControlTowerData data) {
+String _loginStatusLabel(AgentRuntimeWorkbenchData data) {
   if (data.connectionState == 'connecting') {
     return 'Connecting';
   }

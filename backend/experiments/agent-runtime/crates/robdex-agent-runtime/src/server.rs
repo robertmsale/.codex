@@ -19,7 +19,6 @@ use tokio::sync::{Mutex, watch};
 use tokio::time::{Duration, interval};
 use uuid::Uuid;
 
-use crate::roles::DEFAULT_ROLE_ID;
 use crate::errors::{RuntimeDomainError, RuntimeErrorKind};
 use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
 use crate::{approvals, command_registry, compaction, db, projection, routing, runtime, starlark_host, workflow_memory};
@@ -233,6 +232,7 @@ pub fn app(state: ServerState) -> Router {
         .route("/sessions/{session_id}", get(show_session))
         .route("/sessions/{session_id}/history", get(session_history))
         .route("/sessions/{session_id}/send", post(send_message))
+        .route("/sessions/{session_id}/settings", post(update_session_settings))
         .route("/sessions/{session_id}/close", post(close_session))
         .route("/sessions/{session_id}/archive", post(archive_session))
         .route("/sessions/{session_id}/fork", post(fork_session))
@@ -321,7 +321,83 @@ async fn snapshot(
     Query(query): Query<SnapshotQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let projection = projection::build_runtime_projection_snapshot(&state.pool, query.selected_session_id).await?;
-    Ok(Json(serde_json::to_value(projection).map_err(anyhow::Error::from)?))
+    let mut value = serde_json::to_value(&projection).map_err(anyhow::Error::from)?;
+    if let Some(object) = value.as_object_mut() {
+        let selected_project_id = projection
+            .selected_session
+            .as_ref()
+            .and_then(|session| session.project_key.clone());
+        let role_options = projection
+            .roles
+            .iter()
+            .map(|role| json!({
+                "id": role.id,
+                "displayLabel": role.display_name,
+                "status": role.status,
+                "model": role.model,
+            }))
+            .collect::<Vec<_>>();
+        let mut models = projection
+            .roles
+            .iter()
+            .filter_map(|role| role.model.clone())
+            .collect::<Vec<_>>();
+        models.sort();
+        models.dedup();
+        let model_options = models
+            .into_iter()
+            .map(|model| json!({"id": model, "displayLabel": model, "source": "role model defaults"}))
+            .collect::<Vec<_>>();
+        let mut projects = projection
+            .sessions
+            .iter()
+            .filter_map(|session| session.project_key.clone())
+            .filter(|project| !project.trim().is_empty())
+            .collect::<Vec<_>>();
+        projects.sort();
+        projects.dedup();
+        let project_options = projects
+            .into_iter()
+            .map(|project| json!({"id": project, "displayLabel": project, "selected": selected_project_id.as_deref() == Some(project.as_str())}))
+            .collect::<Vec<_>>();
+        let modal_surface_summaries = vec![
+            json!({"surfaceId":"session","title":"Session","rowCount": projection.selected_session.iter().count(), "actionCount": 3}),
+            json!({"surfaceId":"history","title":"History","rowCount": projection.timeline.len(), "actionCount": 0}),
+            json!({"surfaceId":"diagnostics","title":"Diagnostics","rowCount": 7, "actionCount": 0}),
+            json!({"surfaceId":"compaction","title":"Compaction","rowCount": projection.statistics.compaction_checkpoints, "actionCount": 0}),
+            json!({"surfaceId":"statistics","title":"Statistics","rowCount": 14, "actionCount": 0}),
+            json!({"surfaceId":"processManager","title":"Process Manager","rowCount": projection.statistics.managed_processes, "actionCount": 4}),
+            json!({"surfaceId":"settings","title":"Settings","rowCount": 8, "actionCount": 1}),
+            json!({"surfaceId":"roleAdmin","title":"Role Admin","rowCount": projection.roles.len(), "actionCount": 6}),
+            json!({"surfaceId":"workflowMemory","title":"Workflow Memory","rowCount": projection.workflow_memories.len(), "actionCount": 3}),
+            json!({"surfaceId":"approvals","title":"Approvals","rowCount": projection.pending_approvals.len(), "actionCount": 2}),
+            json!({"surfaceId":"commandRegistry","title":"Command Registry","rowCount": projection.command_registry.len(), "actionCount": 3}),
+        ];
+        let pending_actions = projection
+            .pending_approvals
+            .iter()
+            .map(|approval| json!({"kind":"approval","id": approval.id, "status": approval.status}))
+            .chain(projection.command_registry_requests.iter().map(|request| json!({"kind":"commandRegistry","id": request.id, "status": request.status})))
+            .collect::<Vec<_>>();
+        object.insert("selectedSessionIdentity".to_string(), json!(projection.selected_session.as_ref().map(|session| json!({"id": session.id, "title": session.title, "status": session.status}))));
+        object.insert("selectedProjectIdentity".to_string(), json!(selected_project_id.as_ref().map(|project| json!({"id": project, "displayLabel": project}))));
+        object.insert("modalSurfaceSummaries".to_string(), json!(modal_surface_summaries));
+        object.insert("pendingActions".to_string(), json!(pending_actions));
+        object.insert("sessionList".to_string(), json!(projection.sessions));
+        object.insert("roleOptions".to_string(), json!(role_options));
+        object.insert("modelOptions".to_string(), json!(model_options));
+        object.insert("projectOptions".to_string(), json!(project_options));
+        object.insert("watermarkDeltaMetadata".to_string(), json!({
+            "watermark": projection.watermark,
+            "initialHydrateEntryCap": 50,
+            "selectedChatEntryCount": projection.selected_chat_entries.len(),
+            "deltaContract": {
+                "semanticSelectedChatDeltas": true,
+                "fullSnapshotAllowedFor": ["hydrate", "selection", "resync", "recovery"],
+            },
+        }));
+    }
+    Ok(Json(value))
 }
 
 async fn list_sessions(State(state): State<ServerState>) -> Result<Json<Value>, ApiError> {
@@ -347,10 +423,24 @@ async fn session_history(
 struct CreateSessionRequest {
     role: Option<String>,
     project: Option<String>,
+    model: Option<String>,
     workdir: Option<String>,
     worktree_root: Option<String>,
     title: Option<String>,
     name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateSessionSettingsRequest {
+    project: String,
+    role: String,
+    model: String,
+    workdir: String,
+    worktree_root: String,
+    title: String,
+    name: String,
+    tracked: bool,
 }
 
 async fn create_session(
@@ -358,20 +448,95 @@ async fn create_session(
     payload: std::result::Result<Json<CreateSessionRequest>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let request = parse_json(payload)?;
-    let role_id = request.role.as_deref().unwrap_or(DEFAULT_ROLE_ID);
-    let workdir = request.workdir.as_deref().unwrap_or(".");
-    let role = db::current_role_snapshot(&state.pool, role_id).await.map_err(|error| map_missing_entity(error, "role", role_id))?;
+    let role_id = required_create_session_field(request.role.as_deref(), "role")?;
+    let project = required_create_session_field(request.project.as_deref(), "project")?;
+    let model = required_create_session_field(request.model.as_deref(), "model")?;
+    let workdir = required_create_session_field(request.workdir.as_deref(), "workdir")?;
+    let worktree_root = required_create_session_field(request.worktree_root.as_deref(), "worktreeRoot")?;
+    let title = required_create_session_field(request.title.as_deref(), "title")?;
+    let name = required_create_session_field(request.name.as_deref(), "name")?;
+    let mut role = db::current_role_snapshot(&state.pool, role_id).await.map_err(|error| map_missing_entity(error, "role", role_id))?;
+    role.model_defaults.model = model.to_string();
     let id = db::new_session(
         &state.pool,
         &role,
-        request.project.as_deref(),
+        Some(project),
         workdir,
-        request.worktree_root.as_deref(),
-        request.title.as_deref(),
-        request.name.as_deref(),
+        Some(worktree_root),
+        Some(title),
+        Some(name),
     )
     .await?;
     Ok(Json(json!({"sessionId": id})))
+}
+
+fn required_create_session_field<'a>(value: Option<&'a str>, name: &str) -> Result<&'a str, ApiError> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request(format!("create session requires {name}")))
+}
+
+async fn update_session_settings(
+    State(state): State<ServerState>,
+    Path(session_id): Path<Uuid>,
+    payload: std::result::Result<Json<UpdateSessionSettingsRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let request = parse_json(payload)?;
+    let project = required_create_session_field(Some(&request.project), "project")?;
+    let role_id = required_create_session_field(Some(&request.role), "role")?;
+    let model = required_create_session_field(Some(&request.model), "model")?;
+    let workdir = required_create_session_field(Some(&request.workdir), "workdir")?;
+    let worktree_root = required_create_session_field(Some(&request.worktree_root), "worktreeRoot")?;
+    let title = required_create_session_field(Some(&request.title), "title")?;
+    let name = required_create_session_field(Some(&request.name), "name")?;
+    let mut role = db::current_role_snapshot(&state.pool, role_id).await.map_err(|error| map_missing_entity(error, "role", role_id))?;
+    role.model_defaults.model = model.to_string();
+    let role_snapshot = crate::roles::snapshot_to_value(&role).map_err(anyhow::Error::from)?;
+    let result = sqlx::query(
+        r#"
+        UPDATE sessions
+        SET project_key=$2,
+            role_id=$3,
+            role_version=$4,
+            role_snapshot=$5,
+            workdir=$6,
+            worktree_root=$7,
+            title=$8,
+            name=$9,
+            tracked=$10,
+            updated_at=now()
+        WHERE id=$1
+        "#,
+    )
+    .bind(session_id)
+    .bind(project)
+    .bind(role_id)
+    .bind(&role.version)
+    .bind(role_snapshot)
+    .bind(workdir)
+    .bind(worktree_root)
+    .bind(title)
+    .bind(name)
+    .bind(request.tracked)
+    .execute(&state.pool)
+    .await
+    .map_err(anyhow::Error::from)?;
+    if result.rows_affected() != 1 {
+        return Err(ApiError::not_found("session", session_id));
+    }
+    db::append_event(
+        &state.pool,
+        session_id,
+        None,
+        "session",
+        Some(session_id),
+        "session.settingsUpdated",
+        Some("updated"),
+        json!({"project": project, "role": role_id, "model": model, "workdir": workdir, "worktreeRoot": worktree_root, "title": title, "name": name, "tracked": request.tracked}),
+    )
+    .await?;
+    Ok(Json(json!({"sessionId": session_id, "status": "updated"})))
 }
 
 #[derive(Debug, Deserialize)]
@@ -912,14 +1077,23 @@ mod tests {
     #[derive(Default, Clone)]
     struct FakeModelClient {
         observed_history: Arc<StdMutex<Vec<Vec<ModelHistoryItem>>>>,
+        request_error: Option<&'static str>,
+        final_error: Option<&'static str>,
+        tool_name: Option<&'static str>,
+        tool_arguments: Option<Value>,
+        model_name: Option<&'static str>,
     }
 
     #[async_trait]
     impl ModelClient for FakeModelClient {
         async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> anyhow::Result<ModelToolTurn> {
             self.observed_history.lock().expect("history lock").push(history.to_vec());
+            if let Some(message) = self.request_error {
+                anyhow::bail!("{message}");
+            }
+            let model_name = self.model_name.unwrap_or("fake-model");
             let request_shape = crate::model::codex_adapter::CodexBackedModelClient::request_tool_call_request_shape(
-                "fake-model",
+                model_name,
                 role_instructions,
                 history,
                 runtime_messages,
@@ -929,12 +1103,12 @@ mod tests {
             );
             Ok(ModelToolTurn {
                 provider: "fake".to_string(),
-                model: "fake-model".to_string(),
+                model: model_name.to_string(),
                 assistant_summary: "fake tool call".to_string(),
                 tool_call: ToolCallRequest {
                     call_identity: "fake-call".to_string(),
-                    tool_name: "execute_code".to_string(),
-                    arguments: json!({"source": "output(\"fake-ok\")"}),
+                    tool_name: self.tool_name.unwrap_or("execute_code").to_string(),
+                    arguments: self.tool_arguments.clone().unwrap_or_else(|| json!({"source": "output(\"fake-ok\")"})),
                 },
                 request_shape,
                 raw_response: json!({"output":[{"type":"function_call","name":"execute_code","call_id":"fake-call","arguments":"{\"source\":\"output(\\\"fake-ok\\\")\"}"}]}),
@@ -942,11 +1116,15 @@ mod tests {
         }
 
         async fn submit_tool_result(&self, role_instructions: &str, history: &[ModelHistoryItem], _tool_call_response: &Value, call_id: &str, tool_result: &Value) -> anyhow::Result<ModelFinalTurn> {
+            if let Some(message) = self.final_error {
+                anyhow::bail!("{message}");
+            }
+            let model_name = self.model_name.unwrap_or("fake-model");
             Ok(ModelFinalTurn {
                 provider: "fake".to_string(),
-                model: "fake-model".to_string(),
+                model: model_name.to_string(),
                 final_text: format!("fake final {call_id} {}", tool_result.get("status").and_then(Value::as_str).unwrap_or("unknown")),
-                request_shape: json!({"model":"fake-model","instructions":role_instructions,"history":history,"toolResult":tool_result}),
+                request_shape: json!({"model":model_name,"instructions":role_instructions,"history":history,"toolResult":tool_result}),
                 raw_response: json!({"output":[{"type":"message","content":[{"type":"output_text","text":"fake final"}]}]}),
             })
         }
@@ -1031,6 +1209,173 @@ mod tests {
         assert!(value["error"]["details"].is_object());
     }
 
+    async fn assert_turn_terminal(pool: &PgPool, session_id: Uuid, input: &str, expected_status: &str, expected_event_status: &str) {
+        let row = sqlx::query("SELECT id, status FROM turns WHERE session_id=$1 AND input_text=$2 ORDER BY started_at DESC LIMIT 1")
+            .bind(session_id)
+            .bind(input)
+            .fetch_one(pool)
+            .await
+            .expect("terminal turn row");
+        let turn_id: Uuid = row.get("id");
+        let status: String = row.get("status");
+        assert_eq!(status, expected_status);
+        assert_ne!(status, "running");
+        let completed_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND turn_id=$2 AND event_type='turn.completed' AND status=$3")
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(expected_event_status)
+            .fetch_one(pool)
+            .await
+            .expect("terminal event count");
+        assert!(completed_events >= 1, "terminal turn event missing for {turn_id}");
+    }
+
+    #[tokio::test]
+    async fn forced_routing_failure_leaves_terminal_turn() {
+        let test_db = validation_db().await;
+        let mut role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("lifecycle-route"), ".", Some("."), None, None).await.expect("session");
+        role.routing.default_recipient = Some("missing-routing-recipient".to_string());
+        role.routing.allowed_recipients = vec!["missing-routing-recipient".to_string()];
+        sqlx::query("UPDATE sessions SET role_snapshot=$2 WHERE id=$1")
+            .bind(session_id)
+            .bind(crate::roles::snapshot_to_value(&role).expect("snapshot value"))
+            .execute(&test_db.pool)
+            .await
+            .expect("corrupt route snapshot");
+        let model = FakeModelClient::default();
+        let result = crate::runtime::send_with_model_client(&test_db.pool, session_id, "routing forced failure", &model, compaction::CompactionBudget::default()).await;
+        assert!(result.is_err());
+        assert_turn_terminal(&test_db.pool, session_id, "routing forced failure", "failed", "failed").await;
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn forced_model_dispatch_failure_leaves_terminal_turn() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("lifecycle-model"), ".", Some("."), None, None).await.expect("session");
+        let model = FakeModelClient { request_error: Some("forced model dispatch failure"), ..Default::default() };
+        let result = crate::runtime::send_with_model_client(&test_db.pool, session_id, "model forced failure", &model, compaction::CompactionBudget::default()).await;
+        assert!(result.is_err());
+        assert_turn_terminal(&test_db.pool, session_id, "model forced failure", "failed", "failed").await;
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn forced_tool_execution_failure_leaves_terminal_turn() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("lifecycle-tool"), ".", Some("."), None, None).await.expect("session");
+        let model = FakeModelClient { tool_arguments: Some(json!({})), ..Default::default() };
+        let turn_id = crate::runtime::send_with_model_client(&test_db.pool, session_id, "tool forced failure", &model, compaction::CompactionBudget::default()).await.expect("tool failure send returns terminal turn");
+        assert_turn_terminal(&test_db.pool, session_id, "tool forced failure", "failed", "failed").await;
+        let tool_status: String = sqlx::query_scalar("SELECT status FROM tool_calls WHERE turn_id=$1")
+            .bind(turn_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("tool status");
+        assert_eq!(tool_status, "failed");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn forced_cancellation_boundary_leaves_terminal_turn() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("lifecycle-cancel"), ".", Some("."), None, None).await.expect("session");
+        let model = FakeModelClient { final_error: Some("request cancellation forced by test fixture"), ..Default::default() };
+        let result = crate::runtime::send_with_model_client(&test_db.pool, session_id, "cancellation forced failure", &model, compaction::CompactionBudget::default()).await;
+        assert!(result.is_err());
+        assert_turn_terminal(&test_db.pool, session_id, "cancellation forced failure", "failed", "failed").await;
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn startup_reconciliation_marks_seeded_running_rows_lost_and_appends_recovery_events() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("reconcile-project"), ".", Some("."), None, None).await.expect("session");
+        sqlx::query("UPDATE sessions SET updated_at = now() - interval '1 hour' WHERE id=$1")
+            .bind(session_id)
+            .execute(&test_db.pool)
+            .await
+            .expect("age session");
+        let before_updated_at: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT updated_at FROM sessions WHERE id=$1")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("before updated_at");
+        let turn_id = Uuid::new_v4();
+        let tool_id = Uuid::new_v4();
+        let script_id = Uuid::new_v4();
+        let host_id = Uuid::new_v4();
+        let command_id = Uuid::new_v4();
+        let process_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user','stale running turn','running',now() - interval '10 minutes')")
+            .bind(turn_id).bind(session_id).execute(&test_db.pool).await.expect("turn");
+        sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, started_at) VALUES ($1,$2,$3,'execute_code','stale-tool','{}'::jsonb,'running',now() - interval '10 minutes')")
+            .bind(tool_id).bind(session_id).bind(turn_id).execute(&test_db.pool).await.expect("tool");
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, started_at) VALUES ($1,$2,'output(1)','running',now() - interval '10 minutes')")
+            .bind(script_id).bind(tool_id).execute(&test_db.pool).await.expect("script");
+        sqlx::query("INSERT INTO host_api_calls (id, script_run_id, api_name, input, status, started_at) VALUES ($1,$2,'fs.read','{}'::jsonb,'running',now() - interval '10 minutes')")
+            .bind(host_id).bind(script_id).execute(&test_db.pool).await.expect("host");
+        sqlx::query("INSERT INTO command_runs (id, host_api_call_id, binary_name, argv, cwd, status, started_at) VALUES ($1,$2,'echo','[]'::jsonb,'.','running',now() - interval '10 minutes')")
+            .bind(command_id).bind(host_id).execute(&test_db.pool).await.expect("command");
+        sqlx::query("INSERT INTO managed_processes (id, handle, session_id, starting_turn_id, binary_name, argv, cwd, status, end_of_turn_behavior, end_of_session_behavior, metadata, start_time) VALUES ($1,'stale-process',$2,$3,'sleep','[]'::jsonb,'.','running','terminate','terminate','{}'::jsonb,now() - interval '10 minutes')")
+            .bind(process_id).bind(session_id).bind(turn_id).execute(&test_db.pool).await.expect("process");
+
+        let runtime_summary = db::reconcile_running_runtime_rows(&test_db.pool, "startupTest").await.expect("runtime reconcile");
+        let process_summary = db::reconcile_managed_processes(&test_db.pool, "startupTest").await.expect("process reconcile");
+        assert_eq!(runtime_summary.lost_turns, 1);
+        assert_eq!(runtime_summary.lost_tool_calls, 1);
+        assert_eq!(runtime_summary.lost_script_runs, 1);
+        assert_eq!(runtime_summary.lost_host_api_calls, 1);
+        assert_eq!(runtime_summary.lost_command_runs, 1);
+        assert_eq!(process_summary.lost_processes, 1);
+        for table in ["turns", "tool_calls", "script_runs", "host_api_calls", "command_runs", "managed_processes"] {
+            let lost: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE status='lost'"))
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("lost count");
+            assert_eq!(lost, 1, "{table} lost count");
+        }
+        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type IN ('turn.lost','tool.lost','script.lost','host_api.lost','command.lost','process.lost','session.recovered','session.recoveryDegraded')")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("recovery events");
+        assert!(events >= 8);
+        let after_updated_at: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT updated_at FROM sessions WHERE id=$1")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("after updated_at");
+        assert!(after_updated_at > before_updated_at);
+        db::ensure_active_turn_constraint(&test_db.pool).await.expect("active turn constraint");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn database_rejects_more_than_one_running_turn_per_open_session() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("active-turn-constraint"), ".", Some("."), None, None).await.expect("session");
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status) VALUES ($1,$2,'user','first active','running')")
+            .bind(Uuid::new_v4())
+            .bind(session_id)
+            .execute(&test_db.pool)
+            .await
+            .expect("first running turn");
+        let duplicate = sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status) VALUES ($1,$2,'user','second active','running')")
+            .bind(Uuid::new_v4())
+            .bind(session_id)
+            .execute(&test_db.pool)
+            .await;
+        assert!(duplicate.is_err(), "unique partial index must reject a second running turn for the same session");
+        test_db.cleanup().await;
+    }
+
     async fn next_delta(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>) -> RuntimeDelta {
         loop {
             let message = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
@@ -1083,7 +1428,7 @@ mod tests {
             router.clone(),
             Method::POST,
             "/sessions",
-            json!({"role":"runtime-no-rg","project":"server-validation","workdir":"."}),
+            json!({"role":"runtime-no-rg","project":"server-validation","model":"fake-model","workdir":".","worktreeRoot":".","title":"Server validation","name":"server-validation"}),
         )
         .await;
         let session_id: Uuid = serde_json::from_value(created["sessionId"].clone()).expect("session id");
@@ -1273,7 +1618,7 @@ mod tests {
             selected_session_id: Some(session_id.to_string()),
             ..GuiControllerState::default()
         };
-        let view = crate::rinf_transport::AgentRuntimeControlTowerViewModel::from_runtime_state(
+        let view = crate::rinf_transport::AgentRuntimeWorkbenchViewModel::from_runtime_state(
             "http://127.0.0.1:8765",
             Some(&projection),
             &controller_state,
@@ -1289,7 +1634,7 @@ mod tests {
             view.shell
                 .selected_conversation
                 .iter()
-                .any(|row| row.subtitle.contains("fake final fake-call completed")),
+                .any(|row| row.author == "Assistant" && row.body.contains("fake final fake-call completed")),
             "response row must be available for shared ChatTimeline rendering: {:?}",
             view.shell.selected_conversation
         );
@@ -1315,7 +1660,7 @@ mod tests {
         let state = ServerState::new_with_model_client(
             test_db.pool.clone(),
             "live-rinf-ui-smoke".to_string(),
-            Arc::new(FakeModelClient::default()),
+            Arc::new(FakeModelClient { model_name: Some("fake-live-smoke"), ..Default::default() }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("addr");
@@ -1351,6 +1696,7 @@ mod tests {
                     operation: GuiOperationRequest::CreateSession {
                         role: "runtime-no-rg".to_string(),
                         project: Some("live-rinf-ui-smoke".to_string()),
+                        model: Some("fake-live-smoke".to_string()),
                         workdir: Some(".".to_string()),
                         worktree_root: Some(".".to_string()),
                         title: Some("Live Rinf UI smoke".to_string()),
@@ -1370,6 +1716,31 @@ mod tests {
             })
             .expect("created session id");
 
+        let _ = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "live-smoke-project".to_string(),
+                intent: GuiTransportRequest::SelectProject {
+                    project_id: "live-rinf-ui-smoke".to_string(),
+                },
+            })
+            .await;
+        let project_filtered = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "live-smoke-project-refresh".to_string(),
+                intent: GuiTransportRequest::Rehydrate {
+                    selected_session_id: Some(session_id.clone()),
+                },
+            })
+            .await;
+        assert!(
+            project_filtered.iter().any(|packet| matches!(
+                &packet.output,
+                GuiTransportOutput::WorkbenchView { view_model }
+                    if view_model.shell.sessions.iter().any(|row| row.id == session_id && row.subtitle.contains("live-rinf-ui-smoke") && row.group_label == "runtime-no-rg")
+            )),
+            "created GUI session must refresh under selected project with product-facing role/project labels: {project_filtered:?}"
+        );
+
         let selected = transport
             .send(GuiTransportRequestPacket {
                 packet_id: "live-smoke-select".to_string(),
@@ -1383,7 +1754,7 @@ mod tests {
         assert!(
             selected.iter().any(|packet| matches!(
                 &packet.output,
-                GuiTransportOutput::ControlTowerView { view_model }
+                GuiTransportOutput::WorkbenchView { view_model }
                     if view_model.shell.selected_session_id.as_deref() == Some(session_id.as_str())
             )),
             "selection must flow through the live transport shell view: {selected:?}"
@@ -1422,16 +1793,16 @@ mod tests {
         let view = rehydrated
             .iter()
             .find_map(|packet| match &packet.output {
-                GuiTransportOutput::ControlTowerView { view_model } => Some(view_model),
+                GuiTransportOutput::WorkbenchView { view_model } => Some(view_model),
                 _ => None,
             })
-            .expect("control tower view after send");
+            .expect("Workbench view after send");
         assert_eq!(view.shell.selected_session_id.as_deref(), Some(session_id.as_str()));
         assert!(
             view.shell
                 .selected_conversation
                 .iter()
-                .any(|row| row.subtitle.contains("fake final fake-call completed")),
+                .any(|row| row.author == "Assistant" && row.body.contains("fake final fake-call completed")),
             "live transport response must render through shared ChatTimeline rows: {:?}",
             view.shell.selected_conversation
         );
@@ -1442,8 +1813,14 @@ mod tests {
             .await
             .expect("turn count");
         assert_eq!(persisted_turn_count, 1, "live GUI transport smoke must persist the sent turn");
+        let requested_model: String = sqlx::query_scalar("SELECT payload->'request'->>'model' FROM model_events WHERE turn_id=$1 AND event_type='assistant_message'")
+            .bind(Uuid::parse_str(&turn_id).expect("turn uuid"))
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("requested model");
+        assert_eq!(requested_model, "fake-live-smoke");
         println!(
-            "live_rinf_ui_smoke base_url={base_url} session_id={session_id} turn_id={turn_id} persisted_turn_count={persisted_turn_count} chat_timeline_response=\"fake final fake-call completed\" rows={}",
+            "live_rinf_ui_smoke base_url={base_url} session_id={session_id} turn_id={turn_id} persisted_turn_count={persisted_turn_count} requested_model={requested_model} chat_timeline_response=\"fake final fake-call completed\" rows={}",
             view.shell.selected_conversation.len()
         );
         let _ = std::fs::create_dir_all("/tmp/agent-runtime-shell-proof");
@@ -1633,7 +2010,7 @@ mod tests {
         let http = reqwest::Client::new();
         let created: Value = http
             .post(format!("{base_url}/sessions"))
-            .json(&json!({"role":"runtime-no-rg","project":"gui-sync","workdir":"."}))
+            .json(&json!({"role":"runtime-no-rg","project":"gui-sync","model":"fake-model","workdir":".","worktreeRoot":".","title":"GUI sync","name":"gui-sync"}))
             .send()
             .await
             .expect("create session response")
@@ -1775,7 +2152,7 @@ mod tests {
         let http = reqwest::Client::new();
         let created: Value = http
             .post(format!("{base_url}/sessions"))
-            .json(&json!({"role":"runtime-no-rg","project":"gui-sync-resync","workdir":"."}))
+            .json(&json!({"role":"runtime-no-rg","project":"gui-sync-resync","model":"fake-model","workdir":".","worktreeRoot":".","title":"GUI sync resync","name":"gui-sync-resync"}))
             .send()
             .await
             .expect("create response")
@@ -2421,7 +2798,7 @@ mod tests {
 
     async fn insert_turn_and_tool(pool: &PgPool, session_id: Uuid, source: &str) -> (Uuid, Uuid) {
         let turn_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status) VALUES ($1,$2,'user',$3,'running')")
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, completed_at) VALUES ($1,$2,'user',$3,'completed',now())")
             .bind(turn_id)
             .bind(session_id)
             .bind(source)

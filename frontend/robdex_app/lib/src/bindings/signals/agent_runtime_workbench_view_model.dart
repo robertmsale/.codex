@@ -3,8 +3,8 @@ part of 'signals.dart';
 
 
 @immutable
-class AgentRuntimeControlTowerViewModel {
-  const AgentRuntimeControlTowerViewModel({
+class AgentRuntimeWorkbenchViewModel {
+  const AgentRuntimeWorkbenchViewModel({
     required this.discovery,
     required this.remoteDiscovery,
     required this.importedRemoteDiscovery,
@@ -42,9 +42,9 @@ class AgentRuntimeControlTowerViewModel {
     required this.shell,
   });
 
-  static AgentRuntimeControlTowerViewModel deserialize(BinaryDeserializer deserializer) {
+  static AgentRuntimeWorkbenchViewModel deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
-    final instance = AgentRuntimeControlTowerViewModel(
+    final instance = AgentRuntimeWorkbenchViewModel(
       discovery: AgentRuntimeDiscoveryView.deserialize(deserializer),
       remoteDiscovery: AgentRuntimeDiscoveryView.deserialize(deserializer),
       importedRemoteDiscovery: AgentRuntimeDiscoveryView.deserialize(deserializer),
@@ -85,9 +85,9 @@ class AgentRuntimeControlTowerViewModel {
     return instance;
   }
 
-  static AgentRuntimeControlTowerViewModel bincodeDeserialize(Uint8List input) {
+  static AgentRuntimeWorkbenchViewModel bincodeDeserialize(Uint8List input) {
     final deserializer = BincodeDeserializer(input);
-    final value = AgentRuntimeControlTowerViewModel.deserialize(deserializer);
+    final value = AgentRuntimeWorkbenchViewModel.deserialize(deserializer);
     if (deserializer.offset < input.length) {
       throw Exception('Some input bytes were not read');
     }
@@ -130,7 +130,7 @@ class AgentRuntimeControlTowerViewModel {
   final bool hasErrorMessage;
   final AgentRuntimeConversationShellViewModel shell;
 
-  AgentRuntimeControlTowerViewModel copyWith({
+  AgentRuntimeWorkbenchViewModel copyWith({
     AgentRuntimeDiscoveryView? discovery,
     AgentRuntimeDiscoveryView? remoteDiscovery,
     AgentRuntimeDiscoveryView? importedRemoteDiscovery,
@@ -167,7 +167,7 @@ class AgentRuntimeControlTowerViewModel {
     bool? hasErrorMessage,
     AgentRuntimeConversationShellViewModel? shell,
   }) {
-    return AgentRuntimeControlTowerViewModel(
+    return AgentRuntimeWorkbenchViewModel(
       discovery: discovery ?? this.discovery,
       remoteDiscovery: remoteDiscovery ?? this.remoteDiscovery,
       importedRemoteDiscovery: importedRemoteDiscovery ?? this.importedRemoteDiscovery,
@@ -257,7 +257,7 @@ class AgentRuntimeControlTowerViewModel {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
 
-    return other is AgentRuntimeControlTowerViewModel
+    return other is AgentRuntimeWorkbenchViewModel
       && discovery == other.discovery
       && remoteDiscovery == other.remoteDiscovery
       && importedRemoteDiscovery == other.importedRemoteDiscovery
@@ -379,6 +379,6 @@ class AgentRuntimeControlTowerViewModel {
       return true;
     }());
 
-    return fullString ?? 'AgentRuntimeControlTowerViewModel';
+    return fullString ?? 'AgentRuntimeWorkbenchViewModel';
   }
 }

@@ -19,6 +19,8 @@ class ConversationShellScreen extends StatelessWidget {
     this.onArchiveSession,
     this.onForkSession,
     this.onSettings,
+    this.showPermanentDetail = true,
+    this.headerControls,
   });
 
   final ConversationShellData data;
@@ -32,6 +34,8 @@ class ConversationShellScreen extends StatelessWidget {
   final ValueChanged<String>? onArchiveSession;
   final ValueChanged<String>? onForkSession;
   final VoidCallback? onSettings;
+  final bool showPermanentDetail;
+  final Widget? headerControls;
 
   @override
   Widget build(BuildContext context) {
@@ -53,9 +57,11 @@ class ConversationShellScreen extends StatelessWidget {
               onSettings: onSettings,
             );
             final center = _ConversationCenter(
+              key: const ValueKey('conversationShell.center'),
               data: data,
               onSendMessage: onSendMessage,
               onInterrupt: onInterrupt,
+              headerControls: headerControls,
             );
             final detail = detailContent ?? _ConversationDetail(data: data);
             if (compact) {
@@ -69,11 +75,23 @@ class ConversationShellScreen extends StatelessWidget {
             }
             return Row(
               children: [
-                SizedBox(width: 288, child: rail),
+                DecoratedBox(
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFF161A20), Color(0xFF0E1319), Color(0xFF1A1D22)],
+                    ),
+                    border: Border(right: BorderSide(color: Color(0xFF30343B))),
+                  ),
+                  child: SizedBox(width: 288, child: rail),
+                ),
                 const VerticalDivider(width: 1, color: Color(0xFF263241)),
                 Expanded(child: center),
-                const VerticalDivider(width: 1, color: Color(0xFF263241)),
-                SizedBox(width: 320, child: detail),
+                if (showPermanentDetail) ...[
+                  const VerticalDivider(width: 1, color: Color(0xFF263241)),
+                  SizedBox(width: 320, child: detail),
+                ],
               ],
             );
           },
@@ -246,44 +264,92 @@ class _SessionTile extends StatelessWidget {
 }
 
 class _ConversationCenter extends StatelessWidget {
-  const _ConversationCenter({required this.data, required this.onSendMessage, required this.onInterrupt});
+  const _ConversationCenter({super.key, required this.data, required this.onSendMessage, required this.onInterrupt, this.headerControls});
   final ConversationShellData data;
   final ValueChanged<ComposerSubmission> onSendMessage;
   final VoidCallback onInterrupt;
+  final Widget? headerControls;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(18),
-      child: ChatTimeline(
-        threadId: data.selectedSessionId,
-        entries: data.entries,
-        title: data.timelineTitle,
-        contextWindowRemainingPercent: null,
-        onSend: onSendMessage,
-        onInterrupt: onInterrupt,
-        composerEnabled: data.composerEnabled,
-        composerDisabledHint: data.composerDisabledHint,
-        composerPlaceholder: data.composerPlaceholder,
-        isRunning: data.isRunning,
-        selection: WorkspaceSelection(
-          projectId: data.projects.isEmpty ? null : data.projects.first.id,
-          projectRootPath: null,
-          projectOrchestratorThreadId: null,
-          projectOrchestratorName: null,
-          threadId: data.selectedSessionId,
-          threadRole: _selectedRole(data),
-          projectName: data.projects.isEmpty ? 'Agent Runtime' : data.projects.first.title,
-          threadName: data.timelineTitle,
-          connectionLabel: data.connectionLabel,
-          isRunning: data.isRunning,
-        ),
-        availableModels: const [ModelItem(id: 'runtime-default', name: 'Runtime default', hidden: false)],
-        onSettingsChanged: (_) {},
-        onCompactThread: () {},
+    return DecoratedBox(
+      decoration: const BoxDecoration(color: Color(0xFF171C22)),
+      child: Stack(
+        children: [
+          const Positioned.fill(child: _ConversationPaperSurface()),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(28, 16, 28, 22),
+            child: ChatTimeline(
+              threadId: data.selectedSessionId,
+              entries: data.entries,
+              title: data.timelineTitle,
+              contextWindowRemainingPercent: null,
+              onSend: onSendMessage,
+              onInterrupt: onInterrupt,
+              composerEnabled: data.composerEnabled,
+              composerDisabledHint: data.composerDisabledHint,
+              composerPlaceholder: data.composerPlaceholder,
+              isRunning: data.isRunning,
+              selection: WorkspaceSelection(
+                projectId: data.projects.isEmpty ? null : data.projects.first.id,
+                projectRootPath: null,
+                projectOrchestratorThreadId: null,
+                projectOrchestratorName: null,
+                threadId: data.selectedSessionId,
+                threadRole: _selectedRole(data),
+                projectName: data.projects.isEmpty ? 'Agent Runtime' : data.projects.first.title,
+                threadName: data.timelineTitle,
+                connectionLabel: data.connectionLabel,
+                isRunning: data.isRunning,
+              ),
+              availableModels: const [ModelItem(id: 'runtime-default', name: 'Runtime default', hidden: false)],
+              onSettingsChanged: (_) {},
+              onCompactThread: () {},
+              headerControls: headerControls,
+            ),
+          ),
+        ],
       ),
     );
   }
+}
+
+class _ConversationPaperSurface extends StatelessWidget {
+  const _ConversationPaperSurface();
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: CustomPaint(
+        painter: _ConversationPaperSurfacePainter(),
+      ),
+    );
+  }
+}
+
+class _ConversationPaperSurfacePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF101820), Color(0xFF0D151C), Color(0xFF0A1117)],
+        ).createShader(rect),
+    );
+    final hairline = Paint()
+      ..color = const Color(0x22FFFFFF)
+      ..strokeWidth = 0.5;
+    for (double y = 0; y < size.height; y += 11) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), hairline);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ConversationPaperSurfacePainter oldDelegate) => false;
 }
 
 class _ConversationDetail extends StatelessWidget {

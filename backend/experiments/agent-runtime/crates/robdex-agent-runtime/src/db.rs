@@ -21,16 +21,108 @@ pub async fn apply_schema(pool: &PgPool) -> Result<()> {
 
 pub async fn init(pool: &PgPool) -> Result<()> {
     apply_schema(pool).await?;
+    let _ = reconcile_running_runtime_rows(pool, "runtimeRestart").await?;
     let _ = reconcile_managed_processes(pool, "runtimeRestart").await?;
+    ensure_active_turn_constraint(pool).await?;
     crate::command_registry::bootstrap_seed_defaults(pool).await?;
+    Ok(())
+}
+
+pub async fn ensure_active_turn_constraint(pool: &PgPool) -> Result<()> {
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS turns_one_running_per_session_idx
+            ON turns(session_id)
+            WHERE status = 'running'
+        "#,
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcessReconciliationSummary {
+    pub lost_turns: u64,
+    pub lost_tool_calls: u64,
+    pub lost_script_runs: u64,
+    pub lost_host_api_calls: u64,
+    pub lost_command_runs: u64,
     pub lost_processes: u64,
     pub process_events: u64,
     pub session_events: u64,
+}
+
+pub async fn reconcile_running_runtime_rows(pool: &PgPool, reason: &str) -> Result<ProcessReconciliationSummary> {
+    let mut summary = ProcessReconciliationSummary::default();
+    let turns = sqlx::query("UPDATE turns SET status='lost', completed_at=now() WHERE status='running' RETURNING id, session_id")
+        .fetch_all(pool)
+        .await?;
+    for row in turns {
+        summary.lost_turns += 1;
+        let id: Uuid = row.get("id");
+        let session_id: Uuid = row.get("session_id");
+        append_event(pool, session_id, Some(id), "turn", Some(id), "turn.lost", Some("lost"), json!({"reason": reason})).await?;
+        append_event(pool, session_id, None, "session", Some(session_id), "session.recovered", Some("lost"), json!({"reason": reason, "entity":"turn", "entityId": id})).await?;
+        summary.session_events += 1;
+    }
+
+    let tools = sqlx::query("UPDATE tool_calls SET status='lost', completed_at=now() WHERE status='running' RETURNING id, session_id, turn_id")
+        .fetch_all(pool)
+        .await?;
+    for row in tools {
+        summary.lost_tool_calls += 1;
+        let id: Uuid = row.get("id");
+        let session_id: Uuid = row.get("session_id");
+        let turn_id: Uuid = row.get("turn_id");
+        append_event(pool, session_id, Some(turn_id), "tool", Some(id), "tool.lost", Some("lost"), json!({"reason": reason})).await?;
+    }
+
+    let scripts = sqlx::query(
+        r#"
+        UPDATE script_runs sr SET status='lost', completed_at=now()
+        FROM tool_calls tc
+        WHERE sr.status='running' AND sr.tool_call_id=tc.id
+        RETURNING sr.id, tc.session_id, tc.turn_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    for row in scripts {
+        summary.lost_script_runs += 1;
+        append_event(pool, row.get("session_id"), Some(row.get("turn_id")), "script", Some(row.get("id")), "script.lost", Some("lost"), json!({"reason": reason})).await?;
+    }
+
+    let host_calls = sqlx::query(
+        r#"
+        UPDATE host_api_calls hc SET status='lost', completed_at=now()
+        FROM script_runs sr JOIN tool_calls tc ON tc.id=sr.tool_call_id
+        WHERE hc.status='running' AND hc.script_run_id=sr.id
+        RETURNING hc.id, tc.session_id, tc.turn_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    for row in host_calls {
+        summary.lost_host_api_calls += 1;
+        append_event(pool, row.get("session_id"), Some(row.get("turn_id")), "host_api", Some(row.get("id")), "host_api.lost", Some("lost"), json!({"reason": reason})).await?;
+    }
+
+    let command_runs = sqlx::query(
+        r#"
+        UPDATE command_runs cr SET status='lost', completed_at=now()
+        FROM host_api_calls hc JOIN script_runs sr ON sr.id=hc.script_run_id JOIN tool_calls tc ON tc.id=sr.tool_call_id
+        WHERE cr.status='running' AND cr.host_api_call_id=hc.id
+        RETURNING cr.id, tc.session_id, tc.turn_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    for row in command_runs {
+        summary.lost_command_runs += 1;
+        append_event(pool, row.get("session_id"), Some(row.get("turn_id")), "command", Some(row.get("id")), "command.lost", Some("lost"), json!({"reason": reason})).await?;
+    }
+    Ok(summary)
 }
 
 pub async fn reconcile_managed_processes(pool: &PgPool, reason: &str) -> Result<ProcessReconciliationSummary> {
@@ -675,6 +767,10 @@ pub async fn append_event(
     .bind(payload)
     .execute(pool)
     .await?;
+    sqlx::query("UPDATE sessions SET updated_at = now() WHERE id = $1")
+        .bind(session_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

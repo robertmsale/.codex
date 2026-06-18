@@ -100,6 +100,25 @@ pub struct TimelineItem {
     pub created_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeChatEntry {
+    pub id: String,
+    pub author: String,
+    pub display_label: String,
+    pub timestamp: Option<String>,
+    pub body: String,
+    pub subtitle: String,
+    pub kind: String,
+    pub status: String,
+    pub process_id: Option<String>,
+    pub command: String,
+    pub output: String,
+    pub delivery_state: String,
+    pub is_streaming: bool,
+    pub is_tool: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingApprovalSummary {
@@ -300,13 +319,82 @@ pub struct RuntimeProjection {
     pub sessions: Vec<SessionListItem>,
     pub selected_session: Option<SelectedSessionDetail>,
     pub timeline: Vec<TimelineItem>,
+    #[serde(default)]
+    pub selected_chat_entries: Vec<AgentRuntimeChatEntry>,
     pub pending_approvals: Vec<PendingApprovalSummary>,
     pub roles: Vec<RoleSummary>,
     pub command_registry: Vec<CommandRegistrySummary>,
     #[serde(default)]
     pub command_registry_requests: Vec<CommandRegistryRequestSummary>,
     pub workflow_memories: Vec<WorkflowMemorySummary>,
+    #[serde(default)]
+    pub statistics: RuntimeStatistics,
     pub resync_required: Option<ResyncRequiredState>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeStatistics {
+    pub turns: u64,
+    pub model_events: u64,
+    pub tool_calls: u64,
+    pub script_runs: u64,
+    pub host_api_calls: u64,
+    pub command_runs: u64,
+    pub managed_processes: u64,
+    pub output_artifacts: u64,
+    pub compaction_checkpoints: u64,
+    pub approval_requests: u64,
+    pub command_registry_requests: u64,
+    pub failed_rows: u64,
+    pub running_rows: u64,
+    pub lost_rows: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeChatTransportDiagnostics {
+    pub full_snapshot_count: u64,
+    pub delta_count: u64,
+    pub total_payload_bytes: u64,
+    pub max_payload_bytes: u64,
+    pub selected_chat_entry_count: usize,
+    pub coalesced_payload_count: u64,
+    pub dropped_intermediate_payload_count: u64,
+    pub unrelated_modal_rebuild_count: u64,
+    pub unrelated_rail_rebuild_count: u64,
+}
+
+impl AgentRuntimeChatTransportDiagnostics {
+    pub fn record_snapshot(&mut self, payload_bytes: usize, selected_chat_entry_count: usize) {
+        self.full_snapshot_count += 1;
+        self.record_payload(payload_bytes);
+        self.selected_chat_entry_count = selected_chat_entry_count.min(50);
+    }
+
+    pub fn record_delta(&mut self, payload_bytes: usize, selected_chat_entry_count: usize, coalesced: bool) {
+        self.delta_count += 1;
+        if coalesced {
+            self.coalesced_payload_count += 1;
+        }
+        self.record_payload(payload_bytes);
+        self.selected_chat_entry_count = selected_chat_entry_count.min(50);
+    }
+
+    pub fn record_dropped_intermediate(&mut self) {
+        self.dropped_intermediate_payload_count += 1;
+    }
+
+    pub fn average_payload_bytes(&self) -> u64 {
+        let count = self.full_snapshot_count + self.delta_count;
+        if count == 0 { 0 } else { self.total_payload_bytes / count }
+    }
+
+    fn record_payload(&mut self, payload_bytes: usize) {
+        let bytes = payload_bytes as u64;
+        self.total_payload_bytes += bytes;
+        self.max_payload_bytes = self.max_payload_bytes.max(bytes);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -350,6 +438,7 @@ pub struct GuiOperationState {
 pub struct GuiControllerState {
     pub connection_state: GuiConnectionState,
     pub selected_session_id: Option<String>,
+    pub selected_project_id: Option<String>,
     pub selected_workflow_memory_id: Option<String>,
     pub selected_view: GuiSelectedView,
     pub active_operations: Vec<GuiOperationState>,
@@ -365,6 +454,7 @@ impl Default for GuiControllerState {
         Self {
             connection_state: GuiConnectionState::Disconnected,
             selected_session_id: None,
+            selected_project_id: None,
             selected_workflow_memory_id: None,
             selected_view: GuiSelectedView::Sessions,
             active_operations: Vec::new(),
@@ -402,6 +492,14 @@ impl GuiControllerState {
         self.selected_workflow_memory_id = memory_id;
         GuiOperationExpectation::UpdateLocalState
     }
+
+    pub fn select_project(&mut self, project_id: Option<String>) -> GuiOperationExpectation {
+        self.selected_project_id = project_id;
+        self.selected_session_id = None;
+        self.selected_workflow_memory_id = None;
+        self.pending_rehydrate = true;
+        GuiOperationExpectation::Rehydrate
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -432,6 +530,8 @@ pub enum GuiOperationName {
     SelectSession,
     SelectWorkflowMemory,
     CreateSession,
+    UpdateRuntimeSettings,
+    UpdateSessionSettings,
     SendMessage,
     TerminateProcess,
     InputProcess,
@@ -471,7 +571,9 @@ pub enum GuiOperationRequest {
     Disconnect,
     SelectSession { session_id: Option<String> },
     SelectWorkflowMemory { memory_id: Option<String> },
-    CreateSession { role: String, project: Option<String>, workdir: Option<String>, worktree_root: Option<String>, title: Option<String>, name: Option<String> },
+    CreateSession { role: String, project: Option<String>, model: Option<String>, workdir: Option<String>, worktree_root: Option<String>, title: Option<String>, name: Option<String> },
+    UpdateRuntimeSettings { base_url: String, selected_project_id: Option<String> },
+    UpdateSessionSettings { session_id: String, project: String, role: String, model: String, workdir: String, worktree_root: String, title: String, name: String, tracked: bool },
     SendMessage { session_id: String, message: String },
     TerminateProcess { session_id: String, handle: String },
     InputProcess { session_id: String, handle: String, text: String },
@@ -512,6 +614,8 @@ impl GuiOperationRequest {
             Self::SelectSession { .. } => GuiOperationName::SelectSession,
             Self::SelectWorkflowMemory { .. } => GuiOperationName::SelectWorkflowMemory,
             Self::CreateSession { .. } => GuiOperationName::CreateSession,
+            Self::UpdateRuntimeSettings { .. } => GuiOperationName::UpdateRuntimeSettings,
+            Self::UpdateSessionSettings { .. } => GuiOperationName::UpdateSessionSettings,
             Self::SendMessage { .. } => GuiOperationName::SendMessage,
             Self::TerminateProcess { .. } => GuiOperationName::TerminateProcess,
             Self::InputProcess { .. } => GuiOperationName::InputProcess,
@@ -546,9 +650,10 @@ impl GuiOperationRequest {
     pub fn expected_projection_effect(&self) -> GuiOperationExpectation {
         match self {
             Self::Connect { .. } | Self::Hydrate { .. } | Self::Rehydrate { .. } => GuiOperationExpectation::Rehydrate,
-            Self::Disconnect | Self::SelectWorkflowMemory { .. } => GuiOperationExpectation::UpdateLocalState,
+            Self::Disconnect | Self::SelectWorkflowMemory { .. } | Self::UpdateRuntimeSettings { .. } => GuiOperationExpectation::UpdateLocalState,
             Self::SelectSession { .. } => GuiOperationExpectation::RehydrateAndReconnect,
             Self::CreateSession { .. }
+            | Self::UpdateSessionSettings { .. }
             | Self::SendMessage { .. }
             | Self::TerminateProcess { .. }
             | Self::InputProcess { .. }
@@ -587,8 +692,10 @@ impl GuiOperationRequest {
             Self::Rehydrate { .. } => http_mapping(self.name(), "GET", "/state/snapshot?selectedSessionId=<optional>", "none", "RuntimeProjection", GuiOperationExpectation::Rehydrate),
             Self::Disconnect => local_mapping(self.name(), "close local WebSocket stream and mark disconnected", GuiOperationExpectation::UpdateLocalState),
             Self::SelectSession { .. } => local_mapping(self.name(), "set selectedSessionId, then GET /state/snapshot and reconnect /state/ws with selectedSessionId", GuiOperationExpectation::RehydrateAndReconnect),
-            Self::SelectWorkflowMemory { .. } => local_mapping(self.name(), "set selectedWorkflowMemoryId; Control Tower view model deterministically falls back when unavailable", GuiOperationExpectation::UpdateLocalState),
-            Self::CreateSession { .. } => http_mapping(self.name(), "POST", "/sessions", r#"{"role","project","workdir","worktreeRoot","title","name"}"#, r#"{"sessionId"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::SelectWorkflowMemory { .. } => local_mapping(self.name(), "set selectedWorkflowMemoryId; Workbench view model deterministically falls back when unavailable", GuiOperationExpectation::UpdateLocalState),
+            Self::CreateSession { .. } => http_mapping(self.name(), "POST", "/sessions", r#"{"role","project","model","workdir","worktreeRoot","title","name"}"#, r#"{"sessionId"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::UpdateRuntimeSettings { .. } => local_mapping(self.name(), "validate runtime GUI settings and update Rust-owned controller settings", GuiOperationExpectation::UpdateLocalState),
+            Self::UpdateSessionSettings { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/settings", r#"{"project","role","model","workdir","worktreeRoot","title","name","tracked"}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::SendMessage { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/send", r#"{"message"}"#, r#"{"sessionId","turnId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::TerminateProcess { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/processes/{handle}/terminate", "{}", r#"{"handle","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::InputProcess { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/processes/{handle}/input", r#"{"text"}"#, r#"{"handle","status"}"#, GuiOperationExpectation::WaitForDelta),
@@ -628,6 +735,7 @@ impl GuiOperationRequest {
             | Self::Disconnect
             | Self::SelectSession { .. }
             | Self::SelectWorkflowMemory { .. }
+            | Self::UpdateRuntimeSettings { .. }
             | Self::ListCommandRegistry { .. }
             | Self::ShowCommand { .. }
             | Self::ListCommandRegistryRequests
@@ -637,13 +745,24 @@ impl GuiOperationRequest {
             | Self::ListRoleVersions { .. }
             | Self::ShowRoleVersion { .. }
             | Self::ExportRole { .. } => None,
-            Self::CreateSession { role, project, workdir, worktree_root, title, name } => Some(json!({
+            Self::CreateSession { role, project, model, workdir, worktree_root, title, name } => Some(json!({
                 "role": role,
                 "project": project,
+                "model": model,
                 "workdir": workdir,
                 "worktreeRoot": worktree_root,
                 "title": title,
                 "name": name,
+            })),
+            Self::UpdateSessionSettings { project, role, model, workdir, worktree_root, title, name, tracked, .. } => Some(json!({
+                "project": project,
+                "role": role,
+                "model": model,
+                "workdir": workdir,
+                "worktreeRoot": worktree_root,
+                "title": title,
+                "name": name,
+                "tracked": tracked,
             })),
             Self::SendMessage { message, .. } => Some(json!({"message": message})),
             Self::TerminateProcess { .. } | Self::FlushProcess { .. } => Some(json!({})),
@@ -880,7 +999,7 @@ pub const DART_ALLOWED_EPHEMERAL_RESPONSIBILITIES: &[&str] = &[
     "localLayout",
 ];
 
-pub const GUI_OPERATION_VARIANT_COUNT: usize = 35;
+pub const GUI_OPERATION_VARIANT_COUNT: usize = 37;
 
 impl Default for RuntimeProjection {
     fn default() -> Self {
@@ -890,11 +1009,13 @@ impl Default for RuntimeProjection {
             sessions: Vec::new(),
             selected_session: None,
             timeline: Vec::new(),
+            selected_chat_entries: Vec::new(),
             pending_approvals: Vec::new(),
             roles: Vec::new(),
             command_registry: Vec::new(),
             command_registry_requests: Vec::new(),
             workflow_memories: Vec::new(),
+            statistics: RuntimeStatistics::default(),
             resync_required: None,
         }
     }
@@ -940,6 +1061,9 @@ pub enum RuntimeDeltaKind {
     SessionClose { session_id: String, closed_at: Option<String> },
     SelectedSessionReplace { session: Option<SelectedSessionDetail> },
     SelectedSessionPatch { session: SelectedSessionDetail },
+    SelectedChatAppend { entry: AgentRuntimeChatEntry },
+    SelectedChatUpdate { entry: AgentRuntimeChatEntry },
+    SelectedChatFinalize { entry_id: String, delivery_state: String, status: String },
     TimelineAppend { item: TimelineItem },
     TurnStatusChanged { turn_id: String, status: String },
     ToolStatusChanged { tool_call_id: String, status: String },
@@ -1050,6 +1174,22 @@ fn apply_delta_kind(projection: &mut RuntimeProjection, kind: RuntimeDeltaKind) 
         }
         RuntimeDeltaKind::SelectedSessionReplace { session } => replace_if_changed(&mut projection.selected_session, session),
         RuntimeDeltaKind::SelectedSessionPatch { session } => replace_if_changed(&mut projection.selected_session, Some(session)),
+        RuntimeDeltaKind::SelectedChatAppend { entry } | RuntimeDeltaKind::SelectedChatUpdate { entry } => {
+            let changed = upsert_by(&mut projection.selected_chat_entries, entry, |item| item.id.as_str());
+            cap_selected_chat(projection);
+            changed
+        }
+        RuntimeDeltaKind::SelectedChatFinalize { entry_id, delivery_state, status } => {
+            if let Some(entry) = projection.selected_chat_entries.iter_mut().find(|entry| entry.id == entry_id) {
+                let mut changed = false;
+                changed |= replace_if_changed(&mut entry.delivery_state, delivery_state);
+                changed |= replace_if_changed(&mut entry.status, status);
+                changed |= replace_if_changed(&mut entry.is_streaming, false);
+                changed
+            } else {
+                false
+            }
+        }
         RuntimeDeltaKind::TimelineAppend { item } | RuntimeDeltaKind::WorkflowMemoryEvent { item } => append_timeline(projection, item),
         RuntimeDeltaKind::TurnStatusChanged { turn_id, status } => update_timeline_status(projection, "turn", &turn_id, status),
         RuntimeDeltaKind::ToolStatusChanged { tool_call_id, status } => update_timeline_status(projection, "tool", &tool_call_id, status),
@@ -1096,6 +1236,13 @@ fn append_timeline(projection: &mut RuntimeProjection, item: TimelineItem) -> bo
         .unwrap_or_else(|index| index);
     projection.timeline.insert(insert_at, item);
     true
+}
+
+fn cap_selected_chat(projection: &mut RuntimeProjection) {
+    if projection.selected_chat_entries.len() > 50 {
+        let drop_count = projection.selected_chat_entries.len() - 50;
+        projection.selected_chat_entries.drain(0..drop_count);
+    }
 }
 
 fn update_timeline_status(
@@ -1282,7 +1429,9 @@ mod tests {
             GuiOperationRequest::Disconnect,
             GuiOperationRequest::SelectSession { session_id: Some("session-1".to_string()) },
             GuiOperationRequest::SelectWorkflowMemory { memory_id: Some("memory-1".to_string()) },
-            GuiOperationRequest::CreateSession { role: "runtime-allow".to_string(), project: Some("project".to_string()), workdir: Some(".".to_string()), worktree_root: None, title: None, name: None },
+            GuiOperationRequest::CreateSession { role: "runtime-allow".to_string(), project: Some("project".to_string()), model: Some("gpt-5.4-mini".to_string()), workdir: Some(".".to_string()), worktree_root: None, title: None, name: None },
+            GuiOperationRequest::UpdateRuntimeSettings { base_url: "http://127.0.0.1:8765".to_string(), selected_project_id: Some("project".to_string()) },
+            GuiOperationRequest::UpdateSessionSettings { session_id: "session-1".to_string(), project: "project".to_string(), role: "runtime-allow".to_string(), model: "gpt-5.5".to_string(), workdir: ".".to_string(), worktree_root: ".".to_string(), title: "title".to_string(), name: "name".to_string(), tracked: true },
             GuiOperationRequest::SendMessage { session_id: "session-1".to_string(), message: "hello".to_string() },
             GuiOperationRequest::TerminateProcess { session_id: "session-1".to_string(), handle: "proc_1".to_string() },
             GuiOperationRequest::InputProcess { session_id: "session-1".to_string(), handle: "proc_1".to_string(), text: "hello".to_string() },
@@ -1815,7 +1964,8 @@ mod tests {
                 GuiOperationRequest::Connect { .. }
                 | GuiOperationRequest::Disconnect
                 | GuiOperationRequest::SelectSession { .. }
-                | GuiOperationRequest::SelectWorkflowMemory { .. } => {
+                | GuiOperationRequest::SelectWorkflowMemory { .. }
+                | GuiOperationRequest::UpdateRuntimeSettings { .. } => {
                     assert!(mapping.local_only);
                     assert!(mapping.method.is_none());
                 }
@@ -1893,5 +2043,81 @@ mod tests {
         assert!(pending_summary.can_decide);
         assert_eq!(pending_summary.decide_label, "Decide request");
         assert!(!pending_summary.can_apply);
+    }
+
+    fn chat_entry(id: &str, author: &str, body: &str, is_tool: bool, status: &str) -> AgentRuntimeChatEntry {
+        AgentRuntimeChatEntry {
+            id: id.to_string(),
+            author: author.to_string(),
+            display_label: author.to_string(),
+            timestamp: None,
+            body: body.to_string(),
+            subtitle: status.to_string(),
+            kind: if is_tool { "execute_code".to_string() } else { "message".to_string() },
+            status: status.to_string(),
+            process_id: if is_tool { Some("proc-1".to_string()) } else { None },
+            command: if is_tool { "output('delta')".to_string() } else { String::new() },
+            output: if is_tool { "partial output".to_string() } else { String::new() },
+            delivery_state: if status == "completed" { "delivered".to_string() } else { "streaming".to_string() },
+            is_streaming: status == "running",
+            is_tool,
+        }
+    }
+
+    #[test]
+    fn selected_chat_semantic_deltas_update_user_assistant_tool_and_final_without_full_snapshot() {
+        let mut projection = RuntimeProjection::default();
+        projection.selected_chat_entries = (0..50)
+            .map(|index| chat_entry(&format!("old-{index}"), "Assistant", "old", false, "completed"))
+            .collect();
+        let mut diagnostics = AgentRuntimeChatTransportDiagnostics::default();
+        let snapshot_payload = serde_json::to_vec(&projection.selected_chat_entries).expect("snapshot bytes");
+        diagnostics.record_snapshot(snapshot_payload.len(), projection.selected_chat_entries.len());
+
+        let deltas = [
+            RuntimeDeltaKind::SelectedChatAppend { entry: chat_entry("turn-1-user", "User", "exact user composer text", false, "completed") },
+            RuntimeDeltaKind::SelectedChatAppend { entry: chat_entry("tool-1", "Tool", "", true, "running") },
+            RuntimeDeltaKind::SelectedChatUpdate { entry: chat_entry("assistant-1", "Assistant", "partial assistant", false, "running") },
+            RuntimeDeltaKind::SelectedChatUpdate { entry: chat_entry("tool-1", "Tool", "", true, "completed") },
+            RuntimeDeltaKind::SelectedChatUpdate { entry: chat_entry("assistant-1", "Assistant", "complete assistant final", false, "completed") },
+            RuntimeDeltaKind::SelectedChatFinalize { entry_id: "assistant-1".to_string(), delivery_state: "delivered".to_string(), status: "completed".to_string() },
+        ];
+        let modal_generation = 7_u64;
+        let rail_generation = 11_u64;
+        for (index, delta_kind) in deltas.into_iter().enumerate() {
+            let runtime_delta = delta((index + 1) as i64, delta_kind);
+            let encoded = serde_json::to_vec(&runtime_delta).expect("delta bytes");
+            assert!(!String::from_utf8_lossy(&encoded).contains("old-0"), "semantic delta must not carry latest-50 snapshot");
+            diagnostics.record_delta(encoded.len(), projection.selected_chat_entries.len(), true);
+            assert_eq!(projection.apply_delta(runtime_delta), ApplyOutcome::Applied);
+            assert!(projection.selected_chat_entries.len() <= 50);
+            assert_eq!(modal_generation, 7, "streaming delta must not rebuild unrelated modal surfaces");
+            assert_eq!(rail_generation, 11, "streaming delta must not rebuild unrelated rail surfaces");
+        }
+        for _ in 0..990 {
+            diagnostics.record_dropped_intermediate();
+        }
+
+        assert!(projection.selected_chat_entries.iter().any(|entry| entry.id == "turn-1-user" && entry.author == "User" && entry.body == "exact user composer text"));
+        assert!(projection.selected_chat_entries.iter().any(|entry| entry.id == "assistant-1" && entry.author == "Assistant" && entry.body == "complete assistant final" && !entry.is_streaming));
+        assert!(projection.selected_chat_entries.iter().any(|entry| entry.id == "tool-1" && entry.author == "Tool" && entry.is_tool && entry.status == "completed" && entry.command.contains("output")));
+        println!(
+            "agent_runtime_selected_chat_delta_counters full_snapshot_count={} delta_count={} average_payload_bytes={} max_payload_bytes={} selected_chat_entry_count={} coalesced_payload_frequency={} dropped_intermediate_payload_count={} unrelated_modal_rebuilds={} unrelated_rail_rebuilds={}",
+            diagnostics.full_snapshot_count,
+            diagnostics.delta_count,
+            diagnostics.average_payload_bytes(),
+            diagnostics.max_payload_bytes,
+            projection.selected_chat_entries.len(),
+            diagnostics.coalesced_payload_count,
+            diagnostics.dropped_intermediate_payload_count,
+            diagnostics.unrelated_modal_rebuild_count,
+            diagnostics.unrelated_rail_rebuild_count,
+        );
+        assert_eq!(diagnostics.full_snapshot_count, 1);
+        assert_eq!(diagnostics.delta_count, 6);
+        assert_eq!(diagnostics.coalesced_payload_count, 6);
+        assert!(diagnostics.dropped_intermediate_payload_count > 0);
+        assert_eq!(diagnostics.unrelated_modal_rebuild_count, 0);
+        assert_eq!(diagnostics.unrelated_rail_rebuild_count, 0);
     }
 }

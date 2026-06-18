@@ -1,4 +1,5 @@
-import 'agent_runtime_control_tower_models.dart';
+import 'agent_runtime_workbench_models.dart';
+import 'workbench_models.dart';
 
 const mockAgentRuntimeRoleAdminEmpty = AgentRuntimeRoleAdminData(
   title: 'Role Admin (0)',
@@ -355,7 +356,7 @@ const mockAgentRuntimeImportedRemoteUnreachable = AgentRuntimeDiscoveryInfo(
   healthUrl: 'http://robertmsale._peer.internal:8765/health',
 );
 
-const mockAgentRuntimeDisconnected = AgentRuntimeControlTowerData(
+const mockAgentRuntimeDisconnected = AgentRuntimeWorkbenchData(
   connectionState: 'disconnected',
   discovery: AgentRuntimeDiscoveryInfo(
     state: 'noDiscoveryFile',
@@ -403,7 +404,7 @@ const mockAgentRuntimeDisconnected = AgentRuntimeControlTowerData(
   pendingRequestCount: 0,
 );
 
-const mockAgentRuntimeConnecting = AgentRuntimeControlTowerData(
+const mockAgentRuntimeConnecting = AgentRuntimeWorkbenchData(
   connectionState: 'connecting',
   discovery: AgentRuntimeDiscoveryInfo(
     state: 'runningHealthy',
@@ -453,7 +454,7 @@ const mockAgentRuntimeConnecting = AgentRuntimeControlTowerData(
   pendingRequestCount: 1,
 );
 
-const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
+const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
   connectionState: 'streaming',
   discovery: AgentRuntimeDiscoveryInfo(
     state: 'runningHealthy',
@@ -517,7 +518,7 @@ const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
   timeline: [
     AgentRuntimeTimelineItem(
       id: 'event-39',
-      title: 'Owner',
+      title: 'User',
       subtitle: 'Please check runtime health.',
       status: 'sent',
       tone: 'user',
@@ -531,10 +532,10 @@ const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
     ),
     AgentRuntimeTimelineItem(
       id: 'event-41',
-      title: 'Tool result',
+      title: 'Tool',
       subtitle: 'Code run completed',
       status: 'completed',
-      tone: 'success',
+      tone: 'warning',
     ),
     AgentRuntimeTimelineItem(
       id: 'event-42',
@@ -542,6 +543,37 @@ const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
       subtitle: 'Search audit requires owner approval',
       status: 'pending',
       tone: 'warning',
+    ),
+  ],
+  selectedConversation: [
+    ChatEntry(
+      id: 'chat-user-1',
+      author: 'User',
+      displayLabel: 'User',
+      timestamp: null,
+      body: 'Please check runtime health.',
+      status: 'sent',
+    ),
+    ChatEntry(
+      id: 'chat-tool-1',
+      author: 'Tool',
+      displayLabel: 'Tool',
+      timestamp: null,
+      body: 'Execute code',
+      subtitle: 'completed',
+      kind: 'execute_code',
+      status: 'completed',
+      command: 'output({"health":"ok"})',
+      output: '{"health":"ok"}',
+      isTool: true,
+    ),
+    ChatEntry(
+      id: 'chat-assistant-1',
+      author: 'Assistant',
+      displayLabel: 'Assistant',
+      timestamp: null,
+      body: 'Health check is passing.',
+      status: 'completed',
     ),
   ],
   actions: [
@@ -597,7 +629,6 @@ const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
         AgentRuntimeFact(label: 'Boundary', value: 'Latest completed turn'),
         AgentRuntimeFact(label: 'Context estimate', value: '42 KB model-visible'),
         AgentRuntimeFact(label: 'Failed checkpoint', value: 'None'),
-        AgentRuntimeFact(label: 'Manual compact', value: 'Use runtime CLI for manual checkpoint'),
       ],
       actions: [],
     ),
@@ -648,9 +679,37 @@ const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
       title: 'History',
       subtitle: 'Runtime audit events',
       rows: [
-        AgentRuntimeFact(label: 'role.imported', value: '#1 · completed · role'),
-        AgentRuntimeFact(label: 'turn.started', value: '#2 · running · turn'),
-        AgentRuntimeFact(label: 'model.final_response', value: '#3 · completed · turn'),
+        AgentRuntimeFact(label: 'Role imported', value: '#1 · completed · role'),
+        AgentRuntimeFact(label: 'Turn started', value: '#2 · running · turn'),
+        AgentRuntimeFact(label: 'Assistant response', value: '#3 · completed · turn'),
+      ],
+      actions: [],
+    ),
+    AgentRuntimeOperationSurface(
+      surfaceId: 'diagnostics',
+      title: 'Diagnostics',
+      subtitle: 'Runtime transport state',
+      rows: [
+        AgentRuntimeFact(label: 'Connection', value: 'streaming'),
+        AgentRuntimeFact(label: 'Selected session', value: 'Runtime validation'),
+      ],
+      actions: [],
+    ),
+    AgentRuntimeOperationSurface(
+      surfaceId: 'roleAdmin',
+      title: 'Role Admin',
+      subtitle: 'Runtime role inventory',
+      rows: [
+        AgentRuntimeFact(label: 'Runtime Allow', value: 'active · role-version-1'),
+      ],
+      actions: [],
+    ),
+    AgentRuntimeOperationSurface(
+      surfaceId: 'workflowMemory',
+      title: 'Workflow Memory',
+      subtitle: 'Session memory signals',
+      rows: [
+        AgentRuntimeFact(label: 'Recover generated API drift', value: 'project · helpful 0.5'),
       ],
       actions: [],
     ),
@@ -683,7 +742,7 @@ const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
   pendingRequestCount: 0,
 );
 
-const mockAgentRuntimeError = AgentRuntimeControlTowerData(
+const mockAgentRuntimeError = AgentRuntimeWorkbenchData(
   connectionState: 'failed',
   discovery: AgentRuntimeDiscoveryInfo(
     state: 'unhealthy',
@@ -733,7 +792,7 @@ const mockAgentRuntimeError = AgentRuntimeControlTowerData(
   errorMessage: 'Runtime did not respond. Check the service, then refresh discovery.',
 );
 
-const mockAgentRuntimeEmpty = AgentRuntimeControlTowerData(
+const mockAgentRuntimeEmpty = AgentRuntimeWorkbenchData(
   connectionState: 'streaming',
   discovery: AgentRuntimeDiscoveryInfo(
     state: 'runningHealthy',

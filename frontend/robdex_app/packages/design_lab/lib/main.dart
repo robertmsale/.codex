@@ -325,8 +325,8 @@ WorkbenchViewData _cleanRobdexGenericWorkbench(WorkbenchViewData workbench) {
     chatEntries: const [
       ChatEntry(
         id: 'owner-1',
-        author: 'owner',
-        displayLabel: 'Owner',
+        author: 'User',
+        displayLabel: 'User',
         timestamp: null,
         body: 'Please keep the bridge stable while this conversation continues.',
       ),
@@ -383,16 +383,16 @@ ConversationShellData _agentRuntimeLiveSmokeShellData() {
     timelineTitle: 'Live smoke session',
     entries: [
       ChatEntry(
-        id: 'live-smoke-owner',
-        author: 'owner',
-        displayLabel: 'Owner',
+        id: 'live-smoke-user',
+        author: 'User',
+        displayLabel: 'User',
         timestamp: null,
         body: 'Check the runtime health and answer briefly.',
       ),
       ChatEntry(
         id: turnId,
-        author: 'assistant',
-        displayLabel: 'Runtime response',
+        author: 'Assistant',
+        displayLabel: 'Assistant',
         timestamp: null,
         body: response,
       ),
@@ -423,7 +423,7 @@ ConversationShellData _agentRuntimeLiveSmokeShellData() {
 class _AgentRuntimeScenario extends StatefulWidget {
   const _AgentRuntimeScenario({required this.data, this.focusSurfaceId});
 
-  final AgentRuntimeControlTowerData data;
+  final AgentRuntimeWorkbenchData data;
   final String? focusSurfaceId;
 
   @override
@@ -449,46 +449,75 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
   Widget build(BuildContext context) {
     if (_hasConnectedRuntime(widget.data)) {
       final shell = agentRuntimeConversationShellData(widget.data);
-      return ConversationShellScreen(
-        data: shell,
-        onSessionSelected: (_) {},
-        onCreateSession: () {},
-        onSendMessage: (_) {},
-        onInterrupt: () {},
-        onCloseSession: (_) {},
-        onArchiveSession: (_) {},
-        onForkSession: (_) {},
-        onProjectSelected: (_) {},
-        onSettings: () {},
-        detailContent: AgentRuntimeOperationsDetail(
-          data: widget.data,
-          focusSurfaceId: widget.focusSurfaceId,
-          onRoleValidate: (_) {},
-          onRoleCreate: (_) {},
-          onRoleUpdate: (_) {},
-          onRoleExport: (_) {},
-          onRoleArchive: (_) {},
-          onRoleUnarchive: (_) {},
-          onRoleActivate: (_, _) {},
-          onWorkflowMemorySelect: (_) {},
-          onWorkflowMemoryAttempted: (_) {},
-          onWorkflowMemoryHelpful: (_) {},
-          onWorkflowMemoryNotHelpful: (_) {},
-          onSessionClose: (_) {},
-          onSessionArchive: (_) {},
-          onSessionFork: (_) {},
-          onProcessTerminate: (_) {},
-          onProcessInput: (_) {},
-          onProcessFlush: (_) {},
-          onApprovalApprove: (_) {},
-          onApprovalResume: (_) {},
-          onCommandRegistryApprove: (_) {},
-          onCommandRegistryApply: (_) {},
-        ),
+      final operations = AgentRuntimeOperationsDetail(
+        data: widget.data,
+        focusSurfaceId: widget.focusSurfaceId,
+        onRoleValidate: (_) {},
+        onRoleCreate: (_) {},
+        onRoleUpdate: (_) {},
+        onRoleExport: (_) {},
+        onRoleArchive: (_) {},
+        onRoleUnarchive: (_) {},
+        onRoleActivate: (_, _) {},
+        onWorkflowMemorySelect: (_) {},
+        onWorkflowMemoryAttempted: (_) {},
+        onWorkflowMemoryHelpful: (_) {},
+        onWorkflowMemoryNotHelpful: (_) {},
+        onSessionClose: (_) {},
+        onSessionArchive: (_) {},
+        onSessionFork: (_) {},
+        onProcessTerminate: (_) {},
+        onProcessInput: (_) {},
+        onProcessFlush: (_) {},
+        onApprovalApprove: (_) {},
+        onApprovalResume: (_) {},
+        onCommandRegistryApprove: (_) {},
+        onCommandRegistryApply: (_) {},
+      );
+      return Stack(
+        children: [
+          ConversationShellScreen(
+            data: shell,
+            onSessionSelected: (_) {},
+            onCreateSession: () {},
+            onSendMessage: (_) {},
+            onInterrupt: () {},
+            onCloseSession: (_) {},
+            onArchiveSession: (_) {},
+            onForkSession: (_) {},
+            onProjectSelected: (_) {},
+            onSettings: () {},
+            showPermanentDetail: false,
+            headerControls: Wrap(
+              spacing: 6,
+              children: const [
+                Text('Session'),
+                Text('History'),
+                Text('Diagnostics'),
+                Text('Settings'),
+                Text('More'),
+              ],
+            ),
+          ),
+          if (widget.focusSurfaceId != null)
+            Positioned(
+              right: 24,
+              top: 72,
+              bottom: 24,
+              width: 420,
+              child: Material(
+                elevation: 18,
+                color: const Color(0xFF111820),
+                borderRadius: BorderRadius.circular(18),
+                clipBehavior: Clip.antiAlias,
+                child: operations,
+              ),
+            ),
+        ],
       );
     }
     return Scaffold(
-      body: AgentRuntimeControlTower(
+      body: AgentRuntimeWorkbench(
         data: widget.data,
         baseUrlController: _baseUrlController,
         onConnect: () {},
@@ -523,7 +552,7 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
   }
 }
 
-bool _hasConnectedRuntime(AgentRuntimeControlTowerData data) {
+bool _hasConnectedRuntime(AgentRuntimeWorkbenchData data) {
   return data.connectionState != 'disconnected' && data.connectionState != 'connecting' && data.connectionState != 'failed';
 }
 

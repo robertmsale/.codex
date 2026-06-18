@@ -1,7 +1,7 @@
 use anyhow::Result;
 use robdex_agent_runtime_projection::{
-    timeline_by_sequence, timeline_item_id, CommandRegistryRequestSummary,
-    CommandRegistrySummary, PendingApprovalSummary, RoleSummary, RuntimeDelta,
+    timeline_by_sequence, timeline_item_id, AgentRuntimeChatEntry, CommandRegistryRequestSummary,
+    CommandRegistrySummary, PendingApprovalSummary, RoleSummary, RuntimeDelta, RuntimeStatistics,
     RuntimeDeltaKind, RuntimeProjection, SelectedSessionDetail, ServerStatusProjection,
     SessionListItem, TimelineItem, WorkflowMemoryEventSummary, WorkflowMemorySummary,
 };
@@ -36,15 +36,54 @@ pub async fn build_runtime_projection_snapshot(
         sessions: session_list_items(pool).await?,
         selected_session: selected_session_detail(pool, selected_session_id).await?,
         timeline: timeline_items(pool, selected_session_id).await?,
+        selected_chat_entries: selected_chat_entries(pool, selected_session_id).await?,
         pending_approvals: pending_approval_summaries(pool).await?,
         roles: role_summaries(pool).await?,
         command_registry: command_registry_summaries(pool).await?,
         command_registry_requests: command_registry_request_summaries(pool).await?,
         workflow_memories: workflow_memory_summaries(pool, selected_session_id).await?,
+        statistics: runtime_statistics(pool).await?,
         resync_required: None,
     };
     projection.timeline = timeline_by_sequence(projection.timeline);
     Ok(projection)
+}
+
+async fn runtime_statistics(pool: &PgPool) -> Result<RuntimeStatistics> {
+    async fn count(pool: &PgPool, sql: &str) -> Result<u64> {
+        let value: i64 = sqlx::query_scalar(sql).fetch_one(pool).await?;
+        Ok(value.max(0) as u64)
+    }
+    Ok(RuntimeStatistics {
+        turns: count(pool, "SELECT COUNT(*) FROM turns").await?,
+        model_events: count(pool, "SELECT COUNT(*) FROM model_events").await?,
+        tool_calls: count(pool, "SELECT COUNT(*) FROM tool_calls").await?,
+        script_runs: count(pool, "SELECT COUNT(*) FROM script_runs").await?,
+        host_api_calls: count(pool, "SELECT COUNT(*) FROM host_api_calls").await?,
+        command_runs: count(pool, "SELECT COUNT(*) FROM command_runs").await?,
+        managed_processes: count(pool, "SELECT COUNT(*) FROM managed_processes").await?,
+        output_artifacts: count(pool, "SELECT COUNT(*) FROM execution_output_artifacts").await?,
+        compaction_checkpoints: count(pool, "SELECT COUNT(*) FROM compaction_checkpoints").await?,
+        approval_requests: count(pool, "SELECT COUNT(*) FROM approval_requests").await?,
+        command_registry_requests: count(pool, "SELECT COUNT(*) FROM command_registry_requests").await?,
+        failed_rows: count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'failed'").await?
+            + count(pool, "SELECT COUNT(*) FROM tool_calls WHERE status = 'failed'").await?
+            + count(pool, "SELECT COUNT(*) FROM script_runs WHERE status = 'failed'").await?
+            + count(pool, "SELECT COUNT(*) FROM host_api_calls WHERE status = 'failed'").await?
+            + count(pool, "SELECT COUNT(*) FROM command_runs WHERE status = 'failed'").await?,
+        running_rows: count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'running'").await?
+            + count(pool, "SELECT COUNT(*) FROM tool_calls WHERE status = 'running'").await?
+            + count(pool, "SELECT COUNT(*) FROM script_runs WHERE status = 'running'").await?
+            + count(pool, "SELECT COUNT(*) FROM host_api_calls WHERE status = 'running'").await?
+            + count(pool, "SELECT COUNT(*) FROM command_runs WHERE status = 'running'").await?
+            + count(pool, "SELECT COUNT(*) FROM managed_processes WHERE status = 'running'").await?,
+        lost_rows: count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'lost'").await?
+            + count(pool, "SELECT COUNT(*) FROM tool_calls WHERE status = 'lost'").await?
+            + count(pool, "SELECT COUNT(*) FROM script_runs WHERE status = 'lost'").await?
+            + count(pool, "SELECT COUNT(*) FROM host_api_calls WHERE status = 'lost'").await?
+            + count(pool, "SELECT COUNT(*) FROM command_runs WHERE status = 'lost'").await?
+            + count(pool, "SELECT COUNT(*) FROM managed_processes WHERE status = 'lost'").await?,
+    })
 }
 
 pub async fn build_projection_deltas_after(
@@ -336,7 +375,7 @@ async fn selected_session_detail(
     };
     let row = sqlx::query(
         r#"
-        SELECT id, status, role_id, role_version, project_key, workdir, worktree_root, title, name, metadata
+        SELECT id, status, role_id, role_version, project_key, workdir, worktree_root, title, name, metadata, role_snapshot
         FROM sessions
         WHERE id = $1
         "#,
@@ -361,6 +400,16 @@ async fn selected_session_detail(
     .fetch_one(pool)
     .await?
     .get("count");
+    let mut metadata: serde_json::Value = row.get("metadata");
+    if let Some(model) = row
+        .get::<serde_json::Value, _>("role_snapshot")
+        .get("modelDefaults")
+        .and_then(|value| value.get("model"))
+        .and_then(serde_json::Value::as_str)
+        && let Some(map) = metadata.as_object_mut()
+    {
+        map.insert("model".to_string(), serde_json::Value::String(model.to_string()));
+    }
     Ok(Some(SelectedSessionDetail {
         id: row.get::<Uuid, _>("id").to_string(),
         role_id: row.get("role_id"),
@@ -373,7 +422,7 @@ async fn selected_session_detail(
         status: row.get("status"),
         pending_approval_count: pending_approval_count.max(0) as u64,
         managed_process_count: managed_process_count.max(0) as u64,
-        metadata: row.get("metadata"),
+        metadata,
     }))
 }
 
@@ -417,6 +466,195 @@ fn timeline_item_from_row(row: &sqlx::postgres::PgRow) -> TimelineItem {
         payload,
         created_at: Some(time(row.get("created_at"))),
     }
+}
+
+async fn selected_chat_entries(
+    pool: &PgPool,
+    selected_session_id: Option<Uuid>,
+) -> Result<Vec<AgentRuntimeChatEntry>> {
+    let Some(session_id) = selected_session_id else {
+        return Ok(Vec::new());
+    };
+
+    let mut entries = Vec::new();
+    let turn_rows = sqlx::query(
+        r#"
+        SELECT id, role, input_text, status, started_at, completed_at
+        FROM turns
+        WHERE session_id = $1
+        ORDER BY started_at ASC, id ASC
+        LIMIT 50
+        "#,
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+
+    for row in turn_rows {
+        let turn_id = row.get::<Uuid, _>("id");
+        let role: String = row.get("role");
+        let author = match role.as_str() {
+            "operator" => "Operator",
+            _ => "User",
+        }
+        .to_string();
+        let started_at = time(row.get("started_at"));
+        let status: String = row.get("status");
+        entries.push(AgentRuntimeChatEntry {
+            id: format!("turn:{turn_id}:user"),
+            author: author.clone(),
+            display_label: author,
+            timestamp: Some(started_at),
+            body: row.get("input_text"),
+            subtitle: status.clone(),
+            kind: "message".to_string(),
+            status: status.clone(),
+            process_id: None,
+            command: String::new(),
+            output: String::new(),
+            delivery_state: if status == "completed" { "delivered" } else { "sending" }.to_string(),
+            is_streaming: status == "running",
+            is_tool: false,
+        });
+
+        for tool in tool_chat_entries(pool, session_id, turn_id).await? {
+            entries.push(tool);
+        }
+
+        if let Some(assistant) = assistant_chat_entry(pool, session_id, turn_id).await? {
+            entries.push(assistant);
+        }
+    }
+    if entries.len() > 50 {
+        entries = entries.split_off(entries.len() - 50);
+    }
+    Ok(entries)
+}
+
+async fn assistant_chat_entry(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Uuid,
+) -> Result<Option<AgentRuntimeChatEntry>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, payload, created_at
+        FROM model_events
+        WHERE session_id = $1 AND turn_id = $2 AND event_type = 'final_response'
+        ORDER BY ordinal DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(session_id)
+    .bind(turn_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| {
+        let id = row.get::<Uuid, _>("id");
+        let payload: Value = row.get("payload");
+        let body = payload
+            .get("finalText")
+            .and_then(Value::as_str)
+            .or_else(|| payload.get("summary").and_then(Value::as_str))
+            .unwrap_or("")
+            .to_string();
+        AgentRuntimeChatEntry {
+            id: format!("model:{id}:assistant"),
+            author: "Assistant".to_string(),
+            display_label: "Assistant".to_string(),
+            timestamp: Some(time(row.get("created_at"))),
+            body,
+            subtitle: "completed".to_string(),
+            kind: "message".to_string(),
+            status: "completed".to_string(),
+            process_id: None,
+            command: String::new(),
+            output: String::new(),
+            delivery_state: "delivered".to_string(),
+            is_streaming: false,
+            is_tool: false,
+        }
+    }))
+}
+
+async fn tool_chat_entries(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Uuid,
+) -> Result<Vec<AgentRuntimeChatEntry>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT tc.id AS tool_id, tc.tool_name, tc.status AS tool_status, tc.result, tc.started_at,
+               sr.id AS script_id, sr.source, sr.status AS script_status, sr.final_output,
+               COALESCE(sr.final_output, sr.stdout, '') AS script_output,
+               mp.id AS process_id, mp.handle AS process_handle, mp.binary_name, mp.argv, mp.status AS process_status,
+               (
+                   SELECT artifact.id::text || E'\n' || content FROM execution_output_artifacts artifact
+                   WHERE artifact.tool_call_id = tc.id OR artifact.script_run_id = sr.id OR artifact.process_id = mp.id
+                   ORDER BY artifact.created_at DESC LIMIT 1
+               ) AS artifact_output
+        FROM tool_calls tc
+        LEFT JOIN script_runs sr ON sr.tool_call_id = tc.id
+        LEFT JOIN managed_processes mp ON mp.starting_turn_id = tc.turn_id
+        WHERE tc.session_id = $1 AND tc.turn_id = $2
+        ORDER BY tc.started_at ASC
+        "#,
+    )
+    .bind(session_id)
+    .bind(turn_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let tool_id = row.get::<Uuid, _>("tool_id");
+            let tool_name: String = row.get("tool_name");
+            let script_id: Option<Uuid> = row.get("script_id");
+            let source: Option<String> = row.get("source");
+            let process_id: Option<Uuid> = row.get("process_id");
+            let process_handle: Option<String> = row.get("process_handle");
+            let binary_name: Option<String> = row.get("binary_name");
+            let argv: Option<Value> = row.get("argv");
+            let artifact_output: Option<String> = row.get("artifact_output");
+            let script_output: Option<String> = row.get("script_output");
+            let status = row
+                .get::<Option<String>, _>("script_status")
+                .or_else(|| row.get::<Option<String>, _>("process_status"))
+                .unwrap_or_else(|| row.get("tool_status"));
+            let command = source
+                .or_else(|| {
+                    binary_name.map(|binary| {
+                        let args = argv
+                            .and_then(|value| value.as_array().cloned())
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        if args.is_empty() { binary } else { format!("{binary} {args}") }
+                    })
+                })
+                .unwrap_or_else(|| tool_name.clone());
+            let output = artifact_output.or(script_output).unwrap_or_default();
+            let process = process_id.map(|id| id.to_string());
+            AgentRuntimeChatEntry {
+                id: format!("tool:{tool_id}:{}", script_id.map(|id| id.to_string()).unwrap_or_else(|| "call".to_string())),
+                author: "Tool".to_string(),
+                display_label: "Tool".to_string(),
+                timestamp: Some(time(row.get("started_at"))),
+                body: String::new(),
+                subtitle: process_handle.unwrap_or_else(|| tool_name.clone()),
+                kind: tool_name,
+                status: status.clone(),
+                process_id: process,
+                command,
+                output,
+                delivery_state: if status == "completed" { "delivered" } else { "running" }.to_string(),
+                is_streaming: status == "running",
+                is_tool: true,
+            }
+        })
+        .collect())
 }
 
 fn event_summary(payload: &Value) -> Option<String> {
@@ -924,6 +1162,283 @@ mod tests {
     use super::*;
     use crate::{command_registry, db, roles::RoleRegistry};
     use serde_json::json;
+    use sqlx::PgPool;
+
+    async fn create_validation_database(suffix: &str) -> (String, String, PgPool) {
+        let admin_url = std::env::var("ROBDEX_AGENT_RUNTIME_VALIDATION_ADMIN_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres@127.0.0.1:5432/postgres".to_string());
+        let database_name = format!(
+            "robdex_agent_runtime_validation_{}_{}_{}",
+            suffix,
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default().abs()
+        );
+        assert!(database_name.starts_with("robdex_agent_runtime_validation_"));
+        let admin_pool = db::connect(&admin_url).await.expect("connect validation admin Postgres");
+        sqlx::query(&format!(r#"CREATE DATABASE "{database_name}""#))
+            .execute(&admin_pool)
+            .await
+            .expect("create validation database");
+        let runtime_url = format!("{}/{}", admin_url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&admin_url), database_name);
+        (admin_url, database_name, db::connect(&runtime_url).await.expect("connect runtime validation database"))
+    }
+
+    async fn drop_validation_database(admin_url: &str, database_name: &str) {
+        let admin_pool = db::connect(admin_url).await.expect("connect validation admin for cleanup");
+        sqlx::query(&format!(r#"DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)"#))
+            .execute(&admin_pool)
+            .await
+            .expect("drop validation database");
+    }
+
+    async fn seed_durable_selected_chat(pool: &PgPool) -> (Uuid, Uuid, Uuid, Uuid, Uuid, Uuid, Uuid, String) {
+        db::init(pool).await.expect("init schema");
+        let session_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let tool_id = Uuid::new_v4();
+        let script_id = Uuid::new_v4();
+        let process_id = Uuid::new_v4();
+        let artifact_id = Uuid::new_v4();
+        let model_event_id = Uuid::new_v4();
+        let final_text = "## Distinctive final\n\n- exact **markdown** response\n- no placeholder".to_string();
+        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','project-a','/tmp/project-a','Durable selected chat',true)")
+            .bind(session_id)
+            .execute(pool)
+            .await
+            .expect("insert session");
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, completed_at) VALUES ($1,$2,'user',$3,'completed',now())")
+            .bind(turn_id)
+            .bind(session_id)
+            .bind("Exact submitted composer text")
+            .execute(pool)
+            .await
+            .expect("insert turn");
+        for (event_type, entity_type, entity_id, status, payload) in [
+            ("role.imported", "role", Uuid::new_v4(), Some("completed"), json!({"roleId":"runtime-allow"})),
+            ("turn.started", "turn", turn_id, Some("running"), json!({"input":"raw event input must not be chat"})),
+            ("policy.decision", "policy", Uuid::new_v4(), Some("completed"), json!({"decision":"allow"})),
+            ("tool.completed", "tool", tool_id, Some("completed"), json!({"summary":"raw tool event must stay history"})),
+            ("model.final_response", "turn", turn_id, Some("completed"), json!({"finalText":"raw final event must not fabricate selected chat"})),
+            ("turn.completed", "turn", turn_id, Some("completed"), json!({"status":"completed"})),
+        ] {
+            sqlx::query("INSERT INTO event_stream (session_id, turn_id, entity_type, entity_id, event_type, status, payload) VALUES ($1,$2,$3,$4,$5,$6,$7)")
+                .bind(session_id)
+                .bind(turn_id)
+                .bind(entity_type)
+                .bind(entity_id)
+                .bind(event_type)
+                .bind(status)
+                .bind(payload)
+                .execute(pool)
+                .await
+                .expect("insert runtime event");
+        }
+        sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, result, completed_at) VALUES ($1,$2,$3,'execute_code','call-1',$4,'completed',$5,now())")
+            .bind(tool_id)
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(json!({"source":"output('canonical tool output')"}))
+            .bind(json!({"ok":true}))
+            .execute(pool)
+            .await
+            .expect("insert tool call");
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, final_output, stdout, stderr, completed_at) VALUES ($1,$2,$3,'completed',$4,$5,'',now())")
+            .bind(script_id)
+            .bind(tool_id)
+            .bind("output('canonical tool output')")
+            .bind("canonical final output")
+            .bind("canonical stdout preview")
+            .execute(pool)
+            .await
+            .expect("insert script run");
+        sqlx::query("INSERT INTO managed_processes (id, handle, session_id, starting_turn_id, binary_name, argv, cwd, status, end_of_turn_behavior, end_of_session_behavior, metadata) VALUES ($1,'proc-chat-1',$2,$3,'python',$4,'/tmp/project-a','completed','terminate','terminate',$5)")
+            .bind(process_id)
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(json!(["-c", "print('canonical')"]))
+            .bind(json!({"label":"process proof"}))
+            .execute(pool)
+            .await
+            .expect("insert managed process");
+        sqlx::query("INSERT INTO execution_output_artifacts (id, session_id, turn_id, tool_call_id, script_run_id, process_id, source_type, stream, content, byte_count, line_count, metadata) VALUES ($1,$2,$3,$4,$5,$6,'script','stdout',$7,64,2,$8)")
+            .bind(artifact_id)
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(tool_id)
+            .bind(script_id)
+            .bind(process_id)
+            .bind("artifact bounded output preview")
+            .bind(json!({"artifactIdentifier":"stdout-artifact"}))
+            .execute(pool)
+            .await
+            .expect("insert output artifact");
+        sqlx::query("INSERT INTO model_events (id, session_id, turn_id, event_type, payload) VALUES ($1,$2,$3,'final_response',$4)")
+            .bind(model_event_id)
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(json!({"finalText": final_text, "summary":"summary fallback must not win"}))
+            .execute(pool)
+            .await
+            .expect("insert model event");
+        (session_id, turn_id, tool_id, script_id, process_id, artifact_id, model_event_id, final_text)
+    }
+
+    #[tokio::test]
+    async fn selected_conversation_is_built_from_durable_chat_sources_not_event_stream_labels() {
+        let (admin_url, database_name, pool) = create_validation_database("selected_chat_sources").await;
+        let (session_id, _turn_id, _tool_id, _script_id, _process_id, _artifact_id, _model_event_id, final_text) = seed_durable_selected_chat(&pool).await;
+        let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
+        drop(pool);
+        drop_validation_database(&admin_url, &database_name).await;
+
+        assert_eq!(snapshot.selected_chat_entries.len(), 3);
+        assert_eq!(snapshot.selected_chat_entries[0].author, "User");
+        assert_eq!(snapshot.selected_chat_entries[0].body, "Exact submitted composer text");
+        assert_eq!(snapshot.selected_chat_entries[1].author, "Tool");
+        assert!(snapshot.selected_chat_entries[1].is_tool);
+        assert_eq!(snapshot.selected_chat_entries[2].author, "Assistant");
+        assert_eq!(snapshot.selected_chat_entries[2].body, final_text);
+        let forbidden = [
+            "role.imported",
+            "turn.started",
+            "policy.decision",
+            "tool.completed",
+            "model.final_response",
+            "turn.completed",
+        ];
+        for entry in &snapshot.selected_chat_entries {
+            for field in [
+                entry.id.as_str(),
+                entry.author.as_str(),
+                entry.display_label.as_str(),
+                entry.body.as_str(),
+                entry.subtitle.as_str(),
+                entry.kind.as_str(),
+                entry.status.as_str(),
+                entry.command.as_str(),
+                entry.output.as_str(),
+            ] {
+                assert!(!forbidden.iter().any(|raw| field.contains(raw)), "raw event {field} leaked into selected chat");
+            }
+        }
+        assert!(snapshot.timeline.iter().any(|item| item.event_type == "role.imported"));
+        assert!(snapshot.timeline.iter().any(|item| item.event_type == "tool.completed"));
+    }
+
+    #[tokio::test]
+    async fn assistant_final_response_text_is_preserved_exactly_in_selected_conversation() {
+        let (admin_url, database_name, pool) = create_validation_database("assistant_final_exact").await;
+        let (session_id, _turn_id, _tool_id, _script_id, _process_id, _artifact_id, _model_event_id, final_text) = seed_durable_selected_chat(&pool).await;
+        let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
+        drop(pool);
+        drop_validation_database(&admin_url, &database_name).await;
+
+        let assistant = snapshot
+            .selected_chat_entries
+            .iter()
+            .find(|entry| entry.author == "Assistant")
+            .expect("assistant selected chat entry");
+        assert_eq!(assistant.body, final_text);
+        assert_ne!(assistant.body, "Response completed");
+        assert_ne!(assistant.body, "Output details are available in History");
+        assert!(!assistant.body.contains("read History"));
+    }
+
+    #[tokio::test]
+    async fn selected_tool_rows_carry_canonical_chat_timeline_fields() {
+        let (admin_url, database_name, pool) = create_validation_database("tool_row_fields").await;
+        let (session_id, _turn_id, _tool_id, _script_id, process_id, artifact_id, _model_event_id, _final_text) = seed_durable_selected_chat(&pool).await;
+        let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
+        drop(pool);
+        drop_validation_database(&admin_url, &database_name).await;
+
+        let tool = snapshot
+            .selected_chat_entries
+            .iter()
+            .find(|entry| entry.is_tool)
+            .expect("tool selected chat entry");
+        assert_eq!(tool.author, "Tool");
+        assert_eq!(tool.display_label, "Tool");
+        assert_eq!(tool.kind, "execute_code");
+        assert_eq!(tool.status, "completed");
+        let expected_process_id = process_id.to_string();
+        assert_eq!(tool.process_id.as_deref(), Some(expected_process_id.as_str()));
+        assert!(tool.command.contains("output('canonical tool output')"));
+        assert!(tool.output.contains("artifact bounded output preview"));
+        assert!(tool.output.contains(&artifact_id.to_string()));
+        assert!(tool.subtitle.contains("proc-chat-1") || tool.subtitle.contains("execute_code"));
+        assert_eq!(tool.delivery_state, "delivered");
+    }
+
+    #[tokio::test]
+    async fn runtime_statistics_count_authoritative_tables_without_event_stream_rows() {
+        let (admin_url, database_name, pool) = create_validation_database("authoritative_stats_no_events").await;
+        db::init(&pool).await.expect("init schema");
+        let session_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let model_event_id = Uuid::new_v4();
+        let tool_id = Uuid::new_v4();
+        let script_id = Uuid::new_v4();
+        let host_id = Uuid::new_v4();
+        let command_id = Uuid::new_v4();
+        let process_id = Uuid::new_v4();
+        let artifact_id = Uuid::new_v4();
+        let checkpoint_id = Uuid::new_v4();
+        let approval_id = Uuid::new_v4();
+        let registry_request_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','stats-project','/tmp/stats','Stats seed',true)")
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .expect("session");
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, completed_at) VALUES ($1,$2,'user','stats turn','failed',now())")
+            .bind(turn_id).bind(session_id).execute(&pool).await.expect("turn");
+        sqlx::query("INSERT INTO model_events (id, session_id, turn_id, event_type, payload) VALUES ($1,$2,$3,'final_response',$4)")
+            .bind(model_event_id).bind(session_id).bind(turn_id).bind(json!({"finalText":"stats final"})).execute(&pool).await.expect("model");
+        sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, completed_at) VALUES ($1,$2,$3,'execute_code','stats-call','{}'::jsonb,'lost',now())")
+            .bind(tool_id).bind(session_id).bind(turn_id).execute(&pool).await.expect("tool");
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, stdout, stderr, completed_at) VALUES ($1,$2,'output(1)','running','','',NULL)")
+            .bind(script_id).bind(tool_id).execute(&pool).await.expect("script");
+        sqlx::query("INSERT INTO host_api_calls (id, script_run_id, api_name, input, status) VALUES ($1,$2,'fs.read','{}'::jsonb,'completed')")
+            .bind(host_id).bind(script_id).execute(&pool).await.expect("host");
+        sqlx::query("INSERT INTO command_runs (id, host_api_call_id, binary_name, argv, cwd, status) VALUES ($1,$2,'echo','[]'::jsonb,'.','completed')")
+            .bind(command_id).bind(host_id).execute(&pool).await.expect("command");
+        sqlx::query("INSERT INTO managed_processes (id, handle, session_id, starting_turn_id, binary_name, argv, cwd, status, end_of_turn_behavior, end_of_session_behavior, metadata) VALUES ($1,'stats-process',$2,$3,'sleep','[]'::jsonb,'.','running','terminate','terminate','{}'::jsonb)")
+            .bind(process_id).bind(session_id).bind(turn_id).execute(&pool).await.expect("process");
+        sqlx::query("INSERT INTO execution_output_artifacts (id, session_id, turn_id, tool_call_id, script_run_id, command_run_id, process_id, source_type, stream, content, byte_count, line_count, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,'script','stdout','stats artifact',14,1,'{}'::jsonb)")
+            .bind(artifact_id).bind(session_id).bind(turn_id).bind(tool_id).bind(script_id).bind(command_id).bind(process_id).execute(&pool).await.expect("artifact");
+        sqlx::query("INSERT INTO compaction_checkpoints (id, session_id, status, replacement_context, summary, completed_at) VALUES ($1,$2,'completed','stats','{}'::jsonb,now())")
+            .bind(checkpoint_id).bind(session_id).execute(&pool).await.expect("checkpoint");
+        sqlx::query("INSERT INTO approval_requests (id, session_id, turn_id, action_name, requested_by_role, input_context, required_approver_kind, status) VALUES ($1,$2,$3,'tool.execute','{}'::jsonb,'{}'::jsonb,'owner','pending')")
+            .bind(approval_id).bind(session_id).bind(turn_id).execute(&pool).await.expect("approval");
+        sqlx::query("INSERT INTO command_registry_requests (id, session_id, operation, proposed_command, rationale, recommended_policy, requester, approval_status, application_status) VALUES ($1,$2,'add',$3,'stats','allow','test','pending','pending')")
+            .bind(registry_request_id)
+            .bind(session_id)
+            .bind(json!({"actionId":"cmd.stats","binaryName":"echo"}))
+            .execute(&pool)
+            .await
+            .expect("registry request");
+        let event_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1").bind(session_id).fetch_one(&pool).await.expect("event count");
+        assert_eq!(event_rows, 0);
+        let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
+        drop(pool);
+        drop_validation_database(&admin_url, &database_name).await;
+
+        assert_eq!(snapshot.statistics.turns, 1);
+        assert_eq!(snapshot.statistics.model_events, 1);
+        assert_eq!(snapshot.statistics.tool_calls, 1);
+        assert_eq!(snapshot.statistics.script_runs, 1);
+        assert_eq!(snapshot.statistics.host_api_calls, 1);
+        assert_eq!(snapshot.statistics.command_runs, 1);
+        assert_eq!(snapshot.statistics.managed_processes, 1);
+        assert_eq!(snapshot.statistics.output_artifacts, 1);
+        assert_eq!(snapshot.statistics.compaction_checkpoints, 1);
+        assert_eq!(snapshot.statistics.approval_requests, 1);
+        assert_eq!(snapshot.statistics.command_registry_requests, 1);
+        assert_eq!(snapshot.statistics.failed_rows, 1);
+        assert_eq!(snapshot.statistics.running_rows, 2);
+        assert_eq!(snapshot.statistics.lost_rows, 1);
+    }
 
     #[tokio::test]
     async fn postgres_backed_snapshot_builds_from_current_schema() {

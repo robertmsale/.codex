@@ -96,14 +96,14 @@ pub enum GuiTransportOutput {
     Error {
         error: ApiErrorPacket,
     },
-    ControlTowerView {
-        view_model: AgentRuntimeControlTowerViewModel,
+    WorkbenchView {
+        view_model: AgentRuntimeWorkbenchViewModel,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRuntimeControlTowerViewModel {
+pub struct AgentRuntimeWorkbenchViewModel {
     pub discovery: AgentRuntimeDiscoveryView,
     pub remote_discovery: AgentRuntimeDiscoveryView,
     pub imported_remote_discovery: AgentRuntimeDiscoveryView,
@@ -112,7 +112,7 @@ pub struct AgentRuntimeControlTowerViewModel {
     pub base_url: String,
     pub status_label: String,
     pub watermark_label: String,
-    pub status_badges: Vec<AgentRuntimeControlTowerBadge>,
+    pub status_badges: Vec<AgentRuntimeWorkbenchBadge>,
     pub selected_session_label: String,
     pub sessions_title: String,
     pub sessions_subtitle: String,
@@ -128,12 +128,12 @@ pub struct AgentRuntimeControlTowerViewModel {
     pub timeline_empty_text: String,
     pub actions_empty_title: String,
     pub actions_empty_text: String,
-    pub sessions: Vec<AgentRuntimeControlTowerSessionRow>,
-    pub timeline: Vec<AgentRuntimeControlTowerTimelineRow>,
-    pub actions: Vec<AgentRuntimeControlTowerActionRow>,
+    pub sessions: Vec<AgentRuntimeWorkbenchSessionRow>,
+    pub timeline: Vec<AgentRuntimeWorkbenchTimelineRow>,
+    pub actions: Vec<AgentRuntimeWorkbenchActionRow>,
     pub role_admin: AgentRuntimeRoleAdminView,
     pub workflow_memory: AgentRuntimeWorkflowMemoryView,
-    pub controller_facts: Vec<AgentRuntimeControlTowerFact>,
+    pub controller_facts: Vec<AgentRuntimeWorkbenchFact>,
     pub output_log: Vec<String>,
     pub pending_request_count: usize,
     pub error_message: Option<String>,
@@ -162,7 +162,7 @@ pub struct AgentRuntimeDiscoveryView {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRuntimeControlTowerSessionRow {
+pub struct AgentRuntimeWorkbenchSessionRow {
     pub id: String,
     pub title: String,
     pub status: String,
@@ -173,7 +173,7 @@ pub struct AgentRuntimeControlTowerSessionRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRuntimeControlTowerTimelineRow {
+pub struct AgentRuntimeWorkbenchTimelineRow {
     pub id: String,
     pub title: String,
     pub subtitle: String,
@@ -181,21 +181,40 @@ pub struct AgentRuntimeControlTowerTimelineRow {
     pub tone: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeChatEntry {
+    pub id: String,
+    pub author: String,
+    pub display_label: String,
+    pub timestamp: Option<String>,
+    pub body: String,
+    pub subtitle: String,
+    pub kind: String,
+    pub status: String,
+    pub process_id: Option<String>,
+    pub command: String,
+    pub output: String,
+    pub delivery_state: String,
+    pub is_streaming: bool,
+    pub is_tool: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeConversationShellViewModel {
     pub projects: Vec<AgentRuntimeShellProjectRow>,
-    pub sessions: Vec<AgentRuntimeControlTowerSessionRow>,
+    pub sessions: Vec<AgentRuntimeWorkbenchSessionRow>,
     pub selected_session_id: Option<String>,
-    pub selected_conversation: Vec<AgentRuntimeControlTowerTimelineRow>,
+    pub selected_conversation: Vec<AgentRuntimeChatEntry>,
     pub dynamic_roles: Vec<AgentRuntimeShellRolePresentation>,
-    pub actions: Vec<AgentRuntimeControlTowerActionRow>,
-    pub settings: Vec<AgentRuntimeControlTowerFact>,
+    pub actions: Vec<AgentRuntimeWorkbenchActionRow>,
+    pub settings: Vec<AgentRuntimeWorkbenchFact>,
     pub role_management: AgentRuntimeRoleAdminView,
     pub workflow_memory: AgentRuntimeWorkflowMemoryView,
-    pub command_registry_requests: Vec<AgentRuntimeControlTowerActionRow>,
-    pub approvals: Vec<AgentRuntimeControlTowerActionRow>,
-    pub diagnostics: Vec<AgentRuntimeControlTowerFact>,
+    pub command_registry_requests: Vec<AgentRuntimeWorkbenchActionRow>,
+    pub approvals: Vec<AgentRuntimeWorkbenchActionRow>,
+    pub diagnostics: Vec<AgentRuntimeWorkbenchFact>,
     pub operation_surfaces: Vec<AgentRuntimeOperationSurface>,
 }
 
@@ -205,8 +224,8 @@ pub struct AgentRuntimeOperationSurface {
     pub surface_id: String,
     pub title: String,
     pub subtitle: String,
-    pub rows: Vec<AgentRuntimeControlTowerFact>,
-    pub actions: Vec<AgentRuntimeControlTowerActionRow>,
+    pub rows: Vec<AgentRuntimeWorkbenchFact>,
+    pub actions: Vec<AgentRuntimeWorkbenchActionRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -231,7 +250,7 @@ pub struct AgentRuntimeShellRolePresentation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRuntimeControlTowerActionRow {
+pub struct AgentRuntimeWorkbenchActionRow {
     pub id: String,
     pub title: String,
     pub subtitle: String,
@@ -242,14 +261,14 @@ pub struct AgentRuntimeControlTowerActionRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRuntimeControlTowerFact {
+pub struct AgentRuntimeWorkbenchFact {
     pub label: String,
     pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRuntimeControlTowerBadge {
+pub struct AgentRuntimeWorkbenchBadge {
     pub label: String,
     pub value: String,
     pub tone: String,
@@ -267,7 +286,7 @@ pub struct AgentRuntimeRoleAdminView {
     pub version_rows: Vec<AgentRuntimeRoleVersionRow>,
     pub editor_draft: Option<AgentRuntimeRoleEditorDraftView>,
     pub validation_errors: Vec<String>,
-    pub action_states: Vec<AgentRuntimeControlTowerActionRow>,
+    pub action_states: Vec<AgentRuntimeWorkbenchActionRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -292,9 +311,9 @@ pub struct AgentRuntimeRoleDetail {
     pub instruction_text: String,
     pub capabilities: Vec<String>,
     pub policy: Vec<AgentRuntimeRolePolicyRow>,
-    pub routing: Vec<AgentRuntimeControlTowerFact>,
-    pub visibility: Vec<AgentRuntimeControlTowerFact>,
-    pub lifecycle_authority: Vec<AgentRuntimeControlTowerFact>,
+    pub routing: Vec<AgentRuntimeWorkbenchFact>,
+    pub visibility: Vec<AgentRuntimeWorkbenchFact>,
+    pub lifecycle_authority: Vec<AgentRuntimeWorkbenchFact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -346,7 +365,7 @@ pub struct AgentRuntimeWorkflowMemoryView {
     pub rows: Vec<AgentRuntimeWorkflowMemoryRow>,
     pub selected_detail: Option<AgentRuntimeWorkflowMemoryDetail>,
     pub recent_events: Vec<AgentRuntimeWorkflowMemoryEventRow>,
-    pub feedback_actions: Vec<AgentRuntimeControlTowerActionRow>,
+    pub feedback_actions: Vec<AgentRuntimeWorkbenchActionRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -397,7 +416,7 @@ pub struct AgentRuntimeWorkflowMemoryEventRow {
     pub tone: String,
 }
 
-impl AgentRuntimeControlTowerViewModel {
+impl AgentRuntimeWorkbenchViewModel {
     pub fn from_runtime_state(
         base_url: impl Into<String>,
         projection: Option<&RuntimeProjection>,
@@ -416,7 +435,7 @@ impl AgentRuntimeControlTowerViewModel {
         let timeline = projection
             .map(|projection| projection.timeline.iter().map(timeline_row).collect())
             .unwrap_or_default();
-        let mut actions: Vec<AgentRuntimeControlTowerActionRow> = projection
+        let mut actions: Vec<AgentRuntimeWorkbenchActionRow> = projection
             .map(|projection| {
                 projection
                     .pending_approvals
@@ -475,7 +494,7 @@ impl AgentRuntimeControlTowerViewModel {
             error_message,
             shell: AgentRuntimeConversationShellViewModel::empty(),
         };
-        view.shell = AgentRuntimeConversationShellViewModel::from_control_tower(&view, projection, controller_state);
+        view.shell = AgentRuntimeConversationShellViewModel::from_workbench(&view, projection, controller_state);
         view
     }
 }
@@ -499,11 +518,21 @@ impl AgentRuntimeConversationShellViewModel {
         }
     }
 
-    pub fn from_control_tower(view: &AgentRuntimeControlTowerViewModel, projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> Self {
+    pub fn from_workbench(view: &AgentRuntimeWorkbenchViewModel, projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> Self {
+        let project_rows = shell_project_rows(projection, controller_state.selected_project_id.as_deref());
+        let visible_sessions = if let Some(project_id) = controller_state.selected_project_id.as_deref() {
+            view.sessions
+                .iter()
+                .filter(|session| session.subtitle.split(" · ").nth(1) == Some(project_id))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            view.sessions.clone()
+        };
         let selected_session_id = controller_state
             .selected_session_id
             .clone()
-            .or_else(|| view.sessions.first().map(|session| session.id.clone()));
+            .or_else(|| visible_sessions.first().map(|session| session.id.clone()));
         let dynamic_roles = view
             .sessions
             .iter()
@@ -528,24 +557,26 @@ impl AgentRuntimeConversationShellViewModel {
             .cloned()
             .collect();
         Self {
-            projects: vec![AgentRuntimeShellProjectRow {
-                id: "runtime".to_string(),
-                title: "Runtime".to_string(),
-                subtitle: "Runtime project scope".to_string(),
-                selectable: true,
-                unavailable_reason: None,
-            }],
-            sessions: view.sessions.clone(),
+            projects: project_rows,
+            sessions: visible_sessions,
             selected_session_id: selected_session_id.clone(),
-            selected_conversation: selected_chat_rows(projection, selected_session_id.as_deref()),
+            selected_conversation: projection
+                .map(|projection| {
+                    projection
+                        .selected_chat_entries
+                        .iter()
+                        .map(agent_runtime_chat_entry)
+                        .collect()
+                })
+                .unwrap_or_default(),
             dynamic_roles,
             actions: view.actions.clone(),
             settings: vec![
-                AgentRuntimeControlTowerFact {
+                AgentRuntimeWorkbenchFact {
                     label: "Connection".to_string(),
                     value: view.connection_state.clone(),
                 },
-                AgentRuntimeControlTowerFact {
+                AgentRuntimeWorkbenchFact {
                     label: "Base URL".to_string(),
                     value: view.base_url.clone(),
                 },
@@ -560,10 +591,77 @@ impl AgentRuntimeConversationShellViewModel {
     }
 }
 
+fn agent_runtime_chat_entry(entry: &robdex_agent_runtime_projection::AgentRuntimeChatEntry) -> AgentRuntimeChatEntry {
+    AgentRuntimeChatEntry {
+        id: entry.id.clone(),
+        author: entry.author.clone(),
+        display_label: entry.display_label.clone(),
+        timestamp: entry.timestamp.clone(),
+        body: entry.body.clone(),
+        subtitle: entry.subtitle.clone(),
+        kind: entry.kind.clone(),
+        status: entry.status.clone(),
+        process_id: entry.process_id.clone(),
+        command: entry.command.clone(),
+        output: entry.output.clone(),
+        delivery_state: entry.delivery_state.clone(),
+        is_streaming: entry.is_streaming,
+        is_tool: entry.is_tool,
+    }
+}
+
+fn shell_project_rows(projection: Option<&RuntimeProjection>, selected_project_id: Option<&str>) -> Vec<AgentRuntimeShellProjectRow> {
+    let mut projects: Vec<String> = projection
+        .map(|projection| {
+            projection
+                .sessions
+                .iter()
+                .filter_map(|session| session.project_key.clone())
+                .filter(|project| !project.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    projects.sort();
+    projects.dedup();
+    if let Some(selected) = selected_project_id.filter(|value| !value.trim().is_empty())
+        && !projects.iter().any(|project| project == selected)
+    {
+        projects.insert(0, selected.to_string());
+    }
+    if projects.is_empty() {
+        projects.push("runtime".to_string());
+    }
+    projects
+        .into_iter()
+        .map(|project| AgentRuntimeShellProjectRow {
+            id: project.clone(),
+            title: project_title(&project),
+            subtitle: if Some(project.as_str()) == selected_project_id { "Selected project" } else { "Project sessions" }.to_string(),
+            selectable: true,
+            unavailable_reason: None,
+        })
+        .collect()
+}
+
+fn project_title(project: &str) -> String {
+    project
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn operation_surfaces(
     projection: Option<&RuntimeProjection>,
     controller_state: &GuiControllerState,
-    view: &AgentRuntimeControlTowerViewModel,
+    view: &AgentRuntimeWorkbenchViewModel,
 ) -> Vec<AgentRuntimeOperationSurface> {
     let mut surfaces = Vec::new();
     let selected = projection.and_then(|projection| projection.selected_session.as_ref());
@@ -591,7 +689,6 @@ fn operation_surfaces(
             fact("Boundary", latest_event_summary(projection, "compaction.boundary").unwrap_or("Latest completed turn")),
             fact("Context estimate", latest_event_summary(projection, "compaction.estimate").unwrap_or("Within configured budget")),
             fact("Failed checkpoint", latest_event_summary(projection, "compaction.failed").unwrap_or("No failed checkpoint")),
-            fact("Manual compact", "Use runtime CLI for manual checkpoint"),
         ],
         actions: Vec::new(),
     });
@@ -631,6 +728,31 @@ fn operation_surfaces(
         actions: Vec::new(),
     });
     surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "diagnostics".to_string(),
+        title: "Diagnostics".to_string(),
+        subtitle: "Runtime transport state".to_string(),
+        rows: view.controller_facts.clone(),
+        actions: Vec::new(),
+    });
+    surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "roleAdmin".to_string(),
+        title: "Role Admin".to_string(),
+        subtitle: view.role_admin.subtitle.clone(),
+        rows: view.role_admin.rows.iter().map(|row| {
+            fact(row.title.as_str(), format!("{} · {}", row.status, row.current_version_id.as_deref().unwrap_or("no current version")).as_str())
+        }).collect(),
+        actions: view.role_admin.action_states.clone(),
+    });
+    surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "workflowMemory".to_string(),
+        title: "Workflow Memory".to_string(),
+        subtitle: view.workflow_memory.subtitle.clone(),
+        rows: view.workflow_memory.rows.iter().map(|row| {
+            fact(row.title.as_str(), format!("{} · {}", row.scope_type, row.helpful_score).as_str())
+        }).collect(),
+        actions: view.workflow_memory.feedback_actions.clone(),
+    });
+    surfaces.push(AgentRuntimeOperationSurface {
         surface_id: "approvals".to_string(),
         title: "Approvals".to_string(),
         subtitle: "Pending owner decisions".to_string(),
@@ -651,8 +773,8 @@ fn operation_surfaces(
     surfaces
 }
 
-fn fact(label: &str, value: &str) -> AgentRuntimeControlTowerFact {
-    AgentRuntimeControlTowerFact { label: label.to_string(), value: value.to_string() }
+fn fact(label: &str, value: &str) -> AgentRuntimeWorkbenchFact {
+    AgentRuntimeWorkbenchFact { label: label.to_string(), value: value.to_string() }
 }
 
 fn current_turn_label(projection: Option<&RuntimeProjection>) -> &'static str {
@@ -672,13 +794,13 @@ fn latest_event_summary<'a>(projection: Option<&'a RuntimeProjection>, event_typ
         .and_then(|item| item.summary.as_deref().or_else(|| item.status.as_deref()))
 }
 
-fn session_actions(selected: Option<&robdex_agent_runtime_projection::SelectedSessionDetail>) -> Vec<AgentRuntimeControlTowerActionRow> {
+fn session_actions(selected: Option<&robdex_agent_runtime_projection::SelectedSessionDetail>) -> Vec<AgentRuntimeWorkbenchActionRow> {
     let Some(session) = selected else {
         return Vec::new();
     };
     ["closeSession", "archiveSession", "forkSession"]
         .iter()
-        .map(|kind| AgentRuntimeControlTowerActionRow {
+        .map(|kind| AgentRuntimeWorkbenchActionRow {
             id: session.id.clone(),
             title: match *kind {
                 "closeSession" => "Close session",
@@ -693,29 +815,37 @@ fn session_actions(selected: Option<&robdex_agent_runtime_projection::SelectedSe
         .collect()
 }
 
-fn statistics_rows(projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> Vec<AgentRuntimeControlTowerFact> {
+fn statistics_rows(projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> Vec<AgentRuntimeWorkbenchFact> {
     let Some(projection) = projection else { return Vec::new(); };
-    let selected_id = controller_state.selected_session_id.as_deref();
-    let session_events: Vec<&TimelineItem> = projection.timeline.iter().filter(|item| selected_id.map(|id| item.session_id.as_deref() == Some(id)).unwrap_or(true)).collect();
+    let _ = controller_state;
+    let stats = &projection.statistics;
     fact_rows([
-        ("Turns", session_events.iter().filter(|item| item.event_type == "turn.completed").count().to_string()),
-        ("Messages", selected_chat_rows(Some(projection), selected_id).len().to_string()),
-        ("Tools and scripts", session_events.iter().filter(|item| item.event_type.contains("tool.") || item.event_type.contains("script.")).count().to_string()),
-        ("Processes", projection.selected_session.as_ref().map(|session| session.managed_process_count).unwrap_or(0).to_string()),
-        ("Output artifacts", session_events.iter().filter(|item| item.entity_type == "outputArtifact").count().to_string()),
-        ("Context budget", "byte estimate available before send".to_string()),
-        ("Recent activity", session_events.len().to_string()),
+        ("Turns", stats.turns.to_string()),
+        ("Model events", stats.model_events.to_string()),
+        ("Messages", projection.selected_chat_entries.len().to_string()),
+        ("Tool calls", stats.tool_calls.to_string()),
+        ("Scripts", stats.script_runs.to_string()),
+        ("Host actions", stats.host_api_calls.to_string()),
+        ("Commands", stats.command_runs.to_string()),
+        ("Processes", stats.managed_processes.to_string()),
+        ("Output artifacts", stats.output_artifacts.to_string()),
+        ("Compactions", stats.compaction_checkpoints.to_string()),
+        ("Approvals", stats.approval_requests.to_string()),
+        ("Command requests", stats.command_registry_requests.to_string()),
+        ("Failed rows", stats.failed_rows.to_string()),
+        ("Running rows", stats.running_rows.to_string()),
+        ("Lost rows", stats.lost_rows.to_string()),
     ])
 }
 
-fn fact_rows<const N: usize>(items: [(&str, String); N]) -> Vec<AgentRuntimeControlTowerFact> {
+fn fact_rows<const N: usize>(items: [(&str, String); N]) -> Vec<AgentRuntimeWorkbenchFact> {
     items.into_iter().map(|(label, value)| fact(label, value.as_str())).collect()
 }
 
 fn process_rows(
     projection: Option<&RuntimeProjection>,
     selected: Option<&robdex_agent_runtime_projection::SelectedSessionDetail>,
-) -> Vec<AgentRuntimeControlTowerFact> {
+) -> Vec<AgentRuntimeWorkbenchFact> {
     let count = selected.map(|session| session.managed_process_count).unwrap_or(0);
     let mut rows = vec![fact("Managed processes", count.to_string().as_str())];
     if let Some(projection) = projection {
@@ -729,7 +859,7 @@ fn process_rows(
 fn process_actions(
     projection: Option<&RuntimeProjection>,
     selected: Option<&robdex_agent_runtime_projection::SelectedSessionDetail>,
-) -> Vec<AgentRuntimeControlTowerActionRow> {
+) -> Vec<AgentRuntimeWorkbenchActionRow> {
     let Some(selected) = selected else { return Vec::new(); };
     let Some(projection) = projection else { return Vec::new(); };
     let mut handles = Vec::new();
@@ -755,7 +885,7 @@ fn process_actions(
             .into_iter()
             .map({
                 let handle = handle.clone();
-                move |(kind, title, subtitle)| AgentRuntimeControlTowerActionRow {
+                move |(kind, title, subtitle)| AgentRuntimeWorkbenchActionRow {
                     id: handle.clone(),
                     title: title.to_string(),
                     subtitle: subtitle.to_string(),
@@ -768,7 +898,7 @@ fn process_actions(
         .collect()
 }
 
-fn history_rows(projection: Option<&RuntimeProjection>) -> Vec<AgentRuntimeControlTowerFact> {
+fn history_rows(projection: Option<&RuntimeProjection>) -> Vec<AgentRuntimeWorkbenchFact> {
     projection
         .map(|projection| projection.timeline.iter().rev().take(24).map(|item| {
             let status = item.status.as_deref().unwrap_or("recorded");
@@ -790,93 +920,6 @@ fn shell_role_short_label(value: &str) -> String {
         initials = "AR".to_string();
     }
     initials
-}
-
-fn selected_chat_rows(
-    projection: Option<&RuntimeProjection>,
-    selected_session_id: Option<&str>,
-) -> Vec<AgentRuntimeControlTowerTimelineRow> {
-    let Some(projection) = projection else {
-        return Vec::new();
-    };
-    let mut rows = Vec::new();
-    for item in &projection.timeline {
-        if let Some(selected) = selected_session_id {
-            if item.session_id.as_deref() != Some(selected) {
-                continue;
-            }
-        }
-        match item.event_type.as_str() {
-            "turn.started" => {
-                let text = item
-                    .payload
-                    .get("input")
-                    .and_then(serde_json::Value::as_str)
-                    .or_else(|| item.payload.get("message").and_then(serde_json::Value::as_str))
-                    .or_else(|| item.payload.get("prompt").and_then(serde_json::Value::as_str))
-                    .unwrap_or("Message sent");
-                rows.push(AgentRuntimeControlTowerTimelineRow {
-                    id: format!("{}-user", item.turn_id.as_deref().unwrap_or(item.id.as_str())),
-                    title: "Owner".to_string(),
-                    subtitle: text.to_string(),
-                    status: "sent".to_string(),
-                    tone: "user".to_string(),
-                });
-            }
-            "model.final_response" => {
-                let raw_text = item
-                    .payload
-                    .get("finalText")
-                    .and_then(serde_json::Value::as_str)
-                    .or(item.summary.as_deref())
-                    .unwrap_or("Response completed");
-                let text = assistant_chat_summary(raw_text);
-                rows.push(AgentRuntimeControlTowerTimelineRow {
-                    id: format!("{}-assistant", item.turn_id.as_deref().unwrap_or(item.id.as_str())),
-                    title: "Assistant".to_string(),
-                    subtitle: text,
-                    status: item.status.clone().unwrap_or_else(|| "completed".to_string()),
-                    tone: "success".to_string(),
-                });
-            }
-            "tool.completed" | "script.completed" => {
-                let summary = item
-                    .summary
-                    .as_deref()
-                    .or_else(|| item.payload.get("status").and_then(serde_json::Value::as_str))
-                    .unwrap_or("Tool completed");
-                rows.push(AgentRuntimeControlTowerTimelineRow {
-                    id: format!("{}-tool-{}", item.turn_id.as_deref().unwrap_or("turn"), item.sequence),
-                    title: "Tool result".to_string(),
-                    subtitle: summary.to_string(),
-                    status: item.status.clone().unwrap_or_else(|| "completed".to_string()),
-                    tone: "warning".to_string(),
-                });
-            }
-            _ => {}
-        }
-    }
-    rows
-}
-
-fn assistant_chat_summary(raw: &str) -> String {
-    let lower = raw.to_ascii_lowercase();
-    if lower.contains("artifactid")
-        || lower.contains("script_run_id")
-        || lower.contains("script run")
-        || lower.contains("outputs.head")
-        || lower.contains("stdoutartifact")
-        || lower.contains("stderrartifact")
-        || raw.contains("\"")
-    {
-        if raw.starts_with("Live GUI smoke completed") {
-            "Live GUI smoke completed.".to_string()
-        } else {
-            "Response completed. Output details are available in History.".to_string()
-        }
-    } else {
-        raw.to_string()
-    }
 }
 
 impl Default for AgentRuntimeDiscoveryView {
@@ -1269,7 +1312,7 @@ fn import_remote_profile_document(source_path: &Path, target_path: &Path) -> Res
         "updatedAt": profile.updated_at,
         "label": profile.label,
         "metadata": {
-            "importedBy": "agent-runtime-control-tower",
+            "importedBy": "agent-runtime-workbench",
             "sensitiveData": "none"
         }
     });
@@ -1607,13 +1650,13 @@ impl GuiTransportRunner {
                     output.request_id = request_id.clone();
                 }
                 self.record_outputs(&outputs);
-                outputs.push(self.control_tower_view_output(request_id, None));
+                outputs.push(self.workbench_view_output(request_id, None));
                 outputs
             }
             Err(error) => {
                 let mut outputs = vec![error_output(request_id.clone(), error.clone())];
                 self.record_outputs(&outputs);
-                outputs.push(self.control_tower_view_output(request_id, Some(&error)));
+                outputs.push(self.workbench_view_output(request_id, Some(&error)));
                 outputs
             }
         }
@@ -1753,6 +1796,7 @@ impl GuiTransportRunner {
                 Ok(self.operation_outputs(result))
             }
             GuiTransportRequest::SelectProject { project_id } => {
+                self.controller.controller_state_mut().select_project(Some(project_id.clone()));
                 self.selected_project_id = Some(project_id);
                 Ok(vec![])
             }
@@ -1805,8 +1849,8 @@ impl GuiTransportRunner {
         outputs
     }
 
-    fn control_tower_view_output(&self, request_id: String, error: Option<&ApiErrorPacket>) -> GuiTransportOutputPacket {
-        let mut view_model = AgentRuntimeControlTowerViewModel::from_runtime_state(
+    fn workbench_view_output(&self, request_id: String, error: Option<&ApiErrorPacket>) -> GuiTransportOutputPacket {
+        let mut view_model = AgentRuntimeWorkbenchViewModel::from_runtime_state(
             self.base_url.clone(),
             self.controller.projection(),
             self.controller.controller_state(),
@@ -1818,14 +1862,14 @@ impl GuiTransportRunner {
             &self.imported_remote_discovery,
         );
         if let Some(project_id) = &self.selected_project_id {
-            view_model.shell.settings.push(AgentRuntimeControlTowerFact {
+            view_model.shell.settings.push(AgentRuntimeWorkbenchFact {
                 label: "Selected project".to_string(),
                 value: project_id.clone(),
             });
         }
         GuiTransportOutputPacket {
             request_id,
-            output: GuiTransportOutput::ControlTowerView {
+            output: GuiTransportOutput::WorkbenchView {
                 view_model,
             },
         }
@@ -1861,11 +1905,11 @@ fn output_type(output: &GuiTransportOutput) -> &'static str {
         GuiTransportOutput::OperationResult { .. } => "operationResult",
         GuiTransportOutput::StreamOutcome { .. } => "streamOutcome",
         GuiTransportOutput::Error { .. } => "error",
-        GuiTransportOutput::ControlTowerView { .. } => "controlTowerView",
+        GuiTransportOutput::WorkbenchView { .. } => "workbenchView",
     }
 }
 
-fn session_row(session: &SessionListItem) -> AgentRuntimeControlTowerSessionRow {
+fn session_row(session: &SessionListItem) -> AgentRuntimeWorkbenchSessionRow {
     let title = session
         .title
         .as_ref()
@@ -1879,18 +1923,18 @@ fn session_row(session: &SessionListItem) -> AgentRuntimeControlTowerSessionRow 
         .cloned()
         .unwrap_or_else(|| "runtime role".to_string());
     let project = session.project_key.as_deref().unwrap_or("no project");
-    AgentRuntimeControlTowerSessionRow {
+    AgentRuntimeWorkbenchSessionRow {
         id: session.id.clone(),
         title,
         status: session.status.clone(),
         subtitle: format!("{role} · {project} · {}", session.workdir),
-        group_label: session_group_label(session),
+        group_label: role,
         tone: status_tone(&session.status).to_string(),
     }
 }
 
-fn timeline_row(item: &TimelineItem) -> AgentRuntimeControlTowerTimelineRow {
-    AgentRuntimeControlTowerTimelineRow {
+fn timeline_row(item: &TimelineItem) -> AgentRuntimeWorkbenchTimelineRow {
+    AgentRuntimeWorkbenchTimelineRow {
         id: item.id.clone(),
         title: item.event_type.clone(),
         subtitle: item
@@ -1907,8 +1951,8 @@ fn timeline_row(item: &TimelineItem) -> AgentRuntimeControlTowerTimelineRow {
     }
 }
 
-fn approval_action_row(approval: &PendingApprovalSummary) -> AgentRuntimeControlTowerActionRow {
-    AgentRuntimeControlTowerActionRow {
+fn approval_action_row(approval: &PendingApprovalSummary) -> AgentRuntimeWorkbenchActionRow {
+    AgentRuntimeWorkbenchActionRow {
         id: approval.id.clone(),
         title: approval.action_name.clone(),
         subtitle: format!(
@@ -1921,8 +1965,8 @@ fn approval_action_row(approval: &PendingApprovalSummary) -> AgentRuntimeControl
     }
 }
 
-fn command_request_action_row(request: &CommandRegistryRequestSummary) -> AgentRuntimeControlTowerActionRow {
-    AgentRuntimeControlTowerActionRow {
+fn command_request_action_row(request: &CommandRegistryRequestSummary) -> AgentRuntimeWorkbenchActionRow {
+    AgentRuntimeWorkbenchActionRow {
         id: request.id.clone(),
         title: request.action_label.clone(),
         subtitle: format!(
@@ -2070,9 +2114,9 @@ fn role_version_rows(role: &RoleSummary) -> Vec<AgentRuntimeRoleVersionRow> {
         .collect()
 }
 
-fn role_operation_actions(role: &RoleSummary, valid: bool) -> Vec<AgentRuntimeControlTowerActionRow> {
+fn role_operation_actions(role: &RoleSummary, valid: bool) -> Vec<AgentRuntimeWorkbenchActionRow> {
     let mut actions = vec![
-        AgentRuntimeControlTowerActionRow {
+        AgentRuntimeWorkbenchActionRow {
             id: format!("role:{}:validate", role.id),
             title: "Validate draft".to_string(),
             subtitle: "Runs canonical role manifest, routing, and command-policy validation".to_string(),
@@ -2080,7 +2124,7 @@ fn role_operation_actions(role: &RoleSummary, valid: bool) -> Vec<AgentRuntimeCo
             state_text: if valid { "Ready".to_string() } else { "Fix validation errors".to_string() },
             tone: if valid { "success" } else { "danger" }.to_string(),
         },
-        AgentRuntimeControlTowerActionRow {
+        AgentRuntimeWorkbenchActionRow {
             id: format!("role:{}:export", role.id),
             title: "Export current role".to_string(),
             subtitle: "Returns the DB-backed current manifest plus inline instructions".to_string(),
@@ -2089,7 +2133,7 @@ fn role_operation_actions(role: &RoleSummary, valid: bool) -> Vec<AgentRuntimeCo
             tone: "info".to_string(),
         },
     ];
-    actions.push(AgentRuntimeControlTowerActionRow {
+    actions.push(AgentRuntimeWorkbenchActionRow {
         id: format!("role:{}:archive", role.id),
         title: if role.status == "archived" { "Unarchive role" } else { "Archive role" }.to_string(),
         subtitle: "Updates after the runtime confirms the change".to_string(),
@@ -2192,14 +2236,14 @@ fn workflow_memory_event_rows(memory: &WorkflowMemorySummary) -> Vec<AgentRuntim
         .collect()
 }
 
-fn workflow_memory_feedback_actions(memory: &WorkflowMemorySummary) -> Vec<AgentRuntimeControlTowerActionRow> {
+fn workflow_memory_feedback_actions(memory: &WorkflowMemorySummary) -> Vec<AgentRuntimeWorkbenchActionRow> {
     [
         ("attempted", "Mark attempted", "Owner tried this workflow memory", "warning"),
         ("helpful", "Mark helpful", "Owner found this workflow memory useful", "success"),
         ("notHelpful", "Mark not helpful", "Owner found this workflow memory misleading", "danger"),
     ]
     .into_iter()
-    .map(|(kind, title, subtitle, tone)| AgentRuntimeControlTowerActionRow {
+    .map(|(kind, title, subtitle, tone)| AgentRuntimeWorkbenchActionRow {
         id: format!("workflow-memory:{}:{kind}", memory.id),
         title: title.to_string(),
         subtitle: subtitle.to_string(),
@@ -2232,13 +2276,13 @@ fn short_memory_text(memory: &WorkflowMemorySummary) -> String {
     }
 }
 
-fn json_object_facts(value: &Value) -> Vec<AgentRuntimeControlTowerFact> {
+fn json_object_facts(value: &Value) -> Vec<AgentRuntimeWorkbenchFact> {
     value
         .as_object()
         .map(|object| {
             object
                 .iter()
-                .map(|(key, value)| AgentRuntimeControlTowerFact {
+                .map(|(key, value)| AgentRuntimeWorkbenchFact {
                     label: key.clone(),
                     value: value
                         .as_str()
@@ -2248,18 +2292,6 @@ fn json_object_facts(value: &Value) -> Vec<AgentRuntimeControlTowerFact> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn session_group_label(session: &SessionListItem) -> String {
-    if !session.tracked {
-        "Archived".to_string()
-    } else if session.status == "open" {
-        "Open".to_string()
-    } else if session.status == "closed" {
-        "Closed".to_string()
-    } else {
-        "Attention".to_string()
-    }
 }
 
 fn status_tone(status: &str) -> &'static str {
@@ -2327,41 +2359,41 @@ fn status_badges(
     projection: Option<&RuntimeProjection>,
     controller_state: &GuiControllerState,
     _pending_request_count: usize,
-) -> Vec<AgentRuntimeControlTowerBadge> {
+) -> Vec<AgentRuntimeWorkbenchBadge> {
     let mut badges = vec![
-        AgentRuntimeControlTowerBadge {
+        AgentRuntimeWorkbenchBadge {
             label: "Connection".to_string(),
             value: connection_state_label(&controller_state.connection_state).to_string(),
             tone: status_tone(connection_state_label(&controller_state.connection_state)).to_string(),
         },
     ];
     if let Some(projection) = projection {
-        badges.push(AgentRuntimeControlTowerBadge {
+        badges.push(AgentRuntimeWorkbenchBadge {
             label: "Sessions".to_string(),
             value: projection.sessions.len().to_string(),
             tone: if projection.sessions.is_empty() { "muted" } else { "info" }.to_string(),
         });
-        badges.push(AgentRuntimeControlTowerBadge {
+        badges.push(AgentRuntimeWorkbenchBadge {
             label: "Attention".to_string(),
             value: (projection.pending_approvals.len() + projection.command_registry_requests.len()).to_string(),
             tone: if projection.pending_approvals.is_empty() && projection.command_registry_requests.is_empty() { "muted" } else { "warning" }.to_string(),
         });
-        badges.push(AgentRuntimeControlTowerBadge {
+        badges.push(AgentRuntimeWorkbenchBadge {
             label: "Registry requests".to_string(),
             value: projection.command_registry_requests.len().to_string(),
             tone: if projection.command_registry_requests.is_empty() { "muted" } else { "warning" }.to_string(),
         });
-        badges.push(AgentRuntimeControlTowerBadge {
+        badges.push(AgentRuntimeWorkbenchBadge {
             label: "Command inventory".to_string(),
             value: projection.command_registry.len().to_string(),
             tone: if projection.command_registry.is_empty() { "muted" } else { "info" }.to_string(),
         });
-        badges.push(AgentRuntimeControlTowerBadge {
+        badges.push(AgentRuntimeWorkbenchBadge {
             label: "Timeline".to_string(),
             value: projection.timeline.len().to_string(),
             tone: if projection.timeline.is_empty() { "muted" } else { "info" }.to_string(),
         });
-        badges.push(AgentRuntimeControlTowerBadge {
+        badges.push(AgentRuntimeWorkbenchBadge {
             label: "Workflow memories".to_string(),
             value: projection.workflow_memories.len().to_string(),
             tone: if projection.workflow_memories.is_empty() { "muted" } else { "info" }.to_string(),
@@ -2370,50 +2402,50 @@ fn status_badges(
     badges
 }
 
-fn runtime_detail_facts(projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> Vec<AgentRuntimeControlTowerFact> {
+fn runtime_detail_facts(projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> Vec<AgentRuntimeWorkbenchFact> {
     let mut facts = Vec::new();
     if let Some(projection) = projection {
         if let Some(session) = projection.selected_session.as_ref() {
-            facts.push(AgentRuntimeControlTowerFact { label: "Session status".to_string(), value: session.status.clone() });
-            facts.push(AgentRuntimeControlTowerFact { label: "Session role".to_string(), value: session.role_id.clone().unwrap_or_else(|| "default".to_string()) });
-            facts.push(AgentRuntimeControlTowerFact { label: "Session project".to_string(), value: session.project_key.clone().unwrap_or_else(|| "Runtime".to_string()) });
-            facts.push(AgentRuntimeControlTowerFact { label: "Session workdir".to_string(), value: session.workdir.clone() });
-            facts.push(AgentRuntimeControlTowerFact { label: "Managed processes".to_string(), value: session.managed_process_count.to_string() });
-            facts.push(AgentRuntimeControlTowerFact { label: "Pending approvals".to_string(), value: session.pending_approval_count.to_string() });
+            facts.push(AgentRuntimeWorkbenchFact { label: "Session status".to_string(), value: session.status.clone() });
+            facts.push(AgentRuntimeWorkbenchFact { label: "Session role".to_string(), value: session.role_id.clone().unwrap_or_else(|| "default".to_string()) });
+            facts.push(AgentRuntimeWorkbenchFact { label: "Session project".to_string(), value: session.project_key.clone().unwrap_or_else(|| "Runtime".to_string()) });
+            facts.push(AgentRuntimeWorkbenchFact { label: "Session workdir".to_string(), value: session.workdir.clone() });
+            facts.push(AgentRuntimeWorkbenchFact { label: "Managed processes".to_string(), value: session.managed_process_count.to_string() });
+            facts.push(AgentRuntimeWorkbenchFact { label: "Pending approvals".to_string(), value: session.pending_approval_count.to_string() });
         }
         let current_turn = if projection.timeline.iter().any(|item| item.event_type == "turn.started" && item.status.as_deref() == Some("running")) { "Running" } else { "Idle" };
-        facts.push(AgentRuntimeControlTowerFact { label: "Current turn".to_string(), value: current_turn.to_string() });
-        facts.push(AgentRuntimeControlTowerFact { label: "History events".to_string(), value: projection.timeline.len().to_string() });
-        facts.push(AgentRuntimeControlTowerFact { label: "Chat entries".to_string(), value: selected_chat_rows(Some(projection), controller_state.selected_session_id.as_deref()).len().to_string() });
-        facts.push(AgentRuntimeControlTowerFact { label: "Approval requests".to_string(), value: projection.pending_approvals.len().to_string() });
-        facts.push(AgentRuntimeControlTowerFact { label: "Command requests".to_string(), value: projection.command_registry_requests.len().to_string() });
-        facts.push(AgentRuntimeControlTowerFact { label: "Role rows".to_string(), value: projection.roles.len().to_string() });
-        facts.push(AgentRuntimeControlTowerFact { label: "Workflow memories".to_string(), value: projection.workflow_memories.len().to_string() });
-        facts.push(AgentRuntimeControlTowerFact { label: "Compaction checkpoint".to_string(), value: "No completed checkpoint visible".to_string() });
-        facts.push(AgentRuntimeControlTowerFact { label: "Context estimate".to_string(), value: "Runtime estimate unavailable".to_string() });
+        facts.push(AgentRuntimeWorkbenchFact { label: "Current turn".to_string(), value: current_turn.to_string() });
+        facts.push(AgentRuntimeWorkbenchFact { label: "History events".to_string(), value: projection.timeline.len().to_string() });
+        facts.push(AgentRuntimeWorkbenchFact { label: "Chat entries".to_string(), value: projection.selected_chat_entries.len().to_string() });
+        facts.push(AgentRuntimeWorkbenchFact { label: "Approval requests".to_string(), value: projection.pending_approvals.len().to_string() });
+        facts.push(AgentRuntimeWorkbenchFact { label: "Command requests".to_string(), value: projection.command_registry_requests.len().to_string() });
+        facts.push(AgentRuntimeWorkbenchFact { label: "Role rows".to_string(), value: projection.roles.len().to_string() });
+        facts.push(AgentRuntimeWorkbenchFact { label: "Workflow memories".to_string(), value: projection.workflow_memories.len().to_string() });
+        facts.push(AgentRuntimeWorkbenchFact { label: "Compaction checkpoint".to_string(), value: "No completed checkpoint visible".to_string() });
+        facts.push(AgentRuntimeWorkbenchFact { label: "Context estimate".to_string(), value: "Runtime estimate unavailable".to_string() });
     }
     facts.extend(controller_facts(controller_state));
     facts
 }
 
-fn controller_facts(controller_state: &GuiControllerState) -> Vec<AgentRuntimeControlTowerFact> {
+fn controller_facts(controller_state: &GuiControllerState) -> Vec<AgentRuntimeWorkbenchFact> {
     vec![
-        AgentRuntimeControlTowerFact {
+        AgentRuntimeWorkbenchFact {
             label: "Controller".to_string(),
             value: connection_state_label(&controller_state.connection_state).to_string(),
         },
-        AgentRuntimeControlTowerFact {
+        AgentRuntimeWorkbenchFact {
             label: "Selected session".to_string(),
             value: controller_state
                 .selected_session_id
                 .clone()
                 .unwrap_or_else(|| "none".to_string()),
         },
-        AgentRuntimeControlTowerFact {
+        AgentRuntimeWorkbenchFact {
             label: "Pending rehydrate".to_string(),
             value: controller_state.pending_rehydrate.to_string(),
         },
-        AgentRuntimeControlTowerFact {
+        AgentRuntimeWorkbenchFact {
             label: "Pending reconnect".to_string(),
             value: controller_state.pending_reconnect.to_string(),
         },
@@ -2514,8 +2546,9 @@ mod tests {
         CommandRegistryRequestSummary, CommandRegistrySummary, GuiConnectionState,
         GuiOperationOutcome, PendingApprovalSummary, RoleEditorDraft,
         RoleEditorLifecycleAuthorityMetadata, RoleEditorModelDefaults, RoleEditorRoutingMetadata,
-        RoleEditorVisibilityMetadata, RoleSummary, RoleVersionSummary, RuntimeDelta,
-        RuntimeDeltaKind, RuntimeProjection, ServerStatusProjection, SessionListItem, TimelineItem,
+        AgentRuntimeChatEntry, AgentRuntimeChatTransportDiagnostics, RoleEditorVisibilityMetadata,
+        RoleSummary, RoleVersionSummary, RuntimeDelta, RuntimeDeltaKind, RuntimeProjection,
+        ServerStatusProjection, SessionListItem, TimelineItem,
         WorkflowMemoryEventSummary, WorkflowMemorySummary,
     };
     use std::net::SocketAddr;
@@ -2578,6 +2611,133 @@ mod tests {
             axum::serve(listener, app).await.expect("serve transport test server");
         });
         format!("http://{addr}")
+    }
+
+    fn perf_chat_entry(id: &str, body: &str, streaming: bool) -> AgentRuntimeChatEntry {
+        AgentRuntimeChatEntry {
+            id: id.to_string(),
+            author: "Assistant".to_string(),
+            display_label: "Assistant".to_string(),
+            timestamp: None,
+            body: body.to_string(),
+            subtitle: if streaming { "streaming" } else { "completed" }.to_string(),
+            kind: "message".to_string(),
+            status: if streaming { "running" } else { "completed" }.to_string(),
+            process_id: None,
+            command: String::new(),
+            output: String::new(),
+            delivery_state: if streaming { "streaming" } else { "delivered" }.to_string(),
+            is_streaming: streaming,
+            is_tool: false,
+        }
+    }
+
+    async fn start_agent_runtime_streaming_perf_server() -> String {
+        let initial_entries = (0..50)
+            .map(|index| perf_chat_entry(&format!("history-{index}"), "historical", false))
+            .collect::<Vec<_>>();
+        let snapshot_entries = initial_entries.clone();
+        let app = Router::new()
+            .route("/state/snapshot", get(move || {
+                let selected_chat_entries = snapshot_entries.clone();
+                async move {
+                    Json(RuntimeProjection {
+                        watermark: 1,
+                        server_status: ServerStatusProjection {
+                            status: "ok".to_string(),
+                            database: "connected".to_string(),
+                            message: None,
+                        },
+                        selected_chat_entries,
+                        roles: vec![test_role_summary()],
+                        ..RuntimeProjection::default()
+                    })
+                }
+            }))
+            .route("/state/ws", get(|ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(|mut socket| async move {
+                    let mut deltas = Vec::new();
+                    for index in 0..10 {
+                        deltas.push(RuntimeDelta {
+                            watermark: 2 + index,
+                            previous_watermark: Some(1 + index),
+                            kind: RuntimeDeltaKind::SelectedChatUpdate {
+                                entry: perf_chat_entry("assistant-stream", &format!("partial-{index}"), true),
+                            },
+                        });
+                    }
+                    deltas.push(RuntimeDelta {
+                        watermark: 12,
+                        previous_watermark: Some(11),
+                        kind: RuntimeDeltaKind::SelectedChatFinalize {
+                            entry_id: "assistant-stream".to_string(),
+                            delivery_state: "delivered".to_string(),
+                            status: "completed".to_string(),
+                        },
+                    });
+                    for delta in deltas {
+                        let message = json!({"type":"delta","delta": serde_json::to_value(delta).expect("delta")}).to_string();
+                        socket.send(Message::Text(message.into())).await.expect("send selected chat delta");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                })
+            }));
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind transport perf server");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve transport perf server");
+        });
+        format!("http://{addr}")
+    }
+
+    fn record_agent_runtime_outputs(
+        diagnostics: &mut AgentRuntimeChatTransportDiagnostics,
+        outputs: &[GuiTransportOutputPacket],
+        last_modal_count: &mut Option<usize>,
+        last_rail_count: &mut Option<usize>,
+    ) {
+        for packet in outputs {
+            let bytes = serde_json::to_vec(packet).expect("transport packet bytes").len();
+            match &packet.output {
+                GuiTransportOutput::ProjectionSnapshot { projection } => {
+                    let entries = projection
+                        .get("selectedChatEntries")
+                        .and_then(Value::as_array)
+                        .map(Vec::len)
+                        .unwrap_or_default();
+                    diagnostics.record_snapshot(bytes, entries);
+                }
+                GuiTransportOutput::StreamOutcome { outcome: GuiStreamOutcomePacket::DeltaApplied { .. }, projection, .. } => {
+                    let entries = projection
+                        .as_ref()
+                        .and_then(|projection| projection.get("selectedChatEntries"))
+                        .and_then(Value::as_array)
+                        .map(Vec::len)
+                        .unwrap_or_default();
+                    diagnostics.record_delta(bytes, entries, true);
+                }
+                GuiTransportOutput::WorkbenchView { view_model } => {
+                    let modal_count = view_model.shell.operation_surfaces.len();
+                    let rail_count = view_model.shell.sessions.len() + view_model.shell.projects.len();
+                    if let Some(previous) = *last_modal_count {
+                        if previous != modal_count {
+                            diagnostics.unrelated_modal_rebuild_count += 1;
+                        }
+                    }
+                    if let Some(previous) = *last_rail_count {
+                        if previous != rail_count {
+                            diagnostics.unrelated_rail_rebuild_count += 1;
+                        }
+                    }
+                    *last_modal_count = Some(modal_count);
+                    *last_rail_count = Some(rail_count);
+                    diagnostics.selected_chat_entry_count = view_model.shell.selected_conversation.len().min(50);
+                }
+                _ => {}
+            }
+        }
     }
 
     async fn start_unhealthy_profile_test_server() -> String {
@@ -2798,7 +2958,7 @@ mod tests {
             assert!(!view.connectable);
         }
 
-        let control = AgentRuntimeControlTowerViewModel::from_runtime_state(
+        let control = AgentRuntimeWorkbenchViewModel::from_runtime_state(
             "http://manual.example",
             None,
             &GuiControllerState::default(),
@@ -2842,7 +3002,7 @@ mod tests {
         )));
         assert!(outputs.iter().any(|packet| matches!(
             &packet.output,
-            GuiTransportOutput::ControlTowerView { view_model }
+            GuiTransportOutput::WorkbenchView { view_model }
                 if view_model.discovery.connectable && view_model.discovery.state == "runningHealthy"
         )));
     }
@@ -2864,7 +3024,7 @@ mod tests {
             .await;
         assert!(refreshed.iter().any(|packet| matches!(
             &packet.output,
-            GuiTransportOutput::ControlTowerView { view_model }
+            GuiTransportOutput::WorkbenchView { view_model }
                 if view_model.remote_discovery.state == "remoteHealthy"
                     && view_model.remote_discovery.connectable
                     && view_model.remote_discovery.base_url.as_deref() == Some(base_url.as_str())
@@ -2891,7 +3051,7 @@ mod tests {
         )));
         assert!(connected.iter().any(|packet| matches!(
             &packet.output,
-            GuiTransportOutput::ControlTowerView { view_model }
+            GuiTransportOutput::WorkbenchView { view_model }
                 if view_model.remote_discovery.source_type == "iCloudRemoteProfile"
                     && view_model.base_url == base_url
         )));
@@ -2919,7 +3079,7 @@ mod tests {
         assert!(target_path.exists());
         assert!(imported.iter().any(|packet| matches!(
             &packet.output,
-            GuiTransportOutput::ControlTowerView { view_model }
+            GuiTransportOutput::WorkbenchView { view_model }
                 if view_model.imported_remote_discovery.source_type == "importedRemoteProfile"
                     && view_model.imported_remote_discovery.state == "remoteHealthy"
                     && view_model.remote_discovery.state == "notLoaded"
@@ -2930,7 +3090,7 @@ mod tests {
             .await;
         assert!(refreshed.iter().any(|packet| matches!(
             &packet.output,
-            GuiTransportOutput::ControlTowerView { view_model }
+            GuiTransportOutput::WorkbenchView { view_model }
                 if view_model.imported_remote_discovery.connectable
         )));
 
@@ -2958,7 +3118,7 @@ mod tests {
         )));
         assert!(connected.iter().any(|packet| matches!(
             &packet.output,
-            GuiTransportOutput::ControlTowerView { view_model }
+            GuiTransportOutput::WorkbenchView { view_model }
                 if view_model.base_url == base_url
         )));
     }
@@ -3115,7 +3275,7 @@ mod tests {
     }
 
     #[test]
-    fn control_tower_view_model_maps_projection_and_controller_to_constructor_ready_rows() {
+    fn workbench_view_model_maps_projection_and_controller_to_constructor_ready_rows() {
         let projection = RuntimeProjection {
             watermark: 9,
             server_status: ServerStatusProjection {
@@ -3150,6 +3310,56 @@ mod tests {
                 payload: json!({"bounded": true}),
                 created_at: None,
             }],
+            selected_chat_entries: vec![
+                robdex_agent_runtime_projection::AgentRuntimeChatEntry {
+                    id: "turn:turn-1:user".to_string(),
+                    author: "User".to_string(),
+                    display_label: "User".to_string(),
+                    timestamp: None,
+                    body: "Run the diagnostic".to_string(),
+                    subtitle: "completed".to_string(),
+                    kind: "message".to_string(),
+                    status: "completed".to_string(),
+                    process_id: None,
+                    command: String::new(),
+                    output: String::new(),
+                    delivery_state: "delivered".to_string(),
+                    is_streaming: false,
+                    is_tool: false,
+                },
+                robdex_agent_runtime_projection::AgentRuntimeChatEntry {
+                    id: "tool:tool-call-1:script-1".to_string(),
+                    author: "Tool".to_string(),
+                    display_label: "Tool".to_string(),
+                    timestamp: None,
+                    body: String::new(),
+                    subtitle: "execute_code".to_string(),
+                    kind: "execute_code".to_string(),
+                    status: "completed".to_string(),
+                    process_id: Some("process-1".to_string()),
+                    command: "output('ok')".to_string(),
+                    output: "ok".to_string(),
+                    delivery_state: "delivered".to_string(),
+                    is_streaming: false,
+                    is_tool: true,
+                },
+                robdex_agent_runtime_projection::AgentRuntimeChatEntry {
+                    id: "model:model-1:assistant".to_string(),
+                    author: "Assistant".to_string(),
+                    display_label: "Assistant".to_string(),
+                    timestamp: None,
+                    body: "**Done**".to_string(),
+                    subtitle: "completed".to_string(),
+                    kind: "message".to_string(),
+                    status: "completed".to_string(),
+                    process_id: None,
+                    command: String::new(),
+                    output: String::new(),
+                    delivery_state: "delivered".to_string(),
+                    is_streaming: false,
+                    is_tool: false,
+                },
+            ],
             pending_approvals: vec![PendingApprovalSummary {
                 id: "approval-1".to_string(),
                 session_id: "session-1".to_string(),
@@ -3248,7 +3458,7 @@ mod tests {
                         id: "memory-event-1".to_string(),
                         event_type: "workflow_memory.helpful".to_string(),
                         created_at: Some("now".to_string()),
-                        payload_summary: "{\"source\":\"gui.controlTower\"}".to_string(),
+                        payload_summary: "{\"source\":\"gui.workbench\"}".to_string(),
                     }],
                 },
                 WorkflowMemorySummary {
@@ -3274,7 +3484,7 @@ mod tests {
                         id: "memory-event-2".to_string(),
                         event_type: "workflow_memory.attempted".to_string(),
                         created_at: Some("later".to_string()),
-                        payload_summary: "{\"source\":\"gui.controlTower\"}".to_string(),
+                        payload_summary: "{\"source\":\"gui.workbench\"}".to_string(),
                     }],
                 },
             ],
@@ -3288,7 +3498,7 @@ mod tests {
             ..GuiControllerState::default()
         };
 
-        let view = AgentRuntimeControlTowerViewModel::from_runtime_state(
+        let view = AgentRuntimeWorkbenchViewModel::from_runtime_state(
             "http://127.0.0.1:8765",
             Some(&projection),
             &controller,
@@ -3320,7 +3530,7 @@ mod tests {
         assert!(!view.status_badges.iter().any(|badge| badge.label == "Pending UI requests"));
         assert_eq!(view.sessions[0].title, "Runtime check");
         assert!(view.sessions[0].subtitle.contains("runtime-allow"));
-        assert_eq!(view.sessions[0].group_label, "Open");
+        assert_eq!(view.sessions[0].group_label, "runtime-allow");
         assert_eq!(view.sessions[0].tone, "success");
         assert_eq!(view.timeline[0].title, "tool.completed");
         assert_eq!(view.timeline[0].subtitle, "execute_code completed");
@@ -3345,16 +3555,24 @@ mod tests {
         assert!(view.controller_facts.iter().any(|fact| fact.label == "Selected session" && fact.value == "session-1"));
         assert_eq!(view.pending_request_count, 2);
 
-        let shell = AgentRuntimeConversationShellViewModel::from_control_tower(&view, Some(&projection), &controller);
-        assert_eq!(shell.projects[0].id, "runtime");
+        let shell = AgentRuntimeConversationShellViewModel::from_workbench(&view, Some(&projection), &controller);
+        assert_eq!(shell.projects[0].id, "project-a");
         assert!(shell.projects[0].selectable);
         assert_eq!(shell.selected_session_id.as_deref(), Some("session-1"));
         assert_eq!(shell.sessions[0].id, "session-1");
-        assert_eq!(shell.selected_conversation[0].title, "Tool result");
-        assert!(!shell.selected_conversation.iter().any(|row| matches!(row.title.as_str(), "role.imported" | "session.created" | "turn.started" | "route.decision" | "model.tool_call" | "policy.decision" | "tool.started" | "script.started" | "host_api.completed" | "script.completed" | "tool.completed" | "model.final_response" | "turn.completed")));
+        assert_eq!(shell.selected_conversation[0].author, "User");
+        assert_eq!(shell.selected_conversation[1].author, "Tool");
+        assert!(shell.selected_conversation[1].is_tool);
+        assert_eq!(shell.selected_conversation[2].author, "Assistant");
+        assert_eq!(shell.selected_conversation[2].body, "**Done**");
+        assert!(!shell.selected_conversation.iter().any(|row| {
+            [row.id.as_str(), row.author.as_str(), row.display_label.as_str(), row.body.as_str(), row.subtitle.as_str(), row.kind.as_str(), row.status.as_str(), row.command.as_str(), row.output.as_str()]
+                .iter()
+                .any(|value| matches!(*value, "role.imported" | "session.created" | "turn.started" | "route.decision" | "model.tool_call" | "policy.decision" | "tool.started" | "script.started" | "host_api.completed" | "script.completed" | "tool.completed" | "model.final_response" | "turn.completed"))
+        }));
         assert!(view.timeline.iter().any(|row| row.title == "tool.completed"));
-        assert_eq!(shell.dynamic_roles[0].role_id, "Open");
-        assert_eq!(shell.dynamic_roles[0].short_label, "O");
+        assert_eq!(shell.dynamic_roles[0].role_id, "runtime-allow");
+        assert_eq!(shell.dynamic_roles[0].short_label, "R");
         assert!(shell.approvals.iter().any(|row| row.id == "approval-1"));
         assert!(shell.command_registry_requests.iter().any(|row| row.id == "request-1"));
         assert_eq!(shell.workflow_memory.rows.len(), 2);
@@ -3368,6 +3586,9 @@ mod tests {
         assert!(surface_titles.contains(&"Process Manager"));
         assert!(surface_titles.contains(&"Settings"));
         assert!(surface_titles.contains(&"History"));
+        assert!(surface_titles.contains(&"Diagnostics"));
+        assert!(surface_titles.contains(&"Role Admin"));
+        assert!(surface_titles.contains(&"Workflow Memory"));
         assert!(surface_titles.contains(&"Approvals"));
         assert!(surface_titles.contains(&"Command Registry"));
         let history = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "history").expect("history surface");
@@ -3376,8 +3597,8 @@ mod tests {
 
     #[test]
     fn dynamic_role_presentation_is_data_driven_not_fixed_codex_enum() {
-        let view = AgentRuntimeControlTowerViewModel {
-            sessions: vec![AgentRuntimeControlTowerSessionRow {
+        let view = AgentRuntimeWorkbenchViewModel {
+            sessions: vec![AgentRuntimeWorkbenchSessionRow {
                 id: "session-custom".to_string(),
                 title: "Custom runtime role".to_string(),
                 status: "open".to_string(),
@@ -3385,7 +3606,7 @@ mod tests {
                 group_label: "Neon Incident Commander".to_string(),
                 tone: "warning".to_string(),
             }],
-            ..AgentRuntimeControlTowerViewModel::from_runtime_state(
+            ..AgentRuntimeWorkbenchViewModel::from_runtime_state(
                 "http://127.0.0.1:8765",
                 None,
                 &GuiControllerState::default(),
@@ -3397,7 +3618,7 @@ mod tests {
                 &AgentRuntimeDiscoveryView::not_loaded_imported(),
             )
         };
-        let shell = AgentRuntimeConversationShellViewModel::from_control_tower(&view, None, &GuiControllerState::default());
+        let shell = AgentRuntimeConversationShellViewModel::from_workbench(&view, None, &GuiControllerState::default());
         assert_eq!(shell.dynamic_roles[0].role_id, "Neon Incident Commander");
         assert_eq!(shell.dynamic_roles[0].display_label, "Neon Incident Commander");
         assert_eq!(shell.dynamic_roles[0].short_label, "NI");
@@ -3405,7 +3626,7 @@ mod tests {
     }
 
     #[test]
-    fn control_tower_workflow_memory_selection_changes_detail_and_falls_back() {
+    fn workbench_workflow_memory_selection_changes_detail_and_falls_back() {
         let mut projection = RuntimeProjection {
             workflow_memories: vec![
                 WorkflowMemorySummary {
@@ -3468,7 +3689,7 @@ mod tests {
             ..GuiControllerState::default()
         };
 
-        let default_view = AgentRuntimeControlTowerViewModel::from_runtime_state(
+        let default_view = AgentRuntimeWorkbenchViewModel::from_runtime_state(
             "http://127.0.0.1:8765",
             Some(&projection),
             &controller,
@@ -3484,7 +3705,7 @@ mod tests {
         assert!(default_view.workflow_memory.recent_events.iter().any(|event| event.id == "event-a"));
 
         controller.select_workflow_memory(Some("memory-b".to_string()));
-        let selected_view = AgentRuntimeControlTowerViewModel::from_runtime_state(
+        let selected_view = AgentRuntimeWorkbenchViewModel::from_runtime_state(
             "http://127.0.0.1:8765",
             Some(&projection),
             &controller,
@@ -3501,7 +3722,7 @@ mod tests {
         assert!(selected_view.workflow_memory.recent_events.iter().any(|event| event.id == "event-b"));
 
         projection.workflow_memories.retain(|memory| memory.id != "memory-b");
-        let fallback_view = AgentRuntimeControlTowerViewModel::from_runtime_state(
+        let fallback_view = AgentRuntimeWorkbenchViewModel::from_runtime_state(
             "http://127.0.0.1:8765",
             Some(&projection),
             &controller,
@@ -3550,7 +3771,7 @@ mod tests {
         )));
         assert!(connect.iter().any(|packet| matches!(
             &packet.output,
-            GuiTransportOutput::ControlTowerView { view_model }
+            GuiTransportOutput::WorkbenchView { view_model }
                 if view_model.connection_state == "streaming" && view_model.watermark_label == "1"
         )));
 
@@ -3561,6 +3782,7 @@ mod tests {
                     operation: GuiOperationRequest::CreateSession {
                         role: "runtime-allow".to_string(),
                         project: None,
+                        model: None,
                         workdir: Some(".".to_string()),
                         worktree_root: None,
                         title: None,
@@ -3594,7 +3816,7 @@ mod tests {
         )));
         assert!(stream.iter().any(|packet| matches!(
             &packet.output,
-            GuiTransportOutput::ControlTowerView { view_model }
+            GuiTransportOutput::WorkbenchView { view_model }
                 if view_model.sessions.iter().any(|row| row.id == "transport-session-delta")
         )));
 
@@ -3619,6 +3841,57 @@ mod tests {
             GuiTransportOutput::ControllerState { controller_state }
                 if controller_state["connectionState"] == "disconnected"
         )));
+    }
+
+    #[tokio::test]
+    async fn agent_runtime_transport_streaming_diagnostics_observe_actual_packets_without_modal_or_rail_rebuilds() {
+        let base_url = start_agent_runtime_streaming_perf_server().await;
+        let transport = GuiTransportHandle::spawn();
+        let mut diagnostics = AgentRuntimeChatTransportDiagnostics::default();
+        let mut last_modal_count = None;
+        let mut last_rail_count = None;
+
+        let connect = transport
+            .send(packet(
+                "perf-connect",
+                GuiTransportRequest::Connect {
+                    base_url,
+                    selected_session_id: None,
+                },
+            ))
+            .await;
+        record_agent_runtime_outputs(&mut diagnostics, &connect, &mut last_modal_count, &mut last_rail_count);
+
+        for index in 0..11 {
+            let outputs = transport
+                .send(packet(&format!("perf-stream-{index}"), GuiTransportRequest::PollStreamOnce))
+                .await;
+            record_agent_runtime_outputs(&mut diagnostics, &outputs, &mut last_modal_count, &mut last_rail_count);
+        }
+
+        assert_eq!(diagnostics.full_snapshot_count, 1);
+        assert_eq!(diagnostics.delta_count, 11);
+        assert!(diagnostics.average_payload_bytes() > 0);
+        assert!(diagnostics.max_payload_bytes >= diagnostics.average_payload_bytes());
+        assert_eq!(diagnostics.selected_chat_entry_count, 50);
+        assert_eq!(diagnostics.coalesced_payload_count, 11);
+        assert_eq!(diagnostics.unrelated_modal_rebuild_count, 0);
+        assert_eq!(diagnostics.unrelated_rail_rebuild_count, 0);
+        let counter_line = format!(
+            "agent_runtime_transport_streaming_counters full_snapshot_count={} delta_count={} average_payload_bytes={} max_payload_bytes={} selected_chat_entry_count={} coalesced_payload_frequency={} unrelated_modal_rebuilds={} unrelated_rail_rebuilds={}",
+            diagnostics.full_snapshot_count,
+            diagnostics.delta_count,
+            diagnostics.average_payload_bytes(),
+            diagnostics.max_payload_bytes,
+            diagnostics.selected_chat_entry_count,
+            diagnostics.coalesced_payload_count,
+            diagnostics.unrelated_modal_rebuild_count,
+            diagnostics.unrelated_rail_rebuild_count,
+        );
+        println!("{counter_line}");
+        let _ = std::fs::create_dir_all("/tmp/agent-runtime-shell-proof");
+        std::fs::write("/tmp/agent-runtime-shell-proof/agent-runtime-transport-streaming-counters.txt", counter_line)
+            .expect("write agent runtime streaming counters");
     }
 
     #[tokio::test]
@@ -3648,7 +3921,7 @@ mod tests {
         )));
         assert!(connect.iter().any(|packet| matches!(
             &packet.output,
-            GuiTransportOutput::ControlTowerView { view_model }
+            GuiTransportOutput::WorkbenchView { view_model }
                 if view_model.base_url == base_url && view_model.connection_state == "streaming"
         )));
     }
@@ -3675,7 +3948,7 @@ mod tests {
         )));
         assert!(connect.iter().any(|packet| matches!(
             &packet.output,
-            GuiTransportOutput::ControlTowerView { view_model }
+            GuiTransportOutput::WorkbenchView { view_model }
                 if view_model.error_message.as_deref().is_some_and(|message| message.contains("runtime target must use http or https"))
         )));
     }
@@ -3751,7 +4024,7 @@ mod tests {
             )));
             assert!(outputs.iter().any(|packet| matches!(
                 &packet.output,
-                GuiTransportOutput::ControlTowerView { view_model }
+                GuiTransportOutput::WorkbenchView { view_model }
                     if view_model.role_admin.rows.iter().any(|role| role.id == "gui-role")
             )));
         }
@@ -3797,7 +4070,7 @@ mod tests {
                         memory_id: "memory-1".to_string(),
                         session_id: "session-1".to_string(),
                         feedback: "attempted".to_string(),
-                        payload: json!({"source":"gui.controlTower","variant":true}),
+                        payload: json!({"source":"gui.workbench","variant":true}),
                     },
                 },
             ))
@@ -3829,7 +4102,7 @@ mod tests {
         }
         assert!(matches!(
             &outputs[1].output,
-            GuiTransportOutput::ControlTowerView { view_model }
+            GuiTransportOutput::WorkbenchView { view_model }
                 if view_model.error_message.as_deref().is_some_and(|message| message.contains("conflict"))
         ));
     }

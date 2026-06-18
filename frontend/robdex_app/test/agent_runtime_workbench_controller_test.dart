@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:robdex_app/src/agent_runtime/agent_runtime_control_tower_controller.dart';
+import 'package:flutter/material.dart';
+import 'package:robdex_app/src/agent_runtime/agent_runtime_workbench_controller.dart';
 import 'package:robdex_app/src/bindings/bindings.dart' as bindings;
 import 'package:robdex_design_system/robdex_design_system.dart';
 
@@ -19,7 +20,7 @@ void main() {
       sessionId: 'session-1',
       feedback: 'attempted',
       payload: const bindings.AgentRuntimeWorkflowMemoryFeedbackPayload(
-        source: 'gui.controlTower',
+        source: 'gui.workbench',
         reason: '',
         variant: true,
         hasVariant: true,
@@ -30,7 +31,7 @@ void main() {
       sessionId: 'session-1',
       feedback: 'helpful',
       payload: const bindings.AgentRuntimeWorkflowMemoryFeedbackPayload(
-        source: 'gui.controlTower',
+        source: 'gui.workbench',
         reason: '',
         variant: false,
         hasVariant: false,
@@ -41,7 +42,7 @@ void main() {
       sessionId: 'session-1',
       feedback: 'notHelpful',
       payload: const bindings.AgentRuntimeWorkflowMemoryFeedbackPayload(
-        source: 'gui.controlTower',
+        source: 'gui.workbench',
         reason: 'marked from Agent Runtime',
         variant: false,
         hasVariant: false,
@@ -73,7 +74,7 @@ void main() {
 
   test('local discovery refresh sends generated typed signal intent', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
-    final controller = AgentRuntimeControlTowerController(
+    final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
         sentRequests.add(request);
       },
@@ -89,7 +90,7 @@ void main() {
 
   test('manual connect sends generated typed signal intent', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
-    final controller = AgentRuntimeControlTowerController(
+    final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
         sentRequests.add(request);
       },
@@ -107,7 +108,7 @@ void main() {
 
   test('disconnect sends generated typed signal intent', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
-    final controller = AgentRuntimeControlTowerController(
+    final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
         sentRequests.add(request);
       },
@@ -121,7 +122,7 @@ void main() {
 
   test('conversation shell session actions send generated typed operation intents', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
-    final controller = AgentRuntimeControlTowerController(
+    final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
         sentRequests.add(request);
       },
@@ -145,9 +146,313 @@ void main() {
     expect(sendMessage.message, 'hello runtime');
   });
 
+  test('composer send blocks empty selected session id and empty message text', () {
+    final sentRequests = <bindings.AgentRuntimeRequest>[];
+    final controller = AgentRuntimeWorkbenchController(
+      requestSink: (requestId, request) {
+        sentRequests.add(request);
+      },
+    );
+    addTearDown(controller.dispose);
+
+    controller.sendMessage('', 'hello');
+    controller.sendMessage('session-2', '   ');
+
+    expect(sentRequests, isEmpty);
+  });
+
+  test('composer send dispatch failure surfaces typed visible GUI error', () {
+    final controller = AgentRuntimeWorkbenchController(
+      requestSink: (requestId, request) {
+        throw StateError('bridge down');
+      },
+    );
+    addTearDown(controller.dispose);
+
+    controller.sendMessage('session-2', 'hello runtime');
+
+    expect(controller.data.errorMessage, contains('Agent Runtime bridge is not ready'));
+  });
+
+  test('typed selected conversation maps to canonical ChatEntry authors without lowercase runtime labels', () {
+    final user = agentRuntimeChatEntryToChatEntryForTest(const bindings.AgentRuntimeChatEntry(
+      id: 'turn:1:user',
+      author: 'User',
+      displayLabel: 'User',
+      timestamp: '',
+      hasTimestamp: false,
+      body: 'exact submitted text',
+      subtitle: 'completed',
+      kind: 'message',
+      status: 'completed',
+      processId: '',
+      hasProcessId: false,
+      command: '',
+      output: '',
+      deliveryState: 'delivered',
+      isStreaming: false,
+      isTool: false,
+    ));
+    final assistant = agentRuntimeChatEntryToChatEntryForTest(const bindings.AgentRuntimeChatEntry(
+      id: 'model:1:assistant',
+      author: 'Assistant',
+      displayLabel: 'Assistant',
+      timestamp: '',
+      hasTimestamp: false,
+      body: '**actual final response**',
+      subtitle: 'completed',
+      kind: 'message',
+      status: 'completed',
+      processId: '',
+      hasProcessId: false,
+      command: '',
+      output: '',
+      deliveryState: 'delivered',
+      isStreaming: false,
+      isTool: false,
+    ));
+
+    expect(user.author, 'User');
+    expect(assistant.author, 'Assistant');
+    expect([user.author, assistant.author], isNot(contains('owner')));
+    expect([user.author, assistant.author], isNot(contains('assistant')));
+    expect(user.body, 'exact submitted text');
+    expect(assistant.body, '**actual final response**');
+  });
+
+  testWidgets('connected Agent Runtime shell renders left rail plus center chat with modal operation toolbar', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ConversationShellScreen(
+          data: agentRuntimeConversationShellData(mockAgentRuntimeConnected),
+          onSessionSelected: (_) {},
+          onCreateSession: () {},
+          onSendMessage: (_) {},
+          onInterrupt: () {},
+          showPermanentDetail: false,
+          headerControls: TextButton(
+            key: const ValueKey('agentRuntime.toolbar.history'),
+            onPressed: () {
+              showModalBottomSheet<void>(
+                context: tester.element(find.byKey(const ValueKey('agentRuntime.toolbar.history'))),
+                builder: (_) => const AgentRuntimeOperationsDetail(data: mockAgentRuntimeConnected, focusSurfaceId: 'history'),
+              );
+            },
+            child: const Text('History'),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('conversationShell.center')), findsOneWidget);
+    expect(find.text('History'), findsOneWidget);
+    expect(find.text('Details'), findsNothing);
+    expect(find.text('Role imported'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.history')));
+    await tester.pumpAndSettle();
+    expect(find.text('History'), findsWidgets);
+    expect(find.text('Role imported'), findsWidgets);
+  });
+
+  testWidgets('typed selected conversation renders chat bubbles and excludes raw runtime event names', (tester) async {
+    final entries = [
+      agentRuntimeChatEntryToChatEntryForTest(const bindings.AgentRuntimeChatEntry(
+        id: 'turn:1:user',
+        author: 'User',
+        displayLabel: 'User',
+        timestamp: '',
+        hasTimestamp: false,
+        body: 'render this user prompt',
+        subtitle: 'completed',
+        kind: 'message',
+        status: 'completed',
+        processId: '',
+        hasProcessId: false,
+        command: '',
+        output: '',
+        deliveryState: 'delivered',
+        isStreaming: false,
+        isTool: false,
+      )),
+      agentRuntimeChatEntryToChatEntryForTest(const bindings.AgentRuntimeChatEntry(
+        id: 'tool:1',
+        author: 'Tool',
+        displayLabel: 'Tool',
+        timestamp: '',
+        hasTimestamp: false,
+        body: '',
+        subtitle: 'execute_code',
+        kind: 'execute_code',
+        status: 'completed',
+        processId: 'process-1',
+        hasProcessId: true,
+        command: 'output("ok")',
+        output: 'ok',
+        deliveryState: 'delivered',
+        isStreaming: false,
+        isTool: true,
+      )),
+      agentRuntimeChatEntryToChatEntryForTest(const bindings.AgentRuntimeChatEntry(
+        id: 'model:1:assistant',
+        author: 'Assistant',
+        displayLabel: 'Assistant',
+        timestamp: '',
+        hasTimestamp: false,
+        body: 'render this assistant response',
+        subtitle: 'completed',
+        kind: 'message',
+        status: 'completed',
+        processId: '',
+        hasProcessId: false,
+        command: '',
+        output: '',
+        deliveryState: 'delivered',
+        isStreaming: false,
+        isTool: false,
+      )),
+    ];
+
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: ChatTimeline(
+          threadId: 'session-1',
+          entries: entries,
+          title: 'Selected session',
+          contextWindowRemainingPercent: null,
+          onSend: (_) {},
+          onInterrupt: () {},
+          composerEnabled: true,
+          isRunning: false,
+        ),
+      ),
+    ));
+
+    expect(find.text('render this user prompt'), findsOneWidget);
+    expect(find.text('render this assistant response'), findsOneWidget);
+    for (final raw in ['role.imported', 'turn.started', 'model.final_response', 'tool.completed', 'read History', 'Output details are available in History.']) {
+      expect(find.textContaining(raw), findsNothing);
+    }
+  });
+
+  testWidgets('Agent Runtime selected ChatTimeline excludes raw event names even when History contains them', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1440, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const historyRows = [
+      ConversationDetailRow(label: 'Role imported', value: '#1 · completed · role'),
+      ConversationDetailRow(label: 'Tool completed', value: '#2 · completed · tool'),
+    ];
+    final data = ConversationShellData(
+      appTitle: 'Agent Runtime',
+      connectionLabel: 'Runtime connected',
+      projects: const [ConversationProject(id: 'runtime', title: 'Runtime')],
+      sessions: const [
+        ConversationSession(
+          id: 'session-1',
+          title: 'Runtime validation',
+          subtitle: 'Selected',
+          role: 'Runtime',
+          selected: true,
+          rolePresentation: ConversationRolePresentation(
+            roleId: 'runtime',
+            displayLabel: 'Runtime',
+            shortLabel: 'RT',
+            iconKey: 'runtime',
+            tone: 'success',
+            statusLabel: 'open',
+            description: 'Selected',
+          ),
+        ),
+      ],
+      selectedSessionId: 'session-1',
+      timelineTitle: 'Selected session',
+      entries: [
+        agentRuntimeChatEntryToChatEntryForTest(const bindings.AgentRuntimeChatEntry(
+          id: 'turn:1:user',
+          author: 'User',
+          displayLabel: 'User',
+          timestamp: '',
+          hasTimestamp: false,
+          body: 'selected user text',
+          subtitle: 'completed',
+          kind: 'message',
+          status: 'completed',
+          processId: '',
+          hasProcessId: false,
+          command: '',
+          output: '',
+          deliveryState: 'delivered',
+          isStreaming: false,
+          isTool: false,
+        )),
+        agentRuntimeChatEntryToChatEntryForTest(const bindings.AgentRuntimeChatEntry(
+          id: 'tool:1',
+          author: 'Tool',
+          displayLabel: 'Tool',
+          timestamp: '',
+          hasTimestamp: false,
+          body: '',
+          subtitle: 'execute_code',
+          kind: 'execute_code',
+          status: 'completed',
+          processId: 'process-1',
+          hasProcessId: true,
+          command: 'output("ok")',
+          output: 'ok',
+          deliveryState: 'delivered',
+          isStreaming: false,
+          isTool: true,
+        )),
+        agentRuntimeChatEntryToChatEntryForTest(const bindings.AgentRuntimeChatEntry(
+          id: 'model:1:assistant',
+          author: 'Assistant',
+          displayLabel: 'Assistant',
+          timestamp: '',
+          hasTimestamp: false,
+          body: 'selected assistant final',
+          subtitle: 'completed',
+          kind: 'message',
+          status: 'completed',
+          processId: '',
+          hasProcessId: false,
+          command: '',
+          output: '',
+          deliveryState: 'delivered',
+          isStreaming: false,
+          isTool: false,
+        )),
+      ],
+      composerEnabled: true,
+      isRunning: false,
+      detailTitle: 'Runtime detail',
+      detailSections: const [ConversationDetailSection(title: 'History', rows: historyRows)],
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      home: ConversationShellScreen(
+        data: data,
+        onSessionSelected: (_) {},
+        onCreateSession: () {},
+        onSendMessage: (_) {},
+        onInterrupt: () {},
+        showPermanentDetail: false,
+        headerControls: const Text('History'),
+      ),
+    ));
+
+    expect(find.text('Role imported'), findsNothing);
+    expect(find.text('Tool completed'), findsNothing);
+    final center = find.byKey(const ValueKey('conversationShell.center'));
+    expect(find.descendant(of: center, matching: find.text('selected user text')), findsOneWidget);
+    expect(find.descendant(of: center, matching: find.text('selected assistant final')), findsOneWidget);
+    for (final raw in ['role.imported', 'turn.started', 'model.final_response', 'tool.completed', 'read History', 'Output details are available in History.']) {
+      expect(find.descendant(of: center, matching: find.textContaining(raw)), findsNothing);
+    }
+  });
+
   test('session close archive and fork use generated typed operation intents', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
-    final controller = AgentRuntimeControlTowerController(
+    final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
         sentRequests.add(request);
       },
@@ -180,7 +485,7 @@ void main() {
 
   test('project and settings shell entry points rehydrate through typed runtime state requests', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
-    final controller = AgentRuntimeControlTowerController(
+    final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
         sentRequests.add(request);
       },
@@ -196,9 +501,51 @@ void main() {
     expect(sentRequests[1], isA<bindings.AgentRuntimeRequestHydrate>());
   });
 
+  test('runtime and session settings submit through typed operation variants', () {
+    final sentRequests = <bindings.AgentRuntimeRequest>[];
+    final controller = AgentRuntimeWorkbenchController(
+      requestSink: (requestId, request) {
+        sentRequests.add(request);
+      },
+    );
+    addTearDown(controller.dispose);
+
+    controller.updateRuntimeSettings(baseUrl: ' http://127.0.0.1:8765 ', selectedProjectId: ' project-a ');
+    controller.updateSessionSettings(
+      sessionId: ' session-1 ',
+      project: ' project-a ',
+      role: ' runtime-allow ',
+      model: ' gpt-5.5 ',
+      workdir: ' /tmp/project-a ',
+      worktreeRoot: ' /tmp/project-a ',
+      title: ' Updated title ',
+      name: ' updated-name ',
+      tracked: true,
+    );
+
+    final runtime = sentRequests[0] as bindings.AgentRuntimeRequestDispatchOperation;
+    expect(runtime.operation, isA<bindings.AgentRuntimeGuiOperationUpdateRuntimeSettings>());
+    final runtimeSettings = runtime.operation as bindings.AgentRuntimeGuiOperationUpdateRuntimeSettings;
+    expect(runtimeSettings.baseUrl, 'http://127.0.0.1:8765');
+    expect(runtimeSettings.selectedProjectId, 'project-a');
+
+    final session = sentRequests[1] as bindings.AgentRuntimeRequestDispatchOperation;
+    expect(session.operation, isA<bindings.AgentRuntimeGuiOperationUpdateSessionSettings>());
+    final sessionSettings = session.operation as bindings.AgentRuntimeGuiOperationUpdateSessionSettings;
+    expect(sessionSettings.sessionId, 'session-1');
+    expect(sessionSettings.project, 'project-a');
+    expect(sessionSettings.role, 'runtime-allow');
+    expect(sessionSettings.model, 'gpt-5.5');
+    expect(sessionSettings.workdir, '/tmp/project-a');
+    expect(sessionSettings.worktreeRoot, '/tmp/project-a');
+    expect(sessionSettings.title, 'Updated title');
+    expect(sessionSettings.name, 'updated-name');
+    expect(sessionSettings.tracked, true);
+  });
+
   test('role admin shell actions send generated typed operations with payloads', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
-    final controller = AgentRuntimeControlTowerController(
+    final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
         sentRequests.add(request);
       },
@@ -229,7 +576,7 @@ void main() {
 
   test('approval and command-registry request actions use generated typed operation intents', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
-    final controller = AgentRuntimeControlTowerController(
+    final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
         sentRequests.add(request);
       },
@@ -274,7 +621,7 @@ void main() {
 
   test('import profile action passes selected document path to Rust without parsing JSON', () async {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
-    final controller = AgentRuntimeControlTowerController(
+    final controller = AgentRuntimeWorkbenchController(
       remoteProfilePicker: () async => '/tmp/imported-agent-runtime-profile.json',
       requestSink: (requestId, request) {
         sentRequests.add(request);
@@ -292,7 +639,7 @@ void main() {
 
   test('import profile picker failures stay on typed unsupported Rust error path', () async {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
-    final controller = AgentRuntimeControlTowerController(
+    final controller = AgentRuntimeWorkbenchController(
       remoteProfilePicker: () async => throw UnsupportedError('picker unavailable'),
       requestSink: (requestId, request) {
         sentRequests.add(request);

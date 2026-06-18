@@ -28,7 +28,7 @@ class AgentRuntimeConversationShellViewModel {
       sessions: TraitHelpers.deserializeVectorAgentRuntimeSessionRow(deserializer),
       selectedSessionId: deserializer.deserializeString(),
       hasSelectedSessionId: deserializer.deserializeBool(),
-      selectedConversation: TraitHelpers.deserializeVectorAgentRuntimeTimelineRow(deserializer),
+      selectedConversation: TraitHelpers.deserializeVectorAgentRuntimeChatEntry(deserializer),
       dynamicRoles: TraitHelpers.deserializeVectorAgentRuntimeShellRolePresentation(deserializer),
       actions: TraitHelpers.deserializeVectorAgentRuntimeActionRow(deserializer),
       settings: TraitHelpers.deserializeVectorAgentRuntimeFact(deserializer),
@@ -56,7 +56,7 @@ class AgentRuntimeConversationShellViewModel {
   final List<AgentRuntimeSessionRow> sessions;
   final String selectedSessionId;
   final bool hasSelectedSessionId;
-  final List<AgentRuntimeTimelineRow> selectedConversation;
+  final List<AgentRuntimeChatEntry> selectedConversation;
   final List<AgentRuntimeShellRolePresentation> dynamicRoles;
   final List<AgentRuntimeActionRow> actions;
   final List<AgentRuntimeFact> settings;
@@ -72,7 +72,7 @@ class AgentRuntimeConversationShellViewModel {
     List<AgentRuntimeSessionRow>? sessions,
     String? selectedSessionId,
     bool? hasSelectedSessionId,
-    List<AgentRuntimeTimelineRow>? selectedConversation,
+    List<AgentRuntimeChatEntry>? selectedConversation,
     List<AgentRuntimeShellRolePresentation>? dynamicRoles,
     List<AgentRuntimeActionRow>? actions,
     List<AgentRuntimeFact>? settings,
@@ -107,7 +107,7 @@ class AgentRuntimeConversationShellViewModel {
     TraitHelpers.serializeVectorAgentRuntimeSessionRow(sessions, serializer);
     serializer.serializeString(selectedSessionId);
     serializer.serializeBool(hasSelectedSessionId);
-    TraitHelpers.serializeVectorAgentRuntimeTimelineRow(selectedConversation, serializer);
+    TraitHelpers.serializeVectorAgentRuntimeChatEntry(selectedConversation, serializer);
     TraitHelpers.serializeVectorAgentRuntimeShellRolePresentation(dynamicRoles, serializer);
     TraitHelpers.serializeVectorAgentRuntimeActionRow(actions, serializer);
     TraitHelpers.serializeVectorAgentRuntimeFact(settings, serializer);

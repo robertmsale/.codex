@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
 use robdex_agent_runtime::rinf_transport::{
-    AgentRuntimeControlTowerViewModel as InternalControlTowerViewModel,
+    AgentRuntimeWorkbenchViewModel as InternalWorkbenchViewModel,
     AgentRuntimeDiscoveryView as InternalDiscoveryView,
     AgentRuntimeRoleAdminView as InternalRoleAdminView,
     AgentRuntimeWorkflowMemoryView as InternalWorkflowMemoryView,
@@ -31,14 +31,14 @@ use crate::signals::{
     AgentRuntimeOutputSignal, AgentRuntimeRequestSignal, AgentRuntimeRequest,
     AgentRuntimeGuiOperation, AgentRuntimeOutput, AgentRuntimeProjectionSnapshot,
     AgentRuntimeControllerState, AgentRuntimeOperationResult, AgentRuntimeApiError,
-    AgentRuntimeFact, AgentRuntimeStreamOutcome, AgentRuntimeControlTowerViewModel,
+    AgentRuntimeFact, AgentRuntimeStreamOutcome, AgentRuntimeWorkbenchViewModel,
     AgentRuntimeDiscoveryView, AgentRuntimeSessionRow, AgentRuntimeTimelineRow,
     AgentRuntimeActionRow, AgentRuntimeBadge, AgentRuntimeRoleAdminView, AgentRuntimeRoleRow,
     AgentRuntimeRoleDetail, AgentRuntimeRolePolicyRow, AgentRuntimeRoleVersionRow,
     AgentRuntimeRoleEditorDraftView, AgentRuntimeWorkflowMemoryView,
     AgentRuntimeWorkflowMemoryRow, AgentRuntimeWorkflowMemoryDetail,
     AgentRuntimeWorkflowMemoryEvent, AgentRuntimeConversationShellViewModel, AgentRuntimeOperationSurface,
-    AgentRuntimeShellProjectRow, AgentRuntimeShellRolePresentation,
+    AgentRuntimeShellProjectRow, AgentRuntimeShellRolePresentation, AgentRuntimeChatEntry,
     ArchiveThreadGroupSignal, ArchiveThreadSignal, BridgeTaskResultSignal, ClearProjectHookLogsSignal,
     CreateProjectSignal, CreateThreadGroupSignal, CreateThreadSignal, DecideApprovalSignal,
     DeleteProjectSignal, DeleteThreadGroupSignal,
@@ -233,7 +233,7 @@ struct StreamingDiagnostics {
     websocket_payload_bytes: BTreeMap<String, u64>,
     native_signal_count: u64,
     serialized_payload_bytes: u64,
-    dart_full_snapshot_decode_micros: u64,
+    full_snapshot_decode_count: u64,
     dart_selected_chat_delta_apply_count: u64,
     coalesced_stream_update_count: u64,
     dropped_intermediate_stream_update_count: u64,
@@ -246,6 +246,7 @@ impl StreamingDiagnostics {
         *self.websocket_payload_bytes.entry("snapshot".to_string()).or_default() += bytes as u64;
         self.native_signal_count += 1;
         self.serialized_payload_bytes += bytes as u64;
+        self.full_snapshot_decode_count += 1;
         self.selected_timeline_entry_count = entries.min(50) as u32;
     }
 
@@ -263,7 +264,7 @@ impl StreamingDiagnostics {
             websocket_payload_bytes_json: serde_json::to_string(&self.websocket_payload_bytes).unwrap_or_default(),
             native_signal_count: self.native_signal_count,
             serialized_payload_bytes: self.serialized_payload_bytes,
-            dart_full_snapshot_decode_micros: self.dart_full_snapshot_decode_micros,
+            full_snapshot_decode_count: self.full_snapshot_decode_count,
             dart_selected_chat_delta_apply_count: self.dart_selected_chat_delta_apply_count,
             coalesced_stream_update_count: self.coalesced_stream_update_count,
             dropped_intermediate_stream_update_count: self.dropped_intermediate_stream_update_count,
@@ -1183,13 +1184,29 @@ fn typed_gui_operation(operation: AgentRuntimeGuiOperation) -> std::result::Resu
     Ok(match operation {
         AgentRuntimeGuiOperation::SelectSession { session_id } => GuiOperationRequest::SelectSession { session_id: non_empty(session_id) },
         AgentRuntimeGuiOperation::SelectWorkflowMemory { memory_id } => GuiOperationRequest::SelectWorkflowMemory { memory_id: non_empty(memory_id) },
-        AgentRuntimeGuiOperation::CreateSession { role, project, workdir, worktree_root, title, name } => GuiOperationRequest::CreateSession {
+        AgentRuntimeGuiOperation::CreateSession { role, project, model, workdir, worktree_root, title, name } => GuiOperationRequest::CreateSession {
             role,
             project: non_empty(project),
+            model: non_empty(model),
             workdir: non_empty(workdir),
             worktree_root: non_empty(worktree_root),
             title: non_empty(title),
             name: non_empty(name),
+        },
+        AgentRuntimeGuiOperation::UpdateRuntimeSettings { base_url, selected_project_id } => GuiOperationRequest::UpdateRuntimeSettings {
+            base_url,
+            selected_project_id: non_empty(selected_project_id),
+        },
+        AgentRuntimeGuiOperation::UpdateSessionSettings { session_id, project, role, model, workdir, worktree_root, title, name, tracked } => GuiOperationRequest::UpdateSessionSettings {
+            session_id,
+            project,
+            role,
+            model,
+            workdir,
+            worktree_root,
+            title,
+            name,
+            tracked,
         },
         AgentRuntimeGuiOperation::SendMessage { session_id, message } => GuiOperationRequest::SendMessage { session_id, message },
         AgentRuntimeGuiOperation::TerminateProcess { session_id, handle } => GuiOperationRequest::TerminateProcess { session_id, handle },
@@ -1334,8 +1351,8 @@ fn typed_agent_runtime_output(output: GuiTransportOutputPacket) -> AgentRuntimeO
             controller_state: controller_state_from_value(&controller_state),
         },
         GuiTransportOutput::Error { error } => AgentRuntimeOutput::Error { error: typed_api_error(error) },
-        GuiTransportOutput::ControlTowerView { view_model } => AgentRuntimeOutput::ControlTowerView {
-            view_model: typed_control_tower_view(view_model),
+        GuiTransportOutput::WorkbenchView { view_model } => AgentRuntimeOutput::WorkbenchView {
+            view_model: typed_workbench_view(view_model),
         },
     }
 }
@@ -1432,9 +1449,9 @@ fn typed_api_error(error: ApiErrorPacket) -> AgentRuntimeApiError {
     }
 }
 
-fn typed_control_tower_view(view: InternalControlTowerViewModel) -> AgentRuntimeControlTowerViewModel {
+fn typed_workbench_view(view: InternalWorkbenchViewModel) -> AgentRuntimeWorkbenchViewModel {
     let error_message = view.error_message.unwrap_or_default();
-    AgentRuntimeControlTowerViewModel {
+    AgentRuntimeWorkbenchViewModel {
         discovery: typed_discovery_view(view.discovery),
         remote_discovery: typed_discovery_view(view.remote_discovery),
         imported_remote_discovery: typed_discovery_view(view.imported_remote_discovery),
@@ -1485,7 +1502,28 @@ fn typed_conversation_shell_view(view: robdex_agent_runtime::rinf_transport::Age
         sessions: view.sessions.into_iter().map(|row| AgentRuntimeSessionRow { id: row.id, title: row.title, status: row.status, subtitle: row.subtitle, group_label: row.group_label, tone: row.tone }).collect(),
         has_selected_session_id: !selected_session_id.is_empty(),
         selected_session_id,
-        selected_conversation: view.selected_conversation.into_iter().map(|row| AgentRuntimeTimelineRow { id: row.id, title: row.title, subtitle: row.subtitle, status: row.status, tone: row.tone }).collect(),
+        selected_conversation: view.selected_conversation.into_iter().map(|entry| {
+            let timestamp = entry.timestamp.unwrap_or_default();
+            let process_id = entry.process_id.unwrap_or_default();
+            AgentRuntimeChatEntry {
+                id: entry.id,
+                author: entry.author,
+                display_label: entry.display_label,
+                has_timestamp: !timestamp.is_empty(),
+                timestamp,
+                body: entry.body,
+                subtitle: entry.subtitle,
+                kind: entry.kind,
+                status: entry.status,
+                has_process_id: !process_id.is_empty(),
+                process_id,
+                command: entry.command,
+                output: entry.output,
+                delivery_state: entry.delivery_state,
+                is_streaming: entry.is_streaming,
+                is_tool: entry.is_tool,
+            }
+        }).collect(),
         dynamic_roles: view.dynamic_roles.into_iter().map(|role| AgentRuntimeShellRolePresentation {
             role_id: role.role_id,
             display_label: role.display_label,
@@ -1542,7 +1580,7 @@ fn typed_discovery_view(view: InternalDiscoveryView) -> AgentRuntimeDiscoveryVie
     }
 }
 
-fn typed_action_row(row: robdex_agent_runtime::rinf_transport::AgentRuntimeControlTowerActionRow) -> AgentRuntimeActionRow {
+fn typed_action_row(row: robdex_agent_runtime::rinf_transport::AgentRuntimeWorkbenchActionRow) -> AgentRuntimeActionRow {
     AgentRuntimeActionRow {
         id: row.id,
         title: row.title,
@@ -2558,7 +2596,7 @@ mod agent_runtime_typed_mapping_tests {
                     session_id: "session-1".to_string(),
                     feedback: "helpful".to_string(),
                     payload: crate::signals::AgentRuntimeWorkflowMemoryFeedbackPayload {
-                        source: "gui.controlTower".to_string(),
+                        source: "gui.workbench".to_string(),
                         reason: String::new(),
                         variant: false,
                         has_variant: false,
@@ -2580,7 +2618,7 @@ mod agent_runtime_typed_mapping_tests {
     }
 
     #[test]
-    fn typed_output_maps_error_and_control_tower_view_without_generic_string() {
+    fn typed_output_maps_error_and_workbench_view_without_generic_string() {
         let error = typed_agent_runtime_output(GuiTransportOutputPacket {
             request_id: "bad-1".to_string(),
             output: GuiTransportOutput::Error {
@@ -2600,7 +2638,7 @@ mod agent_runtime_typed_mapping_tests {
         }
 
         let controller_state = robdex_agent_runtime_projection::GuiControllerState::default();
-        let view_model = InternalControlTowerViewModel::from_runtime_state(
+        let view_model = InternalWorkbenchViewModel::from_runtime_state(
             "http://127.0.0.1:8765",
             None,
             &controller_state,
@@ -2613,10 +2651,10 @@ mod agent_runtime_typed_mapping_tests {
         );
         let view = typed_agent_runtime_output(GuiTransportOutputPacket {
             request_id: "view-1".to_string(),
-            output: GuiTransportOutput::ControlTowerView { view_model },
+            output: GuiTransportOutput::WorkbenchView { view_model },
         });
         match view {
-            AgentRuntimeOutput::ControlTowerView { view_model } => {
+            AgentRuntimeOutput::WorkbenchView { view_model } => {
                 assert_eq!(view_model.base_url, "http://127.0.0.1:8765");
                 assert_eq!(view_model.connection_state, "disconnected");
             }
@@ -2625,16 +2663,21 @@ mod agent_runtime_typed_mapping_tests {
     }
 
     fn delta_for_test(index: u32, is_final: bool) -> WorkbenchSelectedChatDeltaSignal {
+        let replacement_text = if is_final {
+            (0..1000).map(|token| format!("token-{token} ")).collect::<String>()
+        } else {
+            String::new()
+        };
         WorkbenchSelectedChatDeltaSignal {
             thread_id: "thread-1".to_string(),
             message_id: "assistant-1".to_string(),
             appended_text: format!("token-{index} "),
-            replacement_text: String::new(),
+            replacement_text,
             delivery_state: if is_final { "complete" } else { "streaming" }.to_string(),
             is_final,
             sequence: index as u64,
             metadata_json: "{}".to_string(),
-            selected_entry_count: 2,
+            selected_entry_count: 50,
             coalesced_stream_update_count: 0,
             dropped_intermediate_stream_update_count: 0,
         }
@@ -2654,12 +2697,93 @@ mod agent_runtime_typed_mapping_tests {
             SelectedChatStreamEmission::Delta(delta) => emitted.push(delta),
             SelectedChatStreamEmission::Dropped => panic!("final delta must not be dropped"),
         }
+        let mut assistant_text = String::new();
+        for delta in &emitted {
+            assert!(delta.selected_entry_count <= 50, "selected timeline exceeded cap after delta {}", delta.sequence);
+            if !delta.replacement_text.is_empty() {
+                assistant_text = delta.replacement_text.clone();
+            } else {
+                assistant_text.push_str(&delta.appended_text);
+            }
+        }
         let non_final = emitted.iter().filter(|delta| !delta.is_final).count();
         let final_count = emitted.iter().filter(|delta| delta.is_final).count();
         assert!(non_final <= 10, "non-final emissions exceeded budget: {non_final}");
         assert_eq!(final_count, 1);
-        assert!(emitted.last().is_some_and(|delta| delta.is_final && delta.appended_text == "token-1000 "));
+        let complete = (0..1000).map(|token| format!("token-{token} ")).collect::<String>();
+        assert_eq!(assistant_text, complete);
+        assert!(emitted.last().is_some_and(|delta| delta.is_final && delta.replacement_text == complete));
         assert!(emitted.last().unwrap().dropped_intermediate_stream_update_count > 0);
+    }
+
+    #[test]
+    fn robdex_streaming_diagnostics_increment_for_snapshot_delta_burst_and_final() {
+        let mut diagnostics = StreamingDiagnostics::default();
+        diagnostics.record_snapshot(2048, 75);
+        assert_eq!(diagnostics.websocket_event_counts.get("snapshot"), Some(&1));
+        assert_eq!(diagnostics.websocket_payload_bytes.get("snapshot"), Some(&2048));
+        assert_eq!(diagnostics.native_signal_count, 1);
+        assert_eq!(diagnostics.serialized_payload_bytes, 2048);
+        assert_eq!(diagnostics.full_snapshot_decode_count, 1);
+        assert_eq!(diagnostics.selected_timeline_entry_count, 50);
+
+        diagnostics.record_delta(128, 50);
+        diagnostics.dart_selected_chat_delta_apply_count += 1;
+        assert_eq!(diagnostics.websocket_event_counts.get("selectedChatDelta"), Some(&1));
+        assert_eq!(diagnostics.websocket_payload_bytes.get("selectedChatDelta"), Some(&128));
+        assert_eq!(diagnostics.native_signal_count, 2);
+        assert_eq!(diagnostics.serialized_payload_bytes, 2176);
+        assert_eq!(diagnostics.dart_selected_chat_delta_apply_count, 1);
+
+        let mut coalescer = StreamCoalescer::new(10);
+        let mut emitted = 0;
+        for index in 0..1000 {
+            if let SelectedChatStreamEmission::Delta(delta) = selected_chat_stream_emission(&mut coalescer, delta_for_test(index, false)) {
+                emitted += 1;
+                diagnostics.coalesced_stream_update_count = delta.coalesced_stream_update_count as u64;
+                diagnostics.dropped_intermediate_stream_update_count = delta.dropped_intermediate_stream_update_count as u64;
+                diagnostics.record_delta(64, delta.selected_entry_count as usize);
+                diagnostics.dart_selected_chat_delta_apply_count += 1;
+                assert!(diagnostics.selected_timeline_entry_count <= 50);
+            }
+        }
+        assert!(emitted <= 10);
+        let final_delta = match selected_chat_stream_emission(&mut coalescer, delta_for_test(1000, true)) {
+            SelectedChatStreamEmission::Delta(delta) => delta,
+            SelectedChatStreamEmission::Dropped => panic!("final message delivery must emit"),
+        };
+        diagnostics.coalesced_stream_update_count = final_delta.coalesced_stream_update_count as u64;
+        diagnostics.dropped_intermediate_stream_update_count = final_delta.dropped_intermediate_stream_update_count as u64;
+        diagnostics.record_delta(4096, final_delta.selected_entry_count as usize);
+        diagnostics.dart_selected_chat_delta_apply_count += 1;
+
+        let signal = diagnostics.signal();
+        assert!(signal.websocket_event_counts_json.contains("snapshot"));
+        assert!(signal.websocket_event_counts_json.contains("selectedChatDelta"));
+        assert!(signal.websocket_payload_bytes_json.contains("selectedChatDelta"));
+        assert!(signal.native_signal_count >= 3);
+        assert!(signal.serialized_payload_bytes > 2048);
+        assert_eq!(signal.full_snapshot_decode_count, 1);
+        assert_eq!(signal.selected_timeline_entry_count, 50);
+        assert!(signal.coalesced_stream_update_count >= 10);
+        assert!(signal.dropped_intermediate_stream_update_count > 0);
+        assert!(signal.dart_selected_chat_delta_apply_count >= 2);
+        let payload_values = diagnostics.websocket_payload_bytes.values().copied().collect::<Vec<_>>();
+        let payload_event_total = diagnostics.websocket_event_counts.values().sum::<u64>().max(1);
+        let average_payload_bytes = diagnostics.serialized_payload_bytes / payload_event_total;
+        let max_payload_bytes = payload_values.into_iter().max().unwrap_or_default();
+        println!(
+            "streaming_diagnostics full_snapshot_count={} delta_count={} average_payload_bytes={} max_payload_bytes={} selected_chat_entry_count={} coalesced_updates={} dropped_updates={} native_signals={} serialized_payload_bytes={}",
+            signal.full_snapshot_decode_count,
+            signal.dart_selected_chat_delta_apply_count,
+            average_payload_bytes,
+            max_payload_bytes,
+            signal.selected_timeline_entry_count,
+            signal.coalesced_stream_update_count,
+            signal.dropped_intermediate_stream_update_count,
+            signal.native_signal_count,
+            signal.serialized_payload_bytes,
+        );
     }
 
     #[test]
@@ -2678,7 +2802,7 @@ mod agent_runtime_typed_mapping_tests {
         match final_delta {
             SelectedChatStreamEmission::Delta(delta) => {
                 assert!(delta.is_final);
-                assert_eq!(delta.appended_text, "token-3 ");
+                assert!(delta.replacement_text.contains("token-999 "));
                 assert_eq!(delta.coalesced_stream_update_count, 1);
                 assert_eq!(delta.dropped_intermediate_stream_update_count, 2);
             }

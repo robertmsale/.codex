@@ -1,22 +1,9 @@
-import '../../core/models/agent_runtime_control_tower_models.dart';
+import '../../core/models/agent_runtime_workbench_models.dart';
 import '../../core/models/conversation_shell_models.dart';
-import '../../core/models/workbench_models.dart';
 
-ConversationShellData agentRuntimeConversationShellData(AgentRuntimeControlTowerData data) {
+ConversationShellData agentRuntimeConversationShellData(AgentRuntimeWorkbenchData data) {
   final selected = _selectedSessionId(data);
-  final entries = data.timeline
-      .where(_isChatTimelineItem)
-      .map((item) => ChatEntry(
-            id: item.id,
-            author: item.tone == 'user' ? 'owner' : (item.tone == 'success' ? 'assistant' : 'tool'),
-            displayLabel: _displayCopy(item.title),
-            timestamp: null,
-            body: _displayCopy(item.subtitle.isEmpty ? item.status : item.subtitle),
-            subtitle: _displayCopy(item.status),
-            status: _displayCopy(item.status),
-            isTool: item.tone == 'warning',
-          ))
-      .toList(growable: false);
+  final entries = data.selectedConversation;
   return ConversationShellData(
     appTitle: 'Agent Runtime',
     connectionLabel: data.statusLabel,
@@ -87,11 +74,7 @@ ConversationShellData agentRuntimeConversationShellData(AgentRuntimeControlTower
   );
 }
 
-bool _isChatTimelineItem(AgentRuntimeTimelineItem item) {
-  return item.title == 'Owner' || item.title == 'Assistant' || item.title == 'Tool result';
-}
-
-bool _hasConnectedRuntime(AgentRuntimeControlTowerData data) {
+bool _hasConnectedRuntime(AgentRuntimeWorkbenchData data) {
   return data.connectionState != 'disconnected' && data.connectionState != 'connecting' && data.connectionState != 'failed';
 }
 
@@ -110,7 +93,7 @@ String _displayCopy(String value) {
       .trim();
 }
 
-String? _selectedSessionId(AgentRuntimeControlTowerData data) {
+String? _selectedSessionId(AgentRuntimeWorkbenchData data) {
   if (data.sessions.isEmpty) {
     return null;
   }
