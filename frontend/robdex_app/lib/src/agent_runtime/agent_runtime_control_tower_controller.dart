@@ -69,6 +69,21 @@ bindings.AgentRuntimeGuiOperation agentRuntimeForkSessionOperationForTest(String
 }
 
 @visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeTerminateProcessOperationForTest(String sessionId, String handle) {
+  return bindings.AgentRuntimeGuiOperationTerminateProcess(sessionId: sessionId, handle: handle);
+}
+
+@visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeInputProcessOperationForTest(String sessionId, String handle, String text) {
+  return bindings.AgentRuntimeGuiOperationInputProcess(sessionId: sessionId, handle: handle, text: text);
+}
+
+@visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeFlushProcessOperationForTest(String sessionId, String handle) {
+  return bindings.AgentRuntimeGuiOperationFlushProcess(sessionId: sessionId, handle: handle);
+}
+
+@visibleForTesting
 bindings.AgentRuntimeGuiOperation agentRuntimeApprovalDecisionOperationForTest(String approvalId, String decision) {
   return bindings.AgentRuntimeGuiOperationDecideApproval(approvalId: approvalId, decision: decision, reason: 'Agent Runtime shell action');
 }
@@ -237,6 +252,20 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
     );
   }
 
+  void createLiveSmokeSession() {
+    _dispatchOperation(
+      'session-create-live-smoke',
+      const bindings.AgentRuntimeGuiOperationCreateSession(
+        role: 'runtime-live-smoke-gpt54mini',
+        project: 'agent-runtime-live-smoke',
+        workdir: '.',
+        worktreeRoot: '',
+        title: 'GUI composer live smoke',
+        name: 'gui-composer-live-smoke',
+      ),
+    );
+  }
+
   void selectSession(String sessionId) {
     _dispatchOperation('session-select', bindings.AgentRuntimeGuiOperationSelectSession(sessionId: sessionId));
   }
@@ -249,6 +278,30 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
       'session-send',
       bindings.AgentRuntimeGuiOperationSendMessage(sessionId: sessionId, message: message.trim()),
     );
+  }
+
+  void terminateProcess(String handle) {
+    final sessionId = shellData?.selectedSessionId;
+    if (sessionId == null || sessionId.isEmpty || handle.isEmpty) {
+      return;
+    }
+    _dispatchOperation('process-terminate', agentRuntimeTerminateProcessOperationForTest(sessionId, handle));
+  }
+
+  void inputProcess(String handle, String text) {
+    final sessionId = shellData?.selectedSessionId;
+    if (sessionId == null || sessionId.isEmpty || handle.isEmpty || text.isEmpty) {
+      return;
+    }
+    _dispatchOperation('process-input', agentRuntimeInputProcessOperationForTest(sessionId, handle, text));
+  }
+
+  void flushProcess(String handle) {
+    final sessionId = shellData?.selectedSessionId;
+    if (sessionId == null || sessionId.isEmpty || handle.isEmpty) {
+      return;
+    }
+    _dispatchOperation('process-flush', agentRuntimeFlushProcessOperationForTest(sessionId, handle));
   }
 
   void closeSession(String sessionId) {
@@ -474,6 +527,7 @@ class AgentRuntimeControlTowerController extends ChangeNotifier {
         roleAdmin: mockAgentRuntimeRoleAdminEmpty,
         workflowMemory: mockAgentRuntimeWorkflowMemoryEmpty,
         controllerFacts: const [],
+        operationSurfaces: const [],
         outputLog: const [],
         pendingRequestCount: _pendingRequestIds.length,
       );
@@ -563,6 +617,7 @@ Map<String, dynamic> _viewModelJson(bindings.AgentRuntimeControlTowerViewModel v
     'roleAdmin': _roleAdminJson(view.roleAdmin),
     'workflowMemory': _workflowMemoryJson(view.workflowMemory),
     'controllerFacts': view.controllerFacts.map(_factJson).toList(growable: false),
+    'operationSurfaces': view.shell.operationSurfaces.map(_operationSurfaceJson).toList(growable: false),
     'outputLog': view.outputLog,
     'pendingRequestCount': view.pendingRequestCount,
     'errorMessage': view.hasErrorMessage ? view.errorMessage : null,
@@ -611,7 +666,7 @@ ConversationShellData _shellData(bindings.AgentRuntimeConversationShellViewModel
     entries: view.selectedConversation
         .map((item) => ChatEntry(
               id: item.id,
-              author: item.tone == 'success' ? 'assistant' : 'system',
+              author: _chatAuthor(item),
               displayLabel: _runtimeDisplayCopy(item.title),
               timestamp: null,
               body: _runtimeDisplayCopy(item.subtitle.isEmpty ? item.status : item.subtitle),
@@ -623,19 +678,26 @@ ConversationShellData _shellData(bindings.AgentRuntimeConversationShellViewModel
     composerEnabled: selectedSessionId != null,
     isRunning: view.selectedConversation.any((entry) => entry.status.toLowerCase().contains('running')),
     detailTitle: 'Operations',
-    detailSections: [
-      ConversationDetailSection(
-        title: 'Settings',
-        rows: view.settings.map((fact) => ConversationDetailRow(label: fact.label, value: fact.value)).toList(growable: false),
-      ),
-      ConversationDetailSection(
-        title: 'Actions',
-        rows: view.actions.map((action) => ConversationDetailRow(label: action.title, value: action.stateText)).toList(growable: false),
-      ),
-    ],
+    detailSections: view.operationSurfaces
+        .map((surface) => ConversationDetailSection(
+              title: surface.title,
+              rows: [
+                ...surface.rows.map((fact) => ConversationDetailRow(label: _runtimeDisplayCopy(fact.label), value: _runtimeDisplayCopy(fact.value))),
+                ...surface.actions.map((action) => ConversationDetailRow(label: _runtimeDisplayCopy(action.title), value: _runtimeDisplayCopy(action.stateText))),
+              ],
+            ))
+        .toList(growable: false),
     emptyTitle: 'No sessions yet',
     emptyText: 'Create a session to start working.',
   );
+}
+
+
+String _chatAuthor(bindings.AgentRuntimeTimelineRow item) {
+  if (item.tone == 'user') return 'owner';
+  if (item.tone == 'success') return 'assistant';
+  if (item.tone == 'warning') return 'tool';
+  return 'system';
 }
 
 String _runtimeDisplayCopy(String value) {
@@ -672,6 +734,13 @@ Map<String, dynamic> _discoveryJson(bindings.AgentRuntimeDiscoveryView view) => 
     };
 
 Map<String, dynamic> _factJson(bindings.AgentRuntimeFact fact) => {'label': fact.label, 'value': fact.value};
+Map<String, dynamic> _operationSurfaceJson(bindings.AgentRuntimeOperationSurface surface) => {
+      'surfaceId': surface.surfaceId,
+      'title': surface.title,
+      'subtitle': surface.subtitle,
+      'rows': surface.rows.map(_factJson).toList(growable: false),
+      'actions': surface.actions.map(_actionJson).toList(growable: false),
+    };
 Map<String, dynamic> _badgeJson(bindings.AgentRuntimeBadge badge) => {'label': badge.label, 'value': badge.value, 'tone': badge.tone};
 Map<String, dynamic> _actionJson(bindings.AgentRuntimeActionRow row) => {
       'id': row.id,

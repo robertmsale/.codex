@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,7 +37,7 @@ use crate::signals::{
     AgentRuntimeRoleDetail, AgentRuntimeRolePolicyRow, AgentRuntimeRoleVersionRow,
     AgentRuntimeRoleEditorDraftView, AgentRuntimeWorkflowMemoryView,
     AgentRuntimeWorkflowMemoryRow, AgentRuntimeWorkflowMemoryDetail,
-    AgentRuntimeWorkflowMemoryEvent, AgentRuntimeConversationShellViewModel,
+    AgentRuntimeWorkflowMemoryEvent, AgentRuntimeConversationShellViewModel, AgentRuntimeOperationSurface,
     AgentRuntimeShellProjectRow, AgentRuntimeShellRolePresentation,
     ArchiveThreadGroupSignal, ArchiveThreadSignal, BridgeTaskResultSignal, ClearProjectHookLogsSignal,
     CreateProjectSignal, CreateThreadGroupSignal, CreateThreadSignal, DecideApprovalSignal,
@@ -50,7 +51,7 @@ use crate::signals::{
     ThreadCompactSignal, UpdateGlobalSettingsSignal, UpdateProjectSignal, UpdateThreadSettingsSignal,
     UpdateWorkerMetadataSignal, InterruptThreadSignal, ThreadHistoryStateSignal, HookToastSignal,
     UploadImageBytesSignal, LoadImageBytesSignal,
-    WarmHandoffSignal, WorkbenchStateSignal,
+    WarmHandoffSignal, WorkbenchStateSignal, WorkbenchSelectedChatDeltaSignal, WorkbenchDiagnosticsSignal,
 };
 use crate::terminal::TerminalRegistry;
 
@@ -226,6 +227,110 @@ enum Action {
     },
 }
 
+#[derive(Debug, Default, Clone)]
+struct StreamingDiagnostics {
+    websocket_event_counts: BTreeMap<String, u64>,
+    websocket_payload_bytes: BTreeMap<String, u64>,
+    native_signal_count: u64,
+    serialized_payload_bytes: u64,
+    dart_full_snapshot_decode_micros: u64,
+    dart_selected_chat_delta_apply_count: u64,
+    coalesced_stream_update_count: u64,
+    dropped_intermediate_stream_update_count: u64,
+    selected_timeline_entry_count: u32,
+}
+
+impl StreamingDiagnostics {
+    fn record_snapshot(&mut self, bytes: usize, entries: usize) {
+        *self.websocket_event_counts.entry("snapshot".to_string()).or_default() += 1;
+        *self.websocket_payload_bytes.entry("snapshot".to_string()).or_default() += bytes as u64;
+        self.native_signal_count += 1;
+        self.serialized_payload_bytes += bytes as u64;
+        self.selected_timeline_entry_count = entries.min(50) as u32;
+    }
+
+    fn record_delta(&mut self, bytes: usize, entries: usize) {
+        *self.websocket_event_counts.entry("selectedChatDelta".to_string()).or_default() += 1;
+        *self.websocket_payload_bytes.entry("selectedChatDelta".to_string()).or_default() += bytes as u64;
+        self.native_signal_count += 1;
+        self.serialized_payload_bytes += bytes as u64;
+        self.selected_timeline_entry_count = entries.min(50) as u32;
+    }
+
+    fn signal(&self) -> WorkbenchDiagnosticsSignal {
+        WorkbenchDiagnosticsSignal {
+            websocket_event_counts_json: serde_json::to_string(&self.websocket_event_counts).unwrap_or_default(),
+            websocket_payload_bytes_json: serde_json::to_string(&self.websocket_payload_bytes).unwrap_or_default(),
+            native_signal_count: self.native_signal_count,
+            serialized_payload_bytes: self.serialized_payload_bytes,
+            dart_full_snapshot_decode_micros: self.dart_full_snapshot_decode_micros,
+            dart_selected_chat_delta_apply_count: self.dart_selected_chat_delta_apply_count,
+            coalesced_stream_update_count: self.coalesced_stream_update_count,
+            dropped_intermediate_stream_update_count: self.dropped_intermediate_stream_update_count,
+            selected_timeline_entry_count: self.selected_timeline_entry_count,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StreamCoalescer {
+    max_non_final_per_second: u32,
+    emitted_non_final: u32,
+    coalesced: u32,
+    dropped: u32,
+    pending: Option<WorkbenchSelectedChatDeltaSignal>,
+}
+
+impl StreamCoalescer {
+    fn new(max_non_final_per_second: u32) -> Self {
+        Self {
+            max_non_final_per_second,
+            emitted_non_final: 0,
+            coalesced: 0,
+            dropped: 0,
+            pending: None,
+        }
+    }
+
+    fn push(&mut self, mut delta: WorkbenchSelectedChatDeltaSignal) -> Option<WorkbenchSelectedChatDeltaSignal> {
+        if delta.is_final {
+            if self.pending.take().is_some() {
+                self.dropped += 1;
+            }
+            delta.coalesced_stream_update_count = self.coalesced;
+            delta.dropped_intermediate_stream_update_count = self.dropped;
+            return Some(delta);
+        }
+        if self.emitted_non_final < self.max_non_final_per_second {
+            self.emitted_non_final += 1;
+            self.coalesced += 1;
+            delta.coalesced_stream_update_count = self.coalesced;
+            delta.dropped_intermediate_stream_update_count = self.dropped;
+            Some(delta)
+        } else {
+            if self.pending.replace(delta).is_some() {
+                self.dropped += 1;
+            }
+            None
+        }
+    }
+}
+
+enum SelectedChatStreamEmission {
+    Delta(WorkbenchSelectedChatDeltaSignal),
+    Dropped,
+}
+
+fn selected_chat_stream_emission(
+    coalescer: &mut StreamCoalescer,
+    delta: WorkbenchSelectedChatDeltaSignal,
+) -> SelectedChatStreamEmission {
+    coalescer
+        .push(delta)
+        .map(SelectedChatStreamEmission::Delta)
+        .unwrap_or(SelectedChatStreamEmission::Dropped)
+}
+
 pub async fn run() {
     let (tx, mut rx) = mpsc::unbounded_channel::<Action>();
     spawn_receivers(tx.clone());
@@ -237,6 +342,8 @@ pub async fn run() {
     let mut live_event_rx: Option<mpsc::UnboundedReceiver<LiveSessionEvent>> = None;
     let mut initialized = false;
     let mut terminals = TerminalRegistry::new();
+    let mut diagnostics = StreamingDiagnostics::default();
+    let mut stream_coalescer = StreamCoalescer::new(10);
 
     loop {
         terminals.reap_finished();
@@ -258,6 +365,7 @@ pub async fn run() {
                 apply_optimistic_action(&mut current_view, &action);
                 let show_loading = current_view.is_none();
                 emit_state(current_view.as_ref(), show_loading, "");
+                record_and_emit_snapshot_diagnostics(&mut diagnostics, current_view.as_ref());
                 let result = handle_action(&mut client, &current_view, &mut terminals, action).await;
                 match result {
                     Ok(next_view) => {
@@ -280,20 +388,47 @@ pub async fn run() {
                             session.sync_view(view.clone());
                         }
                         emit_state(current_view.as_ref(), false, "");
+                        record_and_emit_snapshot_diagnostics(&mut diagnostics, current_view.as_ref());
                     }
                     Err(error) => {
                         emit_state(current_view.as_ref(), false, &error.to_string());
+                        record_and_emit_snapshot_diagnostics(&mut diagnostics, current_view.as_ref());
                     }
                 }
             }
             maybe_live_event = recv_live_event(&mut live_event_rx), if initialized && live_event_rx.is_some() => {
                 match maybe_live_event {
                     Some(LiveSessionEvent::View(next_view)) => {
+                        let delta = selected_chat_delta(current_view.as_ref(), &next_view);
                         current_view = Some(next_view);
                         if let (Some(client), Some(view)) = (client.as_mut(), current_view.as_ref()) {
                             client.sync_view(view);
                         }
-                        emit_state(current_view.as_ref(), false, "");
+                        if let Some(delta) = delta {
+                            let delta = match selected_chat_stream_emission(&mut stream_coalescer, delta) {
+                                SelectedChatStreamEmission::Delta(delta) => delta,
+                                SelectedChatStreamEmission::Dropped => {
+                                    diagnostics.coalesced_stream_update_count = stream_coalescer.coalesced as u64;
+                                    diagnostics.dropped_intermediate_stream_update_count = stream_coalescer.dropped as u64;
+                                    diagnostics.signal().send_signal_to_dart();
+                                    terminals.reap_finished();
+                                    continue;
+                                }
+                            };
+                            let bytes = delta.appended_text.len()
+                                + delta.replacement_text.len()
+                                + delta.metadata_json.len()
+                                + delta.thread_id.len()
+                                + delta.message_id.len();
+                            diagnostics.coalesced_stream_update_count = delta.coalesced_stream_update_count as u64;
+                            diagnostics.dropped_intermediate_stream_update_count = delta.dropped_intermediate_stream_update_count as u64;
+                            diagnostics.record_delta(bytes, delta.selected_entry_count as usize);
+                            delta.send_signal_to_dart();
+                            diagnostics.signal().send_signal_to_dart();
+                        } else {
+                            emit_state(current_view.as_ref(), false, "");
+                            record_and_emit_snapshot_diagnostics(&mut diagnostics, current_view.as_ref());
+                        }
                     }
                     Some(LiveSessionEvent::HookFailure(notice)) => {
                         HookToastSignal {
@@ -318,6 +453,7 @@ pub async fn run() {
                     }
                     Some(LiveSessionEvent::Error(error)) => {
                         emit_state(current_view.as_ref(), false, &error);
+                        record_and_emit_snapshot_diagnostics(&mut diagnostics, current_view.as_ref());
                     }
                     None => {
                         live_event_rx = None;
@@ -467,6 +603,64 @@ fn select_thread_from_current_view(
         },
     ];
     Ok(view)
+}
+
+fn selected_chat_delta(
+    previous: Option<&WorkbenchViewData>,
+    next: &WorkbenchViewData,
+) -> Option<WorkbenchSelectedChatDeltaSignal> {
+    let thread_id = next.selection.thread_id.clone()?;
+    if previous.and_then(|view| view.selection.thread_id.as_deref()) != Some(thread_id.as_str()) {
+        return None;
+    }
+    let previous_entries = previous.map(|view| view.chat_entries.as_slice()).unwrap_or(&[]);
+    let next_entries = next.chat_entries.as_slice();
+    let latest = next_entries.last()?;
+    if latest.author.eq_ignore_ascii_case("user") {
+        return None;
+    }
+    let previous_entry = previous_entries.iter().find(|entry| entry.id == latest.id);
+    let (appended_text, replacement_text) = if let Some(previous_entry) = previous_entry {
+        if latest.body == previous_entry.body {
+            return None;
+        }
+        if latest.body.starts_with(&previous_entry.body) {
+            (latest.body[previous_entry.body.len()..].to_string(), String::new())
+        } else {
+            (String::new(), latest.body.clone())
+        }
+    } else {
+        (String::new(), latest.body.clone())
+    };
+    Some(WorkbenchSelectedChatDeltaSignal {
+        thread_id,
+        message_id: latest.id.clone(),
+        appended_text,
+        replacement_text,
+        delivery_state: latest.delivery_state.clone().or_else(|| latest.status.clone()).unwrap_or_else(|| "streaming".to_string()),
+        is_final: !latest.is_streaming,
+        sequence: unix_now_millis() as u64,
+        metadata_json: serde_json::json!({
+            "author": latest.author,
+            "isTool": latest.is_tool,
+        })
+        .to_string(),
+        selected_entry_count: next_entries.len().min(50) as u32,
+        coalesced_stream_update_count: 0,
+        dropped_intermediate_stream_update_count: 0,
+    })
+}
+
+fn record_and_emit_snapshot_diagnostics(
+    diagnostics: &mut StreamingDiagnostics,
+    view: Option<&WorkbenchViewData>,
+) {
+    let Some(view) = view else {
+        return;
+    };
+    let bytes = serde_json::to_string(view).map(|value| value.len()).unwrap_or_default();
+    diagnostics.record_snapshot(bytes, view.chat_entries.len());
+    diagnostics.signal().send_signal_to_dart();
 }
 
 fn unix_now_millis() -> u128 {
@@ -998,6 +1192,9 @@ fn typed_gui_operation(operation: AgentRuntimeGuiOperation) -> std::result::Resu
             name: non_empty(name),
         },
         AgentRuntimeGuiOperation::SendMessage { session_id, message } => GuiOperationRequest::SendMessage { session_id, message },
+        AgentRuntimeGuiOperation::TerminateProcess { session_id, handle } => GuiOperationRequest::TerminateProcess { session_id, handle },
+        AgentRuntimeGuiOperation::InputProcess { session_id, handle, text } => GuiOperationRequest::InputProcess { session_id, handle, text },
+        AgentRuntimeGuiOperation::FlushProcess { session_id, handle } => GuiOperationRequest::FlushProcess { session_id, handle },
         AgentRuntimeGuiOperation::CloseSession { session_id, reason } => GuiOperationRequest::CloseSession { session_id, reason: non_empty(reason) },
         AgentRuntimeGuiOperation::ArchiveSession { session_id } => GuiOperationRequest::ArchiveSession { session_id },
         AgentRuntimeGuiOperation::ForkSession { session_id, at_turn } => GuiOperationRequest::ForkSession { session_id, at_turn },
@@ -1303,6 +1500,13 @@ fn typed_conversation_shell_view(view: robdex_agent_runtime::rinf_transport::Age
         command_registry_requests: view.command_registry_requests.into_iter().map(typed_action_row).collect(),
         approvals: view.approvals.into_iter().map(typed_action_row).collect(),
         diagnostics: view.diagnostics.into_iter().map(|fact| AgentRuntimeFact { label: fact.label, value: fact.value }).collect(),
+        operation_surfaces: view.operation_surfaces.into_iter().map(|surface| AgentRuntimeOperationSurface {
+            surface_id: surface.surface_id,
+            title: surface.title,
+            subtitle: surface.subtitle,
+            rows: surface.rows.into_iter().map(|fact| AgentRuntimeFact { label: fact.label, value: fact.value }).collect(),
+            actions: surface.actions.into_iter().map(typed_action_row).collect(),
+        }).collect(),
     }
 }
 
@@ -2419,4 +2623,67 @@ mod agent_runtime_typed_mapping_tests {
             other => panic!("unexpected typed output: {other:?}"),
         }
     }
+
+    fn delta_for_test(index: u32, is_final: bool) -> WorkbenchSelectedChatDeltaSignal {
+        WorkbenchSelectedChatDeltaSignal {
+            thread_id: "thread-1".to_string(),
+            message_id: "assistant-1".to_string(),
+            appended_text: format!("token-{index} "),
+            replacement_text: String::new(),
+            delivery_state: if is_final { "complete" } else { "streaming" }.to_string(),
+            is_final,
+            sequence: index as u64,
+            metadata_json: "{}".to_string(),
+            selected_entry_count: 2,
+            coalesced_stream_update_count: 0,
+            dropped_intermediate_stream_update_count: 0,
+        }
+    }
+
+    #[test]
+    fn robdex_streaming_coalescer_limits_burst_to_ten_non_final_plus_final() {
+        let mut coalescer = StreamCoalescer::new(10);
+        let mut emitted = Vec::new();
+        for index in 0..1000 {
+            match selected_chat_stream_emission(&mut coalescer, delta_for_test(index, false)) {
+                SelectedChatStreamEmission::Delta(delta) => emitted.push(delta),
+                SelectedChatStreamEmission::Dropped => {}
+            }
+        }
+        match selected_chat_stream_emission(&mut coalescer, delta_for_test(1000, true)) {
+            SelectedChatStreamEmission::Delta(delta) => emitted.push(delta),
+            SelectedChatStreamEmission::Dropped => panic!("final delta must not be dropped"),
+        }
+        let non_final = emitted.iter().filter(|delta| !delta.is_final).count();
+        let final_count = emitted.iter().filter(|delta| delta.is_final).count();
+        assert!(non_final <= 10, "non-final emissions exceeded budget: {non_final}");
+        assert_eq!(final_count, 1);
+        assert!(emitted.last().is_some_and(|delta| delta.is_final && delta.appended_text == "token-1000 "));
+        assert!(emitted.last().unwrap().dropped_intermediate_stream_update_count > 0);
+    }
+
+    #[test]
+    fn robdex_streaming_hot_path_drops_intermediate_without_snapshot_emission() {
+        let mut coalescer = StreamCoalescer::new(1);
+        let first = selected_chat_stream_emission(&mut coalescer, delta_for_test(0, false));
+        assert!(matches!(first, SelectedChatStreamEmission::Delta(_)));
+        let dropped = selected_chat_stream_emission(&mut coalescer, delta_for_test(1, false));
+        assert!(matches!(dropped, SelectedChatStreamEmission::Dropped));
+        assert_eq!(coalescer.coalesced, 1);
+        assert_eq!(coalescer.dropped, 0);
+        let dropped_again = selected_chat_stream_emission(&mut coalescer, delta_for_test(2, false));
+        assert!(matches!(dropped_again, SelectedChatStreamEmission::Dropped));
+        assert_eq!(coalescer.dropped, 1);
+        let final_delta = selected_chat_stream_emission(&mut coalescer, delta_for_test(3, true));
+        match final_delta {
+            SelectedChatStreamEmission::Delta(delta) => {
+                assert!(delta.is_final);
+                assert_eq!(delta.appended_text, "token-3 ");
+                assert_eq!(delta.coalesced_stream_update_count, 1);
+                assert_eq!(delta.dropped_intermediate_stream_update_count, 2);
+            }
+            SelectedChatStreamEmission::Dropped => panic!("final delta must be emitted"),
+        }
+    }
+
 }

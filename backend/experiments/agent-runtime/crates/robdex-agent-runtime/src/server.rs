@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::roles::DEFAULT_ROLE_ID;
 use crate::errors::{RuntimeDomainError, RuntimeErrorKind};
-use crate::model::ModelClient;
+use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
 use crate::{approvals, command_registry, compaction, db, projection, routing, runtime, starlark_host, workflow_memory};
 
 #[derive(Clone)]
@@ -45,13 +45,18 @@ impl ServerState {
     }
 
     pub fn new_with_shutdown(pool: PgPool, runtime_identity: String, shutdown_tx: watch::Sender<bool>, shutdown: watch::Receiver<bool>) -> Self {
+        let model_client: Option<Arc<dyn ModelClient + Send + Sync>> = if std::env::var("ROBDEX_AGENT_RUNTIME_LIVE_SMOKE_FAKE_MODEL").ok().as_deref() == Some("1") {
+            Some(Arc::new(LiveSmokeFakeModel))
+        } else {
+            None
+        };
         Self {
             pool,
             runtime_identity,
             active_sends: Arc::new(Mutex::new(HashSet::new())),
             shutdown_tx,
             shutdown,
-            model_client: None,
+            model_client,
         }
     }
 
@@ -66,6 +71,39 @@ impl ServerState {
             shutdown: shutdown_rx,
             model_client: Some(model_client),
         }
+    }
+}
+
+struct LiveSmokeFakeModel;
+
+#[async_trait::async_trait]
+impl ModelClient for LiveSmokeFakeModel {
+    async fn request_tool_call(&self, _role_instructions: &str, _history: &[ModelHistoryItem], _runtime_messages: &[RuntimeInputMessage], _execute_code_contract: &str, _request_registry_contract: &str, message: &str) -> anyhow::Result<ModelToolTurn> {
+        Ok(ModelToolTurn {
+            provider: "local-live-smoke".to_string(),
+            model: "fake-live-smoke".to_string(),
+            assistant_summary: "Running live GUI smoke script.".to_string(),
+            tool_call: ToolCallRequest {
+                call_identity: "live-gui-smoke".to_string(),
+                tool_name: "execute_code".to_string(),
+                arguments: serde_json::json!({
+                    "source": "output({\"smoke\":\"ok\",\"source\":\"gui-composer\"})",
+                    "message": message,
+                }),
+            },
+            request_shape: serde_json::json!({"provider":"local-live-smoke"}),
+            raw_response: serde_json::json!({"fake":true}),
+        })
+    }
+
+    async fn submit_tool_result(&self, _role_instructions: &str, _history: &[ModelHistoryItem], _tool_call_response: &Value, _call_id: &str, tool_result: &Value) -> anyhow::Result<ModelFinalTurn> {
+        Ok(ModelFinalTurn {
+            provider: "local-live-smoke".to_string(),
+            model: "fake-live-smoke".to_string(),
+            final_text: format!("Live GUI smoke completed: {}", tool_result),
+            request_shape: serde_json::json!({"provider":"local-live-smoke"}),
+            raw_response: serde_json::json!({"fake":true}),
+        })
     }
 }
 
@@ -198,6 +236,9 @@ pub fn app(state: ServerState) -> Router {
         .route("/sessions/{session_id}/close", post(close_session))
         .route("/sessions/{session_id}/archive", post(archive_session))
         .route("/sessions/{session_id}/fork", post(fork_session))
+        .route("/sessions/{session_id}/processes/{handle}/terminate", post(terminate_process))
+        .route("/sessions/{session_id}/processes/{handle}/input", post(input_process))
+        .route("/sessions/{session_id}/processes/{handle}/flush", post(flush_process))
         .route("/approvals", get(list_approvals))
         .route("/approvals/{approval_id}", get(show_approval))
         .route("/approvals/{approval_id}/decide", post(decide_approval))
@@ -398,6 +439,37 @@ async fn archive_session(
 ) -> Result<Json<Value>, ApiError> {
     db::archive_session(&state.pool, session_id).await?;
     Ok(Json(json!({"sessionId": session_id, "tracked": false})))
+}
+
+async fn terminate_process(
+    State(state): State<ServerState>,
+    Path((session_id, handle)): Path<(Uuid, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let value = starlark_host::terminate_managed_process(&state.pool, session_id, &handle).await?;
+    Ok(Json(value))
+}
+
+#[derive(Debug, Deserialize)]
+struct ProcessInputRequest {
+    text: String,
+}
+
+async fn input_process(
+    State(state): State<ServerState>,
+    Path((session_id, handle)): Path<(Uuid, String)>,
+    payload: std::result::Result<Json<ProcessInputRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let request = parse_json(payload)?;
+    let value = starlark_host::input_managed_process(&state.pool, session_id, &handle, &request.text).await?;
+    Ok(Json(value))
+}
+
+async fn flush_process(
+    State(state): State<ServerState>,
+    Path((session_id, handle)): Path<(Uuid, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let value = starlark_host::flush_managed_process(&state.pool, session_id, &handle).await?;
+    Ok(Json(value))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1363,15 +1435,22 @@ mod tests {
             "live transport response must render through shared ChatTimeline rows: {:?}",
             view.shell.selected_conversation
         );
+        let persisted_turn_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id = $1 AND id = $2")
+            .bind(Uuid::parse_str(&session_id).expect("session uuid"))
+            .bind(Uuid::parse_str(&turn_id).expect("turn uuid"))
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("turn count");
+        assert_eq!(persisted_turn_count, 1, "live GUI transport smoke must persist the sent turn");
         println!(
-            "live_rinf_ui_smoke base_url={base_url} session_id={session_id} turn_id={turn_id} chat_timeline_response=\"fake final fake-call completed\" rows={}",
+            "live_rinf_ui_smoke base_url={base_url} session_id={session_id} turn_id={turn_id} persisted_turn_count={persisted_turn_count} chat_timeline_response=\"fake final fake-call completed\" rows={}",
             view.shell.selected_conversation.len()
         );
         let _ = std::fs::create_dir_all("/tmp/agent-runtime-shell-proof");
         std::fs::write(
             "/tmp/agent-runtime-shell-proof/live-rinf-ui-smoke-response.txt",
             format!(
-                "base_url={base_url}\nsession_id={session_id}\nturn_id={turn_id}\nchat_timeline_response=fake final fake-call completed\nrows={}\n",
+                "base_url={base_url}\nsession_id={session_id}\nturn_id={turn_id}\npersisted_turn_count={persisted_turn_count}\nchat_timeline_response=fake final fake-call completed\nrows={}\n",
                 view.shell.selected_conversation.len()
             ),
         )

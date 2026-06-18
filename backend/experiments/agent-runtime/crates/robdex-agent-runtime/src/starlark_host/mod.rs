@@ -654,6 +654,71 @@ fn active_process_handles(session_id: Uuid) -> Vec<String> {
         .unwrap_or_default()
 }
 
+pub async fn terminate_managed_process(pool: &PgPool, session_id: Uuid, handle: &str) -> Result<JsonValue> {
+    let record = {
+        let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
+        let proc = manager
+            .get_mut(&session_id)
+            .and_then(|processes| processes.get_mut(handle))
+            .ok_or_else(|| anyhow::anyhow!("session process is not attached to this runtime: {handle}"))?;
+        proc.terminate("terminated", true)?;
+        proc.snapshot_record("process.terminated", json!({"handle": handle, "terminateGraceMs": proc.command_version.terminate_grace_ms}))
+    };
+    persist_managed_process_control_record(pool, session_id, record).await?;
+    Ok(json!({"handle": handle, "status": "terminated"}))
+}
+
+pub async fn input_managed_process(pool: &PgPool, session_id: Uuid, handle: &str, text: &str) -> Result<JsonValue> {
+    let record = {
+        let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
+        let proc = manager
+            .get_mut(&session_id)
+            .and_then(|processes| processes.get_mut(handle))
+            .ok_or_else(|| anyhow::anyhow!("session process is not attached to this runtime: {handle}"))?;
+        if proc.command_version.stdin_policy != "allow" {
+            bail!("process input is not allowed for this handle");
+        }
+        if let Some(stdin) = proc.child.stdin.as_mut() {
+            stdin.write_all(text.as_bytes())?;
+            stdin.flush()?;
+        } else {
+            bail!("process input is no longer attached");
+        }
+        proc.snapshot_record("process.stdin", json!({"handle": handle, "bytes": text.len()}))
+    };
+    persist_managed_process_control_record(pool, session_id, record).await?;
+    Ok(json!({"handle": handle, "status": "input accepted"}))
+}
+
+pub async fn flush_managed_process(pool: &PgPool, session_id: Uuid, handle: &str) -> Result<JsonValue> {
+    let (record, stdout_record, stderr_record, combined_record, combined_envelope) = {
+        let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
+        let proc = manager
+            .get_mut(&session_id)
+            .and_then(|processes| processes.get_mut(handle))
+            .ok_or_else(|| anyhow::anyhow!("session process is not attached to this runtime: {handle}"))?;
+        let (stdout, stdout_truncated) = proc.take_stdout_since_flush();
+        let (stderr, stderr_truncated) = proc.take_stderr_since_flush();
+        let combined = format!("{stdout}{stderr}");
+        let stdout_artifact_id = Uuid::new_v4();
+        let stderr_artifact_id = Uuid::new_v4();
+        let combined_artifact_id = Uuid::new_v4();
+        let combined_envelope = output_artifacts::envelope_for(combined_artifact_id, "combined", &combined);
+        (
+            proc.snapshot_record("process.flushed", json!({"handle": handle, "stdoutBytes": stdout.len(), "stderrBytes": stderr.len()})),
+            ProcessOutputRecord { artifact_id: stdout_artifact_id, process_id: proc.id, handle: handle.to_string(), stream: "stdout".to_string(), content: stdout, truncated: stdout_truncated },
+            ProcessOutputRecord { artifact_id: stderr_artifact_id, process_id: proc.id, handle: handle.to_string(), stream: "stderr".to_string(), content: stderr, truncated: stderr_truncated },
+            ProcessOutputRecord { artifact_id: combined_artifact_id, process_id: proc.id, handle: handle.to_string(), stream: "combined".to_string(), content: combined, truncated: stdout_truncated || stderr_truncated },
+            combined_envelope,
+        )
+    };
+    persist_process_output_record(pool, session_id, None, &stdout_record).await?;
+    persist_process_output_record(pool, session_id, None, &stderr_record).await?;
+    persist_process_output_record(pool, session_id, None, &combined_record).await?;
+    persist_managed_process_control_record(pool, session_id, record).await?;
+    Ok(json!({"handle": handle, "status": "flushed", "artifact": combined_envelope}))
+}
+
 fn spawn_max_runtime_supervisor(
     pool: PgPool,
     session_id: Uuid,
@@ -2730,6 +2795,101 @@ async fn persist_record(
             .await?;
         }
     }
+    Ok(())
+}
+
+async fn persist_managed_process_control_record(pool: &PgPool, session_id: Uuid, process: ManagedProcessRecord) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE managed_processes
+        SET status = $3,
+            end_time = CASE WHEN $3 = 'running' THEN end_time ELSE now() END,
+            termination_reason = $4,
+            metadata = metadata || $5
+        WHERE session_id = $1 AND handle = $2
+        "#,
+    )
+    .bind(session_id)
+    .bind(&process.handle)
+    .bind(&process.status)
+    .bind(&process.termination_reason)
+    .bind(json!({
+        "lastEvent": process.event,
+        "payload": process.payload,
+    }))
+    .execute(pool)
+    .await?;
+    db::append_event(
+        pool,
+        session_id,
+        None,
+        "process",
+        Some(process.id),
+        &process.event,
+        Some(&process.status),
+        json!({
+            "handle": process.handle,
+            "commandVersionId": process.command_version_id,
+            "binary": process.binary_name,
+            "argv": process.argv,
+            "cwd": process.cwd,
+            "pid": process.os_pid,
+            "pgid": process.os_pgid,
+            "endOfTurnBehavior": process.end_of_turn_behavior,
+            "endOfSessionBehavior": process.end_of_session_behavior,
+            "maxRuntimeMs": process.max_runtime_ms,
+            "terminationReason": process.termination_reason,
+            "payload": process.payload,
+        }),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn persist_process_output_record(pool: &PgPool, session_id: Uuid, turn_id: Option<Uuid>, output: &ProcessOutputRecord) -> Result<()> {
+    let _artifact = output_artifacts::store(pool, NewOutputArtifact {
+        id: output.artifact_id,
+        session_id,
+        turn_id,
+        tool_call_id: None,
+        script_run_id: None,
+        command_run_id: None,
+        process_id: Some(output.process_id),
+        source_type: "managed_process",
+        stream: &output.stream,
+        content: &output.content,
+        metadata: json!({"handle": output.handle, "chunkTruncated": output.truncated}),
+    }).await?;
+    sqlx::query(
+        r#"
+        INSERT INTO process_output_chunks (id, process_id, stream, content, truncated)
+        VALUES ($1, $2, $3, $4, $5)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(output.process_id)
+    .bind(&output.stream)
+    .bind(&output.content)
+    .bind(output.truncated)
+    .execute(pool)
+    .await?;
+    db::append_event(
+        pool,
+        session_id,
+        turn_id,
+        "process",
+        Some(output.process_id),
+        "process.output",
+        Some("completed"),
+        json!({
+            "handle": output.handle,
+            "stream": output.stream,
+            "bytes": output.content.len(),
+            "artifactId": output.artifact_id,
+            "truncated": output.truncated,
+        }),
+    )
+    .await?;
     Ok(())
 }
 

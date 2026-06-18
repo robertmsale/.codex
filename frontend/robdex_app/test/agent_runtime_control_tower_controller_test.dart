@@ -164,6 +164,20 @@ void main() {
     expect((sentRequests[2] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationForkSession>());
   });
 
+  test('managed process controls use generated typed operation intents', () {
+    final terminate = agentRuntimeTerminateProcessOperationForTest('session-2', 'proc_1');
+    final input = agentRuntimeInputProcessOperationForTest('session-2', 'proc_1', 'hello');
+    final flush = agentRuntimeFlushProcessOperationForTest('session-2', 'proc_1');
+
+    expect(terminate, isA<bindings.AgentRuntimeGuiOperationTerminateProcess>());
+    expect((terminate as bindings.AgentRuntimeGuiOperationTerminateProcess).sessionId, 'session-2');
+    expect(terminate.handle, 'proc_1');
+    expect(input, isA<bindings.AgentRuntimeGuiOperationInputProcess>());
+    expect((input as bindings.AgentRuntimeGuiOperationInputProcess).text, 'hello');
+    expect(flush, isA<bindings.AgentRuntimeGuiOperationFlushProcess>());
+    expect((flush as bindings.AgentRuntimeGuiOperationFlushProcess).handle, 'proc_1');
+  });
+
   test('project and settings shell entry points rehydrate through typed runtime state requests', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
     final controller = AgentRuntimeControlTowerController(

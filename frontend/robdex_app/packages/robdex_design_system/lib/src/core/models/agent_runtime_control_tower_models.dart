@@ -30,6 +30,7 @@ class AgentRuntimeControlTowerData {
     required this.roleAdmin,
     required this.workflowMemory,
     required this.controllerFacts,
+    this.operationSurfaces = const [],
     required this.outputLog,
     required this.pendingRequestCount,
     this.errorMessage,
@@ -65,6 +66,7 @@ class AgentRuntimeControlTowerData {
   final AgentRuntimeRoleAdminData roleAdmin;
   final AgentRuntimeWorkflowMemoryData workflowMemory;
   final List<AgentRuntimeFact> controllerFacts;
+  final List<AgentRuntimeOperationSurface> operationSurfaces;
   final List<String> outputLog;
   final int pendingRequestCount;
   final String? errorMessage;
@@ -111,6 +113,7 @@ class AgentRuntimeControlTowerData {
         Map<String, dynamic>.from((json['workflowMemory'] as Map?) ?? const {}),
       ),
       controllerFacts: _objects(json['controllerFacts']).map(AgentRuntimeFact.fromJson).toList(growable: false),
+      operationSurfaces: _objects(json['operationSurfaces']).map(AgentRuntimeOperationSurface.fromJson).toList(growable: false),
       outputLog: (json['outputLog'] as List<dynamic>? ?? const []).map((value) => '$value').toList(growable: false),
       pendingRequestCount: (json['pendingRequestCount'] as num?)?.toInt() ?? 0,
       errorMessage: json['errorMessage'] as String?,
@@ -148,6 +151,7 @@ class AgentRuntimeControlTowerData {
     AgentRuntimeRoleAdminData? roleAdmin,
     AgentRuntimeWorkflowMemoryData? workflowMemory,
     List<AgentRuntimeFact>? controllerFacts,
+    List<AgentRuntimeOperationSurface>? operationSurfaces,
     List<String>? outputLog,
     int? pendingRequestCount,
     String? errorMessage,
@@ -183,6 +187,7 @@ class AgentRuntimeControlTowerData {
       roleAdmin: roleAdmin ?? this.roleAdmin,
       workflowMemory: workflowMemory ?? this.workflowMemory,
       controllerFacts: controllerFacts ?? this.controllerFacts,
+      operationSurfaces: operationSurfaces ?? this.operationSurfaces,
       outputLog: outputLog ?? this.outputLog,
       pendingRequestCount: pendingRequestCount ?? this.pendingRequestCount,
       errorMessage: errorMessage ?? this.errorMessage,
@@ -363,6 +368,32 @@ class AgentRuntimeFact {
     return AgentRuntimeFact(
       label: '${json['label'] ?? ''}',
       value: '${json['value'] ?? ''}',
+    );
+  }
+}
+
+class AgentRuntimeOperationSurface {
+  const AgentRuntimeOperationSurface({
+    required this.surfaceId,
+    required this.title,
+    required this.subtitle,
+    required this.rows,
+    required this.actions,
+  });
+
+  final String surfaceId;
+  final String title;
+  final String subtitle;
+  final List<AgentRuntimeFact> rows;
+  final List<AgentRuntimeActionItem> actions;
+
+  factory AgentRuntimeOperationSurface.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeOperationSurface(
+      surfaceId: '${json['surfaceId'] ?? ''}',
+      title: '${json['title'] ?? 'Detail'}',
+      subtitle: '${json['subtitle'] ?? ''}',
+      rows: _objects(json['rows']).map(AgentRuntimeFact.fromJson).toList(growable: false),
+      actions: _objects(json['actions']).map(AgentRuntimeActionItem.fromJson).toList(growable: false),
     );
   }
 }

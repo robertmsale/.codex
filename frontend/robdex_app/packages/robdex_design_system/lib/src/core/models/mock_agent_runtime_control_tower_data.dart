@@ -517,21 +517,21 @@ const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
   timeline: [
     AgentRuntimeTimelineItem(
       id: 'event-39',
-      title: 'Owner message',
+      title: 'Owner',
       subtitle: 'Please check runtime health.',
       status: 'sent',
-      tone: 'info',
+      tone: 'user',
     ),
     AgentRuntimeTimelineItem(
       id: 'event-40',
-      title: 'Runtime response',
+      title: 'Assistant',
       subtitle: 'Health check is passing.',
       status: 'completed',
       tone: 'success',
     ),
     AgentRuntimeTimelineItem(
       id: 'event-41',
-      title: 'Run code',
+      title: 'Tool result',
       subtitle: 'Code run completed',
       status: 'completed',
       tone: 'success',
@@ -567,6 +567,117 @@ const mockAgentRuntimeConnected = AgentRuntimeControlTowerData(
   controllerFacts: [
     AgentRuntimeFact(label: 'Selected session', value: 'session-a'),
     AgentRuntimeFact(label: 'Connection', value: 'Connected'),
+  ],
+  operationSurfaces: [
+    AgentRuntimeOperationSurface(
+      surfaceId: 'session',
+      title: 'Session',
+      subtitle: 'Runtime validation',
+      rows: [
+        AgentRuntimeFact(label: 'Session', value: 'Runtime validation'),
+        AgentRuntimeFact(label: 'Role', value: 'Runtime Allow'),
+        AgentRuntimeFact(label: 'Project', value: 'Runtime'),
+        AgentRuntimeFact(label: 'Workdir', value: 'Project workspace'),
+        AgentRuntimeFact(label: 'Status', value: 'Open'),
+        AgentRuntimeFact(label: 'Created', value: '2026-06-17 08:16'),
+        AgentRuntimeFact(label: 'Current turn', value: 'Idle'),
+      ],
+      actions: [
+        AgentRuntimeActionItem(id: 'session-a', title: 'Close session', subtitle: 'Runtime validation', kind: 'closeSession', stateText: 'Ready', tone: 'info'),
+        AgentRuntimeActionItem(id: 'session-a', title: 'Archive session', subtitle: 'Runtime validation', kind: 'archiveSession', stateText: 'Ready', tone: 'info'),
+        AgentRuntimeActionItem(id: 'session-a', title: 'Fork session', subtitle: 'Runtime validation', kind: 'forkSession', stateText: 'Ready', tone: 'info'),
+      ],
+    ),
+    AgentRuntimeOperationSurface(
+      surfaceId: 'compaction',
+      title: 'Compaction',
+      subtitle: 'Checkpoint and context budget',
+      rows: [
+        AgentRuntimeFact(label: 'Latest checkpoint', value: 'Completed through turn 12'),
+        AgentRuntimeFact(label: 'Boundary', value: 'Latest completed turn'),
+        AgentRuntimeFact(label: 'Context estimate', value: '42 KB model-visible'),
+        AgentRuntimeFact(label: 'Failed checkpoint', value: 'None'),
+        AgentRuntimeFact(label: 'Manual compact', value: 'Use runtime CLI for manual checkpoint'),
+      ],
+      actions: [],
+    ),
+    AgentRuntimeOperationSurface(
+      surfaceId: 'statistics',
+      title: 'Statistics',
+      subtitle: 'Activity and budget',
+      rows: [
+        AgentRuntimeFact(label: 'Turns', value: '4'),
+        AgentRuntimeFact(label: 'Messages', value: '2'),
+        AgentRuntimeFact(label: 'Tools and scripts', value: '3'),
+        AgentRuntimeFact(label: 'Processes', value: '1'),
+        AgentRuntimeFact(label: 'Output artifacts', value: '2'),
+        AgentRuntimeFact(label: 'Context budget', value: '42 KB of 256 KB'),
+        AgentRuntimeFact(label: 'Recent activity', value: '12 events'),
+      ],
+      actions: [],
+    ),
+    AgentRuntimeOperationSurface(
+      surfaceId: 'processManager',
+      title: 'Process Manager',
+      subtitle: 'Managed process handles',
+      rows: [
+        AgentRuntimeFact(label: 'dev-server', value: 'running · async · terminate at session end'),
+      ],
+      actions: [
+        AgentRuntimeActionItem(id: 'dev-server', title: 'Terminate', subtitle: 'Stop this managed process', kind: 'processTerminate', stateText: 'ready', tone: 'info'),
+        AgentRuntimeActionItem(id: 'dev-server', title: 'Send input', subtitle: 'Send text to this process', kind: 'processInput', stateText: 'ready', tone: 'info'),
+        AgentRuntimeActionItem(id: 'dev-server', title: 'Flush output', subtitle: 'Read new process output', kind: 'processFlush', stateText: 'ready', tone: 'info'),
+      ],
+    ),
+    AgentRuntimeOperationSurface(
+      surfaceId: 'settings',
+      title: 'Settings',
+      subtitle: 'Runtime connection defaults',
+      rows: [
+        AgentRuntimeFact(label: 'Connection', value: 'Connected'),
+        AgentRuntimeFact(label: 'Project', value: 'Runtime'),
+        AgentRuntimeFact(label: 'Role', value: 'Runtime Allow'),
+        AgentRuntimeFact(label: 'Model', value: 'GPT-5.4 Mini'),
+        AgentRuntimeFact(label: 'Registry scope', value: 'Project commands'),
+        AgentRuntimeFact(label: 'Discovery', value: 'Local runtime ready'),
+      ],
+      actions: [],
+    ),
+    AgentRuntimeOperationSurface(
+      surfaceId: 'history',
+      title: 'History',
+      subtitle: 'Runtime audit events',
+      rows: [
+        AgentRuntimeFact(label: 'role.imported', value: '#1 · completed · role'),
+        AgentRuntimeFact(label: 'turn.started', value: '#2 · running · turn'),
+        AgentRuntimeFact(label: 'model.final_response', value: '#3 · completed · turn'),
+      ],
+      actions: [],
+    ),
+    AgentRuntimeOperationSurface(
+      surfaceId: 'approvals',
+      title: 'Approvals',
+      subtitle: 'Pending owner decisions',
+      rows: [
+        AgentRuntimeFact(label: 'Command execution', value: 'Needs decision'),
+      ],
+      actions: [
+        AgentRuntimeActionItem(id: 'approval-1', title: 'Approve', subtitle: 'Command execution', kind: 'approval', stateText: 'Ready', tone: 'warning'),
+        AgentRuntimeActionItem(id: 'approval-1', title: 'Resume', subtitle: 'Command execution', kind: 'approvalResume', stateText: 'Ready', tone: 'info'),
+      ],
+    ),
+    AgentRuntimeOperationSurface(
+      surfaceId: 'commandRegistry',
+      title: 'Command Registry',
+      subtitle: 'Pending command requests',
+      rows: [
+        AgentRuntimeFact(label: 'Search audit', value: 'Needs registry decision'),
+      ],
+      actions: [
+        AgentRuntimeActionItem(id: 'registry-request-1', title: 'Approve command', subtitle: 'Search audit', kind: 'commandRegistryRequest', stateText: 'Ready', tone: 'warning'),
+        AgentRuntimeActionItem(id: 'registry-request-1', title: 'Apply policy', subtitle: 'Search audit', kind: 'commandRegistryRequest', stateText: 'Ready', tone: 'info'),
+      ],
+    ),
   ],
   outputLog: ['Runtime update received', 'Connection streaming'],
   pendingRequestCount: 0,

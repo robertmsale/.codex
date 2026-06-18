@@ -162,7 +162,7 @@ product specification.
     enablement, and operation outcomes.
 35. Rust-owned Agent Runtime view model: the transport now emits an
     `AgentRuntimeControlTowerViewModel` with constructor-ready connection
-    labels, base URL, watermark/status labels, session rows, timeline rows,
+    labels, base URL, watermark/status labels, session rows, product chat rows and separate history rows,
     action rows, controller facts, recent output log, pending-request slot, and
     typed error display text. Dart decodes the Rust-shaped view packet and no
     longer interprets raw `RuntimeProjection` or `GuiControllerState` JSON to
@@ -172,7 +172,7 @@ product specification.
     copy, session group labels, row tones, action state text, and
     action/timeline/session severity tones. The design-system control tower
     renders a clearer runtime status strip, better session rail,
-    selected-session event stream, readable attention list, runtime/error
+    selected-session product chat transcript, readable attention list, runtime/error
     detail visibility, and disconnected/connecting/connected/error/empty
     states without adding Dart-side runtime decisions or a Dart network client.
     Action rows are real attention items, currently approvals/resumable

@@ -31,6 +31,12 @@ class AgentRuntimeControlTower extends StatelessWidget {
     this.onWorkflowMemoryAttempted,
     this.onWorkflowMemoryHelpful,
     this.onWorkflowMemoryNotHelpful,
+    this.onSessionClose,
+    this.onSessionArchive,
+    this.onSessionFork,
+    this.onProcessTerminate,
+    this.onProcessInput,
+    this.onProcessFlush,
     this.onApprovalApprove,
     this.onApprovalResume,
     this.onCommandRegistryApprove,
@@ -60,6 +66,12 @@ class AgentRuntimeControlTower extends StatelessWidget {
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryAttempted;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryHelpful;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryNotHelpful;
+  final ValueChanged<String>? onSessionClose;
+  final ValueChanged<String>? onSessionArchive;
+  final ValueChanged<String>? onSessionFork;
+  final ValueChanged<String>? onProcessTerminate;
+  final ValueChanged<String>? onProcessInput;
+  final ValueChanged<String>? onProcessFlush;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalApprove;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalResume;
   final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApprove;
@@ -120,7 +132,13 @@ class AgentRuntimeControlTower extends StatelessWidget {
                                   onWorkflowMemorySelect: onWorkflowMemorySelect,
                                   onWorkflowMemoryAttempted: onWorkflowMemoryAttempted,
                                   onWorkflowMemoryHelpful: onWorkflowMemoryHelpful,
-                                  onWorkflowMemoryNotHelpful: onWorkflowMemoryNotHelpful)),
+                                  onWorkflowMemoryNotHelpful: onWorkflowMemoryNotHelpful,
+                                  onSessionClose: onSessionClose,
+                                  onSessionArchive: onSessionArchive,
+                                  onSessionFork: onSessionFork,
+                                  onProcessTerminate: onProcessTerminate,
+                                  onProcessInput: onProcessInput,
+                                  onProcessFlush: onProcessFlush)),
                             ],
                           )
                         : Row(
@@ -148,7 +166,13 @@ class AgentRuntimeControlTower extends StatelessWidget {
                                           onWorkflowMemorySelect: onWorkflowMemorySelect,
                                           onWorkflowMemoryAttempted: onWorkflowMemoryAttempted,
                                           onWorkflowMemoryHelpful: onWorkflowMemoryHelpful,
-                                          onWorkflowMemoryNotHelpful: onWorkflowMemoryNotHelpful),
+                                          onWorkflowMemoryNotHelpful: onWorkflowMemoryNotHelpful,
+                                          onSessionClose: onSessionClose,
+                                          onSessionArchive: onSessionArchive,
+                                          onSessionFork: onSessionFork,
+                                          onProcessTerminate: onProcessTerminate,
+                                          onProcessInput: onProcessInput,
+                                          onProcessFlush: onProcessFlush),
                                     ),
                                   ],
                                 ),
@@ -511,6 +535,7 @@ class _ActionsPanel extends StatelessWidget {
 class _DetailsPanel extends StatelessWidget {
   const _DetailsPanel(
     this.data, {
+    this.focusSurfaceId,
     this.onRoleValidate,
     this.onRoleCreate,
     this.onRoleUpdate,
@@ -522,6 +547,12 @@ class _DetailsPanel extends StatelessWidget {
     this.onWorkflowMemoryAttempted,
     this.onWorkflowMemoryHelpful,
     this.onWorkflowMemoryNotHelpful,
+    this.onSessionClose,
+    this.onSessionArchive,
+    this.onSessionFork,
+    this.onProcessTerminate,
+    this.onProcessInput,
+    this.onProcessFlush,
     this.onApprovalApprove,
     this.onApprovalResume,
     this.onCommandRegistryApprove,
@@ -529,6 +560,7 @@ class _DetailsPanel extends StatelessWidget {
   });
 
   final AgentRuntimeControlTowerData data;
+  final String? focusSurfaceId;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleValidate;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleCreate;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleUpdate;
@@ -540,6 +572,12 @@ class _DetailsPanel extends StatelessWidget {
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryAttempted;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryHelpful;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryNotHelpful;
+  final ValueChanged<String>? onSessionClose;
+  final ValueChanged<String>? onSessionArchive;
+  final ValueChanged<String>? onSessionFork;
+  final ValueChanged<String>? onProcessTerminate;
+  final ValueChanged<String>? onProcessInput;
+  final ValueChanged<String>? onProcessFlush;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalApprove;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalResume;
   final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApprove;
@@ -547,12 +585,54 @@ class _DetailsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final surfaces = focusSurfaceId == null
+        ? data.operationSurfaces
+        : data.operationSurfaces.where((surface) => surface.surfaceId == focusSurfaceId).toList(growable: false);
+    final operationSections = surfaces.isEmpty
+        ? const <Widget>[]
+        : surfaces
+            .map((surface) => _OperationsSection(
+                  title: surface.title,
+                  rows: surface.rows.map((row) => _OperationsRow(row.label, row.value)).toList(growable: false),
+                  actions: surface.actions,
+                  onActionPressed: _operationActionHandler(surface.surfaceId),
+                ))
+            .toList(growable: false);
     return _Panel(
       title: _cleanSectionCopy(data.detailTitle),
       subtitle: _cleanSectionCopy(data.detailSubtitle),
       child: ListView(
         children: [
-          if (data.actions.isNotEmpty) ...[
+          if (focusSurfaceId == 'roleAdmin') ...[
+            _RoleAdminPanel(
+              data.roleAdmin,
+              onValidate: onRoleValidate,
+              onCreate: onRoleCreate,
+              onUpdate: onRoleUpdate,
+              onExport: onRoleExport,
+              onArchive: onRoleArchive,
+              onUnarchive: onRoleUnarchive,
+              onActivate: onRoleActivate,
+            ),
+          ] else if (focusSurfaceId == 'workflowMemory') ...[
+            _WorkflowMemoryPanel(
+              data.workflowMemory,
+              onSelect: onWorkflowMemorySelect,
+              onAttempted: onWorkflowMemoryAttempted,
+              onHelpful: onWorkflowMemoryHelpful,
+              onNotHelpful: onWorkflowMemoryNotHelpful,
+            ),
+          ] else if (operationSections.isEmpty)
+            _OperationsSection(
+              title: 'Session',
+              rows: [
+                _OperationsRow('Selected', data.selectedSessionLabel),
+                _OperationsRow('Connection', data.statusLabel),
+              ],
+            )
+          else
+            ...operationSections,
+          if (focusSurfaceId == null && data.actions.isNotEmpty) ...[
             Text(data.actionsTitle, style: Theme.of(context).textTheme.labelMedium?.copyWith(color: Colors.white70)),
             const SizedBox(height: 6),
             ...data.actions.map(
@@ -566,29 +646,64 @@ class _DetailsPanel extends StatelessWidget {
             ),
             const SizedBox(height: 10),
           ],
-          _RoleAdminPanel(
-            data.roleAdmin,
-            onValidate: onRoleValidate,
-            onCreate: onRoleCreate,
-            onUpdate: onRoleUpdate,
-            onExport: onRoleExport,
-            onArchive: onRoleArchive,
-            onUnarchive: onRoleUnarchive,
-            onActivate: onRoleActivate,
-          ),
-          const SizedBox(height: 10),
-          _WorkflowMemoryPanel(
-            data.workflowMemory,
-            onSelect: onWorkflowMemorySelect,
-            onAttempted: onWorkflowMemoryAttempted,
-            onHelpful: onWorkflowMemoryHelpful,
-            onNotHelpful: onWorkflowMemoryNotHelpful,
-          ),
-          const SizedBox(height: 10),
-          ...data.controllerFacts.where(_isUserFacingFact).map(_FactRow.new),
+          if (focusSurfaceId == null) ...[
+            _RoleAdminPanel(
+              data.roleAdmin,
+              onValidate: onRoleValidate,
+              onCreate: onRoleCreate,
+              onUpdate: onRoleUpdate,
+              onExport: onRoleExport,
+              onArchive: onRoleArchive,
+              onUnarchive: onRoleUnarchive,
+              onActivate: onRoleActivate,
+            ),
+            const SizedBox(height: 10),
+            _WorkflowMemoryPanel(
+              data.workflowMemory,
+              onSelect: onWorkflowMemorySelect,
+              onAttempted: onWorkflowMemoryAttempted,
+              onHelpful: onWorkflowMemoryHelpful,
+              onNotHelpful: onWorkflowMemoryNotHelpful,
+            ),
+            const SizedBox(height: 10),
+            ...data.controllerFacts.where(_isUserFacingFact).map(_FactRow.new),
+          ],
         ],
       ),
     );
+  }
+
+  VoidCallback? Function(AgentRuntimeActionItem) _operationActionHandler(String surfaceId) {
+    return (action) {
+      switch (action.kind) {
+        case 'closeSession':
+          return onSessionClose == null ? null : () => onSessionClose!(action.id);
+        case 'archiveSession':
+          return onSessionArchive == null ? null : () => onSessionArchive!(action.id);
+        case 'forkSession':
+          return onSessionFork == null ? null : () => onSessionFork!(action.id);
+        case 'processTerminate':
+          return onProcessTerminate == null ? null : () => onProcessTerminate!(action.id);
+        case 'processInput':
+          return onProcessInput == null ? null : () => onProcessInput!(action.id);
+        case 'processFlush':
+          return onProcessFlush == null ? null : () => onProcessFlush!(action.id);
+        case 'approval':
+          if (action.title.toLowerCase().contains('resume')) {
+            return onApprovalResume == null ? null : () => onApprovalResume!(action);
+          }
+          return onApprovalApprove == null ? null : () => onApprovalApprove!(action);
+        case 'approvalResume':
+          return onApprovalResume == null ? null : () => onApprovalResume!(action);
+        case 'commandRegistryRequest':
+          if (action.title.toLowerCase().contains('apply')) {
+            return onCommandRegistryApply == null ? null : () => onCommandRegistryApply!(action);
+          }
+          return onCommandRegistryApprove == null ? null : () => onCommandRegistryApprove!(action);
+        default:
+          return null;
+      }
+    };
   }
 }
 
@@ -596,6 +711,7 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
   const AgentRuntimeOperationsDetail({
     super.key,
     required this.data,
+    this.focusSurfaceId,
     this.onRoleValidate,
     this.onRoleCreate,
     this.onRoleUpdate,
@@ -607,6 +723,12 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
     this.onWorkflowMemoryAttempted,
     this.onWorkflowMemoryHelpful,
     this.onWorkflowMemoryNotHelpful,
+    this.onSessionClose,
+    this.onSessionArchive,
+    this.onSessionFork,
+    this.onProcessTerminate,
+    this.onProcessInput,
+    this.onProcessFlush,
     this.onApprovalApprove,
     this.onApprovalResume,
     this.onCommandRegistryApprove,
@@ -614,6 +736,7 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
   });
 
   final AgentRuntimeControlTowerData data;
+  final String? focusSurfaceId;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleValidate;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleCreate;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleUpdate;
@@ -625,6 +748,12 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryAttempted;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryHelpful;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryNotHelpful;
+  final ValueChanged<String>? onSessionClose;
+  final ValueChanged<String>? onSessionArchive;
+  final ValueChanged<String>? onSessionFork;
+  final ValueChanged<String>? onProcessTerminate;
+  final ValueChanged<String>? onProcessInput;
+  final ValueChanged<String>? onProcessFlush;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalApprove;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalResume;
   final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApprove;
@@ -634,6 +763,7 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
   Widget build(BuildContext context) {
     return _DetailsPanel(
       data,
+      focusSurfaceId: focusSurfaceId,
       onRoleValidate: onRoleValidate,
       onRoleCreate: onRoleCreate,
       onRoleUpdate: onRoleUpdate,
@@ -645,10 +775,74 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
       onWorkflowMemoryAttempted: onWorkflowMemoryAttempted,
       onWorkflowMemoryHelpful: onWorkflowMemoryHelpful,
       onWorkflowMemoryNotHelpful: onWorkflowMemoryNotHelpful,
+      onSessionClose: onSessionClose,
+      onSessionArchive: onSessionArchive,
+      onSessionFork: onSessionFork,
+      onProcessTerminate: onProcessTerminate,
+      onProcessInput: onProcessInput,
+      onProcessFlush: onProcessFlush,
       onApprovalApprove: onApprovalApprove,
       onApprovalResume: onApprovalResume,
       onCommandRegistryApprove: onCommandRegistryApprove,
       onCommandRegistryApply: onCommandRegistryApply,
+    );
+  }
+}
+
+class _OperationsRow {
+  const _OperationsRow(this.label, this.value);
+  final String label;
+  final String value;
+}
+
+class _OperationsSection extends StatelessWidget {
+  const _OperationsSection({required this.title, required this.rows, this.actions = const [], this.onActionPressed});
+
+  final String title;
+  final List<_OperationsRow> rows;
+  final List<AgentRuntimeActionItem> actions;
+  final VoidCallback? Function(AgentRuntimeActionItem action)? onActionPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white70, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 6),
+          if (rows.isEmpty)
+            const Text('No items', style: TextStyle(color: Color(0xFF8FA1B8), fontSize: 12))
+          else
+            for (final row in rows)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(width: 110, child: Text(_cleanSectionCopy(row.label), style: const TextStyle(color: Color(0xFF8FA1B8), fontSize: 12))),
+                    Expanded(child: Text(_cleanSectionCopy(row.value), style: const TextStyle(fontSize: 12))),
+                  ],
+                ),
+              ),
+          if (actions.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final action in actions)
+                  OutlinedButton(
+                    onPressed: onActionPressed?.call(action),
+                    child: Text(_cleanSectionCopy(action.title)),
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

@@ -5,9 +5,10 @@ import '../../core/models/workbench_models.dart';
 ConversationShellData agentRuntimeConversationShellData(AgentRuntimeControlTowerData data) {
   final selected = _selectedSessionId(data);
   final entries = data.timeline
+      .where(_isChatTimelineItem)
       .map((item) => ChatEntry(
             id: item.id,
-            author: item.tone == 'success' ? 'assistant' : 'system',
+            author: item.tone == 'user' ? 'owner' : (item.tone == 'success' ? 'assistant' : 'tool'),
             displayLabel: _displayCopy(item.title),
             timestamp: null,
             body: _displayCopy(item.subtitle.isEmpty ? item.status : item.subtitle),
@@ -84,6 +85,10 @@ ConversationShellData agentRuntimeConversationShellData(AgentRuntimeControlTower
     emptyTitle: data.sessionsEmptyTitle,
     emptyText: data.sessionsEmptyText,
   );
+}
+
+bool _isChatTimelineItem(AgentRuntimeTimelineItem item) {
+  return item.title == 'Owner' || item.title == 'Assistant' || item.title == 'Tool result';
 }
 
 bool _hasConnectedRuntime(AgentRuntimeControlTowerData data) {

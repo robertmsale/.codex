@@ -196,6 +196,17 @@ pub struct AgentRuntimeConversationShellViewModel {
     pub command_registry_requests: Vec<AgentRuntimeControlTowerActionRow>,
     pub approvals: Vec<AgentRuntimeControlTowerActionRow>,
     pub diagnostics: Vec<AgentRuntimeControlTowerFact>,
+    pub operation_surfaces: Vec<AgentRuntimeOperationSurface>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeOperationSurface {
+    pub surface_id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub rows: Vec<AgentRuntimeControlTowerFact>,
+    pub actions: Vec<AgentRuntimeControlTowerActionRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -423,7 +434,7 @@ impl AgentRuntimeControlTowerViewModel {
             controller_state.selected_session_id.as_deref(),
             controller_state.selected_workflow_memory_id.as_deref(),
         );
-        let controller_facts = controller_facts(controller_state);
+        let controller_facts = runtime_detail_facts(projection, controller_state);
         let mut view = Self {
             discovery: discovery.clone(),
             remote_discovery: remote_discovery.clone(),
@@ -464,7 +475,7 @@ impl AgentRuntimeControlTowerViewModel {
             error_message,
             shell: AgentRuntimeConversationShellViewModel::empty(),
         };
-        view.shell = AgentRuntimeConversationShellViewModel::from_control_tower(&view, controller_state);
+        view.shell = AgentRuntimeConversationShellViewModel::from_control_tower(&view, projection, controller_state);
         view
     }
 }
@@ -484,10 +495,11 @@ impl AgentRuntimeConversationShellViewModel {
             command_registry_requests: Vec::new(),
             approvals: Vec::new(),
             diagnostics: Vec::new(),
+            operation_surfaces: Vec::new(),
         }
     }
 
-    pub fn from_control_tower(view: &AgentRuntimeControlTowerViewModel, controller_state: &GuiControllerState) -> Self {
+    pub fn from_control_tower(view: &AgentRuntimeControlTowerViewModel, projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> Self {
         let selected_session_id = controller_state
             .selected_session_id
             .clone()
@@ -524,8 +536,8 @@ impl AgentRuntimeConversationShellViewModel {
                 unavailable_reason: None,
             }],
             sessions: view.sessions.clone(),
-            selected_session_id,
-            selected_conversation: view.timeline.clone(),
+            selected_session_id: selected_session_id.clone(),
+            selected_conversation: selected_chat_rows(projection, selected_session_id.as_deref()),
             dynamic_roles,
             actions: view.actions.clone(),
             settings: vec![
@@ -543,8 +555,228 @@ impl AgentRuntimeConversationShellViewModel {
             command_registry_requests,
             approvals,
             diagnostics: view.controller_facts.clone(),
+            operation_surfaces: operation_surfaces(projection, controller_state, view),
         }
     }
+}
+
+fn operation_surfaces(
+    projection: Option<&RuntimeProjection>,
+    controller_state: &GuiControllerState,
+    view: &AgentRuntimeControlTowerViewModel,
+) -> Vec<AgentRuntimeOperationSurface> {
+    let mut surfaces = Vec::new();
+    let selected = projection.and_then(|projection| projection.selected_session.as_ref());
+    surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "session".to_string(),
+        title: "Session".to_string(),
+        subtitle: selected.map(|session| session.title.as_deref().unwrap_or("Selected runtime session")).unwrap_or("No selected session").to_string(),
+        rows: vec![
+            fact("Session", selected.map(|session| session.id.as_str()).unwrap_or("No selected session")),
+            fact("Role", selected.and_then(|session| session.role_id.as_deref()).unwrap_or("Runtime default")),
+            fact("Project", selected.and_then(|session| session.project_key.as_deref()).unwrap_or("Runtime")),
+            fact("Workdir", selected.map(|session| session.workdir.as_str()).unwrap_or("Runtime workspace")),
+            fact("Status", selected.map(|session| session.status.as_str()).unwrap_or("Idle")),
+            fact("Created", selected.and_then(|session| session.metadata.get("createdAt").and_then(Value::as_str)).unwrap_or("Not available")),
+            fact("Current turn", current_turn_label(projection)),
+        ],
+        actions: session_actions(selected),
+    });
+    surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "compaction".to_string(),
+        title: "Compaction".to_string(),
+        subtitle: "Checkpoint and context budget".to_string(),
+        rows: vec![
+            fact("Latest checkpoint", latest_event_summary(projection, "compaction.completed").unwrap_or("No completed checkpoint")),
+            fact("Boundary", latest_event_summary(projection, "compaction.boundary").unwrap_or("Latest completed turn")),
+            fact("Context estimate", latest_event_summary(projection, "compaction.estimate").unwrap_or("Within configured budget")),
+            fact("Failed checkpoint", latest_event_summary(projection, "compaction.failed").unwrap_or("No failed checkpoint")),
+            fact("Manual compact", "Use runtime CLI for manual checkpoint"),
+        ],
+        actions: Vec::new(),
+    });
+    surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "statistics".to_string(),
+        title: "Statistics".to_string(),
+        subtitle: "Activity and budget".to_string(),
+        rows: statistics_rows(projection, controller_state),
+        actions: Vec::new(),
+    });
+    surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "processManager".to_string(),
+        title: "Process Manager".to_string(),
+        subtitle: "Managed process handles".to_string(),
+        rows: process_rows(projection, selected),
+        actions: process_actions(projection, selected),
+    });
+    surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "settings".to_string(),
+        title: "Settings".to_string(),
+        subtitle: "Runtime connection defaults".to_string(),
+        rows: vec![
+            fact("Connection", connection_state_label(&controller_state.connection_state)),
+            fact("Project", selected.and_then(|session| session.project_key.as_deref()).unwrap_or("Runtime")),
+            fact("Role", selected.and_then(|session| session.role_id.as_deref()).unwrap_or("Runtime default")),
+            fact("Model", selected.and_then(|session| session.metadata.get("model").and_then(Value::as_str)).unwrap_or("Runtime default")),
+            fact("Registry scope", format!("{} commands", projection.map(|projection| projection.command_registry.len()).unwrap_or(0)).as_str()),
+            fact("Discovery", view.discovery.title.as_str()),
+        ],
+        actions: Vec::new(),
+    });
+    surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "history".to_string(),
+        title: "History".to_string(),
+        subtitle: "Runtime audit events".to_string(),
+        rows: history_rows(projection),
+        actions: Vec::new(),
+    });
+    surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "approvals".to_string(),
+        title: "Approvals".to_string(),
+        subtitle: "Pending owner decisions".to_string(),
+        rows: projection.map(|projection| projection.pending_approvals.iter().map(|request| {
+            fact(request.action_name.as_str(), format!("{} · {}", request.status, request.id).as_str())
+        }).collect()).unwrap_or_default(),
+        actions: view.actions.iter().filter(|action| action.kind == "approval").cloned().collect(),
+    });
+    surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "commandRegistry".to_string(),
+        title: "Command Registry".to_string(),
+        subtitle: "Pending command requests".to_string(),
+        rows: projection.map(|projection| projection.command_registry_requests.iter().map(|request| {
+            fact(request.action_label.as_str(), format!("{} · {}", request.status, request.id).as_str())
+        }).collect()).unwrap_or_default(),
+        actions: view.actions.iter().filter(|action| action.kind == "commandRegistryRequest").cloned().collect(),
+    });
+    surfaces
+}
+
+fn fact(label: &str, value: &str) -> AgentRuntimeControlTowerFact {
+    AgentRuntimeControlTowerFact { label: label.to_string(), value: value.to_string() }
+}
+
+fn current_turn_label(projection: Option<&RuntimeProjection>) -> &'static str {
+    if projection.map(|projection| projection.timeline.iter().any(|item| item.event_type == "turn.started" && item.status.as_deref() == Some("running"))).unwrap_or(false) {
+        "Running"
+    } else {
+        "Idle"
+    }
+}
+
+fn latest_event_summary<'a>(projection: Option<&'a RuntimeProjection>, event_type: &str) -> Option<&'a str> {
+    projection?
+        .timeline
+        .iter()
+        .rev()
+        .find(|item| item.event_type == event_type)
+        .and_then(|item| item.summary.as_deref().or_else(|| item.status.as_deref()))
+}
+
+fn session_actions(selected: Option<&robdex_agent_runtime_projection::SelectedSessionDetail>) -> Vec<AgentRuntimeControlTowerActionRow> {
+    let Some(session) = selected else {
+        return Vec::new();
+    };
+    ["closeSession", "archiveSession", "forkSession"]
+        .iter()
+        .map(|kind| AgentRuntimeControlTowerActionRow {
+            id: session.id.clone(),
+            title: match *kind {
+                "closeSession" => "Close session",
+                "archiveSession" => "Archive session",
+                _ => "Fork session",
+            }.to_string(),
+            subtitle: session.title.clone().unwrap_or_else(|| session.id.clone()),
+            kind: (*kind).to_string(),
+            state_text: "ready".to_string(),
+            tone: "info".to_string(),
+        })
+        .collect()
+}
+
+fn statistics_rows(projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> Vec<AgentRuntimeControlTowerFact> {
+    let Some(projection) = projection else { return Vec::new(); };
+    let selected_id = controller_state.selected_session_id.as_deref();
+    let session_events: Vec<&TimelineItem> = projection.timeline.iter().filter(|item| selected_id.map(|id| item.session_id.as_deref() == Some(id)).unwrap_or(true)).collect();
+    fact_rows([
+        ("Turns", session_events.iter().filter(|item| item.event_type == "turn.completed").count().to_string()),
+        ("Messages", selected_chat_rows(Some(projection), selected_id).len().to_string()),
+        ("Tools and scripts", session_events.iter().filter(|item| item.event_type.contains("tool.") || item.event_type.contains("script.")).count().to_string()),
+        ("Processes", projection.selected_session.as_ref().map(|session| session.managed_process_count).unwrap_or(0).to_string()),
+        ("Output artifacts", session_events.iter().filter(|item| item.entity_type == "outputArtifact").count().to_string()),
+        ("Context budget", "byte estimate available before send".to_string()),
+        ("Recent activity", session_events.len().to_string()),
+    ])
+}
+
+fn fact_rows<const N: usize>(items: [(&str, String); N]) -> Vec<AgentRuntimeControlTowerFact> {
+    items.into_iter().map(|(label, value)| fact(label, value.as_str())).collect()
+}
+
+fn process_rows(
+    projection: Option<&RuntimeProjection>,
+    selected: Option<&robdex_agent_runtime_projection::SelectedSessionDetail>,
+) -> Vec<AgentRuntimeControlTowerFact> {
+    let count = selected.map(|session| session.managed_process_count).unwrap_or(0);
+    let mut rows = vec![fact("Managed processes", count.to_string().as_str())];
+    if let Some(projection) = projection {
+        for item in projection.timeline.iter().filter(|item| item.event_type.contains("process.")).take(8) {
+            rows.push(fact(item.entity_id.as_deref().unwrap_or("process"), item.summary.as_deref().unwrap_or(item.event_type.as_str())));
+        }
+    }
+    rows
+}
+
+fn process_actions(
+    projection: Option<&RuntimeProjection>,
+    selected: Option<&robdex_agent_runtime_projection::SelectedSessionDetail>,
+) -> Vec<AgentRuntimeControlTowerActionRow> {
+    let Some(selected) = selected else { return Vec::new(); };
+    let Some(projection) = projection else { return Vec::new(); };
+    let mut handles = Vec::new();
+    for item in projection.timeline.iter().rev().filter(|item| {
+        item.session_id.as_deref() == Some(selected.id.as_str())
+            && item.event_type.starts_with("process.")
+            && item.status.as_deref().unwrap_or("") == "running"
+    }) {
+        if let Some(handle) = item.payload.get("handle").and_then(Value::as_str) {
+            if !handles.iter().any(|existing: &String| existing == handle) {
+                handles.push(handle.to_string());
+            }
+        }
+    }
+    handles
+        .into_iter()
+        .flat_map(|handle| {
+            [
+                ("processTerminate", "Terminate", "Stop this managed process"),
+                ("processInput", "Send input", "Send text to this process"),
+                ("processFlush", "Flush output", "Read new process output"),
+            ]
+            .into_iter()
+            .map({
+                let handle = handle.clone();
+                move |(kind, title, subtitle)| AgentRuntimeControlTowerActionRow {
+                    id: handle.clone(),
+                    title: title.to_string(),
+                    subtitle: subtitle.to_string(),
+                    kind: kind.to_string(),
+                    state_text: "ready".to_string(),
+                    tone: "info".to_string(),
+                }
+            })
+        })
+        .collect()
+}
+
+fn history_rows(projection: Option<&RuntimeProjection>) -> Vec<AgentRuntimeControlTowerFact> {
+    projection
+        .map(|projection| projection.timeline.iter().rev().take(24).map(|item| {
+            let status = item.status.as_deref().unwrap_or("recorded");
+            let entity = item.entity_id.as_deref().unwrap_or(item.entity_type.as_str());
+            let when = item.created_at.as_deref().unwrap_or("now");
+            fact(item.event_type.as_str(), format!("#{} · {} · {} · {}", item.sequence, status, when, entity).as_str())
+        }).collect())
+        .unwrap_or_default()
 }
 
 fn shell_role_short_label(value: &str) -> String {
@@ -558,6 +790,93 @@ fn shell_role_short_label(value: &str) -> String {
         initials = "AR".to_string();
     }
     initials
+}
+
+fn selected_chat_rows(
+    projection: Option<&RuntimeProjection>,
+    selected_session_id: Option<&str>,
+) -> Vec<AgentRuntimeControlTowerTimelineRow> {
+    let Some(projection) = projection else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    for item in &projection.timeline {
+        if let Some(selected) = selected_session_id {
+            if item.session_id.as_deref() != Some(selected) {
+                continue;
+            }
+        }
+        match item.event_type.as_str() {
+            "turn.started" => {
+                let text = item
+                    .payload
+                    .get("input")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| item.payload.get("message").and_then(serde_json::Value::as_str))
+                    .or_else(|| item.payload.get("prompt").and_then(serde_json::Value::as_str))
+                    .unwrap_or("Message sent");
+                rows.push(AgentRuntimeControlTowerTimelineRow {
+                    id: format!("{}-user", item.turn_id.as_deref().unwrap_or(item.id.as_str())),
+                    title: "Owner".to_string(),
+                    subtitle: text.to_string(),
+                    status: "sent".to_string(),
+                    tone: "user".to_string(),
+                });
+            }
+            "model.final_response" => {
+                let raw_text = item
+                    .payload
+                    .get("finalText")
+                    .and_then(serde_json::Value::as_str)
+                    .or(item.summary.as_deref())
+                    .unwrap_or("Response completed");
+                let text = assistant_chat_summary(raw_text);
+                rows.push(AgentRuntimeControlTowerTimelineRow {
+                    id: format!("{}-assistant", item.turn_id.as_deref().unwrap_or(item.id.as_str())),
+                    title: "Assistant".to_string(),
+                    subtitle: text,
+                    status: item.status.clone().unwrap_or_else(|| "completed".to_string()),
+                    tone: "success".to_string(),
+                });
+            }
+            "tool.completed" | "script.completed" => {
+                let summary = item
+                    .summary
+                    .as_deref()
+                    .or_else(|| item.payload.get("status").and_then(serde_json::Value::as_str))
+                    .unwrap_or("Tool completed");
+                rows.push(AgentRuntimeControlTowerTimelineRow {
+                    id: format!("{}-tool-{}", item.turn_id.as_deref().unwrap_or("turn"), item.sequence),
+                    title: "Tool result".to_string(),
+                    subtitle: summary.to_string(),
+                    status: item.status.clone().unwrap_or_else(|| "completed".to_string()),
+                    tone: "warning".to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+    rows
+}
+
+fn assistant_chat_summary(raw: &str) -> String {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("artifactid")
+        || lower.contains("script_run_id")
+        || lower.contains("script run")
+        || lower.contains("outputs.head")
+        || lower.contains("stdoutartifact")
+        || lower.contains("stderrartifact")
+        || raw.contains("\"")
+    {
+        if raw.starts_with("Live GUI smoke completed") {
+            "Live GUI smoke completed.".to_string()
+        } else {
+            "Response completed. Output details are available in History.".to_string()
+        }
+    } else {
+        raw.to_string()
+    }
 }
 
 impl Default for AgentRuntimeDiscoveryView {
@@ -2051,6 +2370,32 @@ fn status_badges(
     badges
 }
 
+fn runtime_detail_facts(projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> Vec<AgentRuntimeControlTowerFact> {
+    let mut facts = Vec::new();
+    if let Some(projection) = projection {
+        if let Some(session) = projection.selected_session.as_ref() {
+            facts.push(AgentRuntimeControlTowerFact { label: "Session status".to_string(), value: session.status.clone() });
+            facts.push(AgentRuntimeControlTowerFact { label: "Session role".to_string(), value: session.role_id.clone().unwrap_or_else(|| "default".to_string()) });
+            facts.push(AgentRuntimeControlTowerFact { label: "Session project".to_string(), value: session.project_key.clone().unwrap_or_else(|| "Runtime".to_string()) });
+            facts.push(AgentRuntimeControlTowerFact { label: "Session workdir".to_string(), value: session.workdir.clone() });
+            facts.push(AgentRuntimeControlTowerFact { label: "Managed processes".to_string(), value: session.managed_process_count.to_string() });
+            facts.push(AgentRuntimeControlTowerFact { label: "Pending approvals".to_string(), value: session.pending_approval_count.to_string() });
+        }
+        let current_turn = if projection.timeline.iter().any(|item| item.event_type == "turn.started" && item.status.as_deref() == Some("running")) { "Running" } else { "Idle" };
+        facts.push(AgentRuntimeControlTowerFact { label: "Current turn".to_string(), value: current_turn.to_string() });
+        facts.push(AgentRuntimeControlTowerFact { label: "History events".to_string(), value: projection.timeline.len().to_string() });
+        facts.push(AgentRuntimeControlTowerFact { label: "Chat entries".to_string(), value: selected_chat_rows(Some(projection), controller_state.selected_session_id.as_deref()).len().to_string() });
+        facts.push(AgentRuntimeControlTowerFact { label: "Approval requests".to_string(), value: projection.pending_approvals.len().to_string() });
+        facts.push(AgentRuntimeControlTowerFact { label: "Command requests".to_string(), value: projection.command_registry_requests.len().to_string() });
+        facts.push(AgentRuntimeControlTowerFact { label: "Role rows".to_string(), value: projection.roles.len().to_string() });
+        facts.push(AgentRuntimeControlTowerFact { label: "Workflow memories".to_string(), value: projection.workflow_memories.len().to_string() });
+        facts.push(AgentRuntimeControlTowerFact { label: "Compaction checkpoint".to_string(), value: "No completed checkpoint visible".to_string() });
+        facts.push(AgentRuntimeControlTowerFact { label: "Context estimate".to_string(), value: "Runtime estimate unavailable".to_string() });
+    }
+    facts.extend(controller_facts(controller_state));
+    facts
+}
+
 fn controller_facts(controller_state: &GuiControllerState) -> Vec<AgentRuntimeControlTowerFact> {
     vec![
         AgentRuntimeControlTowerFact {
@@ -3000,12 +3345,14 @@ mod tests {
         assert!(view.controller_facts.iter().any(|fact| fact.label == "Selected session" && fact.value == "session-1"));
         assert_eq!(view.pending_request_count, 2);
 
-        let shell = AgentRuntimeConversationShellViewModel::from_control_tower(&view, &controller);
+        let shell = AgentRuntimeConversationShellViewModel::from_control_tower(&view, Some(&projection), &controller);
         assert_eq!(shell.projects[0].id, "runtime");
         assert!(shell.projects[0].selectable);
         assert_eq!(shell.selected_session_id.as_deref(), Some("session-1"));
         assert_eq!(shell.sessions[0].id, "session-1");
-        assert_eq!(shell.selected_conversation[0].id, "event-7");
+        assert_eq!(shell.selected_conversation[0].title, "Tool result");
+        assert!(!shell.selected_conversation.iter().any(|row| matches!(row.title.as_str(), "role.imported" | "session.created" | "turn.started" | "route.decision" | "model.tool_call" | "policy.decision" | "tool.started" | "script.started" | "host_api.completed" | "script.completed" | "tool.completed" | "model.final_response" | "turn.completed")));
+        assert!(view.timeline.iter().any(|row| row.title == "tool.completed"));
         assert_eq!(shell.dynamic_roles[0].role_id, "Open");
         assert_eq!(shell.dynamic_roles[0].short_label, "O");
         assert!(shell.approvals.iter().any(|row| row.id == "approval-1"));
@@ -3014,6 +3361,17 @@ mod tests {
         assert_eq!(shell.role_management.rows[0].id, "runtime-allow");
         assert!(shell.settings.iter().any(|fact| fact.label == "Connection" && fact.value == "streaming"));
         assert!(shell.diagnostics.iter().any(|fact| fact.label == "Selected session"));
+        let surface_titles = shell.operation_surfaces.iter().map(|surface| surface.title.as_str()).collect::<Vec<_>>();
+        assert!(surface_titles.contains(&"Session"));
+        assert!(surface_titles.contains(&"Compaction"));
+        assert!(surface_titles.contains(&"Statistics"));
+        assert!(surface_titles.contains(&"Process Manager"));
+        assert!(surface_titles.contains(&"Settings"));
+        assert!(surface_titles.contains(&"History"));
+        assert!(surface_titles.contains(&"Approvals"));
+        assert!(surface_titles.contains(&"Command Registry"));
+        let history = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "history").expect("history surface");
+        assert!(history.rows.iter().any(|row| row.label == "tool.completed"));
     }
 
     #[test]
@@ -3039,7 +3397,7 @@ mod tests {
                 &AgentRuntimeDiscoveryView::not_loaded_imported(),
             )
         };
-        let shell = AgentRuntimeConversationShellViewModel::from_control_tower(&view, &GuiControllerState::default());
+        let shell = AgentRuntimeConversationShellViewModel::from_control_tower(&view, None, &GuiControllerState::default());
         assert_eq!(shell.dynamic_roles[0].role_id, "Neon Incident Commander");
         assert_eq!(shell.dynamic_roles[0].display_label, "Neon Incident Commander");
         assert_eq!(shell.dynamic_roles[0].short_label, "NI");

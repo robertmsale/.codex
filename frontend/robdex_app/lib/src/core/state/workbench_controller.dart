@@ -15,11 +15,16 @@ class WorkbenchController extends ChangeNotifier {
   StreamSubscription<RustSignalPack<WorkbenchStateSignal>>? _subscription;
   StreamSubscription<RustSignalPack<ThreadHistoryStateSignal>>? _historySubscription;
   StreamSubscription<RustSignalPack<BridgeTaskResultSignal>>? _bridgeTaskSubscription;
+  StreamSubscription<RustSignalPack<WorkbenchSelectedChatDeltaSignal>>? _selectedChatDeltaSubscription;
+  StreamSubscription<RustSignalPack<WorkbenchDiagnosticsSignal>>? _diagnosticsSubscription;
   final Map<String, Completer<dynamic>> _bridgeTaskCompleters = <String, Completer<dynamic>>{};
   int _bridgeTaskSerial = 0;
   List<ChatEntry> _threadHistoryEntries = const [];
   bool _isThreadHistoryLoading = false;
   Object? _threadHistoryError;
+  WorkbenchDiagnosticsSignal? _diagnostics;
+  int _selectedChatDeltaApplyCount = 0;
+  int _lastFullSnapshotDecodeMicros = 0;
 
   WorkbenchViewData? get view => _view;
   bool get isLoading => _isLoading;
@@ -27,6 +32,9 @@ class WorkbenchController extends ChangeNotifier {
   List<ChatEntry> get threadHistoryEntries => _threadHistoryEntries;
   bool get isThreadHistoryLoading => _isThreadHistoryLoading;
   Object? get threadHistoryError => _threadHistoryError;
+  WorkbenchDiagnosticsSignal? get diagnostics => _diagnostics;
+  int get selectedChatDeltaApplyCount => _selectedChatDeltaApplyCount;
+  int get lastFullSnapshotDecodeMicros => _lastFullSnapshotDecodeMicros;
 
   Future<void> start({
     required String host,
@@ -35,14 +43,19 @@ class WorkbenchController extends ChangeNotifier {
     _subscription?.cancel();
     _historySubscription?.cancel();
     _bridgeTaskSubscription?.cancel();
+    _selectedChatDeltaSubscription?.cancel();
+    _diagnosticsSubscription?.cancel();
     _subscription = WorkbenchStateSignal.rustSignalStream.listen(
       (pack) {
         final signal = pack.message;
         _isLoading = signal.isLoading;
         _error = signal.errorMessage.isEmpty ? null : signal.errorMessage;
         if (signal.viewJson.isNotEmpty) {
+          final watch = Stopwatch()..start();
           final decoded = jsonDecode(signal.viewJson) as Map<String, dynamic>;
           _view = WorkbenchViewData.fromJson(decoded);
+          watch.stop();
+          _lastFullSnapshotDecodeMicros = watch.elapsedMicroseconds;
         }
         notifyListeners();
       },
@@ -99,10 +112,87 @@ class WorkbenchController extends ChangeNotifier {
         }
       },
     );
+
+    _selectedChatDeltaSubscription = WorkbenchSelectedChatDeltaSignal.rustSignalStream.listen(
+      (pack) {
+        final signal = pack.message;
+        _applySelectedChatDelta(signal);
+        notifyListeners();
+      },
+      onError: (Object error) {
+        _error = error;
+        notifyListeners();
+      },
+    );
+    _diagnosticsSubscription = WorkbenchDiagnosticsSignal.rustSignalStream.listen(
+      (pack) {
+        _diagnostics = pack.message;
+        notifyListeners();
+      },
+      onError: (Object error) {
+        _error = error;
+        notifyListeners();
+      },
+    );
     InitializeWorkbenchSignal(
       host: host,
       port: port,
     ).sendSignalToRust();
+  }
+
+
+  void _applySelectedChatDelta(WorkbenchSelectedChatDeltaSignal signal) {
+    final view = _view;
+    if (view == null || view.selection.threadId != signal.threadId) {
+      return;
+    }
+    final entries = List<ChatEntry>.from(view.chatEntries);
+    final index = entries.indexWhere((entry) => entry.id == signal.messageId);
+    if (index < 0) {
+      entries.add(ChatEntry(
+        id: signal.messageId,
+        author: 'Assistant',
+        displayLabel: 'Assistant',
+        timestamp: null,
+        body: signal.replacementText.isNotEmpty ? signal.replacementText : signal.appendedText,
+        status: signal.deliveryState,
+        deliveryState: signal.deliveryState,
+        isStreaming: !signal.isFinal,
+      ));
+    } else {
+      final current = entries[index];
+      final body = signal.replacementText.isNotEmpty ? signal.replacementText : current.body + signal.appendedText;
+      entries[index] = ChatEntry(
+        id: current.id,
+        author: current.author,
+        displayLabel: current.displayLabel,
+        timestamp: current.timestamp,
+        body: body,
+        subtitle: current.subtitle,
+        kind: current.kind,
+        status: signal.deliveryState,
+        processId: current.processId,
+        command: current.command,
+        output: current.output,
+        imagePreviewBase64: current.imagePreviewBase64,
+        imagePreviewContentType: current.imagePreviewContentType,
+        imagePreviewError: current.imagePreviewError,
+        deliveryState: signal.deliveryState,
+        semanticCard: current.semanticCard,
+        planItems: current.planItems,
+        isStreaming: !signal.isFinal,
+        isTool: current.isTool,
+      );
+    }
+    final capped = entries.length <= 50 ? entries : entries.sublist(entries.length - 50);
+    _view = view.copyWith(chatEntries: capped);
+    _selectedChatDeltaApplyCount += 1;
+  }
+
+  @visibleForTesting
+  void applySelectedChatDeltaForTest(WorkbenchViewData view, WorkbenchSelectedChatDeltaSignal signal) {
+    _view = view;
+    _applySelectedChatDelta(signal);
   }
 
   String _nextBridgeTaskRequestId(String task) {
@@ -540,6 +630,8 @@ class WorkbenchController extends ChangeNotifier {
     _historySubscription?.cancel();
     _historySubscription = null;
     _bridgeTaskSubscription?.cancel();
+    _selectedChatDeltaSubscription?.cancel();
+    _diagnosticsSubscription?.cancel();
     _bridgeTaskSubscription = null;
     final pending = _bridgeTaskCompleters.values.toList(growable: false);
     _bridgeTaskCompleters.clear();
@@ -562,6 +654,8 @@ class WorkbenchController extends ChangeNotifier {
     _subscription?.cancel();
     _historySubscription?.cancel();
     _bridgeTaskSubscription?.cancel();
+    _selectedChatDeltaSubscription?.cancel();
+    _diagnosticsSubscription?.cancel();
     super.dispose();
   }
 }

@@ -46,6 +46,24 @@ final assignRustSignal = <String, void Function(Uint8List, Uint8List)>{
     _threadHistoryStateSignalStreamController.add(rustSignal);
     ThreadHistoryStateSignal.latestRustSignal = rustSignal;
   },
+  'WorkbenchDiagnosticsSignal': (Uint8List messageBytes, Uint8List binary) {
+    final message = WorkbenchDiagnosticsSignal.bincodeDeserialize(messageBytes);
+    final rustSignal = RustSignalPack(
+      message,
+      binary,
+    );
+    _workbenchDiagnosticsSignalStreamController.add(rustSignal);
+    WorkbenchDiagnosticsSignal.latestRustSignal = rustSignal;
+  },
+  'WorkbenchSelectedChatDeltaSignal': (Uint8List messageBytes, Uint8List binary) {
+    final message = WorkbenchSelectedChatDeltaSignal.bincodeDeserialize(messageBytes);
+    final rustSignal = RustSignalPack(
+      message,
+      binary,
+    );
+    _workbenchSelectedChatDeltaSignalStreamController.add(rustSignal);
+    WorkbenchSelectedChatDeltaSignal.latestRustSignal = rustSignal;
+  },
   'WorkbenchStateSignal': (Uint8List messageBytes, Uint8List binary) {
     final message = WorkbenchStateSignal.bincodeDeserialize(messageBytes);
     final rustSignal = RustSignalPack(

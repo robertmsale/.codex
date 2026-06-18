@@ -433,6 +433,9 @@ pub enum GuiOperationName {
     SelectWorkflowMemory,
     CreateSession,
     SendMessage,
+    TerminateProcess,
+    InputProcess,
+    FlushProcess,
     CloseSession,
     ArchiveSession,
     ForkSession,
@@ -470,6 +473,9 @@ pub enum GuiOperationRequest {
     SelectWorkflowMemory { memory_id: Option<String> },
     CreateSession { role: String, project: Option<String>, workdir: Option<String>, worktree_root: Option<String>, title: Option<String>, name: Option<String> },
     SendMessage { session_id: String, message: String },
+    TerminateProcess { session_id: String, handle: String },
+    InputProcess { session_id: String, handle: String, text: String },
+    FlushProcess { session_id: String, handle: String },
     CloseSession { session_id: String, reason: Option<String> },
     ArchiveSession { session_id: String },
     ForkSession { session_id: String, at_turn: String },
@@ -507,6 +513,9 @@ impl GuiOperationRequest {
             Self::SelectWorkflowMemory { .. } => GuiOperationName::SelectWorkflowMemory,
             Self::CreateSession { .. } => GuiOperationName::CreateSession,
             Self::SendMessage { .. } => GuiOperationName::SendMessage,
+            Self::TerminateProcess { .. } => GuiOperationName::TerminateProcess,
+            Self::InputProcess { .. } => GuiOperationName::InputProcess,
+            Self::FlushProcess { .. } => GuiOperationName::FlushProcess,
             Self::CloseSession { .. } => GuiOperationName::CloseSession,
             Self::ArchiveSession { .. } => GuiOperationName::ArchiveSession,
             Self::ForkSession { .. } => GuiOperationName::ForkSession,
@@ -541,6 +550,9 @@ impl GuiOperationRequest {
             Self::SelectSession { .. } => GuiOperationExpectation::RehydrateAndReconnect,
             Self::CreateSession { .. }
             | Self::SendMessage { .. }
+            | Self::TerminateProcess { .. }
+            | Self::InputProcess { .. }
+            | Self::FlushProcess { .. }
             | Self::CloseSession { .. }
             | Self::ArchiveSession { .. }
             | Self::ForkSession { .. }
@@ -578,6 +590,9 @@ impl GuiOperationRequest {
             Self::SelectWorkflowMemory { .. } => local_mapping(self.name(), "set selectedWorkflowMemoryId; Control Tower view model deterministically falls back when unavailable", GuiOperationExpectation::UpdateLocalState),
             Self::CreateSession { .. } => http_mapping(self.name(), "POST", "/sessions", r#"{"role","project","workdir","worktreeRoot","title","name"}"#, r#"{"sessionId"}"#, GuiOperationExpectation::WaitForDelta),
             Self::SendMessage { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/send", r#"{"message"}"#, r#"{"sessionId","turnId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::TerminateProcess { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/processes/{handle}/terminate", "{}", r#"{"handle","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::InputProcess { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/processes/{handle}/input", r#"{"text"}"#, r#"{"handle","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::FlushProcess { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/processes/{handle}/flush", "{}", r#"{"handle","status","artifact"}"#, GuiOperationExpectation::WaitForDelta),
             Self::CloseSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/close", r#"{"reason"?}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ArchiveSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/archive", "{}", r#"{"sessionId","tracked"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ForkSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/fork", r#"{"atTurn"}"#, r#"{"sessionId","forkedFromSessionId","forkedFromTurnId"}"#, GuiOperationExpectation::WaitForDelta),
@@ -631,6 +646,8 @@ impl GuiOperationRequest {
                 "name": name,
             })),
             Self::SendMessage { message, .. } => Some(json!({"message": message})),
+            Self::TerminateProcess { .. } | Self::FlushProcess { .. } => Some(json!({})),
+            Self::InputProcess { text, .. } => Some(json!({"text": text})),
             Self::CloseSession { reason, .. } => Some(json!({"reason": reason})),
             Self::ArchiveSession { .. } | Self::ResumeApproval { .. } => Some(json!({})),
             Self::ForkSession { at_turn, .. } => Some(json!({"atTurn": at_turn})),
@@ -863,7 +880,7 @@ pub const DART_ALLOWED_EPHEMERAL_RESPONSIBILITIES: &[&str] = &[
     "localLayout",
 ];
 
-pub const GUI_OPERATION_VARIANT_COUNT: usize = 32;
+pub const GUI_OPERATION_VARIANT_COUNT: usize = 35;
 
 impl Default for RuntimeProjection {
     fn default() -> Self {
@@ -1267,6 +1284,9 @@ mod tests {
             GuiOperationRequest::SelectWorkflowMemory { memory_id: Some("memory-1".to_string()) },
             GuiOperationRequest::CreateSession { role: "runtime-allow".to_string(), project: Some("project".to_string()), workdir: Some(".".to_string()), worktree_root: None, title: None, name: None },
             GuiOperationRequest::SendMessage { session_id: "session-1".to_string(), message: "hello".to_string() },
+            GuiOperationRequest::TerminateProcess { session_id: "session-1".to_string(), handle: "proc_1".to_string() },
+            GuiOperationRequest::InputProcess { session_id: "session-1".to_string(), handle: "proc_1".to_string(), text: "hello".to_string() },
+            GuiOperationRequest::FlushProcess { session_id: "session-1".to_string(), handle: "proc_1".to_string() },
             GuiOperationRequest::CloseSession { session_id: "session-1".to_string(), reason: Some("done".to_string()) },
             GuiOperationRequest::ArchiveSession { session_id: "session-1".to_string() },
             GuiOperationRequest::ForkSession { session_id: "session-1".to_string(), at_turn: "turn-1".to_string() },

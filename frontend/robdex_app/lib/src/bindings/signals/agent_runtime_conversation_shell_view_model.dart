@@ -18,6 +18,7 @@ class AgentRuntimeConversationShellViewModel {
     required this.commandRegistryRequests,
     required this.approvals,
     required this.diagnostics,
+    required this.operationSurfaces,
   });
 
   static AgentRuntimeConversationShellViewModel deserialize(BinaryDeserializer deserializer) {
@@ -36,6 +37,7 @@ class AgentRuntimeConversationShellViewModel {
       commandRegistryRequests: TraitHelpers.deserializeVectorAgentRuntimeActionRow(deserializer),
       approvals: TraitHelpers.deserializeVectorAgentRuntimeActionRow(deserializer),
       diagnostics: TraitHelpers.deserializeVectorAgentRuntimeFact(deserializer),
+      operationSurfaces: TraitHelpers.deserializeVectorAgentRuntimeOperationSurface(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -63,6 +65,7 @@ class AgentRuntimeConversationShellViewModel {
   final List<AgentRuntimeActionRow> commandRegistryRequests;
   final List<AgentRuntimeActionRow> approvals;
   final List<AgentRuntimeFact> diagnostics;
+  final List<AgentRuntimeOperationSurface> operationSurfaces;
 
   AgentRuntimeConversationShellViewModel copyWith({
     List<AgentRuntimeShellProjectRow>? projects,
@@ -78,6 +81,7 @@ class AgentRuntimeConversationShellViewModel {
     List<AgentRuntimeActionRow>? commandRegistryRequests,
     List<AgentRuntimeActionRow>? approvals,
     List<AgentRuntimeFact>? diagnostics,
+    List<AgentRuntimeOperationSurface>? operationSurfaces,
   }) {
     return AgentRuntimeConversationShellViewModel(
       projects: projects ?? this.projects,
@@ -93,6 +97,7 @@ class AgentRuntimeConversationShellViewModel {
       commandRegistryRequests: commandRegistryRequests ?? this.commandRegistryRequests,
       approvals: approvals ?? this.approvals,
       diagnostics: diagnostics ?? this.diagnostics,
+      operationSurfaces: operationSurfaces ?? this.operationSurfaces,
     );
   }
 
@@ -111,6 +116,7 @@ class AgentRuntimeConversationShellViewModel {
     TraitHelpers.serializeVectorAgentRuntimeActionRow(commandRegistryRequests, serializer);
     TraitHelpers.serializeVectorAgentRuntimeActionRow(approvals, serializer);
     TraitHelpers.serializeVectorAgentRuntimeFact(diagnostics, serializer);
+    TraitHelpers.serializeVectorAgentRuntimeOperationSurface(operationSurfaces, serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -138,7 +144,8 @@ class AgentRuntimeConversationShellViewModel {
       && workflowMemory == other.workflowMemory
       && listEquals(commandRegistryRequests, other.commandRegistryRequests)
       && listEquals(approvals, other.approvals)
-      && listEquals(diagnostics, other.diagnostics);
+      && listEquals(diagnostics, other.diagnostics)
+      && listEquals(operationSurfaces, other.operationSurfaces);
   }
 
   @override
@@ -156,6 +163,7 @@ class AgentRuntimeConversationShellViewModel {
         commandRegistryRequests,
         approvals,
         diagnostics,
+        operationSurfaces,
       );
 
   @override
@@ -176,7 +184,8 @@ class AgentRuntimeConversationShellViewModel {
         'workflowMemory: $workflowMemory, '
         'commandRegistryRequests: $commandRegistryRequests, '
         'approvals: $approvals, '
-        'diagnostics: $diagnostics'
+        'diagnostics: $diagnostics, '
+        'operationSurfaces: $operationSurfaces'
         ')';
       return true;
     }());

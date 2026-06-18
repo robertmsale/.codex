@@ -29,7 +29,7 @@ small: Dart sends generated typed Agent Runtime request variants over
 `AgentRuntimeRequestSignal`, consumes generated typed Agent Runtime output
 variants from `AgentRuntimeOutputSignal`, and renders the Rust-owned
 `AgentRuntimeControlTowerViewModel`. Dart does not derive session rows,
-timeline rows, action rows, runtime facts, labels, watermarks, operation
+chat rows and separate history rows, action rows, runtime facts, labels, watermarks, operation
 success, approval/command enablement, or durable state from raw projection or
 controller JSON.
 
@@ -37,7 +37,7 @@ Reusable visual pieces live in
 `frontend/robdex_app/packages/robdex_design_system` and minimal static
 scenarios live in `frontend/robdex_app/packages/design_lab`. The initial shell
 proves disconnected/error state, connect intent, runtime packet
-receipt, selected-session timeline visibility when the Rust view model contains
+receipt, selected-session chat visibility when the Rust view model contains
 it, attention-item rendering from Rust-shaped action rows, and explicit stream
 polling through the Rust-owned transport. The richer UX guidance below remains
 the direction for subsequent slices.
@@ -126,7 +126,7 @@ The shell must optimize for command/control over runtime state:
 
 ## First-shell information architecture
 
-The first shell uses five stable regions:
+The shell uses stable regions:
 
 1. **Top runtime status strip**
    - Runtime identity, database connectivity, server health, stream status,
@@ -141,11 +141,8 @@ The first shell uses five stable regions:
      status from raw events. The first Flutter shell receives these items as
      Rust-shaped control-tower session rows.
 3. **Center selected-session activity**
-   - Ordered timeline for the selected session: user/model turns, tool calls,
-     scripts, process events, approvals, command-registry changes, errors, and
-     workflow-memory events.
-   - This is not a chat transcript first. It is an operations event stream with
-     compact progressive detail.
+   - Product-shaped chat for the selected session: user messages, assistant responses, and compact tool/result summaries.
+   - Runtime audit events, process events, approvals, command-registry changes, errors, and workflow-memory events render in History/Diagnostics or the relevant operations detail surface, not in the center chat transcript.
 4. **Right attention and operations detail**
    - Pending approvals, resumable approvals, command-registry requests, blocked
      process/session actions, validation failures, and safe next operations.
@@ -182,7 +179,7 @@ The first shell uses five stable regions:
 
 - Requires selected-session hydration. Selecting a different session triggers
   rehydrate and WebSocket reconnect with the selected-session identifier.
-- Center stream shows selected-session timeline. The rail and queue remain
+- Center panel shows product-shaped selected-session chat. The rail and queue remain
   visible so the user does not lose operational context.
 
 ### Approval decision
@@ -279,7 +276,7 @@ Dart must not decide:
 - command policy;
 - role status;
 - process status;
-- timeline semantics;
+- chat and history semantics;
 - WebSocket state;
 - operation success.
 
@@ -296,7 +293,7 @@ The Rust boundary must provide constructor-ready or near-constructor-ready
 values through `AgentRuntimeControlTowerViewModel`, `RuntimeProjection`,
 `RuntimeDelta`, `GuiControllerState`, `GuiOperationRequest`,
 `GuiOperationResult`, and `ApiErrorPacket`. The Flutter shell must not parse
-raw `RuntimeProjection.sessions`, `RuntimeProjection.timeline`,
+raw `RuntimeProjection.sessions`, `RuntimeProjection chat/history fields`,
 `RuntimeProjection.pendingApprovals`, or command-registry internals to build
 control-tower rows.
 

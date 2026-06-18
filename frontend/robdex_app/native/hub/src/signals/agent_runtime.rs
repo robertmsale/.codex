@@ -33,6 +33,9 @@ pub enum AgentRuntimeGuiOperation {
     SelectWorkflowMemory { memory_id: String },
     CreateSession { role: String, project: String, workdir: String, worktree_root: String, title: String, name: String },
     SendMessage { session_id: String, message: String },
+    TerminateProcess { session_id: String, handle: String },
+    InputProcess { session_id: String, handle: String, text: String },
+    FlushProcess { session_id: String, handle: String },
     CloseSession { session_id: String, reason: String },
     ArchiveSession { session_id: String },
     ForkSession { session_id: String, at_turn: String },
@@ -301,6 +304,7 @@ pub struct AgentRuntimeConversationShellViewModel {
     pub command_registry_requests: Vec<AgentRuntimeActionRow>,
     pub approvals: Vec<AgentRuntimeActionRow>,
     pub diagnostics: Vec<AgentRuntimeFact>,
+    pub operation_surfaces: Vec<AgentRuntimeOperationSurface>,
 }
 
 #[derive(Clone, Debug, Serialize, SignalPiece)]
@@ -310,6 +314,16 @@ pub struct AgentRuntimeShellProjectRow { pub id: String, pub title: String, pub 
 #[derive(Clone, Debug, Serialize, SignalPiece)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeShellRolePresentation { pub role_id: String, pub display_label: String, pub short_label: String, pub tone: String, pub description: String }
+
+#[derive(Clone, Debug, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeOperationSurface {
+    pub surface_id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub rows: Vec<AgentRuntimeFact>,
+    pub actions: Vec<AgentRuntimeActionRow>,
+}
 
 #[derive(Clone, Debug, Serialize, SignalPiece)]
 #[serde(rename_all = "camelCase")]

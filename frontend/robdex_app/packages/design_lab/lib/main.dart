@@ -153,10 +153,41 @@ class RobdexDesignLabHome extends StatelessWidget {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);
     }
     if (surface == 'agentRuntimeRoleManagementDetail') {
-      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'roleAdmin');
     }
     if (surface == 'agentRuntimeOperationsDetail') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);
+    }
+    if (surface == 'agentRuntimeActiveResponse') {
+      return _AgentRuntimeScenario(
+        data: mockAgentRuntimeConnected.copyWith(
+          timeline: const [
+            AgentRuntimeTimelineItem(id: 'active-user', title: 'Owner', subtitle: 'Check the workspace status.', status: 'sent', tone: 'user'),
+            AgentRuntimeTimelineItem(id: 'active-assistant', title: 'Assistant', subtitle: 'Reviewing the latest runtime state…', status: 'running', tone: 'success'),
+          ],
+        ),
+      );
+    }
+    if (surface == 'agentRuntimeHistorySurface') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'history');
+    }
+    if (surface == 'agentRuntimeProcessManagerSurface') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'processManager');
+    }
+    if (surface == 'agentRuntimeCompactionSurface') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'compaction');
+    }
+    if (surface == 'agentRuntimeStatisticsSurface') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'statistics');
+    }
+    if (surface == 'agentRuntimeWorkflowMemorySurface') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'workflowMemory');
+    }
+    if (surface == 'agentRuntimeApprovalsSurface') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'approvals');
+    }
+    if (surface == 'agentRuntimeCommandRegistrySurface') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'commandRegistry');
     }
     if (surface == 'agentRuntimeDynamicCustomRole') {
       return _AgentRuntimeScenario(
@@ -390,9 +421,10 @@ ConversationShellData _agentRuntimeLiveSmokeShellData() {
 }
 
 class _AgentRuntimeScenario extends StatefulWidget {
-  const _AgentRuntimeScenario({required this.data});
+  const _AgentRuntimeScenario({required this.data, this.focusSurfaceId});
 
   final AgentRuntimeControlTowerData data;
+  final String? focusSurfaceId;
 
   @override
   State<_AgentRuntimeScenario> createState() => _AgentRuntimeScenarioState();
@@ -430,6 +462,7 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
         onSettings: () {},
         detailContent: AgentRuntimeOperationsDetail(
           data: widget.data,
+          focusSurfaceId: widget.focusSurfaceId,
           onRoleValidate: (_) {},
           onRoleCreate: (_) {},
           onRoleUpdate: (_) {},
@@ -441,6 +474,12 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
           onWorkflowMemoryAttempted: (_) {},
           onWorkflowMemoryHelpful: (_) {},
           onWorkflowMemoryNotHelpful: (_) {},
+          onSessionClose: (_) {},
+          onSessionArchive: (_) {},
+          onSessionFork: (_) {},
+          onProcessTerminate: (_) {},
+          onProcessInput: (_) {},
+          onProcessFlush: (_) {},
           onApprovalApprove: (_) {},
           onApprovalResume: (_) {},
           onCommandRegistryApprove: (_) {},
@@ -473,6 +512,12 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
         onWorkflowMemoryAttempted: (_) {},
         onWorkflowMemoryHelpful: (_) {},
         onWorkflowMemoryNotHelpful: (_) {},
+        onSessionClose: (_) {},
+        onSessionArchive: (_) {},
+        onSessionFork: (_) {},
+        onProcessTerminate: (_) {},
+        onProcessInput: (_) {},
+        onProcessFlush: (_) {},
       ),
     );
   }

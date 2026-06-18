@@ -293,6 +293,34 @@ pub struct WorkbenchStateSignal {
     pub error_message: String,
 }
 
+#[derive(Serialize, RustSignal, Clone, Debug)]
+pub struct WorkbenchSelectedChatDeltaSignal {
+    pub thread_id: String,
+    pub message_id: String,
+    pub appended_text: String,
+    pub replacement_text: String,
+    pub delivery_state: String,
+    pub is_final: bool,
+    pub sequence: u64,
+    pub metadata_json: String,
+    pub selected_entry_count: u32,
+    pub coalesced_stream_update_count: u32,
+    pub dropped_intermediate_stream_update_count: u32,
+}
+
+#[derive(Serialize, RustSignal, Clone, Debug)]
+pub struct WorkbenchDiagnosticsSignal {
+    pub websocket_event_counts_json: String,
+    pub websocket_payload_bytes_json: String,
+    pub native_signal_count: u64,
+    pub serialized_payload_bytes: u64,
+    pub dart_full_snapshot_decode_micros: u64,
+    pub dart_selected_chat_delta_apply_count: u64,
+    pub coalesced_stream_update_count: u64,
+    pub dropped_intermediate_stream_update_count: u64,
+    pub selected_timeline_entry_count: u32,
+}
+
 #[derive(Serialize, RustSignal)]
 pub struct ThreadHistoryStateSignal {
     pub entries_json: String,

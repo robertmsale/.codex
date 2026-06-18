@@ -146,6 +146,9 @@ impl GuiBackendController {
             }
             GuiOperationRequest::CreateSession { .. }
             | GuiOperationRequest::SendMessage { .. }
+            | GuiOperationRequest::TerminateProcess { .. }
+            | GuiOperationRequest::InputProcess { .. }
+            | GuiOperationRequest::FlushProcess { .. }
             | GuiOperationRequest::CloseSession { .. }
             | GuiOperationRequest::ArchiveSession { .. }
             | GuiOperationRequest::ForkSession { .. }
@@ -258,7 +261,16 @@ impl GuiBackendController {
                 entity_id: value.get("sessionId").and_then(Value::as_str).map(str::to_string),
             }),
             GuiOperationRequest::SendMessage { .. } => Ok(GuiOperationOutcome::Accepted {
-                entity_id: value.get("turnId").and_then(Value::as_str).map(str::to_string),
+                entity_id: {
+                    let id = value.get("turnId").and_then(Value::as_str).map(str::to_string);
+                    let _ = self.hydrate_current().await?;
+                    id
+                },
+            }),
+            GuiOperationRequest::TerminateProcess { handle, .. }
+            | GuiOperationRequest::InputProcess { handle, .. }
+            | GuiOperationRequest::FlushProcess { handle, .. } => Ok(GuiOperationOutcome::Accepted {
+                entity_id: Some(handle.clone()),
             }),
             GuiOperationRequest::ForkSession { .. } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: value.get("sessionId").and_then(Value::as_str).map(str::to_string),
@@ -312,6 +324,9 @@ impl GuiBackendController {
         Ok(match request {
             GuiOperationRequest::CreateSession { .. } => "/sessions".to_string(),
             GuiOperationRequest::SendMessage { session_id, .. } => format!("/sessions/{session_id}/send"),
+            GuiOperationRequest::TerminateProcess { session_id, handle } => format!("/sessions/{session_id}/processes/{handle}/terminate"),
+            GuiOperationRequest::InputProcess { session_id, handle, .. } => format!("/sessions/{session_id}/processes/{handle}/input"),
+            GuiOperationRequest::FlushProcess { session_id, handle } => format!("/sessions/{session_id}/processes/{handle}/flush"),
             GuiOperationRequest::CloseSession { session_id, .. } => format!("/sessions/{session_id}/close"),
             GuiOperationRequest::ArchiveSession { session_id } => format!("/sessions/{session_id}/archive"),
             GuiOperationRequest::ForkSession { session_id, .. } => format!("/sessions/{session_id}/fork"),

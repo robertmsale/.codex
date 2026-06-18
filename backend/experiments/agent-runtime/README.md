@@ -48,8 +48,8 @@ safe, preserve timeline ordering, and set explicit `resyncRequired` state when
 they detect a gap or incompatible stream condition.
 
 The projection includes server status, session list items, optional selected
-session detail, timeline/event rows, pending approvals, role summaries, command
-registry summaries, workflow memory summaries, and a top-level watermark.
+session detail, product-shaped chat rows, separate history/event rows, pending approvals, role summaries, command
+registry summaries, workflow memory summaries, and a top-level watermark. Selected-session chat is not populated from raw runtime event names; audit events remain available through History/Diagnostics surfaces.
 Deltas cover session upsert/archive/close, selected-session replacement or
 patch, timeline append, turn/tool/script/process status changes, approval
 upsert/removal, role upsert/archive, command registry upsert/disable, workflow
@@ -364,8 +364,7 @@ semantics, operation success, and typed errors.
 
 The transport now emits a Rust-owned `AgentRuntimeControlTowerViewModel` output
 for the shared shell and operations detail. The view model is constructor-ready:
-connection state, base URL, status and watermark labels, session rows, timeline
-rows, action rows, runtime facts, recent output log, pending-request slot,
+connection state, base URL, status and watermark labels, session rows, product chat rows, separate history rows, action rows, runtime facts, recent output log, pending-request slot,
 and typed error display text are shaped in Rust from `RuntimeProjection`,
 `GuiControllerState`, and operation/stream outcomes. Dart decodes this
 Rust-shaped view packet and renders it; Dart no longer interprets raw
@@ -385,7 +384,7 @@ required action. Dart still sends only generated typed Rinf intents and does not
 infer durable runtime meaning from raw projection/controller internals.
 
 The shell remains focused: discovery/connect input, Rust-shaped view-model
-rendering, selected-session timeline visibility when present, an attention list
+rendering, selected-session chat visibility when present, an attention list
 from Rust-owned approval/resume and command-registry request rows, explicit
 disconnected/error states, and manual stream polling through the Rust-owned
 transport. Reusable visual pieces live in the design-system package under the
@@ -1264,3 +1263,13 @@ The cleanup helper refuses destructive cleanup for database names that do not st
 Registry command versions carry process policy as data: `syncAllowed`, `asyncAllowed`, `maxRuntimeMs` (`null` means no configured maximum runtime kill), `endOfTurnBehavior`, `stdinPolicy`, await bounds, bounded output buffer bytes, and terminate grace. Seeded default commands use `maxRuntimeMs: null`; a finite value is an explicit command-specific maximum runtime policy, not a renamed default timeout. The model-facing Starlark surface is explicit: `cmd["name"].method(...).sync()` runs synchronously under the command version's max-runtime semantics, and `cmd["name"].method(...).start()` returns an opaque session-only process handle. Process handles are not OS PIDs. The handle API is exposed through `proc[handle]` with `is_running()`, `await_for(mins=N)`, `flush_buffer()`, `terminate()`, and `input(text)`.
 
 The current experimental CLI executes each `send` as a short-lived runtime process. Same-runtime continuation is supported inside a single runtime instance, which is the target persistent server boundary. Across separate CLI invocations, handles are intentionally detached; startup reconciliation marks any previously `running` rows as `lost` instead of pretending to reattach them. Process metadata is persisted in `managed_processes`; incremental bounded output is persisted in `process_output_chunks` when handles are flushed. Command execution remains policy-controlled: approval-required commands pause before side effects, sync/async permission is checked before execution, stdin is rejected unless explicitly allowed, and command traces retain the exact `command_version_id`.
+
+## Selected chat and history boundary
+
+The connected Agent Runtime shell treats the center panel as product chat, not as an event-stream viewer. Rust shapes selected-session chat rows from user turn input, assistant final responses, and compact tool/result summaries. Raw runtime events such as `role.imported`, `turn.started`, `policy.decision`, `model.final_response`, approval events, command-registry events, workflow-memory events, and compaction events remain audit history and must render in History or Diagnostics detail surfaces.
+
+The Rust/Rinf view model keeps those concepts separate: selected chat rows feed the shared `ChatTimeline`; history and operations DTO fields feed the right-side detail surfaces. Dart renders those constructor-ready fields and must not translate raw runtime event names into chat messages.
+
+## Robdex streaming transport notes
+
+Workbench hydrate, thread selection, resync, and recovery may use full snapshots. Streaming hot paths should prefer bounded selected-chat deltas and coalesced native emissions so token bursts do not repeatedly decode full `WorkbenchViewData` snapshots in Dart. Local diagnostics should be used to confirm snapshot decode counts, selected-chat delta applies, emitted native signals, and coalesced/dropped stream updates while developing streaming changes.
