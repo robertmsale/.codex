@@ -255,12 +255,15 @@ command-registry request lists are reduced into `CommandRegistryRequestSummary`
 inside Rust, preserving typed `canPreview`, `canDecide`, and `canApply` control
 fields.
 
-Realtime server messages are consumed through the controller with
-`GuiBackendController::next_stream_outcome()`, which reads one message from the
-controller-owned WebSocket stream, applies deltas/resync/shutdown through
-`RuntimeSyncClient`, and mirrors the reduced projection/controller state back
-onto the controller. Deltas are applied to the current projection only through
-the shared `RuntimeProjection` reducer. The
+Realtime server messages are consumed by the Rust native hub, not by Dart. The
+hub owns the selected-session stream loop and calls the controller-owned stream
+reader internally. `GuiBackendController::next_stream_outcome()` remains the
+Rust reducer entrypoint for reading one message from the owned WebSocket stream,
+applying deltas/resync/shutdown through `RuntimeSyncClient`, and mirroring the
+reduced projection/controller state back onto the controller. Disconnect and
+session replacement cancel pending stream reads before the next control intent
+is reduced. Deltas are applied to the current projection only through the shared
+`RuntimeProjection` reducer. The
 controller does not create a second GUI state path: persisted runtime state
 remains `RuntimeProjection` plus `RuntimeDelta`; `GuiControllerState` remains
 local-only coordination state. Subsequent slices mounted the Flutter-facing
@@ -303,7 +306,9 @@ Dart-to-Rust signals now use generated typed request variants:
 `AgentRuntimeRequestSignal { requestId, request }`. The request enum covers
 connect, disconnect, hydrate, rehydrate, local discovery refresh/connect,
 iCloud remote profile refresh/connect, imported profile import/refresh/connect,
-owned stream polling, and typed GUI operation dispatch. GUI operation variants
+and typed GUI operation dispatch. Dart does not send stream-consume requests;
+the Rust hub starts, replaces, and cancels the selected-session stream
+subscription from lifecycle and selected-session intents. GUI operation variants
 cover sessions, approvals, command-registry operations, Role Admin operations,
 and Workflow Memory selection/feedback.
 
@@ -406,9 +411,9 @@ infer durable runtime meaning from raw projection/controller internals.
 The shell remains focused: discovery/connect input, Rust-shaped view-model
 rendering, selected-session chat visibility when present, an attention list
 from Rust-owned approval/resume and command-registry request rows, explicit
-disconnected/error states, and manual stream polling through the Rust-owned
-transport. Reusable visual pieces live in the design-system package under the
-agent-runtime shared shell and operations-detail
+disconnected/error states, and Rust-owned selected-session streaming through
+typed Rinf outputs. Reusable visual pieces live in the design-system package
+under the agent-runtime shared shell and operations-detail
 components, with Design Lab scenarios for disconnected, connecting, connected,
 error, empty/no-session, no workflow memories, populated workflow memories, and
 selected workflow-memory detail/feedback states, iCloud remote-profile states,

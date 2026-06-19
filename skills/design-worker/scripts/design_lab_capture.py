@@ -7,12 +7,14 @@ import functools
 import http.client
 import http.server
 import os
+import struct
 import shlex
 import socket
 import subprocess
 import sys
 import threading
 import time
+import zlib
 from pathlib import Path
 
 
@@ -120,6 +122,32 @@ def run_phase(phase: str, argv: list[str], cwd: Path, timeout: float, log_path: 
         raise CaptureError(phase, f"command exited {result.returncode}")
 
 
+def run_capture_with_recovery(args: argparse.Namespace, url: str, shot_args: list[str], lab_dir: Path, log_path: Path, out_path: Path) -> None:
+    attempts: list[tuple[str, list[str]]] = [
+        ("default-backend", []),
+        ("chrome-backend-retry", ["--backend", "chrome"]),
+    ]
+    last_error: CaptureError | None = None
+    for attempt_name, recovery_args in attempts:
+        if out_path.exists():
+            out_path.unlink()
+        try:
+            append_log(log_path, f"\n[capture] attempt={attempt_name}")
+            run_phase("capture", shot_command(args, url, [*shot_args, *recovery_args]), lab_dir, args.shot_timeout, log_path)
+            if not out_path.is_file():
+                raise CaptureError("capture", f"screenshot output was not created: {out_path}")
+            if png_is_blank_white(out_path):
+                raise CaptureError(
+                    "capture",
+                    f"screenshot output is blank white: {out_path}. Design Lab did not render usable visual proof.",
+                )
+            return
+        except CaptureError as exc:
+            last_error = exc
+            append_log(log_path, f"[capture] attempt={attempt_name} failed: {exc}")
+    raise last_error or CaptureError("capture", "capture failed")
+
+
 def choose_port() -> int:
     with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -205,6 +233,115 @@ def shot_command(args: argparse.Namespace, url: str, shot_args: list[str]) -> li
     return cmd
 
 
+def png_is_blank_white(path: Path) -> bool:
+    """Return true when a PNG screenshot is all near-white pixels.
+
+    This catches Design Lab readiness timeout fallbacks that produce a valid
+    white PNG. A valid screenshot must not pass visual proof with no rendered
+    content.
+    """
+    try:
+        width, height, color_type, raw = read_png_pixels(path)
+    except Exception:  # noqa: BLE001 - invalid or unsupported images should be handled elsewhere.
+        return False
+    if width < 16 or height < 16:
+        return False
+    if color_type == 6:
+        stride = 4
+        rgb_offsets = (0, 1, 2)
+    elif color_type == 2:
+        stride = 3
+        rgb_offsets = (0, 1, 2)
+    elif color_type == 0:
+        stride = 1
+        rgb_offsets = (0, 0, 0)
+    else:
+        return False
+    if not raw:
+        return False
+    min_channel = 255
+    max_channel = 0
+    sample_step = max(stride, (len(raw) // 50000 // stride) * stride)
+    for index in range(0, len(raw), sample_step):
+        if index + stride > len(raw):
+            break
+        for offset in rgb_offsets:
+            value = raw[index + offset]
+            min_channel = min(min_channel, value)
+            max_channel = max(max_channel, value)
+        if min_channel < 248 or max_channel - min_channel > 3:
+            return False
+    return min_channel >= 248
+
+
+def read_png_pixels(path: Path) -> tuple[int, int, int, bytes]:
+    data = path.read_bytes()
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("not a png")
+    pos = 8
+    width = height = bit_depth = color_type = None
+    compressed = bytearray()
+    while pos + 8 <= len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        chunk_type = data[pos + 4:pos + 8]
+        chunk_data = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type = struct.unpack(">IIBB", chunk_data[:10])
+        elif chunk_type == b"IDAT":
+            compressed.extend(chunk_data)
+        elif chunk_type == b"IEND":
+            break
+    if width is None or height is None or bit_depth != 8 or color_type not in (0, 2, 6):
+        raise ValueError("unsupported png")
+    channels = {0: 1, 2: 3, 6: 4}[color_type]
+    row_bytes = width * channels
+    decompressed = zlib.decompress(bytes(compressed))
+    rows = []
+    prev = bytearray(row_bytes)
+    offset = 0
+    for _row in range(height):
+        filter_type = decompressed[offset]
+        offset += 1
+        current = bytearray(decompressed[offset:offset + row_bytes])
+        offset += row_bytes
+        unfilter_scanline(current, prev, channels, filter_type)
+        rows.append(bytes(current))
+        prev = current
+    return width, height, color_type, b"".join(rows)
+
+
+def unfilter_scanline(current: bytearray, previous: bytearray, bpp: int, filter_type: int) -> None:
+    if filter_type == 0:
+        return
+    for index in range(len(current)):
+        left = current[index - bpp] if index >= bpp else 0
+        up = previous[index]
+        up_left = previous[index - bpp] if index >= bpp else 0
+        if filter_type == 1:
+            current[index] = (current[index] + left) & 0xFF
+        elif filter_type == 2:
+            current[index] = (current[index] + up) & 0xFF
+        elif filter_type == 3:
+            current[index] = (current[index] + ((left + up) // 2)) & 0xFF
+        elif filter_type == 4:
+            current[index] = (current[index] + paeth(left, up, up_left)) & 0xFF
+        else:
+            raise ValueError(f"unsupported png filter {filter_type}")
+
+
+def paeth(left: int, up: int, up_left: int) -> int:
+    estimate = left + up - up_left
+    left_delta = abs(estimate - left)
+    up_delta = abs(estimate - up)
+    up_left_delta = abs(estimate - up_left)
+    if left_delta <= up_delta and left_delta <= up_left_delta:
+        return left
+    if up_delta <= up_left_delta:
+        return up
+    return up_left
+
+
 def main() -> int:
     args, extra_shot_args = parse_args()
     workdir = Path(args.workdir).expanduser().resolve()
@@ -236,9 +373,7 @@ def main() -> int:
         wait_for_http(port, args.serve_timeout)
 
         url = f"http://127.0.0.1:{port}/"
-        run_phase("capture", shot_command(args, url, extra_shot_args), lab_dir, args.shot_timeout, log_path)
-        if not out_path.is_file():
-            raise CaptureError("capture", f"screenshot output was not created: {out_path}")
+        run_capture_with_recovery(args, url, extra_shot_args, lab_dir, log_path, out_path)
 
         print("build: ok")
         print(f"screenshot: {out_path}")

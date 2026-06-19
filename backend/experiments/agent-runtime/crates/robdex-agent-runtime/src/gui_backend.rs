@@ -4,6 +4,7 @@ use robdex_agent_runtime_projection::{
 };
 use serde_json::{json, Value};
 use std::time::Duration;
+use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::gui_sync::{RuntimeStateStream, RuntimeSyncClient, RuntimeSyncConfig, SyncError, SyncOutcome};
@@ -97,28 +98,68 @@ impl GuiBackendController {
     }
 
     pub async fn next_stream_outcome_timeout(&mut self, timeout: Option<Duration>) -> Result<Option<SyncOutcome>, ApiErrorPacket> {
+        self.next_stream_outcome_timeout_or_cancel(timeout, None).await
+    }
+
+    pub async fn next_stream_outcome_timeout_or_cancel(
+        &mut self,
+        timeout: Option<Duration>,
+        cancel: Option<&mut watch::Receiver<u64>>,
+    ) -> Result<Option<SyncOutcome>, ApiErrorPacket> {
         let mut stream = self.stream.take().ok_or_else(|| {
             api_error("conflict", "GUI controller stream is not connected", json!({"operation":"nextStreamOutcome"}))
         })?;
-        let (outcome, projection, controller_state) = {
+        enum StreamWait {
+            Outcome(Result<SyncOutcome, SyncError>),
+            Cancelled,
+            TimedOut,
+        }
+        let wait = {
             let sync = self.sync_client.as_mut().ok_or_else(|| {
                 api_error("conflict", "GUI controller is not connected", json!({"operation":"nextStreamOutcome"}))
             })?;
-            let outcome = if let Some(timeout) = timeout {
-                match tokio::time::timeout(timeout, stream.next_outcome(sync)).await {
-                    Ok(outcome) => outcome.map_err(sync_error_packet)?,
-                    Err(_) => {
-                        self.stream = Some(stream);
-                        if let Some(handle) = self.stream_handle.as_mut() {
-                            handle.connected = true;
-                        }
-                        return Ok(None);
+            let outcome = stream.next_outcome(sync);
+            tokio::pin!(outcome);
+            match (timeout, cancel) {
+                (Some(timeout), Some(cancel)) => {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.changed() => StreamWait::Cancelled,
+                        result = &mut outcome => StreamWait::Outcome(result),
+                        _ = tokio::time::sleep(timeout) => StreamWait::TimedOut,
                     }
                 }
-            } else {
-                stream.next_outcome(sync).await.map_err(sync_error_packet)?
-            };
-            (outcome, sync.projection().cloned(), sync.controller_state().clone())
+                (None, Some(cancel)) => {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.changed() => StreamWait::Cancelled,
+                        result = &mut outcome => StreamWait::Outcome(result),
+                    }
+                }
+                (Some(timeout), None) => {
+                    tokio::select! {
+                        result = &mut outcome => StreamWait::Outcome(result),
+                        _ = tokio::time::sleep(timeout) => StreamWait::TimedOut,
+                    }
+                }
+                (None, None) => StreamWait::Outcome(outcome.await),
+            }
+        };
+        let outcome = match wait {
+            StreamWait::Outcome(outcome) => outcome.map_err(sync_error_packet)?,
+            StreamWait::Cancelled | StreamWait::TimedOut => {
+                self.stream = Some(stream);
+                if let Some(handle) = self.stream_handle.as_mut() {
+                    handle.connected = true;
+                }
+                return Ok(None);
+            }
+        };
+        let (projection, controller_state) = {
+            let sync = self.sync_client.as_ref().ok_or_else(|| {
+                api_error("conflict", "GUI controller is not connected", json!({"operation":"nextStreamOutcome"}))
+            })?;
+            (sync.projection().cloned(), sync.controller_state().clone())
         };
         self.projection = projection;
         self.replace_controller_state_from_sync(controller_state);

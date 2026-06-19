@@ -23,7 +23,6 @@ abstract class AgentRuntimeRequest {
       case 10: return AgentRuntimeRequestRehydrate.load(deserializer);
       case 11: return AgentRuntimeRequestDisconnect.load(deserializer);
       case 12: return AgentRuntimeRequestDispatchOperation.load(deserializer);
-      case 13: return AgentRuntimeRequestConsumeStreamOnce.load(deserializer);
       default: throw Exception('Unknown variant index for AgentRuntimeRequest: ' + index.toString());
     }
   }
@@ -812,49 +811,5 @@ class AgentRuntimeRequestDispatchOperation extends AgentRuntimeRequest {
     }());
 
     return fullString ?? 'AgentRuntimeRequestDispatchOperation';
-  }
-}
-
-@immutable
-class AgentRuntimeRequestConsumeStreamOnce extends AgentRuntimeRequest {
-  const AgentRuntimeRequestConsumeStreamOnce(
-  ) : super();
-
-  static AgentRuntimeRequestConsumeStreamOnce load(BinaryDeserializer deserializer) {
-    deserializer.increaseContainerDepth();
-    final instance = AgentRuntimeRequestConsumeStreamOnce(
-    );
-    deserializer.decreaseContainerDepth();
-    return instance;
-  }
-
-  void serialize(BinarySerializer serializer) {
-    serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(13);
-    serializer.decreaseContainerDepth();
-  }
-
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    if (other.runtimeType != runtimeType) return false;
-
-    return other is AgentRuntimeRequestConsumeStreamOnce;
-  }
-
-  @override
-  int get hashCode => runtimeType.hashCode;
-
-  @override
-  String toString() {
-    String? fullString;
-
-    assert(() {
-      fullString = '$runtimeType('
-        ')';
-      return true;
-    }());
-
-    return fullString ?? 'AgentRuntimeRequestConsumeStreamOnce';
   }
 }

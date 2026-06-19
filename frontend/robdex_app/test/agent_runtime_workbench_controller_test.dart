@@ -121,7 +121,7 @@ void main() {
     expect(sentRequests.single, isA<bindings.AgentRuntimeRequestDisconnect>());
   });
 
-  test('disconnect suppresses stale stream pump replies and reaches disconnected state', () {
+  test('disconnect sends only disconnect intent while Rust owns stream shutdown', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
     final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
@@ -131,10 +131,11 @@ void main() {
     addTearDown(controller.dispose);
 
     controller.sendMessage('session-live', 'hello');
-    expect(sentRequests.whereType<bindings.AgentRuntimeRequestConsumeStreamOnce>(), hasLength(1));
+    expect(sentRequests.single, isA<bindings.AgentRuntimeRequestDispatchOperation>());
 
     controller.disconnect();
     expect(sentRequests.last, isA<bindings.AgentRuntimeRequestDisconnect>());
+    expect(sentRequests, hasLength(2));
 
     controller.applyOutputForTest(const bindings.AgentRuntimeOutputControllerState(
       controllerState: bindings.AgentRuntimeControllerState(
@@ -146,7 +147,7 @@ void main() {
         hasLastError: false,
       ),
     ));
-    expect(sentRequests.whereType<bindings.AgentRuntimeRequestConsumeStreamOnce>(), hasLength(1));
+    expect(sentRequests, hasLength(2));
 
     controller.applyOutputForTest(const bindings.AgentRuntimeOutputControllerState(
       controllerState: bindings.AgentRuntimeControllerState(
@@ -354,7 +355,7 @@ void main() {
     controller.selectSession('session-2');
     controller.sendMessage('session-2', '  hello runtime  ');
 
-    expect(sentRequests, hasLength(3));
+    expect(sentRequests, hasLength(2));
     expect(controller.data.errorMessage, contains('Use the New session dialog'));
     final select = sentRequests[0] as bindings.AgentRuntimeRequestDispatchOperation;
     expect(select.operation, isA<bindings.AgentRuntimeGuiOperationSelectSession>());
@@ -364,10 +365,9 @@ void main() {
     final sendMessage = send.operation as bindings.AgentRuntimeGuiOperationSendMessage;
     expect(sendMessage.sessionId, 'session-2');
     expect(sendMessage.message, 'hello runtime');
-    expect(sentRequests[2], isA<bindings.AgentRuntimeRequestConsumeStreamOnce>());
   });
 
-  test('composer send starts continuous stream consumption and applies selected chat deltas', () {
+  test('composer send emits only send intent and Rust stream signals apply selected chat deltas', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
     final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
@@ -377,8 +377,8 @@ void main() {
     addTearDown(controller.dispose);
 
     controller.sendMessage('session-live', 'show files');
-    expect(sentRequests[0], isA<bindings.AgentRuntimeRequestDispatchOperation>());
-    expect(sentRequests[1], isA<bindings.AgentRuntimeRequestConsumeStreamOnce>());
+    expect(sentRequests, hasLength(1));
+    expect(sentRequests.single, isA<bindings.AgentRuntimeRequestDispatchOperation>());
 
     controller.applyOutputForTest(const bindings.AgentRuntimeOutputStreamOutcome(
       outcome: bindings.AgentRuntimeStreamOutcomeDeltaApplied(applyOutcome: 'selectedChatAppend'),
@@ -441,11 +441,10 @@ void main() {
 
     expect(controller.data.selectedConversation.map((entry) => entry.body), contains('show files'));
     expect(controller.data.selectedConversation.map((entry) => entry.body), contains('Read directory'));
-    expect(sentRequests.last, isA<bindings.AgentRuntimeRequestConsumeStreamOnce>());
-    expect(sentRequests.whereType<bindings.AgentRuntimeRequestConsumeStreamOnce>(), hasLength(2));
+    expect(sentRequests, hasLength(1));
   });
 
-  test('stream consume timeout controller state keeps live pump bounded', () {
+  test('controller state output after send does not trigger Dart stream polling', () {
     final sentRequests = <String, bindings.AgentRuntimeRequest>{};
     final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
@@ -455,10 +454,10 @@ void main() {
     addTearDown(controller.dispose);
 
     controller.sendMessage('session-live', 'show files');
-    expect(sentRequests.values.whereType<bindings.AgentRuntimeRequestConsumeStreamOnce>(), hasLength(1));
-    final streamRequestId = sentRequests.entries.singleWhere((entry) => entry.value is bindings.AgentRuntimeRequestConsumeStreamOnce).key;
+    expect(sentRequests.values, hasLength(1));
+    final sendRequestId = sentRequests.keys.single;
 
-    controller.applyOutputForRequestForTest(streamRequestId, const bindings.AgentRuntimeOutputControllerState(
+    controller.applyOutputForRequestForTest(sendRequestId, const bindings.AgentRuntimeOutputControllerState(
       controllerState: bindings.AgentRuntimeControllerState(
         connectionState: 'streaming',
         selectedSessionId: 'session-live',
@@ -469,7 +468,103 @@ void main() {
       ),
     ));
 
-    expect(sentRequests.values.whereType<bindings.AgentRuntimeRequestConsumeStreamOnce>(), hasLength(2));
+    expect(sentRequests.values, hasLength(1));
+  });
+
+  test('Rust terminal stream output marks user tool and assistant entries completed without reconnect', () {
+    final sentRequests = <bindings.AgentRuntimeRequest>[];
+    final controller = AgentRuntimeWorkbenchController(
+      requestSink: (requestId, request) {
+        sentRequests.add(request);
+      },
+    );
+    addTearDown(controller.dispose);
+
+    controller.sendMessage('session-live', 'terminal state check');
+    expect(sentRequests, hasLength(1));
+
+    controller.applyOutputForTest(const bindings.AgentRuntimeOutputStreamOutcome(
+      outcome: bindings.AgentRuntimeStreamOutcomeDeltaApplied(applyOutcome: 'selectedChatFinalize'),
+      projection: bindings.AgentRuntimeProjectionSnapshot(
+        watermark: 9,
+        sessionCount: 1,
+        timelineCount: 3,
+        actionCount: 0,
+        roleCount: 1,
+        workflowMemoryCount: 0,
+        selectedChatEntries: [
+          bindings.AgentRuntimeChatEntry(
+            id: 'turn-user-terminal',
+            author: 'User',
+            displayLabel: 'User',
+            timestamp: '',
+            hasTimestamp: false,
+            body: 'terminal state check',
+            subtitle: 'completed',
+            kind: 'message',
+            status: 'completed',
+            processId: '',
+            hasProcessId: false,
+            command: '',
+            output: '',
+            deliveryState: 'delivered',
+            isStreaming: false,
+            isTool: false,
+          ),
+          bindings.AgentRuntimeChatEntry(
+            id: 'tool-terminal',
+            author: 'Tool',
+            displayLabel: 'Tool',
+            timestamp: '',
+            hasTimestamp: false,
+            body: 'tool result',
+            subtitle: 'completed',
+            kind: 'tool',
+            status: 'completed',
+            processId: 'proc-terminal',
+            hasProcessId: true,
+            command: 'execute_code',
+            output: 'ok',
+            deliveryState: 'delivered',
+            isStreaming: false,
+            isTool: true,
+          ),
+          bindings.AgentRuntimeChatEntry(
+            id: 'assistant-terminal',
+            author: 'Assistant',
+            displayLabel: 'Assistant',
+            timestamp: '',
+            hasTimestamp: false,
+            body: 'done',
+            subtitle: 'completed',
+            kind: 'message',
+            status: 'completed',
+            processId: '',
+            hasProcessId: false,
+            command: '',
+            output: '',
+            deliveryState: 'delivered',
+            isStreaming: false,
+            isTool: false,
+          ),
+        ],
+      ),
+      hasProjection: true,
+      controllerState: bindings.AgentRuntimeControllerState(
+        connectionState: 'streaming',
+        selectedSessionId: 'session-live',
+        hasSelectedSessionId: true,
+        baseUrl: 'http://127.0.0.1:8765',
+        lastError: '',
+        hasLastError: false,
+      ),
+    ));
+
+    expect(controller.data.selectedConversation.map((entry) => entry.author), containsAll(<String>['User', 'Tool', 'Assistant']));
+    expect(controller.data.selectedConversation.every((entry) => entry.status == 'completed'), isTrue);
+    expect(controller.data.selectedConversation.any((entry) => entry.isStreaming), isFalse);
+    expect(controller.data.selectedConversation.length, 3);
+    expect(sentRequests, hasLength(1));
   });
 
   test('project CRUD actions send generated typed operation intents', () {

@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -323,6 +326,181 @@ enum SelectedChatStreamEmission {
     Dropped,
 }
 
+#[derive(Clone)]
+struct AgentRuntimeStreamSupervisor {
+    tx: mpsc::UnboundedSender<AgentRuntimeStreamCommand>,
+    active: Arc<AtomicBool>,
+    generation: Arc<AtomicU64>,
+}
+
+enum AgentRuntimeStreamCommand {
+    Wake,
+}
+
+impl AgentRuntimeStreamSupervisor {
+    fn spawn(handle: GuiTransportHandle) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel::<AgentRuntimeStreamCommand>();
+        let active = Arc::new(AtomicBool::new(false));
+        let generation = Arc::new(AtomicU64::new(0));
+        let task_active = active.clone();
+        let task_generation = generation.clone();
+        tokio::spawn(async move {
+            let mut serial = 0_u64;
+            loop {
+                if !task_active.load(Ordering::SeqCst) {
+                    match rx.recv().await {
+                        Some(AgentRuntimeStreamCommand::Wake) => {}
+                        None => break,
+                    }
+                    continue;
+                }
+
+                while rx.try_recv().is_ok() {}
+
+                if !task_active.load(Ordering::SeqCst) {
+                    continue;
+                }
+
+                let observed_generation = task_generation.load(Ordering::SeqCst);
+                serial += 1;
+                let outputs = handle
+                    .send(GuiTransportRequestPacket {
+                        packet_id: format!("agent-runtime-stream-rust-{serial}"),
+                        intent: GuiTransportRequest::ConsumeStreamOnce,
+                    })
+                    .await;
+
+                if !task_active.load(Ordering::SeqCst)
+                    || observed_generation != task_generation.load(Ordering::SeqCst)
+                {
+                    continue;
+                }
+
+                let mut keep_streaming = true;
+                let mut emitted_state = false;
+                for output in outputs {
+                    keep_streaming &= agent_runtime_stream_output_keeps_subscription(&output.output);
+                    if matches!(
+                        output.output,
+                        GuiTransportOutput::StreamOutcome { .. }
+                            | GuiTransportOutput::ControllerState { .. }
+                            | GuiTransportOutput::Error { .. }
+                    ) {
+                        emitted_state = true;
+                        emit_agent_runtime_output(output);
+                    }
+                }
+
+                if !keep_streaming {
+                    task_active.store(false, Ordering::SeqCst);
+                    task_generation.fetch_add(1, Ordering::SeqCst);
+                    continue;
+                }
+
+                if !emitted_state {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }
+        });
+
+        Self { tx, active, generation }
+    }
+
+    #[cfg(test)]
+    fn for_test() -> Self {
+        let (tx, _rx) = mpsc::unbounded_channel::<AgentRuntimeStreamCommand>();
+        Self {
+            tx,
+            active: Arc::new(AtomicBool::new(false)),
+            generation: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn start(&self) {
+        self.active.store(true, Ordering::SeqCst);
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        let _ = self.tx.send(AgentRuntimeStreamCommand::Wake);
+    }
+
+    fn stop(&self) {
+        self.active.store(false, Ordering::SeqCst);
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        let _ = self.tx.send(AgentRuntimeStreamCommand::Wake);
+    }
+
+    #[cfg(test)]
+    fn active_for_test(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    fn generation_for_test(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+}
+
+fn agent_runtime_stream_output_keeps_subscription(output: &GuiTransportOutput) -> bool {
+    match output {
+        GuiTransportOutput::StreamOutcome { outcome, controller_state, .. } => {
+            !matches!(
+                outcome,
+                GuiStreamOutcomePacket::ServerShutdown | GuiStreamOutcomePacket::StreamClosed
+            ) && controller_state
+                .get("connectionState")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|state| state.eq_ignore_ascii_case("streaming"))
+        }
+        GuiTransportOutput::ControllerState { controller_state } => controller_state
+            .get("connectionState")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|state| state.eq_ignore_ascii_case("streaming")),
+        GuiTransportOutput::Error { error } => {
+            !(error.error.code == "conflict"
+                && error.error.message.to_lowercase().contains("stream is not connected"))
+        }
+        _ => true,
+    }
+}
+
+fn agent_runtime_outputs_have_streaming_subscription(outputs: &[GuiTransportOutputPacket]) -> bool {
+    outputs.iter().any(|packet| match &packet.output {
+        GuiTransportOutput::WorkbenchView { view_model } => {
+            view_model.connection_state.eq_ignore_ascii_case("streaming")
+                && view_model.shell.selected_session_id.is_some()
+        }
+        GuiTransportOutput::ControllerState { controller_state } => controller_state
+            .get("connectionState")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|state| state.eq_ignore_ascii_case("streaming"))
+            && controller_state
+                .get("hasSelectedSessionId")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        GuiTransportOutput::StreamOutcome { controller_state, .. } => controller_state
+            .get("connectionState")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|state| state.eq_ignore_ascii_case("streaming"))
+            && controller_state
+                .get("hasSelectedSessionId")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        _ => false,
+    })
+}
+
+fn agent_runtime_outputs_have_disconnected_state(outputs: &[GuiTransportOutputPacket]) -> bool {
+    outputs.iter().any(|packet| match &packet.output {
+        GuiTransportOutput::WorkbenchView { view_model } => {
+            view_model.connection_state.eq_ignore_ascii_case("disconnected")
+        }
+        GuiTransportOutput::ControllerState { controller_state } => controller_state
+            .get("connectionState")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|state| state.eq_ignore_ascii_case("disconnected")),
+        _ => false,
+    })
+}
+
 fn selected_chat_stream_emission(
     coalescer: &mut StreamCoalescer,
     delta: WorkbenchSelectedChatDeltaSignal,
@@ -337,6 +515,7 @@ pub async fn run() {
     let (tx, mut rx) = mpsc::unbounded_channel::<Action>();
     spawn_receivers(tx.clone());
     let agent_runtime_transport = GuiTransportHandle::spawn();
+    let agent_runtime_stream = AgentRuntimeStreamSupervisor::spawn(agent_runtime_transport.clone());
 
     let mut client: Option<WorkbenchClient> = None;
     let mut current_view: Option<WorkbenchViewData> = None;
@@ -359,8 +538,9 @@ pub async fn run() {
                 }
                 if let Action::AgentRuntimeRequest { request_id, request } = action {
                     let agent_runtime_transport = agent_runtime_transport.clone();
+                    let agent_runtime_stream = agent_runtime_stream.clone();
                     tokio::spawn(async move {
-                        handle_agent_runtime_request(&agent_runtime_transport, request_id, request).await;
+                        handle_agent_runtime_request(&agent_runtime_transport, &agent_runtime_stream, request_id, request).await;
                     });
                     continue;
                 }
@@ -1189,7 +1369,6 @@ fn typed_agent_runtime_request_packet(
             AgentRuntimeRequest::DispatchOperation { operation } => GuiTransportRequest::DispatchOperation {
                 operation: typed_gui_operation(operation)?,
             },
-            AgentRuntimeRequest::ConsumeStreamOnce => GuiTransportRequest::ConsumeStreamOnce,
         },
     })
 }
@@ -1820,9 +1999,14 @@ fn typed_workflow_memory_view(view: InternalWorkflowMemoryView) -> AgentRuntimeW
 
 async fn handle_agent_runtime_request(
     handle: &GuiTransportHandle,
+    stream: &AgentRuntimeStreamSupervisor,
     request_id: String,
     request: AgentRuntimeRequest,
 ) {
+    if agent_runtime_request_replaces_stream(&request) {
+        stream.stop();
+    }
+    let request_can_need_selected_stream = agent_runtime_request_can_need_selected_stream(&request);
     let packet = match typed_agent_runtime_request_packet(&request_id, request) {
         Ok(packet) => packet,
         Err(error) => {
@@ -1834,9 +2018,56 @@ async fn handle_agent_runtime_request(
             return;
         }
     };
-    for output in handle.send(packet).await {
+    let outputs = handle.send(packet).await;
+    agent_runtime_apply_stream_lifecycle(stream, request_can_need_selected_stream, &outputs);
+    for output in outputs {
         emit_agent_runtime_output(output);
     }
+}
+
+fn agent_runtime_apply_stream_lifecycle(
+    stream: &AgentRuntimeStreamSupervisor,
+    request_can_need_selected_stream: bool,
+    outputs: &[GuiTransportOutputPacket],
+) {
+    if agent_runtime_outputs_have_disconnected_state(&outputs) {
+        stream.stop();
+    } else if agent_runtime_outputs_have_streaming_subscription(&outputs) || request_can_need_selected_stream {
+        stream.start();
+    }
+}
+
+fn agent_runtime_request_replaces_stream(request: &AgentRuntimeRequest) -> bool {
+    match request {
+        AgentRuntimeRequest::Disconnect
+        | AgentRuntimeRequest::Connect { .. }
+        | AgentRuntimeRequest::ConnectDiscoveredRuntime { .. }
+        | AgentRuntimeRequest::ConnectIcloudRemoteRuntime { .. }
+        | AgentRuntimeRequest::ConnectImportedRemoteRuntime { .. }
+        | AgentRuntimeRequest::Hydrate { .. }
+        | AgentRuntimeRequest::Rehydrate { .. } => true,
+        AgentRuntimeRequest::DispatchOperation { operation } => matches!(
+            operation,
+            AgentRuntimeGuiOperation::SelectSession { .. }
+                | AgentRuntimeGuiOperation::CreateSession { .. }
+                | AgentRuntimeGuiOperation::UpdateSessionSettings { .. }
+                | AgentRuntimeGuiOperation::ForkSession { .. }
+                | AgentRuntimeGuiOperation::CloseSession { .. }
+                | AgentRuntimeGuiOperation::ArchiveSession { .. }
+        ),
+        _ => false,
+    }
+}
+
+fn agent_runtime_request_can_need_selected_stream(request: &AgentRuntimeRequest) -> bool {
+    matches!(
+        request,
+        AgentRuntimeRequest::DispatchOperation {
+            operation: AgentRuntimeGuiOperation::SendMessage { .. }
+                | AgentRuntimeGuiOperation::SelectSession { .. }
+                | AgentRuntimeGuiOperation::CreateSession { .. }
+        }
+    )
 }
 
 fn emit_agent_runtime_output(output: GuiTransportOutputPacket) {
@@ -2667,12 +2898,6 @@ mod agent_runtime_typed_mapping_tests {
             }
         );
 
-        let stream = typed_agent_runtime_request_packet(
-            "stream-1",
-            AgentRuntimeRequest::ConsumeStreamOnce,
-        )
-        .expect("typed stream consumption maps");
-        assert_eq!(stream.intent, GuiTransportRequest::ConsumeStreamOnce);
     }
 
     #[test]
@@ -2724,6 +2949,94 @@ mod agent_runtime_typed_mapping_tests {
             }
             other => panic!("unexpected mapped operation: {other:?}"),
         }
+    }
+
+    #[test]
+    fn rust_stream_subscription_starts_from_selected_state_and_send_intent() {
+        let stream = AgentRuntimeStreamSupervisor::for_test();
+        let outputs = vec![GuiTransportOutputPacket {
+            request_id: "state-1".to_string(),
+            output: GuiTransportOutput::ControllerState {
+                controller_state: serde_json::json!({
+                    "connectionState": "streaming",
+                    "selectedSessionId": "session-1",
+                    "hasSelectedSessionId": true
+                }),
+            },
+        }];
+        let before_connect_generation = stream.generation_for_test();
+        agent_runtime_apply_stream_lifecycle(&stream, false, &outputs);
+        assert!(stream.active_for_test(), "stream supervisor must start after streaming selected state");
+        assert!(stream.generation_for_test() > before_connect_generation);
+
+        let select_request = AgentRuntimeRequest::DispatchOperation {
+            operation: AgentRuntimeGuiOperation::SelectSession {
+                session_id: "session-2".to_string(),
+            },
+        };
+        assert!(agent_runtime_request_replaces_stream(&select_request));
+        stream.stop();
+        assert!(!stream.active_for_test());
+        let before_select_generation = stream.generation_for_test();
+        agent_runtime_apply_stream_lifecycle(
+            &stream,
+            agent_runtime_request_can_need_selected_stream(&select_request),
+            &[],
+        );
+        assert!(stream.active_for_test(), "select-session intent must start Rust stream supervisor even before Dart polling can exist");
+        assert!(stream.generation_for_test() > before_select_generation);
+
+        let send_request = AgentRuntimeRequest::DispatchOperation {
+            operation: AgentRuntimeGuiOperation::SendMessage {
+                session_id: "session-1".to_string(),
+                message: "hello".to_string(),
+            },
+        };
+        stream.stop();
+        let before_send_generation = stream.generation_for_test();
+        agent_runtime_apply_stream_lifecycle(
+            &stream,
+            agent_runtime_request_can_need_selected_stream(&send_request),
+            &[],
+        );
+        assert!(stream.active_for_test(), "send intent must wake Rust stream supervisor");
+        assert!(stream.generation_for_test() > before_send_generation);
+    }
+
+    #[test]
+    fn rust_stream_subscription_stops_on_disconnect_and_rejects_stale_terminal_outputs() {
+        assert!(agent_runtime_request_replaces_stream(&AgentRuntimeRequest::Disconnect));
+        let outputs = vec![GuiTransportOutputPacket {
+            request_id: "disconnect-1".to_string(),
+            output: GuiTransportOutput::ControllerState {
+                controller_state: serde_json::json!({
+                    "connectionState": "disconnected",
+                    "selectedSessionId": "",
+                    "hasSelectedSessionId": false
+                }),
+            },
+        }];
+        assert!(agent_runtime_outputs_have_disconnected_state(&outputs));
+        assert!(!agent_runtime_stream_output_keeps_subscription(
+            &GuiTransportOutput::StreamOutcome {
+                outcome: GuiStreamOutcomePacket::StreamClosed,
+                projection: None,
+                controller_state: serde_json::json!({
+                    "connectionState": "streaming",
+                    "selectedSessionId": "session-1",
+                    "hasSelectedSessionId": true
+                }),
+            }
+        ));
+        assert!(!agent_runtime_stream_output_keeps_subscription(
+            &GuiTransportOutput::Error {
+                error: ApiErrorPacket::new(
+                    "conflict",
+                    "GUI controller stream is not connected",
+                    serde_json::json!({}),
+                ),
+            }
+        ));
     }
 
     #[test]

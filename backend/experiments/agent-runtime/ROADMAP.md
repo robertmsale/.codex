@@ -113,7 +113,12 @@ product specification.
 28. Rust/Rinf GUI backend controller boundary: a Rust-owned dispatcher owns
     `RuntimeSyncClient`, owned WebSocket stream handle, `RuntimeProjection`,
     `GuiControllerState`, selected session, connection/resync state, transient
-    errors, operation dispatch, and typed `GuiOperationResult` emission for a future thin Rinf layer. The controller also exposes a public owned-stream polling method for consuming one WebSocket server message at a time through the shared reducer.
+    errors, operation dispatch, and typed `GuiOperationResult` emission for a
+    thin Rinf layer. The native hub now owns the selected-session stream loop:
+    Dart sends user/lifecycle intents, Rust consumes the controller-owned
+    WebSocket stream, applies deltas through the shared reducer, cancels stale
+    reads on disconnect/session replacement, and emits typed Rinf output
+    signals.
 29. Workbench shell GUI plan: the current direction is documented as a
     Robdex Workbench-compatible chat product with modal operational surfaces;
     the artifact defines selected conversation, composer, toolbar modal
@@ -123,11 +128,11 @@ product specification.
 30. Experimental Rinf transport proof: an experiment-local Rust module defines
     stable Dart-to-Rust request envelopes and Rust-to-Dart output envelopes for
     driving `GuiBackendController`, owns exactly one controller through a
-    serialized async action loop, uses JSON-backed projection/controller
+    cancellable async action loop, uses JSON-backed projection/controller
     payloads where schemas should remain stable, maps errors to
     `ApiErrorPacket`, and proves connect/hydrate, operation dispatch, owned
-    stream polling, typed errors, and disconnect without modifying
-    `frontend/robdex_app` or the stable Rinf hub.
+    stream consumption, typed errors, and disconnect while the stable Rinf hub
+    exposes only user/lifecycle intents to Dart.
 31. Local discovery service packaging: the Agent Runtime service wrapper exposes
     a JSON `discover`/`json-status` contract and persists the same redacted
     discovery packet to the service state directory for GUI/Rinf bootstrap.

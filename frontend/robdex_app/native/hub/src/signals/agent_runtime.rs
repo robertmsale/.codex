@@ -23,7 +23,6 @@ pub enum AgentRuntimeRequest {
     Rehydrate { selected_session_id: String },
     Disconnect,
     DispatchOperation { operation: AgentRuntimeGuiOperation },
-    ConsumeStreamOnce,
 }
 
 #[derive(Clone, Debug, Deserialize, SignalPiece)]

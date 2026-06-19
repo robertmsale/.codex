@@ -13,11 +13,13 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::model::codex_adapter::CodexModelOptionsProvider;
 use crate::gui_backend::GuiBackendController;
 use crate::gui_sync::SyncOutcome;
+
+const GUI_STREAM_CONSUME_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -68,6 +70,12 @@ pub enum GuiTransportRequest {
     },
     ConsumeStreamOnce,
     Disconnect,
+}
+
+impl GuiTransportRequest {
+    fn cancels_pending_stream_read(&self) -> bool {
+        !matches!(self, GuiTransportRequest::ConsumeStreamOnce)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2008,6 +2016,7 @@ pub enum GuiStreamOutcomePacket {
 #[derive(Clone)]
 pub struct GuiTransportHandle {
     sender: mpsc::Sender<TransportAction>,
+    stream_cancel: watch::Sender<u64>,
 }
 
 struct TransportAction {
@@ -2018,18 +2027,26 @@ struct TransportAction {
 impl GuiTransportHandle {
     pub fn spawn() -> Self {
         let (sender, mut receiver) = mpsc::channel::<TransportAction>(32);
+        let (stream_cancel, stream_cancel_rx) = watch::channel(0_u64);
         tokio::spawn(async move {
-            let mut runner = GuiTransportRunner::new();
+            let mut runner = GuiTransportRunner::new(stream_cancel_rx);
             while let Some(action) = receiver.recv().await {
                 let outputs = runner.handle_packet(action.packet).await;
                 let _ = action.reply.send(outputs);
             }
         });
-        Self { sender }
+        Self { sender, stream_cancel }
     }
 
     pub async fn send(&self, packet: GuiTransportRequestPacket) -> Vec<GuiTransportOutputPacket> {
         let request_id = packet.packet_id.clone();
+        if packet.intent.cancels_pending_stream_read() {
+            let next_generation = {
+                let current_generation = *self.stream_cancel.borrow();
+                current_generation.saturating_add(1)
+            };
+            let _ = self.stream_cancel.send(next_generation);
+        }
         let (reply, receiver) = oneshot::channel();
         if self.sender.send(TransportAction { packet, reply }).await.is_err() {
             return vec![error_output(
@@ -2065,10 +2082,11 @@ struct GuiTransportRunner {
     selected_project_id: Option<String>,
     model_options: Vec<AgentRuntimeModelOption>,
     model_options_error: Option<String>,
+    stream_cancel: watch::Receiver<u64>,
 }
 
 impl GuiTransportRunner {
-    fn new() -> Self {
+    fn new(stream_cancel: watch::Receiver<u64>) -> Self {
         Self {
             controller: GuiBackendController::new(),
             http: reqwest::Client::new(),
@@ -2080,6 +2098,7 @@ impl GuiTransportRunner {
             selected_project_id: None,
             model_options: Vec::new(),
             model_options_error: None,
+            stream_cancel,
         }
     }
 
@@ -2303,9 +2322,13 @@ impl GuiTransportRunner {
                 Ok(self.operation_outputs(result))
             }
             GuiTransportRequest::ConsumeStreamOnce => {
+                let _ = *self.stream_cancel.borrow_and_update();
                 let Some(outcome) = self
                     .controller
-                    .next_stream_outcome_timeout(Some(std::time::Duration::from_millis(500)))
+                    .next_stream_outcome_timeout_or_cancel(
+                        Some(GUI_STREAM_CONSUME_TIMEOUT),
+                        Some(&mut self.stream_cancel),
+                    )
                     .await?
                 else {
                     let controller_state = self.effective_controller_state();
@@ -3460,6 +3483,76 @@ mod tests {
         let addr = listener.local_addr().expect("addr");
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve transport perf server");
+        });
+        format!("http://{addr}")
+    }
+
+    async fn start_stalled_stream_transport_server() -> String {
+        let app = Router::new()
+            .route("/state/snapshot", get(|| async {
+                Json(RuntimeProjection {
+                    watermark: 1,
+                    server_status: ServerStatusProjection {
+                        status: "ok".to_string(),
+                        database: "connected".to_string(),
+                        message: None,
+                    },
+                    sessions: vec![SessionListItem {
+                        id: "00000000-0000-0000-0000-00000000d15c".to_string(),
+                        status: "open".to_string(),
+                        role_id: Some("runtime-allow".to_string()),
+                        role_version: Some("1.0.0".to_string()),
+                        project_key: None,
+                        title: Some("Pending read session".to_string()),
+                        name: Some("pending-read-session".to_string()),
+                        workdir: ".".to_string(),
+                        tracked: true,
+                        archived_at: None,
+                        closed_at: None,
+                        updated_at: None,
+                    }],
+                    ..RuntimeProjection::default()
+                })
+            }))
+            .route("/state/ws", get(|ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(|_socket| async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                })
+            }))
+            .route("/health", get(Json(json!({"ok":true}))));
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind stalled stream server");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve stalled stream server");
+        });
+        format!("http://{addr}")
+    }
+
+    async fn start_websocket_auth_reject_transport_server() -> String {
+        let app = Router::new()
+            .route("/state/snapshot", get(|| async {
+                Json(RuntimeProjection {
+                    watermark: 1,
+                    server_status: ServerStatusProjection {
+                        status: "ok".to_string(),
+                        database: "connected".to_string(),
+                        message: None,
+                    },
+                    ..RuntimeProjection::default()
+                })
+            }))
+            .route("/state/ws", get(|| async {
+                (StatusCode::UNAUTHORIZED, "websocket authorization required")
+            }))
+            .route("/health", get(Json(json!({"ok":true}))));
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind auth reject stream server");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve auth reject stream server");
         });
         format!("http://{addr}")
     }
@@ -5202,6 +5295,193 @@ mod tests {
             GuiTransportOutput::ControllerState { controller_state }
                 if controller_state["connectionState"] == "disconnected"
         )));
+    }
+
+    #[tokio::test]
+    async fn pending_stream_read_does_not_block_disconnect() {
+        let base_url = start_stalled_stream_transport_server().await;
+        let transport = GuiTransportHandle::spawn();
+        let connect = transport
+            .send(packet(
+                "pending-read-connect",
+                GuiTransportRequest::Connect {
+                    base_url,
+                    selected_session_id: None,
+                },
+            ))
+            .await;
+        assert!(connect.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::WorkbenchView { view_model }
+                if view_model.connection_state == "streaming"
+        )), "connect must establish stream before pending read test: {connect:?}");
+
+        let pending_transport = transport.clone();
+        let pending = tokio::spawn(async move {
+            pending_transport
+                .send(packet("pending-read-stream", GuiTransportRequest::ConsumeStreamOnce))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let disconnected = tokio::time::timeout(
+            std::time::Duration::from_millis(60),
+            transport.send(packet("pending-read-disconnect", GuiTransportRequest::Disconnect)),
+        )
+        .await
+        .expect("disconnect must bypass/cancel the pending stream read instead of waiting for its timeout");
+        assert!(disconnected.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::ControllerState { controller_state }
+                if controller_state["connectionState"] == "disconnected"
+        )), "disconnect must emit disconnected state: {disconnected:?}");
+
+        let pending_outputs = tokio::time::timeout(std::time::Duration::from_millis(60), pending)
+            .await
+            .expect("pending stream read must cancel promptly")
+            .expect("pending stream task joins");
+        assert!(pending_outputs.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::ControllerState { controller_state }
+                if controller_state["connectionState"] == "streaming"
+        ) || matches!(&packet.output, GuiTransportOutput::Error { .. })), "cancelled stream read must return bounded controller state or typed error instead of blocking: {pending_outputs:?}");
+        assert!(!pending_outputs.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::StreamOutcome {
+                outcome: GuiStreamOutcomePacket::DeltaApplied { .. },
+                ..
+            }
+        )), "cancelled stream read must not emit a stale delta after disconnect: {pending_outputs:?}");
+    }
+
+    #[tokio::test]
+    async fn pending_stream_read_does_not_block_control_intents() {
+        let cases = vec![
+            (
+                "rehydrate",
+                GuiTransportRequest::Rehydrate {
+                    selected_session_id: None,
+                },
+            ),
+            (
+                "select-session",
+                GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::SelectSession {
+                        session_id: Some("00000000-0000-0000-0000-00000000d15c".to_string()),
+                    },
+                },
+            ),
+            (
+                "send",
+                GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::SendMessage {
+                        session_id: "00000000-0000-0000-0000-00000000d15c".to_string(),
+                        message: "second turn while stream read is pending".to_string(),
+                    },
+                },
+            ),
+            (
+                "settings",
+                GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::UpdateSessionSettings {
+                        session_id: "00000000-0000-0000-0000-00000000d15c".to_string(),
+                        project: "unassigned".to_string(),
+                        role: "runtime-allow".to_string(),
+                        model: "gpt-5.4-mini".to_string(),
+                        workdir: ".".to_string(),
+                        worktree_root: ".".to_string(),
+                        title: "Updated while stream read is pending".to_string(),
+                        name: "pending-read-updated".to_string(),
+                        tracked: true,
+                    },
+                },
+            ),
+        ];
+
+        for (label, intent) in cases {
+            let base_url = start_stalled_stream_transport_server().await;
+            let transport = GuiTransportHandle::spawn();
+            let connect = transport
+                .send(packet(
+                    &format!("{label}-connect"),
+                    GuiTransportRequest::Connect {
+                        base_url,
+                        selected_session_id: None,
+                    },
+                ))
+                .await;
+            assert!(connect.iter().any(|packet| matches!(
+                &packet.output,
+                GuiTransportOutput::WorkbenchView { view_model }
+                    if view_model.connection_state == "streaming"
+            )), "{label}: connect must establish stream before pending read test: {connect:?}");
+
+            let pending_transport = transport.clone();
+            let pending = tokio::spawn(async move {
+                pending_transport
+                    .send(packet(&format!("{label}-stream"), GuiTransportRequest::ConsumeStreamOnce))
+                    .await
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+            let outputs = tokio::time::timeout(
+                std::time::Duration::from_millis(90),
+                transport.send(packet(&format!("{label}-control"), intent)),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{label}: control intent must bypass/cancel the pending stream read"));
+            assert!(!outputs.is_empty(), "{label}: control intent must produce typed output");
+
+            let pending_outputs = tokio::time::timeout(std::time::Duration::from_millis(90), pending)
+                .await
+                .unwrap_or_else(|_| panic!("{label}: pending stream read must cancel promptly"))
+                .expect("pending stream task joins");
+            assert!(pending_outputs.iter().any(|packet| matches!(
+                &packet.output,
+                GuiTransportOutput::ControllerState { .. } | GuiTransportOutput::Error { .. }
+            )), "{label}: cancelled stream read must return bounded controller state or typed error: {pending_outputs:?}");
+            assert!(!pending_outputs.iter().any(|packet| matches!(
+                &packet.output,
+                GuiTransportOutput::StreamOutcome {
+                    outcome: GuiStreamOutcomePacket::DeltaApplied { .. },
+                    ..
+                }
+            )), "{label}: cancelled stream read must not emit a stale delta: {pending_outputs:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_auth_rejection_emits_typed_actionable_error() {
+        let base_url = start_websocket_auth_reject_transport_server().await;
+        let transport = GuiTransportHandle::spawn();
+        let outputs = transport
+            .send(packet(
+                "auth-reject-connect",
+                GuiTransportRequest::Connect {
+                    base_url,
+                    selected_session_id: None,
+                },
+            ))
+            .await;
+        assert!(outputs.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult {
+                result: GuiOperationResult {
+                    outcome: GuiOperationOutcome::Error { error },
+                    ..
+                }
+            }
+                if error.error.code == "unavailable"
+                    && error.error.message.contains("WebSocket sync failed")
+        )), "websocket auth rejection must emit a typed actionable error: {outputs:?}");
+        assert!(outputs.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::ControllerState { controller_state }
+                if controller_state["connectionState"] == "disconnected"
+                    && controller_state["transientErrors"].as_array().is_some_and(|errors| {
+                        errors.iter().any(|error| error["error"]["message"].as_str().is_some_and(|message| message.contains("WebSocket sync failed")))
+                    })
+        )), "typed websocket auth error must be visible in reduced controller state: {outputs:?}");
     }
 
     #[tokio::test]

@@ -40,9 +40,11 @@ Reusable visual pieces live in
 scenarios live in `frontend/robdex_app/packages/design_lab`. The initial shell
 proves disconnected/error state, connect intent, runtime packet
 receipt, selected-session chat visibility when the Rust view model contains
-it, attention-item rendering from Rust-shaped action rows, and explicit stream
-polling through the Rust-owned transport. The richer UX guidance below remains
-the direction for subsequent slices.
+it, attention-item rendering from Rust-shaped action rows, and Rust-owned
+selected-session stream subscription. Dart issues user and lifecycle intents;
+Rust owns WebSocket stream consumption, state reduction, and typed output
+signals. The richer UX guidance below remains the direction for subsequent
+slices.
 
 ## Richer UX implementation record
 

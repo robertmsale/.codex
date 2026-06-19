@@ -301,6 +301,50 @@ impl fmt::Display for SyncError {
 
 impl std::error::Error for SyncError {}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn runtime_sync_reports_resync_shutdown_and_malformed_messages_as_typed_state() {
+        let mut client = RuntimeSyncClient::new(RuntimeSyncConfig::new("http://127.0.0.1:8765"));
+
+        let resync = client
+            .handle_server_message_value(json!({
+                "type": "resyncRequired",
+                "delta": {
+                    "watermark": 2,
+                    "previousWatermark": 1,
+                    "type": "resyncRequired",
+                    "reason": "validation resync"
+                }
+            }))
+            .expect("resync is typed outcome");
+        assert_eq!(resync, SyncOutcome::ResyncRequired { reason: Some("validation resync".to_string()) });
+        assert!(client.resync_required());
+        assert!(client.controller_state().resync_required.as_ref().is_some_and(|state| {
+            state.reason == "validation resync"
+        }));
+
+        let shutdown = client
+            .handle_server_message_value(json!({"type": "serverShutdown"}))
+            .expect("shutdown is typed outcome");
+        assert_eq!(shutdown, SyncOutcome::ServerShutdown);
+        assert_eq!(client.controller_state().connection_state, GuiConnectionState::ShuttingDown);
+
+        let malformed_delta = client
+            .handle_server_message_value(json!({"type": "delta"}))
+            .expect_err("malformed delta is rejected");
+        assert!(matches!(malformed_delta, SyncError::Protocol(message) if message.contains("missing delta")));
+
+        let unknown = client
+            .handle_server_message_value(json!({"type": "notARealMessage"}))
+            .expect_err("unknown message type is rejected");
+        assert!(matches!(unknown, SyncError::Protocol(message) if message.contains("unknown runtime server message type")));
+    }
+}
+
 impl From<reqwest::Error> for SyncError {
     fn from(error: reqwest::Error) -> Self {
         SyncError::Http(error)

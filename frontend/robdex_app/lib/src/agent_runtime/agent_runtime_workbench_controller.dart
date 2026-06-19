@@ -167,10 +167,6 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   final AgentRuntimeRequestSink _requestSink;
   final Set<String> _pendingRequestIds = <String>{};
   final Map<String, String> _approvalListUpdates = <String, String>{};
-  String? _streamConsumeRequestId;
-  bool _streamPumpEnabled = false;
-  bool _disconnecting = false;
-  bool _disposed = false;
   int _serial = 0;
   String _baseUrl = 'http://127.0.0.1:8765';
   AgentRuntimeWorkbenchData? _viewModel;
@@ -205,7 +201,6 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   ConversationShellData? get shellData => _shellViewModel;
 
   void connect(String baseUrl) {
-    _disconnecting = false;
     _baseUrl = baseUrl.trim().isEmpty ? _baseUrl : baseUrl.trim();
     _send('connect', bindings.AgentRuntimeRequestConnect(baseUrl: _baseUrl, selectedSessionId: ''));
   }
@@ -281,8 +276,6 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   }
 
   void disconnect() {
-    _disconnecting = true;
-    _stopStreamPump();
     _send('disconnect', const bindings.AgentRuntimeRequestDisconnect());
   }
 
@@ -425,7 +418,6 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
       'session-send',
       bindings.AgentRuntimeGuiOperationSendMessage(sessionId: sessionId, message: message.trim()),
     );
-    _startStreamPump();
   }
 
   void terminateProcess(String handle) {
@@ -660,38 +652,10 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
       _requestSink(requestId, request);
     } catch (_) {
       _pendingRequestIds.remove(requestId);
-      if (_streamConsumeRequestId == requestId) {
-        _streamConsumeRequestId = null;
-        _streamPumpEnabled = false;
-      }
       _bridgeErrorMessage = 'Agent Runtime bridge is not ready. Restart the app, then refresh discovery.';
     }
     notifyListeners();
     return requestId;
-  }
-
-  void _startStreamPump() {
-    if (_disposed || _disconnecting) {
-      return;
-    }
-    _streamPumpEnabled = true;
-    _requestNextStreamPacket();
-  }
-
-  void _stopStreamPump() {
-    _streamPumpEnabled = false;
-    _streamConsumeRequestId = null;
-  }
-
-  void _requestNextStreamPacket() {
-    if (!_streamPumpEnabled || _streamConsumeRequestId != null || _disposed) {
-      return;
-    }
-    _streamConsumeRequestId = _sendWithTracking(
-      'stream-consume',
-      const bindings.AgentRuntimeRequestConsumeStreamOnce(),
-      trackPending: false,
-    );
   }
 
   static void _sendRequestSignalToRust(String requestId, bindings.AgentRuntimeRequest request) {
@@ -701,23 +665,13 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   void _handleOutput(RustSignalPack<bindings.AgentRuntimeOutputSignal> pack) {
     final signal = pack.message;
     _pendingRequestIds.remove(signal.requestId);
-    final isStreamConsumeReply = signal.requestId == _streamConsumeRequestId;
-    if (isStreamConsumeReply) {
-      _streamConsumeRequestId = null;
-    }
     _applyOutput(signal.output);
     _applyApprovalListUpdate(signal.requestId, signal.output);
-    _advanceStreamPump(signal.output, isStreamConsumeReply: isStreamConsumeReply);
   }
 
   @visibleForTesting
   void applyOutputForTest(bindings.AgentRuntimeOutput output) {
-    final isStreamConsumeReply = output is bindings.AgentRuntimeOutputStreamOutcome && _streamConsumeRequestId != null;
-    if (isStreamConsumeReply) {
-      _streamConsumeRequestId = null;
-    }
     _applyOutput(output);
-    _advanceStreamPump(output, isStreamConsumeReply: isStreamConsumeReply);
   }
 
   @visibleForTesting
@@ -730,73 +684,8 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   @visibleForTesting
   void applyOutputForRequestForTest(String requestId, bindings.AgentRuntimeOutput output) {
     _pendingRequestIds.remove(requestId);
-    final isStreamConsumeReply = requestId == _streamConsumeRequestId;
-    if (isStreamConsumeReply) {
-      _streamConsumeRequestId = null;
-    }
     _applyOutput(output);
     _applyApprovalListUpdate(requestId, output);
-    _advanceStreamPump(output, isStreamConsumeReply: isStreamConsumeReply);
-  }
-
-  void _advanceStreamPump(bindings.AgentRuntimeOutput output, {required bool isStreamConsumeReply}) {
-    if (_disposed) {
-      return;
-    }
-    if (output is bindings.AgentRuntimeOutputWorkbenchView) {
-      if (!_isStreamableState(output.viewModel.connectionState)) {
-        _disconnecting = false;
-        _stopStreamPump();
-      }
-      if (_disconnecting) {
-        return;
-      }
-      if (_isStreamingState(output.viewModel.connectionState) && output.viewModel.shell.selectedSessionId.isNotEmpty) {
-        _startStreamPump();
-      }
-      return;
-    }
-    if (output is bindings.AgentRuntimeOutputControllerState) {
-      if (!_isStreamableState(output.controllerState.connectionState)) {
-        _disconnecting = false;
-        _stopStreamPump();
-      }
-      if (_disconnecting) {
-        return;
-      }
-      if (_isStreamingState(output.controllerState.connectionState) && output.controllerState.hasSelectedSessionId) {
-        _startStreamPump();
-      }
-      return;
-    }
-    if (output is bindings.AgentRuntimeOutputStreamOutcome) {
-      if (_disconnecting) {
-        return;
-      }
-      final outcome = output.outcome;
-      if (outcome is bindings.AgentRuntimeStreamOutcomeServerShutdown || outcome is bindings.AgentRuntimeStreamOutcomeStreamClosed) {
-        _stopStreamPump();
-        return;
-      }
-      if (outcome is bindings.AgentRuntimeStreamOutcomeResyncRequired && output.controllerState.hasSelectedSessionId) {
-        _send('stream-rehydrate', bindings.AgentRuntimeRequestRehydrate(selectedSessionId: output.controllerState.selectedSessionId));
-      }
-      _streamPumpEnabled = _isStreamableState(output.controllerState.connectionState);
-      _requestNextStreamPacket();
-      return;
-    }
-    if (output is bindings.AgentRuntimeOutputError && isStreamConsumeReply) {
-      _stopStreamPump();
-    }
-  }
-
-  bool _isStreamableState(String connectionState) {
-    final normalized = connectionState.toLowerCase();
-    return normalized.contains('connected') || normalized.contains('streaming');
-  }
-
-  bool _isStreamingState(String connectionState) {
-    return connectionState.toLowerCase().contains('streaming');
   }
 
   void _applyOutput(bindings.AgentRuntimeOutput output) {
@@ -979,8 +868,6 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _disposed = true;
-    _stopStreamPump();
     _subscription?.cancel();
     super.dispose();
   }
