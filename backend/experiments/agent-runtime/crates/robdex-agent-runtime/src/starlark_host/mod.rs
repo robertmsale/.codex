@@ -83,6 +83,79 @@ pub fn terminate_all_runtime_processes(reason: &str) -> usize {
     terminated
 }
 
+#[cfg(test)]
+pub fn register_test_terminable_process(session_id: Uuid) -> Result<(Uuid, String)> {
+    let id = Uuid::new_v4();
+    let handle = format!("proc_{}", Uuid::new_v4().simple());
+    let command_version = CommandVersion {
+        version_id: Uuid::new_v4(),
+        definition_id: Uuid::new_v4(),
+        scope_type: "global".to_string(),
+        project_key: None,
+        action_id: "cmd.test.sleep".to_string(),
+        binary_name: "sleep".to_string(),
+        candidate_paths: vec![PathBuf::from("/bin/sleep")],
+        starlark_object: "sleep".to_string(),
+        starlark_method: "run".to_string(),
+        argv_prefix: vec!["30".to_string()],
+        default_cwd: ".".to_string(),
+        cwd_policy: "allow".to_string(),
+        env_policy: "inherit".to_string(),
+        max_runtime: Some(Duration::from_secs(60)),
+        output_limit: OUTPUT_LIMIT_BYTES,
+        mutation_class: "read".to_string(),
+        model_description: "test sleep".to_string(),
+        allow_cwd_arg: true,
+        allow_args_arg: true,
+        forbidden_args: vec![],
+        execution_policy: "allow".to_string(),
+        sync_allowed: true,
+        async_allowed: true,
+        end_of_turn_behavior: "continue".to_string(),
+        stdin_policy: "forbid".to_string(),
+        min_await_ms: 0,
+        max_await_ms: 1000,
+        output_buffer_bytes: OUTPUT_LIMIT_BYTES,
+        terminate_grace_ms: 50,
+    };
+    let mut command = Command::new("/bin/sleep");
+    command
+        .arg("30")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::piped())
+        .process_group(0);
+    let child = command.spawn().context("spawn test terminable process")?;
+    let process = ManagedProcess {
+        id,
+        handle: handle.clone(),
+        command_version_id: command_version.version_id,
+        binary_name: command_version.binary_name.clone(),
+        binary_path: "/bin/sleep".to_string(),
+        argv: vec!["30".to_string()],
+        cwd: ".".to_string(),
+        child,
+        stdout: Arc::new(Mutex::new(String::new())),
+        stderr: Arc::new(Mutex::new(String::new())),
+        stdout_flush_cursor: 0,
+        stderr_flush_cursor: 0,
+        started: Instant::now(),
+        started_at: Utc::now(),
+        status: "running".to_string(),
+        end_of_session_behavior: "terminate".to_string(),
+        termination_reason: None,
+        command_version,
+    };
+    let mut manager = PROCESS_MANAGER
+        .lock()
+        .map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
+    manager
+        .entry(session_id)
+        .or_default()
+        .insert(handle.clone(), process);
+    Ok((id, handle))
+}
+
 fn end_of_session_behavior(command_version: &CommandVersion) -> String {
     if command_version.end_of_turn_behavior == "terminate" {
         "terminate".to_string()

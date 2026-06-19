@@ -14,24 +14,24 @@ use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let base_url = env::var("ROBDEX_AGENT_RUNTIME_SERVER_SMOKE_BASE_URL")
-        .context("ROBDEX_AGENT_RUNTIME_SERVER_SMOKE_BASE_URL is required")?;
+    let base_url = env::var("ROBDEX_AGENT_RUNTIME_SERVER_VALIDATION_BASE_URL")
+        .context("ROBDEX_AGENT_RUNTIME_SERVER_VALIDATION_BASE_URL is required")?;
     let database_url = env::var("ROBDEX_AGENT_RUNTIME_DATABASE_URL")
         .context("ROBDEX_AGENT_RUNTIME_DATABASE_URL is required")?;
     let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
     let pool = db::connect(&database_url).await?;
-    if env::var("ROBDEX_AGENT_RUNTIME_SERVER_SMOKE_HOLD_WS").ok().as_deref() == Some("1") {
+    if env::var("ROBDEX_AGENT_RUNTIME_SERVER_VALIDATION_HOLD_WS").ok().as_deref() == Some("1") {
         hold_websocket_until_shutdown(&client, base_url.trim_end_matches('/')).await?;
         pool.close().await;
         return Ok(());
     }
-    run_smoke(&client, &pool, base_url.trim_end_matches('/')).await?;
+    run_validation(&client, &pool, base_url.trim_end_matches('/')).await?;
     pool.close().await;
-    println!("[server-smoke-client] deterministic resident server smoke complete");
+    println!("[server-validation-client] deterministic resident server validation complete");
     Ok(())
 }
 
-async fn run_smoke(client: &Client, pool: &PgPool, base: &str) -> Result<()> {
+async fn run_validation(client: &Client, pool: &PgPool, base: &str) -> Result<()> {
     step("health");
     let health = get_json(client, base, "/health", StatusCode::OK).await?;
     assert_eq_str(&health, "/status", "ok")?;
@@ -46,7 +46,7 @@ async fn run_smoke(client: &Client, pool: &PgPool, base: &str) -> Result<()> {
         client,
         base,
         "/sessions",
-        json!({"role":"runtime-no-rg","project":"server-smoke","workdir":".","worktreeRoot":"."}),
+        json!({"role":"runtime-no-rg","project":"server-validation","workdir":".","worktreeRoot":"."}),
         StatusCode::OK,
     )
     .await?;
@@ -62,16 +62,16 @@ async fn run_smoke(client: &Client, pool: &PgPool, base: &str) -> Result<()> {
 
     step("command registry request/review/preview/decide/apply");
     let _commands = get_json(client, base, "/command-registry", StatusCode::OK).await?;
-    let seed = command_seed("cmd.server.smoke");
+    let seed = command_seed("cmd.server.validation");
     let request_id = command_registry::create_request(
         pool,
         session_id,
         command_registry::ChangeRequestInput {
             operation: "add".to_string(),
             command: serde_json::from_value(seed.clone())?,
-            rationale: "deterministic resident server smoke".to_string(),
-            recommended_policy: "operator reviewed deterministic smoke".to_string(),
-            requester: "server-smoke-client".to_string(),
+            rationale: "deterministic resident server validation".to_string(),
+            recommended_policy: "operator reviewed deterministic validation".to_string(),
+            requester: "server-validation-client".to_string(),
         },
     )
     .await?;
@@ -81,15 +81,15 @@ async fn run_smoke(client: &Client, pool: &PgPool, base: &str) -> Result<()> {
     let decision = json!({
         "sessionId": session_id,
         "status": "approved",
-        "finalScope": {"scopeType":"project","projectKey":"server-smoke"},
-        "finalExecutionPolicy": {"decision":"allow","reason":"deterministic smoke"},
+        "finalScope": {"scopeType":"project","projectKey":"server-validation"},
+        "finalExecutionPolicy": {"decision":"allow","reason":"deterministic validation"},
         "finalCommand": seed
     });
     let _preview = post_json(client, base, &format!("/command-registry/requests/{request_id}/preview-decision"), decision.clone(), StatusCode::OK).await?;
     let _decided = post_json(client, base, &format!("/command-registry/requests/{request_id}/decide"), decision, StatusCode::OK).await?;
     let _applied = post_json(client, base, &format!("/command-registry/requests/{request_id}/apply"), json!({"sessionId": session_id}), StatusCode::OK).await?;
-    let scoped = get_json(client, base, "/command-registry/cmd.server.smoke?project=server-smoke", StatusCode::OK).await?;
-    assert_eq_str(&scoped, "/actionId", "cmd.server.smoke")?;
+    let scoped = get_json(client, base, "/command-registry/cmd.server.validation?project=server-validation", StatusCode::OK).await?;
+    assert_eq_str(&scoped, "/actionId", "cmd.server.validation")?;
 
     step("workflow memory inspection/feedback");
     let memory_id = seed_workflow_memory(pool, session_id).await?;
@@ -101,7 +101,7 @@ async fn run_smoke(client: &Client, pool: &PgPool, base: &str) -> Result<()> {
         client,
         base,
         &format!("/workflow-memories/{memory_id}/feedback"),
-        json!({"sessionId": session_id, "feedback":"attempted", "payload":{"variant":true,"source":"server-smoke"}}),
+        json!({"sessionId": session_id, "feedback":"attempted", "payload":{"variant":true,"source":"server-validation"}}),
         StatusCode::OK,
     )
     .await?;
@@ -113,19 +113,19 @@ async fn run_smoke(client: &Client, pool: &PgPool, base: &str) -> Result<()> {
     assert_error_code(&bad_request, "bad_request")?;
     let missing_session = get_json(client, base, &format!("/sessions/{}", Uuid::new_v4()), StatusCode::NOT_FOUND).await?;
     assert_error_code(&missing_session, "not_found")?;
-    let closed = post_json(client, base, &format!("/sessions/{session_id}/close"), json!({"reason":"server smoke conflict setup"}), StatusCode::OK).await?;
+    let closed = post_json(client, base, &format!("/sessions/{session_id}/close"), json!({"reason":"server validation conflict setup"}), StatusCode::OK).await?;
     assert_eq_str(&closed, "/status", "closed")?;
     let conflict = post_json(client, base, &format!("/sessions/{session_id}/send"), json!({"message":"must not call model because session is closed"}), StatusCode::CONFLICT).await?;
     assert_error_code(&conflict, "conflict")?;
     let validation = post_json(client, base, &format!("/command-registry/requests/{request_id}/preview-decision"), json!({"status":"maybe"}), StatusCode::UNPROCESSABLE_ENTITY).await?;
     assert_error_code(&validation, "validation_failed")?;
-    let other_session = post_json(client, base, "/sessions", json!({"role":"runtime-no-rg","project":"other-server-smoke","workdir":".","worktreeRoot":"."}), StatusCode::OK).await?;
+    let other_session = post_json(client, base, "/sessions", json!({"role":"runtime-no-rg","project":"other-server-validation","workdir":".","worktreeRoot":"."}), StatusCode::OK).await?;
     let other_session_id = uuid_at(&other_session, "/sessionId")?;
     let forbidden = post_json(client, base, &format!("/workflow-memories/{memory_id}/feedback"), json!({"sessionId": other_session_id, "feedback":"helpful", "payload":{}}), StatusCode::FORBIDDEN).await?;
     assert_error_code(&forbidden, "forbidden")?;
 
     step("websocket semantic delta and resync");
-    let ws_session = post_json(client, base, "/sessions", json!({"role":"runtime-no-rg","project":"server-smoke-ws","workdir":".","worktreeRoot":"."}), StatusCode::OK).await?;
+    let ws_session = post_json(client, base, "/sessions", json!({"role":"runtime-no-rg","project":"server-validation-ws","workdir":".","worktreeRoot":"."}), StatusCode::OK).await?;
     let ws_session_id = uuid_at(&ws_session, "/sessionId")?;
     let ws_snapshot = get_json(client, base, "/state/snapshot", StatusCode::OK).await?;
     let watermark = ws_snapshot.pointer("/watermark").and_then(Value::as_i64).context("websocket snapshot watermark missing")?;
@@ -134,9 +134,9 @@ async fn run_smoke(client: &Client, pool: &PgPool, base: &str) -> Result<()> {
         .fetch_one(pool)
         .await?;
     if pending_delta_rows != 0 {
-        bail!("websocket smoke expected no catch-up rows before live mutation, found {pending_delta_rows} rows after watermark {watermark}");
+        bail!("websocket validation expected no catch-up rows before live mutation, found {pending_delta_rows} rows after watermark {watermark}");
     }
-    println!("[server-smoke-client] websocket after={watermark} pending_event_rows={pending_delta_rows}");
+    println!("[server-validation-client] websocket after={watermark} pending_event_rows={pending_delta_rows}");
     let ws_url = websocket_url(base, &format!("/state/ws?after={watermark}&selectedSessionId={ws_session_id}"))?;
     let (mut ws, _) = connect_async(&ws_url).await.with_context(|| format!("connect websocket {ws_url}"))?;
     let hello = next_ws_json(&mut ws).await?;
@@ -178,7 +178,7 @@ async fn run_smoke(client: &Client, pool: &PgPool, base: &str) -> Result<()> {
         SyncOutcome::Hello { .. } => {}
         outcome => bail!("GUI sync expected hello, got {outcome:?}"),
     }
-    let sync_created = post_json(client, base, "/sessions", json!({"role":"runtime-no-rg","project":"server-smoke-gui-sync","workdir":".","worktreeRoot":"."}), StatusCode::OK).await?;
+    let sync_created = post_json(client, base, "/sessions", json!({"role":"runtime-no-rg","project":"server-validation-gui-sync","workdir":".","worktreeRoot":"."}), StatusCode::OK).await?;
     let sync_session_id = uuid_at(&sync_created, "/sessionId")?;
     let mut saw_sync_upsert = false;
     let mut saw_sync_timeline = false;
@@ -238,13 +238,13 @@ async fn hold_websocket_until_shutdown(client: &Client, base: &str) -> Result<()
     let (mut ws, _) = connect_async(&ws_url).await.with_context(|| format!("connect websocket {ws_url}"))?;
     let hello = next_ws_json(&mut ws).await?;
     assert_eq_str(&hello, "/type", "hello")?;
-    if let Ok(path) = env::var("ROBDEX_AGENT_RUNTIME_SERVER_SMOKE_HOLD_WS_READY") {
+    if let Ok(path) = env::var("ROBDEX_AGENT_RUNTIME_SERVER_VALIDATION_HOLD_WS_READY") {
         std::fs::write(&path, "ready\n").with_context(|| format!("write hold-ws ready file {path}"))?;
     }
     loop {
         let message = next_ws_json(&mut ws).await?;
         if message.pointer("/type").and_then(Value::as_str) == Some("serverShutdown") {
-            println!("[server-smoke-client] websocket observed serverShutdown");
+            println!("[server-validation-client] websocket observed serverShutdown");
             return Ok(());
         }
     }
@@ -295,14 +295,14 @@ async fn seed_workflow_memory(pool: &PgPool, session_id: Uuid) -> Result<Uuid> {
         .execute(pool)
         .await?;
     let tool_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status) VALUES ($1,$2,$3,'execute_code','server-smoke-memory','{}'::jsonb,'completed')")
+    sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status) VALUES ($1,$2,$3,'execute_code','server-validation-memory','{}'::jsonb,'completed')")
         .bind(tool_id)
         .bind(session_id)
         .bind(turn_id)
         .execute(pool)
         .await?;
     let script_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status) VALUES ($1,$2,'output(\"server smoke memory\")','completed')")
+    sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status) VALUES ($1,$2,'output(\"server validation memory\")','completed')")
         .bind(script_id)
         .bind(tool_id)
         .execute(pool)
@@ -314,7 +314,7 @@ async fn seed_workflow_memory(pool: &PgPool, session_id: Uuid) -> Result<Uuid> {
         INSERT INTO workflow_memories (
             id, script_run_id, session_id, scope_type, project_key, title, reason, summary,
             provider, model, dimensions, storage_type, source_hash, command_fingerprint, embedding
-        ) VALUES ($1,$2,$3,'project','server-smoke','Server Smoke Memory','Reason','Summary','deterministic','test',$4,'halfvec','server-smoke-hash','plain',$5::halfvec)
+        ) VALUES ($1,$2,$3,'project','server-validation','Server Validation Memory','Reason','Summary','deterministic','test',$4,'halfvec','server-validation-hash','plain',$5::halfvec)
         "#,
     )
     .bind(memory_id)
@@ -328,7 +328,7 @@ async fn seed_workflow_memory(pool: &PgPool, session_id: Uuid) -> Result<Uuid> {
 }
 
 async fn verify_preseeded_reconciliation(pool: &PgPool) -> Result<()> {
-    let Ok(raw_process_id) = env::var("ROBDEX_AGENT_RUNTIME_SERVER_SMOKE_PRESEEDED_PROCESS_ID") else {
+    let Ok(raw_process_id) = env::var("ROBDEX_AGENT_RUNTIME_SERVER_VALIDATION_PRESEEDED_PROCESS_ID") else {
         return Ok(());
     };
     let process_id = Uuid::parse_str(&raw_process_id)?;
@@ -354,7 +354,7 @@ async fn verify_preseeded_reconciliation(pool: &PgPool) -> Result<()> {
     if process_events != 1 || session_events != 1 {
         bail!("preseeded process reconciliation missing event evidence: process_events={process_events}, session_events={session_events}");
     }
-    println!("[server-smoke-client] preseeded process reconciliation process={process_id} status={status} reason={}", reason.unwrap_or_default());
+    println!("[server-validation-client] preseeded process reconciliation process={process_id} status={status} reason={}", reason.unwrap_or_default());
     Ok(())
 }
 
@@ -363,7 +363,7 @@ fn command_seed(action_id: &str) -> Value {
         "actionId": action_id,
         "binaryName": "echo",
         "candidatePaths": ["/bin/echo", "/usr/bin/echo"],
-        "starlarkObject": "server_smoke_echo",
+        "starlarkObject": "server_validation_echo",
         "starlarkMethod": "run",
         "argvPrefix": [],
         "defaultCwd": ".",
@@ -380,7 +380,7 @@ fn command_seed(action_id: &str) -> Value {
         "terminateGraceMs": 1000,
         "outputLimitBytes": 12000,
         "mutationClass": "readOnly",
-        "modelDescription": "deterministic resident server smoke command",
+        "modelDescription": "deterministic resident server validation command",
         "allowCwdArg": false,
         "allowArgsArg": true,
         "forbiddenArgs": [],
@@ -441,5 +441,5 @@ fn ensure_array_non_empty(value: &Value, label: &str) -> Result<()> {
 }
 
 fn step(name: &str) {
-    println!("[server-smoke-client] {name}");
+    println!("[server-validation-client] {name}");
 }

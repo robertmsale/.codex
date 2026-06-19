@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -12,25 +13,29 @@ use serde_json::{Value, json};
 use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
 
 const CHATGPT_CODEX_RESPONSES_URL: &str =
-    "https://chatgpt.com/backend-api/codex/responses?client_version=0.124.0&source=robdex-agent-runtime";
+    "https://chatgpt.com/backend-api/codex/responses";
+const OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
 const RAW_MODEL_RESPONSE_LIMIT: usize = 24_000;
 
 pub struct CodexBackedModelClient {
     model: String,
     http: reqwest::Client,
-    auth: CodexAuthMaterial,
+    auth_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
 struct CodexAuthMaterial {
     bearer: String,
     account_id: Option<String>,
+    endpoint: &'static str,
+    source: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
 struct AuthJson {
     #[serde(rename = "OPENAI_API_KEY")]
     openai_api_key: Option<String>,
+    auth_mode: Option<String>,
     tokens: Option<AuthTokens>,
 }
 
@@ -38,6 +43,12 @@ struct AuthJson {
 struct AuthTokens {
     access_token: String,
     account_id: Option<String>,
+    id_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IdTokenClaims {
+    exp: Option<i64>,
 }
 
 impl CodexBackedModelClient {
@@ -51,7 +62,7 @@ impl CodexBackedModelClient {
         Ok(Self {
             model,
             http: reqwest::Client::new(),
-            auth: read_codex_auth()?,
+            auth_path: codex_home().join("auth.json"),
         })
     }
 
@@ -164,20 +175,34 @@ impl CodexBackedModelClient {
         })
     }
 
-    fn request_headers(&self) -> Result<HeaderMap> {
+    #[cfg(test)]
+    fn new_for_testing(model: String, auth_path: PathBuf) -> Self {
+        Self {
+            model,
+            http: reqwest::Client::new(),
+            auth_path,
+        }
+    }
+
+    fn resolve_auth(&self) -> Result<CodexAuthMaterial> {
+        read_codex_auth(&self.auth_path)
+    }
+
+    fn request_headers(auth: &CodexAuthMaterial) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", self.auth.bearer))
+            HeaderValue::from_str(&format!("Bearer {}", auth.bearer))
                 .context("invalid bearer token header")?,
         );
-        if let Some(account_id) = &self.auth.account_id {
+        if let Some(account_id) = &auth.account_id {
             headers.insert(
-                "chatgpt-account-id",
+                "ChatGPT-Account-ID",
                 HeaderValue::from_str(account_id).context("invalid chatgpt account id header")?,
             );
         }
+        headers.insert("originator", HeaderValue::from_static("codex_cli_rs"));
         headers.insert(
             "x-codex-client",
             HeaderValue::from_static("robdex-agent-runtime-experiment"),
@@ -186,10 +211,11 @@ impl CodexBackedModelClient {
     }
 
     async fn post_responses(&self, body: &Value) -> Result<Value> {
+        let auth = self.resolve_auth()?;
         let response = self
             .http
-            .post(CHATGPT_CODEX_RESPONSES_URL)
-            .headers(self.request_headers()?)
+            .post(auth.endpoint)
+            .headers(Self::request_headers(&auth)?)
             .json(body)
             .send()
             .await
@@ -197,7 +223,7 @@ impl CodexBackedModelClient {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         if !status.is_success() {
-            bail!("Responses request failed with HTTP {status}: {text}");
+            bail!("Responses request failed using {} auth with HTTP {status}: {text}", auth.source);
         }
         parse_responses_body(&text).with_context(|| format!("invalid Responses response body: {text}"))
     }
@@ -365,35 +391,102 @@ pub fn responses_input_from_history(history: &[ModelHistoryItem], runtime_messag
     input
 }
 
-fn read_codex_auth() -> Result<CodexAuthMaterial> {
+fn codex_home() -> PathBuf {
+    PathBuf::from(std::env::var("CODEX_HOME").unwrap_or_else(|_| "/Users/robertsale/.codex".to_string()))
+}
+
+fn read_codex_auth(auth_path: &std::path::Path) -> Result<CodexAuthMaterial> {
+    let auth = fs::read_to_string(auth_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<AuthJson>(&raw).ok());
+    if let Some(auth) = auth {
+        if auth.auth_mode.as_deref() != Some("api_key")
+            && let Some(tokens) = auth.tokens
+            && !tokens.access_token.trim().is_empty()
+            && id_token_is_not_expired(tokens.id_token.as_deref())
+        {
+            return Ok(CodexAuthMaterial {
+                bearer: tokens.access_token,
+                account_id: tokens.account_id,
+                endpoint: CHATGPT_CODEX_RESPONSES_URL,
+                source: "codex-auth-json",
+            });
+        }
+        if let Some(api_key) = auth.openai_api_key.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
+            return Ok(CodexAuthMaterial {
+                bearer: api_key,
+                account_id: None,
+                endpoint: OPENAI_RESPONSES_URL,
+                source: "codex-auth-json-api-key",
+            });
+        }
+    }
     if let Ok(api_key) = std::env::var("OPENAI_API_KEY")
         && !api_key.trim().is_empty()
     {
         return Ok(CodexAuthMaterial {
-            bearer: api_key,
+            bearer: api_key.trim().to_string(),
             account_id: None,
+            endpoint: OPENAI_RESPONSES_URL,
+            source: "openai-api-key-env",
         });
     }
-    let auth_path = PathBuf::from(
-        std::env::var("CODEX_HOME").unwrap_or_else(|_| "/Users/robertsale/.codex".to_string()),
-    )
-    .join("auth.json");
-    let raw = fs::read_to_string(&auth_path)
-        .with_context(|| format!("failed to read Codex auth file {}", auth_path.display()))?;
-    let auth: AuthJson = serde_json::from_str(&raw).context("failed to parse Codex auth JSON")?;
-    if let Some(api_key) = auth.openai_api_key
-        && !api_key.trim().is_empty()
-    {
-        return Ok(CodexAuthMaterial {
-            bearer: api_key,
-            account_id: None,
-        });
+    bail!("Codex auth.json does not contain a non-expired ChatGPT token and OPENAI_API_KEY fallback is not set")
+}
+
+fn id_token_is_not_expired(id_token: Option<&str>) -> bool {
+    let Some(id_token) = id_token else {
+        return false;
+    };
+    let Some(payload) = id_token.split('.').nth(1) else {
+        return false;
+    };
+    let decoded = match base64_url_decode(payload) {
+        Some(decoded) => decoded,
+        None => return false,
+    };
+    let claims = match serde_json::from_slice::<IdTokenClaims>(&decoded) {
+        Ok(claims) => claims,
+        Err(_) => return false,
+    };
+    let Some(exp) = claims.exp else {
+        return false;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(i64::MAX);
+    exp > now + 60
+}
+
+fn base64_url_decode(input: &str) -> Option<Vec<u8>> {
+    const INVALID: u8 = 255;
+    fn value(byte: u8) -> u8 {
+        match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => INVALID,
+        }
     }
-    let tokens = auth.tokens.context("Codex auth JSON has no token data")?;
-    Ok(CodexAuthMaterial {
-        bearer: tokens.access_token,
-        account_id: tokens.account_id,
-    })
+    let mut buffer = 0u32;
+    let mut bits = 0u8;
+    let mut output = Vec::new();
+    for byte in input.bytes().filter(|byte| *byte != b'=') {
+        let val = value(byte);
+        if val == INVALID {
+            return None;
+        }
+        buffer = (buffer << 6) | val as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            output.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+    Some(output)
 }
 
 fn find_native_tool_item(response: &Value, call_id: &str) -> Result<Value> {
@@ -590,5 +683,75 @@ mod cache_stable_tests {
         assert!(source_description.contains("Starlark source"));
         assert!(!source_description.contains("Registry commands available now"));
         assert!(!source_description.contains("cmd[\""));
+    }
+
+    #[test]
+    fn auth_json_chatgpt_tokens_take_precedence_over_api_key_when_not_expired() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let auth_path = dir.path().join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{
+                "auth_mode": "chatgpt",
+                "OPENAI_API_KEY": "sk-auth-json",
+                "tokens": {
+                    "access_token": "chatgpt-access",
+                    "account_id": "account-123",
+                    "id_token": "header.eyJleHAiOjQxMDI0NDQ4MDB9.signature",
+                    "refresh_token": "refresh"
+                }
+            }"#,
+        )
+        .expect("write auth");
+
+        let auth = read_codex_auth(&auth_path).expect("auth");
+
+        assert_eq!(auth.source, "codex-auth-json");
+        assert_eq!(auth.endpoint, CHATGPT_CODEX_RESPONSES_URL);
+        assert_eq!(auth.bearer, "chatgpt-access");
+        assert_eq!(auth.account_id.as_deref(), Some("account-123"));
+    }
+
+    #[test]
+    fn expired_chatgpt_token_falls_back_to_auth_json_api_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let auth_path = dir.path().join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{
+                "auth_mode": "chatgpt",
+                "OPENAI_API_KEY": "sk-auth-json",
+                "tokens": {
+                    "access_token": "expired-chatgpt-access",
+                    "account_id": "account-123",
+                    "id_token": "header.eyJleHAiOjEwMDB9.signature",
+                    "refresh_token": "refresh"
+                }
+            }"#,
+        )
+        .expect("write auth");
+
+        let auth = read_codex_auth(&auth_path).expect("auth");
+
+        assert_eq!(auth.source, "codex-auth-json-api-key");
+        assert_eq!(auth.endpoint, OPENAI_RESPONSES_URL);
+        assert_eq!(auth.bearer, "sk-auth-json");
+        assert!(auth.account_id.is_none());
+    }
+
+    #[test]
+    fn chatgpt_auth_headers_match_codex_backend_contract() {
+        let auth = CodexAuthMaterial {
+            bearer: "chatgpt-access".to_string(),
+            account_id: Some("account-123".to_string()),
+            endpoint: CHATGPT_CODEX_RESPONSES_URL,
+            source: "codex-auth-json",
+        };
+
+        let headers = CodexBackedModelClient::request_headers(&auth).expect("headers");
+
+        assert_eq!(headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok()), Some("Bearer chatgpt-access"));
+        assert_eq!(headers.get("chatgpt-account-id").and_then(|value| value.to_str().ok()), Some("account-123"));
+        assert_eq!(headers.get("originator").and_then(|value| value.to_str().ok()), Some("codex_cli_rs"));
     }
 }

@@ -18,7 +18,6 @@ class AgentRuntimeWorkbench extends StatelessWidget {
     required this.onImportRemoteProfile,
     required this.onRefreshImportedRemoteProfile,
     required this.onConnectImportedRemoteProfile,
-    required this.onPollStream,
     required this.onDisconnect,
     this.onRoleValidate,
     this.onRoleCreate,
@@ -38,8 +37,11 @@ class AgentRuntimeWorkbench extends StatelessWidget {
     this.onProcessInput,
     this.onProcessFlush,
     this.onApprovalApprove,
+    this.onApprovalDeny,
     this.onApprovalResume,
     this.onCommandRegistryApprove,
+    this.onCommandRegistryDeny,
+    this.onCommandRegistryPreview,
     this.onCommandRegistryApply,
   });
 
@@ -53,7 +55,6 @@ class AgentRuntimeWorkbench extends StatelessWidget {
   final VoidCallback onImportRemoteProfile;
   final VoidCallback onRefreshImportedRemoteProfile;
   final VoidCallback onConnectImportedRemoteProfile;
-  final VoidCallback onPollStream;
   final VoidCallback onDisconnect;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleValidate;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleCreate;
@@ -73,8 +74,11 @@ class AgentRuntimeWorkbench extends StatelessWidget {
   final ValueChanged<String>? onProcessInput;
   final ValueChanged<String>? onProcessFlush;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalApprove;
+  final ValueChanged<AgentRuntimeActionItem>? onApprovalDeny;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalResume;
   final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApprove;
+  final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryDeny;
+  final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryPreview;
   final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApply;
 
   @override
@@ -105,7 +109,6 @@ class AgentRuntimeWorkbench extends StatelessWidget {
               children: [
                 _RuntimeTopBar(
                   data: data,
-                  onPollStream: onPollStream,
                   onDisconnect: onDisconnect,
                 ),
                 if (data.errorMessage case final error?)
@@ -138,7 +141,14 @@ class AgentRuntimeWorkbench extends StatelessWidget {
                                   onSessionFork: onSessionFork,
                                   onProcessTerminate: onProcessTerminate,
                                   onProcessInput: onProcessInput,
-                                  onProcessFlush: onProcessFlush)),
+                                  onProcessFlush: onProcessFlush,
+                                  onApprovalApprove: onApprovalApprove,
+                                  onApprovalDeny: onApprovalDeny,
+                                  onApprovalResume: onApprovalResume,
+                                  onCommandRegistryApprove: onCommandRegistryApprove,
+                                  onCommandRegistryDeny: onCommandRegistryDeny,
+                                  onCommandRegistryPreview: onCommandRegistryPreview,
+                                  onCommandRegistryApply: onCommandRegistryApply)),
                             ],
                           )
                         : Row(
@@ -172,7 +182,14 @@ class AgentRuntimeWorkbench extends StatelessWidget {
                                           onSessionFork: onSessionFork,
                                           onProcessTerminate: onProcessTerminate,
                                           onProcessInput: onProcessInput,
-                                          onProcessFlush: onProcessFlush),
+                                          onProcessFlush: onProcessFlush,
+                                          onApprovalApprove: onApprovalApprove,
+                                          onApprovalDeny: onApprovalDeny,
+                                          onApprovalResume: onApprovalResume,
+                                          onCommandRegistryApprove: onCommandRegistryApprove,
+                                          onCommandRegistryDeny: onCommandRegistryDeny,
+                                          onCommandRegistryPreview: onCommandRegistryPreview,
+                                          onCommandRegistryApply: onCommandRegistryApply),
                                     ),
                                   ],
                                 ),
@@ -308,12 +325,10 @@ class _RuntimeLoginScreen extends StatelessWidget {
 class _RuntimeTopBar extends StatelessWidget {
   const _RuntimeTopBar({
     required this.data,
-    required this.onPollStream,
     required this.onDisconnect,
   });
 
   final AgentRuntimeWorkbenchData data;
-  final VoidCallback onPollStream;
   final VoidCallback onDisconnect;
 
   @override
@@ -339,8 +354,6 @@ class _RuntimeTopBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          OutlinedButton(onPressed: onPollStream, child: const Text('Refresh')),
-          const SizedBox(width: 6),
           OutlinedButton(onPressed: onDisconnect, child: const Text('Disconnect')),
         ],
       ),
@@ -554,8 +567,11 @@ class _DetailsPanel extends StatelessWidget {
     this.onProcessInput,
     this.onProcessFlush,
     this.onApprovalApprove,
+    this.onApprovalDeny,
     this.onApprovalResume,
     this.onCommandRegistryApprove,
+    this.onCommandRegistryDeny,
+    this.onCommandRegistryPreview,
     this.onCommandRegistryApply,
   });
 
@@ -579,8 +595,11 @@ class _DetailsPanel extends StatelessWidget {
   final ValueChanged<String>? onProcessInput;
   final ValueChanged<String>? onProcessFlush;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalApprove;
+  final ValueChanged<AgentRuntimeActionItem>? onApprovalDeny;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalResume;
   final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApprove;
+  final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryDeny;
+  final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryPreview;
   final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApply;
 
   @override
@@ -639,8 +658,11 @@ class _DetailsPanel extends StatelessWidget {
               (action) => _ActionTile(
                 action,
                 onApprovalApprove: onApprovalApprove == null ? null : () => onApprovalApprove!(action),
+                onApprovalDeny: onApprovalDeny == null ? null : () => onApprovalDeny!(action),
                 onApprovalResume: onApprovalResume == null ? null : () => onApprovalResume!(action),
                 onCommandRegistryApprove: onCommandRegistryApprove == null ? null : () => onCommandRegistryApprove!(action),
+                onCommandRegistryDeny: onCommandRegistryDeny == null ? null : () => onCommandRegistryDeny!(action),
+                onCommandRegistryPreview: onCommandRegistryPreview == null ? null : () => onCommandRegistryPreview!(action),
                 onCommandRegistryApply: onCommandRegistryApply == null ? null : () => onCommandRegistryApply!(action),
               ),
             ),
@@ -689,17 +711,19 @@ class _DetailsPanel extends StatelessWidget {
         case 'processFlush':
           return onProcessFlush == null ? null : () => onProcessFlush!(action.id);
         case 'approval':
-          if (action.title.toLowerCase().contains('resume')) {
-            return onApprovalResume == null ? null : () => onApprovalResume!(action);
-          }
           return onApprovalApprove == null ? null : () => onApprovalApprove!(action);
+        case 'approvalDeny':
+          return onApprovalDeny == null ? null : () => onApprovalDeny!(action);
         case 'approvalResume':
           return onApprovalResume == null ? null : () => onApprovalResume!(action);
+        case 'commandRegistryPreview':
+          return onCommandRegistryPreview == null ? null : () => onCommandRegistryPreview!(action);
         case 'commandRegistryRequest':
-          if (action.title.toLowerCase().contains('apply')) {
-            return onCommandRegistryApply == null ? null : () => onCommandRegistryApply!(action);
-          }
           return onCommandRegistryApprove == null ? null : () => onCommandRegistryApprove!(action);
+        case 'commandRegistryDeny':
+          return onCommandRegistryDeny == null ? null : () => onCommandRegistryDeny!(action);
+        case 'commandRegistryApply':
+          return onCommandRegistryApply == null ? null : () => onCommandRegistryApply!(action);
         default:
           return null;
       }
@@ -730,8 +754,11 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
     this.onProcessInput,
     this.onProcessFlush,
     this.onApprovalApprove,
+    this.onApprovalDeny,
     this.onApprovalResume,
     this.onCommandRegistryApprove,
+    this.onCommandRegistryDeny,
+    this.onCommandRegistryPreview,
     this.onCommandRegistryApply,
   });
 
@@ -755,8 +782,11 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
   final ValueChanged<String>? onProcessInput;
   final ValueChanged<String>? onProcessFlush;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalApprove;
+  final ValueChanged<AgentRuntimeActionItem>? onApprovalDeny;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalResume;
   final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApprove;
+  final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryDeny;
+  final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryPreview;
   final ValueChanged<AgentRuntimeActionItem>? onCommandRegistryApply;
 
   @override
@@ -782,8 +812,11 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
       onProcessInput: onProcessInput,
       onProcessFlush: onProcessFlush,
       onApprovalApprove: onApprovalApprove,
+      onApprovalDeny: onApprovalDeny,
       onApprovalResume: onApprovalResume,
       onCommandRegistryApprove: onCommandRegistryApprove,
+      onCommandRegistryDeny: onCommandRegistryDeny,
+      onCommandRegistryPreview: onCommandRegistryPreview,
       onCommandRegistryApply: onCommandRegistryApply,
     );
   }
@@ -1133,15 +1166,21 @@ class _ActionTile extends StatelessWidget {
   const _ActionTile(
     this.item, {
     this.onApprovalApprove,
+    this.onApprovalDeny,
     this.onApprovalResume,
     this.onCommandRegistryApprove,
+    this.onCommandRegistryDeny,
+    this.onCommandRegistryPreview,
     this.onCommandRegistryApply,
   });
 
   final AgentRuntimeActionItem item;
   final VoidCallback? onApprovalApprove;
+  final VoidCallback? onApprovalDeny;
   final VoidCallback? onApprovalResume;
   final VoidCallback? onCommandRegistryApprove;
+  final VoidCallback? onCommandRegistryDeny;
+  final VoidCallback? onCommandRegistryPreview;
   final VoidCallback? onCommandRegistryApply;
 
   @override
@@ -1149,9 +1188,17 @@ class _ActionTile extends StatelessWidget {
     final actions = <Widget>[];
     if (item.kind == 'approval') {
       actions.add(OutlinedButton(onPressed: onApprovalApprove, child: const Text('Approve')));
+    } else if (item.kind == 'approvalDeny') {
+      actions.add(OutlinedButton(onPressed: onApprovalDeny, child: const Text('Deny')));
+    } else if (item.kind == 'approvalResume') {
       actions.add(OutlinedButton(onPressed: onApprovalResume, child: const Text('Resume')));
     } else if (item.kind == 'commandRegistryRequest') {
       actions.add(OutlinedButton(onPressed: onCommandRegistryApprove, child: const Text('Approve')));
+    } else if (item.kind == 'commandRegistryDeny') {
+      actions.add(OutlinedButton(onPressed: onCommandRegistryDeny, child: const Text('Deny')));
+    } else if (item.kind == 'commandRegistryPreview') {
+      actions.add(OutlinedButton(onPressed: onCommandRegistryPreview, child: const Text('Preview Decision')));
+    } else if (item.kind == 'commandRegistryApply') {
       actions.add(OutlinedButton(onPressed: onCommandRegistryApply, child: const Text('Apply')));
     }
     return Column(

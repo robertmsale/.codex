@@ -94,7 +94,7 @@ product specification.
 18. Semantic WebSocket deltas.
 19. Core admin APIs.
 20. Typed API error shape and error mapping polish.
-21. Resident server smoke harness.
+21. Resident server validation harness.
 22. Runtime operations hardening and local service wrapper.
 23. GUI integration foundation via shared projection and sync client prototype.
 24. Cache-stable command discovery with synthetic runtime command context and
@@ -228,7 +228,7 @@ Run from `backend/experiments/agent-runtime` unless noted otherwise:
 ```bash
 cargo check
 cargo test
-scripts/smoke-resident-server.sh
+scripts/validate-resident-server.sh
 scripts/validate-local-service.sh
 scripts/validate-launchd-packaging.sh
 ```
@@ -258,8 +258,8 @@ scripts/validate-workflow-memory.sh
 Live-model or external-service tests are opt-in only:
 
 ```bash
-scripts/smoke-live-server-gpt54mini.sh
-scripts/smoke-lmstudio-embeddings.sh
+scripts/validate-live-server-gpt54mini.sh
+scripts/validate-lmstudio-embeddings.sh
 ```
 
 ## Deferred / next likely slices

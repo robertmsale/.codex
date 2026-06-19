@@ -93,12 +93,15 @@ impl GuiBackendController {
         let mut stream = self.stream.take().ok_or_else(|| {
             api_error("conflict", "GUI controller stream is not connected", json!({"operation":"nextStreamOutcome"}))
         })?;
-        let sync = self.sync_client.as_mut().ok_or_else(|| {
-            api_error("conflict", "GUI controller is not connected", json!({"operation":"nextStreamOutcome"}))
-        })?;
-        let outcome = stream.next_outcome(sync).await.map_err(sync_error_packet)?;
-        self.projection = sync.projection().cloned();
-        self.controller_state = sync.controller_state().clone();
+        let (outcome, projection, controller_state) = {
+            let sync = self.sync_client.as_mut().ok_or_else(|| {
+                api_error("conflict", "GUI controller is not connected", json!({"operation":"nextStreamOutcome"}))
+            })?;
+            let outcome = stream.next_outcome(sync).await.map_err(sync_error_packet)?;
+            (outcome, sync.projection().cloned(), sync.controller_state().clone())
+        };
+        self.projection = projection;
+        self.replace_controller_state_from_sync(controller_state);
         match outcome {
             SyncOutcome::StreamClosed | SyncOutcome::ServerShutdown => {
                 self.stream = None;
@@ -157,6 +160,11 @@ impl GuiBackendController {
                 Ok(GuiOperationOutcome::Accepted { entity_id: selected_project_id.clone() })
             }
             GuiOperationRequest::CreateSession { .. }
+            | GuiOperationRequest::ListProjects
+            | GuiOperationRequest::CreateProject { .. }
+            | GuiOperationRequest::UpdateProject { .. }
+            | GuiOperationRequest::ArchiveProject { .. }
+            | GuiOperationRequest::UnarchiveProject { .. }
             | GuiOperationRequest::UpdateSessionSettings { .. }
             | GuiOperationRequest::SendMessage { .. }
             | GuiOperationRequest::TerminateProcess { .. }
@@ -204,9 +212,14 @@ impl GuiBackendController {
         self.projection = Some(snapshot);
         self.reconnect_stream(watermark, stream_url, selected_session_id).await?;
         if let Some(sync) = self.sync_client.as_ref() {
-            self.controller_state = sync.controller_state().clone();
+            self.replace_controller_state_from_sync(sync.controller_state().clone());
         }
         Ok(GuiOperationOutcome::ProjectionUpdated { watermark })
+    }
+
+    fn replace_controller_state_from_sync(&mut self, mut next: GuiControllerState) {
+        next.selected_project_id = self.controller_state.selected_project_id.clone();
+        self.controller_state = next;
     }
 
     async fn reconnect_stream(
@@ -260,6 +273,11 @@ impl GuiBackendController {
                     .ok_or_else(|| api_error("internal_error", "invalid command registry request summary response", json!({})))?;
                 Ok(GuiOperationOutcome::CommandRegistryRequests { requests })
             }
+            GuiOperationRequest::ListProjects
+            | GuiOperationRequest::CreateProject { .. }
+            | GuiOperationRequest::UpdateProject { .. }
+            | GuiOperationRequest::ArchiveProject { .. }
+            | GuiOperationRequest::UnarchiveProject { .. } => self.hydrate_current().await,
             GuiOperationRequest::ListCommandRegistry { .. }
             | GuiOperationRequest::ShowCommand { .. }
             | GuiOperationRequest::ShowCommandRegistryRequest { .. }
@@ -270,12 +288,24 @@ impl GuiBackendController {
             | GuiOperationRequest::ListRoleVersions { .. }
             | GuiOperationRequest::ShowRoleVersion { .. }
             | GuiOperationRequest::ExportRole { .. } => Ok(GuiOperationOutcome::DirectValue { value }),
-            GuiOperationRequest::CreateSession { .. } => Ok(GuiOperationOutcome::Accepted {
-                entity_id: value.get("sessionId").and_then(Value::as_str).map(str::to_string),
-            }),
-            GuiOperationRequest::UpdateSessionSettings { session_id, .. } => Ok(GuiOperationOutcome::Accepted {
-                entity_id: Some(session_id.clone()),
-            }),
+            GuiOperationRequest::CreateSession { .. } => {
+                let entity_id = value.get("sessionId").and_then(Value::as_str).map(str::to_string);
+                if let Some(id) = entity_id.as_deref() {
+                    let base_url = self.required_base_url()?;
+                    self.controller_state.select_session(Some(id.to_string()));
+                    self.replace_sync_client(&base_url, Some(id))?;
+                    let _ = self.hydrate_current().await?;
+                }
+                Ok(GuiOperationOutcome::Accepted { entity_id })
+            }
+            GuiOperationRequest::UpdateSessionSettings { session_id, .. } => {
+                let base_url = self.required_base_url()?;
+                self.replace_sync_client(&base_url, Some(session_id))?;
+                let _ = self.hydrate_current().await?;
+                Ok(GuiOperationOutcome::Accepted {
+                    entity_id: Some(session_id.clone()),
+                })
+            }
             GuiOperationRequest::SendMessage { .. } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: {
                     let id = value.get("turnId").and_then(Value::as_str).map(str::to_string);
@@ -288,16 +318,30 @@ impl GuiBackendController {
             | GuiOperationRequest::FlushProcess { handle, .. } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: Some(handle.clone()),
             }),
-            GuiOperationRequest::ForkSession { .. } => Ok(GuiOperationOutcome::Accepted {
-                entity_id: value.get("sessionId").and_then(Value::as_str).map(str::to_string),
-            }),
+            GuiOperationRequest::ForkSession { .. } => {
+                let entity_id = value.get("sessionId").and_then(Value::as_str).map(str::to_string);
+                if let Some(id) = entity_id.as_deref() {
+                    let base_url = self.required_base_url()?;
+                    self.controller_state.select_session(Some(id.to_string()));
+                    self.replace_sync_client(&base_url, Some(id))?;
+                    let _ = self.hydrate_current().await?;
+                }
+                Ok(GuiOperationOutcome::Accepted { entity_id })
+            }
             GuiOperationRequest::DecideApproval { approval_id, .. }
             | GuiOperationRequest::ResumeApproval { approval_id } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: Some(approval_id.clone()),
             }),
             GuiOperationRequest::CloseSession { session_id, .. }
-            | GuiOperationRequest::ArchiveSession { session_id }
-            | GuiOperationRequest::WorkflowMemoryFeedback { memory_id: session_id, .. }
+            | GuiOperationRequest::ArchiveSession { session_id } => {
+                let base_url = self.required_base_url()?;
+                self.replace_sync_client(&base_url, Some(session_id))?;
+                let _ = self.hydrate_current().await?;
+                Ok(GuiOperationOutcome::Accepted {
+                    entity_id: Some(session_id.clone()),
+                })
+            }
+            GuiOperationRequest::WorkflowMemoryFeedback { memory_id: session_id, .. }
             | GuiOperationRequest::DecideCommandRegistryRequest { request_id: session_id, .. }
             | GuiOperationRequest::ApplyCommandRegistryRequest { request_id: session_id, .. } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: Some(session_id.clone()),
@@ -340,6 +384,11 @@ impl GuiBackendController {
     fn route_for_request(&self, request: &GuiOperationRequest) -> Result<String, ApiErrorPacket> {
         Ok(match request {
             GuiOperationRequest::CreateSession { .. } => "/sessions".to_string(),
+            GuiOperationRequest::ListProjects => "/projects".to_string(),
+            GuiOperationRequest::CreateProject { .. } => "/projects".to_string(),
+            GuiOperationRequest::UpdateProject { project_key, .. } => format!("/projects/{project_key}"),
+            GuiOperationRequest::ArchiveProject { project_key } => format!("/projects/{project_key}/archive"),
+            GuiOperationRequest::UnarchiveProject { project_key } => format!("/projects/{project_key}/unarchive"),
             GuiOperationRequest::UpdateSessionSettings { session_id, .. } => format!("/sessions/{session_id}/settings"),
             GuiOperationRequest::SendMessage { session_id, .. } => format!("/sessions/{session_id}/send"),
             GuiOperationRequest::TerminateProcess { session_id, handle } => format!("/sessions/{session_id}/processes/{handle}/terminate"),
@@ -488,7 +537,7 @@ mod tests {
                 })
             }))
             .route("/state/ws", get(test_ws))
-            .route("/sessions", post(Json(json!({"sessionId":"session-created"}))))
+            .route("/sessions", post(Json(json!({"sessionId":"00000000-0000-0000-0000-00000000c001"}))))
             .route("/sessions/session-1/send", post(Json(json!({"sessionId":"session-1","turnId":"turn-1","status":"completed"}))))
             .route("/command-registry/requests", get(Json(json!([{
                 "id":"request-1",
@@ -722,14 +771,18 @@ mod tests {
 
         let create = controller.dispatch(GuiOperationRequest::CreateSession {
             role: "runtime-allow".to_string(),
-            project: None,
-            model: None,
+            project: Some("__unassigned__".to_string()),
+            model: Some("gpt-5.4-mini".to_string()),
             workdir: Some(".".to_string()),
-            worktree_root: None,
-            title: None,
-            name: None,
+            worktree_root: Some(".".to_string()),
+            title: Some("Transport created session".to_string()),
+            name: Some("transport-created-session".to_string()),
         }).await;
-        assert!(matches!(create.outcome, GuiOperationOutcome::Accepted { entity_id: Some(id) } if id == "session-created"));
+        assert!(
+            matches!(create.outcome, GuiOperationOutcome::Accepted { entity_id: Some(ref id) } if id == "00000000-0000-0000-0000-00000000c001"),
+            "unexpected create outcome: {:?}",
+            create.outcome
+        );
 
         let send = controller.dispatch(GuiOperationRequest::SendMessage {
             session_id: "session-1".to_string(),

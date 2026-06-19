@@ -50,9 +50,9 @@ robdex status
 ROBDEX_SERVICE_MANAGER=supervisor robdex start
 ```
 
-## Manual Smoke
+## Manual Validation
 
-The live VSCodium webview smoke test is owner-run for this slice:
+The live VSCodium webview validation test is owner-run for this slice:
 
 1. Verify `curl -fsS http://localhost:42080/health`.
 2. Compile the extension with `npm run compile`.

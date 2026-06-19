@@ -20,7 +20,7 @@ use tokio::time::{Duration, interval};
 use uuid::Uuid;
 
 use crate::errors::{RuntimeDomainError, RuntimeErrorKind};
-use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
+use crate::model::ModelClient;
 use crate::{approvals, command_registry, compaction, db, projection, routing, runtime, starlark_host, workflow_memory};
 
 #[derive(Clone)]
@@ -44,18 +44,13 @@ impl ServerState {
     }
 
     pub fn new_with_shutdown(pool: PgPool, runtime_identity: String, shutdown_tx: watch::Sender<bool>, shutdown: watch::Receiver<bool>) -> Self {
-        let model_client: Option<Arc<dyn ModelClient + Send + Sync>> = if std::env::var("ROBDEX_AGENT_RUNTIME_LIVE_SMOKE_FAKE_MODEL").ok().as_deref() == Some("1") {
-            Some(Arc::new(LiveSmokeFakeModel))
-        } else {
-            None
-        };
         Self {
             pool,
             runtime_identity,
             active_sends: Arc::new(Mutex::new(HashSet::new())),
             shutdown_tx,
             shutdown,
-            model_client,
+            model_client: None,
         }
     }
 
@@ -70,39 +65,6 @@ impl ServerState {
             shutdown: shutdown_rx,
             model_client: Some(model_client),
         }
-    }
-}
-
-struct LiveSmokeFakeModel;
-
-#[async_trait::async_trait]
-impl ModelClient for LiveSmokeFakeModel {
-    async fn request_tool_call(&self, _role_instructions: &str, _history: &[ModelHistoryItem], _runtime_messages: &[RuntimeInputMessage], _execute_code_contract: &str, _request_registry_contract: &str, message: &str) -> anyhow::Result<ModelToolTurn> {
-        Ok(ModelToolTurn {
-            provider: "local-live-smoke".to_string(),
-            model: "fake-live-smoke".to_string(),
-            assistant_summary: "Running live GUI smoke script.".to_string(),
-            tool_call: ToolCallRequest {
-                call_identity: "live-gui-smoke".to_string(),
-                tool_name: "execute_code".to_string(),
-                arguments: serde_json::json!({
-                    "source": "output({\"smoke\":\"ok\",\"source\":\"gui-composer\"})",
-                    "message": message,
-                }),
-            },
-            request_shape: serde_json::json!({"provider":"local-live-smoke"}),
-            raw_response: serde_json::json!({"fake":true}),
-        })
-    }
-
-    async fn submit_tool_result(&self, _role_instructions: &str, _history: &[ModelHistoryItem], _tool_call_response: &Value, _call_id: &str, tool_result: &Value) -> anyhow::Result<ModelFinalTurn> {
-        Ok(ModelFinalTurn {
-            provider: "local-live-smoke".to_string(),
-            model: "fake-live-smoke".to_string(),
-            final_text: format!("Live GUI smoke completed: {}", tool_result),
-            request_shape: serde_json::json!({"provider":"local-live-smoke"}),
-            raw_response: serde_json::json!({"fake":true}),
-        })
     }
 }
 
@@ -228,6 +190,10 @@ pub fn app(state: ServerState) -> Router {
         .route("/health", get(health))
         .route("/state/snapshot", get(snapshot))
         .route("/state/ws", get(state_ws))
+        .route("/projects", get(list_projects).post(create_project))
+        .route("/projects/{project_key}", post(update_project))
+        .route("/projects/{project_key}/archive", post(archive_project))
+        .route("/projects/{project_key}/unarchive", post(unarchive_project))
         .route("/sessions", get(list_sessions).post(create_session))
         .route("/sessions/{session_id}", get(show_session))
         .route("/sessions/{session_id}/history", get(session_history))
@@ -348,18 +314,21 @@ async fn snapshot(
             .into_iter()
             .map(|model| json!({"id": model, "displayLabel": model, "source": "role model defaults"}))
             .collect::<Vec<_>>();
-        let mut projects = projection
-            .sessions
-            .iter()
-            .filter_map(|session| session.project_key.clone())
-            .filter(|project| !project.trim().is_empty())
-            .collect::<Vec<_>>();
-        projects.sort();
-        projects.dedup();
-        let project_options = projects
-            .into_iter()
-            .map(|project| json!({"id": project, "displayLabel": project, "selected": selected_project_id.as_deref() == Some(project.as_str())}))
-            .collect::<Vec<_>>();
+        let mut project_options = vec![
+            json!({"id": "__all__", "displayLabel": "All", "selected": selected_project_id.is_none()}),
+            json!({"id": "__unassigned__", "displayLabel": "Unassigned", "selected": selected_project_id.as_deref() == Some("__unassigned__")}),
+        ];
+        project_options.extend(projection.projects.iter().filter(|project| !project.archived && project.listed).map(|project| {
+            json!({
+                "id": project.project_key,
+                "displayLabel": project.display_name,
+                "selected": selected_project_id.as_deref() == Some(project.project_key.as_str()),
+                "defaultWorkdir": project.default_workdir,
+                "defaultWorktreeRoot": project.default_worktree_root,
+                "defaultRoleId": project.default_role_id,
+                "defaultModel": project.default_model,
+            })
+        }));
         let modal_surface_summaries = vec![
             json!({"surfaceId":"session","title":"Session","rowCount": projection.selected_session.iter().count(), "actionCount": 3}),
             json!({"surfaceId":"history","title":"History","rowCount": projection.timeline.len(), "actionCount": 0}),
@@ -432,6 +401,31 @@ struct CreateSessionRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ProjectSettingsRequest {
+    display_name: String,
+    default_workdir: String,
+    default_worktree_root: String,
+    default_role_id: Option<String>,
+    default_model: String,
+    tracked: bool,
+    listed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateProjectRequest {
+    project_key: String,
+    display_name: String,
+    default_workdir: String,
+    default_worktree_root: String,
+    default_role_id: Option<String>,
+    default_model: String,
+    tracked: bool,
+    listed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UpdateSessionSettingsRequest {
     project: String,
     role: String,
@@ -449,7 +443,7 @@ async fn create_session(
 ) -> Result<Json<Value>, ApiError> {
     let request = parse_json(payload)?;
     let role_id = required_create_session_field(request.role.as_deref(), "role")?;
-    let project = required_create_session_field(request.project.as_deref(), "project")?;
+    let project_intent = required_create_session_field(request.project.as_deref(), "project")?;
     let model = required_create_session_field(request.model.as_deref(), "model")?;
     let workdir = required_create_session_field(request.workdir.as_deref(), "workdir")?;
     let worktree_root = required_create_session_field(request.worktree_root.as_deref(), "worktreeRoot")?;
@@ -457,10 +451,11 @@ async fn create_session(
     let name = required_create_session_field(request.name.as_deref(), "name")?;
     let mut role = db::current_role_snapshot(&state.pool, role_id).await.map_err(|error| map_missing_entity(error, "role", role_id))?;
     role.model_defaults.model = model.to_string();
+    let project = project_from_intent(&state.pool, project_intent).await?;
     let id = db::new_session(
         &state.pool,
         &role,
-        Some(project),
+        project.as_deref(),
         workdir,
         Some(worktree_root),
         Some(title),
@@ -468,6 +463,121 @@ async fn create_session(
     )
     .await?;
     Ok(Json(json!({"sessionId": id})))
+}
+
+async fn list_projects(State(state): State<ServerState>) -> Result<Json<Value>, ApiError> {
+    let projects = db::list_projects(&state.pool, true).await?;
+    Ok(Json(json!({"projects": projects.into_iter().map(project_json).collect::<Vec<_>>() })))
+}
+
+async fn create_project(
+    State(state): State<ServerState>,
+    payload: std::result::Result<Json<CreateProjectRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let request = parse_json(payload)?;
+    let project = db::create_project(
+        &state.pool,
+        request.project_key.trim(),
+        request.display_name.trim(),
+        request.default_workdir.trim(),
+        request.default_worktree_root.trim(),
+        request.default_role_id.as_deref(),
+        request.default_model.trim(),
+        request.tracked,
+        request.listed,
+    )
+    .await?;
+    Ok(Json(json!({"project": project_json(project)})))
+}
+
+async fn update_project(
+    State(state): State<ServerState>,
+    Path(project_key): Path<String>,
+    payload: std::result::Result<Json<ProjectSettingsRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let request = parse_json(payload)?;
+    let project = db::update_project(
+        &state.pool,
+        project_key.trim(),
+        request.display_name.trim(),
+        request.default_workdir.trim(),
+        request.default_worktree_root.trim(),
+        request.default_role_id.as_deref(),
+        request.default_model.trim(),
+        request.tracked,
+        request.listed,
+    )
+    .await
+    .map_err(|error| map_missing_entity(error, "project", project_key.trim()))?;
+    Ok(Json(json!({"project": project_json(project)})))
+}
+
+async fn archive_project(State(state): State<ServerState>, Path(project_key): Path<String>) -> Result<Json<Value>, ApiError> {
+    let project = db::set_project_archived(&state.pool, project_key.trim(), true)
+        .await
+        .map_err(|error| map_missing_entity(error, "project", project_key.trim()))?;
+    Ok(Json(json!({"project": project_json(project)})))
+}
+
+async fn unarchive_project(State(state): State<ServerState>, Path(project_key): Path<String>) -> Result<Json<Value>, ApiError> {
+    let project = db::set_project_archived(&state.pool, project_key.trim(), false)
+        .await
+        .map_err(|error| map_missing_entity(error, "project", project_key.trim()))?;
+    Ok(Json(json!({"project": project_json(project)})))
+}
+
+async fn project_from_intent(pool: &PgPool, project_intent: &str) -> Result<Option<String>, ApiError> {
+    if matches!(project_intent, "__unassigned__" | "unassigned") {
+        return Ok(None);
+    }
+    let active_exists = db::list_projects(pool, true)
+        .await?
+        .into_iter()
+        .find(|project| project.project_key == project_intent)
+        .map(|project| !project.archived)
+        .unwrap_or(false);
+    if !active_exists {
+        db::create_project(
+            pool,
+            project_intent,
+            &project_intent
+                .split(['-', '_'])
+                .filter(|part| !part.is_empty())
+                .map(|part| {
+                    let mut chars = part.chars();
+                    match chars.next() {
+                        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+            ".",
+            ".",
+            None,
+            "gpt-5.4-mini",
+            true,
+            true,
+        )
+        .await?;
+    }
+    Ok(Some(project_intent.to_string()))
+}
+
+fn project_json(project: db::ProjectRow) -> Value {
+    json!({
+        "projectKey": project.project_key,
+        "displayName": project.display_name,
+        "defaultWorkdir": project.default_workdir,
+        "defaultWorktreeRoot": project.default_worktree_root,
+        "defaultRoleId": project.default_role_id,
+        "defaultModel": project.default_model,
+        "tracked": project.tracked,
+        "listed": project.listed,
+        "archived": project.archived,
+        "createdAt": project.created_at.to_rfc3339(),
+        "updatedAt": project.updated_at.to_rfc3339(),
+    })
 }
 
 fn required_create_session_field<'a>(value: Option<&'a str>, name: &str) -> Result<&'a str, ApiError> {
@@ -483,7 +593,7 @@ async fn update_session_settings(
     payload: std::result::Result<Json<UpdateSessionSettingsRequest>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let request = parse_json(payload)?;
-    let project = required_create_session_field(Some(&request.project), "project")?;
+    let project_intent = required_create_session_field(Some(&request.project), "project")?;
     let role_id = required_create_session_field(Some(&request.role), "role")?;
     let model = required_create_session_field(Some(&request.model), "model")?;
     let workdir = required_create_session_field(Some(&request.workdir), "workdir")?;
@@ -493,6 +603,7 @@ async fn update_session_settings(
     let mut role = db::current_role_snapshot(&state.pool, role_id).await.map_err(|error| map_missing_entity(error, "role", role_id))?;
     role.model_defaults.model = model.to_string();
     let role_snapshot = crate::roles::snapshot_to_value(&role).map_err(anyhow::Error::from)?;
+    let project = project_from_intent(&state.pool, project_intent).await?;
     let result = sqlx::query(
         r#"
         UPDATE sessions
@@ -510,7 +621,7 @@ async fn update_session_settings(
         "#,
     )
     .bind(session_id)
-    .bind(project)
+    .bind(project.as_deref())
     .bind(role_id)
     .bind(&role.version)
     .bind(role_snapshot)
@@ -559,21 +670,66 @@ async fn send_message(
             return Err(ApiError::conflict("session already has an active send"));
         }
     }
-    let result = if let Some(model) = state.model_client.as_ref() {
-        runtime::send_with_model_client(
-            &state.pool,
-            session_id,
-            &request.message,
-            model.as_ref(),
-            compaction::CompactionBudget::from_env(),
+    let pool = state.pool.clone();
+    let active_sends = state.active_sends.clone();
+    let model_client = state.model_client.clone();
+    let message = request.message.clone();
+    let message_for_query = message.clone();
+    let send_task = tokio::spawn(async move {
+        let result = if let Some(model) = model_client {
+            runtime::send_with_model_client(
+                &pool,
+                session_id,
+                &message,
+                model.as_ref(),
+                compaction::CompactionBudget::from_env(),
+            )
+            .await
+        } else {
+            runtime::send(&pool, session_id, &message).await
+        };
+        active_sends.lock().await.remove(&session_id);
+        result
+    });
+
+    for _ in 0..100 {
+        if let Some(turn_id) = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM turns WHERE session_id=$1 AND input_text=$2 ORDER BY started_at DESC LIMIT 1",
         )
+        .bind(session_id)
+        .bind(&message_for_query)
+        .fetch_optional(&state.pool)
         .await
-    } else {
-        runtime::send(&state.pool, session_id, &request.message).await
-    };
-    state.active_sends.lock().await.remove(&session_id);
-    let turn_id = result?;
-    Ok(Json(json!({"sessionId": session_id, "turnId": turn_id, "status": "completed"})))
+        .map_err(anyhow::Error::from)?
+        {
+            return Ok(Json(json!({"sessionId": session_id, "turnId": turn_id, "status": "running"})));
+        }
+        if send_task.is_finished() {
+            let result = send_task
+                .await
+                .map_err(|error| ApiError::from_anyhow(anyhow::anyhow!("send worker failed: {error}")))?;
+            return match result {
+                Ok(turn_id) => Ok(Json(json!({"sessionId": session_id, "turnId": turn_id, "status": "completed"}))),
+                Err(error) => {
+                    if let Some(turn_id) = sqlx::query_scalar::<_, Uuid>(
+                        "SELECT id FROM turns WHERE session_id=$1 AND input_text=$2 ORDER BY started_at DESC LIMIT 1",
+                    )
+                    .bind(session_id)
+                    .bind(&message_for_query)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .map_err(anyhow::Error::from)?
+                    {
+                        Ok(Json(json!({"sessionId": session_id, "turnId": turn_id, "status": "failed", "error": error.to_string()})))
+                    } else {
+                        Err(ApiError::from_anyhow(error))
+                    }
+                }
+            };
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Ok(Json(json!({"sessionId": session_id, "turnId": null, "status": "queued"})))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1064,10 +1220,13 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Method, Request};
     use crate::gui_sync::{RuntimeSyncClient, RuntimeSyncConfig, SyncOutcome};
-    use crate::rinf_transport::{GuiTransportHandle, GuiTransportOutput, GuiTransportRequest, GuiTransportRequestPacket};
+    use crate::rinf_transport::{
+        GuiTransportHandle, GuiTransportOutput, GuiTransportOutputPacket, GuiTransportRequest,
+        GuiTransportRequestPacket,
+    };
     use robdex_agent_runtime_projection::{
-        GuiConnectionState, GuiControllerState, GuiOperationOutcome, GuiOperationRequest,
-        RuntimeDeltaKind, RuntimeProjection,
+        CommandRegistryDecisionInput, GuiConnectionState, GuiControllerState, GuiOperationOutcome,
+        GuiOperationRequest, RuntimeDeltaKind, RuntimeProjection,
     };
     use tokio_tungstenite::connect_async;
     use tower::ServiceExt;
@@ -1082,6 +1241,18 @@ mod tests {
         tool_name: Option<&'static str>,
         tool_arguments: Option<Value>,
         model_name: Option<&'static str>,
+        request_delay_ms: Option<u64>,
+    }
+
+    fn assert_gui_operation_error(outputs: &[GuiTransportOutputPacket], context: &str) {
+        assert!(
+            outputs.iter().any(|packet| matches!(
+                &packet.output,
+                GuiTransportOutput::OperationResult { result }
+                    if matches!(&result.outcome, GuiOperationOutcome::Error { error } if !error.error.code.is_empty() && !error.error.message.is_empty())
+            )),
+            "{context} must surface a typed OperationResult error with actionable message: {outputs:?}"
+        );
     }
 
     #[async_trait]
@@ -1090,6 +1261,9 @@ mod tests {
             self.observed_history.lock().expect("history lock").push(history.to_vec());
             if let Some(message) = self.request_error {
                 anyhow::bail!("{message}");
+            }
+            if let Some(delay) = self.request_delay_ms {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
             }
             let model_name = self.model_name.unwrap_or("fake-model");
             let request_shape = crate::model::codex_adapter::CodexBackedModelClient::request_tool_call_request_shape(
@@ -1584,7 +1758,1099 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_ui_smoke_send_response_projects_into_shared_chat_timeline_shape() {
+    async fn gui_project_crud_projection_and_unassigned_filter_validation() {
+        let test_db = validation_db().await;
+        let state = ServerState::new_with_identity(test_db.pool.clone(), "project-crud-validation".to_string());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.expect("serve");
+        });
+        let base_url = format!("http://{addr}");
+        let transport = GuiTransportHandle::spawn();
+
+        let _ = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "project-connect".to_string(),
+                intent: GuiTransportRequest::Connect { base_url: base_url.clone(), selected_session_id: None },
+            })
+            .await;
+
+        let create = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "project-create".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::CreateProject {
+                        project_key: "zeta-project".to_string(),
+                        display_name: "Zeta Project".to_string(),
+                        default_workdir: "/tmp/zeta".to_string(),
+                        default_worktree_root: "/tmp/zeta".to_string(),
+                        default_role_id: Some("runtime-no-rg".to_string()),
+                        default_model: "gpt-5.4-mini".to_string(),
+                        tracked: true,
+                        listed: true,
+                    },
+                },
+            })
+            .await;
+        assert!(create.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model } if view_model.shell.projects.iter().any(|row| row.id == "zeta-project" && row.title == "Zeta Project"))), "project create must update Workbench projection: {create:?}");
+
+        let update = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "project-update".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::UpdateProject {
+                        project_key: "zeta-project".to_string(),
+                        display_name: "Zeta Updated".to_string(),
+                        default_workdir: "/tmp/zeta-updated".to_string(),
+                        default_worktree_root: "/tmp/zeta-root".to_string(),
+                        default_role_id: Some("runtime-allow".to_string()),
+                        default_model: "gpt-5.5".to_string(),
+                        tracked: false,
+                        listed: true,
+                    },
+                },
+            })
+            .await;
+        assert!(update.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model } if view_model.shell.projects.iter().any(|row| row.id == "zeta-project" && row.title == "Zeta Updated"))), "project update must update rendered rail data: {update:?}");
+
+        let row: (String, String, String, Option<String>, String, bool, bool, bool) = sqlx::query_as(
+            "SELECT display_name, default_workdir, default_worktree_root, default_role_id, default_model, tracked, listed, archived FROM projects WHERE project_key='zeta-project'",
+        )
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("project row");
+        assert_eq!(row.0, "Zeta Updated");
+        assert_eq!(row.1, "/tmp/zeta-updated");
+        assert_eq!(row.2, "/tmp/zeta-root");
+        assert_eq!(row.3.as_deref(), Some("runtime-allow"));
+        assert_eq!(row.4, "gpt-5.5");
+        assert!(!row.5);
+        assert!(row.6);
+        assert!(!row.7);
+
+        let archived = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "project-archive".to_string(),
+                intent: GuiTransportRequest::DispatchOperation { operation: GuiOperationRequest::ArchiveProject { project_key: "zeta-project".to_string() } },
+            })
+            .await;
+        assert!(archived.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model } if !view_model.shell.projects.iter().any(|row| row.id == "zeta-project"))), "archived project must leave normal rail: {archived:?}");
+        let archived_flag: bool = sqlx::query_scalar("SELECT archived FROM projects WHERE project_key='zeta-project'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("archived flag");
+        assert!(archived_flag, "archive action must persist archived=true");
+
+        let unarchived = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "project-unarchive".to_string(),
+                intent: GuiTransportRequest::DispatchOperation { operation: GuiOperationRequest::UnarchiveProject { project_key: "zeta-project".to_string() } },
+            })
+            .await;
+        assert!(unarchived.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model } if view_model.shell.projects.iter().any(|row| row.id == "zeta-project"))), "unarchived project must return to rail: {unarchived:?}");
+        let unarchived_flag: bool = sqlx::query_scalar("SELECT archived FROM projects WHERE project_key='zeta-project'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("unarchived flag");
+        assert!(!unarchived_flag, "unarchive action must persist archived=false");
+
+        let unassigned_session = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "unassigned-create".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::CreateSession {
+                        role: "runtime-no-rg".to_string(),
+                        project: Some("__unassigned__".to_string()),
+                        model: Some("gpt-5.4-mini".to_string()),
+                        workdir: Some(".".to_string()),
+                        worktree_root: Some(".".to_string()),
+                        title: Some("Unassigned proof".to_string()),
+                        name: Some("unassigned-proof".to_string()),
+                    },
+                },
+            })
+            .await;
+        let session_id = unassigned_session
+            .iter()
+            .find_map(|packet| match &packet.output {
+                GuiTransportOutput::OperationResult { result } => match &result.outcome {
+                    GuiOperationOutcome::Accepted { entity_id: Some(id) } => Some(id.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("unassigned session id");
+        let project_key: Option<String> = sqlx::query_scalar("SELECT project_key FROM sessions WHERE id=$1")
+            .bind(Uuid::parse_str(&session_id).expect("session uuid"))
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("session project key");
+        assert!(project_key.is_none());
+
+        let _ = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "select-unassigned-filter".to_string(),
+                intent: GuiTransportRequest::SelectProject { project_id: "__unassigned__".to_string() },
+            })
+            .await;
+        let unassigned_view = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "unassigned-rehydrate".to_string(),
+                intent: GuiTransportRequest::Rehydrate { selected_session_id: None },
+            })
+            .await;
+        assert!(unassigned_view.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model } if view_model.shell.sessions.iter().any(|row| row.id == session_id) && view_model.shell.projects[0].id == "__all__" && view_model.shell.projects[1].id == "__unassigned__")), "Unassigned filter must show projectless sessions and stable project row order: {unassigned_view:?}");
+
+        server.abort();
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn gui_disconnect_returns_disconnected_surface_without_mutating_sessions_or_projects() {
+        let test_db = validation_db().await;
+        let state = ServerState::new_with_identity(test_db.pool.clone(), "disconnect-validation".to_string());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.expect("serve");
+        });
+        let base_url = format!("http://{addr}");
+        let transport = GuiTransportHandle::spawn();
+
+        let _ = db::create_project(
+            &test_db.pool,
+            "disconnect-project",
+            "Disconnect Project",
+            "/tmp/disconnect",
+            "/tmp/disconnect",
+            Some("runtime-no-rg"),
+            "gpt-5.4-mini",
+            true,
+            true,
+        )
+        .await
+        .expect("project");
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg")
+            .await
+            .expect("role");
+        let _session_id = db::new_session(
+            &test_db.pool,
+            &role,
+            Some("disconnect-project"),
+            "/tmp/disconnect",
+            Some("/tmp/disconnect"),
+            Some("Disconnect proof"),
+            Some("disconnect-proof"),
+        )
+        .await
+        .expect("session");
+
+        let before_sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("session count");
+        let before_projects: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM projects")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("project count");
+
+        let connect = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "disconnect-connect".to_string(),
+                intent: GuiTransportRequest::Connect { base_url, selected_session_id: None },
+            })
+            .await;
+        assert!(connect.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::WorkbenchView { view_model } if view_model.connection_state == "connected" || view_model.connection_state == "streaming"
+        )), "connect must render connected Workbench view: {connect:?}");
+
+        let disconnect = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "disconnect-click".to_string(),
+                intent: GuiTransportRequest::Disconnect,
+            })
+            .await;
+        assert!(disconnect.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult { result } if matches!(result.outcome, GuiOperationOutcome::Accepted { .. })
+        )), "disconnect must dispatch typed Rust operation: {disconnect:?}");
+        assert!(disconnect.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::ControllerState { controller_state }
+                if controller_state["connectionState"] == "disconnected"
+        )), "disconnect must close Rust-owned sync state: {disconnect:?}");
+        assert!(disconnect.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::WorkbenchView { view_model }
+                if view_model.connection_state == "disconnected" && view_model.discovery.title.contains("Discovery")
+        )), "disconnect must render disconnected discovery surface: {disconnect:?}");
+
+        let after_sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("session count after");
+        let after_projects: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM projects")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("project count after");
+        assert_eq!(before_sessions, after_sessions, "disconnect must not mutate sessions");
+        assert_eq!(before_projects, after_projects, "disconnect must not mutate projects");
+
+        server.abort();
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn unassigned_migration_and_project_filter_semantics_preserve_selected_filter() {
+        let test_db = validation_db().await;
+        let state = ServerState::new_with_identity(test_db.pool.clone(), "unassigned-filter-validation".to_string());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.expect("serve");
+        });
+        let base_url = format!("http://{addr}");
+        let transport = GuiTransportHandle::spawn();
+
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg")
+            .await
+            .expect("role");
+        let _ = db::create_project(&test_db.pool, "alpha-project", "Alpha Project", "/tmp/alpha", "/tmp/alpha", Some("runtime-no-rg"), "gpt-5.4-mini", true, true)
+            .await
+            .expect("alpha project");
+        let _ = db::create_project(&test_db.pool, "zeta-project", "Zeta Project", "/tmp/zeta", "/tmp/zeta", Some("runtime-no-rg"), "gpt-5.4-mini", true, true)
+            .await
+            .expect("zeta project");
+        let historical_unassigned = db::new_session(&test_db.pool, &role, None, "/tmp/unassigned", Some("/tmp/unassigned"), Some("Historical unassigned"), Some("historical-unassigned"))
+            .await
+            .expect("historical unassigned");
+        let zeta_session = db::new_session(&test_db.pool, &role, Some("zeta-project"), "/tmp/zeta", Some("/tmp/zeta"), Some("Zeta session"), Some("zeta-session"))
+            .await
+            .expect("zeta session");
+
+        let _ = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "filter-connect".to_string(),
+                intent: GuiTransportRequest::Connect { base_url, selected_session_id: None },
+            })
+            .await;
+
+        let unassigned = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "filter-unassigned".to_string(),
+                intent: GuiTransportRequest::SelectProject { project_id: "__unassigned__".to_string() },
+            })
+            .await;
+        assert!(unassigned.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+            if view_model.shell.projects.iter().map(|row| row.id.as_str()).take(4).collect::<Vec<_>>() == vec!["__all__", "__unassigned__", "alpha-project", "zeta-project"]
+                && view_model.shell.sessions.iter().any(|row| row.id == historical_unassigned.to_string())
+                && !view_model.shell.sessions.iter().any(|row| row.id == zeta_session.to_string())
+        )), "historical projectless session must appear under Unassigned only, with sorted project rows: {unassigned:?}");
+
+        let zeta_filter = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "filter-zeta".to_string(),
+                intent: GuiTransportRequest::SelectProject { project_id: "zeta-project".to_string() },
+            })
+            .await;
+        assert!(zeta_filter.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+            if view_model.shell.projects.iter().any(|row| row.id == "zeta-project" && row.subtitle.contains("Selected"))
+                && view_model.shell.sessions.iter().any(|row| row.id == zeta_session.to_string())
+                && !view_model.shell.sessions.iter().any(|row| row.id == historical_unassigned.to_string())
+        )), "selecting a non-first project filter must filter sessions and preserve row selection: {zeta_filter:?}");
+        let zeta_view = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "filter-zeta-select-session".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::SelectSession { session_id: Some(zeta_session.to_string()) },
+                },
+            })
+            .await;
+        assert!(zeta_view.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+            if view_model.shell.projects.iter().any(|row| row.id == "zeta-project" && row.subtitle.contains("Selected"))
+                && view_model.shell.sessions.iter().any(|row| row.id == zeta_session.to_string())
+        )), "selecting a session inside a non-first project must preserve the active project filter: {zeta_view:?}");
+
+        let outside_filter_selection = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "filter-zeta-select-outside-session".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::SelectSession { session_id: Some(historical_unassigned.to_string()) },
+                },
+            })
+            .await;
+        assert!(outside_filter_selection.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::Error { error }
+            if error.error.code == "project_filter_mismatch"
+                && error.error.details["selectedProjectId"] == "zeta-project"
+                && error.error.details["sessionId"] == historical_unassigned.to_string()
+        )), "selecting a session outside the active project filter must return a typed visible error: {outside_filter_selection:?}");
+        assert!(outside_filter_selection.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+            if view_model.shell.projects.iter().any(|row| row.id == "zeta-project" && row.subtitle.contains("Selected"))
+                && view_model.shell.selected_session_id == Some(zeta_session.to_string())
+                && !view_model.shell.sessions.iter().any(|row| row.id == historical_unassigned.to_string())
+        )), "outside-filter rejection must preserve selected project filter and not show the rejected session: {outside_filter_selection:?}");
+
+        let move_to_project = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "unassigned-to-project".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::UpdateSessionSettings {
+                        session_id: historical_unassigned.to_string(),
+                        project: "alpha-project".to_string(),
+                        role: "runtime-no-rg".to_string(),
+                        model: "gpt-5.4-mini".to_string(),
+                        workdir: "/tmp/alpha".to_string(),
+                        worktree_root: "/tmp/alpha".to_string(),
+                        title: "Moved to alpha".to_string(),
+                        name: "moved-to-alpha".to_string(),
+                        tracked: true,
+                    },
+                },
+            })
+            .await;
+        assert!(move_to_project.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::OperationResult { result } if matches!(result.outcome, GuiOperationOutcome::Accepted { .. }))));
+        let moved_key: Option<String> = sqlx::query_scalar("SELECT project_key FROM sessions WHERE id=$1")
+            .bind(historical_unassigned)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("moved key");
+        assert_eq!(moved_key.as_deref(), Some("alpha-project"));
+
+        let move_to_unassigned = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "project-to-unassigned".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::UpdateSessionSettings {
+                        session_id: historical_unassigned.to_string(),
+                        project: "__unassigned__".to_string(),
+                        role: "runtime-no-rg".to_string(),
+                        model: "gpt-5.4-mini".to_string(),
+                        workdir: "/tmp/unassigned".to_string(),
+                        worktree_root: "/tmp/unassigned".to_string(),
+                        title: "Moved back unassigned".to_string(),
+                        name: "moved-back-unassigned".to_string(),
+                        tracked: true,
+                    },
+                },
+            })
+            .await;
+        assert!(move_to_unassigned.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::OperationResult { result } if matches!(result.outcome, GuiOperationOutcome::Accepted { .. }))));
+        let unassigned_key: Option<String> = sqlx::query_scalar("SELECT project_key FROM sessions WHERE id=$1")
+            .bind(historical_unassigned)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("unassigned key");
+        assert!(unassigned_key.is_none());
+
+        server.abort();
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn gui_session_creation_settings_and_lifecycle_persist_and_reproject() {
+        let test_db = validation_db().await;
+        let state = ServerState::new_with_identity(test_db.pool.clone(), "session-settings-lifecycle-validation".to_string());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.expect("serve");
+        });
+        let base_url = format!("http://{addr}");
+        let transport = GuiTransportHandle::spawn();
+
+        let _ = db::create_project(&test_db.pool, "alpha-project", "Alpha Project", "/tmp/alpha", "/tmp/alpha-root", Some("runtime-no-rg"), "gpt-5.4-mini", true, true)
+            .await
+            .expect("alpha project");
+        let _ = db::create_project(&test_db.pool, "zeta-project", "Zeta Project", "/tmp/zeta", "/tmp/zeta-root", Some("runtime-no-rg"), "gpt-5.4-mini", true, true)
+            .await
+            .expect("zeta project");
+
+        let _ = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "settings-connect".to_string(),
+                intent: GuiTransportRequest::Connect { base_url, selected_session_id: None },
+            })
+            .await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg")
+            .await
+            .expect("role");
+        let blocker_session = db::new_session(
+            &test_db.pool,
+            &role,
+            Some("zeta-project"),
+            "/tmp/zeta/blocker",
+            Some("/tmp/zeta-root"),
+            Some("Process blocker"),
+            Some("process-blocker"),
+        )
+        .await
+        .expect("blocker session");
+        let blocker_process = Uuid::new_v4();
+        sqlx::query("INSERT INTO managed_processes (id, handle, session_id, binary_name, argv, cwd, status, end_of_turn_behavior, end_of_session_behavior, metadata, start_time) VALUES ($1,'blocker',$2,'sleep','[]'::jsonb,'/tmp','running','continue','block','{}'::jsonb,now())")
+            .bind(blocker_process)
+            .bind(blocker_session)
+            .execute(&test_db.pool)
+            .await
+            .expect("blocking managed process");
+        let blocked_close = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "settings-close-blocked-by-process".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::CloseSession {
+                        session_id: blocker_session.to_string(),
+                        reason: Some("blocked process policy proof".to_string()),
+                    },
+                },
+            })
+            .await;
+        assert!(blocked_close.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::OperationResult { result } if matches!(&result.outcome, GuiOperationOutcome::Error { error } if error.error.code == "conflict" && error.error.message.contains("managed processes")))), "close must surface typed process-policy failure: {blocked_close:?}");
+        let blocked_event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='session.closeBlocked'")
+            .bind(blocker_session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("close blocked event count");
+        assert_eq!(blocked_event_count, 1, "process-policy close failure must append a recovery/audit event");
+
+        let terminable_session = db::new_session(
+            &test_db.pool,
+            &role,
+            Some("zeta-project"),
+            "/tmp/zeta/terminable",
+            Some("/tmp/zeta-root"),
+            Some("Terminable process session"),
+            Some("terminable-process-session"),
+        )
+        .await
+        .expect("terminable session");
+        let (terminable_process, terminable_handle) =
+            starlark_host::register_test_terminable_process(terminable_session)
+                .expect("live terminable process");
+        sqlx::query("INSERT INTO managed_processes (id, handle, session_id, binary_name, argv, cwd, status, end_of_turn_behavior, end_of_session_behavior, metadata, start_time) VALUES ($1,$2,$3,'sleep','[\"30\"]'::jsonb,'.','running','continue','terminate','{}'::jsonb,now())")
+            .bind(terminable_process)
+            .bind(&terminable_handle)
+            .bind(terminable_session)
+            .execute(&test_db.pool)
+            .await
+            .expect("terminable managed process row");
+        let terminable_close = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "settings-close-terminates-process".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::CloseSession {
+                        session_id: terminable_session.to_string(),
+                        reason: Some("terminates live process policy proof".to_string()),
+                    },
+                },
+            })
+            .await;
+        assert!(terminable_close.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+            if view_model.shell.sessions.iter().any(|row| row.id == terminable_session.to_string() && row.status == "closed")
+        )), "Close must terminate session-ending managed processes and refresh the connected projection: {terminable_close:?}");
+        let terminated_process_row: (String, Option<String>, bool) = sqlx::query_as(
+            "SELECT status, termination_reason, end_time IS NOT NULL FROM managed_processes WHERE id=$1",
+        )
+        .bind(terminable_process)
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("terminated process row");
+        assert_eq!(terminated_process_row.0, "sessionClosed");
+        assert_eq!(terminated_process_row.1.as_deref(), Some("sessionClosed"));
+        assert!(terminated_process_row.2);
+        let terminable_session_row: (String, Option<String>) =
+            sqlx::query_as("SELECT status, close_reason FROM sessions WHERE id=$1")
+                .bind(terminable_session)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("terminable closed session row");
+        assert_eq!(terminable_session_row.0, "closed");
+        assert_eq!(
+            terminable_session_row.1.as_deref(),
+            Some("terminates live process policy proof")
+        );
+        let _ = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "settings-select-zeta".to_string(),
+                intent: GuiTransportRequest::SelectProject { project_id: "zeta-project".to_string() },
+            })
+            .await;
+
+        let create = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "settings-create-session".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::CreateSession {
+                        role: "runtime-no-rg".to_string(),
+                        project: Some("zeta-project".to_string()),
+                        model: Some("gpt-5.4-mini".to_string()),
+                        workdir: Some("/tmp/zeta/work".to_string()),
+                        worktree_root: Some("/tmp/zeta-root".to_string()),
+                        title: Some("Zeta modal session".to_string()),
+                        name: Some("zeta-modal-session".to_string()),
+                    },
+                },
+            })
+            .await;
+        let session_id = create
+            .iter()
+            .find_map(|packet| match &packet.output {
+                GuiTransportOutput::OperationResult { result } => match &result.outcome {
+                    GuiOperationOutcome::Accepted { entity_id: Some(id) } => Some(id.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("created session id");
+        assert!(create.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+            if view_model.shell.selected_session_id == Some(session_id.clone())
+                && view_model.shell.sessions.iter().any(|row| row.id == session_id && row.title == "Zeta modal session")
+        )), "Create Session modal path must select and render the new zeta session under the active filter: {create:?}");
+
+        let created_uuid = Uuid::parse_str(&session_id).expect("created session uuid");
+        let created_row: (Option<String>, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, bool, String) = sqlx::query_as(
+            "SELECT project_key, title, name, workdir, worktree_root, role_id, role_snapshot #>> '{modelDefaults,model}', tracked, status FROM sessions WHERE id=$1",
+        )
+        .bind(created_uuid)
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("created session row");
+        assert_eq!(created_row.0.as_deref(), Some("zeta-project"));
+        assert_eq!(created_row.1.as_deref(), Some("Zeta modal session"));
+        assert_eq!(created_row.2.as_deref(), Some("zeta-modal-session"));
+        assert_eq!(created_row.3, "/tmp/zeta/work");
+        assert_eq!(created_row.4.as_deref(), Some("/tmp/zeta-root"));
+        assert_eq!(created_row.5.as_deref(), Some("runtime-no-rg"));
+        assert_eq!(created_row.6.as_deref(), Some("gpt-5.4-mini"));
+        assert!(created_row.7);
+        assert_eq!(created_row.8, "open");
+
+        let update = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "settings-update-session".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::UpdateSessionSettings {
+                        session_id: session_id.clone(),
+                        project: "alpha-project".to_string(),
+                        role: "runtime-allow".to_string(),
+                        model: "gpt-5.5".to_string(),
+                        workdir: "/tmp/alpha/updated-work".to_string(),
+                        worktree_root: "/tmp/alpha-root-updated".to_string(),
+                        title: "Alpha updated title".to_string(),
+                        name: "alpha-updated-name".to_string(),
+                        tracked: true,
+                    },
+                },
+            })
+            .await;
+        assert!(update.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::OperationResult { result } if matches!(result.outcome, GuiOperationOutcome::Accepted { .. }))), "session settings save must dispatch typed operation: {update:?}");
+        let updated_row: (Option<String>, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, bool) = sqlx::query_as(
+            "SELECT project_key, title, name, workdir, worktree_root, role_id, role_snapshot #>> '{modelDefaults,model}', tracked FROM sessions WHERE id=$1",
+        )
+        .bind(created_uuid)
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("updated session row");
+        assert_eq!(updated_row.0.as_deref(), Some("alpha-project"));
+        assert_eq!(updated_row.1.as_deref(), Some("Alpha updated title"));
+        assert_eq!(updated_row.2.as_deref(), Some("alpha-updated-name"));
+        assert_eq!(updated_row.3, "/tmp/alpha/updated-work");
+        assert_eq!(updated_row.4.as_deref(), Some("/tmp/alpha-root-updated"));
+        assert_eq!(updated_row.5.as_deref(), Some("runtime-allow"));
+        assert_eq!(updated_row.6.as_deref(), Some("gpt-5.5"));
+        assert!(updated_row.7);
+
+        let _ = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "settings-select-alpha".to_string(),
+                intent: GuiTransportRequest::SelectProject { project_id: "alpha-project".to_string() },
+            })
+            .await;
+        let alpha_view = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "settings-alpha-rehydrate".to_string(),
+                intent: GuiTransportRequest::Rehydrate { selected_session_id: Some(session_id.clone()) },
+            })
+            .await;
+        assert!(alpha_view.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+            if view_model.shell.selected_session_id == Some(session_id.clone())
+                && view_model.shell.sessions.iter().any(|row| row.id == session_id && row.subtitle.contains("alpha-project") && row.subtitle.contains("runtime-allow") && row.title == "Alpha updated title")
+        )), "session settings save must update projection and rendered left rail under the new project: {alpha_view:?}");
+
+        let fork_turn = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at, completed_at) VALUES ($1,$2,'user','fork from completed turn','completed',now(),now())")
+            .bind(fork_turn)
+            .bind(created_uuid)
+            .execute(&test_db.pool)
+            .await
+            .expect("completed fork turn");
+        let fork = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "settings-fork-session".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::ForkSession {
+                        session_id: session_id.clone(),
+                        at_turn: fork_turn.to_string(),
+                    },
+                },
+            })
+            .await;
+        let forked_session_id = fork
+            .iter()
+            .find_map(|packet| match &packet.output {
+                GuiTransportOutput::OperationResult { result } => match &result.outcome {
+                    GuiOperationOutcome::Accepted { entity_id: Some(id) } => Some(id.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("forked session id");
+        assert!(fork.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+            if view_model.shell.selected_session_id == Some(forked_session_id.clone())
+                && view_model.shell.sessions.iter().any(|row| row.id == forked_session_id)
+        )), "Fork must create and select the forked session in the connected GUI: {fork:?}");
+        let forked_uuid = Uuid::parse_str(&forked_session_id).expect("forked session uuid");
+        let fork_linkage: (Option<Uuid>, Option<Uuid>, i32, Option<String>) = sqlx::query_as(
+            "SELECT forked_from_session_id, forked_from_turn_id, fork_depth, project_key FROM sessions WHERE id=$1",
+        )
+        .bind(forked_uuid)
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("fork linkage");
+        assert_eq!(fork_linkage.0, Some(created_uuid));
+        assert_eq!(fork_linkage.1, Some(fork_turn));
+        assert_eq!(fork_linkage.2, 1);
+        assert_eq!(fork_linkage.3.as_deref(), Some("alpha-project"));
+
+        let close = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "settings-close-session".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::CloseSession {
+                        session_id: forked_session_id.clone(),
+                        reason: Some("settings modal close proof".to_string()),
+                    },
+                },
+            })
+            .await;
+        assert!(close.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+            if view_model.shell.sessions.iter().any(|row| row.id == forked_session_id && row.status == "closed")
+        )), "Close must update connected GUI state immediately: {close:?}");
+        let closed_row: (String, Option<String>) = sqlx::query_as("SELECT status, close_reason FROM sessions WHERE id=$1")
+            .bind(forked_uuid)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("closed row");
+        assert_eq!(closed_row.0, "closed");
+        assert_eq!(closed_row.1.as_deref(), Some("settings modal close proof"));
+
+        let archive = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "settings-archive-session".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::ArchiveSession { session_id: forked_session_id.clone() },
+                },
+            })
+            .await;
+        assert!(archive.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+            if !view_model.shell.sessions.iter().any(|row| row.id == forked_session_id)
+        )), "Archive must remove the session from normal tracked lists: {archive:?}");
+        let archived_row: (bool, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as("SELECT tracked, archived_at FROM sessions WHERE id=$1")
+            .bind(forked_uuid)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("archived session row");
+        assert!(!archived_row.0);
+        assert!(archived_row.1.is_some());
+
+        server.abort();
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn nonblocking_send_streams_selected_chat_deltas_and_terminal_state() {
+        let test_db = validation_db().await;
+        let model = FakeModelClient {
+            request_delay_ms: Some(250),
+            model_name: Some("nonblocking-test-model"),
+            ..Default::default()
+        };
+        let state = ServerState::new_with_model_client(
+            test_db.pool.clone(),
+            "nonblocking-stream-validation".to_string(),
+            Arc::new(model),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.expect("serve");
+        });
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-allow")
+            .await
+            .expect("role");
+        let session_id = db::new_session(
+            &test_db.pool,
+            &role,
+            Some("stream-project"),
+            ".",
+            Some("."),
+            Some("Nonblocking stream"),
+            Some("nonblocking-stream"),
+        )
+        .await
+        .expect("session");
+        let base_url = format!("http://{addr}");
+        let mut sync = RuntimeSyncClient::new(RuntimeSyncConfig::new(base_url.clone()).with_selected_session(session_id));
+        let snapshot = sync.hydrate().await.expect("hydrate").clone();
+        let mut stream = sync.connect_after(Some(snapshot.watermark)).await.expect("connect stream");
+
+        let started = std::time::Instant::now();
+        let response = reqwest::Client::new()
+            .post(format!("{base_url}/sessions/{session_id}/send"))
+            .json(&json!({"message":"nonblocking exact composer text"}))
+            .send()
+            .await
+            .expect("send request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = response.json().await.expect("send body");
+        assert_eq!(body["status"], "running", "send must return while model work continues");
+        let turn_id = Uuid::parse_str(body["turnId"].as_str().expect("turn id")).expect("turn uuid");
+        assert!(started.elapsed() < Duration::from_millis(220), "send response must not wait for delayed model completion");
+
+        let mut saw_user_delta = false;
+        let mut saw_tool_delta = false;
+        let mut saw_assistant_delta = false;
+        for _ in 0..80 {
+            let outcome = stream.next_outcome(&mut sync).await.expect("stream outcome");
+            if let SyncOutcome::DeltaApplied { delta, .. } = outcome {
+                match &delta.kind {
+                    RuntimeDeltaKind::SelectedChatUpdate { entry }
+                        if entry.author == "User"
+                            && entry.body == "nonblocking exact composer text"
+                            && entry.is_streaming =>
+                    {
+                        saw_user_delta = true;
+                    }
+                    RuntimeDeltaKind::SelectedChatUpdate { entry }
+                        if entry.author == "Tool" && entry.is_tool && !entry.command.is_empty() =>
+                    {
+                        saw_tool_delta = true;
+                    }
+                    RuntimeDeltaKind::SelectedChatUpdate { entry }
+                        if entry.author == "Assistant" && entry.body.contains("fake final fake-call completed") =>
+                    {
+                        saw_assistant_delta = true;
+                    }
+                    _ => {}
+                }
+                if saw_user_delta && saw_tool_delta && saw_assistant_delta {
+                    break;
+                }
+            }
+        }
+        assert!(saw_user_delta, "stream must deliver selected-chat User delta before final completion");
+        assert!(saw_tool_delta, "stream must deliver selected-chat Tool delta");
+        assert!(saw_assistant_delta, "stream must deliver selected-chat Assistant final delta");
+
+        let mut turn_status = String::new();
+        for _ in 0..50 {
+            turn_status = sqlx::query_scalar("SELECT status FROM turns WHERE id=$1")
+                .bind(turn_id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("turn status");
+            if turn_status == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(turn_status, "completed");
+        let assistant_text: String = sqlx::query_scalar("SELECT payload->>'finalText' FROM event_stream WHERE turn_id=$1 AND event_type='model.final_response'")
+            .bind(turn_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("assistant final text");
+        assert!(assistant_text.contains("fake final fake-call completed"));
+        let running_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status='running'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("running turn count");
+        assert_eq!(running_count, 0);
+
+        server.abort();
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn gui_transport_surfaces_typed_errors_for_required_interactions() {
+        let test_db = validation_db().await;
+        let state = ServerState::new_with_identity(test_db.pool.clone(), "typed-errors-validation".to_string());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.expect("serve");
+        });
+        let transport = GuiTransportHandle::spawn();
+
+        let bad_connect = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "typed-error-connect".to_string(),
+                intent: GuiTransportRequest::Connect { base_url: "not-a-url".to_string(), selected_session_id: None },
+            })
+            .await;
+        assert!(bad_connect.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::OperationResult { result } if matches!(&result.outcome, GuiOperationOutcome::Error { error } if error.error.code == "unavailable" || error.error.code == "bad_request"))), "connect failure must surface typed error: {bad_connect:?}");
+
+        let base_url = format!("http://{addr}");
+        let _ = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "typed-error-connect-ok".to_string(),
+                intent: GuiTransportRequest::Connect { base_url, selected_session_id: None },
+            })
+            .await;
+
+        let bad_create = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "typed-error-create".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::CreateSession {
+                        role: String::new(),
+                        project: Some("typed-error-project".to_string()),
+                        model: Some("gpt-5.4-mini".to_string()),
+                        workdir: Some(".".to_string()),
+                        worktree_root: Some(".".to_string()),
+                        title: Some("Bad create".to_string()),
+                        name: Some("bad-create".to_string()),
+                    },
+                },
+            })
+            .await;
+        assert!(bad_create.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::OperationResult { result } if matches!(&result.outcome, GuiOperationOutcome::Error { error } if error.error.code == "bad_request" && error.error.message.contains("role")))), "create validation failure must surface typed modal error: {bad_create:?}");
+
+        let _ = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "typed-error-create-project-ok".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::CreateProject {
+                        project_key: "typed-error-project".to_string(),
+                        display_name: "Typed Error Project".to_string(),
+                        default_workdir: ".".to_string(),
+                        default_worktree_root: ".".to_string(),
+                        default_role_id: Some("runtime-no-rg".to_string()),
+                        default_model: "gpt-5.4-mini".to_string(),
+                        tracked: true,
+                        listed: true,
+                    },
+                },
+            })
+            .await;
+        let duplicate_project = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "typed-error-create-project-duplicate".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::CreateProject {
+                        project_key: "typed-error-project".to_string(),
+                        display_name: "Duplicate".to_string(),
+                        default_workdir: ".".to_string(),
+                        default_worktree_root: ".".to_string(),
+                        default_role_id: Some("runtime-no-rg".to_string()),
+                        default_model: "gpt-5.4-mini".to_string(),
+                        tracked: true,
+                        listed: true,
+                    },
+                },
+            })
+            .await;
+        assert_gui_operation_error(&duplicate_project, "duplicate project create");
+
+        let bad_project_update = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "typed-error-project-update".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::UpdateProject {
+                        project_key: "missing-project".to_string(),
+                        display_name: "Missing".to_string(),
+                        default_workdir: ".".to_string(),
+                        default_worktree_root: ".".to_string(),
+                        default_role_id: Some("runtime-no-rg".to_string()),
+                        default_model: "gpt-5.4-mini".to_string(),
+                        tracked: true,
+                        listed: true,
+                    },
+                },
+            })
+            .await;
+        assert!(bad_project_update.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::OperationResult { result } if matches!(&result.outcome, GuiOperationOutcome::Error { error } if error.error.code == "not_found"))), "project update failure must surface typed error: {bad_project_update:?}");
+
+        for (packet_id, operation) in [
+            (
+                "typed-error-runtime-settings",
+                GuiOperationRequest::UpdateRuntimeSettings {
+                    base_url: String::new(),
+                    selected_project_id: Some("typed-error-project".to_string()),
+                },
+            ),
+            (
+                "typed-error-session-settings",
+                GuiOperationRequest::UpdateSessionSettings {
+                    session_id: Uuid::nil().to_string(),
+                    project: "typed-error-project".to_string(),
+                    role: "runtime-no-rg".to_string(),
+                    model: "gpt-5.4-mini".to_string(),
+                    workdir: ".".to_string(),
+                    worktree_root: ".".to_string(),
+                    title: "Missing session".to_string(),
+                    name: "missing-session".to_string(),
+                    tracked: true,
+                },
+            ),
+            (
+                "typed-error-close",
+                GuiOperationRequest::CloseSession {
+                    session_id: Uuid::nil().to_string(),
+                    reason: Some("missing session".to_string()),
+                },
+            ),
+            (
+                "typed-error-archive",
+                GuiOperationRequest::ArchiveSession {
+                    session_id: Uuid::nil().to_string(),
+                },
+            ),
+            (
+                "typed-error-fork",
+                GuiOperationRequest::ForkSession {
+                    session_id: Uuid::nil().to_string(),
+                    at_turn: Uuid::nil().to_string(),
+                },
+            ),
+            (
+                "typed-error-archive-project",
+                GuiOperationRequest::ArchiveProject {
+                    project_key: "missing-project".to_string(),
+                },
+            ),
+            (
+                "typed-error-unarchive-project",
+                GuiOperationRequest::UnarchiveProject {
+                    project_key: "missing-project".to_string(),
+                },
+            ),
+            (
+                "typed-error-role-admin",
+                GuiOperationRequest::ShowRoleDetail {
+                    role_id: "missing-role".to_string(),
+                },
+            ),
+            (
+                "typed-error-role-activate",
+                GuiOperationRequest::ActivateRoleVersion {
+                    role_id: "missing-role".to_string(),
+                    version_id: Uuid::nil().to_string(),
+                },
+            ),
+            (
+                "typed-error-approval-decide",
+                GuiOperationRequest::DecideApproval {
+                    approval_id: Uuid::nil().to_string(),
+                    decision: "approve".to_string(),
+                    reason: "missing approval".to_string(),
+                },
+            ),
+            (
+                "typed-error-approval-resume",
+                GuiOperationRequest::ResumeApproval {
+                    approval_id: Uuid::nil().to_string(),
+                },
+            ),
+            (
+                "typed-error-command-show",
+                GuiOperationRequest::ShowCommand {
+                    action_id: "missing.command".to_string(),
+                    session_id: None,
+                    project_key: None,
+                },
+            ),
+            (
+                "typed-error-command-preview",
+                GuiOperationRequest::PreviewCommandRegistryRequest {
+                    request_id: Uuid::nil().to_string(),
+                    decision: CommandRegistryDecisionInput {
+                        session_id: None,
+                        status: "approved".to_string(),
+                        final_scope: None,
+                        final_execution_policy: None,
+                        final_command: None,
+                    },
+                },
+            ),
+            (
+                "typed-error-command-apply",
+                GuiOperationRequest::ApplyCommandRegistryRequest {
+                    request_id: Uuid::nil().to_string(),
+                    session_id: Uuid::nil().to_string(),
+                },
+            ),
+            (
+                "typed-error-process-flush",
+                GuiOperationRequest::FlushProcess {
+                    session_id: Uuid::nil().to_string(),
+                    handle: "missing".to_string(),
+                },
+            ),
+            (
+                "typed-error-process-input",
+                GuiOperationRequest::InputProcess {
+                    session_id: Uuid::nil().to_string(),
+                    handle: "missing".to_string(),
+                    text: "hello".to_string(),
+                },
+            ),
+            (
+                "typed-error-process-terminate",
+                GuiOperationRequest::TerminateProcess {
+                    session_id: Uuid::nil().to_string(),
+                    handle: "missing".to_string(),
+                },
+            ),
+            (
+                "typed-error-workflow-memory",
+                GuiOperationRequest::WorkflowMemoryFeedback {
+                    memory_id: Uuid::nil().to_string(),
+                    session_id: Uuid::nil().to_string(),
+                    feedback: "helpful".to_string(),
+                    payload: json!({"source":"typed-error-validation"}),
+                },
+            ),
+        ] {
+            let outputs = transport
+                .send(GuiTransportRequestPacket {
+                    packet_id: packet_id.to_string(),
+                    intent: GuiTransportRequest::DispatchOperation { operation },
+                })
+                .await;
+            assert_gui_operation_error(&outputs, packet_id);
+        }
+
+        let bad_send = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "typed-error-send".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::SendMessage {
+                        session_id: "00000000-0000-0000-0000-000000000000".to_string(),
+                        message: String::new(),
+                    },
+                },
+            })
+            .await;
+        assert!(bad_send.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::OperationResult { result } if matches!(&result.outcome, GuiOperationOutcome::Error { error } if error.error.code == "bad_request" || error.error.code == "validation_failed"))), "send failure must surface typed composer error: {bad_send:?}");
+
+        server.abort();
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn live_ui_validation_send_response_projects_into_shared_chat_timeline_shape() {
         let test_db = validation_db().await;
         let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg")
             .await
@@ -1592,11 +2858,11 @@ mod tests {
         let session_id = db::new_session(
             &test_db.pool,
             &role,
-            Some("live-ui-smoke"),
+            Some("live-ui-validation"),
             ".",
             Some("."),
-            Some("Live UI smoke"),
-            Some("live-ui-smoke"),
+            Some("Live UI validation"),
+            Some("live-ui-validation"),
         )
         .await
         .expect("session");
@@ -1639,28 +2905,28 @@ mod tests {
             view.shell.selected_conversation
         );
         println!(
-            "live_ui_smoke session_id={session_id} turn_id={turn_id} chat_timeline_response=\"fake final fake-call completed\" rows={}",
+            "live_ui_validation session_id={session_id} turn_id={turn_id} chat_timeline_response=\"fake final fake-call completed\" rows={}",
             view.shell.selected_conversation.len()
         );
         let _ = std::fs::create_dir_all("/tmp/agent-runtime-shell-proof");
         std::fs::write(
-            "/tmp/agent-runtime-shell-proof/live-ui-smoke-response.txt",
+            "/tmp/agent-runtime-shell-proof/live-ui-validation-response.txt",
             format!(
                 "session_id={session_id}\nturn_id={turn_id}\nchat_timeline_response=fake final fake-call completed\nrows={}\n",
                 view.shell.selected_conversation.len()
             ),
         )
-        .expect("write live ui smoke evidence");
+        .expect("write live ui validation evidence");
         test_db.cleanup().await;
     }
 
     #[tokio::test]
-    async fn live_rinf_transport_ui_smoke_connect_create_send_projects_chat_timeline_response() {
+    async fn live_rinf_transport_ui_validation_connect_create_send_projects_chat_timeline_response() {
         let test_db = validation_db().await;
         let state = ServerState::new_with_model_client(
             test_db.pool.clone(),
-            "live-rinf-ui-smoke".to_string(),
-            Arc::new(FakeModelClient { model_name: Some("fake-live-smoke"), ..Default::default() }),
+            "live-rinf-ui-validation".to_string(),
+            Arc::new(FakeModelClient { model_name: Some("deterministic-test-model"), ..Default::default() }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("addr");
@@ -1672,7 +2938,7 @@ mod tests {
 
         let connect = transport
             .send(GuiTransportRequestPacket {
-                packet_id: "live-smoke-connect".to_string(),
+                packet_id: "live-validation-connect".to_string(),
                 intent: GuiTransportRequest::Connect {
                     base_url: base_url.clone(),
                     selected_session_id: None,
@@ -1691,16 +2957,16 @@ mod tests {
 
         let created = transport
             .send(GuiTransportRequestPacket {
-                packet_id: "live-smoke-create".to_string(),
+                packet_id: "live-validation-create".to_string(),
                 intent: GuiTransportRequest::DispatchOperation {
                     operation: GuiOperationRequest::CreateSession {
                         role: "runtime-no-rg".to_string(),
-                        project: Some("live-rinf-ui-smoke".to_string()),
-                        model: Some("fake-live-smoke".to_string()),
+                        project: Some("live-rinf-ui-validation".to_string()),
+                        model: Some("deterministic-test-model".to_string()),
                         workdir: Some(".".to_string()),
                         worktree_root: Some(".".to_string()),
-                        title: Some("Live Rinf UI smoke".to_string()),
-                        name: Some("live-rinf-ui-smoke".to_string()),
+                        title: Some("Live Rinf UI validation".to_string()),
+                        name: Some("live-rinf-ui-validation".to_string()),
                     },
                 },
             })
@@ -1718,15 +2984,15 @@ mod tests {
 
         let _ = transport
             .send(GuiTransportRequestPacket {
-                packet_id: "live-smoke-project".to_string(),
+                packet_id: "live-validation-project".to_string(),
                 intent: GuiTransportRequest::SelectProject {
-                    project_id: "live-rinf-ui-smoke".to_string(),
+                    project_id: "live-rinf-ui-validation".to_string(),
                 },
             })
             .await;
         let project_filtered = transport
             .send(GuiTransportRequestPacket {
-                packet_id: "live-smoke-project-refresh".to_string(),
+                packet_id: "live-validation-project-refresh".to_string(),
                 intent: GuiTransportRequest::Rehydrate {
                     selected_session_id: Some(session_id.clone()),
                 },
@@ -1736,14 +3002,14 @@ mod tests {
             project_filtered.iter().any(|packet| matches!(
                 &packet.output,
                 GuiTransportOutput::WorkbenchView { view_model }
-                    if view_model.shell.sessions.iter().any(|row| row.id == session_id && row.subtitle.contains("live-rinf-ui-smoke") && row.group_label == "runtime-no-rg")
+                    if view_model.shell.sessions.iter().any(|row| row.id == session_id && row.subtitle.contains("live-rinf-ui-validation") && row.group_label == "runtime-no-rg")
             )),
             "created GUI session must refresh under selected project with product-facing role/project labels: {project_filtered:?}"
         );
 
         let selected = transport
             .send(GuiTransportRequestPacket {
-                packet_id: "live-smoke-select".to_string(),
+                packet_id: "live-validation-select".to_string(),
                 intent: GuiTransportRequest::DispatchOperation {
                     operation: GuiOperationRequest::SelectSession {
                         session_id: Some(session_id.clone()),
@@ -1762,7 +3028,7 @@ mod tests {
 
         let sent = transport
             .send(GuiTransportRequestPacket {
-                packet_id: "live-smoke-send".to_string(),
+                packet_id: "live-validation-send".to_string(),
                 intent: GuiTransportRequest::DispatchOperation {
                     operation: GuiOperationRequest::SendMessage {
                         session_id: session_id.clone(),
@@ -1784,7 +3050,7 @@ mod tests {
 
         let rehydrated = transport
             .send(GuiTransportRequestPacket {
-                packet_id: "live-smoke-rehydrate".to_string(),
+                packet_id: "live-validation-rehydrate".to_string(),
                 intent: GuiTransportRequest::Rehydrate {
                     selected_session_id: Some(session_id.clone()),
                 },
@@ -1812,28 +3078,209 @@ mod tests {
             .fetch_one(&test_db.pool)
             .await
             .expect("turn count");
-        assert_eq!(persisted_turn_count, 1, "live GUI transport smoke must persist the sent turn");
+        assert_eq!(persisted_turn_count, 1, "live GUI transport validation must persist the sent turn");
         let requested_model: String = sqlx::query_scalar("SELECT payload->'request'->>'model' FROM model_events WHERE turn_id=$1 AND event_type='assistant_message'")
             .bind(Uuid::parse_str(&turn_id).expect("turn uuid"))
             .fetch_one(&test_db.pool)
             .await
             .expect("requested model");
-        assert_eq!(requested_model, "fake-live-smoke");
+        assert_eq!(requested_model, "deterministic-test-model");
         println!(
-            "live_rinf_ui_smoke base_url={base_url} session_id={session_id} turn_id={turn_id} persisted_turn_count={persisted_turn_count} requested_model={requested_model} chat_timeline_response=\"fake final fake-call completed\" rows={}",
+            "live_rinf_ui_validation base_url={base_url} session_id={session_id} turn_id={turn_id} persisted_turn_count={persisted_turn_count} requested_model={requested_model} chat_timeline_response=\"fake final fake-call completed\" rows={}",
             view.shell.selected_conversation.len()
         );
         let _ = std::fs::create_dir_all("/tmp/agent-runtime-shell-proof");
         std::fs::write(
-            "/tmp/agent-runtime-shell-proof/live-rinf-ui-smoke-response.txt",
+            "/tmp/agent-runtime-shell-proof/live-rinf-ui-validation-response.txt",
             format!(
                 "base_url={base_url}\nsession_id={session_id}\nturn_id={turn_id}\npersisted_turn_count={persisted_turn_count}\nchat_timeline_response=fake final fake-call completed\nrows={}\n",
                 view.shell.selected_conversation.len()
             ),
         )
-        .expect("write live rinf ui smoke evidence");
+        .expect("write live rinf ui validation evidence");
         server.abort();
         test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_real_model_gui_e2e_without_fake_model_behavior() {
+        let base_url = std::env::var("ROBDEX_AGENT_RUNTIME_SERVER_BASE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8765".to_string());
+        let database_url = std::env::var("ROBDEX_AGENT_RUNTIME_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres@127.0.0.1:5432/robdex_agent_runtime".to_string());
+        let pool = db::connect(&database_url).await.expect("connect live runtime database");
+        let transport = GuiTransportHandle::spawn();
+        let unique = format!("live-e2e-{}", chrono::Utc::now().timestamp_millis());
+        let project_key = format!("agent-runtime-{unique}");
+        let title = format!("Agent Runtime {unique}");
+        let name = format!("agent-runtime-{unique}");
+
+        let connect = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "live-real-connect".to_string(),
+                intent: GuiTransportRequest::Connect {
+                    base_url: base_url.clone(),
+                    selected_session_id: None,
+                },
+            })
+            .await;
+        assert!(
+            connect.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model } if view_model.connection_state == "streaming")),
+            "live GUI connect must render streaming Workbench state: {connect:?}"
+        );
+
+        let created_project = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "live-real-project".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::CreateProject {
+                        project_key: project_key.clone(),
+                        display_name: title.clone(),
+                        default_workdir: ".".to_string(),
+                        default_worktree_root: ".".to_string(),
+                        default_role_id: Some("runtime-no-rg".to_string()),
+                        default_model: "gpt-5.4-mini".to_string(),
+                        tracked: true,
+                        listed: true,
+                    },
+                },
+            })
+            .await;
+        assert!(
+            created_project.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+                if view_model.shell.projects.iter().any(|project| project.id == project_key)
+            )),
+            "live GUI project creation must appear in the DB-backed rail: {created_project:?}"
+        );
+
+        let created = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "live-real-session".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::CreateSession {
+                        role: "runtime-no-rg".to_string(),
+                        project: Some(project_key.clone()),
+                        model: Some("gpt-5.4-mini".to_string()),
+                        workdir: Some(".".to_string()),
+                        worktree_root: Some(".".to_string()),
+                        title: Some(title.clone()),
+                        name: Some(name.clone()),
+                    },
+                },
+            })
+            .await;
+        let session_id = created
+            .iter()
+            .find_map(|packet| match &packet.output {
+                GuiTransportOutput::OperationResult { result } => match &result.outcome {
+                    GuiOperationOutcome::Accepted { entity_id: Some(id) } => Some(id.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("live GUI session id");
+        let session_uuid = Uuid::parse_str(&session_id).expect("session uuid");
+        assert!(
+            created.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+                if view_model.shell.selected_session_id == Some(session_id.clone())
+            )),
+            "live GUI session creation must select the new session: {created:?}"
+        );
+
+        let send = transport
+            .send(GuiTransportRequestPacket {
+                packet_id: "live-real-send".to_string(),
+                intent: GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::SendMessage {
+                        session_id: session_id.clone(),
+                        message: "Use execute_code with exactly this harmless read-only Starlark: output({\"validation\":\"ok\",\"source\":\"live-real-gui-e2e\"})".to_string(),
+                    },
+                },
+            })
+            .await;
+        assert!(
+            send.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::OperationResult { result }
+                if matches!(result.outcome, GuiOperationOutcome::Accepted { .. })
+            )),
+            "live GUI send must dispatch through typed operation path: {send:?}"
+        );
+
+        let mut saw_user_delta = false;
+        let mut saw_assistant_delta = false;
+        for index in 0..120 {
+            let packet = GuiTransportRequestPacket {
+                packet_id: format!("live-real-stream-{index}"),
+                intent: GuiTransportRequest::ConsumeStreamOnce,
+            };
+            let outputs = match tokio::time::timeout(Duration::from_secs(2), transport.send(packet)).await {
+                Ok(outputs) => outputs,
+                Err(_) => Vec::new(),
+            };
+            for packet in &outputs {
+                if let GuiTransportOutput::StreamOutcome { projection: Some(projection), .. } = &packet.output {
+                    let entries = projection["selectedChatEntries"].as_array().cloned().unwrap_or_default();
+                    saw_user_delta |= entries.iter().any(|entry| entry["author"] == "User" && entry["body"].as_str().unwrap_or_default().contains("live-real-gui-e2e"));
+                    saw_assistant_delta |= entries.iter().any(|entry| entry["author"] == "Assistant" && !entry["body"].as_str().unwrap_or_default().trim().is_empty());
+                }
+            }
+            let terminal: Option<String> = sqlx::query_scalar("SELECT status FROM turns WHERE session_id=$1 ORDER BY started_at DESC LIMIT 1")
+                .bind(session_uuid)
+                .fetch_optional(&pool)
+                .await
+                .expect("turn status");
+            if matches!(terminal.as_deref(), Some("completed" | "failed" | "cancelled" | "lost")) && saw_user_delta && saw_assistant_delta {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        let turn_row: (Uuid, String, String) = sqlx::query_as("SELECT id, input_text, status FROM turns WHERE session_id=$1 ORDER BY started_at DESC LIMIT 1")
+            .bind(session_uuid)
+            .fetch_one(&pool)
+            .await
+            .expect("live turn row");
+        let turn_id = turn_row.0;
+        let model_event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM model_events WHERE turn_id=$1")
+            .bind(turn_id)
+            .fetch_one(&pool)
+            .await
+            .expect("model event count");
+        let tool_call_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls WHERE turn_id=$1")
+            .bind(turn_id)
+            .fetch_one(&pool)
+            .await
+            .expect("tool call count");
+        let artifact_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_output_artifacts WHERE turn_id=$1")
+            .bind(turn_id)
+            .fetch_one(&pool)
+            .await
+            .expect("artifact count");
+        let running_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status='running'")
+            .bind(session_uuid)
+            .fetch_one(&pool)
+            .await
+            .expect("running count");
+        let stored_project: String = sqlx::query_scalar("SELECT project_key FROM sessions WHERE id=$1")
+            .bind(session_uuid)
+            .fetch_one(&pool)
+            .await
+            .expect("stored project");
+        assert_eq!(stored_project, project_key);
+        assert!(saw_user_delta, "live GUI E2E must observe selected-chat user delta");
+        assert!(saw_assistant_delta, "live GUI E2E must observe selected-chat assistant delta");
+        assert_eq!(turn_row.1.contains("live-real-gui-e2e"), true);
+        assert!(matches!(turn_row.2.as_str(), "completed" | "failed"), "turn must reach terminal status, got {}", turn_row.2);
+        assert!(model_event_count > 0, "live GUI E2E must persist model events");
+        if turn_row.2 == "completed" {
+            assert!(tool_call_count > 0, "completed live GUI E2E must persist tool calls");
+            assert!(artifact_count > 0, "completed live GUI E2E must persist output artifacts");
+        }
+        assert_eq!(running_count, 0, "live GUI E2E must leave no orphan running turn");
+        println!(
+            "live_real_model_gui_e2e base_url={base_url} project_key={project_key} session_id={session_id} turn_id={turn_id} terminal_status={} model_events={model_event_count} tool_calls={tool_call_count} output_artifacts={artifact_count} saw_user_delta={saw_user_delta} saw_assistant_delta={saw_assistant_delta}",
+            turn_row.2
+        );
     }
 
     #[tokio::test]
@@ -1883,14 +3330,29 @@ mod tests {
         })
         .await;
 
-        db::close_session(&test_db.pool, session_id, "semantic close", 0)
+        let close_session_id = db::new_session(
+            &test_db.pool,
+            &role,
+            Some("semantic-session"),
+            ".",
+            Some("."),
+            Some("Semantic close session"),
+            Some("semantic-close-session"),
+        )
+        .await
+        .expect("new close session");
+        apply_until(&mut ws, &mut client_projection, |_delta, projection| {
+            projection.sessions.iter().any(|session| session.id == close_session_id.to_string())
+        })
+        .await;
+        db::close_session(&test_db.pool, close_session_id, "semantic close", 0)
             .await
             .expect("close");
         apply_until(&mut ws, &mut client_projection, |_delta, projection| {
             projection
                 .sessions
                 .iter()
-                .any(|session| session.id == session_id.to_string() && session.status == "closed")
+                .any(|session| session.id == close_session_id.to_string() && session.status == "closed")
         })
         .await;
 
@@ -1983,7 +3445,12 @@ mod tests {
         .await
         .expect("approval decided event");
         apply_until(&mut ws, &mut client_projection, |_delta, projection| {
-            projection.pending_approvals.iter().all(|approval| approval.id != approval_id.to_string())
+            projection.pending_approvals.iter().any(|approval| {
+                approval.id == approval_id.to_string()
+                    && approval.status == "denied"
+                    && !approval.can_decide
+                    && !approval.can_resume
+            })
         })
         .await;
 
@@ -2460,7 +3927,11 @@ mod tests {
         let mut saw_timeline_for_approval_decide = false;
         apply_until(&mut ws, &mut client_projection, |delta, projection| {
             saw_timeline_for_approval_decide |= matches!(&delta.kind, RuntimeDeltaKind::TimelineAppend { item } if item.event_type == "approval.decided");
-            projection.pending_approvals.iter().all(|approval| approval.id != approval_id.to_string())
+            projection.pending_approvals.iter().any(|approval| {
+                approval.id == approval_id.to_string()
+                    && approval.status == "denied"
+                    && approval.decision_reason.as_deref() == Some("deterministic admin ws validation")
+            })
         })
         .await;
         assert!(saw_timeline_for_approval_decide);
@@ -3466,13 +4937,28 @@ output(outputs.stats(artifact))
         let show: Value = serde_json::from_slice(&bytes).expect("show json");
         assert_eq!(show["sourceStarlark"], "output(\"ok\")");
         assert_eq!(show["commandFingerprint"], "plain");
-        let (status, _) = request_json(router.clone(), Method::POST, &format!("/workflow-memories/{memory_id}/feedback"), json!({"sessionId": session_id, "feedback":"attempted", "payload":{"variant":true}})).await;
-        assert_eq!(status, StatusCode::OK);
+        for (feedback, expected_event) in [
+            ("attempted", "workflow_memory.mark_attempted"),
+            ("helpful", "workflow_memory.helpful"),
+            ("notHelpful", "workflow_memory.mark_not_helpful"),
+        ] {
+            let (status, _) = request_json(router.clone(), Method::POST, &format!("/workflow-memories/{memory_id}/feedback"), json!({"sessionId": session_id, "feedback": feedback, "payload":{"variant":true}})).await;
+            assert_eq!(status, StatusCode::OK);
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_memory_events WHERE memory_id=$1 AND event_type=$2")
+                .bind(memory_id)
+                .bind(expected_event)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("feedback event count");
+            assert_eq!(count, 1, "{expected_event} persisted");
+        }
         let response = router.clone().oneshot(Request::builder().uri(format!("/workflow-memories/{memory_id}/events?sessionId={session_id}")).body(Body::empty()).expect("request")).await.expect("events");
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("events body");
         let events: Value = serde_json::from_slice(&bytes).expect("events json");
         assert!(events.as_array().unwrap().iter().any(|event| event["eventType"] == "workflow_memory.mark_attempted"));
+        assert!(events.as_array().unwrap().iter().any(|event| event["eventType"] == "workflow_memory.helpful"));
+        assert!(events.as_array().unwrap().iter().any(|event| event["eventType"] == "workflow_memory.mark_not_helpful"));
         let response = router
             .oneshot(
                 Request::builder()

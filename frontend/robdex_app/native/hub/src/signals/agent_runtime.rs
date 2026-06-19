@@ -21,7 +21,6 @@ pub enum AgentRuntimeRequest {
     SelectProject { project_id: String },
     Hydrate { selected_session_id: String },
     Rehydrate { selected_session_id: String },
-    PollStreamOnce,
     Disconnect,
     DispatchOperation { operation: AgentRuntimeGuiOperation },
 }
@@ -32,6 +31,11 @@ pub enum AgentRuntimeGuiOperation {
     SelectSession { session_id: String },
     SelectWorkflowMemory { memory_id: String },
     CreateSession { role: String, project: String, model: String, workdir: String, worktree_root: String, title: String, name: String },
+    ListProjects,
+    CreateProject { project_key: String, display_name: String, default_workdir: String, default_worktree_root: String, default_role_id: String, default_model: String, tracked: bool, listed: bool },
+    UpdateProject { project_key: String, display_name: String, default_workdir: String, default_worktree_root: String, default_role_id: String, default_model: String, tracked: bool, listed: bool },
+    ArchiveProject { project_key: String },
+    UnarchiveProject { project_key: String },
     UpdateRuntimeSettings { base_url: String, selected_project_id: String },
     UpdateSessionSettings { session_id: String, project: String, role: String, model: String, workdir: String, worktree_root: String, title: String, name: String, tracked: bool },
     SendMessage { session_id: String, message: String },
@@ -211,6 +215,7 @@ pub struct AgentRuntimeProjectionSnapshot {
     pub action_count: i64,
     pub role_count: i64,
     pub workflow_memory_count: i64,
+    pub selected_chat_entries: Vec<AgentRuntimeChatEntry>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, SignalPiece)]

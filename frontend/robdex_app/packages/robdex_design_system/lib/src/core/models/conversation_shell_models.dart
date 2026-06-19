@@ -19,6 +19,7 @@ class ConversationShellData {
     this.sessionLabel = 'Sessions',
     this.composerPlaceholder = 'Message selected session...',
     this.composerDisabledHint = 'Select a session to enable the composer.',
+    this.inlineErrorMessage,
   });
 
   final String appTitle;
@@ -38,13 +39,24 @@ class ConversationShellData {
   final String sessionLabel;
   final String composerPlaceholder;
   final String composerDisabledHint;
+  final String? inlineErrorMessage;
 }
 
 class ConversationProject {
-  const ConversationProject({required this.id, required this.title, this.subtitle = ''});
+  const ConversationProject({
+    required this.id,
+    required this.title,
+    this.subtitle = '',
+    this.canEdit = false,
+    this.canArchive = false,
+    this.canCreateSession = true,
+  });
   final String id;
   final String title;
   final String subtitle;
+  final bool canEdit;
+  final bool canArchive;
+  final bool canCreateSession;
 }
 
 class ConversationSession {

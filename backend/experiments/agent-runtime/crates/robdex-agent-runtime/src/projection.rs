@@ -1,7 +1,7 @@
 use anyhow::Result;
 use robdex_agent_runtime_projection::{
     timeline_by_sequence, timeline_item_id, AgentRuntimeChatEntry, CommandRegistryRequestSummary,
-    CommandRegistrySummary, PendingApprovalSummary, RoleSummary, RuntimeDelta, RuntimeStatistics,
+    CommandRegistrySummary, PendingApprovalSummary, ProjectSummary, RoleSummary, RuntimeDelta, RuntimeStatistics,
     RuntimeDeltaKind, RuntimeProjection, SelectedSessionDetail, ServerStatusProjection,
     SessionListItem, TimelineItem, WorkflowMemoryEventSummary, WorkflowMemorySummary,
 };
@@ -33,6 +33,7 @@ pub async fn build_runtime_projection_snapshot(
             database: "connected".to_string(),
             message: None,
         },
+        projects: project_summaries(pool).await?,
         sessions: session_list_items(pool).await?,
         selected_session: selected_session_detail(pool, selected_session_id).await?,
         timeline: timeline_items(pool, selected_session_id).await?,
@@ -42,47 +43,91 @@ pub async fn build_runtime_projection_snapshot(
         command_registry: command_registry_summaries(pool).await?,
         command_registry_requests: command_registry_request_summaries(pool).await?,
         workflow_memories: workflow_memory_summaries(pool, selected_session_id).await?,
-        statistics: runtime_statistics(pool).await?,
+        statistics: runtime_statistics(pool, selected_session_id).await?,
         resync_required: None,
     };
     projection.timeline = timeline_by_sequence(projection.timeline);
     Ok(projection)
 }
 
-async fn runtime_statistics(pool: &PgPool) -> Result<RuntimeStatistics> {
+async fn project_summaries(pool: &PgPool) -> Result<Vec<ProjectSummary>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT project_key, display_name, default_workdir, default_worktree_root,
+               default_role_id, default_model, tracked, listed, archived, created_at, updated_at
+        FROM projects
+        ORDER BY lower(display_name), project_key
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| ProjectSummary {
+            project_key: row.get("project_key"),
+            display_name: row.get("display_name"),
+            default_workdir: row.get("default_workdir"),
+            default_worktree_root: row.get("default_worktree_root"),
+            default_role_id: row.get("default_role_id"),
+            default_model: row.get("default_model"),
+            tracked: row.get("tracked"),
+            listed: row.get("listed"),
+            archived: row.get("archived"),
+            created_at: optional_time(row.get("created_at")),
+            updated_at: optional_time(row.get("updated_at")),
+        })
+        .collect())
+}
+
+async fn runtime_statistics(pool: &PgPool, selected_session_id: Option<Uuid>) -> Result<RuntimeStatistics> {
     async fn count(pool: &PgPool, sql: &str) -> Result<u64> {
         let value: i64 = sqlx::query_scalar(sql).fetch_one(pool).await?;
         Ok(value.max(0) as u64)
     }
+    async fn scoped_count(pool: &PgPool, global_sql: &str, scoped_sql: &str, selected_session_id: Option<Uuid>) -> Result<u64> {
+        if let Some(session_id) = selected_session_id {
+            let value: i64 = sqlx::query_scalar(scoped_sql).bind(session_id).fetch_one(pool).await?;
+            Ok(value.max(0) as u64)
+        } else {
+            count(pool, global_sql).await
+        }
+    }
     Ok(RuntimeStatistics {
-        turns: count(pool, "SELECT COUNT(*) FROM turns").await?,
-        model_events: count(pool, "SELECT COUNT(*) FROM model_events").await?,
-        tool_calls: count(pool, "SELECT COUNT(*) FROM tool_calls").await?,
-        script_runs: count(pool, "SELECT COUNT(*) FROM script_runs").await?,
-        host_api_calls: count(pool, "SELECT COUNT(*) FROM host_api_calls").await?,
-        command_runs: count(pool, "SELECT COUNT(*) FROM command_runs").await?,
-        managed_processes: count(pool, "SELECT COUNT(*) FROM managed_processes").await?,
-        output_artifacts: count(pool, "SELECT COUNT(*) FROM execution_output_artifacts").await?,
-        compaction_checkpoints: count(pool, "SELECT COUNT(*) FROM compaction_checkpoints").await?,
-        approval_requests: count(pool, "SELECT COUNT(*) FROM approval_requests").await?,
-        command_registry_requests: count(pool, "SELECT COUNT(*) FROM command_registry_requests").await?,
-        failed_rows: count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'failed'").await?
-            + count(pool, "SELECT COUNT(*) FROM tool_calls WHERE status = 'failed'").await?
-            + count(pool, "SELECT COUNT(*) FROM script_runs WHERE status = 'failed'").await?
-            + count(pool, "SELECT COUNT(*) FROM host_api_calls WHERE status = 'failed'").await?
-            + count(pool, "SELECT COUNT(*) FROM command_runs WHERE status = 'failed'").await?,
-        running_rows: count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'running'").await?
-            + count(pool, "SELECT COUNT(*) FROM tool_calls WHERE status = 'running'").await?
-            + count(pool, "SELECT COUNT(*) FROM script_runs WHERE status = 'running'").await?
-            + count(pool, "SELECT COUNT(*) FROM host_api_calls WHERE status = 'running'").await?
-            + count(pool, "SELECT COUNT(*) FROM command_runs WHERE status = 'running'").await?
-            + count(pool, "SELECT COUNT(*) FROM managed_processes WHERE status = 'running'").await?,
-        lost_rows: count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'lost'").await?
-            + count(pool, "SELECT COUNT(*) FROM tool_calls WHERE status = 'lost'").await?
-            + count(pool, "SELECT COUNT(*) FROM script_runs WHERE status = 'lost'").await?
-            + count(pool, "SELECT COUNT(*) FROM host_api_calls WHERE status = 'lost'").await?
-            + count(pool, "SELECT COUNT(*) FROM command_runs WHERE status = 'lost'").await?
-            + count(pool, "SELECT COUNT(*) FROM managed_processes WHERE status = 'lost'").await?,
+        sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions", "SELECT COUNT(*) FROM sessions WHERE id=$1", selected_session_id).await?,
+        open_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE closed_at IS NULL AND archived_at IS NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND closed_at IS NULL AND archived_at IS NULL", selected_session_id).await?,
+        closed_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE closed_at IS NOT NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND closed_at IS NOT NULL", selected_session_id).await?,
+        archived_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE archived_at IS NOT NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND archived_at IS NOT NULL", selected_session_id).await?,
+        turns: scoped_count(pool, "SELECT COUNT(*) FROM turns", "SELECT COUNT(*) FROM turns WHERE session_id=$1", selected_session_id).await?,
+        running_turns: scoped_count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'running'", "SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status = 'running'", selected_session_id).await?,
+        failed_turns: scoped_count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'failed'", "SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status = 'failed'", selected_session_id).await?,
+        model_events: scoped_count(pool, "SELECT COUNT(*) FROM model_events", "SELECT COUNT(*) FROM model_events WHERE session_id=$1", selected_session_id).await?,
+        tool_calls: scoped_count(pool, "SELECT COUNT(*) FROM tool_calls", "SELECT COUNT(*) FROM tool_calls WHERE session_id=$1", selected_session_id).await?,
+        script_runs: scoped_count(pool, "SELECT COUNT(*) FROM script_runs", "SELECT COUNT(*) FROM script_runs sr JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1", selected_session_id).await?,
+        host_api_calls: scoped_count(pool, "SELECT COUNT(*) FROM host_api_calls", "SELECT COUNT(*) FROM host_api_calls h JOIN script_runs sr ON sr.id=h.script_run_id JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1", selected_session_id).await?,
+        command_runs: scoped_count(pool, "SELECT COUNT(*) FROM command_runs", "SELECT COUNT(*) FROM command_runs cr JOIN host_api_calls h ON h.id=cr.host_api_call_id JOIN script_runs sr ON sr.id=h.script_run_id JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1", selected_session_id).await?,
+        managed_processes: scoped_count(pool, "SELECT COUNT(*) FROM managed_processes", "SELECT COUNT(*) FROM managed_processes WHERE session_id=$1", selected_session_id).await?,
+        output_artifacts: scoped_count(pool, "SELECT COUNT(*) FROM execution_output_artifacts", "SELECT COUNT(*) FROM execution_output_artifacts WHERE session_id=$1", selected_session_id).await?,
+        compaction_checkpoints: scoped_count(pool, "SELECT COUNT(*) FROM compaction_checkpoints", "SELECT COUNT(*) FROM compaction_checkpoints WHERE session_id=$1", selected_session_id).await?,
+        approval_requests: scoped_count(pool, "SELECT COUNT(*) FROM approval_requests", "SELECT COUNT(*) FROM approval_requests WHERE session_id=$1", selected_session_id).await?,
+        command_registry_requests: scoped_count(pool, "SELECT COUNT(*) FROM command_registry_requests", "SELECT COUNT(*) FROM command_registry_requests WHERE session_id=$1", selected_session_id).await?,
+        workflow_memories: scoped_count(pool, "SELECT COUNT(*) FROM workflow_memories", "SELECT COUNT(*) FROM workflow_memories WHERE session_id=$1", selected_session_id).await?,
+        failed_rows: scoped_count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'failed'", "SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status = 'failed'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM tool_calls WHERE status = 'failed'", "SELECT COUNT(*) FROM tool_calls WHERE session_id=$1 AND status = 'failed'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM script_runs WHERE status = 'failed'", "SELECT COUNT(*) FROM script_runs sr JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1 AND sr.status = 'failed'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM host_api_calls WHERE status = 'failed'", "SELECT COUNT(*) FROM host_api_calls h JOIN script_runs sr ON sr.id=h.script_run_id JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1 AND h.status = 'failed'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM command_runs WHERE status = 'failed'", "SELECT COUNT(*) FROM command_runs cr JOIN host_api_calls h ON h.id=cr.host_api_call_id JOIN script_runs sr ON sr.id=h.script_run_id JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1 AND cr.status = 'failed'", selected_session_id).await?,
+        running_rows: scoped_count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'running'", "SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status = 'running'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM tool_calls WHERE status = 'running'", "SELECT COUNT(*) FROM tool_calls WHERE session_id=$1 AND status = 'running'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM script_runs WHERE status = 'running'", "SELECT COUNT(*) FROM script_runs sr JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1 AND sr.status = 'running'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM host_api_calls WHERE status = 'running'", "SELECT COUNT(*) FROM host_api_calls h JOIN script_runs sr ON sr.id=h.script_run_id JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1 AND h.status = 'running'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM command_runs WHERE status = 'running'", "SELECT COUNT(*) FROM command_runs cr JOIN host_api_calls h ON h.id=cr.host_api_call_id JOIN script_runs sr ON sr.id=h.script_run_id JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1 AND cr.status = 'running'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM managed_processes WHERE status = 'running'", "SELECT COUNT(*) FROM managed_processes WHERE session_id=$1 AND status = 'running'", selected_session_id).await?,
+        lost_rows: scoped_count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'lost'", "SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status = 'lost'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM tool_calls WHERE status = 'lost'", "SELECT COUNT(*) FROM tool_calls WHERE session_id=$1 AND status = 'lost'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM script_runs WHERE status = 'lost'", "SELECT COUNT(*) FROM script_runs sr JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1 AND sr.status = 'lost'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM host_api_calls WHERE status = 'lost'", "SELECT COUNT(*) FROM host_api_calls h JOIN script_runs sr ON sr.id=h.script_run_id JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1 AND h.status = 'lost'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM command_runs WHERE status = 'lost'", "SELECT COUNT(*) FROM command_runs cr JOIN host_api_calls h ON h.id=cr.host_api_call_id JOIN script_runs sr ON sr.id=h.script_run_id JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1 AND cr.status = 'lost'", selected_session_id).await?
+            + scoped_count(pool, "SELECT COUNT(*) FROM managed_processes WHERE status = 'lost'", "SELECT COUNT(*) FROM managed_processes WHERE session_id=$1 AND status = 'lost'", selected_session_id).await?,
     })
 }
 
@@ -170,6 +215,9 @@ async fn projection_deltas_from_event_row(
                     turn_id: id.to_string(),
                     status,
                 }));
+                if let Some(entry) = turn_chat_entry(pool, id).await? {
+                    deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SelectedChatUpdate { entry }));
+                }
             }
         }
         "tool.started" | "tool.completed" => {
@@ -180,6 +228,9 @@ async fn projection_deltas_from_event_row(
                     tool_call_id: id.to_string(),
                     status,
                 }));
+                if let Some(entry) = tool_chat_entry_for_tool(pool, id).await? {
+                    deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SelectedChatUpdate { entry }));
+                }
             }
         }
         "script.started" | "script.completed" => {
@@ -200,6 +251,17 @@ async fn projection_deltas_from_event_row(
                     process_id: id.to_string(),
                     status,
                 }));
+                for entry in tool_chat_entries_for_process(pool, id).await? {
+                    deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SelectedChatUpdate { entry }));
+                }
+            }
+        }
+        "model.final_response" => {
+            if let Some(turn_id) = uuid_from_option(item.turn_id.as_deref())
+                && let Some(session_id) = uuid_from_option(item.session_id.as_deref())
+                && let Some(entry) = assistant_chat_entry(pool, session_id, turn_id).await?
+            {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SelectedChatUpdate { entry }));
             }
         }
         "approval.requested" => {
@@ -313,7 +375,7 @@ async fn session_list_items(pool: &PgPool) -> Result<Vec<SessionListItem>> {
         SELECT id, status, role_id, role_version, project_key, workdir, title, name, tracked,
                archived_at, closed_at, updated_at
         FROM sessions
-        WHERE tracked = true OR status <> 'open'
+        WHERE archived_at IS NULL AND (tracked = true OR status <> 'open')
         ORDER BY updated_at DESC, created_at DESC
         "#,
     )
@@ -344,7 +406,7 @@ async fn session_list_item(pool: &PgPool, session_id: Uuid) -> Result<Option<Ses
         SELECT id, status, role_id, role_version, project_key, workdir, title, name, tracked,
                archived_at, closed_at, updated_at
         FROM sessions
-        WHERE id = $1 AND (tracked = true OR status <> 'open')
+        WHERE id = $1 AND archived_at IS NULL AND (tracked = true OR status <> 'open')
         "#,
     )
     .bind(session_id)
@@ -531,6 +593,44 @@ async fn selected_chat_entries(
     Ok(entries)
 }
 
+async fn turn_chat_entry(pool: &PgPool, turn_id: Uuid) -> Result<Option<AgentRuntimeChatEntry>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, role, input_text, status, started_at
+        FROM turns
+        WHERE id = $1
+        "#,
+    )
+    .bind(turn_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| {
+        let role: String = row.get("role");
+        let author = match role.as_str() {
+            "operator" => "Operator",
+            _ => "User",
+        }
+        .to_string();
+        let status: String = row.get("status");
+        AgentRuntimeChatEntry {
+            id: format!("turn:{turn_id}:user"),
+            author: author.clone(),
+            display_label: author,
+            timestamp: Some(time(row.get("started_at"))),
+            body: row.get("input_text"),
+            subtitle: status.clone(),
+            kind: "message".to_string(),
+            status: status.clone(),
+            process_id: None,
+            command: String::new(),
+            output: String::new(),
+            delivery_state: if status == "completed" { "delivered" } else { "sending" }.to_string(),
+            is_streaming: status == "running",
+            is_tool: false,
+        }
+    }))
+}
+
 async fn assistant_chat_entry(
     pool: &PgPool,
     session_id: Uuid,
@@ -657,6 +757,43 @@ async fn tool_chat_entries(
         .collect())
 }
 
+async fn tool_chat_entry_for_tool(pool: &PgPool, tool_call_id: Uuid) -> Result<Option<AgentRuntimeChatEntry>> {
+    let row = sqlx::query("SELECT session_id, turn_id FROM tool_calls WHERE id=$1")
+        .bind(tool_call_id)
+        .fetch_optional(pool)
+        .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let session_id: Uuid = row.get("session_id");
+    let turn_id: Uuid = row.get("turn_id");
+    Ok(tool_chat_entries(pool, session_id, turn_id)
+        .await?
+        .into_iter()
+        .find(|entry| entry.id.starts_with(&format!("tool:{tool_call_id}:"))))
+}
+
+async fn tool_chat_entries_for_process(pool: &PgPool, process_id: Uuid) -> Result<Vec<AgentRuntimeChatEntry>> {
+    let rows = sqlx::query("SELECT session_id, starting_turn_id FROM managed_processes WHERE id=$1")
+        .bind(process_id)
+        .fetch_all(pool)
+        .await?;
+    let mut entries = Vec::new();
+    for row in rows {
+        let session_id: Uuid = row.get("session_id");
+        let Some(turn_id) = row.get::<Option<Uuid>, _>("starting_turn_id") else {
+            continue;
+        };
+        entries.extend(
+            tool_chat_entries(pool, session_id, turn_id)
+                .await?
+                .into_iter()
+                .filter(|entry| entry.process_id.as_deref() == Some(&process_id.to_string())),
+        );
+    }
+    Ok(entries)
+}
+
 fn event_summary(payload: &Value) -> Option<String> {
     payload
         .get("finalText")
@@ -671,22 +808,27 @@ async fn pending_approval_summaries(pool: &PgPool) -> Result<Vec<PendingApproval
     let rows = sqlx::query(
         r#"
         SELECT ar.id, ar.session_id, ar.turn_id, ar.action_name, ar.required_approver_kind, ar.status, ar.input_context, ar.created_at,
-               EXISTS (
-                   SELECT 1 FROM paused_actions pa
-                   WHERE pa.approval_request_id = ar.id
-                     AND pa.status IN ('approved', 'pendingApproval')
-               ) AS has_resumable_action
+               ad.created_at AS decision_at,
+               ad.reason AS decision_reason,
+               pa.status AS resumable_action_status,
+               COALESCE(pa.status IN ('approved', 'pendingApproval'), false) AS has_resumable_action
         FROM approval_requests ar
-        WHERE ar.status = 'pending'
-           OR (
-               ar.status = 'approved'
-               AND EXISTS (
-                   SELECT 1 FROM paused_actions pa
-                   WHERE pa.approval_request_id = ar.id
-                     AND pa.status IN ('approved', 'pendingApproval')
-               )
-           )
+        LEFT JOIN LATERAL (
+            SELECT created_at, reason
+            FROM approval_decisions
+            WHERE request_id = ar.id
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) ad ON true
+        LEFT JOIN LATERAL (
+            SELECT status
+            FROM paused_actions
+            WHERE approval_request_id = ar.id
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) pa ON true
         ORDER BY ar.created_at DESC
+        LIMIT 50
         "#,
     )
     .fetch_all(pool)
@@ -711,6 +853,9 @@ fn pending_approval_summary_from_row(row: sqlx::postgres::PgRow) -> PendingAppro
             can_resume: status == "approved" && has_resumable_action,
             input_context: row.get("input_context"),
             created_at: Some(time(row.get("created_at"))),
+            decision_at: optional_time(row.get("decision_at")),
+            decision_reason: row.get("decision_reason"),
+            resumable_action_status: row.get("resumable_action_status"),
     }
 }
 
@@ -721,24 +866,26 @@ async fn pending_approval_summary(
     let row = sqlx::query(
         r#"
         SELECT ar.id, ar.session_id, ar.turn_id, ar.action_name, ar.required_approver_kind, ar.status, ar.input_context, ar.created_at,
-               EXISTS (
-                   SELECT 1 FROM paused_actions pa
-                   WHERE pa.approval_request_id = ar.id
-                     AND pa.status IN ('approved', 'pendingApproval')
-               ) AS has_resumable_action
+               ad.created_at AS decision_at,
+               ad.reason AS decision_reason,
+               pa.status AS resumable_action_status,
+               COALESCE(pa.status IN ('approved', 'pendingApproval'), false) AS has_resumable_action
         FROM approval_requests ar
+        LEFT JOIN LATERAL (
+            SELECT created_at, reason
+            FROM approval_decisions
+            WHERE request_id = ar.id
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) ad ON true
+        LEFT JOIN LATERAL (
+            SELECT status
+            FROM paused_actions
+            WHERE approval_request_id = ar.id
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) pa ON true
         WHERE ar.id = $1
-          AND (
-              ar.status = 'pending'
-              OR (
-                  ar.status = 'approved'
-                  AND EXISTS (
-                      SELECT 1 FROM paused_actions pa
-                      WHERE pa.approval_request_id = ar.id
-                        AND pa.status IN ('approved', 'pendingApproval')
-                  )
-              )
-          )
         "#,
     )
     .bind(approval_id)
@@ -1386,13 +1533,22 @@ mod tests {
         let checkpoint_id = Uuid::new_v4();
         let approval_id = Uuid::new_v4();
         let registry_request_id = Uuid::new_v4();
+        let other_session_id = Uuid::new_v4();
+        let other_turn_id = Uuid::new_v4();
         sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','stats-project','/tmp/stats','Stats seed',true)")
             .bind(session_id)
             .execute(&pool)
             .await
             .expect("session");
+        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','stats-project','/tmp/other','Stats other',true)")
+            .bind(other_session_id)
+            .execute(&pool)
+            .await
+            .expect("other session");
         sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, completed_at) VALUES ($1,$2,'user','stats turn','failed',now())")
             .bind(turn_id).bind(session_id).execute(&pool).await.expect("turn");
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, completed_at) VALUES ($1,$2,'user','other turn','completed',now())")
+            .bind(other_turn_id).bind(other_session_id).execute(&pool).await.expect("other turn");
         sqlx::query("INSERT INTO model_events (id, session_id, turn_id, event_type, payload) VALUES ($1,$2,$3,'final_response',$4)")
             .bind(model_event_id).bind(session_id).bind(turn_id).bind(json!({"finalText":"stats final"})).execute(&pool).await.expect("model");
         sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, completed_at) VALUES ($1,$2,$3,'execute_code','stats-call','{}'::jsonb,'lost',now())")
@@ -1420,11 +1576,18 @@ mod tests {
             .expect("registry request");
         let event_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1").bind(session_id).fetch_one(&pool).await.expect("event count");
         assert_eq!(event_rows, 0);
-        let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
+        let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("selected projection");
+        let global_snapshot = build_runtime_projection_snapshot(&pool, None).await.expect("global projection");
         drop(pool);
         drop_validation_database(&admin_url, &database_name).await;
 
+        assert_eq!(snapshot.statistics.sessions, 1);
+        assert_eq!(snapshot.statistics.open_sessions, 1);
+        assert_eq!(snapshot.statistics.closed_sessions, 0);
+        assert_eq!(snapshot.statistics.archived_sessions, 0);
         assert_eq!(snapshot.statistics.turns, 1);
+        assert_eq!(snapshot.statistics.running_turns, 0);
+        assert_eq!(snapshot.statistics.failed_turns, 1);
         assert_eq!(snapshot.statistics.model_events, 1);
         assert_eq!(snapshot.statistics.tool_calls, 1);
         assert_eq!(snapshot.statistics.script_runs, 1);
@@ -1435,9 +1598,16 @@ mod tests {
         assert_eq!(snapshot.statistics.compaction_checkpoints, 1);
         assert_eq!(snapshot.statistics.approval_requests, 1);
         assert_eq!(snapshot.statistics.command_registry_requests, 1);
+        assert_eq!(snapshot.statistics.workflow_memories, 0);
         assert_eq!(snapshot.statistics.failed_rows, 1);
         assert_eq!(snapshot.statistics.running_rows, 2);
         assert_eq!(snapshot.statistics.lost_rows, 1);
+        assert_eq!(global_snapshot.statistics.sessions, 2);
+        assert_eq!(global_snapshot.statistics.open_sessions, 2);
+        assert_eq!(global_snapshot.statistics.turns, 2);
+        assert_eq!(global_snapshot.statistics.failed_turns, 1);
+        assert_eq!(global_snapshot.statistics.model_events, 1);
+        assert_eq!(global_snapshot.statistics.managed_processes, 1);
     }
 
     #[tokio::test]
@@ -1493,6 +1663,16 @@ mod tests {
             )
             .bind(approval_id)
             .bind(session_id)
+            .execute(&pool)
+            .await?;
+            sqlx::query(
+                r#"
+                INSERT INTO approval_decisions (id, request_id, decision, reason, decided_by, created_at)
+                VALUES ($1, $2, 'approved', 'projection approval proof', '{"kind":"test"}'::jsonb, now())
+                "#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(approval_id)
             .execute(&pool)
             .await?;
             sqlx::query(
@@ -1587,5 +1767,8 @@ mod tests {
             .expect("approved resumable approval is projected");
         assert!(!resumable.can_decide);
         assert!(resumable.can_resume);
+        assert!(resumable.decision_at.is_some());
+        assert_eq!(resumable.decision_reason.as_deref(), Some("projection approval proof"));
+        assert_eq!(resumable.resumable_action_status.as_deref(), Some("pendingApproval"));
     }
 }

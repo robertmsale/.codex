@@ -104,6 +104,22 @@ bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryDecisionOperationFo
 }
 
 @visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryDenyOperationForTest(String requestId, String sessionId) {
+  return bindings.AgentRuntimeGuiOperationDecideCommandRegistryRequest(
+    requestId: requestId,
+    decision: _defaultRegistryDecision(sessionId, 'denied'),
+  );
+}
+
+@visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryPreviewOperationForTest(String requestId, String sessionId) {
+  return bindings.AgentRuntimeGuiOperationPreviewCommandRegistryRequest(
+    requestId: requestId,
+    decision: _defaultRegistryDecision(sessionId, 'approved'),
+  );
+}
+
+@visibleForTesting
 bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryApplyOperationForTest(String requestId, String sessionId) {
   return bindings.AgentRuntimeGuiOperationApplyCommandRegistryRequest(requestId: requestId, sessionId: sessionId);
 }
@@ -185,7 +201,8 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   }
 
   void openSettings() {
-    _send('settings-refresh', const bindings.AgentRuntimeRequestHydrate(selectedSessionId: ''));
+    _bridgeErrorMessage = 'Open Global settings from the toolbar.';
+    notifyListeners();
   }
 
   void updateRuntimeSettings({
@@ -245,27 +262,13 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     _send('imported-connect', agentRuntimeConnectImportedProfileIntentForTest());
   }
 
-  void pollStreamOnce() {
-    _send('poll', const bindings.AgentRuntimeRequestPollStreamOnce());
-  }
-
   void disconnect() {
     _send('disconnect', const bindings.AgentRuntimeRequestDisconnect());
   }
 
   void createSession() {
-    final shell = shellData;
-    final project = shell?.projects.isNotEmpty == true ? shell!.projects.first.id : '';
-    final role = data.roleAdmin.rows.isNotEmpty ? data.roleAdmin.rows.first.id : '';
-    createSessionFromDraft(
-      role: role,
-      project: project,
-      model: '',
-      workdir: '',
-      worktreeRoot: '',
-      title: 'New session',
-      name: '',
-    );
+    _bridgeErrorMessage = 'Use the New session dialog to choose project, role, model, title, name, workdir, and worktree root.';
+    notifyListeners();
   }
 
   void createSessionFromDraft({
@@ -277,6 +280,20 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     required String title,
     required String name,
   }) {
+    final missing = <String>[
+      if (role.trim().isEmpty) 'role',
+      if (project.trim().isEmpty) 'project',
+      if (model.trim().isEmpty) 'model',
+      if (workdir.trim().isEmpty) 'workdir',
+      if (worktreeRoot.trim().isEmpty) 'worktree root',
+      if (title.trim().isEmpty) 'title',
+      if (name.trim().isEmpty) 'name',
+    ];
+    if (missing.isNotEmpty) {
+      _bridgeErrorMessage = 'Create session requires ${missing.join(', ')}.';
+      notifyListeners();
+      return;
+    }
     _dispatchOperation(
       'session-create',
       bindings.AgentRuntimeGuiOperationCreateSession(
@@ -289,6 +306,64 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
         name: name.trim(),
       ),
     );
+  }
+
+  void createProject({
+    required String projectKey,
+    required String displayName,
+    required String defaultWorkdir,
+    required String defaultWorktreeRoot,
+    required String defaultRoleId,
+    required String defaultModel,
+    required bool tracked,
+    required bool listed,
+  }) {
+    _dispatchOperation(
+      'project-create',
+      bindings.AgentRuntimeGuiOperationCreateProject(
+        projectKey: projectKey.trim(),
+        displayName: displayName.trim(),
+        defaultWorkdir: defaultWorkdir.trim(),
+        defaultWorktreeRoot: defaultWorktreeRoot.trim(),
+        defaultRoleId: defaultRoleId.trim(),
+        defaultModel: defaultModel.trim(),
+        tracked: tracked,
+        listed: listed,
+      ),
+    );
+  }
+
+  void updateProject({
+    required String projectKey,
+    required String displayName,
+    required String defaultWorkdir,
+    required String defaultWorktreeRoot,
+    required String defaultRoleId,
+    required String defaultModel,
+    required bool tracked,
+    required bool listed,
+  }) {
+    _dispatchOperation(
+      'project-update',
+      bindings.AgentRuntimeGuiOperationUpdateProject(
+        projectKey: projectKey.trim(),
+        displayName: displayName.trim(),
+        defaultWorkdir: defaultWorkdir.trim(),
+        defaultWorktreeRoot: defaultWorktreeRoot.trim(),
+        defaultRoleId: defaultRoleId.trim(),
+        defaultModel: defaultModel.trim(),
+        tracked: tracked,
+        listed: listed,
+      ),
+    );
+  }
+
+  void archiveProject(String projectKey) {
+    _dispatchOperation('project-archive', bindings.AgentRuntimeGuiOperationArchiveProject(projectKey: projectKey.trim()));
+  }
+
+  void unarchiveProject(String projectKey) {
+    _dispatchOperation('project-unarchive', bindings.AgentRuntimeGuiOperationUnarchiveProject(projectKey: projectKey.trim()));
   }
 
   void updateSessionSettings({
@@ -381,12 +456,24 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     _dispatchOperation('approval-decide', agentRuntimeApprovalDecisionOperationForTest(action.id, 'approved'));
   }
 
+  void denyAction(AgentRuntimeActionItem action) {
+    _dispatchOperation('approval-deny', agentRuntimeApprovalDecisionOperationForTest(action.id, 'denied'));
+  }
+
   void resumeApproval(AgentRuntimeActionItem action) {
     _dispatchOperation('approval-resume', agentRuntimeApprovalResumeOperationForTest(action.id));
   }
 
   void approveCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId) {
     _dispatchOperation('registry-decide', agentRuntimeCommandRegistryDecisionOperationForTest(action.id, sessionId));
+  }
+
+  void denyCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId) {
+    _dispatchOperation('registry-deny', agentRuntimeCommandRegistryDenyOperationForTest(action.id, sessionId));
+  }
+
+  void previewCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId) {
+    _dispatchOperation('registry-preview', agentRuntimeCommandRegistryPreviewOperationForTest(action.id, sessionId));
   }
 
   void applyCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId) {
@@ -512,13 +599,94 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   void _handleOutput(RustSignalPack<bindings.AgentRuntimeOutputSignal> pack) {
     final signal = pack.message;
     _pendingRequestIds.remove(signal.requestId);
-    final output = signal.output;
+    _applyOutput(signal.output);
+  }
+
+  @visibleForTesting
+  void applyOutputForTest(bindings.AgentRuntimeOutput output) {
+    _applyOutput(output);
+  }
+
+  void _applyOutput(bindings.AgentRuntimeOutput output) {
     if (output is bindings.AgentRuntimeOutputWorkbenchView) {
       _viewModel = _workbenchData(output.viewModel);
       _shellViewModel = _shellData(output.viewModel.shell);
       _bridgeErrorMessage = null;
+    } else if (output is bindings.AgentRuntimeOutputOperationResult) {
+      final current = _viewModel ?? _disconnectedViewModel;
+      final isError = output.result.outcome == 'error';
+      final message = output.result.message.isEmpty ? output.result.outcome : output.result.message;
+      _viewModel = current.copyWith(
+        outputLog: <String>[
+          ...current.outputLog.take(49),
+          '${output.result.operation}: $message',
+        ],
+        pendingRequestCount: _pendingRequestIds.length,
+        errorMessage: isError ? message : null,
+      );
+      _shellViewModel = _copyShellWithError(_shellViewModel, isError ? message : null);
+      _bridgeErrorMessage = isError ? message : null;
+    } else if (output is bindings.AgentRuntimeOutputProjectionSnapshot) {
+      final current = _viewModel ?? _disconnectedViewModel;
+      _viewModel = current.copyWith(
+        watermarkLabel: output.projection.watermark.toString(),
+        statusBadges: [
+          ...current.statusBadges.where((badge) => badge.label != 'Sessions' && badge.label != 'History events'),
+          AgentRuntimeStatusBadge(label: 'Sessions', value: output.projection.sessionCount.toString(), tone: output.projection.sessionCount == 0 ? 'muted' : 'info'),
+          AgentRuntimeStatusBadge(label: 'History events', value: output.projection.timelineCount.toString(), tone: output.projection.timelineCount == 0 ? 'muted' : 'info'),
+        ],
+        pendingRequestCount: _pendingRequestIds.length,
+      );
+    } else if (output is bindings.AgentRuntimeOutputControllerState) {
+      final current = _viewModel ?? _disconnectedViewModel;
+      _viewModel = current.copyWith(
+        connectionState: output.controllerState.connectionState,
+        baseUrl: output.controllerState.baseUrl.isEmpty ? current.baseUrl : output.controllerState.baseUrl,
+        selectedSessionLabel: output.controllerState.hasSelectedSessionId ? output.controllerState.selectedSessionId : current.selectedSessionLabel,
+        errorMessage: output.controllerState.hasLastError ? output.controllerState.lastError : null,
+        pendingRequestCount: _pendingRequestIds.length,
+      );
+      _bridgeErrorMessage = output.controllerState.hasLastError ? output.controllerState.lastError : null;
+    } else if (output is bindings.AgentRuntimeOutputStreamOutcome) {
+      final current = _viewModel ?? _disconnectedViewModel;
+      final outcome = output.outcome;
+      final selectedChatEntries = output.hasProjection && output.projection.selectedChatEntries.isNotEmpty
+          ? output.projection.selectedChatEntries.map(_chatEntry).toList(growable: false)
+          : null;
+      final streamLabel = switch (outcome) {
+        bindings.AgentRuntimeStreamOutcomeHello(:final watermark) => 'stream hello · $watermark',
+        bindings.AgentRuntimeStreamOutcomeDeltaApplied(:final applyOutcome) => 'stream delta · $applyOutcome',
+        bindings.AgentRuntimeStreamOutcomeResyncRequired(:final reason, :final hasReason) => 'stream resync · ${hasReason ? reason : 'required'}',
+        bindings.AgentRuntimeStreamOutcomeServerShutdown() => 'stream shutdown',
+        bindings.AgentRuntimeStreamOutcomeStreamClosed() => 'stream closed',
+        _ => 'stream update',
+      };
+      _viewModel = current.copyWith(
+        connectionState: output.controllerState.connectionState,
+        watermarkLabel: output.hasProjection ? output.projection.watermark.toString() : current.watermarkLabel,
+        outputLog: <String>[...current.outputLog.take(49), streamLabel],
+        selectedConversation: selectedChatEntries,
+        pendingRequestCount: _pendingRequestIds.length,
+        errorMessage: output.controllerState.hasLastError ? output.controllerState.lastError : null,
+      );
+      if (selectedChatEntries != null) {
+        _shellViewModel = _copyShellWithEntries(
+          _shellViewModel,
+          selectedChatEntries,
+          output.controllerState.hasSelectedSessionId ? output.controllerState.selectedSessionId : null,
+        );
+      }
+      _bridgeErrorMessage = output.controllerState.hasLastError ? output.controllerState.lastError : null;
     } else if (output is bindings.AgentRuntimeOutputError) {
-      _bridgeErrorMessage = output.error.message.isNotEmpty ? output.error.message : output.error.code;
+      final current = _viewModel ?? _disconnectedViewModel;
+      final message = output.error.message.isNotEmpty ? output.error.message : output.error.code;
+      _viewModel = current.copyWith(
+        errorMessage: message,
+        outputLog: <String>[...current.outputLog.take(49), 'Error: $message'],
+        pendingRequestCount: _pendingRequestIds.length,
+      );
+      _shellViewModel = _copyShellWithError(_shellViewModel, message);
+      _bridgeErrorMessage = message;
     }
     notifyListeners();
   }
@@ -589,6 +757,58 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     _subscription?.cancel();
     super.dispose();
   }
+}
+
+ConversationShellData? _copyShellWithEntries(ConversationShellData? shell, List<ChatEntry> entries, String? selectedSessionId) {
+  if (shell == null) {
+    return null;
+  }
+  return ConversationShellData(
+    appTitle: shell.appTitle,
+    connectionLabel: shell.connectionLabel,
+    projects: shell.projects,
+    sessions: shell.sessions,
+    selectedSessionId: selectedSessionId ?? shell.selectedSessionId,
+    timelineTitle: shell.timelineTitle,
+    entries: entries,
+    composerEnabled: shell.composerEnabled,
+    isRunning: entries.any((entry) => entry.isStreaming || (entry.status ?? '').toLowerCase().contains('running')),
+    detailTitle: shell.detailTitle,
+    detailSections: shell.detailSections,
+    emptyTitle: shell.emptyTitle,
+    emptyText: shell.emptyText,
+    projectLabel: shell.projectLabel,
+    sessionLabel: shell.sessionLabel,
+    composerPlaceholder: shell.composerPlaceholder,
+    composerDisabledHint: shell.composerDisabledHint,
+    inlineErrorMessage: shell.inlineErrorMessage,
+  );
+}
+
+ConversationShellData? _copyShellWithError(ConversationShellData? shell, String? message) {
+  if (shell == null) {
+    return null;
+  }
+  return ConversationShellData(
+    appTitle: shell.appTitle,
+    connectionLabel: shell.connectionLabel,
+    projects: shell.projects,
+    sessions: shell.sessions,
+    selectedSessionId: shell.selectedSessionId,
+    timelineTitle: shell.timelineTitle,
+    entries: shell.entries,
+    composerEnabled: shell.composerEnabled,
+    isRunning: shell.isRunning,
+    detailTitle: shell.detailTitle,
+    detailSections: shell.detailSections,
+    emptyTitle: shell.emptyTitle,
+    emptyText: shell.emptyText,
+    projectLabel: shell.projectLabel,
+    sessionLabel: shell.sessionLabel,
+    composerPlaceholder: shell.composerPlaceholder,
+    composerDisabledHint: shell.composerDisabledHint,
+    inlineErrorMessage: message,
+  );
 }
 
 bindings.AgentRuntimeRoleEditorDraft _typedRoleDraft(AgentRuntimeRoleEditorDraft draft) {
@@ -671,7 +891,14 @@ ConversationShellData _shellData(bindings.AgentRuntimeConversationShellViewModel
     appTitle: 'Agent Runtime',
     connectionLabel: 'Runtime connected',
     projects: view.projects
-        .map((project) => ConversationProject(id: project.id, title: project.title, subtitle: project.subtitle))
+        .map((project) => ConversationProject(
+              id: project.id,
+              title: project.title,
+              subtitle: project.subtitle,
+              canEdit: project.id != '__all__' && project.id != '__unassigned__',
+              canArchive: project.id != '__all__' && project.id != '__unassigned__',
+              canCreateSession: true,
+            ))
         .toList(growable: false),
     sessions: view.sessions
         .map((session) {

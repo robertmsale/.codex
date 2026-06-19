@@ -34,7 +34,7 @@ void main() {
     );
     expect(codexProject.threads.length, 2);
     expect(codexProject.threads.any((thread) => thread.title == 'Config Operator'), true);
-    expect(codexProject.threads.any((thread) => thread.title == 'Approval Smoke Worker'), true);
+    expect(codexProject.threads.any((thread) => thread.title == 'Approval Validation Worker'), true);
   });
 
   test('snapshot includes command and file-change chat rows', () {

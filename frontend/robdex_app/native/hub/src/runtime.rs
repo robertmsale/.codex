@@ -1171,7 +1171,6 @@ fn typed_agent_runtime_request_packet(
             AgentRuntimeRequest::Rehydrate { selected_session_id } => GuiTransportRequest::Rehydrate {
                 selected_session_id: non_empty(selected_session_id),
             },
-            AgentRuntimeRequest::PollStreamOnce => GuiTransportRequest::PollStreamOnce,
             AgentRuntimeRequest::Disconnect => GuiTransportRequest::Disconnect,
             AgentRuntimeRequest::DispatchOperation { operation } => GuiTransportRequest::DispatchOperation {
                 operation: typed_gui_operation(operation)?,
@@ -1193,6 +1192,29 @@ fn typed_gui_operation(operation: AgentRuntimeGuiOperation) -> std::result::Resu
             title: non_empty(title),
             name: non_empty(name),
         },
+        AgentRuntimeGuiOperation::ListProjects => GuiOperationRequest::ListProjects,
+        AgentRuntimeGuiOperation::CreateProject { project_key, display_name, default_workdir, default_worktree_root, default_role_id, default_model, tracked, listed } => GuiOperationRequest::CreateProject {
+            project_key,
+            display_name,
+            default_workdir,
+            default_worktree_root,
+            default_role_id: non_empty(default_role_id),
+            default_model,
+            tracked,
+            listed,
+        },
+        AgentRuntimeGuiOperation::UpdateProject { project_key, display_name, default_workdir, default_worktree_root, default_role_id, default_model, tracked, listed } => GuiOperationRequest::UpdateProject {
+            project_key,
+            display_name,
+            default_workdir,
+            default_worktree_root,
+            default_role_id: non_empty(default_role_id),
+            default_model,
+            tracked,
+            listed,
+        },
+        AgentRuntimeGuiOperation::ArchiveProject { project_key } => GuiOperationRequest::ArchiveProject { project_key },
+        AgentRuntimeGuiOperation::UnarchiveProject { project_key } => GuiOperationRequest::UnarchiveProject { project_key },
         AgentRuntimeGuiOperation::UpdateRuntimeSettings { base_url, selected_project_id } => GuiOperationRequest::UpdateRuntimeSettings {
             base_url,
             selected_project_id: non_empty(selected_project_id),
@@ -1365,6 +1387,35 @@ fn projection_snapshot_from_value(value: &serde_json::Value) -> AgentRuntimeProj
         action_count: value.get("pendingApprovals").and_then(|value| value.as_array()).map(|items| items.len() as i64).unwrap_or_default(),
         role_count: value.get("roles").and_then(|value| value.as_array()).map(|items| items.len() as i64).unwrap_or_default(),
         workflow_memory_count: value.get("workflowMemories").and_then(|value| value.as_array()).map(|items| items.len() as i64).unwrap_or_default(),
+        selected_chat_entries: value
+            .get("selectedChatEntries")
+            .and_then(|value| value.as_array())
+            .map(|items| items.iter().map(agent_runtime_chat_entry_from_value).collect())
+            .unwrap_or_default(),
+    }
+}
+
+fn agent_runtime_chat_entry_from_value(value: &serde_json::Value) -> AgentRuntimeChatEntry {
+    let string = |key: &str| value.get(key).and_then(|value| value.as_str()).unwrap_or_default().to_string();
+    let timestamp = string("timestamp");
+    let process_id = string("processId");
+    AgentRuntimeChatEntry {
+        id: string("id"),
+        author: string("author"),
+        display_label: string("displayLabel"),
+        has_timestamp: !timestamp.is_empty(),
+        timestamp,
+        body: string("body"),
+        subtitle: string("subtitle"),
+        kind: string("kind"),
+        status: string("status"),
+        has_process_id: !process_id.is_empty(),
+        process_id,
+        command: string("command"),
+        output: string("output"),
+        delivery_state: string("deliveryState"),
+        is_streaming: value.get("isStreaming").and_then(|value| value.as_bool()).unwrap_or_default(),
+        is_tool: value.get("isTool").and_then(|value| value.as_bool()).unwrap_or_default(),
     }
 }
 
@@ -1390,17 +1441,21 @@ fn controller_state_from_value(value: &serde_json::Value) -> AgentRuntimeControl
 }
 
 fn typed_operation_result(result: robdex_agent_runtime_projection::GuiOperationResult) -> AgentRuntimeOperationResult {
+    let mut error_message = None;
     let outcome = match result.outcome {
         GuiOperationOutcome::Accepted { .. } => "accepted",
         GuiOperationOutcome::ProjectionUpdated { .. } => "projectionUpdated",
         GuiOperationOutcome::DirectValue { .. } => "directValue",
         GuiOperationOutcome::CommandRegistryRequests { .. } => "commandRegistryRequests",
-        GuiOperationOutcome::Error { .. } => "error",
+        GuiOperationOutcome::Error { error } => {
+            error_message = Some(error.error.message);
+            "error"
+        }
     };
     AgentRuntimeOperationResult {
         operation: format!("{:?}", result.operation),
         outcome: outcome.to_string(),
-        message: format!("{:?}", result.expectation),
+        message: error_message.unwrap_or_else(|| format!("{:?}", result.expectation)),
     }
 }
 

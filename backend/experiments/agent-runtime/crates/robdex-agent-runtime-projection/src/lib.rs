@@ -67,6 +67,22 @@ pub struct SessionListItem {
     pub updated_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSummary {
+    pub project_key: String,
+    pub display_name: String,
+    pub default_workdir: String,
+    pub default_worktree_root: String,
+    pub default_role_id: Option<String>,
+    pub default_model: String,
+    pub tracked: bool,
+    pub listed: bool,
+    pub archived: bool,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectedSessionDetail {
@@ -132,6 +148,12 @@ pub struct PendingApprovalSummary {
     pub can_resume: bool,
     pub input_context: Value,
     pub created_at: Option<String>,
+    #[serde(default)]
+    pub decision_at: Option<String>,
+    #[serde(default)]
+    pub decision_reason: Option<String>,
+    #[serde(default)]
+    pub resumable_action_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -316,6 +338,8 @@ pub struct ResyncRequiredState {
 pub struct RuntimeProjection {
     pub watermark: Watermark,
     pub server_status: ServerStatusProjection,
+    #[serde(default)]
+    pub projects: Vec<ProjectSummary>,
     pub sessions: Vec<SessionListItem>,
     pub selected_session: Option<SelectedSessionDetail>,
     pub timeline: Vec<TimelineItem>,
@@ -335,7 +359,19 @@ pub struct RuntimeProjection {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeStatistics {
+    #[serde(default)]
+    pub sessions: u64,
+    #[serde(default)]
+    pub open_sessions: u64,
+    #[serde(default)]
+    pub closed_sessions: u64,
+    #[serde(default)]
+    pub archived_sessions: u64,
     pub turns: u64,
+    #[serde(default)]
+    pub running_turns: u64,
+    #[serde(default)]
+    pub failed_turns: u64,
     pub model_events: u64,
     pub tool_calls: u64,
     pub script_runs: u64,
@@ -346,6 +382,8 @@ pub struct RuntimeStatistics {
     pub compaction_checkpoints: u64,
     pub approval_requests: u64,
     pub command_registry_requests: u64,
+    #[serde(default)]
+    pub workflow_memories: u64,
     pub failed_rows: u64,
     pub running_rows: u64,
     pub lost_rows: u64,
@@ -530,6 +568,11 @@ pub enum GuiOperationName {
     SelectSession,
     SelectWorkflowMemory,
     CreateSession,
+    ListProjects,
+    CreateProject,
+    UpdateProject,
+    ArchiveProject,
+    UnarchiveProject,
     UpdateRuntimeSettings,
     UpdateSessionSettings,
     SendMessage,
@@ -572,6 +615,11 @@ pub enum GuiOperationRequest {
     SelectSession { session_id: Option<String> },
     SelectWorkflowMemory { memory_id: Option<String> },
     CreateSession { role: String, project: Option<String>, model: Option<String>, workdir: Option<String>, worktree_root: Option<String>, title: Option<String>, name: Option<String> },
+    ListProjects,
+    CreateProject { project_key: String, display_name: String, default_workdir: String, default_worktree_root: String, default_role_id: Option<String>, default_model: String, tracked: bool, listed: bool },
+    UpdateProject { project_key: String, display_name: String, default_workdir: String, default_worktree_root: String, default_role_id: Option<String>, default_model: String, tracked: bool, listed: bool },
+    ArchiveProject { project_key: String },
+    UnarchiveProject { project_key: String },
     UpdateRuntimeSettings { base_url: String, selected_project_id: Option<String> },
     UpdateSessionSettings { session_id: String, project: String, role: String, model: String, workdir: String, worktree_root: String, title: String, name: String, tracked: bool },
     SendMessage { session_id: String, message: String },
@@ -614,6 +662,11 @@ impl GuiOperationRequest {
             Self::SelectSession { .. } => GuiOperationName::SelectSession,
             Self::SelectWorkflowMemory { .. } => GuiOperationName::SelectWorkflowMemory,
             Self::CreateSession { .. } => GuiOperationName::CreateSession,
+            Self::ListProjects => GuiOperationName::ListProjects,
+            Self::CreateProject { .. } => GuiOperationName::CreateProject,
+            Self::UpdateProject { .. } => GuiOperationName::UpdateProject,
+            Self::ArchiveProject { .. } => GuiOperationName::ArchiveProject,
+            Self::UnarchiveProject { .. } => GuiOperationName::UnarchiveProject,
             Self::UpdateRuntimeSettings { .. } => GuiOperationName::UpdateRuntimeSettings,
             Self::UpdateSessionSettings { .. } => GuiOperationName::UpdateSessionSettings,
             Self::SendMessage { .. } => GuiOperationName::SendMessage,
@@ -653,6 +706,10 @@ impl GuiOperationRequest {
             Self::Disconnect | Self::SelectWorkflowMemory { .. } | Self::UpdateRuntimeSettings { .. } => GuiOperationExpectation::UpdateLocalState,
             Self::SelectSession { .. } => GuiOperationExpectation::RehydrateAndReconnect,
             Self::CreateSession { .. }
+            | Self::CreateProject { .. }
+            | Self::UpdateProject { .. }
+            | Self::ArchiveProject { .. }
+            | Self::UnarchiveProject { .. }
             | Self::UpdateSessionSettings { .. }
             | Self::SendMessage { .. }
             | Self::TerminateProcess { .. }
@@ -671,7 +728,8 @@ impl GuiOperationRequest {
             | Self::ActivateRoleVersion { .. }
             | Self::ArchiveRole { .. }
             | Self::UnarchiveRole { .. } => GuiOperationExpectation::WaitForDelta,
-            Self::ListCommandRegistry { .. }
+            Self::ListProjects
+            | Self::ListCommandRegistry { .. }
             | Self::ShowCommand { .. }
             | Self::ListCommandRegistryRequests
             | Self::ShowCommandRegistryRequest { .. }
@@ -694,6 +752,11 @@ impl GuiOperationRequest {
             Self::SelectSession { .. } => local_mapping(self.name(), "set selectedSessionId, then GET /state/snapshot and reconnect /state/ws with selectedSessionId", GuiOperationExpectation::RehydrateAndReconnect),
             Self::SelectWorkflowMemory { .. } => local_mapping(self.name(), "set selectedWorkflowMemoryId; Workbench view model deterministically falls back when unavailable", GuiOperationExpectation::UpdateLocalState),
             Self::CreateSession { .. } => http_mapping(self.name(), "POST", "/sessions", r#"{"role","project","model","workdir","worktreeRoot","title","name"}"#, r#"{"sessionId"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ListProjects => http_mapping(self.name(), "GET", "/projects", "none", r#"{"projects"}"#, GuiOperationExpectation::DirectResult),
+            Self::CreateProject { .. } => http_mapping(self.name(), "POST", "/projects", r#"{"projectKey","displayName","defaultWorkdir","defaultWorktreeRoot","defaultRoleId","defaultModel","tracked","listed"}"#, r#"{"project"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::UpdateProject { .. } => http_mapping(self.name(), "POST", "/projects/{projectKey}", r#"{"displayName","defaultWorkdir","defaultWorktreeRoot","defaultRoleId","defaultModel","tracked","listed"}"#, r#"{"project"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ArchiveProject { .. } => http_mapping(self.name(), "POST", "/projects/{projectKey}/archive", "{}", r#"{"project"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::UnarchiveProject { .. } => http_mapping(self.name(), "POST", "/projects/{projectKey}/unarchive", "{}", r#"{"project"}"#, GuiOperationExpectation::WaitForDelta),
             Self::UpdateRuntimeSettings { .. } => local_mapping(self.name(), "validate runtime GUI settings and update Rust-owned controller settings", GuiOperationExpectation::UpdateLocalState),
             Self::UpdateSessionSettings { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/settings", r#"{"project","role","model","workdir","worktreeRoot","title","name","tracked"}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::SendMessage { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/send", r#"{"message"}"#, r#"{"sessionId","turnId","status"}"#, GuiOperationExpectation::WaitForDelta),
@@ -736,6 +799,7 @@ impl GuiOperationRequest {
             | Self::SelectSession { .. }
             | Self::SelectWorkflowMemory { .. }
             | Self::UpdateRuntimeSettings { .. }
+            | Self::ListProjects
             | Self::ListCommandRegistry { .. }
             | Self::ShowCommand { .. }
             | Self::ListCommandRegistryRequests
@@ -754,6 +818,26 @@ impl GuiOperationRequest {
                 "title": title,
                 "name": name,
             })),
+            Self::CreateProject { project_key, display_name, default_workdir, default_worktree_root, default_role_id, default_model, tracked, listed } => Some(json!({
+                "projectKey": project_key,
+                "displayName": display_name,
+                "defaultWorkdir": default_workdir,
+                "defaultWorktreeRoot": default_worktree_root,
+                "defaultRoleId": default_role_id,
+                "defaultModel": default_model,
+                "tracked": tracked,
+                "listed": listed,
+            })),
+            Self::UpdateProject { display_name, default_workdir, default_worktree_root, default_role_id, default_model, tracked, listed, .. } => Some(json!({
+                "displayName": display_name,
+                "defaultWorkdir": default_workdir,
+                "defaultWorktreeRoot": default_worktree_root,
+                "defaultRoleId": default_role_id,
+                "defaultModel": default_model,
+                "tracked": tracked,
+                "listed": listed,
+            })),
+            Self::ArchiveProject { .. } | Self::UnarchiveProject { .. } => Some(json!({})),
             Self::UpdateSessionSettings { project, role, model, workdir, worktree_root, title, name, tracked, .. } => Some(json!({
                 "project": project,
                 "role": role,
@@ -999,13 +1083,14 @@ pub const DART_ALLOWED_EPHEMERAL_RESPONSIBILITIES: &[&str] = &[
     "localLayout",
 ];
 
-pub const GUI_OPERATION_VARIANT_COUNT: usize = 37;
+pub const GUI_OPERATION_VARIANT_COUNT: usize = 42;
 
 impl Default for RuntimeProjection {
     fn default() -> Self {
         Self {
             watermark: 0,
             server_status: ServerStatusProjection::default(),
+            projects: Vec::new(),
             sessions: Vec::new(),
             selected_session: None,
             timeline: Vec::new(),
@@ -1430,6 +1515,11 @@ mod tests {
             GuiOperationRequest::SelectSession { session_id: Some("session-1".to_string()) },
             GuiOperationRequest::SelectWorkflowMemory { memory_id: Some("memory-1".to_string()) },
             GuiOperationRequest::CreateSession { role: "runtime-allow".to_string(), project: Some("project".to_string()), model: Some("gpt-5.4-mini".to_string()), workdir: Some(".".to_string()), worktree_root: None, title: None, name: None },
+            GuiOperationRequest::ListProjects,
+            GuiOperationRequest::CreateProject { project_key: "project".to_string(), display_name: "Project".to_string(), default_workdir: ".".to_string(), default_worktree_root: ".".to_string(), default_role_id: Some("runtime-allow".to_string()), default_model: "gpt-5.4-mini".to_string(), tracked: true, listed: true },
+            GuiOperationRequest::UpdateProject { project_key: "project".to_string(), display_name: "Project Updated".to_string(), default_workdir: ".".to_string(), default_worktree_root: ".".to_string(), default_role_id: Some("runtime-no-rg".to_string()), default_model: "gpt-5.5".to_string(), tracked: true, listed: true },
+            GuiOperationRequest::ArchiveProject { project_key: "project".to_string() },
+            GuiOperationRequest::UnarchiveProject { project_key: "project".to_string() },
             GuiOperationRequest::UpdateRuntimeSettings { base_url: "http://127.0.0.1:8765".to_string(), selected_project_id: Some("project".to_string()) },
             GuiOperationRequest::UpdateSessionSettings { session_id: "session-1".to_string(), project: "project".to_string(), role: "runtime-allow".to_string(), model: "gpt-5.5".to_string(), workdir: ".".to_string(), worktree_root: ".".to_string(), title: "title".to_string(), name: "name".to_string(), tracked: true },
             GuiOperationRequest::SendMessage { session_id: "session-1".to_string(), message: "hello".to_string() },
@@ -1574,6 +1664,9 @@ mod tests {
             can_resume: false,
             input_context: Value::Null,
             created_at: None,
+            decision_at: None,
+            decision_reason: None,
+            resumable_action_status: None,
         };
         projection.apply_delta(delta(1, RuntimeDeltaKind::ApprovalUpsert { approval }));
         assert_eq!(projection.pending_approvals.len(), 1);
@@ -1824,6 +1917,9 @@ mod tests {
                 can_resume: false,
                 input_context: json!({"policy": {"decision": "approvalRequired"}}),
                 created_at: None,
+                decision_at: None,
+                decision_reason: None,
+                resumable_action_status: None,
             }}),
         ];
         assert_eq!(from_snapshot.apply_deltas(deltas), ApplyOutcome::Applied);
@@ -1924,6 +2020,9 @@ mod tests {
                 "rawDiagnosticOnly": {"nested": ["not", "a", "control", "contract"]}
             }),
             created_at: None,
+            decision_at: None,
+            decision_reason: None,
+            resumable_action_status: None,
         };
         let mut projection = RuntimeProjection::default();
         projection.apply_delta(delta(1, RuntimeDeltaKind::ApprovalUpsert { approval: approval.clone() }));

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ "${ROBDEX_AGENT_RUNTIME_EMBEDDING_PROVIDER:-lmstudio}" != "lmstudio" ]]; then
-  printf 'Skipping LM Studio smoke: set ROBDEX_AGENT_RUNTIME_EMBEDDING_PROVIDER=lmstudio to opt in.\n'
+  printf 'Skipping LM Studio validation: set ROBDEX_AGENT_RUNTIME_EMBEDDING_PROVIDER=lmstudio to opt in.\n'
   exit 0
 fi
 
@@ -16,7 +16,7 @@ fi
 BODY="$(mktemp /tmp/agent-runtime-lmstudio-embeddings.XXXXXX)"
 HTTP_STATUS="$(curl --show-error --silent --output "$BODY" --write-out '%{http_code}' "$URL" \
   -H "Content-Type: application/json" \
-  -d "{\"model\":\"$MODEL\",\"input\":\"workflow memory smoke test\"}")"
+  -d "{\"model\":\"$MODEL\",\"input\":\"workflow memory validation input\"}")"
 if [[ "$HTTP_STATUS" != 2* ]]; then
   printf 'LM Studio embeddings endpoint returned HTTP %s from %s\n' "$HTTP_STATUS" "$URL" >&2
   cat "$BODY" >&2

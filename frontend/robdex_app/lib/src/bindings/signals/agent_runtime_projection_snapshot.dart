@@ -11,6 +11,7 @@ class AgentRuntimeProjectionSnapshot {
     required this.actionCount,
     required this.roleCount,
     required this.workflowMemoryCount,
+    this.selectedChatEntries = const [],
   });
 
   static AgentRuntimeProjectionSnapshot deserialize(BinaryDeserializer deserializer) {
@@ -22,6 +23,7 @@ class AgentRuntimeProjectionSnapshot {
       actionCount: deserializer.deserializeInt64(),
       roleCount: deserializer.deserializeInt64(),
       workflowMemoryCount: deserializer.deserializeInt64(),
+      selectedChatEntries: TraitHelpers.deserializeVectorAgentRuntimeChatEntry(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -42,6 +44,7 @@ class AgentRuntimeProjectionSnapshot {
   final int actionCount;
   final int roleCount;
   final int workflowMemoryCount;
+  final List<AgentRuntimeChatEntry> selectedChatEntries;
 
   AgentRuntimeProjectionSnapshot copyWith({
     int? watermark,
@@ -50,6 +53,7 @@ class AgentRuntimeProjectionSnapshot {
     int? actionCount,
     int? roleCount,
     int? workflowMemoryCount,
+    List<AgentRuntimeChatEntry>? selectedChatEntries,
   }) {
     return AgentRuntimeProjectionSnapshot(
       watermark: watermark ?? this.watermark,
@@ -58,6 +62,7 @@ class AgentRuntimeProjectionSnapshot {
       actionCount: actionCount ?? this.actionCount,
       roleCount: roleCount ?? this.roleCount,
       workflowMemoryCount: workflowMemoryCount ?? this.workflowMemoryCount,
+      selectedChatEntries: selectedChatEntries ?? this.selectedChatEntries,
     );
   }
 
@@ -69,6 +74,7 @@ class AgentRuntimeProjectionSnapshot {
     serializer.serializeInt64(actionCount);
     serializer.serializeInt64(roleCount);
     serializer.serializeInt64(workflowMemoryCount);
+    TraitHelpers.serializeVectorAgentRuntimeChatEntry(selectedChatEntries, serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -89,7 +95,9 @@ class AgentRuntimeProjectionSnapshot {
       && timelineCount == other.timelineCount
       && actionCount == other.actionCount
       && roleCount == other.roleCount
-      && workflowMemoryCount == other.workflowMemoryCount;
+      && workflowMemoryCount == other.workflowMemoryCount
+      && selectedChatEntries.length == other.selectedChatEntries.length
+      && Iterable.generate(selectedChatEntries.length).every((index) => selectedChatEntries[index] == other.selectedChatEntries[index]);
   }
 
   @override
@@ -100,6 +108,7 @@ class AgentRuntimeProjectionSnapshot {
         actionCount,
         roleCount,
         workflowMemoryCount,
+        Object.hashAll(selectedChatEntries),
       );
 
   @override
@@ -113,7 +122,8 @@ class AgentRuntimeProjectionSnapshot {
         'timelineCount: $timelineCount, '
         'actionCount: $actionCount, '
         'roleCount: $roleCount, '
-        'workflowMemoryCount: $workflowMemoryCount'
+        'workflowMemoryCount: $workflowMemoryCount, '
+        'selectedChatEntries: $selectedChatEntries'
         ')';
       return true;
     }());

@@ -631,6 +631,6 @@ fn summarize_source(source: &str) -> String {
 }
 
 #[allow(dead_code)]
-pub fn lmstudio_smoke_curl() -> String {
-    "curl http://localhost:1234/v1/embeddings -H \"Content-Type: application/json\" -d '{\"model\":\"qwen3-embedding-4b-dwq\",\"input\":\"workflow memory smoke test\"}'".to_string()
+pub fn lmstudio_validation_curl() -> String {
+    "curl http://localhost:1234/v1/embeddings -H \"Content-Type: application/json\" -d '{\"model\":\"qwen3-embedding-4b-dwq\",\"input\":\"workflow memory validation input\"}'".to_string()
 }

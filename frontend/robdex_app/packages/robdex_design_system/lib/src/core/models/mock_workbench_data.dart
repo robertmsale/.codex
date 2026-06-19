@@ -105,8 +105,8 @@ const mockWorkbenchData = WorkbenchViewData(
       requirementReview: null,
     ),
     ThreadItem(
-      id: 'approval-smoke',
-      title: 'Approval Smoke Worker',
+      id: 'approval-validation',
+      title: 'Approval Validation Worker',
       role: 'worker',
       projectName: 'Codex Control Plane',
       preview: 'Approval and archive flow recovered.',

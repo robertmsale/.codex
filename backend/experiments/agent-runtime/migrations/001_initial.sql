@@ -290,6 +290,49 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS root_session_id UUID;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS fork_depth INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS lineage JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+CREATE TABLE IF NOT EXISTS projects (
+    project_key TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    default_workdir TEXT NOT NULL,
+    default_worktree_root TEXT NOT NULL,
+    default_role_id TEXT,
+    default_model TEXT NOT NULL,
+    tracked BOOLEAN NOT NULL DEFAULT true,
+    listed BOOLEAN NOT NULL DEFAULT true,
+    archived BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS default_workdir TEXT NOT NULL DEFAULT '.';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS default_worktree_root TEXT NOT NULL DEFAULT '.';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS default_role_id TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS default_model TEXT NOT NULL DEFAULT 'gpt-5.4-mini';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS tracked BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS listed BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+UPDATE projects SET display_name = project_key WHERE display_name = '';
+INSERT INTO projects (
+    project_key, display_name, default_workdir, default_worktree_root,
+    default_role_id, default_model, tracked, listed, archived
+)
+SELECT DISTINCT
+    s.project_key,
+    initcap(replace(replace(s.project_key, '-', ' '), '_', ' ')),
+    COALESCE(NULLIF(s.workdir, ''), '.'),
+    COALESCE(NULLIF(s.worktree_root, ''), COALESCE(NULLIF(s.workdir, ''), '.')),
+    s.role_id,
+    COALESCE(s.role_snapshot->'modelDefaults'->>'model', 'gpt-5.4-mini'),
+    true,
+    true,
+    false
+FROM sessions s
+WHERE NULLIF(s.project_key, '') IS NOT NULL
+ON CONFLICT (project_key) DO NOTHING;
+CREATE INDEX IF NOT EXISTS projects_listed_display_idx ON projects(archived, listed, display_name, project_key);
+
 CREATE TABLE IF NOT EXISTS roles (
     id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,

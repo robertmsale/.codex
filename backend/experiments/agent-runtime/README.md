@@ -25,10 +25,12 @@ Use local host Postgres for all experimental runtime state.
 Runtime code depends on the local `ModelClient` trait. The current adapter is
 `model::codex_adapter::CodexBackedModelClient`, an experimental direct
 Responses adapter that performs HTTPS calls to the ChatGPT Codex Responses
-endpoint with Codex auth material from the local environment or `auth.json`.
-It does not claim to use the full vendored Codex provider/client runtime. All
-direct HTTP, Responses request shaping, Codex auth headers, SSE parsing, and raw
-model response handling must stay inside `model::codex_adapter`.
+endpoint with non-expired ChatGPT token material from `$CODEX_HOME/auth.json`.
+If that file is missing usable ChatGPT token material, the adapter falls back to
+`OPENAI_API_KEY` and uses the public OpenAI Responses endpoint. It does not claim
+to use the full vendored Codex provider/client runtime. All direct HTTP,
+Responses request shaping, Codex auth headers, SSE parsing, and raw model
+response handling must stay inside `model::codex_adapter`.
 
 ## Projection-first GUI/server state boundary
 
@@ -125,7 +127,7 @@ Run:
 ```sh
 cargo test -p robdex-agent-runtime-projection
 cargo test
-scripts/smoke-resident-server.sh
+scripts/validate-resident-server.sh
 scripts/validate-local-service.sh
 ```
 
@@ -143,7 +145,12 @@ Every operation uses the API error packet
 | `Rehydrate` | `/state/snapshot?selectedSessionId=<optional>` | GET | none | `RuntimeProjection` | `Rehydrate` |
 | `Disconnect` | local stream close and controller state update | local | local controller state | `GuiControllerState` | `UpdateLocalState` |
 | `SelectSession` | local selected-session update, then snapshot and WebSocket reconnect with `selectedSessionId` | local + GET/WS | selected session id | fresh `RuntimeProjection` and stream | `RehydrateAndReconnect` |
-| `CreateSession` | `/sessions` | POST | `{role, project, workdir, worktreeRoot, title, name}` | `{sessionId}` | `WaitForDelta` |
+| `CreateSession` | `/sessions` | POST | `{role, project, model, workdir, worktreeRoot, title, name}`; `project` may be the explicit `__unassigned__` sentinel | `{sessionId}` | `WaitForDelta` |
+| `ListProjects` | `/projects` | GET | none | canonical DB-backed project rows | `DirectResult` |
+| `CreateProject` | `/projects` | POST | `{projectKey, displayName, defaultWorkdir, defaultWorktreeRoot, defaultRoleId, defaultModel, tracked, listed}` | `{project}` | `WaitForDelta` |
+| `UpdateProject` | `/projects/{projectKey}` | POST | `{displayName, defaultWorkdir, defaultWorktreeRoot, defaultRoleId, defaultModel, tracked, listed}` | `{project}` | `WaitForDelta` |
+| `ArchiveProject` | `/projects/{projectKey}/archive` | POST | `{}` | `{project}` | `WaitForDelta` |
+| `UnarchiveProject` | `/projects/{projectKey}/unarchive` | POST | `{}` | `{project}` | `WaitForDelta` |
 | `SendMessage` | `/sessions/{sessionId}/send` | POST | `{message}` | `{sessionId, turnId, status}` | `WaitForDelta` |
 | `CloseSession` | `/sessions/{sessionId}/close` | POST | `{reason?}` | `{sessionId, status}` | `WaitForDelta` |
 | `ArchiveSession` | `/sessions/{sessionId}/archive` | POST | `{}` | `{sessionId, tracked}` | `WaitForDelta` |
@@ -535,7 +542,7 @@ state remains coherent. `launchd-status` and `package-status` distinguish
 `staleUnknown` from launchctl state plus service health rather than plist file
 presence alone. `uninstall-launchd` unloads, stops, removes the plist, and
 updates package state. Validation does not load the owner's real launchd job;
-manual smoke can run these commands from the experiment workspace when the
+manual validation can run these commands from the experiment workspace when the
 owner wants to enable autostart.
 
 Validate the user-scoped service wrapper, iCloud remote profile writer, and
@@ -670,7 +677,7 @@ curl -sS -X POST http://127.0.0.1:8765/sessions \
 
 curl -sS -X POST http://127.0.0.1:8765/sessions/<session-id>/send \
   -H 'content-type: application/json' \
-  -d '{"message":"Use execute_code with exactly this Starlark source: content = fs.read(\"Cargo.toml\"); output({\"smoke\":\"ok\",\"contains_workspace\":\"workspace\" in content})"}'
+  -d '{"message":"Use execute_code with exactly this Starlark source: content = fs.read(\"Cargo.toml\"); output({\"validation\":\"ok\",\"contains_workspace\":\"workspace\" in content})"}'
 ```
 
 The send route enforces one active send per session. A concurrent send for the
@@ -800,13 +807,13 @@ selected-session chat remains a typed transcript while semantic deltas update se
 the projection reducer. GUI surfaces render from the reduced
 `RuntimeProjection` and request a fresh snapshot whenever resync state is set.
 
-Resident server deterministic smoke uses a real
+Resident server deterministic validation uses a real
 `robdex-agent-runtime-server` process on a local HTTP/WebSocket listener and an
 isolated validation database. It does not call OpenAI, LM Studio, or embedding
 providers. Run it from this nested workspace:
 
 ```sh
-scripts/smoke-resident-server.sh
+scripts/validate-resident-server.sh
 ```
 
 The harness creates and later drops a validation database through
@@ -819,12 +826,12 @@ omitted watermark, and stops the server process on success or failure. Override
 `ROBDEX_AGENT_RUNTIME_VALIDATION_ADMIN_DATABASE_URL` when the local Postgres
 maintenance database differs from the default.
 
-Minimal live-server smoke with `gpt-5.4-mini` is intentionally separate from
+Minimal live-server validation with `gpt-5.4-mini` is intentionally separate from
 deterministic validation and remains explicitly opt-in. Start
 `robdex-agent-runtime-server`, then run:
 
 ```sh
-ROBDEX_AGENT_RUNTIME_LIVE_SERVER_SMOKE=1 scripts/smoke-live-server-gpt54mini.sh
+ROBDEX_AGENT_RUNTIME_LIVE_SERVER_VALIDATION=1 scripts/validate-live-server-gpt54mini.sh
 ```
 
 The script imports a throwaway DB role with `modelDefaults.model` set to
@@ -1192,16 +1199,16 @@ Host Postgres must have the pgvector extension package installed; `init-db` runs
 ```sh
 curl http://localhost:1234/v1/embeddings \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen3-embedding-4b-dwq","input":"workflow memory smoke test"}'
+  -d '{"model":"qwen3-embedding-4b-dwq","input":"workflow memory validation input"}'
 ```
 
-The optional smoke helper is explicitly opt-in and performs only an embedding call:
+The optional validation helper is explicitly opt-in and performs only an embedding call:
 
 ```sh
 ROBDEX_AGENT_RUNTIME_EMBEDDING_PROVIDER=lmstudio \
 ROBDEX_AGENT_RUNTIME_EMBEDDING_BASE_URL=http://localhost:1234 \
 ROBDEX_AGENT_RUNTIME_EMBEDDING_MODEL=qwen3-embedding-4b-dwq \
-scripts/smoke-lmstudio-embeddings.sh
+scripts/validate-lmstudio-embeddings.sh
 ```
 
 The model-visible Starlark API is concise: `workflow_memory.help()` searches using the latest prior relevant non-memory script in the same session, not the tiny current help script; `workflow_memory.remember_when(condition, title, reason)` records a candidate and promotes it only after the full script exits successfully with `condition == True`; `workflow_memory.mark_attempted(id, variant=True)` and `workflow_memory.mark_not_helpful(id, reason)` record bounded feedback events. First/plain attempts are not auto-promoted. The intended loop is plain attempt fails, call `workflow_memory.help()`, try exact or variant help when useful, and enter remember mode only for a later successful script with explicit success criteria.
@@ -1234,16 +1241,16 @@ scripts/validate-workflow-memory.sh
 
 Server/admin deterministic validation is covered by `cargo test` from this
 nested workspace. It uses migrated temporary Postgres databases and does not
-call a live OpenAI model or LM Studio. The resident server process smoke is:
+call a live OpenAI model or LM Studio. The resident server process validation is:
 
 ```sh
-scripts/smoke-resident-server.sh
+scripts/validate-resident-server.sh
 ```
 
-The live server smoke remains env-gated:
+The live server validation remains env-gated:
 
 ```sh
-ROBDEX_AGENT_RUNTIME_LIVE_SERVER_SMOKE=1 scripts/smoke-live-server-gpt54mini.sh
+ROBDEX_AGENT_RUNTIME_LIVE_SERVER_VALIDATION=1 scripts/validate-live-server-gpt54mini.sh
 ```
 
 Validation database administration defaults to `ROBDEX_AGENT_RUNTIME_VALIDATION_ADMIN_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres`. Override that admin connection only when the same local Postgres server requires a different maintenance database. Do not point validation cleanup at the normal runtime database.

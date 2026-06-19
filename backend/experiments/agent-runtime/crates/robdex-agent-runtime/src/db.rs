@@ -8,6 +8,49 @@ use crate::errors::RuntimeDomainError;
 
 use crate::roles::{ImportedRoleVersion, RoleSnapshot, snapshot_from_value, snapshot_to_value};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectRow {
+    pub project_key: String,
+    pub display_name: String,
+    pub default_workdir: String,
+    pub default_worktree_root: String,
+    pub default_role_id: Option<String>,
+    pub default_model: String,
+    pub tracked: bool,
+    pub listed: bool,
+    pub archived: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn validate_project_key(project_key: &str) -> Result<()> {
+    let valid = !project_key.is_empty()
+        && project_key.len() <= 96
+        && project_key
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'));
+    if !valid {
+        bail!("project key must use 1-96 ASCII letters, numbers, dash, underscore, or dot");
+    }
+    Ok(())
+}
+
+fn project_row(row: sqlx::postgres::PgRow) -> ProjectRow {
+    ProjectRow {
+        project_key: row.get("project_key"),
+        display_name: row.get("display_name"),
+        default_workdir: row.get("default_workdir"),
+        default_worktree_root: row.get("default_worktree_root"),
+        default_role_id: row.get("default_role_id"),
+        default_model: row.get("default_model"),
+        tracked: row.get("tracked"),
+        listed: row.get("listed"),
+        archived: row.get("archived"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     Ok(PgPoolOptions::new().max_connections(5).connect(database_url).await?)
 }
@@ -26,6 +69,139 @@ pub async fn init(pool: &PgPool) -> Result<()> {
     ensure_active_turn_constraint(pool).await?;
     crate::command_registry::bootstrap_seed_defaults(pool).await?;
     Ok(())
+}
+
+pub async fn list_projects(pool: &PgPool, include_archived: bool) -> Result<Vec<ProjectRow>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT project_key, display_name, default_workdir, default_worktree_root,
+               default_role_id, default_model, tracked, listed, archived, created_at, updated_at
+        FROM projects
+        WHERE ($1::bool OR archived = false)
+        ORDER BY lower(display_name), project_key
+        "#,
+    )
+    .bind(include_archived)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(project_row).collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn create_project(
+    pool: &PgPool,
+    project_key: &str,
+    display_name: &str,
+    default_workdir: &str,
+    default_worktree_root: &str,
+    default_role_id: Option<&str>,
+    default_model: &str,
+    tracked: bool,
+    listed: bool,
+) -> Result<ProjectRow> {
+    validate_project_key(project_key)?;
+    if display_name.trim().is_empty()
+        || default_workdir.trim().is_empty()
+        || default_worktree_root.trim().is_empty()
+        || default_model.trim().is_empty()
+    {
+        bail!("display name, default workdir, default worktree root, and default model are required");
+    }
+    let row = sqlx::query(
+        r#"
+        INSERT INTO projects (
+            project_key, display_name, default_workdir, default_worktree_root,
+            default_role_id, default_model, tracked, listed, archived
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false)
+        RETURNING project_key, display_name, default_workdir, default_worktree_root,
+                  default_role_id, default_model, tracked, listed, archived, created_at, updated_at
+        "#,
+    )
+    .bind(project_key)
+    .bind(display_name.trim())
+    .bind(default_workdir.trim())
+    .bind(default_worktree_root.trim())
+    .bind(default_role_id.filter(|value| !value.trim().is_empty()))
+    .bind(default_model.trim())
+    .bind(tracked)
+    .bind(listed)
+    .fetch_one(pool)
+    .await?;
+    append_admin_event(pool, "project", None, "project.created", Some("created"), json!({"projectKey": project_key})).await?;
+    Ok(project_row(row))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn update_project(
+    pool: &PgPool,
+    project_key: &str,
+    display_name: &str,
+    default_workdir: &str,
+    default_worktree_root: &str,
+    default_role_id: Option<&str>,
+    default_model: &str,
+    tracked: bool,
+    listed: bool,
+) -> Result<ProjectRow> {
+    validate_project_key(project_key)?;
+    if display_name.trim().is_empty()
+        || default_workdir.trim().is_empty()
+        || default_worktree_root.trim().is_empty()
+        || default_model.trim().is_empty()
+    {
+        bail!("display name, default workdir, default worktree root, and default model are required");
+    }
+    let row = sqlx::query(
+        r#"
+        UPDATE projects
+        SET display_name=$2, default_workdir=$3, default_worktree_root=$4,
+            default_role_id=$5, default_model=$6, tracked=$7, listed=$8,
+            updated_at=now()
+        WHERE project_key=$1
+        RETURNING project_key, display_name, default_workdir, default_worktree_root,
+                  default_role_id, default_model, tracked, listed, archived, created_at, updated_at
+        "#,
+    )
+    .bind(project_key)
+    .bind(display_name.trim())
+    .bind(default_workdir.trim())
+    .bind(default_worktree_root.trim())
+    .bind(default_role_id.filter(|value| !value.trim().is_empty()))
+    .bind(default_model.trim())
+    .bind(tracked)
+    .bind(listed)
+    .fetch_one(pool)
+    .await?;
+    append_admin_event(pool, "project", None, "project.updated", Some("updated"), json!({"projectKey": project_key})).await?;
+    Ok(project_row(row))
+}
+
+pub async fn set_project_archived(pool: &PgPool, project_key: &str, archived: bool) -> Result<ProjectRow> {
+    validate_project_key(project_key)?;
+    let row = sqlx::query(
+        r#"
+        UPDATE projects
+        SET archived=$2, updated_at=now()
+        WHERE project_key=$1
+        RETURNING project_key, display_name, default_workdir, default_worktree_root,
+                  default_role_id, default_model, tracked, listed, archived, created_at, updated_at
+        "#,
+    )
+    .bind(project_key)
+    .bind(archived)
+    .fetch_one(pool)
+    .await?;
+    append_admin_event(
+        pool,
+        "project",
+        None,
+        if archived { "project.archived" } else { "project.unarchived" },
+        Some(if archived { "archived" } else { "active" }),
+        json!({"projectKey": project_key}),
+    )
+    .await?;
+    Ok(project_row(row))
 }
 
 pub async fn ensure_active_turn_constraint(pool: &PgPool) -> Result<()> {

@@ -7,7 +7,7 @@ ConversationShellData agentRuntimeConversationShellData(AgentRuntimeWorkbenchDat
   return ConversationShellData(
     appTitle: 'Agent Runtime',
     connectionLabel: data.statusLabel,
-    projects: const [ConversationProject(id: 'runtime', title: 'Runtime', subtitle: 'Agent sessions')],
+    projects: const [ConversationProject(id: 'runtime', title: 'Runtime', subtitle: 'Agent sessions', canEdit: true, canArchive: true)],
     sessions: data.sessions
         .map((session) => ConversationSession(
               id: session.id,

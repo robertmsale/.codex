@@ -21,9 +21,8 @@ abstract class AgentRuntimeRequest {
       case 8: return AgentRuntimeRequestSelectProject.load(deserializer);
       case 9: return AgentRuntimeRequestHydrate.load(deserializer);
       case 10: return AgentRuntimeRequestRehydrate.load(deserializer);
-      case 11: return AgentRuntimeRequestPollStreamOnce.load(deserializer);
-      case 12: return AgentRuntimeRequestDisconnect.load(deserializer);
-      case 13: return AgentRuntimeRequestDispatchOperation.load(deserializer);
+      case 11: return AgentRuntimeRequestDisconnect.load(deserializer);
+      case 12: return AgentRuntimeRequestDispatchOperation.load(deserializer);
       default: throw Exception('Unknown variant index for AgentRuntimeRequest: ' + index.toString());
     }
   }
@@ -713,50 +712,6 @@ class AgentRuntimeRequestRehydrate extends AgentRuntimeRequest {
 }
 
 @immutable
-class AgentRuntimeRequestPollStreamOnce extends AgentRuntimeRequest {
-  const AgentRuntimeRequestPollStreamOnce(
-  ) : super();
-
-  static AgentRuntimeRequestPollStreamOnce load(BinaryDeserializer deserializer) {
-    deserializer.increaseContainerDepth();
-    final instance = AgentRuntimeRequestPollStreamOnce(
-    );
-    deserializer.decreaseContainerDepth();
-    return instance;
-  }
-
-  void serialize(BinarySerializer serializer) {
-    serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(11);
-    serializer.decreaseContainerDepth();
-  }
-
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    if (other.runtimeType != runtimeType) return false;
-
-    return other is AgentRuntimeRequestPollStreamOnce;
-  }
-
-  @override
-  int get hashCode => runtimeType.hashCode;
-
-  @override
-  String toString() {
-    String? fullString;
-
-    assert(() {
-      fullString = '$runtimeType('
-        ')';
-      return true;
-    }());
-
-    return fullString ?? 'AgentRuntimeRequestPollStreamOnce';
-  }
-}
-
-@immutable
 class AgentRuntimeRequestDisconnect extends AgentRuntimeRequest {
   const AgentRuntimeRequestDisconnect(
   ) : super();
@@ -771,7 +726,7 @@ class AgentRuntimeRequestDisconnect extends AgentRuntimeRequest {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(12);
+    serializer.serializeVariantIndex(11);
     serializer.decreaseContainerDepth();
   }
 
@@ -827,7 +782,7 @@ class AgentRuntimeRequestDispatchOperation extends AgentRuntimeRequest {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(13);
+    serializer.serializeVariantIndex(12);
     operation.serialize(serializer);
     serializer.decreaseContainerDepth();
   }

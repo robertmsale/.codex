@@ -29,7 +29,7 @@ cd "$ROBDEX_HOME/frontend/robdex_app"
 flutter pub get
 flutter build macos   # macOS
 flutter build linux   # Linux, on a Linux host
-flutter build web     # optional web smoke build
+flutter build web     # optional web validation build
 ```
 
 For isolated Linux build validation from macOS, a disposable Docker container is
@@ -54,7 +54,7 @@ bridge host shown on the login screen. For local development the default is
 
 - GUI packaging is not part of the headless bootstrap requirement.
 - Linux packaging is validated by `flutter build linux`; drag-and-drop images
-  and desktop integrations still need a focused runtime smoke test on a real
+  and desktop integrations still need a focused runtime validation test on a real
   Linux desktop session.
 - Integrated terminal support is macOS-focused unless separately validated.
 - If an older GUI build does not understand a newer schema, update the GUI

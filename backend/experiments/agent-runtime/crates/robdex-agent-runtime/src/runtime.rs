@@ -459,6 +459,40 @@ async fn finalize_failed_started_turn(
     boundary: &str,
     error: &str,
 ) -> Result<()> {
+    let model_event_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO model_events (id, session_id, turn_id, event_type, payload)
+        VALUES ($1, $2, $3, 'final_response', $4)
+        "#,
+    )
+    .bind(model_event_id)
+    .bind(session_id)
+    .bind(turn_id)
+    .bind(json!({
+        "summary": format!("Model request failed at {boundary}: {error}"),
+        "provider": "runtime",
+        "model": "real-model-adapter",
+        "raw": {"error": error, "boundary": boundary},
+    }))
+    .execute(pool)
+    .await?;
+    db::append_event(
+        pool,
+        session_id,
+        Some(turn_id),
+        "model",
+        Some(model_event_id),
+        "model.final_response",
+        Some("failed"),
+        json!({
+            "finalText": format!("Model request failed at {boundary}: {error}"),
+            "provider": "runtime",
+            "model": "real-model-adapter",
+            "boundary": boundary,
+        }),
+    )
+    .await?;
     lifecycle::complete_turn(pool, turn_id, TerminalStatus::Failed, Utc::now()).await?;
     db::append_event(
         pool,

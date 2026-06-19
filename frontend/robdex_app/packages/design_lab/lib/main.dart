@@ -205,9 +205,9 @@ class RobdexDesignLabHome extends StatelessWidget {
         ),
       );
     }
-    if (surface == 'agentRuntimeLiveSmoke') {
+    if (surface == 'agentRuntimeLiveValidation') {
       return ConversationShellScreen(
-        data: _agentRuntimeLiveSmokeShellData(),
+        data: _agentRuntimeLiveValidationShellData(),
         onSessionSelected: (_) {},
         onCreateSession: () {},
         onSendMessage: (_) {},
@@ -353,19 +353,19 @@ WorkbenchViewData _cleanRobdexGenericWorkbench(WorkbenchViewData workbench) {
   );
 }
 
-ConversationShellData _agentRuntimeLiveSmokeShellData() {
-  const sessionId = String.fromEnvironment('AGENT_RUNTIME_LIVE_SMOKE_SESSION_ID', defaultValue: 'live-ui-smoke-session');
-  const turnId = String.fromEnvironment('AGENT_RUNTIME_LIVE_SMOKE_TURN_ID', defaultValue: 'live-ui-smoke-turn');
-  const response = String.fromEnvironment('AGENT_RUNTIME_LIVE_SMOKE_RESPONSE', defaultValue: 'Runtime response rendered.');
+ConversationShellData _agentRuntimeLiveValidationShellData() {
+  const sessionId = String.fromEnvironment('AGENT_RUNTIME_LIVE_VALIDATION_SESSION_ID', defaultValue: 'live-ui-validation-session');
+  const turnId = String.fromEnvironment('AGENT_RUNTIME_LIVE_VALIDATION_TURN_ID', defaultValue: 'live-ui-validation-turn');
+  const response = String.fromEnvironment('AGENT_RUNTIME_LIVE_VALIDATION_RESPONSE', defaultValue: 'Runtime response rendered.');
   return const ConversationShellData(
     appTitle: 'Agent Runtime',
-    connectionLabel: 'Live smoke connected',
-    projects: [ConversationProject(id: 'runtime', title: 'Runtime', subtitle: 'Live smoke')],
+    connectionLabel: 'Live validation connected',
+    projects: [ConversationProject(id: 'runtime', title: 'Runtime', subtitle: 'Live validation')],
     sessions: [
       ConversationSession(
         id: sessionId,
-        title: 'Live smoke session',
-        subtitle: 'Created and selected through runtime smoke',
+        title: 'Live validation session',
+        subtitle: 'Created and selected through runtime validation',
         role: 'Runtime',
         selected: true,
         rolePresentation: ConversationRolePresentation(
@@ -375,15 +375,15 @@ ConversationShellData _agentRuntimeLiveSmokeShellData() {
           iconKey: 'runtime',
           tone: 'success',
           statusLabel: 'Connected',
-          description: 'Live runtime smoke',
+          description: 'Live runtime validation',
         ),
       ),
     ],
     selectedSessionId: sessionId,
-    timelineTitle: 'Live smoke session',
+    timelineTitle: 'Live validation session',
     entries: [
       ChatEntry(
-        id: 'live-smoke-user',
+        id: 'live-validation-user',
         author: 'User',
         displayLabel: 'User',
         timestamp: null,
@@ -399,7 +399,7 @@ ConversationShellData _agentRuntimeLiveSmokeShellData() {
     ],
     composerEnabled: true,
     isRunning: false,
-    detailTitle: 'Smoke proof',
+    detailTitle: 'Validation proof',
     detailSections: [
       ConversationDetailSection(
         title: 'Live path',
@@ -490,12 +490,27 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
             showPermanentDetail: false,
             headerControls: Wrap(
               spacing: 6,
-              children: const [
-                Text('Session'),
-                Text('History'),
-                Text('Diagnostics'),
-                Text('Settings'),
-                Text('More'),
+              children: [
+                IconButton(
+                  tooltip: 'Session settings',
+                  onPressed: () {},
+                  icon: const Icon(Icons.tune_rounded, size: 18),
+                ),
+                IconButton(
+                  tooltip: 'Runtime operations',
+                  onPressed: () {},
+                  icon: const Icon(Icons.manage_history_rounded, size: 18),
+                ),
+                IconButton(
+                  tooltip: 'Global settings',
+                  onPressed: () {},
+                  icon: const Icon(Icons.settings_rounded, size: 18),
+                ),
+                IconButton(
+                  tooltip: 'Disconnect',
+                  onPressed: () {},
+                  icon: const Icon(Icons.link_off_rounded, size: 18),
+                ),
               ],
             ),
           ),
@@ -528,7 +543,6 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
         onImportRemoteProfile: () {},
         onRefreshImportedRemoteProfile: () {},
         onConnectImportedRemoteProfile: () {},
-        onPollStream: () {},
         onDisconnect: () {},
         onRoleValidate: (_) {},
         onRoleCreate: (_) {},
