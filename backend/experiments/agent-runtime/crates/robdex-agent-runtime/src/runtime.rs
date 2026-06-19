@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::{approvals, command_registry, compaction, db, routing};
 use crate::lifecycle::{self, TerminalStatus};
 use crate::model::codex_adapter::{bounded_raw_response, concise_response_summary, CodexBackedModelClient};
-use crate::model::{ModelClient, ModelHistoryItem, RuntimeInputMessage};
+use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelInitialTurn, RuntimeInputMessage};
 use crate::policy::PolicyEngine;
 use crate::starlark_host::{ExecutionRoot, execute_code};
 
@@ -84,6 +84,21 @@ fn model_history_from_items(history: &[db::HistoryItem]) -> Vec<ModelHistoryItem
         .collect()
 }
 
+fn runtime_model_role_instructions(role_instructions: &str) -> String {
+    let forced_prefix = ["Choose exactly one native", " tool per turn:"].concat();
+    role_instructions
+        .split(". ")
+        .map(|sentence| {
+            if sentence.trim_start().starts_with(&forced_prefix) {
+                "Reply directly when no runtime work is needed. Use native tools only when the user's request requires runtime work".to_string()
+            } else {
+                sentence.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(". ")
+}
+
 fn model_tool_request_shape(
     role_instructions: &str,
     history: &[db::HistoryItem],
@@ -93,9 +108,10 @@ fn model_tool_request_shape(
     message: &str,
     model: &str,
 ) -> Value {
+    let role_instructions = runtime_model_role_instructions(role_instructions);
     CodexBackedModelClient::request_tool_call_request_shape(
         model,
-        role_instructions,
+        &role_instructions,
         &model_history_from_items(history),
         runtime_messages,
         execute_code_contract,
@@ -120,6 +136,7 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
     let session = db::ensure_session_open(pool, session_id).await?;
     let workdir = session.workdir.clone();
     let role_snapshot = db::session_role_snapshot(pool, session_id).await?;
+    let model_role_instructions = runtime_model_role_instructions(&role_snapshot.instruction_text);
     let project_key = session.project_key.clone();
     let live_commands = command_registry::live_visible_commands(pool, &role_snapshot, project_key.as_deref()).await?;
     let previous_command_context = latest_command_context_evidence(pool, session_id).await?;
@@ -132,7 +149,7 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
     let request_registry_contract = command_registry::request_tool_contract();
     let prior_history_before_compaction = db::reconstructed_history(pool, session_id).await?;
     let pre_send_request_shape = model_tool_request_shape(
-        &role_snapshot.instruction_text,
+        &model_role_instructions,
         &prior_history_before_compaction,
         &runtime_messages,
         &execute_code_contract,
@@ -145,7 +162,7 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
         compaction::compact_session_through_latest_completed_turn(pool, session_id, budget).await?;
         let rebuilt_history = db::reconstructed_history(pool, session_id).await?;
         let rebuilt_request_shape = model_tool_request_shape(
-            &role_snapshot.instruction_text,
+            &model_role_instructions,
             &rebuilt_history,
             &runtime_messages,
             &execute_code_contract,
@@ -198,11 +215,27 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
         }
     };
 
-    let plan = match model.request_tool_call(&role_snapshot.instruction_text, &model_history, &runtime_messages, &execute_code_contract, &request_registry_contract, message).await {
-        Ok(plan) => plan,
+    let initial_turn = match model.request_tool_call(&model_role_instructions, &model_history, &runtime_messages, &execute_code_contract, &request_registry_contract, message).await {
+        Ok(turn) => turn,
         Err(error) => {
             finalize_failed_started_turn(pool, session_id, turn_id, "model_dispatch", &error.to_string()).await?;
             return Err(anyhow::anyhow!("model dispatch failed after turn start: {error}"));
+        }
+    };
+    let plan = match initial_turn {
+        ModelInitialTurn::ToolCall(plan) => plan,
+        ModelInitialTurn::FinalResponse(final_response) => {
+            complete_direct_final_response(
+                pool,
+                session_id,
+                turn_id,
+                &prior_history,
+                &model_role_instructions,
+                final_response,
+            )
+            .await?;
+            println!("turn {turn_id} completed");
+            return Ok(turn_id);
         }
     };
     let request_evidence = model_request_evidence(&plan.request_shape, &runtime_command_context.evidence, &runtime_messages);
@@ -243,9 +276,9 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
             "request": {
                 "model": plan.request_shape.get("model").cloned(),
                 "roleInstructions": {
-                    "source": "session.role_snapshot.instruction_text",
-                    "bytes": role_snapshot.instruction_text.len(),
-                    "prefix": role_snapshot.instruction_text.chars().take(80).collect::<String>(),
+                    "source": "session.role_snapshot.instruction_text.normalized_for_model",
+                    "bytes": model_role_instructions.len(),
+                    "prefix": model_role_instructions.chars().take(80).collect::<String>(),
                 },
                 "toolChoice": plan.request_shape.get("tool_choice").cloned(),
                 "tools": plan.request_shape.get("tools").and_then(serde_json::Value::as_array).map(Vec::len),
@@ -377,7 +410,7 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
     .await?;
     let final_response = match model
         .submit_tool_result(
-            &role_snapshot.instruction_text,
+            &model_role_instructions,
             &model_history,
             &plan.raw_response,
             &plan.tool_call.call_identity,
@@ -423,9 +456,9 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
             "request": {
                 "model": final_response.request_shape.get("model").cloned(),
                 "roleInstructions": {
-                    "source": "session.role_snapshot.instruction_text",
-                    "bytes": role_snapshot.instruction_text.len(),
-                    "prefix": role_snapshot.instruction_text.chars().take(80).collect::<String>(),
+                    "source": "session.role_snapshot.instruction_text.normalized_for_model",
+                    "bytes": model_role_instructions.len(),
+                    "prefix": model_role_instructions.chars().take(80).collect::<String>(),
                 },
                 "inputItems": final_response.request_shape.get("input").and_then(serde_json::Value::as_array).map(Vec::len),
                 "history": {"items": prior_history.len(), "source": "reconstructed_session_history"},
@@ -450,6 +483,72 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
 
     println!("turn {turn_id} {}", status.as_str());
     Ok(turn_id)
+}
+
+async fn complete_direct_final_response(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Uuid,
+    prior_history: &[db::HistoryItem],
+    role_instructions: &str,
+    final_response: ModelFinalTurn,
+) -> Result<()> {
+    let final_model_event_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO model_events (id, session_id, turn_id, event_type, payload)
+        VALUES ($1, $2, $3, 'final_response', $4)
+        "#,
+    )
+    .bind(final_model_event_id)
+    .bind(session_id)
+    .bind(turn_id)
+    .bind(json!({
+        "summary": final_response.final_text,
+        "provider": final_response.provider,
+        "model": final_response.model,
+        "raw": bounded_raw_response(&final_response.raw_response),
+    }))
+    .execute(pool)
+    .await?;
+    db::append_event(
+        pool,
+        session_id,
+        Some(turn_id),
+        "model",
+        Some(final_model_event_id),
+        "model.final_response",
+        Some("completed"),
+        json!({
+            "finalText": final_response.final_text,
+            "request": {
+                "model": final_response.request_shape.get("model").cloned(),
+                "roleInstructions": {
+                    "source": "session.role_snapshot.instruction_text.normalized_for_model",
+                    "bytes": role_instructions.len(),
+                    "prefix": role_instructions.chars().take(80).collect::<String>(),
+                },
+                "inputItems": final_response.request_shape.get("input").and_then(serde_json::Value::as_array).map(Vec::len),
+                "history": {"items": prior_history.len(), "source": "reconstructed_session_history"},
+            },
+            "response": concise_response_summary(&final_response.raw_response),
+        }),
+    )
+    .await?;
+
+    lifecycle::complete_turn(pool, turn_id, TerminalStatus::Completed, Utc::now()).await?;
+    db::append_event(
+        pool,
+        session_id,
+        Some(turn_id),
+        "turn",
+        Some(turn_id),
+        "turn.completed",
+        Some("completed"),
+        json!({"directAssistantResponse": true}),
+    )
+    .await?;
+    Ok(())
 }
 
 async fn finalize_failed_started_turn(
@@ -565,5 +664,27 @@ mod tests {
         );
         assert_eq!(request_shape["model"], "non-default-model-proof");
         println!("selected_model_send_request_model={}", request_shape["model"]);
+    }
+
+    #[test]
+    fn outbound_model_request_does_not_force_a_tool_call() {
+        let legacy_role = format!(
+            "You are test. {} execute_code for available Starlark work, or request_command_registry_change when a registry command must be added or changed.",
+            ["Choose exactly one native", " tool per turn:"].concat()
+        );
+        let request_shape = model_tool_request_shape(
+            &legacy_role,
+            &[],
+            &[],
+            "execute contract",
+            "registry contract",
+            "Hi",
+            "model-proof",
+        );
+        let instructions = request_shape["instructions"].as_str().expect("instructions");
+        assert_eq!(request_shape["tool_choice"], "auto");
+        assert!(instructions.contains("Reply directly when no tool is needed"));
+        assert!(!instructions.contains(&["Choose exactly one native", " tool"].concat()));
+        assert!(!instructions.contains(&["must choose", " exactly one"].concat()));
     }
 }

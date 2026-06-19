@@ -23,6 +23,7 @@ pub enum AgentRuntimeRequest {
     Rehydrate { selected_session_id: String },
     Disconnect,
     DispatchOperation { operation: AgentRuntimeGuiOperation },
+    ConsumeStreamOnce,
 }
 
 #[derive(Clone, Debug, Deserialize, SignalPiece)]
@@ -42,6 +43,7 @@ pub enum AgentRuntimeGuiOperation {
     TerminateProcess { session_id: String, handle: String },
     InputProcess { session_id: String, handle: String, text: String },
     FlushProcess { session_id: String, handle: String },
+    CompactSession { session_id: String, through_turn: String },
     CloseSession { session_id: String, reason: String },
     ArchiveSession { session_id: String },
     ForkSession { session_id: String, at_turn: String },
@@ -121,6 +123,7 @@ pub struct AgentRuntimeCommandSeed {
     pub max_runtime_ms: i64,
     pub has_max_runtime_ms: bool,
     pub end_of_turn_behavior: String,
+    pub end_of_session_behavior: String,
     pub stdin_policy: String,
     pub min_await_ms: i64,
     pub max_await_ms: i64,
@@ -326,7 +329,19 @@ pub struct AgentRuntimeConversationShellViewModel {
 
 #[derive(Clone, Debug, Serialize, SignalPiece)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRuntimeShellProjectRow { pub id: String, pub title: String, pub subtitle: String, pub selectable: bool }
+pub struct AgentRuntimeShellProjectRow {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub selectable: bool,
+    pub default_workdir: String,
+    pub default_worktree_root: String,
+    pub default_role_id: String,
+    pub default_model: String,
+    pub tracked: bool,
+    pub listed: bool,
+    pub archived: bool,
+}
 
 #[derive(Clone, Debug, Serialize, SignalPiece)]
 #[serde(rename_all = "camelCase")]
@@ -419,7 +434,11 @@ pub struct AgentRuntimeRoleAdminView {
     pub has_editor_draft: bool,
     pub validation_errors: Vec<String>,
     pub action_states: Vec<AgentRuntimeActionRow>,
+    pub editor_options: AgentRuntimeRoleEditorOptionsView,
 }
+#[derive(Clone, Debug, Default, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeRoleEditorOptionsView { pub models: Vec<String>, pub reasoning_efforts: Vec<String>, pub capabilities: Vec<String>, pub policy_actions: Vec<String>, pub policy_decisions: Vec<String>, pub routing_modes: Vec<String>, pub recipients: Vec<String>, pub reserved_actions: Vec<String> }
 
 #[derive(Clone, Debug, Default, Serialize, SignalPiece)]
 #[serde(rename_all = "camelCase")]

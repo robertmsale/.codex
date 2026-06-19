@@ -198,6 +198,7 @@ pub fn app(state: ServerState) -> Router {
         .route("/sessions/{session_id}", get(show_session))
         .route("/sessions/{session_id}/history", get(session_history))
         .route("/sessions/{session_id}/send", post(send_message))
+        .route("/sessions/{session_id}/compact", post(compact_session))
         .route("/sessions/{session_id}/settings", post(update_session_settings))
         .route("/sessions/{session_id}/close", post(close_session))
         .route("/sessions/{session_id}/archive", post(archive_session))
@@ -332,7 +333,7 @@ async fn snapshot(
             json!({"surfaceId":"session","title":"Session","rowCount": projection.selected_session.iter().count(), "actionCount": 3}),
             json!({"surfaceId":"history","title":"History","rowCount": projection.timeline.len(), "actionCount": 0}),
             json!({"surfaceId":"diagnostics","title":"Diagnostics","rowCount": 7, "actionCount": 0}),
-            json!({"surfaceId":"compaction","title":"Compaction","rowCount": projection.statistics.compaction_checkpoints, "actionCount": 0}),
+            json!({"surfaceId":"compaction","title":"Compaction","rowCount": projection.statistics.compaction_checkpoints, "actionCount": 1}),
             json!({"surfaceId":"statistics","title":"Statistics","rowCount": 14, "actionCount": 0}),
             json!({"surfaceId":"processManager","title":"Process Manager","rowCount": projection.statistics.managed_processes, "actionCount": 4}),
             json!({"surfaceId":"settings","title":"Settings","rowCount": 8, "actionCount": 1}),
@@ -653,6 +654,42 @@ async fn update_session_settings(
 #[derive(Debug, Deserialize)]
 struct SendRequest {
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompactSessionRequest {
+    through_turn: Option<Uuid>,
+}
+
+async fn compact_session(
+    State(state): State<ServerState>,
+    Path(session_id): Path<Uuid>,
+    payload: std::result::Result<Json<CompactSessionRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let request = parse_json(payload)?;
+    let checkpoint = if let Some(through_turn) = request.through_turn {
+        compaction::compact_session_through_turn(
+            &state.pool,
+            session_id,
+            through_turn,
+            compaction::CompactionBudget::from_env(),
+        )
+        .await?
+    } else {
+        compaction::compact_session_through_latest_completed_turn(
+            &state.pool,
+            session_id,
+            compaction::CompactionBudget::from_env(),
+        )
+        .await?
+    };
+    Ok(Json(json!({
+        "sessionId": session_id,
+        "checkpointId": checkpoint.id,
+        "status": checkpoint.status,
+        "compactedThroughTurnId": checkpoint.compacted_through_turn_id,
+    })))
 }
 
 async fn send_message(
@@ -1215,7 +1252,7 @@ async fn state_ws_loop(state: ServerState, query: WsQuery, socket: WebSocket) {
 mod tests {
     use super::*;
     use crate::compaction;
-    use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
+    use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelInitialTurn, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
     use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{Method, Request};
@@ -1238,6 +1275,7 @@ mod tests {
         observed_history: Arc<StdMutex<Vec<Vec<ModelHistoryItem>>>>,
         request_error: Option<&'static str>,
         final_error: Option<&'static str>,
+        direct_final_text: Option<&'static str>,
         tool_name: Option<&'static str>,
         tool_arguments: Option<Value>,
         model_name: Option<&'static str>,
@@ -1257,7 +1295,7 @@ mod tests {
 
     #[async_trait]
     impl ModelClient for FakeModelClient {
-        async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> anyhow::Result<ModelToolTurn> {
+        async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> anyhow::Result<ModelInitialTurn> {
             self.observed_history.lock().expect("history lock").push(history.to_vec());
             if let Some(message) = self.request_error {
                 anyhow::bail!("{message}");
@@ -1275,7 +1313,16 @@ mod tests {
                 request_registry_contract,
                 message,
             );
-            Ok(ModelToolTurn {
+            if let Some(final_text) = self.direct_final_text {
+                return Ok(ModelInitialTurn::FinalResponse(ModelFinalTurn {
+                    provider: "fake".to_string(),
+                    model: model_name.to_string(),
+                    final_text: final_text.to_string(),
+                    request_shape,
+                    raw_response: json!({"output":[{"type":"message","content":[{"type":"output_text","text":final_text}]}]}),
+                }));
+            }
+            Ok(ModelInitialTurn::ToolCall(ModelToolTurn {
                 provider: "fake".to_string(),
                 model: model_name.to_string(),
                 assistant_summary: "fake tool call".to_string(),
@@ -1286,7 +1333,7 @@ mod tests {
                 },
                 request_shape,
                 raw_response: json!({"output":[{"type":"function_call","name":"execute_code","call_id":"fake-call","arguments":"{\"source\":\"output(\\\"fake-ok\\\")\"}"}]}),
-            })
+            }))
         }
 
         async fn submit_tool_result(&self, role_instructions: &str, history: &[ModelHistoryItem], _tool_call_response: &Value, call_id: &str, tool_result: &Value) -> anyhow::Result<ModelFinalTurn> {
@@ -1450,6 +1497,35 @@ mod tests {
             .await
             .expect("tool status");
         assert_eq!(tool_status, "failed");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn direct_assistant_response_completes_without_tool_call() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-allow").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("direct-final"), ".", Some("."), None, None).await.expect("session");
+        let model = FakeModelClient {
+            direct_final_text: Some("Hi! How can I help?"),
+            ..Default::default()
+        };
+        let turn_id = crate::runtime::send_with_model_client(&test_db.pool, session_id, "Hi", &model, compaction::CompactionBudget::default())
+            .await
+            .expect("direct assistant send succeeds");
+
+        assert_turn_terminal(&test_db.pool, session_id, "Hi", "completed", "completed").await;
+        let tool_call_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls WHERE turn_id=$1")
+            .bind(turn_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("tool call count");
+        assert_eq!(tool_call_count, 0, "direct assistant response must not synthesize a tool call");
+        let final_text: String = sqlx::query_scalar("SELECT payload->>'finalText' FROM event_stream WHERE turn_id=$1 AND event_type='model.final_response'")
+            .bind(turn_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("final response event");
+        assert_eq!(final_text, "Hi! How can I help?");
         test_db.cleanup().await;
     }
 

@@ -166,6 +166,104 @@ class RobdexDesignLabHome extends StatelessWidget {
         ),
       );
     }
+    if (surface == 'agentRuntimeCreateProjectModal') {
+      return Scaffold(
+        backgroundColor: const Color(0xFF0E141B),
+        body: Center(
+          child: AgentRuntimeCreateProjectDialog(
+            data: mockAgentRuntimeConnected,
+            existingProjectKeys: const ['project-a'],
+            onCreate: ({
+              required projectKey,
+              required displayName,
+              required defaultWorkdir,
+              required defaultWorktreeRoot,
+              required defaultRoleId,
+              required defaultModel,
+              required tracked,
+              required listed,
+            }) {},
+          ),
+        ),
+      );
+    }
+    if (surface == 'agentRuntimeProjectSettingsModal') {
+      return Scaffold(
+        backgroundColor: const Color(0xFF0E141B),
+        body: Center(
+          child: AgentRuntimeProjectSettingsDialog(
+            data: mockAgentRuntimeConnected,
+            projectId: 'project-a',
+            project: const ConversationProject(
+              id: 'project-a',
+              title: 'Runtime',
+              defaultWorkdir: '/Users/robertsale/.codex',
+              defaultWorktreeRoot: '/Users/robertsale/.codex',
+              defaultRoleId: 'runtime-allow',
+              defaultModel: 'codex-live-model',
+              tracked: true,
+              listed: true,
+            ),
+            onSave: ({
+              required projectKey,
+              required displayName,
+              required defaultWorkdir,
+              required defaultWorktreeRoot,
+              required defaultRoleId,
+              required defaultModel,
+              required tracked,
+              required listed,
+            }) {},
+            onArchive: (_) {},
+            onUnarchive: (_) {},
+          ),
+        ),
+      );
+    }
+    if (surface == 'agentRuntimeSessionSettingsModal') {
+      return Scaffold(
+        backgroundColor: const Color(0xFF0E141B),
+        body: Center(
+          child: AgentRuntimeSessionSettingsDialog(
+            shell: agentRuntimeConversationShellData(mockAgentRuntimeConnected),
+            data: mockAgentRuntimeConnected,
+            onSave: ({
+              required sessionId,
+              required project,
+              required role,
+              required model,
+              required workdir,
+              required worktreeRoot,
+              required title,
+              required name,
+              required tracked,
+            }) {},
+            onClose: (_) {},
+            onArchive: (_) {},
+            onFork: (_) {},
+          ),
+        ),
+      );
+    }
+    if (surface == 'agentRuntimeGlobalSettingsModal') {
+      return Scaffold(
+        backgroundColor: const Color(0xFF0E141B),
+        body: Center(
+          child: AgentRuntimeGlobalSettingsDialog(
+            data: mockAgentRuntimeConnected.copyWith(errorMessage: 'Connection failed. Check the runtime URL and try again.'),
+            onConnectManual: (_) {},
+            onRefreshDiscovery: () {},
+            onConnectDiscovery: () {},
+            onRefreshIcloud: () {},
+            onConnectIcloud: () {},
+            onImportProfile: () {},
+            onRefreshImportedProfile: () {},
+            onConnectImportedProfile: () {},
+            onDisconnect: () {},
+          ),
+        ),
+      );
+    }
     if (surface == 'agentRuntimeRoleManagementDetail') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'roleAdmin');
     }
@@ -190,6 +288,35 @@ class RobdexDesignLabHome extends StatelessWidget {
     }
     if (surface == 'agentRuntimeCompactionSurface') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'compaction');
+    }
+    if (surface == 'agentRuntimeCompactionUnavailableSurface') {
+      return _AgentRuntimeScenario(
+        data: mockAgentRuntimeConnected.copyWith(
+          operationSurfaces: const [
+            AgentRuntimeOperationSurface(
+              surfaceId: 'compaction',
+              title: 'Compaction',
+              subtitle: 'Checkpoint and context budget',
+              rows: [
+                AgentRuntimeFact(label: 'Checkpoints', value: 'No completed or failed compaction checkpoints'),
+                AgentRuntimeFact(label: 'Current context estimate', value: 'Runtime projection supplies estimate data when available'),
+                AgentRuntimeFact(label: 'Compaction thresholds', value: 'Runtime-owned budget thresholds apply'),
+              ],
+              actions: [
+                AgentRuntimeActionItem(
+                  id: 'compact-session-unavailable',
+                  title: 'Compact selected session',
+                  subtitle: 'Select a session before compacting history.',
+                  kind: 'compactionUnavailable',
+                  stateText: 'No selected session',
+                  tone: 'muted',
+                ),
+              ],
+            ),
+          ],
+        ),
+        focusSurfaceId: 'compaction',
+      );
     }
     if (surface == 'agentRuntimeStatisticsSurface') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'statistics');
@@ -463,6 +590,7 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
   Widget build(BuildContext context) {
     if (_hasConnectedRuntime(widget.data)) {
       final shell = agentRuntimeConversationShellData(widget.data);
+      final narrow = MediaQuery.sizeOf(context).width < 560;
       final operations = AgentRuntimeOperationsDetail(
         data: widget.data,
         focusSurfaceId: widget.focusSurfaceId,
@@ -481,11 +609,12 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
         onSessionArchive: (_) {},
         onSessionFork: (_) {},
         onProcessTerminate: (_) {},
-        onProcessInput: (_) {},
+        onProcessInput: (_, _) {},
         onProcessFlush: (_) {},
-        onApprovalApprove: (_) {},
+        onCompactSession: (_) {},
+        onApprovalApprove: (_, _) {},
         onApprovalResume: (_) {},
-        onCommandRegistryApprove: (_) {},
+        onCommandRegistryApprove: (_, _) {},
         onCommandRegistryApply: (_) {},
       );
       return Stack(
@@ -530,10 +659,11 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
           ),
           if (widget.focusSurfaceId != null)
             Positioned(
-              right: 24,
+              right: narrow ? 12 : 24,
+              left: narrow ? 12 : null,
               top: 72,
               bottom: 24,
-              width: 420,
+              width: narrow ? null : 420,
               child: Material(
                 elevation: 18,
                 color: const Color(0xFF111820),
@@ -573,7 +703,7 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
         onSessionArchive: (_) {},
         onSessionFork: (_) {},
         onProcessTerminate: (_) {},
-        onProcessInput: (_) {},
+        onProcessInput: (_, _) {},
         onProcessFlush: (_) {},
       ),
     );

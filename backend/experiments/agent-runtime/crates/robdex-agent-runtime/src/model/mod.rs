@@ -23,6 +23,12 @@ pub struct ModelToolTurn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ModelInitialTurn {
+    ToolCall(ModelToolTurn),
+    FinalResponse(ModelFinalTurn),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelFinalTurn {
     pub provider: String,
     pub model: String,
@@ -50,7 +56,7 @@ pub struct ModelHistoryItem {
 
 #[async_trait]
 pub trait ModelClient {
-    async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn>;
+    async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelInitialTurn>;
     async fn submit_tool_result(
         &self,
         role_instructions: &str,

@@ -1018,11 +1018,27 @@ async fn role_summary(pool: &PgPool, role_id: &str) -> Result<Option<RoleSummary
     }))
 }
 
+fn command_config_string(config: &Option<Value>, key: &str) -> Option<String> {
+    config.as_ref()?.get(key)?.as_str().map(str::to_string)
+}
+
+fn command_config_bool(config: &Option<Value>, key: &str) -> Option<bool> {
+    config.as_ref()?.get(key)?.as_bool()
+}
+
+fn command_config_i64(config: &Option<Value>, key: &str) -> Option<i64> {
+    config.as_ref()?.get(key)?.as_i64()
+}
+
+fn command_config_string_list(config: &Option<Value>, key: &str) -> Vec<String> {
+    config.as_ref().and_then(|value| value.get(key)).and_then(Value::as_array).map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default()
+}
+
 async fn command_registry_summaries(pool: &PgPool) -> Result<Vec<CommandRegistrySummary>> {
     let rows = sqlx::query(
         r#"
         SELECT cd.id, cd.action_id, cd.scope_type, cd.project_key, cd.enabled, cd.current_version_id,
-               cd.updated_at, cv.binary_name, cv.starlark_object, cv.starlark_method
+               cd.updated_at, cv.version_number, cv.binary_name, cv.starlark_object, cv.starlark_method, cv.config, cv.model_description
         FROM command_definitions cd
         LEFT JOIN command_versions cv ON cv.id = cd.current_version_id
         ORDER BY cd.scope_type ASC, cd.action_id ASC, cd.project_key ASC NULLS FIRST
@@ -1039,9 +1055,26 @@ async fn command_registry_summaries(pool: &PgPool) -> Result<Vec<CommandRegistry
             project_key: row.get("project_key"),
             enabled: row.get("enabled"),
             current_version_id: optional_uuid(row.get("current_version_id")),
+            command_version: row.get::<Option<i64>, _>("version_number"),
             binary_name: row.get("binary_name"),
             starlark_object: row.get("starlark_object"),
             starlark_method: row.get("starlark_method"),
+            argv_template: command_config_string_list(&row.get::<Option<Value>, _>("config"), "argvPrefix"),
+            default_cwd: command_config_string(&row.get::<Option<Value>, _>("config"), "defaultCwd"),
+            cwd_policy: command_config_string(&row.get::<Option<Value>, _>("config"), "cwdPolicy"),
+            env_policy: command_config_string(&row.get::<Option<Value>, _>("config"), "envPolicy"),
+            stdin_policy: command_config_string(&row.get::<Option<Value>, _>("config"), "stdinPolicy"),
+            sync_allowed: command_config_bool(&row.get::<Option<Value>, _>("config"), "syncAllowed"),
+            async_allowed: command_config_bool(&row.get::<Option<Value>, _>("config"), "asyncAllowed"),
+            max_runtime_ms: command_config_i64(&row.get::<Option<Value>, _>("config"), "maxRuntimeMs"),
+            end_of_turn_behavior: command_config_string(&row.get::<Option<Value>, _>("config"), "endOfTurnBehavior"),
+            end_of_session_behavior: command_config_string(&row.get::<Option<Value>, _>("config"), "endOfSessionBehavior"),
+            mutation_class: command_config_string(&row.get::<Option<Value>, _>("config"), "mutationClass"),
+            model_description: row.get::<Option<String>, _>("model_description"),
+            allow_cwd_arg: command_config_bool(&row.get::<Option<Value>, _>("config"), "allowCwdArg"),
+            allow_args_arg: command_config_bool(&row.get::<Option<Value>, _>("config"), "allowArgsArg"),
+            forbidden_args: command_config_string_list(&row.get::<Option<Value>, _>("config"), "forbiddenArgs"),
+            execution_policy: command_config_string(&row.get::<Option<Value>, _>("config"), "executionPolicy"),
             updated_at: optional_time(Some(row.get("updated_at"))),
         })
         .collect())
@@ -1077,7 +1110,7 @@ async fn command_registry_summary_by_definition_id(
     let row = sqlx::query(
         r#"
         SELECT cd.id, cd.action_id, cd.scope_type, cd.project_key, cd.enabled, cd.current_version_id,
-               cd.updated_at, cv.binary_name, cv.starlark_object, cv.starlark_method
+               cd.updated_at, cv.version_number, cv.binary_name, cv.starlark_object, cv.starlark_method, cv.config, cv.model_description
         FROM command_definitions cd
         LEFT JOIN command_versions cv ON cv.id = cd.current_version_id
         WHERE cd.id = $1
@@ -1096,7 +1129,7 @@ async fn command_registry_summary_by_action_id(
     let row = sqlx::query(
         r#"
         SELECT cd.id, cd.action_id, cd.scope_type, cd.project_key, cd.enabled, cd.current_version_id,
-               cd.updated_at, cv.binary_name, cv.starlark_object, cv.starlark_method
+               cd.updated_at, cv.version_number, cv.binary_name, cv.starlark_object, cv.starlark_method, cv.config, cv.model_description
         FROM command_definitions cd
         LEFT JOIN command_versions cv ON cv.id = cd.current_version_id
         WHERE cd.action_id = $1
@@ -1118,9 +1151,26 @@ fn command_registry_summary_from_row(row: sqlx::postgres::PgRow) -> CommandRegis
         project_key: row.get("project_key"),
         enabled: row.get("enabled"),
         current_version_id: optional_uuid(row.get("current_version_id")),
+        command_version: row.get::<Option<i64>, _>("version_number"),
         binary_name: row.get("binary_name"),
         starlark_object: row.get("starlark_object"),
         starlark_method: row.get("starlark_method"),
+        argv_template: command_config_string_list(&row.get::<Option<Value>, _>("config"), "argvPrefix"),
+        default_cwd: command_config_string(&row.get::<Option<Value>, _>("config"), "defaultCwd"),
+        cwd_policy: command_config_string(&row.get::<Option<Value>, _>("config"), "cwdPolicy"),
+        env_policy: command_config_string(&row.get::<Option<Value>, _>("config"), "envPolicy"),
+        stdin_policy: command_config_string(&row.get::<Option<Value>, _>("config"), "stdinPolicy"),
+        sync_allowed: command_config_bool(&row.get::<Option<Value>, _>("config"), "syncAllowed"),
+        async_allowed: command_config_bool(&row.get::<Option<Value>, _>("config"), "asyncAllowed"),
+        max_runtime_ms: command_config_i64(&row.get::<Option<Value>, _>("config"), "maxRuntimeMs"),
+        end_of_turn_behavior: command_config_string(&row.get::<Option<Value>, _>("config"), "endOfTurnBehavior"),
+        end_of_session_behavior: command_config_string(&row.get::<Option<Value>, _>("config"), "endOfSessionBehavior"),
+        mutation_class: command_config_string(&row.get::<Option<Value>, _>("config"), "mutationClass"),
+        model_description: row.get::<Option<String>, _>("model_description"),
+        allow_cwd_arg: command_config_bool(&row.get::<Option<Value>, _>("config"), "allowCwdArg"),
+        allow_args_arg: command_config_bool(&row.get::<Option<Value>, _>("config"), "allowArgsArg"),
+        forbidden_args: command_config_string_list(&row.get::<Option<Value>, _>("config"), "forbiddenArgs"),
+        execution_policy: command_config_string(&row.get::<Option<Value>, _>("config"), "executionPolicy"),
         updated_at: optional_time(Some(row.get("updated_at"))),
     }
 }
@@ -1705,6 +1755,7 @@ mod tests {
                 async_allowed: false,
                 max_runtime_ms: Some(5000),
                 end_of_turn_behavior: "terminate".to_string(),
+                end_of_session_behavior: "terminate".to_string(),
                 stdin_policy: "forbid".to_string(),
                 min_await_ms: 0,
                 max_await_ms: 60000,

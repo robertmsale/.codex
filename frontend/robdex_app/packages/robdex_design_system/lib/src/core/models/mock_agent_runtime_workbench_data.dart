@@ -1,6 +1,17 @@
 import 'agent_runtime_workbench_models.dart';
 import 'workbench_models.dart';
 
+const mockAgentRuntimeRoleEditorOptions = AgentRuntimeRoleEditorOptions(
+  models: ['gpt-5.4-mini', 'codex-live-model'],
+  reasoningEfforts: ['low', 'medium', 'high'],
+  capabilities: ['Execute code', 'Send message', 'Command registry', 'Workflow memory'],
+  policyActions: ['Execute code', 'Send message', 'Command registry', 'Workflow memory'],
+  policyDecisions: ['Allow', 'Deny'],
+  routingModes: ['Direct'],
+  recipients: ['Owner', 'Runtime'],
+  reservedActions: ['Send message', 'Archive agent', 'Apply command registry', 'Workflow memory feedback'],
+);
+
 const mockAgentRuntimeRoleAdminEmpty = AgentRuntimeRoleAdminData(
   title: 'Role Admin (0)',
   subtitle: 'Edit roles and versions',
@@ -10,6 +21,7 @@ const mockAgentRuntimeRoleAdminEmpty = AgentRuntimeRoleAdminData(
   versionRows: [],
   validationErrors: [],
   actionStates: [],
+  editorOptions: mockAgentRuntimeRoleEditorOptions,
 );
 
 const mockAgentRuntimeRoleAdminSelected = AgentRuntimeRoleAdminData(
@@ -82,6 +94,7 @@ const mockAgentRuntimeRoleAdminSelected = AgentRuntimeRoleAdminData(
       tone: 'muted',
     ),
   ],
+  editorOptions: mockAgentRuntimeRoleEditorOptions,
 );
 
 const mockAgentRuntimeRoleAdminInvalid = AgentRuntimeRoleAdminData(
@@ -124,6 +137,7 @@ const mockAgentRuntimeRoleAdminInvalid = AgentRuntimeRoleAdminData(
       tone: 'danger',
     ),
   ],
+  editorOptions: mockAgentRuntimeRoleEditorOptions,
 );
 
 const mockAgentRuntimeWorkflowMemoryEmpty = AgentRuntimeWorkflowMemoryData(
@@ -633,7 +647,16 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
         AgentRuntimeFact(label: 'Context estimate', value: '42 KB model-visible'),
         AgentRuntimeFact(label: 'Failed checkpoint', value: 'None'),
       ],
-      actions: [],
+      actions: [
+        AgentRuntimeActionItem(
+          id: 'session-a',
+          title: 'Compact selected session',
+          subtitle: 'Create a checkpoint through the latest completed turn.',
+          kind: 'compactionManual',
+          stateText: 'Uses runtime compaction budget',
+          tone: 'warning',
+        ),
+      ],
     ),
     AgentRuntimeOperationSurface(
       surfaceId: 'statistics',

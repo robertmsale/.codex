@@ -15,7 +15,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
+use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelInitialTurn, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
 
 const CHATGPT_CODEX_RESPONSES_URL: &str =
     "https://chatgpt.com/backend-api/codex/responses";
@@ -180,7 +180,7 @@ impl CodexBackedModelClient {
         let tool = Self::execute_code_tool_schema(execute_code_contract);
         let request_tool = Self::request_command_registry_change_tool_schema(request_registry_contract);
         let instructions = format!(
-            "{role_instructions}\n\nChoose exactly one native tool for this turn. Call execute_code when the permanent Starlark interface can satisfy the user. Inspect live registered commands with cmd.describe(), cmd[\"object\"].describe(), or cmd[\"object\"].method.describe() inside execute_code when command details are needed. Full command/process output is stored as output artifacts; use outputs.head/tail/slice/search/stats for bounded retrieval instead of dumping large logs. Call request_command_registry_change when progress is blocked by a missing or outdated command registry entry."
+            "{role_instructions}\n\nUse a native tool only when the user's request requires runtime work. Reply directly when no tool is needed. Call execute_code when the permanent Starlark interface can satisfy runtime work. Inspect live registered commands with cmd.describe(), cmd[\"object\"].describe(), or cmd[\"object\"].method.describe() inside execute_code when command details are needed. Full command/process output is stored as output artifacts; use outputs.head/tail/slice/search/stats for bounded retrieval instead of dumping large logs. Call request_command_registry_change when progress is blocked by a missing or outdated command registry entry."
         );
         json!({
             "model": model,
@@ -383,7 +383,7 @@ pub fn bounded_raw_response(response: &Value) -> Value {
 
 #[async_trait]
 impl ModelClient for CodexBackedModelClient {
-    async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelToolTurn> {
+    async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelInitialTurn> {
         let body = Self::request_tool_call_request_shape(
             &self.model,
             role_instructions,
@@ -417,11 +417,15 @@ impl ModelClient for CodexBackedModelClient {
         };
         let _ = request_for_shape;
         let raw_response = self.post_responses(&body).await?;
-        let (call_id, tool_name, arguments) = extract_native_tool_call(&raw_response)?;
-        Ok(ModelToolTurn {
+        let calls = extract_native_tool_calls(&raw_response)?;
+        if calls.len() > 1 {
+            bail!("model response included more than one native tool call, got {}: {raw_response}", calls.len());
+        }
+        if let Some((call_id, tool_name, arguments)) = calls.into_iter().next() {
+            return Ok(ModelInitialTurn::ToolCall(ModelToolTurn {
             provider: "chatgpt-codex-responses".to_string(),
             model: self.model.clone(),
-            assistant_summary: "Live Responses model called execute_code.".to_string(),
+            assistant_summary: format!("Live Responses model called {tool_name}."),
             tool_call: ToolCallRequest {
                 call_identity: call_id,
                 tool_name,
@@ -429,7 +433,19 @@ impl ModelClient for CodexBackedModelClient {
             },
             request_shape,
             raw_response,
-        })
+            }));
+        }
+        let final_text = extract_output_text(&raw_response).unwrap_or_default();
+        if final_text.trim().is_empty() {
+            bail!("model response included neither native tool call nor assistant text: {raw_response}");
+        }
+        Ok(ModelInitialTurn::FinalResponse(ModelFinalTurn {
+            provider: "chatgpt-codex-responses".to_string(),
+            model: self.model.clone(),
+            final_text,
+            request_shape,
+            raw_response,
+        }))
     }
 
     async fn submit_tool_result(
@@ -635,7 +651,7 @@ fn find_native_tool_item(response: &Value, call_id: &str) -> Result<Value> {
     bail!("model response did not include native tool item for call_id {call_id}")
 }
 
-fn extract_native_tool_call(response: &Value) -> Result<(String, String, Value)> {
+fn extract_native_tool_calls(response: &Value) -> Result<Vec<(String, String, Value)>> {
     let mut calls = Vec::new();
     for item in response
         .get("output")
@@ -663,10 +679,7 @@ fn extract_native_tool_call(response: &Value) -> Result<(String, String, Value)>
             calls.push((call_id, name.to_string(), parsed));
         }
     }
-    if calls.len() != 1 {
-        bail!("model response must include exactly one native tool call, got {}: {response}", calls.len());
-    }
-    Ok(calls.remove(0))
+    Ok(calls)
 }
 
 fn parse_responses_body(text: &str) -> Result<Value> {
@@ -764,6 +777,7 @@ mod cache_stable_tests {
             sync_allowed: true,
             async_allowed: false,
             end_of_turn_behavior: "terminate".to_string(),
+            end_of_session_behavior: "terminate".to_string(),
             stdin_policy: "forbid".to_string(),
             min_await_ms: 0,
             max_await_ms: 60000,

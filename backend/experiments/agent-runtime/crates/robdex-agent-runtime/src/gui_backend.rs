@@ -3,6 +3,7 @@ use robdex_agent_runtime_projection::{
     GuiOperationOutcome, GuiOperationRequest, GuiOperationResult, RuntimeProjection,
 };
 use serde_json::{json, Value};
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::gui_sync::{RuntimeStateStream, RuntimeSyncClient, RuntimeSyncConfig, SyncError, SyncOutcome};
@@ -90,6 +91,12 @@ impl GuiBackendController {
     }
 
     pub async fn next_stream_outcome(&mut self) -> Result<SyncOutcome, ApiErrorPacket> {
+        self.next_stream_outcome_timeout(None)
+            .await?
+            .ok_or_else(|| api_error("timeout", "GUI controller stream timed out", json!({"operation":"nextStreamOutcome"})))
+    }
+
+    pub async fn next_stream_outcome_timeout(&mut self, timeout: Option<Duration>) -> Result<Option<SyncOutcome>, ApiErrorPacket> {
         let mut stream = self.stream.take().ok_or_else(|| {
             api_error("conflict", "GUI controller stream is not connected", json!({"operation":"nextStreamOutcome"}))
         })?;
@@ -97,7 +104,20 @@ impl GuiBackendController {
             let sync = self.sync_client.as_mut().ok_or_else(|| {
                 api_error("conflict", "GUI controller is not connected", json!({"operation":"nextStreamOutcome"}))
             })?;
-            let outcome = stream.next_outcome(sync).await.map_err(sync_error_packet)?;
+            let outcome = if let Some(timeout) = timeout {
+                match tokio::time::timeout(timeout, stream.next_outcome(sync)).await {
+                    Ok(outcome) => outcome.map_err(sync_error_packet)?,
+                    Err(_) => {
+                        self.stream = Some(stream);
+                        if let Some(handle) = self.stream_handle.as_mut() {
+                            handle.connected = true;
+                        }
+                        return Ok(None);
+                    }
+                }
+            } else {
+                stream.next_outcome(sync).await.map_err(sync_error_packet)?
+            };
             (outcome, sync.projection().cloned(), sync.controller_state().clone())
         };
         self.projection = projection;
@@ -113,7 +133,7 @@ impl GuiBackendController {
                 self.stream = Some(stream);
             }
         }
-        Ok(outcome)
+        Ok(Some(outcome))
     }
 
     async fn dispatch_inner(&mut self, request: &GuiOperationRequest) -> Result<GuiOperationOutcome, ApiErrorPacket> {
@@ -170,6 +190,7 @@ impl GuiBackendController {
             | GuiOperationRequest::TerminateProcess { .. }
             | GuiOperationRequest::InputProcess { .. }
             | GuiOperationRequest::FlushProcess { .. }
+            | GuiOperationRequest::CompactSession { .. }
             | GuiOperationRequest::CloseSession { .. }
             | GuiOperationRequest::ArchiveSession { .. }
             | GuiOperationRequest::ForkSession { .. }
@@ -318,6 +339,12 @@ impl GuiBackendController {
             | GuiOperationRequest::FlushProcess { handle, .. } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: Some(handle.clone()),
             }),
+            GuiOperationRequest::CompactSession { session_id, .. } => {
+                let _ = self.hydrate_current().await?;
+                Ok(GuiOperationOutcome::Accepted {
+                    entity_id: Some(session_id.clone()),
+                })
+            }
             GuiOperationRequest::ForkSession { .. } => {
                 let entity_id = value.get("sessionId").and_then(Value::as_str).map(str::to_string);
                 if let Some(id) = entity_id.as_deref() {
@@ -394,6 +421,7 @@ impl GuiBackendController {
             GuiOperationRequest::TerminateProcess { session_id, handle } => format!("/sessions/{session_id}/processes/{handle}/terminate"),
             GuiOperationRequest::InputProcess { session_id, handle, .. } => format!("/sessions/{session_id}/processes/{handle}/input"),
             GuiOperationRequest::FlushProcess { session_id, handle } => format!("/sessions/{session_id}/processes/{handle}/flush"),
+            GuiOperationRequest::CompactSession { session_id, .. } => format!("/sessions/{session_id}/compact"),
             GuiOperationRequest::CloseSession { session_id, .. } => format!("/sessions/{session_id}/close"),
             GuiOperationRequest::ArchiveSession { session_id } => format!("/sessions/{session_id}/archive"),
             GuiOperationRequest::ForkSession { session_id, .. } => format!("/sessions/{session_id}/fork"),
@@ -708,6 +736,7 @@ mod tests {
             async_allowed: true,
             max_runtime_ms: None,
             end_of_turn_behavior: "terminate".to_string(),
+            end_of_session_behavior: "terminate".to_string(),
             stdin_policy: "forbid".to_string(),
             min_await_ms: 0,
             max_await_ms: 60000,

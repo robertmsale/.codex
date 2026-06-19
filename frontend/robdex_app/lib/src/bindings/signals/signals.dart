@@ -41,6 +41,7 @@ part 'agent_runtime_role_editor_draft.dart';
 part 'agent_runtime_role_editor_draft_view.dart';
 part 'agent_runtime_role_editor_lifecycle_authority_metadata.dart';
 part 'agent_runtime_role_editor_model_defaults.dart';
+part 'agent_runtime_role_editor_options_view.dart';
 part 'agent_runtime_role_editor_routing_metadata.dart';
 part 'agent_runtime_role_editor_visibility_metadata.dart';
 part 'agent_runtime_role_policy_entry.dart';

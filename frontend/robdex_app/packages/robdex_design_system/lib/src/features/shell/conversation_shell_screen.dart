@@ -527,7 +527,7 @@ class _ConversationCenter extends StatelessWidget {
                 connectionLabel: data.connectionLabel,
                 isRunning: data.isRunning,
               ),
-              availableModels: const [ModelItem(id: 'runtime-default', name: 'Runtime default', hidden: false)],
+              availableModels: const [],
               onSettingsChanged: (_) {},
               onCompactThread: () {},
               headerControls: headerControls,

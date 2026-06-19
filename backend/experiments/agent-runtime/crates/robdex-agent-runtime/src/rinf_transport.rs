@@ -247,6 +247,13 @@ pub struct AgentRuntimeShellProjectRow {
     pub subtitle: String,
     pub selectable: bool,
     pub unavailable_reason: Option<String>,
+    pub default_workdir: String,
+    pub default_worktree_root: String,
+    pub default_role_id: Option<String>,
+    pub default_model: String,
+    pub tracked: bool,
+    pub listed: bool,
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -298,6 +305,20 @@ pub struct AgentRuntimeRoleAdminView {
     pub editor_draft: Option<AgentRuntimeRoleEditorDraftView>,
     pub validation_errors: Vec<String>,
     pub action_states: Vec<AgentRuntimeWorkbenchActionRow>,
+    pub editor_options: AgentRuntimeRoleEditorOptionsView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeRoleEditorOptionsView {
+    pub models: Vec<String>,
+    pub reasoning_efforts: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub policy_actions: Vec<String>,
+    pub policy_decisions: Vec<String>,
+    pub routing_modes: Vec<String>,
+    pub recipients: Vec<String>,
+    pub reserved_actions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -459,7 +480,7 @@ impl AgentRuntimeWorkbenchViewModel {
             .unwrap_or_default();
         actions.sort_by(|left, right| left.kind.cmp(&right.kind).then(left.id.cmp(&right.id)));
         let selected_session_label = selected_session_label(projection, controller_state);
-        let role_admin = role_admin_view(projection);
+        let role_admin = role_admin_view(projection, model_options);
         let workflow_memory = workflow_memory_view(
             projection,
             controller_state.selected_session_id.as_deref(),
@@ -522,7 +543,7 @@ impl AgentRuntimeConversationShellViewModel {
             dynamic_roles: Vec::new(),
             actions: Vec::new(),
             settings: Vec::new(),
-            role_management: role_admin_view(None),
+            role_management: role_admin_view(None, &[]),
             workflow_memory: workflow_memory_view(None, None, None),
             command_registry_requests: Vec::new(),
             approvals: Vec::new(),
@@ -638,6 +659,13 @@ fn shell_project_rows(projection: Option<&RuntimeProjection>, selected_project_i
             subtitle: if selected == "__all__" { "Selected" } else { "All sessions" }.to_string(),
             selectable: true,
             unavailable_reason: None,
+            default_workdir: String::new(),
+            default_worktree_root: String::new(),
+            default_role_id: None,
+            default_model: String::new(),
+            tracked: false,
+            listed: true,
+            archived: false,
         },
         AgentRuntimeShellProjectRow {
             id: "__unassigned__".to_string(),
@@ -645,6 +673,13 @@ fn shell_project_rows(projection: Option<&RuntimeProjection>, selected_project_i
             subtitle: if selected == "__unassigned__" { "Selected" } else { "Sessions without a project" }.to_string(),
             selectable: true,
             unavailable_reason: None,
+            default_workdir: String::new(),
+            default_worktree_root: String::new(),
+            default_role_id: None,
+            default_model: String::new(),
+            tracked: false,
+            listed: true,
+            archived: false,
         },
     ];
     if let Some(projection) = projection {
@@ -659,6 +694,13 @@ fn shell_project_rows(projection: Option<&RuntimeProjection>, selected_project_i
                     subtitle: if selected == project.project_key { "Selected project" } else { "Project sessions" }.to_string(),
                     selectable: true,
                     unavailable_reason: None,
+                    default_workdir: project.default_workdir.clone(),
+                    default_worktree_root: project.default_worktree_root.clone(),
+                    default_role_id: project.default_role_id.clone(),
+                    default_model: project.default_model.clone(),
+                    tracked: project.tracked,
+                    listed: project.listed,
+                    archived: project.archived,
                 }),
         );
     }
@@ -692,7 +734,7 @@ fn operation_surfaces(
         title: "Compaction".to_string(),
         subtitle: "Checkpoint and context budget".to_string(),
         rows: compaction_rows(projection),
-        actions: Vec::new(),
+        actions: compaction_actions(controller_state),
     });
     surfaces.push(AgentRuntimeOperationSurface {
         surface_id: "statistics".to_string(),
@@ -839,8 +881,29 @@ fn compaction_rows(projection: Option<&RuntimeProjection>) -> Vec<AgentRuntimeWo
         rows.push(fact("Checkpoints", "No completed or failed compaction checkpoints"));
     }
     rows.push(fact("Current context estimate", "Runtime projection supplies estimate data when available"));
-    rows.push(fact("Compaction thresholds", "Runtime-owned budget thresholds apply; manual compact is not exposed in this UI"));
+    rows.push(fact("Compaction thresholds", "Runtime-owned budget thresholds apply; manual compact uses the selected session and latest completed turn"));
     rows
+}
+
+fn compaction_actions(controller_state: &GuiControllerState) -> Vec<AgentRuntimeWorkbenchActionRow> {
+    let Some(session_id) = controller_state.selected_session_id.as_ref() else {
+        return vec![AgentRuntimeWorkbenchActionRow {
+            id: "compact-session-unavailable".to_string(),
+            title: "Compact selected session".to_string(),
+            subtitle: "Select a session before compacting history.".to_string(),
+            kind: "compactionUnavailable".to_string(),
+            state_text: "No selected session".to_string(),
+            tone: "muted".to_string(),
+        }];
+    };
+    vec![AgentRuntimeWorkbenchActionRow {
+        id: session_id.to_string(),
+        title: "Compact selected session".to_string(),
+        subtitle: "Create a checkpoint through the latest completed turn.".to_string(),
+        kind: "compactionManual".to_string(),
+        state_text: "Uses runtime compaction budget".to_string(),
+        tone: "warning".to_string(),
+    }]
 }
 
 fn compact_json_summary_value(value: &Value) -> String {
@@ -1164,13 +1227,28 @@ fn command_registry_surface_rows(projection: Option<&RuntimeProjection>) -> Vec<
             fact(
                 command.action_id.as_str(),
                 format!(
-                    "displayName={} · scope={} · project={} · enabled={} · commandVersion={} · policyDecision=runtime-owned · asyncSync=runtime-owned · maxRuntime=runtime-owned · stdin=runtime-owned · description={}",
+                    "displayName={} · scope={} · project={} · enabled={} · commandVersion={} · binary={} · argvTemplate={} · cwdPolicy={} · envPolicy={} · stdinPolicy={} · syncAllowed={} · asyncAllowed={} · maxRuntimeMs={} · endOfTurn={} · endOfSession={} · mutationClass={} · modelDescription={} · allowCwdArg={} · allowArgsArg={} · forbiddenArgs={} · executionPolicy={}",
                     command.action_id,
                     command.scope_type,
                     command.project_key.as_deref().unwrap_or("global"),
                     command.enabled,
-                    command.current_version_id.as_deref().unwrap_or("none"),
-                    command.binary_name.as_deref().unwrap_or(command.starlark_method.as_deref().unwrap_or("command"))
+                    command.command_version.map(|value| value.to_string()).or_else(|| command.current_version_id.clone()).unwrap_or_else(|| "none".to_string()),
+                    command.binary_name.as_deref().unwrap_or(command.starlark_method.as_deref().unwrap_or("command")),
+                    if command.argv_template.is_empty() { "none".to_string() } else { command.argv_template.join(" ") },
+                    command.cwd_policy.as_deref().unwrap_or("unknown"),
+                    command.env_policy.as_deref().unwrap_or("unknown"),
+                    command.stdin_policy.as_deref().unwrap_or("unknown"),
+                    command.sync_allowed.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string()),
+                    command.async_allowed.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string()),
+                    command.max_runtime_ms.map(|value| value.to_string()).unwrap_or_else(|| "none".to_string()),
+                    command.end_of_turn_behavior.as_deref().unwrap_or("unknown"),
+                    command.end_of_session_behavior.as_deref().unwrap_or("unknown"),
+                    command.mutation_class.as_deref().unwrap_or("unknown"),
+                    command.model_description.as_deref().unwrap_or("unknown"),
+                    command.allow_cwd_arg.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string()),
+                    command.allow_args_arg.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string()),
+                    if command.forbidden_args.is_empty() { "none".to_string() } else { command.forbidden_args.join(" ") },
+                    command.execution_policy.as_deref().unwrap_or("unknown"),
                 )
                 .as_str(),
             )
@@ -1198,6 +1276,16 @@ fn command_registry_surface_rows(projection: Option<&RuntimeProjection>) -> Vec<
 fn command_registry_surface_actions(projection: Option<&RuntimeProjection>) -> Vec<AgentRuntimeWorkbenchActionRow> {
     let Some(projection) = projection else { return Vec::new(); };
     let mut actions = Vec::new();
+    for command in &projection.command_registry {
+        actions.push(AgentRuntimeWorkbenchActionRow {
+            id: command.action_id.clone(),
+            title: "Show installed command".to_string(),
+            subtitle: command.binary_name.clone().unwrap_or_else(|| command.scope_type.clone()),
+            kind: "commandRegistryShow".to_string(),
+            state_text: if command.enabled { "enabled".to_string() } else { "disabled".to_string() },
+            tone: if command.enabled { "info".to_string() } else { "muted".to_string() },
+        });
+    }
     for request in &projection.command_registry_requests {
         actions.push(AgentRuntimeWorkbenchActionRow {
             id: request.id.clone(),
@@ -2215,7 +2303,19 @@ impl GuiTransportRunner {
                 Ok(self.operation_outputs(result))
             }
             GuiTransportRequest::ConsumeStreamOnce => {
-                let outcome = self.controller.next_stream_outcome().await?;
+                let Some(outcome) = self
+                    .controller
+                    .next_stream_outcome_timeout(Some(std::time::Duration::from_millis(500)))
+                    .await?
+                else {
+                    let controller_state = self.effective_controller_state();
+                    return Ok(vec![GuiTransportOutputPacket {
+                        request_id: String::new(),
+                        output: GuiTransportOutput::ControllerState {
+                            controller_state: to_json(&controller_state)?,
+                        },
+                    }]);
+                };
                 let controller_state = self.effective_controller_state();
                 Ok(vec![GuiTransportOutputPacket {
                     request_id: String::new(),
@@ -2448,7 +2548,7 @@ fn command_request_action_row(request: &CommandRegistryRequestSummary) -> AgentR
     }
 }
 
-fn role_admin_view(projection: Option<&RuntimeProjection>) -> AgentRuntimeRoleAdminView {
+fn role_admin_view(projection: Option<&RuntimeProjection>, model_options: &[AgentRuntimeModelOption]) -> AgentRuntimeRoleAdminView {
     let roles: Vec<RoleSummary> = projection.map(|projection| projection.roles.clone()).unwrap_or_default();
     let mut rows: Vec<_> = roles.iter().map(role_row).collect();
     rows.sort_by(|left, right| left.id.cmp(&right.id));
@@ -2477,6 +2577,70 @@ fn role_admin_view(projection: Option<&RuntimeProjection>) -> AgentRuntimeRoleAd
         editor_draft,
         validation_errors,
         action_states,
+        editor_options: role_editor_options_view(&roles, model_options),
+    }
+}
+
+fn role_editor_options_view(roles: &[RoleSummary], model_options: &[AgentRuntimeModelOption]) -> AgentRuntimeRoleEditorOptionsView {
+    let mut models = model_options.iter().map(|option| option.id.clone()).collect::<Vec<_>>();
+    for model in roles.iter().filter_map(|role| role.model.as_deref()) {
+        push_unique(&mut models, model);
+    }
+    let mut capabilities = roles.iter().flat_map(|role| role.capabilities.clone()).collect::<Vec<_>>();
+    push_unique(&mut capabilities, "tool.execute_code");
+    push_unique(&mut capabilities, "message.send");
+    push_unique(&mut capabilities, "command.registry");
+    push_unique(&mut capabilities, "workflow.memory");
+    let mut policy_actions = roles
+        .iter()
+        .flat_map(|role| role.policy.keys().cloned())
+        .collect::<Vec<_>>();
+    for capability in &capabilities {
+        push_unique(&mut policy_actions, capability);
+    }
+    let mut recipients = roles
+        .iter()
+        .filter_map(|role| role.routing.get("defaultRecipient").and_then(Value::as_str).map(str::to_string))
+        .collect::<Vec<_>>();
+    push_unique(&mut recipients, "owner");
+    push_unique(&mut recipients, "runtime");
+    let mut reserved_actions = roles
+        .iter()
+        .flat_map(|role| {
+            role.routing
+                .get("reservedActions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    push_unique(&mut reserved_actions, "message.send");
+    push_unique(&mut reserved_actions, "agent.archive");
+    push_unique(&mut reserved_actions, "command.registry.apply");
+    push_unique(&mut reserved_actions, "workflow_memory.feedback");
+    models.sort();
+    capabilities.sort();
+    policy_actions.sort();
+    recipients.sort();
+    reserved_actions.sort();
+    AgentRuntimeRoleEditorOptionsView {
+        models,
+        reasoning_efforts: vec!["low".to_string(), "medium".to_string(), "high".to_string()],
+        capabilities,
+        policy_actions,
+        policy_decisions: vec!["allow".to_string(), "deny".to_string()],
+        routing_modes: vec!["direct".to_string()],
+        recipients,
+        reserved_actions,
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|item| item == value) {
+        values.push(value.to_string());
     }
 }
 
@@ -3122,9 +3286,26 @@ mod tests {
                         project_key: Some("transport-project".to_string()),
                         enabled: true,
                         current_version_id: Some("command-version-1".to_string()),
+                        command_version: Some(1),
                         binary_name: Some("echo".to_string()),
                         starlark_object: Some("transport_echo".to_string()),
                         starlark_method: Some("run".to_string()),
+                        argv_template: vec!["hello".to_string()],
+                        default_cwd: Some(".".to_string()),
+                        cwd_policy: Some("project".to_string()),
+                        env_policy: Some("inherit".to_string()),
+                        stdin_policy: Some("deny".to_string()),
+                        sync_allowed: Some(true),
+                        async_allowed: Some(false),
+                        max_runtime_ms: Some(30000),
+                        end_of_turn_behavior: Some("terminate".to_string()),
+                        end_of_session_behavior: Some("terminate".to_string()),
+                        mutation_class: Some("readOnly".to_string()),
+                        model_description: Some("Echo transport".to_string()),
+                        allow_cwd_arg: Some(false),
+                        allow_args_arg: Some(true),
+                        forbidden_args: vec!["--unsafe".to_string()],
+                        execution_policy: Some("allow".to_string()),
                         updated_at: Some("2026-06-18T00:00:00Z".to_string()),
                     }],
                     command_registry_requests: vec![CommandRegistryRequestSummary {
@@ -4268,9 +4449,26 @@ mod tests {
                 project_key: Some("project-a".to_string()),
                 enabled: true,
                 current_version_id: Some("cmd-version-1".to_string()),
+                command_version: Some(1),
                 binary_name: Some("rg".to_string()),
                 starlark_object: Some("rg".to_string()),
-                starlark_method: Some("project".to_string()),
+                starlark_method: Some("run".to_string()),
+                argv_template: vec!["--files".to_string()],
+                default_cwd: Some(".".to_string()),
+                cwd_policy: Some("project".to_string()),
+                env_policy: Some("inherit".to_string()),
+                stdin_policy: Some("deny".to_string()),
+                sync_allowed: Some(true),
+                async_allowed: Some(false),
+                max_runtime_ms: Some(30000),
+                end_of_turn_behavior: Some("terminate".to_string()),
+                end_of_session_behavior: Some("terminate".to_string()),
+                mutation_class: Some("readOnly".to_string()),
+                model_description: Some("Search project files".to_string()),
+                allow_cwd_arg: Some(false),
+                allow_args_arg: Some(true),
+                forbidden_args: vec!["--unsafe".to_string()],
+                execution_policy: Some("allow".to_string()),
                 updated_at: None,
             }],
             command_registry_requests: vec![CommandRegistryRequestSummary {
@@ -4513,7 +4711,7 @@ mod tests {
         let compaction = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "compaction").expect("compaction surface");
         assert!(compaction.rows.iter().any(|row| row.label == "compaction.completed" && row.value.contains("checkpoint=checkpoint-completed") && row.value.contains("boundaryTurn=turn-1") && row.value.contains("replacementEstimate=") && row.value.contains("providerModel=")));
         assert!(compaction.rows.iter().any(|row| row.label == "compaction.failed" && row.value.contains("checkpoint=checkpoint-failed") && row.value.contains("failure=\"forced fixture failure\"")));
-        assert!(compaction.actions.is_empty(), "manual compaction is not implemented in the visible action surface");
+        assert!(compaction.actions.iter().any(|action| action.kind == "compactionManual" && action.title == "Compact selected session"));
         let statistics = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "statistics").expect("statistics surface");
         for (label, value) in [
             ("Sessions", "3"),
@@ -4727,7 +4925,7 @@ mod tests {
         assert!(selected_view.workflow_memory.recent_events.iter().any(|event| event.id == "event-b"));
 
         projection.workflow_memories.retain(|memory| memory.id != "memory-b");
-        let fallback_view = AgentRuntimeWorkbenchViewModel::from_runtime_state(
+        let recovered_view = AgentRuntimeWorkbenchViewModel::from_runtime_state(
             "http://127.0.0.1:8765",
             Some(&projection),
             &controller,
@@ -4739,8 +4937,8 @@ mod tests {
             &AgentRuntimeDiscoveryView::not_loaded_imported(),
             &[],
         );
-        assert_eq!(fallback_view.workflow_memory.selected_memory_id.as_deref(), Some("memory-a"));
-        assert_eq!(fallback_view.workflow_memory.selected_detail.as_ref().map(|detail| detail.id.as_str()), Some("memory-a"));
+        assert_eq!(recovered_view.workflow_memory.selected_memory_id.as_deref(), Some("memory-a"));
+        assert_eq!(recovered_view.workflow_memory.selected_detail.as_ref().map(|detail| detail.id.as_str()), Some("memory-a"));
     }
 
     #[tokio::test]
@@ -4970,6 +5168,18 @@ mod tests {
             GuiTransportOutput::StreamOutcome { projection: Some(projection), .. }
                 if projection["sessions"].as_array().is_some_and(|sessions| sessions.iter().any(|row| row["id"] == "transport-session-delta"))
         )));
+
+        let idle_stream = transport
+            .send(packet("stream-idle", GuiTransportRequest::ConsumeStreamOnce))
+            .await;
+        assert!(idle_stream.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::ControllerState { controller_state }
+                if controller_state["connectionState"] == "streaming"
+        ) || matches!(&packet.output, GuiTransportOutput::Error { .. })), "idle stream consume must return a bounded heartbeat or typed stream error instead of blocking the transport runner: {idle_stream:?}");
+        if !idle_stream.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::Error { .. })) {
+            assert!(!idle_stream.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { .. })));
+        }
 
         let rehydrate = transport
             .send(packet(
@@ -5263,7 +5473,7 @@ mod tests {
                 })
                     && view_model.shell.operation_surfaces.iter().any(|surface| {
                         surface.surface_id == "commandRegistry"
-                            && surface.rows.iter().any(|row| row.label == "cmd.transport.echo" && row.value.contains("policyDecision=runtime-owned"))
+                            && surface.rows.iter().any(|row| row.label == "cmd.transport.echo" && row.value.contains("argvTemplate=hello") && row.value.contains("endOfSession=terminate") && row.value.contains("executionPolicy=allow"))
                             && surface.rows.iter().any(|row| row.label == "transport · pending" && row.value.contains("requestedAction=cmd.transport.pending"))
                             && surface.actions.iter().any(|action| action.title == "Review")
                             && surface.actions.iter().any(|action| action.title == "Preview Decision")

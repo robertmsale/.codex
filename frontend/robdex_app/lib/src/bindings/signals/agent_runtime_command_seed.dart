@@ -19,6 +19,7 @@ class AgentRuntimeCommandSeed {
     required this.maxRuntimeMs,
     required this.hasMaxRuntimeMs,
     required this.endOfTurnBehavior,
+    required this.endOfSessionBehavior,
     required this.stdinPolicy,
     required this.minAwaitMs,
     required this.maxAwaitMs,
@@ -50,6 +51,7 @@ class AgentRuntimeCommandSeed {
       maxRuntimeMs: deserializer.deserializeInt64(),
       hasMaxRuntimeMs: deserializer.deserializeBool(),
       endOfTurnBehavior: deserializer.deserializeString(),
+      endOfSessionBehavior: deserializer.deserializeString(),
       stdinPolicy: deserializer.deserializeString(),
       minAwaitMs: deserializer.deserializeInt64(),
       maxAwaitMs: deserializer.deserializeInt64(),
@@ -90,6 +92,7 @@ class AgentRuntimeCommandSeed {
   final int maxRuntimeMs;
   final bool hasMaxRuntimeMs;
   final String endOfTurnBehavior;
+  final String endOfSessionBehavior;
   final String stdinPolicy;
   final int minAwaitMs;
   final int maxAwaitMs;
@@ -118,6 +121,7 @@ class AgentRuntimeCommandSeed {
     int? maxRuntimeMs,
     bool? hasMaxRuntimeMs,
     String? endOfTurnBehavior,
+    String? endOfSessionBehavior,
     String? stdinPolicy,
     int? minAwaitMs,
     int? maxAwaitMs,
@@ -146,6 +150,7 @@ class AgentRuntimeCommandSeed {
       maxRuntimeMs: maxRuntimeMs ?? this.maxRuntimeMs,
       hasMaxRuntimeMs: hasMaxRuntimeMs ?? this.hasMaxRuntimeMs,
       endOfTurnBehavior: endOfTurnBehavior ?? this.endOfTurnBehavior,
+      endOfSessionBehavior: endOfSessionBehavior ?? this.endOfSessionBehavior,
       stdinPolicy: stdinPolicy ?? this.stdinPolicy,
       minAwaitMs: minAwaitMs ?? this.minAwaitMs,
       maxAwaitMs: maxAwaitMs ?? this.maxAwaitMs,
@@ -177,6 +182,7 @@ class AgentRuntimeCommandSeed {
     serializer.serializeInt64(maxRuntimeMs);
     serializer.serializeBool(hasMaxRuntimeMs);
     serializer.serializeString(endOfTurnBehavior);
+    serializer.serializeString(endOfSessionBehavior);
     serializer.serializeString(stdinPolicy);
     serializer.serializeInt64(minAwaitMs);
     serializer.serializeInt64(maxAwaitMs);
@@ -218,6 +224,7 @@ class AgentRuntimeCommandSeed {
       && maxRuntimeMs == other.maxRuntimeMs
       && hasMaxRuntimeMs == other.hasMaxRuntimeMs
       && endOfTurnBehavior == other.endOfTurnBehavior
+      && endOfSessionBehavior == other.endOfSessionBehavior
       && stdinPolicy == other.stdinPolicy
       && minAwaitMs == other.minAwaitMs
       && maxAwaitMs == other.maxAwaitMs
@@ -248,6 +255,7 @@ class AgentRuntimeCommandSeed {
         maxRuntimeMs,
         hasMaxRuntimeMs,
         endOfTurnBehavior,
+        endOfSessionBehavior,
         stdinPolicy,
         minAwaitMs,
         maxAwaitMs,
@@ -282,6 +290,7 @@ class AgentRuntimeCommandSeed {
         'maxRuntimeMs: $maxRuntimeMs, '
         'hasMaxRuntimeMs: $hasMaxRuntimeMs, '
         'endOfTurnBehavior: $endOfTurnBehavior, '
+        'endOfSessionBehavior: $endOfSessionBehavior, '
         'stdinPolicy: $stdinPolicy, '
         'minAwaitMs: $minAwaitMs, '
         'maxAwaitMs: $maxAwaitMs, '

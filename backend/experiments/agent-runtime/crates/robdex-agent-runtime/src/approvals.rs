@@ -241,6 +241,7 @@ pub async fn show(pool: &PgPool, id: Uuid) -> Result<Value> {
 }
 
 pub async fn decide(pool: &PgPool, id: Uuid, decision: ApprovalDecision, reason: &str) -> Result<()> {
+    let reason = validate_decision_reason(reason)?;
     let request = sqlx::query("SELECT session_id, turn_id, status FROM approval_requests WHERE id = $1")
         .bind(id)
         .fetch_one(pool)
@@ -430,6 +431,15 @@ pub fn validate_decide_status(status: &str) -> std::result::Result<(), &'static 
     }
 }
 
+pub fn validate_decision_reason(reason: &str) -> Result<&str> {
+    let trimmed = reason.trim();
+    if trimmed.is_empty() {
+        Err(RuntimeDomainError::validation_failed("approval decision reason is required").into())
+    } else {
+        Ok(trimmed)
+    }
+}
+
 pub fn validate_resume_request_status(status: &str) -> std::result::Result<(), &'static str> {
     if status == "approved" {
         Ok(())
@@ -509,7 +519,7 @@ fn paused_row_to_json(row: sqlx::postgres::PgRow) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_decide_status, validate_resume_paused_status, validate_resume_request_status};
+    use super::{validate_decide_status, validate_decision_reason, validate_resume_paused_status, validate_resume_request_status};
 
     #[test]
     fn approval_decision_rejects_non_pending_statuses() {
@@ -530,5 +540,12 @@ mod tests {
         for status in ["resuming", "completed", "failed", "cancelled"] {
             assert_eq!(validate_resume_paused_status(status), Err("paused action is not resume-ready"));
         }
+    }
+
+    #[test]
+    fn approval_decision_requires_non_empty_reason() {
+        assert_eq!(validate_decision_reason(" reviewed by owner ").unwrap(), "reviewed by owner");
+        assert!(validate_decision_reason("").is_err());
+        assert!(validate_decision_reason("   ").is_err());
     }
 }

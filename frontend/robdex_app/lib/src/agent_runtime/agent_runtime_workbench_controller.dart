@@ -84,8 +84,8 @@ bindings.AgentRuntimeGuiOperation agentRuntimeFlushProcessOperationForTest(Strin
 }
 
 @visibleForTesting
-bindings.AgentRuntimeGuiOperation agentRuntimeApprovalDecisionOperationForTest(String approvalId, String decision) {
-  return bindings.AgentRuntimeGuiOperationDecideApproval(approvalId: approvalId, decision: decision, reason: 'Agent Runtime shell action');
+bindings.AgentRuntimeGuiOperation agentRuntimeApprovalDecisionOperationForTest(String approvalId, String decision, {String reason = 'Agent Runtime shell action'}) {
+  return bindings.AgentRuntimeGuiOperationDecideApproval(approvalId: approvalId, decision: decision, reason: reason);
 }
 
 @visibleForTesting
@@ -96,26 +96,38 @@ bindings.AgentRuntimeGuiOperation agentRuntimeApprovalResumeOperationForTest(Str
 ChatEntry agentRuntimeChatEntryToChatEntryForTest(bindings.AgentRuntimeChatEntry entry) => _chatEntry(entry);
 
 @visibleForTesting
-bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryDecisionOperationForTest(String requestId, String sessionId) {
+bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryDecisionOperationForTest(
+  String requestId,
+  String sessionId,
+  AgentRuntimeCommandRegistryDecisionDraft decision,
+) {
   return bindings.AgentRuntimeGuiOperationDecideCommandRegistryRequest(
     requestId: requestId,
-    decision: _defaultRegistryDecision(sessionId, 'approved'),
+    decision: _typedRegistryDecision(sessionId, decision),
   );
 }
 
 @visibleForTesting
-bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryDenyOperationForTest(String requestId, String sessionId) {
+bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryDenyOperationForTest(
+  String requestId,
+  String sessionId,
+  AgentRuntimeCommandRegistryDecisionDraft decision,
+) {
   return bindings.AgentRuntimeGuiOperationDecideCommandRegistryRequest(
     requestId: requestId,
-    decision: _defaultRegistryDecision(sessionId, 'denied'),
+    decision: _typedRegistryDecision(sessionId, decision),
   );
 }
 
 @visibleForTesting
-bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryPreviewOperationForTest(String requestId, String sessionId) {
+bindings.AgentRuntimeGuiOperation agentRuntimeCommandRegistryPreviewOperationForTest(
+  String requestId,
+  String sessionId,
+  AgentRuntimeCommandRegistryDecisionDraft decision,
+) {
   return bindings.AgentRuntimeGuiOperationPreviewCommandRegistryRequest(
     requestId: requestId,
-    decision: _defaultRegistryDecision(sessionId, 'approved'),
+    decision: _typedRegistryDecision(sessionId, decision),
   );
 }
 
@@ -154,6 +166,11 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   final AgentRuntimeRemoteProfilePicker _remoteProfilePicker;
   final AgentRuntimeRequestSink _requestSink;
   final Set<String> _pendingRequestIds = <String>{};
+  final Map<String, String> _approvalListUpdates = <String, String>{};
+  String? _streamConsumeRequestId;
+  bool _streamPumpEnabled = false;
+  bool _disconnecting = false;
+  bool _disposed = false;
   int _serial = 0;
   String _baseUrl = 'http://127.0.0.1:8765';
   AgentRuntimeWorkbenchData? _viewModel;
@@ -188,6 +205,7 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   ConversationShellData? get shellData => _shellViewModel;
 
   void connect(String baseUrl) {
+    _disconnecting = false;
     _baseUrl = baseUrl.trim().isEmpty ? _baseUrl : baseUrl.trim();
     _send('connect', bindings.AgentRuntimeRequestConnect(baseUrl: _baseUrl, selectedSessionId: ''));
   }
@@ -263,6 +281,8 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   }
 
   void disconnect() {
+    _disconnecting = true;
+    _stopStreamPump();
     _send('disconnect', const bindings.AgentRuntimeRequestDisconnect());
   }
 
@@ -405,6 +425,7 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
       'session-send',
       bindings.AgentRuntimeGuiOperationSendMessage(sessionId: sessionId, message: message.trim()),
     );
+    _startStreamPump();
   }
 
   void terminateProcess(String handle) {
@@ -452,28 +473,62 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     _dispatchOperation('session-fork', agentRuntimeForkSessionOperationForTest(sessionId));
   }
 
-  void approveAction(AgentRuntimeActionItem action) {
-    _dispatchOperation('approval-decide', agentRuntimeApprovalDecisionOperationForTest(action.id, 'approved'));
+  void approveAction(AgentRuntimeActionItem action, String reason) {
+    if (reason.trim().isEmpty) {
+      _bridgeErrorMessage = 'Approval reason is required.';
+      notifyListeners();
+      return;
+    }
+    final requestId = _dispatchOperation('approval-decide', agentRuntimeApprovalDecisionOperationForTest(action.id, 'approved', reason: reason.trim()));
+    _approvalListUpdates[requestId] = action.id;
   }
 
-  void denyAction(AgentRuntimeActionItem action) {
-    _dispatchOperation('approval-deny', agentRuntimeApprovalDecisionOperationForTest(action.id, 'denied'));
+  void denyAction(AgentRuntimeActionItem action, String reason) {
+    if (reason.trim().isEmpty) {
+      _bridgeErrorMessage = 'Approval reason is required.';
+      notifyListeners();
+      return;
+    }
+    final requestId = _dispatchOperation('approval-deny', agentRuntimeApprovalDecisionOperationForTest(action.id, 'denied', reason: reason.trim()));
+    _approvalListUpdates[requestId] = action.id;
   }
 
   void resumeApproval(AgentRuntimeActionItem action) {
-    _dispatchOperation('approval-resume', agentRuntimeApprovalResumeOperationForTest(action.id));
+    final requestId = _dispatchOperation('approval-resume', agentRuntimeApprovalResumeOperationForTest(action.id));
+    _approvalListUpdates[requestId] = action.id;
   }
 
-  void approveCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId) {
-    _dispatchOperation('registry-decide', agentRuntimeCommandRegistryDecisionOperationForTest(action.id, sessionId));
+
+  void listCommandRegistry(String sessionId, String projectKey) {
+    _dispatchOperation('registry-list', bindings.AgentRuntimeGuiOperationListCommandRegistry(sessionId: sessionId, projectKey: projectKey));
   }
 
-  void denyCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId) {
-    _dispatchOperation('registry-deny', agentRuntimeCommandRegistryDenyOperationForTest(action.id, sessionId));
+  void listCommandRegistryRequests() {
+    _dispatchOperation('registry-requests', bindings.AgentRuntimeGuiOperationListCommandRegistryRequests());
   }
 
-  void previewCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId) {
-    _dispatchOperation('registry-preview', agentRuntimeCommandRegistryPreviewOperationForTest(action.id, sessionId));
+  void showCommand(AgentRuntimeActionItem action, String sessionId, String projectKey) {
+    _dispatchOperation('registry-show-command', bindings.AgentRuntimeGuiOperationShowCommand(actionId: action.id, sessionId: sessionId, projectKey: projectKey));
+  }
+
+  void showCommandRegistryRequest(AgentRuntimeActionItem action) {
+    _dispatchOperation('registry-review', bindings.AgentRuntimeGuiOperationShowCommandRegistryRequest(requestId: action.id));
+  }
+
+  void compactSession(AgentRuntimeActionItem action) {
+    _dispatchOperation('session-compact', bindings.AgentRuntimeGuiOperationCompactSession(sessionId: action.id, throughTurn: ''));
+  }
+
+  void approveCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId, AgentRuntimeCommandRegistryDecisionDraft decision) {
+    _dispatchOperation('registry-decide', agentRuntimeCommandRegistryDecisionOperationForTest(action.id, sessionId, decision.copyWith(status: 'approved')));
+  }
+
+  void denyCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId, AgentRuntimeCommandRegistryDecisionDraft decision) {
+    _dispatchOperation('registry-deny', agentRuntimeCommandRegistryDenyOperationForTest(action.id, sessionId, decision.copyWith(status: 'denied')));
+  }
+
+  void previewCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId, AgentRuntimeCommandRegistryDecisionDraft decision) {
+    _dispatchOperation('registry-preview', agentRuntimeCommandRegistryPreviewOperationForTest(action.id, sessionId, decision));
   }
 
   void applyCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId) {
@@ -490,6 +545,18 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
 
   void updateRoleFromDraft(AgentRuntimeRoleEditorDraft draft) {
     _dispatchOperation('role-update', bindings.AgentRuntimeGuiOperationUpdateRoleFromDraft(roleId: draft.roleId, draft: _typedRoleDraft(draft)));
+  }
+
+  void showRoleDetail(String roleId) {
+    _dispatchOperation('role-detail', bindings.AgentRuntimeGuiOperationShowRoleDetail(roleId: roleId));
+  }
+
+  void listRoleVersions(String roleId) {
+    _dispatchOperation('role-versions', bindings.AgentRuntimeGuiOperationListRoleVersions(roleId: roleId));
+  }
+
+  void showRoleVersion(String versionId) {
+    _dispatchOperation('role-version-data', bindings.AgentRuntimeGuiOperationShowRoleVersion(versionId: versionId));
   }
 
   void exportRole(String roleId) {
@@ -575,21 +642,56 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     );
   }
 
-  void _dispatchOperation(String prefix, bindings.AgentRuntimeGuiOperation operation) {
-    _send(prefix, bindings.AgentRuntimeRequestDispatchOperation(operation: operation));
+  String _dispatchOperation(String prefix, bindings.AgentRuntimeGuiOperation operation) {
+    return _send(prefix, bindings.AgentRuntimeRequestDispatchOperation(operation: operation));
   }
 
-  void _send(String prefix, bindings.AgentRuntimeRequest request) {
+  String _send(String prefix, bindings.AgentRuntimeRequest request) {
+    return _sendWithTracking(prefix, request, trackPending: true);
+  }
+
+  String _sendWithTracking(String prefix, bindings.AgentRuntimeRequest request, {required bool trackPending}) {
     _serial += 1;
     final requestId = 'agent-runtime-$prefix-$_serial';
-    _pendingRequestIds.add(requestId);
+    if (trackPending) {
+      _pendingRequestIds.add(requestId);
+    }
     try {
       _requestSink(requestId, request);
     } catch (_) {
       _pendingRequestIds.remove(requestId);
+      if (_streamConsumeRequestId == requestId) {
+        _streamConsumeRequestId = null;
+        _streamPumpEnabled = false;
+      }
       _bridgeErrorMessage = 'Agent Runtime bridge is not ready. Restart the app, then refresh discovery.';
     }
     notifyListeners();
+    return requestId;
+  }
+
+  void _startStreamPump() {
+    if (_disposed || _disconnecting) {
+      return;
+    }
+    _streamPumpEnabled = true;
+    _requestNextStreamPacket();
+  }
+
+  void _stopStreamPump() {
+    _streamPumpEnabled = false;
+    _streamConsumeRequestId = null;
+  }
+
+  void _requestNextStreamPacket() {
+    if (!_streamPumpEnabled || _streamConsumeRequestId != null || _disposed) {
+      return;
+    }
+    _streamConsumeRequestId = _sendWithTracking(
+      'stream-consume',
+      const bindings.AgentRuntimeRequestConsumeStreamOnce(),
+      trackPending: false,
+    );
   }
 
   static void _sendRequestSignalToRust(String requestId, bindings.AgentRuntimeRequest request) {
@@ -599,12 +701,102 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   void _handleOutput(RustSignalPack<bindings.AgentRuntimeOutputSignal> pack) {
     final signal = pack.message;
     _pendingRequestIds.remove(signal.requestId);
+    final isStreamConsumeReply = signal.requestId == _streamConsumeRequestId;
+    if (isStreamConsumeReply) {
+      _streamConsumeRequestId = null;
+    }
     _applyOutput(signal.output);
+    _applyApprovalListUpdate(signal.requestId, signal.output);
+    _advanceStreamPump(signal.output, isStreamConsumeReply: isStreamConsumeReply);
   }
 
   @visibleForTesting
   void applyOutputForTest(bindings.AgentRuntimeOutput output) {
+    final isStreamConsumeReply = output is bindings.AgentRuntimeOutputStreamOutcome && _streamConsumeRequestId != null;
+    if (isStreamConsumeReply) {
+      _streamConsumeRequestId = null;
+    }
     _applyOutput(output);
+    _advanceStreamPump(output, isStreamConsumeReply: isStreamConsumeReply);
+  }
+
+  @visibleForTesting
+  void setViewDataForTest(AgentRuntimeWorkbenchData data, {ConversationShellData? shell}) {
+    _viewModel = data;
+    _shellViewModel = shell;
+    notifyListeners();
+  }
+
+  @visibleForTesting
+  void applyOutputForRequestForTest(String requestId, bindings.AgentRuntimeOutput output) {
+    _pendingRequestIds.remove(requestId);
+    final isStreamConsumeReply = requestId == _streamConsumeRequestId;
+    if (isStreamConsumeReply) {
+      _streamConsumeRequestId = null;
+    }
+    _applyOutput(output);
+    _applyApprovalListUpdate(requestId, output);
+    _advanceStreamPump(output, isStreamConsumeReply: isStreamConsumeReply);
+  }
+
+  void _advanceStreamPump(bindings.AgentRuntimeOutput output, {required bool isStreamConsumeReply}) {
+    if (_disposed) {
+      return;
+    }
+    if (output is bindings.AgentRuntimeOutputWorkbenchView) {
+      if (!_isStreamableState(output.viewModel.connectionState)) {
+        _disconnecting = false;
+        _stopStreamPump();
+      }
+      if (_disconnecting) {
+        return;
+      }
+      if (_isStreamingState(output.viewModel.connectionState) && output.viewModel.shell.selectedSessionId.isNotEmpty) {
+        _startStreamPump();
+      }
+      return;
+    }
+    if (output is bindings.AgentRuntimeOutputControllerState) {
+      if (!_isStreamableState(output.controllerState.connectionState)) {
+        _disconnecting = false;
+        _stopStreamPump();
+      }
+      if (_disconnecting) {
+        return;
+      }
+      if (_isStreamingState(output.controllerState.connectionState) && output.controllerState.hasSelectedSessionId) {
+        _startStreamPump();
+      }
+      return;
+    }
+    if (output is bindings.AgentRuntimeOutputStreamOutcome) {
+      if (_disconnecting) {
+        return;
+      }
+      final outcome = output.outcome;
+      if (outcome is bindings.AgentRuntimeStreamOutcomeServerShutdown || outcome is bindings.AgentRuntimeStreamOutcomeStreamClosed) {
+        _stopStreamPump();
+        return;
+      }
+      if (outcome is bindings.AgentRuntimeStreamOutcomeResyncRequired && output.controllerState.hasSelectedSessionId) {
+        _send('stream-rehydrate', bindings.AgentRuntimeRequestRehydrate(selectedSessionId: output.controllerState.selectedSessionId));
+      }
+      _streamPumpEnabled = _isStreamableState(output.controllerState.connectionState);
+      _requestNextStreamPacket();
+      return;
+    }
+    if (output is bindings.AgentRuntimeOutputError && isStreamConsumeReply) {
+      _stopStreamPump();
+    }
+  }
+
+  bool _isStreamableState(String connectionState) {
+    final normalized = connectionState.toLowerCase();
+    return normalized.contains('connected') || normalized.contains('streaming');
+  }
+
+  bool _isStreamingState(String connectionState) {
+    return connectionState.toLowerCase().contains('streaming');
   }
 
   void _applyOutput(bindings.AgentRuntimeOutput output) {
@@ -691,6 +883,39 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _applyApprovalListUpdate(String requestId, bindings.AgentRuntimeOutput output) {
+    final approvalId = _approvalListUpdates.remove(requestId);
+    if (approvalId == null || output is! bindings.AgentRuntimeOutputOperationResult || output.result.outcome == 'error') {
+      return;
+    }
+    bool matchesApproval(AgentRuntimeActionItem action) {
+      return action.id == approvalId && (action.kind == 'approval' || action.kind == 'approvalDeny' || action.kind == 'approvalResume');
+    }
+
+    AgentRuntimeOperationSurface refreshSurface(AgentRuntimeOperationSurface surface) {
+      if (surface.surfaceId != 'approvals') {
+        return surface;
+      }
+      return AgentRuntimeOperationSurface(
+        surfaceId: surface.surfaceId,
+        title: surface.title,
+        subtitle: surface.subtitle,
+        rows: surface.rows,
+        actions: surface.actions.where((action) => !matchesApproval(action)).toList(growable: false),
+      );
+    }
+
+    final current = _viewModel;
+    if (current == null) {
+      return;
+    }
+    _viewModel = current.copyWith(
+      actions: current.actions.where((action) => !matchesApproval(action)).toList(growable: false),
+      operationSurfaces: current.operationSurfaces.map(refreshSurface).toList(growable: false),
+    );
+    notifyListeners();
+  }
+
   AgentRuntimeWorkbenchData get _disconnectedViewModel => AgentRuntimeWorkbenchData(
         connectionState: 'disconnected',
         discovery: const AgentRuntimeDiscoveryInfo(
@@ -754,6 +979,8 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _stopStreamPump();
     _subscription?.cancel();
     super.dispose();
   }
@@ -906,6 +1133,13 @@ ConversationShellData _shellData(bindings.AgentRuntimeConversationShellViewModel
               canEdit: project.id != '__all__' && project.id != '__unassigned__',
               canArchive: project.id != '__all__' && project.id != '__unassigned__',
               canCreateSession: true,
+              defaultWorkdir: project.defaultWorkdir,
+              defaultWorktreeRoot: project.defaultWorktreeRoot,
+              defaultRoleId: project.defaultRoleId,
+              defaultModel: project.defaultModel,
+              tracked: project.tracked,
+              listed: project.listed,
+              archived: project.archived,
             ))
         .toList(growable: false),
     sessions: view.sessions
@@ -1064,6 +1298,16 @@ AgentRuntimeRoleAdminData _roleAdmin(bindings.AgentRuntimeRoleAdminView view) =>
       editorDraft: view.hasEditorDraft ? _roleEditorDraft(view.editorDraft) : null,
       validationErrors: view.validationErrors,
       actionStates: view.actionStates.map(_action).toList(growable: false),
+      editorOptions: AgentRuntimeRoleEditorOptions(
+        models: view.editorOptions.models,
+        reasoningEfforts: view.editorOptions.reasoningEfforts,
+        capabilities: view.editorOptions.capabilities,
+        policyActions: view.editorOptions.policyActions,
+        policyDecisions: view.editorOptions.policyDecisions,
+        routingModes: view.editorOptions.routingModes,
+        recipients: view.editorOptions.recipients,
+        reservedActions: view.editorOptions.reservedActions,
+      ),
     );
 
 AgentRuntimeRoleRow _roleRow(bindings.AgentRuntimeRoleRow row) => AgentRuntimeRoleRow(
@@ -1185,42 +1429,43 @@ String _humanRuntimeLabel(String value) {
       .trim();
 }
 
-bindings.AgentRuntimeCommandRegistryDecisionInput _defaultRegistryDecision(String sessionId, String status) {
+bindings.AgentRuntimeCommandRegistryDecisionInput _typedRegistryDecision(String sessionId, AgentRuntimeCommandRegistryDecisionDraft decision) {
   return bindings.AgentRuntimeCommandRegistryDecisionInput(
     sessionId: sessionId,
-    status: status,
-    finalScope: const bindings.AgentRuntimeRegistryScope(scopeType: '', projectKey: ''),
-    hasFinalScope: false,
-    finalExecutionPolicy: const bindings.AgentRuntimeFinalExecutionPolicy(decision: '', reason: ''),
-    hasFinalExecutionPolicy: false,
-    finalCommand: const bindings.AgentRuntimeCommandSeed(
-      actionId: '',
-      binaryName: '',
-      candidatePaths: <String>[],
-      starlarkObject: '',
-      starlarkMethod: '',
-      argvPrefix: <String>[],
-      defaultCwd: '',
-      cwdPolicy: '',
-      envPolicy: '',
-      syncAllowed: false,
-      asyncAllowed: false,
-      maxRuntimeMs: 0,
-      hasMaxRuntimeMs: false,
-      endOfTurnBehavior: '',
-      stdinPolicy: '',
+    status: decision.status,
+    finalScope: bindings.AgentRuntimeRegistryScope(scopeType: decision.scopeType, projectKey: decision.projectKey),
+    hasFinalScope: decision.scopeType.isNotEmpty,
+    finalExecutionPolicy: bindings.AgentRuntimeFinalExecutionPolicy(decision: decision.policyDecision, reason: decision.policyReason),
+    hasFinalExecutionPolicy: decision.policyDecision.isNotEmpty,
+    finalCommand: bindings.AgentRuntimeCommandSeed(
+      actionId: decision.actionId,
+      binaryName: decision.binaryName,
+      candidatePaths: const <String>[],
+      starlarkObject: decision.actionId,
+      starlarkMethod: 'run',
+      argvPrefix: decision.argvTemplate,
+      defaultCwd: decision.defaultCwd,
+      cwdPolicy: decision.cwdPolicy,
+      envPolicy: decision.envPolicy,
+      syncAllowed: decision.syncAllowed,
+      asyncAllowed: decision.asyncAllowed,
+      maxRuntimeMs: decision.maxRuntimeMs ?? 0,
+      hasMaxRuntimeMs: decision.maxRuntimeMs != null,
+      endOfTurnBehavior: decision.endOfTurnBehavior,
+      endOfSessionBehavior: decision.endOfSessionBehavior,
+      stdinPolicy: decision.stdinPolicy,
       minAwaitMs: 0,
       maxAwaitMs: 0,
-      outputBufferBytes: 0,
-      terminateGraceMs: 0,
-      outputLimitBytes: 0,
-      mutationClass: '',
-      modelDescription: '',
-      allowCwdArg: false,
-      allowArgsArg: false,
-      forbiddenArgs: <String>[],
-      executionPolicy: '',
+      outputBufferBytes: 65536,
+      terminateGraceMs: 1000,
+      outputLimitBytes: 65536,
+      mutationClass: decision.mutationClass,
+      modelDescription: decision.modelDescription,
+      allowCwdArg: decision.allowCwdArg,
+      allowArgsArg: decision.allowArgsArg,
+      forbiddenArgs: decision.forbiddenArgs,
+      executionPolicy: decision.executionPolicy,
     ),
-    hasFinalCommand: false,
+    hasFinalCommand: decision.actionId.isNotEmpty && decision.binaryName.isNotEmpty,
   );
 }

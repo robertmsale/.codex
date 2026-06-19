@@ -38,6 +38,8 @@ pub struct CommandSeed {
     pub max_runtime_ms: Option<i64>,
     #[serde(default = "default_end_of_turn_behavior")]
     pub end_of_turn_behavior: String,
+    #[serde(default = "default_end_of_session_behavior")]
+    pub end_of_session_behavior: String,
     #[serde(default = "default_stdin_policy")]
     pub stdin_policy: String,
     #[serde(default = "default_min_await_ms")]
@@ -72,6 +74,7 @@ fn default_execution_policy() -> String { "allow".to_string() }
 fn default_true() -> bool { true }
 fn default_end_of_turn_behavior() -> String { "terminate".to_string() }
 fn default_stdin_policy() -> String { "forbid".to_string() }
+fn default_end_of_session_behavior() -> String { "terminate".to_string() }
 fn default_min_await_ms() -> i64 { 0 }
 fn default_max_await_ms() -> i64 { 60_000 }
 fn default_output_buffer_bytes() -> i64 { 64_000 }
@@ -103,6 +106,7 @@ pub struct CommandVersion {
     pub sync_allowed: bool,
     pub async_allowed: bool,
     pub end_of_turn_behavior: String,
+    pub end_of_session_behavior: String,
     pub stdin_policy: String,
     pub min_await_ms: i64,
     pub max_await_ms: i64,
@@ -123,9 +127,9 @@ pub fn model_line(&self) -> String {
         let args = if self.allow_args_arg { "args=[...]" } else { "" };
         let cwd = if self.allow_cwd_arg { ", cwd=\".\"" } else { "" };
         format!(
-            "cmd[\"{}\"].{}({}{}).sync() for synchronous execution or .start() for a managed async process; {}; action {}; command_version_id {}; syncAllowed {}; asyncAllowed {}; maxRuntimeMs {:?}; endOfTurnBehavior {}; stdinPolicy {}; minAwaitMs {}; maxAwaitMs {}; outputBufferBytes {}; terminateGraceMs {}",
+            "cmd[\"{}\"].{}({}{}).sync() for synchronous execution or .start() for a managed async process; {}; action {}; command_version_id {}; syncAllowed {}; asyncAllowed {}; maxRuntimeMs {:?}; endOfTurnBehavior {}; endOfSessionBehavior {}; stdinPolicy {}; minAwaitMs {}; maxAwaitMs {}; outputBufferBytes {}; terminateGraceMs {}",
             self.starlark_object, self.starlark_method, args, cwd, self.model_description, self.action_id, self.version_id
-            , self.sync_allowed, self.async_allowed, self.max_runtime.map(|d| d.as_millis()), self.end_of_turn_behavior, self.stdin_policy, self.min_await_ms, self.max_await_ms, self.output_buffer_bytes, self.terminate_grace_ms
+            , self.sync_allowed, self.async_allowed, self.max_runtime.map(|d| d.as_millis()), self.end_of_turn_behavior, self.end_of_session_behavior, self.stdin_policy, self.min_await_ms, self.max_await_ms, self.output_buffer_bytes, self.terminate_grace_ms
         )
     }
 }
@@ -268,6 +272,7 @@ fn validate_seed(seed: &CommandSeed) -> Result<()> {
         if max_runtime_ms <= 0 { return Err(RuntimeDomainError::validation_failed("maxRuntimeMs must be null or positive").into()); }
     }
     if !matches!(seed.end_of_turn_behavior.as_str(), "terminate" | "continue") { return Err(RuntimeDomainError::validation_failed(format!("unsupported endOfTurnBehavior: {}", seed.end_of_turn_behavior)).into()); }
+    if !matches!(seed.end_of_session_behavior.as_str(), "terminate" | "block" | "continue") { return Err(RuntimeDomainError::validation_failed(format!("unsupported endOfSessionBehavior: {}", seed.end_of_session_behavior)).into()); }
     if !matches!(seed.stdin_policy.as_str(), "forbid" | "allow") { return Err(RuntimeDomainError::validation_failed(format!("unsupported stdinPolicy: {}", seed.stdin_policy)).into()); }
     if seed.min_await_ms < 0 || seed.max_await_ms < seed.min_await_ms { return Err(RuntimeDomainError::validation_failed("invalid await policy").into()); }
     if seed.output_buffer_bytes <= 0 || seed.output_limit_bytes <= 0 { return Err(RuntimeDomainError::validation_failed("output limits must be positive").into()); }
@@ -301,6 +306,7 @@ fn command_version_from_row(row: &sqlx::postgres::PgRow) -> Result<CommandVersio
         sync_allowed: seed.sync_allowed,
         async_allowed: seed.async_allowed,
         end_of_turn_behavior: seed.end_of_turn_behavior,
+        end_of_session_behavior: seed.end_of_session_behavior,
         stdin_policy: seed.stdin_policy,
         min_await_ms: seed.min_await_ms,
         max_await_ms: seed.max_await_ms,
@@ -452,7 +458,7 @@ pub fn command_context_summaries(commands: &[CommandVersion]) -> Vec<CommandCont
             "maxRuntimeMs": command.max_runtime.map(|duration| duration.as_millis()),
             "stdinPolicy": command.stdin_policy,
             "endOfTurnBehavior": command.end_of_turn_behavior,
-            "endOfSessionBehavior": if command.end_of_turn_behavior == "terminate" { "terminate" } else { "block" },
+        "endOfSessionBehavior": command.end_of_session_behavior,
             "outputLimitBytes": command.output_limit,
             "outputBufferBytes": command.output_buffer_bytes,
             "terminateGraceMs": command.terminate_grace_ms,
@@ -557,7 +563,7 @@ pub fn describe_command(command: &CommandVersion) -> String {
         command.max_runtime.map(|duration| duration.as_millis()),
         command.stdin_policy,
         command.end_of_turn_behavior,
-        if command.end_of_turn_behavior == "terminate" { "terminate" } else { "block" },
+        command.end_of_session_behavior,
         command.output_limit,
         command.output_buffer_bytes,
         command.mutation_class,
@@ -913,6 +919,7 @@ fn risk_fields(command: &CommandSeed, scope: Option<&RegistryScope>, policy: Opt
         "outputBufferBytes": command.output_buffer_bytes,
         "outputLimitBytes": command.output_limit_bytes,
         "endOfTurnBehavior": command.end_of_turn_behavior,
+        "endOfSessionBehavior": command.end_of_session_behavior,
         "mutationClass": command.mutation_class,
     })
 }
@@ -1330,6 +1337,7 @@ mod cache_stable_discovery_tests {
             sync_allowed: true,
             async_allowed: true,
             end_of_turn_behavior: "terminate".to_string(),
+            end_of_session_behavior: "terminate".to_string(),
             stdin_policy: "forbid".to_string(),
             min_await_ms: 0,
             max_await_ms: 1000,

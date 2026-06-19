@@ -17,6 +17,7 @@ class AgentRuntimeRoleAdminView {
     required this.hasEditorDraft,
     required this.validationErrors,
     required this.actionStates,
+    required this.editorOptions,
   });
 
   static AgentRuntimeRoleAdminView deserialize(BinaryDeserializer deserializer) {
@@ -34,6 +35,7 @@ class AgentRuntimeRoleAdminView {
       hasEditorDraft: deserializer.deserializeBool(),
       validationErrors: TraitHelpers.deserializeVectorStr(deserializer),
       actionStates: TraitHelpers.deserializeVectorAgentRuntimeActionRow(deserializer),
+      editorOptions: AgentRuntimeRoleEditorOptionsView.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -60,6 +62,7 @@ class AgentRuntimeRoleAdminView {
   final bool hasEditorDraft;
   final List<String> validationErrors;
   final List<AgentRuntimeActionRow> actionStates;
+  final AgentRuntimeRoleEditorOptionsView editorOptions;
 
   AgentRuntimeRoleAdminView copyWith({
     String? title,
@@ -74,6 +77,7 @@ class AgentRuntimeRoleAdminView {
     bool? hasEditorDraft,
     List<String>? validationErrors,
     List<AgentRuntimeActionRow>? actionStates,
+    AgentRuntimeRoleEditorOptionsView? editorOptions,
   }) {
     return AgentRuntimeRoleAdminView(
       title: title ?? this.title,
@@ -88,6 +92,7 @@ class AgentRuntimeRoleAdminView {
       hasEditorDraft: hasEditorDraft ?? this.hasEditorDraft,
       validationErrors: validationErrors ?? this.validationErrors,
       actionStates: actionStates ?? this.actionStates,
+      editorOptions: editorOptions ?? this.editorOptions,
     );
   }
 
@@ -105,6 +110,7 @@ class AgentRuntimeRoleAdminView {
     serializer.serializeBool(hasEditorDraft);
     TraitHelpers.serializeVectorStr(validationErrors, serializer);
     TraitHelpers.serializeVectorAgentRuntimeActionRow(actionStates, serializer);
+    editorOptions.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -131,7 +137,8 @@ class AgentRuntimeRoleAdminView {
       && editorDraft == other.editorDraft
       && hasEditorDraft == other.hasEditorDraft
       && listEquals(validationErrors, other.validationErrors)
-      && listEquals(actionStates, other.actionStates);
+      && listEquals(actionStates, other.actionStates)
+      && editorOptions == other.editorOptions;
   }
 
   @override
@@ -148,6 +155,7 @@ class AgentRuntimeRoleAdminView {
         hasEditorDraft,
         validationErrors,
         actionStates,
+        editorOptions,
       );
 
   @override
@@ -167,7 +175,8 @@ class AgentRuntimeRoleAdminView {
         'editorDraft: $editorDraft, '
         'hasEditorDraft: $hasEditorDraft, '
         'validationErrors: $validationErrors, '
-        'actionStates: $actionStates'
+        'actionStates: $actionStates, '
+        'editorOptions: $editorOptions'
         ')';
       return true;
     }());

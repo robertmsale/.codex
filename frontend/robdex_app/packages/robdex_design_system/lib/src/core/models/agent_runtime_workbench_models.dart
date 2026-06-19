@@ -433,6 +433,114 @@ class AgentRuntimeOperationSurface {
   }
 }
 
+class AgentRuntimeCommandRegistryDecisionDraft {
+  const AgentRuntimeCommandRegistryDecisionDraft({
+    required this.status,
+    required this.scopeType,
+    required this.projectKey,
+    required this.policyDecision,
+    required this.policyReason,
+    required this.actionId,
+    required this.displayName,
+    required this.binaryName,
+    required this.argvTemplate,
+    required this.defaultCwd,
+    required this.cwdPolicy,
+    required this.envPolicy,
+    required this.stdinPolicy,
+    required this.syncAllowed,
+    required this.asyncAllowed,
+    required this.maxRuntimeMs,
+    required this.endOfTurnBehavior,
+    required this.endOfSessionBehavior,
+    required this.mutationClass,
+    required this.modelDescription,
+    required this.allowCwdArg,
+    required this.allowArgsArg,
+    required this.forbiddenArgs,
+    required this.executionPolicy,
+  });
+
+  final String status;
+  final String scopeType;
+  final String projectKey;
+  final String policyDecision;
+  final String policyReason;
+  final String actionId;
+  final String displayName;
+  final String binaryName;
+  final List<String> argvTemplate;
+  final String defaultCwd;
+  final String cwdPolicy;
+  final String envPolicy;
+  final String stdinPolicy;
+  final bool syncAllowed;
+  final bool asyncAllowed;
+  final int? maxRuntimeMs;
+  final String endOfTurnBehavior;
+  final String endOfSessionBehavior;
+  final String mutationClass;
+  final String modelDescription;
+  final bool allowCwdArg;
+  final bool allowArgsArg;
+  final List<String> forbiddenArgs;
+  final String executionPolicy;
+
+  AgentRuntimeCommandRegistryDecisionDraft copyWith({
+    String? status,
+    String? scopeType,
+    String? projectKey,
+    String? policyDecision,
+    String? policyReason,
+    String? actionId,
+    String? displayName,
+    String? binaryName,
+    List<String>? argvTemplate,
+    String? defaultCwd,
+    String? cwdPolicy,
+    String? envPolicy,
+    String? stdinPolicy,
+    bool? syncAllowed,
+    bool? asyncAllowed,
+    int? maxRuntimeMs,
+    String? endOfTurnBehavior,
+    String? endOfSessionBehavior,
+    String? mutationClass,
+    String? modelDescription,
+    bool? allowCwdArg,
+    bool? allowArgsArg,
+    List<String>? forbiddenArgs,
+    String? executionPolicy,
+  }) {
+    return AgentRuntimeCommandRegistryDecisionDraft(
+      status: status ?? this.status,
+      scopeType: scopeType ?? this.scopeType,
+      projectKey: projectKey ?? this.projectKey,
+      policyDecision: policyDecision ?? this.policyDecision,
+      policyReason: policyReason ?? this.policyReason,
+      actionId: actionId ?? this.actionId,
+      displayName: displayName ?? this.displayName,
+      binaryName: binaryName ?? this.binaryName,
+      argvTemplate: argvTemplate ?? this.argvTemplate,
+      defaultCwd: defaultCwd ?? this.defaultCwd,
+      cwdPolicy: cwdPolicy ?? this.cwdPolicy,
+      envPolicy: envPolicy ?? this.envPolicy,
+      stdinPolicy: stdinPolicy ?? this.stdinPolicy,
+      syncAllowed: syncAllowed ?? this.syncAllowed,
+      asyncAllowed: asyncAllowed ?? this.asyncAllowed,
+      maxRuntimeMs: maxRuntimeMs ?? this.maxRuntimeMs,
+      endOfTurnBehavior: endOfTurnBehavior ?? this.endOfTurnBehavior,
+      endOfSessionBehavior: endOfSessionBehavior ?? this.endOfSessionBehavior,
+      mutationClass: mutationClass ?? this.mutationClass,
+      modelDescription: modelDescription ?? this.modelDescription,
+      allowCwdArg: allowCwdArg ?? this.allowCwdArg,
+      allowArgsArg: allowArgsArg ?? this.allowArgsArg,
+      forbiddenArgs: forbiddenArgs ?? this.forbiddenArgs,
+      executionPolicy: executionPolicy ?? this.executionPolicy,
+    );
+  }
+}
+
 class AgentRuntimeWorkflowMemoryData {
   const AgentRuntimeWorkflowMemoryData({
     required this.title,
@@ -614,6 +722,7 @@ class AgentRuntimeRoleAdminData {
     required this.versionRows,
     required this.validationErrors,
     required this.actionStates,
+    required this.editorOptions,
     this.selectedDetail,
     this.editorDraft,
   });
@@ -628,6 +737,7 @@ class AgentRuntimeRoleAdminData {
   final AgentRuntimeRoleEditorDraft? editorDraft;
   final List<String> validationErrors;
   final List<AgentRuntimeActionItem> actionStates;
+  final AgentRuntimeRoleEditorOptions editorOptions;
 
   factory AgentRuntimeRoleAdminData.fromJson(Map<String, dynamic> json) {
     final selectedDetail = json['selectedDetail'];
@@ -643,6 +753,66 @@ class AgentRuntimeRoleAdminData {
       editorDraft: editorDraft is Map ? AgentRuntimeRoleEditorDraft.fromJson(Map<String, dynamic>.from(editorDraft)) : null,
       validationErrors: (json['validationErrors'] as List<dynamic>? ?? const []).map((value) => '$value').toList(growable: false),
       actionStates: _objects(json['actionStates']).map(AgentRuntimeActionItem.fromJson).toList(growable: false),
+      editorOptions: json['editorOptions'] is Map ? AgentRuntimeRoleEditorOptions.fromJson(Map<String, dynamic>.from(json['editorOptions'] as Map)) : AgentRuntimeRoleEditorOptions.empty(),
+    );
+  }
+}
+
+class AgentRuntimeRoleEditorOptions {
+  const AgentRuntimeRoleEditorOptions({
+    required this.models,
+    required this.reasoningEfforts,
+    required this.capabilities,
+    required this.policyActions,
+    required this.policyDecisions,
+    required this.routingModes,
+    required this.recipients,
+    required this.reservedActions,
+  });
+
+  final List<String> models;
+  final List<String> reasoningEfforts;
+  final List<String> capabilities;
+  final List<String> policyActions;
+  final List<String> policyDecisions;
+  final List<String> routingModes;
+  final List<String> recipients;
+  final List<String> reservedActions;
+
+  bool get isCompleteForPrimaryAuthoring {
+    return models.isNotEmpty &&
+        reasoningEfforts.isNotEmpty &&
+        capabilities.isNotEmpty &&
+        policyActions.isNotEmpty &&
+        policyDecisions.isNotEmpty &&
+        routingModes.isNotEmpty &&
+        recipients.isNotEmpty &&
+        reservedActions.isNotEmpty;
+  }
+
+  factory AgentRuntimeRoleEditorOptions.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeRoleEditorOptions(
+      models: _strings(json['models']),
+      reasoningEfforts: _strings(json['reasoningEfforts']),
+      capabilities: _strings(json['capabilities']),
+      policyActions: _strings(json['policyActions']),
+      policyDecisions: _strings(json['policyDecisions']),
+      routingModes: _strings(json['routingModes']),
+      recipients: _strings(json['recipients']),
+      reservedActions: _strings(json['reservedActions']),
+    );
+  }
+
+  factory AgentRuntimeRoleEditorOptions.empty() {
+    return const AgentRuntimeRoleEditorOptions(
+      models: [],
+      reasoningEfforts: [],
+      capabilities: [],
+      policyActions: [],
+      policyDecisions: [],
+      routingModes: [],
+      recipients: [],
+      reservedActions: [],
     );
   }
 }
@@ -853,4 +1023,8 @@ Iterable<Map<String, dynamic>> _objects(Object? value) {
   return (value as List<dynamic>? ?? const [])
       .whereType<Map>()
       .map((item) => Map<String, dynamic>.from(item));
+}
+
+List<String> _strings(Object? value) {
+  return (value as List<dynamic>? ?? const []).map((item) => '$item').where((item) => item.isNotEmpty).toList(growable: false);
 }

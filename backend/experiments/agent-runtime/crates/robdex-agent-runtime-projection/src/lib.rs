@@ -273,9 +273,28 @@ pub struct CommandRegistrySummary {
     pub project_key: Option<String>,
     pub enabled: bool,
     pub current_version_id: Option<String>,
+    pub command_version: Option<i64>,
     pub binary_name: Option<String>,
     pub starlark_object: Option<String>,
     pub starlark_method: Option<String>,
+    #[serde(default)]
+    pub argv_template: Vec<String>,
+    pub default_cwd: Option<String>,
+    pub cwd_policy: Option<String>,
+    pub env_policy: Option<String>,
+    pub stdin_policy: Option<String>,
+    pub sync_allowed: Option<bool>,
+    pub async_allowed: Option<bool>,
+    pub max_runtime_ms: Option<i64>,
+    pub end_of_turn_behavior: Option<String>,
+    pub end_of_session_behavior: Option<String>,
+    pub mutation_class: Option<String>,
+    pub model_description: Option<String>,
+    pub allow_cwd_arg: Option<bool>,
+    pub allow_args_arg: Option<bool>,
+    #[serde(default)]
+    pub forbidden_args: Vec<String>,
+    pub execution_policy: Option<String>,
     pub updated_at: Option<String>,
 }
 
@@ -579,6 +598,7 @@ pub enum GuiOperationName {
     TerminateProcess,
     InputProcess,
     FlushProcess,
+    CompactSession,
     CloseSession,
     ArchiveSession,
     ForkSession,
@@ -626,6 +646,7 @@ pub enum GuiOperationRequest {
     TerminateProcess { session_id: String, handle: String },
     InputProcess { session_id: String, handle: String, text: String },
     FlushProcess { session_id: String, handle: String },
+    CompactSession { session_id: String, through_turn: Option<String> },
     CloseSession { session_id: String, reason: Option<String> },
     ArchiveSession { session_id: String },
     ForkSession { session_id: String, at_turn: String },
@@ -673,6 +694,7 @@ impl GuiOperationRequest {
             Self::TerminateProcess { .. } => GuiOperationName::TerminateProcess,
             Self::InputProcess { .. } => GuiOperationName::InputProcess,
             Self::FlushProcess { .. } => GuiOperationName::FlushProcess,
+            Self::CompactSession { .. } => GuiOperationName::CompactSession,
             Self::CloseSession { .. } => GuiOperationName::CloseSession,
             Self::ArchiveSession { .. } => GuiOperationName::ArchiveSession,
             Self::ForkSession { .. } => GuiOperationName::ForkSession,
@@ -715,6 +737,7 @@ impl GuiOperationRequest {
             | Self::TerminateProcess { .. }
             | Self::InputProcess { .. }
             | Self::FlushProcess { .. }
+            | Self::CompactSession { .. }
             | Self::CloseSession { .. }
             | Self::ArchiveSession { .. }
             | Self::ForkSession { .. }
@@ -763,6 +786,7 @@ impl GuiOperationRequest {
             Self::TerminateProcess { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/processes/{handle}/terminate", "{}", r#"{"handle","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::InputProcess { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/processes/{handle}/input", r#"{"text"}"#, r#"{"handle","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::FlushProcess { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/processes/{handle}/flush", "{}", r#"{"handle","status","artifact"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::CompactSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/compact", r#"{"throughTurn"?}"#, r#"{"sessionId","checkpointId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::CloseSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/close", r#"{"reason"?}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ArchiveSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/archive", "{}", r#"{"sessionId","tracked"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ForkSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/fork", r#"{"atTurn"}"#, r#"{"sessionId","forkedFromSessionId","forkedFromTurnId"}"#, GuiOperationExpectation::WaitForDelta),
@@ -850,6 +874,7 @@ impl GuiOperationRequest {
             })),
             Self::SendMessage { message, .. } => Some(json!({"message": message})),
             Self::TerminateProcess { .. } | Self::FlushProcess { .. } => Some(json!({})),
+            Self::CompactSession { through_turn, .. } => Some(json!({"throughTurn": through_turn})),
             Self::InputProcess { text, .. } => Some(json!({"text": text})),
             Self::CloseSession { reason, .. } => Some(json!({"reason": reason})),
             Self::ArchiveSession { .. } | Self::ResumeApproval { .. } => Some(json!({})),
@@ -945,6 +970,7 @@ pub struct GuiCommandSeed {
     pub async_allowed: bool,
     pub max_runtime_ms: Option<i64>,
     pub end_of_turn_behavior: String,
+    pub end_of_session_behavior: String,
     pub stdin_policy: String,
     pub min_await_ms: i64,
     pub max_await_ms: i64,
@@ -1083,7 +1109,7 @@ pub const DART_ALLOWED_EPHEMERAL_RESPONSIBILITIES: &[&str] = &[
     "localLayout",
 ];
 
-pub const GUI_OPERATION_VARIANT_COUNT: usize = 42;
+pub const GUI_OPERATION_VARIANT_COUNT: usize = 43;
 
 impl Default for RuntimeProjection {
     fn default() -> Self {
@@ -1461,6 +1487,7 @@ mod tests {
             async_allowed: true,
             max_runtime_ms: Some(5000),
             end_of_turn_behavior: "terminate".to_string(),
+            end_of_session_behavior: "terminate".to_string(),
             stdin_policy: "forbid".to_string(),
             min_await_ms: 0,
             max_await_ms: 60000,
@@ -1526,6 +1553,7 @@ mod tests {
             GuiOperationRequest::TerminateProcess { session_id: "session-1".to_string(), handle: "proc_1".to_string() },
             GuiOperationRequest::InputProcess { session_id: "session-1".to_string(), handle: "proc_1".to_string(), text: "hello".to_string() },
             GuiOperationRequest::FlushProcess { session_id: "session-1".to_string(), handle: "proc_1".to_string() },
+            GuiOperationRequest::CompactSession { session_id: "session-1".to_string(), through_turn: None },
             GuiOperationRequest::CloseSession { session_id: "session-1".to_string(), reason: Some("done".to_string()) },
             GuiOperationRequest::ArchiveSession { session_id: "session-1".to_string() },
             GuiOperationRequest::ForkSession { session_id: "session-1".to_string(), at_turn: "turn-1".to_string() },
@@ -1713,9 +1741,26 @@ mod tests {
             project_key: None,
             enabled: true,
             current_version_id: Some("version-1".to_string()),
+            command_version: Some(1),
             binary_name: Some("rg".to_string()),
             starlark_object: Some("rg".to_string()),
             starlark_method: Some("run".to_string()),
+            argv_template: vec!["--files".to_string()],
+            default_cwd: Some(".".to_string()),
+            cwd_policy: Some("project".to_string()),
+            env_policy: Some("inherit".to_string()),
+            stdin_policy: Some("deny".to_string()),
+            sync_allowed: Some(true),
+            async_allowed: Some(false),
+            max_runtime_ms: Some(30000),
+            end_of_turn_behavior: Some("wait".to_string()),
+            end_of_session_behavior: Some("terminate".to_string()),
+            mutation_class: Some("readOnly".to_string()),
+            model_description: Some("Search files".to_string()),
+            allow_cwd_arg: Some(false),
+            allow_args_arg: Some(true),
+            forbidden_args: vec!["--pcre2".to_string()],
+            execution_policy: Some("allow".to_string()),
             updated_at: None,
         }}));
         projection.apply_delta(delta(2, RuntimeDeltaKind::CommandRegistryDisable { command_id: "command-1".to_string() }));

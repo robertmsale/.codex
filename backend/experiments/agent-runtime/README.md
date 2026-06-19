@@ -1051,11 +1051,12 @@ Role policy remains authority for native kernel actions such as
 `command_registry.*`. Scoped DB command visibility and execution do not require
 role policy entries for command action ids.
 
-The model has two native tools and must choose exactly one per turn:
-`execute_code` for current Starlark execution, or
-`request_command_registry_change` when the current registry lacks a needed
-command. `request_command_registry_change` is a native model tool outside
-Starlark; it is not a `cmd[...]` helper, raw shell, or execute_code workaround.
+The model has two native tools available, but ordinary assistant replies do not
+require a tool call. The model uses `execute_code` for current Starlark
+execution when runtime work is needed, or `request_command_registry_change`
+when the current registry lacks a needed command. `request_command_registry_change`
+is a native model tool outside Starlark; it is not a `cmd[...]` helper, raw
+shell, or execute_code workaround.
 The request schema captures operation (`add`, `update`, `disable`, `enable`),
 proposed command definition, rationale, intended use, current blocker or need,
 and requester context. Requesters do not choose authoritative scope or execution

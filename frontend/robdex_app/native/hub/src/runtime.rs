@@ -36,7 +36,7 @@ use crate::signals::{
     AgentRuntimeDiscoveryView, AgentRuntimeSessionRow, AgentRuntimeTimelineRow,
     AgentRuntimeActionRow, AgentRuntimeBadge, AgentRuntimeRoleAdminView, AgentRuntimeRoleRow,
     AgentRuntimeRoleDetail, AgentRuntimeRolePolicyRow, AgentRuntimeRoleVersionRow,
-    AgentRuntimeRoleEditorDraftView, AgentRuntimeWorkflowMemoryView,
+    AgentRuntimeRoleEditorDraftView, AgentRuntimeRoleEditorOptionsView, AgentRuntimeWorkflowMemoryView,
     AgentRuntimeWorkflowMemoryRow, AgentRuntimeWorkflowMemoryDetail,
     AgentRuntimeWorkflowMemoryEvent, AgentRuntimeConversationShellViewModel, AgentRuntimeOperationSurface,
     AgentRuntimeShellProjectRow, AgentRuntimeShellRolePresentation, AgentRuntimeChatEntry,
@@ -1131,6 +1131,19 @@ fn non_empty(value: String) -> Option<String> {
     }
 }
 
+fn required_non_empty(value: String, field: &str) -> std::result::Result<String, ApiErrorPacket> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Err(ApiErrorPacket::new(
+            "invalid_request",
+            format!("{field} is required"),
+            serde_json::json!({ "field": field }),
+        ))
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
 fn typed_agent_runtime_request_packet(
     request_id: &str,
     request: AgentRuntimeRequest,
@@ -1176,6 +1189,7 @@ fn typed_agent_runtime_request_packet(
             AgentRuntimeRequest::DispatchOperation { operation } => GuiTransportRequest::DispatchOperation {
                 operation: typed_gui_operation(operation)?,
             },
+            AgentRuntimeRequest::ConsumeStreamOnce => GuiTransportRequest::ConsumeStreamOnce,
         },
     })
 }
@@ -1235,10 +1249,18 @@ fn typed_gui_operation(operation: AgentRuntimeGuiOperation) -> std::result::Resu
         AgentRuntimeGuiOperation::TerminateProcess { session_id, handle } => GuiOperationRequest::TerminateProcess { session_id, handle },
         AgentRuntimeGuiOperation::InputProcess { session_id, handle, text } => GuiOperationRequest::InputProcess { session_id, handle, text },
         AgentRuntimeGuiOperation::FlushProcess { session_id, handle } => GuiOperationRequest::FlushProcess { session_id, handle },
+        AgentRuntimeGuiOperation::CompactSession { session_id, through_turn } => GuiOperationRequest::CompactSession {
+            session_id,
+            through_turn: non_empty(through_turn),
+        },
         AgentRuntimeGuiOperation::CloseSession { session_id, reason } => GuiOperationRequest::CloseSession { session_id, reason: non_empty(reason) },
         AgentRuntimeGuiOperation::ArchiveSession { session_id } => GuiOperationRequest::ArchiveSession { session_id },
         AgentRuntimeGuiOperation::ForkSession { session_id, at_turn } => GuiOperationRequest::ForkSession { session_id, at_turn },
-        AgentRuntimeGuiOperation::DecideApproval { approval_id, decision, reason } => GuiOperationRequest::DecideApproval { approval_id, decision, reason },
+        AgentRuntimeGuiOperation::DecideApproval { approval_id, decision, reason } => GuiOperationRequest::DecideApproval {
+            approval_id,
+            decision,
+            reason: required_non_empty(reason, "approval reason")?,
+        },
         AgentRuntimeGuiOperation::ResumeApproval { approval_id } => GuiOperationRequest::ResumeApproval { approval_id },
         AgentRuntimeGuiOperation::ListCommandRegistry { session_id, project_key } => GuiOperationRequest::ListCommandRegistry {
             session_id: non_empty(session_id),
@@ -1310,6 +1332,7 @@ fn typed_registry_decision(input: crate::signals::AgentRuntimeCommandRegistryDec
             async_allowed: input.final_command.async_allowed,
             max_runtime_ms: input.final_command.has_max_runtime_ms.then_some(input.final_command.max_runtime_ms),
             end_of_turn_behavior: input.final_command.end_of_turn_behavior,
+            end_of_session_behavior: input.final_command.end_of_session_behavior,
             stdin_policy: input.final_command.stdin_policy,
             min_await_ms: input.final_command.min_await_ms,
             max_await_ms: input.final_command.max_await_ms,
@@ -1560,6 +1583,13 @@ fn typed_conversation_shell_view(view: robdex_agent_runtime::rinf_transport::Age
             title: project.title,
             subtitle: project.subtitle,
             selectable: project.selectable,
+            default_workdir: project.default_workdir,
+            default_worktree_root: project.default_worktree_root,
+            default_role_id: project.default_role_id.unwrap_or_default(),
+            default_model: project.default_model,
+            tracked: project.tracked,
+            listed: project.listed,
+            archived: project.archived,
         }).collect(),
         sessions: view.sessions.into_iter().map(|row| AgentRuntimeSessionRow { id: row.id, title: row.title, status: row.status, subtitle: row.subtitle, group_label: row.group_label, tone: row.tone }).collect(),
         has_selected_session_id: !selected_session_id.is_empty(),
@@ -1712,6 +1742,16 @@ fn typed_role_admin_view(view: InternalRoleAdminView) -> AgentRuntimeRoleAdminVi
         }).unwrap_or_default(),
         validation_errors: view.validation_errors,
         action_states: view.action_states.into_iter().map(typed_action_row).collect(),
+        editor_options: AgentRuntimeRoleEditorOptionsView {
+            models: view.editor_options.models,
+            reasoning_efforts: view.editor_options.reasoning_efforts,
+            capabilities: view.editor_options.capabilities,
+            policy_actions: view.editor_options.policy_actions,
+            policy_decisions: view.editor_options.policy_decisions,
+            routing_modes: view.editor_options.routing_modes,
+            recipients: view.editor_options.recipients,
+            reserved_actions: view.editor_options.reserved_actions,
+        },
     }
 }
 
@@ -2626,6 +2666,13 @@ mod agent_runtime_typed_mapping_tests {
                 project_id: "runtime".to_string(),
             }
         );
+
+        let stream = typed_agent_runtime_request_packet(
+            "stream-1",
+            AgentRuntimeRequest::ConsumeStreamOnce,
+        )
+        .expect("typed stream consumption maps");
+        assert_eq!(stream.intent, GuiTransportRequest::ConsumeStreamOnce);
     }
 
     #[test]
@@ -2680,6 +2727,23 @@ mod agent_runtime_typed_mapping_tests {
     }
 
     #[test]
+    fn typed_request_rejects_empty_approval_reason() {
+        let result = typed_agent_runtime_request_packet(
+            "approval-empty-reason-1",
+            AgentRuntimeRequest::DispatchOperation {
+                operation: AgentRuntimeGuiOperation::DecideApproval {
+                    approval_id: "approval-1".to_string(),
+                    decision: "approved".to_string(),
+                    reason: "   ".to_string(),
+                },
+            },
+        );
+        let error = result.expect_err("empty approval reason must be rejected before dispatch");
+        assert_eq!(error.error.code, "invalid_request");
+        assert!(error.error.message.contains("approval reason is required"));
+    }
+
+    #[test]
     fn typed_output_maps_error_and_workbench_view_without_generic_string() {
         let error = typed_agent_runtime_output(GuiTransportOutputPacket {
             request_id: "bad-1".to_string(),
@@ -2710,6 +2774,7 @@ mod agent_runtime_typed_mapping_tests {
             &InternalDiscoveryView::default(),
             &InternalDiscoveryView::default(),
             &InternalDiscoveryView::default(),
+            &[],
         );
         let view = typed_agent_runtime_output(GuiTransportOutputPacket {
             request_id: "view-1".to_string(),

@@ -50,6 +50,13 @@ class ConversationProject {
     this.canEdit = false,
     this.canArchive = false,
     this.canCreateSession = true,
+    this.defaultWorkdir = '',
+    this.defaultWorktreeRoot = '',
+    this.defaultRoleId = '',
+    this.defaultModel = '',
+    this.tracked = false,
+    this.listed = true,
+    this.archived = false,
   });
   final String id;
   final String title;
@@ -57,6 +64,13 @@ class ConversationProject {
   final bool canEdit;
   final bool canArchive;
   final bool canCreateSession;
+  final String defaultWorkdir;
+  final String defaultWorktreeRoot;
+  final String defaultRoleId;
+  final String defaultModel;
+  final bool tracked;
+  final bool listed;
+  final bool archived;
 }
 
 class ConversationSession {

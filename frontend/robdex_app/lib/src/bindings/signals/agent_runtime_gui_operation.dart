@@ -24,30 +24,31 @@ abstract class AgentRuntimeGuiOperation {
       case 11: return AgentRuntimeGuiOperationTerminateProcess.load(deserializer);
       case 12: return AgentRuntimeGuiOperationInputProcess.load(deserializer);
       case 13: return AgentRuntimeGuiOperationFlushProcess.load(deserializer);
-      case 14: return AgentRuntimeGuiOperationCloseSession.load(deserializer);
-      case 15: return AgentRuntimeGuiOperationArchiveSession.load(deserializer);
-      case 16: return AgentRuntimeGuiOperationForkSession.load(deserializer);
-      case 17: return AgentRuntimeGuiOperationDecideApproval.load(deserializer);
-      case 18: return AgentRuntimeGuiOperationResumeApproval.load(deserializer);
-      case 19: return AgentRuntimeGuiOperationListCommandRegistry.load(deserializer);
-      case 20: return AgentRuntimeGuiOperationShowCommand.load(deserializer);
-      case 21: return AgentRuntimeGuiOperationListCommandRegistryRequests.load(deserializer);
-      case 22: return AgentRuntimeGuiOperationShowCommandRegistryRequest.load(deserializer);
-      case 23: return AgentRuntimeGuiOperationPreviewCommandRegistryRequest.load(deserializer);
-      case 24: return AgentRuntimeGuiOperationDecideCommandRegistryRequest.load(deserializer);
-      case 25: return AgentRuntimeGuiOperationApplyCommandRegistryRequest.load(deserializer);
-      case 26: return AgentRuntimeGuiOperationWorkflowMemoryFeedback.load(deserializer);
-      case 27: return AgentRuntimeGuiOperationRoleEditorOptions.load(deserializer);
-      case 28: return AgentRuntimeGuiOperationValidateRoleDraft.load(deserializer);
-      case 29: return AgentRuntimeGuiOperationCreateRoleFromDraft.load(deserializer);
-      case 30: return AgentRuntimeGuiOperationUpdateRoleFromDraft.load(deserializer);
-      case 31: return AgentRuntimeGuiOperationShowRoleDetail.load(deserializer);
-      case 32: return AgentRuntimeGuiOperationListRoleVersions.load(deserializer);
-      case 33: return AgentRuntimeGuiOperationShowRoleVersion.load(deserializer);
-      case 34: return AgentRuntimeGuiOperationExportRole.load(deserializer);
-      case 35: return AgentRuntimeGuiOperationActivateRoleVersion.load(deserializer);
-      case 36: return AgentRuntimeGuiOperationArchiveRole.load(deserializer);
-      case 37: return AgentRuntimeGuiOperationUnarchiveRole.load(deserializer);
+      case 14: return AgentRuntimeGuiOperationCompactSession.load(deserializer);
+      case 15: return AgentRuntimeGuiOperationCloseSession.load(deserializer);
+      case 16: return AgentRuntimeGuiOperationArchiveSession.load(deserializer);
+      case 17: return AgentRuntimeGuiOperationForkSession.load(deserializer);
+      case 18: return AgentRuntimeGuiOperationDecideApproval.load(deserializer);
+      case 19: return AgentRuntimeGuiOperationResumeApproval.load(deserializer);
+      case 20: return AgentRuntimeGuiOperationListCommandRegistry.load(deserializer);
+      case 21: return AgentRuntimeGuiOperationShowCommand.load(deserializer);
+      case 22: return AgentRuntimeGuiOperationListCommandRegistryRequests.load(deserializer);
+      case 23: return AgentRuntimeGuiOperationShowCommandRegistryRequest.load(deserializer);
+      case 24: return AgentRuntimeGuiOperationPreviewCommandRegistryRequest.load(deserializer);
+      case 25: return AgentRuntimeGuiOperationDecideCommandRegistryRequest.load(deserializer);
+      case 26: return AgentRuntimeGuiOperationApplyCommandRegistryRequest.load(deserializer);
+      case 27: return AgentRuntimeGuiOperationWorkflowMemoryFeedback.load(deserializer);
+      case 28: return AgentRuntimeGuiOperationRoleEditorOptions.load(deserializer);
+      case 29: return AgentRuntimeGuiOperationValidateRoleDraft.load(deserializer);
+      case 30: return AgentRuntimeGuiOperationCreateRoleFromDraft.load(deserializer);
+      case 31: return AgentRuntimeGuiOperationUpdateRoleFromDraft.load(deserializer);
+      case 32: return AgentRuntimeGuiOperationShowRoleDetail.load(deserializer);
+      case 33: return AgentRuntimeGuiOperationListRoleVersions.load(deserializer);
+      case 34: return AgentRuntimeGuiOperationShowRoleVersion.load(deserializer);
+      case 35: return AgentRuntimeGuiOperationExportRole.load(deserializer);
+      case 36: return AgentRuntimeGuiOperationActivateRoleVersion.load(deserializer);
+      case 37: return AgentRuntimeGuiOperationArchiveRole.load(deserializer);
+      case 38: return AgentRuntimeGuiOperationUnarchiveRole.load(deserializer);
       default: throw Exception('Unknown variant index for AgentRuntimeGuiOperation: ' + index.toString());
     }
   }
@@ -1205,6 +1206,76 @@ class AgentRuntimeGuiOperationFlushProcess extends AgentRuntimeGuiOperation {
 }
 
 @immutable
+class AgentRuntimeGuiOperationCompactSession extends AgentRuntimeGuiOperation {
+  const AgentRuntimeGuiOperationCompactSession({
+    required this.sessionId,
+    required this.throughTurn,
+  }) : super();
+
+  static AgentRuntimeGuiOperationCompactSession load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = AgentRuntimeGuiOperationCompactSession(
+      sessionId: deserializer.deserializeString(),
+      throughTurn: deserializer.deserializeString(),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final String sessionId;
+  final String throughTurn;
+
+  AgentRuntimeGuiOperationCompactSession copyWith({
+    String? sessionId,
+    String? throughTurn,
+  }) {
+    return AgentRuntimeGuiOperationCompactSession(
+      sessionId: sessionId ?? this.sessionId,
+      throughTurn: throughTurn ?? this.throughTurn,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(14);
+    serializer.serializeString(sessionId);
+    serializer.serializeString(throughTurn);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is AgentRuntimeGuiOperationCompactSession
+      && sessionId == other.sessionId
+      && throughTurn == other.throughTurn;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        sessionId,
+        throughTurn,
+      );
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'sessionId: $sessionId, '
+        'throughTurn: $throughTurn'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'AgentRuntimeGuiOperationCompactSession';
+  }
+}
+
+@immutable
 class AgentRuntimeGuiOperationCloseSession extends AgentRuntimeGuiOperation {
   const AgentRuntimeGuiOperationCloseSession({
     required this.sessionId,
@@ -1236,7 +1307,7 @@ class AgentRuntimeGuiOperationCloseSession extends AgentRuntimeGuiOperation {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(14);
+    serializer.serializeVariantIndex(15);
     serializer.serializeString(sessionId);
     serializer.serializeString(reason);
     serializer.decreaseContainerDepth();
@@ -1301,7 +1372,7 @@ class AgentRuntimeGuiOperationArchiveSession extends AgentRuntimeGuiOperation {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(15);
+    serializer.serializeVariantIndex(16);
     serializer.serializeString(sessionId);
     serializer.decreaseContainerDepth();
   }
@@ -1365,7 +1436,7 @@ class AgentRuntimeGuiOperationForkSession extends AgentRuntimeGuiOperation {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(16);
+    serializer.serializeVariantIndex(17);
     serializer.serializeString(sessionId);
     serializer.serializeString(atTurn);
     serializer.decreaseContainerDepth();
@@ -1440,7 +1511,7 @@ class AgentRuntimeGuiOperationDecideApproval extends AgentRuntimeGuiOperation {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(17);
+    serializer.serializeVariantIndex(18);
     serializer.serializeString(approvalId);
     serializer.serializeString(decision);
     serializer.serializeString(reason);
@@ -1509,7 +1580,7 @@ class AgentRuntimeGuiOperationResumeApproval extends AgentRuntimeGuiOperation {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(18);
+    serializer.serializeVariantIndex(19);
     serializer.serializeString(approvalId);
     serializer.decreaseContainerDepth();
   }
@@ -1573,7 +1644,7 @@ class AgentRuntimeGuiOperationListCommandRegistry extends AgentRuntimeGuiOperati
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(19);
+    serializer.serializeVariantIndex(20);
     serializer.serializeString(sessionId);
     serializer.serializeString(projectKey);
     serializer.decreaseContainerDepth();
@@ -1648,7 +1719,7 @@ class AgentRuntimeGuiOperationShowCommand extends AgentRuntimeGuiOperation {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(20);
+    serializer.serializeVariantIndex(21);
     serializer.serializeString(actionId);
     serializer.serializeString(sessionId);
     serializer.serializeString(projectKey);
@@ -1705,7 +1776,7 @@ class AgentRuntimeGuiOperationListCommandRegistryRequests extends AgentRuntimeGu
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(21);
+    serializer.serializeVariantIndex(22);
     serializer.decreaseContainerDepth();
   }
 
@@ -1761,7 +1832,7 @@ class AgentRuntimeGuiOperationShowCommandRegistryRequest extends AgentRuntimeGui
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(22);
+    serializer.serializeVariantIndex(23);
     serializer.serializeString(requestId);
     serializer.decreaseContainerDepth();
   }
@@ -1825,7 +1896,7 @@ class AgentRuntimeGuiOperationPreviewCommandRegistryRequest extends AgentRuntime
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(23);
+    serializer.serializeVariantIndex(24);
     serializer.serializeString(requestId);
     decision.serialize(serializer);
     serializer.decreaseContainerDepth();
@@ -1895,7 +1966,7 @@ class AgentRuntimeGuiOperationDecideCommandRegistryRequest extends AgentRuntimeG
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(24);
+    serializer.serializeVariantIndex(25);
     serializer.serializeString(requestId);
     decision.serialize(serializer);
     serializer.decreaseContainerDepth();
@@ -1965,7 +2036,7 @@ class AgentRuntimeGuiOperationApplyCommandRegistryRequest extends AgentRuntimeGu
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(25);
+    serializer.serializeVariantIndex(26);
     serializer.serializeString(requestId);
     serializer.serializeString(sessionId);
     serializer.decreaseContainerDepth();
@@ -2045,7 +2116,7 @@ class AgentRuntimeGuiOperationWorkflowMemoryFeedback extends AgentRuntimeGuiOper
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(26);
+    serializer.serializeVariantIndex(27);
     serializer.serializeString(memoryId);
     serializer.serializeString(sessionId);
     serializer.serializeString(feedback);
@@ -2106,7 +2177,7 @@ class AgentRuntimeGuiOperationRoleEditorOptions extends AgentRuntimeGuiOperation
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(27);
+    serializer.serializeVariantIndex(28);
     serializer.decreaseContainerDepth();
   }
 
@@ -2162,7 +2233,7 @@ class AgentRuntimeGuiOperationValidateRoleDraft extends AgentRuntimeGuiOperation
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(28);
+    serializer.serializeVariantIndex(29);
     draft.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -2221,7 +2292,7 @@ class AgentRuntimeGuiOperationCreateRoleFromDraft extends AgentRuntimeGuiOperati
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(29);
+    serializer.serializeVariantIndex(30);
     draft.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -2285,7 +2356,7 @@ class AgentRuntimeGuiOperationUpdateRoleFromDraft extends AgentRuntimeGuiOperati
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(30);
+    serializer.serializeVariantIndex(31);
     serializer.serializeString(roleId);
     draft.serialize(serializer);
     serializer.decreaseContainerDepth();
@@ -2350,7 +2421,7 @@ class AgentRuntimeGuiOperationShowRoleDetail extends AgentRuntimeGuiOperation {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(31);
+    serializer.serializeVariantIndex(32);
     serializer.serializeString(roleId);
     serializer.decreaseContainerDepth();
   }
@@ -2409,7 +2480,7 @@ class AgentRuntimeGuiOperationListRoleVersions extends AgentRuntimeGuiOperation 
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(32);
+    serializer.serializeVariantIndex(33);
     serializer.serializeString(roleId);
     serializer.decreaseContainerDepth();
   }
@@ -2468,7 +2539,7 @@ class AgentRuntimeGuiOperationShowRoleVersion extends AgentRuntimeGuiOperation {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(33);
+    serializer.serializeVariantIndex(34);
     serializer.serializeString(versionId);
     serializer.decreaseContainerDepth();
   }
@@ -2527,7 +2598,7 @@ class AgentRuntimeGuiOperationExportRole extends AgentRuntimeGuiOperation {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(34);
+    serializer.serializeVariantIndex(35);
     serializer.serializeString(roleId);
     serializer.decreaseContainerDepth();
   }
@@ -2591,7 +2662,7 @@ class AgentRuntimeGuiOperationActivateRoleVersion extends AgentRuntimeGuiOperati
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(35);
+    serializer.serializeVariantIndex(36);
     serializer.serializeString(roleId);
     serializer.serializeString(versionId);
     serializer.decreaseContainerDepth();
@@ -2656,7 +2727,7 @@ class AgentRuntimeGuiOperationArchiveRole extends AgentRuntimeGuiOperation {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(36);
+    serializer.serializeVariantIndex(37);
     serializer.serializeString(roleId);
     serializer.decreaseContainerDepth();
   }
@@ -2715,7 +2786,7 @@ class AgentRuntimeGuiOperationUnarchiveRole extends AgentRuntimeGuiOperation {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(37);
+    serializer.serializeVariantIndex(38);
     serializer.serializeString(roleId);
     serializer.decreaseContainerDepth();
   }
