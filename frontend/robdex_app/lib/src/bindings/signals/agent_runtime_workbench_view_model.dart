@@ -14,6 +14,7 @@ class AgentRuntimeWorkbenchViewModel {
     required this.statusLabel,
     required this.watermarkLabel,
     required this.statusBadges,
+    required this.modelOptions,
     required this.selectedSessionLabel,
     required this.sessionsTitle,
     required this.sessionsSubtitle,
@@ -54,6 +55,7 @@ class AgentRuntimeWorkbenchViewModel {
       statusLabel: deserializer.deserializeString(),
       watermarkLabel: deserializer.deserializeString(),
       statusBadges: TraitHelpers.deserializeVectorAgentRuntimeBadge(deserializer),
+      modelOptions: TraitHelpers.deserializeVectorAgentRuntimeModelOption(deserializer),
       selectedSessionLabel: deserializer.deserializeString(),
       sessionsTitle: deserializer.deserializeString(),
       sessionsSubtitle: deserializer.deserializeString(),
@@ -103,6 +105,7 @@ class AgentRuntimeWorkbenchViewModel {
   final String statusLabel;
   final String watermarkLabel;
   final List<AgentRuntimeBadge> statusBadges;
+  final List<AgentRuntimeModelOption> modelOptions;
   final String selectedSessionLabel;
   final String sessionsTitle;
   final String sessionsSubtitle;
@@ -140,6 +143,7 @@ class AgentRuntimeWorkbenchViewModel {
     String? statusLabel,
     String? watermarkLabel,
     List<AgentRuntimeBadge>? statusBadges,
+    List<AgentRuntimeModelOption>? modelOptions,
     String? selectedSessionLabel,
     String? sessionsTitle,
     String? sessionsSubtitle,
@@ -177,6 +181,7 @@ class AgentRuntimeWorkbenchViewModel {
       statusLabel: statusLabel ?? this.statusLabel,
       watermarkLabel: watermarkLabel ?? this.watermarkLabel,
       statusBadges: statusBadges ?? this.statusBadges,
+      modelOptions: modelOptions ?? this.modelOptions,
       selectedSessionLabel: selectedSessionLabel ?? this.selectedSessionLabel,
       sessionsTitle: sessionsTitle ?? this.sessionsTitle,
       sessionsSubtitle: sessionsSubtitle ?? this.sessionsSubtitle,
@@ -217,6 +222,7 @@ class AgentRuntimeWorkbenchViewModel {
     serializer.serializeString(statusLabel);
     serializer.serializeString(watermarkLabel);
     TraitHelpers.serializeVectorAgentRuntimeBadge(statusBadges, serializer);
+    TraitHelpers.serializeVectorAgentRuntimeModelOption(modelOptions, serializer);
     serializer.serializeString(selectedSessionLabel);
     serializer.serializeString(sessionsTitle);
     serializer.serializeString(sessionsSubtitle);
@@ -267,6 +273,7 @@ class AgentRuntimeWorkbenchViewModel {
       && statusLabel == other.statusLabel
       && watermarkLabel == other.watermarkLabel
       && listEquals(statusBadges, other.statusBadges)
+      && listEquals(modelOptions, other.modelOptions)
       && selectedSessionLabel == other.selectedSessionLabel
       && sessionsTitle == other.sessionsTitle
       && sessionsSubtitle == other.sessionsSubtitle
@@ -306,6 +313,7 @@ class AgentRuntimeWorkbenchViewModel {
         statusLabel,
         watermarkLabel,
         statusBadges,
+        modelOptions,
         selectedSessionLabel,
         sessionsTitle,
         sessionsSubtitle,
@@ -349,6 +357,7 @@ class AgentRuntimeWorkbenchViewModel {
         'statusLabel: $statusLabel, '
         'watermarkLabel: $watermarkLabel, '
         'statusBadges: $statusBadges, '
+        'modelOptions: $modelOptions, '
         'selectedSessionLabel: $selectedSessionLabel, '
         'sessionsTitle: $sessionsTitle, '
         'sessionsSubtitle: $sessionsSubtitle, '

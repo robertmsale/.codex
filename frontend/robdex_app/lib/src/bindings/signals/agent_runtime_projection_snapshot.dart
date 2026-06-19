@@ -11,7 +11,7 @@ class AgentRuntimeProjectionSnapshot {
     required this.actionCount,
     required this.roleCount,
     required this.workflowMemoryCount,
-    this.selectedChatEntries = const [],
+    required this.selectedChatEntries,
   });
 
   static AgentRuntimeProjectionSnapshot deserialize(BinaryDeserializer deserializer) {
@@ -96,8 +96,7 @@ class AgentRuntimeProjectionSnapshot {
       && actionCount == other.actionCount
       && roleCount == other.roleCount
       && workflowMemoryCount == other.workflowMemoryCount
-      && selectedChatEntries.length == other.selectedChatEntries.length
-      && Iterable.generate(selectedChatEntries.length).every((index) => selectedChatEntries[index] == other.selectedChatEntries[index]);
+      && listEquals(selectedChatEntries, other.selectedChatEntries);
   }
 
   @override
@@ -108,7 +107,7 @@ class AgentRuntimeProjectionSnapshot {
         actionCount,
         roleCount,
         workflowMemoryCount,
-        Object.hashAll(selectedChatEntries),
+        selectedChatEntries,
       );
 
   @override

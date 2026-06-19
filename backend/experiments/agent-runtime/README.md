@@ -32,6 +32,16 @@ to use the full vendored Codex provider/client runtime. All direct HTTP,
 Responses request shaping, Codex auth headers, SSE parsing, and raw model
 response handling must stay inside `model::codex_adapter`.
 
+Create Session model choices are Rust-owned. The Agent Runtime constructs model
+options through the vendored Codex `codex-models-manager` `OpenAiModelsManager`
+and its `models_cache.json` cache semantics, using the same auth preference as
+the model adapter: non-expired ChatGPT subscription token material in
+`$CODEX_HOME/auth.json` first, then API-key fallback. Flutter receives these
+options only through generated Rinf `AgentRuntimeWorkbenchViewModel.modelOptions`.
+Dart must not hardcode fallback model names, derive the selectable list from role
+admin draft/detail fields, or add a server environment variable that replaces the
+Codex model manager source.
+
 ## Projection-first GUI/server state boundary
 
 The shared GUI-facing state contract lives in the pure Rust crate

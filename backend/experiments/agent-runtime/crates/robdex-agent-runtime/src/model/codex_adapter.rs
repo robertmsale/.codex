@@ -1,20 +1,27 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
+use codex_models_manager::manager::{ModelsEndpointClient, ModelsManager, OpenAiModelsManager, RefreshStrategy};
+use codex_protocol::error::{CodexErr, Result as CoreResult};
+use codex_protocol::openai_models::{ModelInfo, ModelVisibility};
 use codex_api::ResponsesApiRequest;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
 
 const CHATGPT_CODEX_RESPONSES_URL: &str =
     "https://chatgpt.com/backend-api/codex/responses";
+const CHATGPT_CODEX_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
 const OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
+const OPENAI_MODELS_URL: &str = "https://api.openai.com/v1/models";
 const RAW_MODEL_RESPONSE_LIMIT: usize = 24_000;
 
 pub struct CodexBackedModelClient {
@@ -29,6 +36,19 @@ struct CodexAuthMaterial {
     account_id: Option<String>,
     endpoint: &'static str,
     source: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexModelOption {
+    pub id: String,
+    pub display_label: String,
+    pub source: String,
+    pub is_default: bool,
+}
+
+pub struct CodexModelOptionsProvider {
+    auth_path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,7 +74,7 @@ struct IdTokenClaims {
 impl CodexBackedModelClient {
     pub fn new() -> Result<Self> {
         let model = std::env::var("ROBDEX_AGENT_RUNTIME_MODEL")
-            .unwrap_or_else(|_| "gpt-5.5".to_string());
+            .context("ROBDEX_AGENT_RUNTIME_MODEL must be set when constructing a model client without an explicit session model")?;
         Self::new_with_model(model)
     }
 
@@ -226,6 +246,112 @@ impl CodexBackedModelClient {
             bail!("Responses request failed using {} auth with HTTP {status}: {text}", auth.source);
         }
         parse_responses_body(&text).with_context(|| format!("invalid Responses response body: {text}"))
+    }
+}
+
+impl CodexModelOptionsProvider {
+    pub fn new() -> Self {
+        let home = codex_home();
+        Self {
+            auth_path: home.join("auth.json"),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_for_testing(auth_path: PathBuf) -> Self {
+        Self {
+            auth_path,
+        }
+    }
+
+    pub async fn model_options(&self, force_refresh: bool) -> Result<Vec<CodexModelOption>> {
+        let auth = read_codex_auth(&self.auth_path)?;
+        let codex_home = self.auth_path.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
+        let endpoint = Arc::new(CodexAuthModelsEndpoint {
+            http: reqwest::Client::new(),
+            auth_path: self.auth_path.clone(),
+        });
+        let manager = OpenAiModelsManager::new(
+            codex_home,
+            endpoint,
+            None,
+            CollaborationModesConfig::default(),
+        );
+        let strategy = if force_refresh {
+            RefreshStrategy::Online
+        } else {
+            RefreshStrategy::OnlineIfUncached
+        };
+        let catalog = manager.raw_model_catalog(strategy).await;
+        let chatgpt_auth = auth.endpoint == CHATGPT_CODEX_RESPONSES_URL;
+        let mut options = catalog.models
+            .into_iter()
+            .filter(|model| model.visibility == ModelVisibility::List)
+            .filter(|model| chatgpt_auth || model.supported_in_api)
+            .map(|model| CodexModelOption {
+                id: model.slug,
+                display_label: model.display_name,
+                source: "codex-models-manager".to_string(),
+                is_default: false,
+            })
+            .collect::<Vec<_>>();
+        options.sort_by(|left, right| right.is_default.cmp(&left.is_default).then(left.display_label.to_lowercase().cmp(&right.display_label.to_lowercase())));
+        options.dedup_by(|left, right| left.id == right.id);
+        if options.is_empty() {
+            bail!("Codex models-manager did not return selectable models")
+        }
+        Ok(options)
+    }
+}
+
+#[derive(Debug)]
+struct CodexAuthModelsEndpoint {
+    http: reqwest::Client,
+    auth_path: PathBuf,
+}
+
+#[async_trait]
+impl ModelsEndpointClient for CodexAuthModelsEndpoint {
+    fn has_command_auth(&self) -> bool {
+        true
+    }
+
+    async fn uses_codex_backend(&self) -> bool {
+        read_codex_auth(&self.auth_path)
+            .map(|auth| auth.endpoint == CHATGPT_CODEX_RESPONSES_URL)
+            .unwrap_or(false)
+    }
+
+    async fn list_models(&self, _client_version: &str) -> CoreResult<(Vec<ModelInfo>, Option<String>)> {
+        let auth = read_codex_auth(&self.auth_path).map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+        let url = if auth.endpoint == CHATGPT_CODEX_RESPONSES_URL {
+            CHATGPT_CODEX_MODELS_URL
+        } else {
+            OPENAI_MODELS_URL
+        };
+        let response = self
+            .http
+            .get(url)
+            .headers(CodexBackedModelClient::request_headers(&auth).map_err(|error| CodexErr::InvalidRequest(error.to_string()))?)
+            .send()
+            .await
+            .map_err(|error| CodexErr::InvalidRequest(format!("Codex model-options request failed for {url}: {error}")))?;
+        let etag = response
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(ToString::to_string);
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(CodexErr::InvalidRequest(format!(
+                "Codex model-options request failed using {} auth with HTTP {status}: {text}",
+                auth.source
+            )));
+        }
+        let catalog: codex_protocol::openai_models::ModelsResponse = serde_json::from_str(&text)
+            .map_err(|error| CodexErr::InvalidRequest(format!("invalid Codex model-options body: {error}: {text}")))?;
+        Ok((catalog.models, etag))
     }
 }
 
@@ -452,11 +578,15 @@ fn id_token_is_not_expired(id_token: Option<&str>) -> bool {
     let Some(exp) = claims.exp else {
         return false;
     };
-    let now = SystemTime::now()
+    let now = unix_now();
+    exp > now + 60
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(i64::MAX);
-    exp > now + 60
+        .unwrap_or(i64::MAX)
 }
 
 fn base64_url_decode(input: &str) -> Option<Vec<u8>> {
@@ -606,6 +736,7 @@ fn truncate_string(input: &str, limit: usize) -> (String, bool) {
 #[cfg(test)]
 mod cache_stable_tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn command(action: &str) -> crate::command_registry::CommandVersion {
         crate::command_registry::CommandVersion {
@@ -753,5 +884,67 @@ mod cache_stable_tests {
         assert_eq!(headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok()), Some("Bearer chatgpt-access"));
         assert_eq!(headers.get("chatgpt-account-id").and_then(|value| value.to_str().ok()), Some("account-123"));
         assert_eq!(headers.get("originator").and_then(|value| value.to_str().ok()), Some("codex_cli_rs"));
+    }
+
+    #[derive(Debug)]
+    struct CountingModelsEndpoint {
+        calls: Arc<AtomicUsize>,
+        models: Vec<ModelInfo>,
+    }
+
+    #[async_trait]
+    impl ModelsEndpointClient for CountingModelsEndpoint {
+        fn has_command_auth(&self) -> bool {
+            true
+        }
+
+        async fn uses_codex_backend(&self) -> bool {
+            true
+        }
+
+        async fn list_models(&self, _client_version: &str) -> CoreResult<(Vec<ModelInfo>, Option<String>)> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok((self.models.clone(), Some("etag-test".to_string())))
+        }
+    }
+
+    #[tokio::test]
+    async fn vendored_models_manager_cache_serves_model_options_without_second_fetch() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let model = codex_models_manager::bundled_models_response()
+            .expect("bundled models")
+            .models
+            .into_iter()
+            .next()
+            .expect("at least one bundled model");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let endpoint = Arc::new(CountingModelsEndpoint {
+            calls: calls.clone(),
+            models: vec![model],
+        });
+        let manager = OpenAiModelsManager::new(
+            dir.path().to_path_buf(),
+            endpoint,
+            None,
+            CollaborationModesConfig::default(),
+        );
+
+        let first = manager.list_models(RefreshStrategy::OnlineIfUncached).await;
+        let second = manager.list_models(RefreshStrategy::OnlineIfUncached).await;
+
+        assert!(!first.is_empty());
+        assert_eq!(first, second);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(dir.path().join("models_cache.json").exists());
+    }
+
+    #[tokio::test]
+    async fn unavailable_model_options_surface_auth_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let provider = CodexModelOptionsProvider::new_for_testing(dir.path().join("auth.json"));
+
+        let error = provider.model_options(false).await.expect_err("missing auth must fail");
+
+        assert!(error.to_string().contains("Codex auth.json does not contain a non-expired ChatGPT token"));
     }
 }

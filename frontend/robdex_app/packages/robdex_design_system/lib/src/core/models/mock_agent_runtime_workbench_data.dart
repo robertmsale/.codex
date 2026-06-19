@@ -482,6 +482,9 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
     AgentRuntimeStatusBadge(label: 'Command inventory', value: '1', tone: 'info'),
     AgentRuntimeStatusBadge(label: 'Timeline', value: '2', tone: 'info'),
   ],
+  modelOptions: [
+    AgentRuntimeModelOption(id: 'codex-live-model', displayLabel: 'Codex live model', source: 'codex-auth-json', isDefault: true),
+  ],
   selectedSessionLabel: 'Runtime validation',
   sessionsTitle: 'Sessions (2)',
   sessionsSubtitle: 'Sessions needing attention',

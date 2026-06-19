@@ -26,6 +26,7 @@ part 'agent_runtime_discovery_view.dart';
 part 'agent_runtime_fact.dart';
 part 'agent_runtime_final_execution_policy.dart';
 part 'agent_runtime_gui_operation.dart';
+part 'agent_runtime_model_option.dart';
 part 'agent_runtime_operation_result.dart';
 part 'agent_runtime_operation_surface.dart';
 part 'agent_runtime_output.dart';

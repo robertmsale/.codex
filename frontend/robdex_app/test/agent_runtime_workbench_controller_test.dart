@@ -138,6 +138,7 @@ void main() {
         actionCount: 1,
         roleCount: 2,
         workflowMemoryCount: 1,
+        selectedChatEntries: [],
       ),
     ));
     expect(controller.data.watermarkLabel, '42');
@@ -1053,7 +1054,7 @@ void main() {
       expect(find.text(label), findsOneWidget);
     }
     expect(find.byKey(const ValueKey('agentRuntime.createSession.model')), findsOneWidget);
-    expect(find.text('gpt-5.5'), findsNothing);
+    expect(find.text('Codex live model'), findsOneWidget);
 
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.createSession.title')), 'Live Test Session');
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.createSession.workdir')), '/work/live');
@@ -1064,11 +1065,57 @@ void main() {
 
     expect(submitted, isNotNull);
     expect(submitted!['project'], 'project-a');
-    expect(submitted!['model'], mockAgentRuntimeConnected.roleAdmin.selectedDetail!.model);
+    expect(submitted!['model'], mockAgentRuntimeConnected.modelOptions.single.id);
     expect(submitted!['title'], 'Live Test Session');
     expect(submitted!['name'], 'live-test-session');
     expect(submitted!['workdir'], '/work/live');
     expect(submitted!['worktreeRoot'], '/work/live/root');
+  });
+
+  testWidgets('Create Session modal blocks unavailable model options with inline recovery text', (tester) async {
+    Map<String, String>? submitted;
+    const shell = ConversationShellData(
+      appTitle: 'Agent Runtime',
+      connectionLabel: 'Runtime healthy',
+      projects: [
+        ConversationProject(id: '__unassigned__', title: 'Unassigned'),
+      ],
+      sessions: [],
+      selectedSessionId: null,
+      timelineTitle: 'Selected session',
+      entries: [],
+      composerEnabled: false,
+      isRunning: false,
+      detailTitle: 'Operations',
+      detailSections: [],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentRuntimeCreateSessionDialog(
+            shell: shell,
+            data: mockAgentRuntimeConnected.copyWith(modelOptions: const []),
+            onCreate: ({
+              required role,
+              required project,
+              required model,
+              required workdir,
+              required worktreeRoot,
+              required title,
+              required name,
+            }) {
+              submitted = {'model': model};
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(find.textContaining('Model options are unavailable'), findsOneWidget);
+    expect(find.byKey(const ValueKey('agentRuntime.createSession.noModel')), findsOneWidget);
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Create')).onPressed, isNull);
+    expect(submitted, isNull);
   });
 
   testWidgets('Project Settings modal saves every field and exposes archive and unarchive typed actions', (tester) async {

@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:robdex_app/robdex_app.dart';
 import 'package:robdex_design_system/robdex_design_system.dart';
 
 void main() {
@@ -151,6 +152,19 @@ class RobdexDesignLabHome extends StatelessWidget {
     }
     if (surface == 'agentRuntimeSelectedSessionTranscript') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);
+    }
+    if (surface == 'agentRuntimeCreateSessionModal') {
+      return Scaffold(
+        backgroundColor: const Color(0xFF0E141B),
+        body: Center(
+          child: AgentRuntimeCreateSessionDialog(
+            shell: agentRuntimeConversationShellData(mockAgentRuntimeConnected),
+            data: mockAgentRuntimeConnected,
+            initialProjectId: 'project-a',
+            onCreate: ({required role, required project, required model, required workdir, required worktreeRoot, required title, required name}) {},
+          ),
+        ),
+      );
     }
     if (surface == 'agentRuntimeRoleManagementDetail') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'roleAdmin');

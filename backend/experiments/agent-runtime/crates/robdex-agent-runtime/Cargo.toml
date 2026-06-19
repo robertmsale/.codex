@@ -35,6 +35,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "ti
 tokio-tungstenite = "0.27"
 uuid = { version = "1", features = ["v4", "serde"] }
 codex-api = { path = "../../../../vendor/codex/codex-rs/codex-api" }
+codex-models-manager = { path = "../../../../vendor/codex/codex-rs/models-manager" }
+codex-protocol = { path = "../../../../vendor/codex/codex-rs/protocol" }
 wait-timeout = "0.2"
 async-trait = "0.1"
 libc = "0.2"

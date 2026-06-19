@@ -350,7 +350,13 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
             : '__unassigned__';
     _role = widget.data.roleAdmin.rows.isNotEmpty ? widget.data.roleAdmin.rows.first.id : '';
     final models = _modelOptions();
-    _model = models.isNotEmpty ? models.first : '';
+    final roleDefault = widget.data.roleAdmin.selectedDetail?.model.trim() ?? '';
+    final modelIds = models.map((model) => model.id).toSet();
+    _model = roleDefault.isNotEmpty && modelIds.contains(roleDefault)
+        ? roleDefault
+        : models.isNotEmpty
+            ? models.first.id
+            : '';
     _title = TextEditingController(text: 'New session');
     _name = TextEditingController(text: _sessionNameFromTitle('New session'));
     _title.addListener(_syncGeneratedName);
@@ -372,12 +378,14 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
   Widget build(BuildContext context) {
     final projects = widget.shell.projects.where((project) => project.id.isNotEmpty && project.id != '__all__').toList(growable: false);
     final roles = widget.data.roleAdmin.rows.where((role) => role.id.isNotEmpty).toList(growable: false);
-    final models = _modelOptions();
+    final modelOptions = _modelOptions();
+    final modelOptionIds = modelOptions.map((model) => model.id).toList(growable: false);
+    final modelOptionsUnavailable = modelOptions.isEmpty;
     return AlertDialog(
       title: const Text('Create session'),
       contentPadding: const EdgeInsets.fromLTRB(24, 12, 24, 10),
       content: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: 680, maxHeight: MediaQuery.of(context).size.height * 0.78),
+        constraints: BoxConstraints(maxWidth: 700, maxHeight: MediaQuery.of(context).size.height * 0.86),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -390,6 +398,13 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
               if (_error != null) ...[
                 const SizedBox(height: 14),
                 _RuntimeFormNotice(message: _error!, tone: _RuntimeFormNoticeTone.error),
+              ],
+              if (modelOptionsUnavailable) ...[
+                const SizedBox(height: 14),
+                const _RuntimeFormNotice(
+                  message: 'Model options are unavailable. Refresh the runtime connection or fix Codex auth, then reopen Create session.',
+                  tone: _RuntimeFormNoticeTone.error,
+                ),
               ],
               const SizedBox(height: 18),
               _RuntimeFormSection(
@@ -423,8 +438,8 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
                     ),
                     _RuntimeLabeledField(
                       label: 'Model',
-                      helper: models.isEmpty ? 'No model options were provided by the runtime projection.' : 'Model option supplied by Rust-owned runtime data.',
-                      child: models.isEmpty
+                      helper: modelOptions.isEmpty ? 'No model options were provided by the runtime projection.' : 'Model option supplied by Rust-owned runtime data.',
+                      child: modelOptions.isEmpty
                           ? TextField(
                               key: const ValueKey('agentRuntime.createSession.noModel'),
                               enabled: false,
@@ -432,9 +447,9 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
                             )
                           : DropdownButtonFormField<String>(
                               key: const ValueKey('agentRuntime.createSession.model'),
-                              initialValue: models.contains(_model) ? _model : models.first,
-                              items: [for (final model in models) DropdownMenuItem(value: model, child: Text(model, overflow: TextOverflow.ellipsis))],
-                              onChanged: (value) => setState(() => _model = value ?? models.first),
+                              initialValue: modelOptionIds.contains(_model) ? _model : modelOptionIds.first,
+                              items: [for (final model in modelOptions) DropdownMenuItem(value: model.id, child: Text(model.displayLabel, overflow: TextOverflow.ellipsis))],
+                              onChanged: (value) => setState(() => _model = value ?? modelOptionIds.first),
                               isExpanded: true,
                               decoration: _runtimeInputDecoration(hintText: 'Choose model'),
                             ),
@@ -503,7 +518,7 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
       ),
       actions: [
         TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
-        FilledButton(onPressed: _submit, child: const Text('Create')),
+        FilledButton(onPressed: modelOptionsUnavailable ? null : _submit, child: const Text('Create')),
       ],
     );
   }
@@ -536,12 +551,12 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
     Navigator.of(context).pop();
   }
 
-  List<String> _modelOptions() {
-    final models = <String>{
-      if ((widget.data.roleAdmin.selectedDetail?.model ?? '').trim().isNotEmpty) widget.data.roleAdmin.selectedDetail!.model.trim(),
-      if ((widget.data.roleAdmin.editorDraft?.model ?? '').trim().isNotEmpty) widget.data.roleAdmin.editorDraft!.model.trim(),
-    }.toList(growable: false);
-    return models;
+  List<AgentRuntimeModelOption> _modelOptions() {
+    final seen = <String>{};
+    return widget.data.modelOptions.where((model) {
+      final id = model.id.trim();
+      return id.isNotEmpty && seen.add(id);
+    }).toList(growable: false);
   }
 
   void _syncGeneratedName() {
@@ -590,25 +605,15 @@ class _RuntimeFormSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.32),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: theme.colorScheme.outlineVariant.withValues(alpha: 0.48)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(title, style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 4),
-            Text(description, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-            const SizedBox(height: 14),
-            ...children,
-          ],
-        ),
-      ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(title, style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        Text(description, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+        const SizedBox(height: 10),
+        ...children,
+      ],
     );
   }
 }
@@ -626,7 +631,7 @@ class _RuntimeFormGrid extends StatelessWidget {
       children: [
         for (final child in children)
           SizedBox(
-            width: 292,
+            width: 180,
             child: child,
           ),
       ],
@@ -650,7 +655,7 @@ class _RuntimeLabeledField extends StatelessWidget {
         Text(label, style: theme.textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700)),
         const SizedBox(height: 7),
         child,
-        if (helper != null && helper!.trim().isNotEmpty) ...[
+        if (helper != null && helper!.trim().startsWith('No model options')) ...[
           const SizedBox(height: 6),
           Text(helper!, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
         ],

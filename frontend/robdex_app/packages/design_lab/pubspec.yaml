@@ -10,6 +10,8 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
+  robdex_app:
+    path: ../..
   robdex_design_system:
     path: ../robdex_design_system
 

@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::model::codex_adapter::CodexModelOptionsProvider;
 use crate::gui_backend::GuiBackendController;
 use crate::gui_sync::SyncOutcome;
 
@@ -113,6 +114,7 @@ pub struct AgentRuntimeWorkbenchViewModel {
     pub status_label: String,
     pub watermark_label: String,
     pub status_badges: Vec<AgentRuntimeWorkbenchBadge>,
+    pub model_options: Vec<AgentRuntimeModelOption>,
     pub selected_session_label: String,
     pub sessions_title: String,
     pub sessions_subtitle: String,
@@ -138,6 +140,15 @@ pub struct AgentRuntimeWorkbenchViewModel {
     pub pending_request_count: usize,
     pub error_message: Option<String>,
     pub shell: AgentRuntimeConversationShellViewModel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeModelOption {
+    pub id: String,
+    pub display_label: String,
+    pub source: String,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -427,6 +438,7 @@ impl AgentRuntimeWorkbenchViewModel {
         discovery: &AgentRuntimeDiscoveryView,
         remote_discovery: &AgentRuntimeDiscoveryView,
         imported_remote_discovery: &AgentRuntimeDiscoveryView,
+        model_options: &[AgentRuntimeModelOption],
     ) -> Self {
         let base_url = base_url.into();
         let sessions = projection
@@ -466,6 +478,7 @@ impl AgentRuntimeWorkbenchViewModel {
                 .map(|projection| projection.watermark.to_string())
                 .unwrap_or_else(|| "—".to_string()),
             status_badges: status_badges(projection, controller_state, pending_request_count),
+            model_options: model_options.to_vec(),
             selected_session_label: selected_session_label.clone(),
             sessions_title: projection
                 .map(|projection| format!("Sessions ({})", projection.sessions.len()))
@@ -1962,6 +1975,8 @@ struct GuiTransportRunner {
     remote_discovery: AgentRuntimeDiscoveryView,
     imported_remote_discovery: AgentRuntimeDiscoveryView,
     selected_project_id: Option<String>,
+    model_options: Vec<AgentRuntimeModelOption>,
+    model_options_error: Option<String>,
 }
 
 impl GuiTransportRunner {
@@ -1975,6 +1990,8 @@ impl GuiTransportRunner {
             remote_discovery: AgentRuntimeDiscoveryView::not_loaded_remote(),
             imported_remote_discovery: AgentRuntimeDiscoveryView::not_loaded_imported(),
             selected_project_id: None,
+            model_options: Vec::new(),
+            model_options_error: None,
         }
     }
 
@@ -2012,6 +2029,27 @@ impl GuiTransportRunner {
                     | GuiOperationRequest::FlushProcess { .. },
             } => false,
             _ => true,
+        }
+    }
+
+    async fn refresh_model_options(&mut self, force_refresh: bool) {
+        match CodexModelOptionsProvider::new().model_options(force_refresh).await {
+            Ok(options) => {
+                self.model_options = options
+                    .into_iter()
+                    .map(|option| AgentRuntimeModelOption {
+                        id: option.id,
+                        display_label: option.display_label,
+                        source: option.source,
+                        is_default: option.is_default,
+                    })
+                    .collect();
+                self.model_options_error = None;
+            }
+            Err(err) => {
+                self.model_options.clear();
+                self.model_options_error = Some(format!("Model options unavailable: {err}"));
+            }
         }
     }
 
@@ -2062,6 +2100,7 @@ impl GuiTransportRunner {
                     )
                 })?;
                 self.base_url = base_url.clone();
+                self.refresh_model_options(false).await;
                 let result = self
                     .controller
                     .dispatch(GuiOperationRequest::Connect {
@@ -2091,6 +2130,7 @@ impl GuiTransportRunner {
                     )
                 })?;
                 self.base_url = base_url.clone();
+                self.refresh_model_options(false).await;
                 let result = self
                     .controller
                     .dispatch(GuiOperationRequest::Connect {
@@ -2117,6 +2157,7 @@ impl GuiTransportRunner {
                     )
                 })?;
                 self.base_url = base_url.clone();
+                self.refresh_model_options(false).await;
                 let result = self
                     .controller
                     .dispatch(GuiOperationRequest::Connect {
@@ -2132,6 +2173,7 @@ impl GuiTransportRunner {
             } => {
                 let base_url = normalize_manual_base_url(&base_url)?;
                 self.base_url = base_url.clone();
+                self.refresh_model_options(false).await;
                 let result = self
                     .controller
                     .dispatch(GuiOperationRequest::Connect {
@@ -2142,6 +2184,7 @@ impl GuiTransportRunner {
                 Ok(self.operation_outputs(result))
             }
             GuiTransportRequest::Hydrate { selected_session_id } => {
+                self.refresh_model_options(false).await;
                 let result = self
                     .controller
                     .dispatch(GuiOperationRequest::Hydrate { selected_session_id })
@@ -2159,6 +2202,7 @@ impl GuiTransportRunner {
                 Ok(vec![])
             }
             GuiTransportRequest::Rehydrate { selected_session_id } => {
+                self.refresh_model_options(false).await;
                 let result = self
                     .controller
                     .dispatch(GuiOperationRequest::Rehydrate { selected_session_id })
@@ -2222,11 +2266,18 @@ impl GuiTransportRunner {
             &self.discovery,
             &self.remote_discovery,
             &self.imported_remote_discovery,
+            &self.model_options,
         );
         if let Some(project_id) = &self.selected_project_id {
             view_model.shell.settings.push(AgentRuntimeWorkbenchFact {
                 label: "Selected project".to_string(),
                 value: project_id.clone(),
+            });
+        }
+        if let Some(error) = &self.model_options_error {
+            view_model.shell.settings.push(AgentRuntimeWorkbenchFact {
+                label: "Model options".to_string(),
+                value: error.clone(),
             });
         }
         GuiTransportOutputPacket {
@@ -3708,6 +3759,7 @@ mod tests {
             &view,
             &AgentRuntimeDiscoveryView::not_loaded_remote(),
             &AgentRuntimeDiscoveryView::not_loaded_imported(),
+            &[],
         );
         assert_eq!(control.discovery.state, "unhealthy");
         assert_eq!(control.discovery.title, "Local runtime is unhealthy");
@@ -4368,6 +4420,7 @@ mod tests {
             &AgentRuntimeDiscoveryView::default(),
             &AgentRuntimeDiscoveryView::not_loaded_remote(),
             &AgentRuntimeDiscoveryView::not_loaded_imported(),
+            &[],
         );
 
         assert_eq!(view.connection_state, "streaming");
@@ -4542,6 +4595,7 @@ mod tests {
                 &AgentRuntimeDiscoveryView::default(),
                 &AgentRuntimeDiscoveryView::not_loaded_remote(),
                 &AgentRuntimeDiscoveryView::not_loaded_imported(),
+                &[],
             )
         };
         let shell = AgentRuntimeConversationShellViewModel::from_workbench(&view, None, &GuiControllerState::default());
@@ -4549,6 +4603,29 @@ mod tests {
         assert_eq!(shell.dynamic_roles[0].display_label, "Neon Incident Commander");
         assert_eq!(shell.dynamic_roles[0].short_label, "NI");
         assert_eq!(shell.dynamic_roles[0].tone, "warning");
+    }
+
+    #[test]
+    fn workbench_view_projects_rust_owned_model_options_into_gui_contract() {
+        let model_options = vec![AgentRuntimeModelOption {
+            id: "codex-owned-model".to_string(),
+            display_label: "Codex owned model".to_string(),
+            source: "codex-auth-json".to_string(),
+            is_default: true,
+        }];
+        let view = AgentRuntimeWorkbenchViewModel::from_runtime_state(
+            "http://127.0.0.1:8765",
+            None,
+            &GuiControllerState::default(),
+            &[],
+            0,
+            None,
+            &AgentRuntimeDiscoveryView::default(),
+            &AgentRuntimeDiscoveryView::not_loaded_remote(),
+            &AgentRuntimeDiscoveryView::not_loaded_imported(),
+            &model_options,
+        );
+        assert_eq!(view.model_options, model_options);
     }
 
     #[test]
@@ -4625,6 +4702,7 @@ mod tests {
             &AgentRuntimeDiscoveryView::default(),
             &AgentRuntimeDiscoveryView::not_loaded_remote(),
             &AgentRuntimeDiscoveryView::not_loaded_imported(),
+            &[],
         );
         assert_eq!(default_view.workflow_memory.selected_memory_id.as_deref(), Some("memory-a"));
         assert_eq!(default_view.workflow_memory.selected_detail.as_ref().map(|detail| detail.id.as_str()), Some("memory-a"));
@@ -4641,6 +4719,7 @@ mod tests {
             &AgentRuntimeDiscoveryView::default(),
             &AgentRuntimeDiscoveryView::not_loaded_remote(),
             &AgentRuntimeDiscoveryView::not_loaded_imported(),
+            &[],
         );
         assert_eq!(selected_view.workflow_memory.selected_memory_id.as_deref(), Some("memory-b"));
         assert_eq!(selected_view.workflow_memory.selected_detail.as_ref().map(|detail| detail.id.as_str()), Some("memory-b"));
@@ -4658,6 +4737,7 @@ mod tests {
             &AgentRuntimeDiscoveryView::default(),
             &AgentRuntimeDiscoveryView::not_loaded_remote(),
             &AgentRuntimeDiscoveryView::not_loaded_imported(),
+            &[],
         );
         assert_eq!(fallback_view.workflow_memory.selected_memory_id.as_deref(), Some("memory-a"));
         assert_eq!(fallback_view.workflow_memory.selected_detail.as_ref().map(|detail| detail.id.as_str()), Some("memory-a"));

@@ -267,6 +267,7 @@ pub struct AgentRuntimeWorkbenchViewModel {
     pub status_label: String,
     pub watermark_label: String,
     pub status_badges: Vec<AgentRuntimeBadge>,
+    pub model_options: Vec<AgentRuntimeModelOption>,
     pub selected_session_label: String,
     pub sessions_title: String,
     pub sessions_subtitle: String,
@@ -293,6 +294,15 @@ pub struct AgentRuntimeWorkbenchViewModel {
     pub error_message: String,
     pub has_error_message: bool,
     pub shell: AgentRuntimeConversationShellViewModel,
+}
+
+#[derive(Clone, Debug, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeModelOption {
+    pub id: String,
+    pub display_label: String,
+    pub source: String,
+    pub is_default: bool,
 }
 
 #[derive(Clone, Debug, Serialize, SignalPiece)]

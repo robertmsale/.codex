@@ -855,6 +855,7 @@ AgentRuntimeWorkbenchData _workbenchData(bindings.AgentRuntimeWorkbenchViewModel
     statusLabel: view.statusLabel,
     watermarkLabel: view.watermarkLabel,
     statusBadges: view.statusBadges.map(_badge).toList(growable: false),
+    modelOptions: view.modelOptions.map(_modelOption).toList(growable: false),
     selectedSessionLabel: view.selectedSessionLabel,
     sessionsTitle: view.sessionsTitle,
     sessionsSubtitle: view.sessionsSubtitle,
@@ -883,6 +884,13 @@ AgentRuntimeWorkbenchData _workbenchData(bindings.AgentRuntimeWorkbenchViewModel
     errorMessage: view.hasErrorMessage ? view.errorMessage : null,
   );
 }
+
+AgentRuntimeModelOption _modelOption(bindings.AgentRuntimeModelOption option) => AgentRuntimeModelOption(
+      id: option.id,
+      displayLabel: option.displayLabel,
+      source: option.source,
+      isDefault: option.isDefault,
+    );
 
 ConversationShellData _shellData(bindings.AgentRuntimeConversationShellViewModel view) {
   final roles = {for (final role in view.dynamicRoles) role.roleId: role};

@@ -11,6 +11,7 @@ class AgentRuntimeWorkbenchData {
     required this.statusLabel,
     required this.watermarkLabel,
     required this.statusBadges,
+    this.modelOptions = const [],
     required this.selectedSessionLabel,
     required this.sessionsTitle,
     required this.sessionsSubtitle,
@@ -48,6 +49,7 @@ class AgentRuntimeWorkbenchData {
   final String statusLabel;
   final String watermarkLabel;
   final List<AgentRuntimeStatusBadge> statusBadges;
+  final List<AgentRuntimeModelOption> modelOptions;
   final String selectedSessionLabel;
   final String sessionsTitle;
   final String sessionsSubtitle;
@@ -92,6 +94,7 @@ class AgentRuntimeWorkbenchData {
       statusLabel: '${json['statusLabel'] ?? 'No projection packet'}',
       watermarkLabel: '${json['watermarkLabel'] ?? '—'}',
       statusBadges: _objects(json['statusBadges']).map(AgentRuntimeStatusBadge.fromJson).toList(growable: false),
+      modelOptions: _objects(json['modelOptions']).map(AgentRuntimeModelOption.fromJson).toList(growable: false),
       selectedSessionLabel: '${json['selectedSessionLabel'] ?? 'none selected'}',
       sessionsTitle: '${json['sessionsTitle'] ?? 'Sessions'}',
       sessionsSubtitle: '${json['sessionsSubtitle'] ?? ''}',
@@ -135,6 +138,7 @@ class AgentRuntimeWorkbenchData {
     String? statusLabel,
     String? watermarkLabel,
     List<AgentRuntimeStatusBadge>? statusBadges,
+    List<AgentRuntimeModelOption>? modelOptions,
     String? selectedSessionLabel,
     String? sessionsTitle,
     String? sessionsSubtitle,
@@ -172,6 +176,7 @@ class AgentRuntimeWorkbenchData {
       statusLabel: statusLabel ?? this.statusLabel,
       watermarkLabel: watermarkLabel ?? this.watermarkLabel,
       statusBadges: statusBadges ?? this.statusBadges,
+      modelOptions: modelOptions ?? this.modelOptions,
       selectedSessionLabel: selectedSessionLabel ?? this.selectedSessionLabel,
       sessionsTitle: sessionsTitle ?? this.sessionsTitle,
       sessionsSubtitle: sessionsSubtitle ?? this.sessionsSubtitle,
@@ -198,6 +203,29 @@ class AgentRuntimeWorkbenchData {
       outputLog: outputLog ?? this.outputLog,
       pendingRequestCount: pendingRequestCount ?? this.pendingRequestCount,
       errorMessage: errorMessage ?? this.errorMessage,
+    );
+  }
+}
+
+class AgentRuntimeModelOption {
+  const AgentRuntimeModelOption({
+    required this.id,
+    required this.displayLabel,
+    required this.source,
+    this.isDefault = false,
+  });
+
+  final String id;
+  final String displayLabel;
+  final String source;
+  final bool isDefault;
+
+  factory AgentRuntimeModelOption.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeModelOption(
+      id: '${json['id'] ?? ''}',
+      displayLabel: '${json['displayLabel'] ?? json['id'] ?? ''}',
+      source: '${json['source'] ?? ''}',
+      isDefault: json['isDefault'] == true,
     );
   }
 }

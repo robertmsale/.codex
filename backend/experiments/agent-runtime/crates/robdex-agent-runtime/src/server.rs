@@ -303,17 +303,16 @@ async fn snapshot(
                 "model": role.model,
             }))
             .collect::<Vec<_>>();
-        let mut models = projection
-            .roles
-            .iter()
-            .filter_map(|role| role.model.clone())
-            .collect::<Vec<_>>();
-        models.sort();
-        models.dedup();
-        let model_options = models
-            .into_iter()
-            .map(|model| json!({"id": model, "displayLabel": model, "source": "role model defaults"}))
-            .collect::<Vec<_>>();
+        let (model_options, model_options_error) = match crate::model::codex_adapter::CodexModelOptionsProvider::new().model_options(false).await {
+            Ok(options) => (
+                options
+                    .into_iter()
+                    .map(|model| json!({"id": model.id, "displayLabel": model.display_label, "source": model.source, "isDefault": model.is_default}))
+                    .collect::<Vec<_>>(),
+                None,
+            ),
+            Err(error) => (Vec::new(), Some(format!("Model options unavailable: {error}"))),
+        };
         let mut project_options = vec![
             json!({"id": "__all__", "displayLabel": "All", "selected": selected_project_id.is_none()}),
             json!({"id": "__unassigned__", "displayLabel": "Unassigned", "selected": selected_project_id.as_deref() == Some("__unassigned__")}),
@@ -355,6 +354,7 @@ async fn snapshot(
         object.insert("sessionList".to_string(), json!(projection.sessions));
         object.insert("roleOptions".to_string(), json!(role_options));
         object.insert("modelOptions".to_string(), json!(model_options));
+        object.insert("modelOptionsError".to_string(), json!(model_options_error));
         object.insert("projectOptions".to_string(), json!(project_options));
         object.insert("watermarkDeltaMetadata".to_string(), json!({
             "watermark": projection.watermark,
@@ -2894,6 +2894,7 @@ mod tests {
             &crate::rinf_transport::AgentRuntimeDiscoveryView::default(),
             &crate::rinf_transport::AgentRuntimeDiscoveryView::default(),
             &crate::rinf_transport::AgentRuntimeDiscoveryView::default(),
+            &[],
         );
         assert_eq!(view.shell.selected_session_id.as_deref(), Some(session_id.to_string().as_str()));
         assert!(
