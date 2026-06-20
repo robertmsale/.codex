@@ -899,6 +899,59 @@ do not dump unbounded stdout, stderr, or combined streams into model-visible
 responses. Retrieval is session-scoped: an artifact id alone is not sufficient
 to read output from a different session.
 
+## Model input context management
+
+Agent Runtime assembles production Responses requests statelessly in Rust. The
+runtime does not rely on `previous_response_id`, and production role/runtime
+context is not placed in the Responses `instructions` field. Each model turn is
+assembled from PostgreSQL state into an explicit input array.
+
+The first active developer item is a machine-readable role block:
+
+```xml
+<role_instructions epoch="role-key:role-version:role-version-id" role_key="..." role_version="...">
+...
+</role_instructions>
+```
+
+Role instructions are not additive. The latest `role_instructions` block is the
+active role authority. The next developer item is a machine-readable runtime
+snapshot:
+
+```xml
+<runtime_context epoch="...">
+  <session_id>...</session_id>
+  <project key="...">...</project>
+  <cwd state="known|unavailable" source="session.workdir|unavailable">...</cwd>
+  <role epoch="..." key="..." version="..." />
+  <model>...</model>
+  <tools command_context_id="..." visible_command_count="..." />
+  <context_event_watermark>...</context_event_watermark>
+</runtime_context>
+```
+
+Every session has either a canonical CWD or an explicit unavailable CWD state.
+`Unassigned` means no project assignment; it does not silently mean unknown CWD.
+When CWD is known, the model can answer CWD questions from developer context
+without a tool call. When CWD is unavailable, context says so and CWD-dependent
+runtime actions must be unavailable rather than guessed.
+
+Runtime context snapshots and context events are durable PostgreSQL rows in
+`session_context_snapshots` and `session_context_events`. Model request evidence
+records role/context epoch metadata, the context event watermark, prompt cache
+key, and whether compacted state was present. Dart does not author or inject
+these messages; it sends only user/UI lifecycle intents through Rinf.
+
+Tool/command registry changes, CWD changes, sandbox/policy changes, and role
+metadata changes are represented as typed context events. The next model turn
+receives bounded developer context rather than raw oversized registry JSON.
+
+Same-role compaction may use the runtime compaction flow as a replacement base
+window. If a retained visible window contains stale role/context blocks, the
+Rust assembler normalizes the visible window before the next request. Role or
+policy authority changes are role-epoch boundaries; opaque compaction state is
+not an auditable authority boundary for security-sensitive role isolation.
+
 ## Compaction checkpoints
 
 Long sessions stop replaying all completed turns once a durable compaction
@@ -1166,7 +1219,7 @@ Reserved future action names documented but not implemented here:
 - `message.send`
 - `message.route`
 
-Manifest decision values are `allow`, `deny`, `ownerApproval`, and `orchestratorApproval`. Runtime policy maps approval decisions to `approvalRequired` and does not execute those actions in this task. Missing action policy defaults to deny. Policy is execution authority; `capabilities` are validated to exactly match policy keys so they cannot contradict enforcement. Sessions store immutable role snapshots at creation time; turns use the stored snapshot rather than rereading the latest manifest. The direct Responses adapter receives the model name and instruction text from the session snapshot. Reasoning effort is stored in the DB role version and snapshot but is not applied by the current direct adapter yet.
+Manifest decision values are `allow`, `deny`, `ownerApproval`, and `orchestratorApproval`. Runtime policy maps approval decisions to `approvalRequired` and does not execute those actions in this task. Missing action policy defaults to deny. Policy is execution authority; `capabilities` are validated to exactly match policy keys so they cannot contradict enforcement. Sessions store immutable role snapshots at creation time; turns use the stored snapshot rather than rereading the latest manifest. The direct Responses adapter receives the model name and role snapshot from the session snapshot, then emits role instructions as a tagged developer input block through the Rust-owned model-input assembler. Reasoning effort is stored in the DB role version and snapshot but is not applied by the current direct adapter yet.
 
 
 ## Role Admin GUI/editor contract

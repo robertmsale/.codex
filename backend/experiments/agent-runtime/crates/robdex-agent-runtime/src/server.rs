@@ -1273,6 +1273,7 @@ mod tests {
     #[derive(Default, Clone)]
     struct FakeModelClient {
         observed_history: Arc<StdMutex<Vec<Vec<ModelHistoryItem>>>>,
+        observed_request_shapes: Arc<StdMutex<Vec<Value>>>,
         request_error: Option<&'static str>,
         final_error: Option<&'static str>,
         direct_final_text: Option<&'static str>,
@@ -1295,7 +1296,7 @@ mod tests {
 
     #[async_trait]
     impl ModelClient for FakeModelClient {
-        async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> anyhow::Result<ModelInitialTurn> {
+        async fn request_tool_call(&self, role: &crate::roles::RoleSnapshot, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> anyhow::Result<ModelInitialTurn> {
             self.observed_history.lock().expect("history lock").push(history.to_vec());
             if let Some(message) = self.request_error {
                 anyhow::bail!("{message}");
@@ -1306,13 +1307,14 @@ mod tests {
             let model_name = self.model_name.unwrap_or("fake-model");
             let request_shape = crate::model::codex_adapter::CodexBackedModelClient::request_tool_call_request_shape(
                 model_name,
-                role_instructions,
+                role,
                 history,
                 runtime_messages,
                 execute_code_contract,
                 request_registry_contract,
                 message,
             );
+            self.observed_request_shapes.lock().expect("request shapes").push(request_shape.clone());
             if let Some(final_text) = self.direct_final_text {
                 return Ok(ModelInitialTurn::FinalResponse(ModelFinalTurn {
                     provider: "fake".to_string(),
@@ -1336,7 +1338,7 @@ mod tests {
             }))
         }
 
-        async fn submit_tool_result(&self, role_instructions: &str, history: &[ModelHistoryItem], _tool_call_response: &Value, call_id: &str, tool_result: &Value) -> anyhow::Result<ModelFinalTurn> {
+        async fn submit_tool_result(&self, role: &crate::roles::RoleSnapshot, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], _tool_call_response: &Value, call_id: &str, tool_result: &Value) -> anyhow::Result<ModelFinalTurn> {
             if let Some(message) = self.final_error {
                 anyhow::bail!("{message}");
             }
@@ -1345,7 +1347,7 @@ mod tests {
                 provider: "fake".to_string(),
                 model: model_name.to_string(),
                 final_text: format!("fake final {call_id} {}", tool_result.get("status").and_then(Value::as_str).unwrap_or("unknown")),
-                request_shape: json!({"model":model_name,"instructions":role_instructions,"history":history,"toolResult":tool_result}),
+                request_shape: json!({"model":model_name,"input": crate::model_input::responses_input(role, history, runtime_messages, None), "toolResult":tool_result}),
                 raw_response: json!({"output":[{"type":"message","content":[{"type":"output_text","text":"fake final"}]}]}),
             })
         }
@@ -1480,6 +1482,128 @@ mod tests {
         let result = crate::runtime::send_with_model_client(&test_db.pool, session_id, "model forced failure", &model, compaction::CompactionBudget::default()).await;
         assert!(result.is_err());
         assert_turn_terminal(&test_db.pool, session_id, "model forced failure", "failed", "failed").await;
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn send_persists_context_snapshot_and_dispatches_developer_role_context_without_instructions() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("context-proof"), "/tmp/context-proof", Some("/tmp/context-proof"), None, None).await.expect("session");
+        let model = FakeModelClient { direct_final_text: Some("The current CWD is /tmp/context-proof."), ..Default::default() };
+        let turn_id = crate::runtime::send_with_model_client(&test_db.pool, session_id, "what is my CWD?", &model, compaction::CompactionBudget::default()).await.expect("send");
+        let shape = model.observed_request_shapes.lock().expect("request shapes").first().cloned().expect("shape");
+        assert!(shape.get("instructions").is_none(), "role/runtime context must not use Responses instructions: {shape}");
+        assert!(shape.get("previous_response_id").is_none(), "production stateless request must not use previous_response_id: {shape}");
+        let input = shape["input"].as_array().expect("input array");
+        assert!(input.iter().any(|item| item["role"] == "developer" && item["content"][0]["text"].as_str().unwrap_or_default().contains("<role_instructions")));
+        assert!(input.iter().any(|item| item["role"] == "developer" && item["content"][0]["text"].as_str().unwrap_or_default().contains("<runtime_context")));
+        assert!(serde_json::to_string(&shape).unwrap().contains("/tmp/context-proof"), "known CWD must be model-visible without a tool call");
+        let snapshot: Value = sqlx::query_scalar("SELECT snapshot FROM session_context_snapshots WHERE session_id=$1 AND turn_id=$2 ORDER BY context_epoch DESC LIMIT 1")
+            .bind(session_id)
+            .bind(turn_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("context snapshot");
+        assert_eq!(snapshot.pointer("/cwd/path").and_then(Value::as_str), Some("/tmp/context-proof"));
+        let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_context_events WHERE session_id=$1 AND turn_id=$2")
+            .bind(session_id)
+            .bind(turn_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("context events");
+        assert!(event_count >= 1);
+        let projection = crate::projection::build_runtime_projection_snapshot(&test_db.pool, Some(session_id)).await.expect("projection");
+        let visible_chat = serde_json::to_string(&projection.selected_chat_entries).expect("chat json");
+        assert!(!visible_chat.contains("<role_instructions"), "developer role context must stay out of visible chat timeline");
+        assert!(!visible_chat.contains("<runtime_context"), "developer runtime context must stay out of visible chat timeline");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn cwd_change_persists_context_event_and_next_request_contains_bounded_delta() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("context-cwd-delta"), "/tmp/old-cwd", Some("/tmp/old-cwd"), None, None).await.expect("session");
+        let model = FakeModelClient { direct_final_text: Some("ok"), ..Default::default() };
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "first", &model, compaction::CompactionBudget::default()).await.expect("first send");
+        sqlx::query("UPDATE sessions SET workdir=$2, worktree_root=$2, updated_at=now() WHERE id=$1")
+            .bind(session_id)
+            .bind("/tmp/new-cwd")
+            .execute(&test_db.pool)
+            .await
+            .expect("update cwd");
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "what changed?", &model, compaction::CompactionBudget::default()).await.expect("second send");
+        let shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("shape");
+        let rendered = serde_json::to_string(&shape).expect("shape json");
+        assert!(rendered.contains("<context_delta epoch=\\\"2\\\" previous_epoch=\\\"1\\\">"), "{rendered}");
+        assert!(rendered.contains("kind=\\\"cwd_changed\\\""), "{rendered}");
+        assert!(rendered.contains("old_cwd=/tmp/old-cwd"), "{rendered}");
+        assert!(rendered.contains("new_cwd=/tmp/new-cwd"), "{rendered}");
+        let event: (String, Value) = sqlx::query_as("SELECT event_kind, payload FROM session_context_events WHERE session_id=$1 ORDER BY sequence DESC LIMIT 1")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("event");
+        assert_eq!(event.0, "cwd_changed");
+        assert_eq!(event.1.pointer("/snapshot/cwd/path").and_then(Value::as_str), Some("/tmp/new-cwd"));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn role_epoch_change_emits_new_role_block_and_transition_summary_not_context_delta() {
+        let test_db = validation_db().await;
+        let mut role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("context-role-epoch"), ".", Some("."), None, None).await.expect("session");
+        let model = FakeModelClient { direct_final_text: Some("ok"), ..Default::default() };
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "first", &model, compaction::CompactionBudget::default()).await.expect("first send");
+        role.version = "epoch-test-2".to_string();
+        role.role_version_id = Uuid::new_v4();
+        role.instruction_text = "new role epoch instructions".to_string();
+        let snapshot = crate::roles::snapshot_to_value(&role).expect("snapshot");
+        sqlx::query("UPDATE sessions SET role_version=$2, role_snapshot=$3, updated_at=now() WHERE id=$1")
+            .bind(session_id)
+            .bind(&role.version)
+            .bind(snapshot)
+            .execute(&test_db.pool)
+            .await
+            .expect("role update");
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "second", &model, compaction::CompactionBudget::default()).await.expect("second send");
+        let shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("shape");
+        let rendered = serde_json::to_string(&shape).expect("shape json");
+        assert!(rendered.contains("new role epoch instructions"), "{rendered}");
+        assert!(rendered.contains("<role_transition_summary"), "{rendered}");
+        assert!(!rendered.contains("kind=\\\"role_epoch_changed\\\""), "role change must not be represented as ordinary context_delta: {rendered}");
+        let event_kind: String = sqlx::query_scalar("SELECT event_kind FROM session_context_events WHERE session_id=$1 ORDER BY sequence DESC LIMIT 1")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("event");
+        assert_eq!(event_kind, "role_epoch_changed");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn tool_command_registry_change_persists_event_and_next_request_contains_delta() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("context-tool-delta"), ".", Some("."), None, None).await.expect("session");
+        let model = FakeModelClient { direct_final_text: Some("ok"), ..Default::default() };
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "first", &model, compaction::CompactionBudget::default()).await.expect("first send");
+        let seed = scoped_command_seed("cmd.context.delta", "context_delta");
+        apply_registry_seed(&test_db.pool, session_id, seed, command_registry::RegistryScope { scope_type: "global".to_string(), project_key: None }).await;
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "second", &model, compaction::CompactionBudget::default()).await.expect("second send");
+        let shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("shape");
+        let rendered = serde_json::to_string(&shape).expect("shape json");
+        assert!(rendered.contains("<context_delta"), "{rendered}");
+        assert!(rendered.contains("tool_context_changed"), "{rendered}");
+        assert!(rendered.contains("new_command_context=cmdctx-"), "{rendered}");
+        let event_kind: String = sqlx::query_scalar("SELECT event_kind FROM session_context_events WHERE session_id=$1 ORDER BY sequence DESC LIMIT 1")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("event");
+        assert_eq!(event_kind, "tool_context_changed");
         test_db.cleanup().await;
     }
 
@@ -4697,6 +4821,18 @@ output(outputs.stats(artifact))
         assert!(history[0].assistant.as_deref().unwrap_or_default().contains("Runtime compaction checkpoint"));
         assert_eq!(history[1].turn_id, t3);
         assert!(!history.iter().any(|item| item.turn_id == t1 || item.user == "pre-one raw history"));
+        let model_history = crate::model_input::model_history_from_items(&history);
+        let active_context = RuntimeInputMessage {
+            text: "<runtime_context epoch=\"9\"><cwd state=\"known\" source=\"session.workdir\">.</cwd></runtime_context>".to_string(),
+            metadata: json!({"source":"runtime_context","contextEpoch":9}),
+        };
+        let input = crate::model_input::responses_input(&role, &model_history, &[active_context], Some("continue after compact"));
+        assert!(input[0]["content"][0]["text"].as_str().unwrap_or_default().contains("<role_instructions"));
+        assert!(input[1]["content"][0]["text"].as_str().unwrap_or_default().contains("<runtime_context"));
+        assert!(input[2]["metadata"]["source"] == "compaction_checkpoint", "compacted output must be preserved as base history after active context: {input:?}");
+        assert!(input[2]["content"][0]["text"].as_str().unwrap_or_default().contains("Compaction checkpoint"), "standalone compact output user marker is preserved");
+        assert!(input[3]["role"] == "assistant" && input[3]["content"][0]["text"].as_str().unwrap_or_default().contains("Runtime compaction checkpoint"));
+        assert_eq!(input.last().and_then(|item| item.get("role")).and_then(Value::as_str), Some("user"));
 
         test_db.cleanup().await;
     }

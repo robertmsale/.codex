@@ -9,6 +9,7 @@ pub mod gui_backend;
 pub mod gui_sync;
 pub mod lifecycle;
 pub mod model;
+pub mod model_input;
 pub mod operations;
 pub mod output_artifacts;
 pub mod policy;

@@ -43,6 +43,33 @@ CREATE TABLE IF NOT EXISTS model_events (
     ordinal BIGSERIAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS session_context_events (
+    sequence BIGSERIAL PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id UUID,
+    event_kind TEXT NOT NULL,
+    role_epoch TEXT NOT NULL,
+    context_epoch BIGINT NOT NULL,
+    previous_context_epoch BIGINT,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS session_context_events_session_sequence_idx
+    ON session_context_events(session_id, sequence);
+
+CREATE TABLE IF NOT EXISTS session_context_snapshots (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id UUID,
+    role_epoch TEXT NOT NULL,
+    context_epoch BIGINT NOT NULL,
+    context_event_watermark BIGINT NOT NULL,
+    snapshot JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS session_context_snapshots_session_epoch_idx
+    ON session_context_snapshots(session_id, context_epoch DESC);
+
 CREATE TABLE IF NOT EXISTS tool_calls (
     id UUID PRIMARY KEY,
     session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -230,6 +257,10 @@ CREATE TABLE IF NOT EXISTS compaction_checkpoints (
     source_end_turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
     compacted_through_turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
     compacted_through_event_sequence BIGINT,
+    role_epoch TEXT,
+    context_epoch BIGINT,
+    context_event_watermark BIGINT,
+    reconstruction_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     replacement_context TEXT NOT NULL DEFAULT '',
     summary JSONB NOT NULL DEFAULT '{}'::jsonb,
     estimate_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,

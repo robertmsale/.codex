@@ -229,14 +229,15 @@ pub async fn compact_session_through_turn(pool: &PgPool, session_id: Uuid, throu
             "Output evidence is represented by artifact handles and bounded excerpts only."
         ],
     });
+    let context_meta = latest_context_metadata(pool, session_id).await?;
     sqlx::query(
         r#"
         INSERT INTO compaction_checkpoints (
             id, session_id, status, source_start_turn_id, source_end_turn_id, compacted_through_turn_id,
-            compacted_through_event_sequence, replacement_context, summary, estimate_metadata,
-            model_provider_metadata, completed_at
+            compacted_through_event_sequence, role_epoch, context_epoch, context_event_watermark, reconstruction_metadata,
+            replacement_context, summary, estimate_metadata, model_provider_metadata, completed_at
         )
-        VALUES ($1,$2,'completed',$3,$4,$5,$6,$7,$8,$9,$10,now())
+        VALUES ($1,$2,'completed',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now())
         "#,
     )
     .bind(id)
@@ -245,6 +246,15 @@ pub async fn compact_session_through_turn(pool: &PgPool, session_id: Uuid, throu
     .bind(source_end_turn_id)
     .bind(through_turn_id)
     .bind(event_boundary)
+    .bind(context_meta.role_epoch)
+    .bind(context_meta.context_epoch)
+    .bind(context_meta.context_event_watermark)
+    .bind(json!({
+        "strategy": "same_role_replacement_base_window",
+        "source": "runtime_owned_compaction",
+        "opaqueOpenAICompactionAuthority": false,
+        "visibleStaleRoleRuntimeBlocksNormalizedByAssembler": true,
+    }))
     .bind(&replacement_context)
     .bind(summary)
     .bind(serde_json::to_value(&estimate)?)
@@ -263,6 +273,29 @@ pub async fn compact_session_through_turn(pool: &PgPool, session_id: Uuid, throu
     )
     .await?;
     latest_completed_checkpoint(pool, session_id).await?.ok_or_else(|| anyhow::anyhow!("completed checkpoint was not readable after insert"))
+}
+
+#[derive(Debug, Default)]
+struct ContextCheckpointMetadata {
+    role_epoch: Option<String>,
+    context_epoch: Option<i64>,
+    context_event_watermark: Option<i64>,
+}
+
+async fn latest_context_metadata(pool: &PgPool, session_id: Uuid) -> Result<ContextCheckpointMetadata> {
+    let row = sqlx::query(
+        "SELECT role_epoch, context_epoch, context_event_watermark FROM session_context_snapshots WHERE session_id=$1 ORDER BY context_epoch DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row
+        .map(|row| ContextCheckpointMetadata {
+            role_epoch: row.get("role_epoch"),
+            context_epoch: row.get("context_epoch"),
+            context_event_watermark: row.get("context_event_watermark"),
+        })
+        .unwrap_or_default())
 }
 
 pub async fn reconstructed_history_after_checkpoint(pool: &PgPool, session_id: Uuid) -> Result<Vec<db::HistoryItem>> {

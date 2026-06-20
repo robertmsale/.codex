@@ -4,6 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use crate::roles::RoleSnapshot;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRequest {
@@ -56,11 +57,12 @@ pub struct ModelHistoryItem {
 
 #[async_trait]
 pub trait ModelClient {
-    async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelInitialTurn>;
+    async fn request_tool_call(&self, role: &RoleSnapshot, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelInitialTurn>;
     async fn submit_tool_result(
         &self,
-        role_instructions: &str,
+        role: &RoleSnapshot,
         history: &[ModelHistoryItem],
+        runtime_messages: &[RuntimeInputMessage],
         tool_call_response: &Value,
         call_id: &str,
         tool_result: &Value,

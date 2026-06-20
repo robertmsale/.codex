@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelInitialTurn, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
+use crate::model_input;
+use crate::roles::RoleSnapshot;
 
 const CHATGPT_CODEX_RESPONSES_URL: &str =
     "https://chatgpt.com/backend-api/codex/responses";
@@ -170,7 +172,7 @@ impl CodexBackedModelClient {
 
     pub fn request_tool_call_request_shape(
         model: &str,
-        role_instructions: &str,
+        role: &RoleSnapshot,
         history: &[ModelHistoryItem],
         runtime_messages: &[RuntimeInputMessage],
         execute_code_contract: &str,
@@ -179,19 +181,21 @@ impl CodexBackedModelClient {
     ) -> Value {
         let tool = Self::execute_code_tool_schema(execute_code_contract);
         let request_tool = Self::request_command_registry_change_tool_schema(request_registry_contract);
-        let instructions = format!(
-            "{role_instructions}\n\nUse a native tool only when the user's request requires runtime work. Reply directly when no tool is needed. Call execute_code when the permanent Starlark interface can satisfy runtime work. Inspect live registered commands with cmd.describe(), cmd[\"object\"].describe(), or cmd[\"object\"].method.describe() inside execute_code when command details are needed. Full command/process output is stored as output artifacts; use outputs.head/tail/slice/search/stats for bounded retrieval instead of dumping large logs. Call request_command_registry_change when progress is blocked by a missing or outdated command registry entry."
-        );
+        let mut runtime_messages = runtime_messages.to_vec();
+        runtime_messages.push(RuntimeInputMessage {
+            text: "Use a native tool only when the user's request requires runtime work. Reply directly when no tool is needed. Call execute_code when the permanent Starlark interface can satisfy runtime work. Inspect live registered commands with cmd.describe(), cmd[\"object\"].describe(), or cmd[\"object\"].method.describe() inside execute_code when command details are needed. Full command/process output is stored as output artifacts; use outputs.head/tail/slice/search/stats for bounded retrieval instead of dumping large logs. Call request_command_registry_change when progress is blocked by a missing or outdated command registry entry.".to_string(),
+            metadata: json!({"source": "runtime_tool_policy"}),
+        });
+        let cache_key = prompt_cache_key_for_runtime(role, &runtime_messages);
         json!({
             "model": model,
-            "instructions": instructions,
-            "input": responses_input_from_history(history, runtime_messages, Some(message)),
+            "input": model_input::responses_input(role, history, &runtime_messages, Some(message)),
             "tools": [tool, request_tool],
             "tool_choice": "auto",
             "parallel_tool_calls": false,
             "store": false,
             "stream": true,
-            "prompt_cache_key": "robdex-agent-runtime-kernel-v1",
+            "prompt_cache_key": cache_key,
         })
     }
 
@@ -381,12 +385,22 @@ pub fn bounded_raw_response(response: &Value) -> Value {
     })
 }
 
+fn prompt_cache_key_for_runtime(role: &RoleSnapshot, runtime_messages: &[RuntimeInputMessage]) -> String {
+    let role_epoch = model_input::role_epoch(role);
+    let context_epoch = runtime_messages
+        .iter()
+        .find_map(|message| message.metadata.get("contextEpoch").and_then(Value::as_i64))
+        .map(|epoch| epoch.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    format!("robdex-agent-runtime-kernel-v2:{role_epoch}:context-{context_epoch}")
+}
+
 #[async_trait]
 impl ModelClient for CodexBackedModelClient {
-    async fn request_tool_call(&self, role_instructions: &str, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelInitialTurn> {
+    async fn request_tool_call(&self, role: &RoleSnapshot, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> Result<ModelInitialTurn> {
         let body = Self::request_tool_call_request_shape(
             &self.model,
-            role_instructions,
+            role,
             history,
             runtime_messages,
             execute_code_contract,
@@ -398,7 +412,7 @@ impl ModelClient for CodexBackedModelClient {
         let request_tool = Self::request_command_registry_change_tool_schema(request_registry_contract);
         let request_for_shape = ResponsesApiRequest {
             model: self.model.clone(),
-            instructions: body.get("instructions").and_then(Value::as_str).unwrap_or_default().to_string(),
+            instructions: String::new(),
             input: Vec::new(),
             tools: vec![tool.clone(), request_tool.clone()],
             tool_choice: "auto".to_string(),
@@ -408,7 +422,7 @@ impl ModelClient for CodexBackedModelClient {
             stream: true,
             include: Vec::new(),
             service_tier: None,
-            prompt_cache_key: Some("robdex-agent-runtime-kernel-v1".to_string()),
+            prompt_cache_key: Some(model_input::prompt_cache_key(role, None)),
             text: None,
             client_metadata: Some(HashMap::from([(
                 "runtime".to_string(),
@@ -450,31 +464,34 @@ impl ModelClient for CodexBackedModelClient {
 
     async fn submit_tool_result(
         &self,
-        role_instructions: &str,
+        role: &RoleSnapshot,
         history: &[ModelHistoryItem],
+        runtime_messages: &[RuntimeInputMessage],
         tool_call_response: &Value,
         call_id: &str,
         tool_result: &Value,
     ) -> Result<ModelFinalTurn> {
         let result_text = serde_json::to_string(tool_result)?;
         let function_call_item = find_native_tool_item(tool_call_response, call_id)?;
-        let mut input = responses_input_from_history(history, &[], None);
+        let mut runtime_messages = runtime_messages.to_vec();
+        runtime_messages.push(RuntimeInputMessage {
+            text: "Summarize the tool result concisely using the structured prior messages in the request input.".to_string(),
+            metadata: json!({"source": "runtime_tool_result_policy"}),
+        });
+        let mut input = model_input::responses_input(role, history, &runtime_messages, None);
         input.push(function_call_item);
         input.push(json!({
             "type": "function_call_output",
             "call_id": call_id,
             "output": result_text
         }));
-        let instructions = format!(
-            "{role_instructions}\n\nSummarize the tool result concisely using the structured prior messages in the request input."
-        );
+        let cache_key = prompt_cache_key_for_runtime(role, &runtime_messages);
         let body = json!({
             "model": self.model,
-            "instructions": instructions,
             "input": input,
             "store": false,
             "stream": true,
-            "prompt_cache_key": "robdex-agent-runtime-kernel-v1",
+            "prompt_cache_key": cache_key,
         });
         let raw_response = self.post_responses(&body).await?;
         Ok(ModelFinalTurn {
@@ -485,52 +502,6 @@ impl ModelClient for CodexBackedModelClient {
             raw_response,
         })
     }
-}
-
-pub fn responses_input_from_history(history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], current_message: Option<&str>) -> Vec<Value> {
-    let mut input = Vec::new();
-    for item in history {
-        input.push(json!({
-            "role": "user",
-            "content": [{"type": "input_text", "text": item.user}],
-            "metadata": {
-                "sessionId": item.session_id,
-                "turnId": item.turn_id,
-                "startedAt": item.started_at,
-                "source": item.source,
-                "checkpointId": item.checkpoint_id,
-            }
-        }));
-        if let Some(assistant) = &item.assistant
-            && !assistant.trim().is_empty()
-        {
-            input.push(json!({
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": assistant}],
-                "metadata": {
-                    "sessionId": item.session_id,
-                    "turnId": item.turn_id,
-                    "startedAt": item.started_at,
-                    "source": item.source,
-                    "checkpointId": item.checkpoint_id,
-                }
-            }));
-        }
-    }
-    for runtime_message in runtime_messages {
-        input.push(json!({
-            "role": "user",
-            "content": [{"type": "input_text", "text": runtime_message.text}],
-            "metadata": runtime_message.metadata,
-        }));
-    }
-    if let Some(message) = current_message {
-        input.push(json!({
-            "role": "user",
-            "content": [{"type": "input_text", "text": message}]
-        }));
-    }
-    input
 }
 
 fn codex_home() -> PathBuf {
@@ -786,30 +757,6 @@ mod cache_stable_tests {
         }
     }
 
-
-    #[test]
-    fn runtime_command_context_input_has_metadata_and_is_not_history() {
-        let history = vec![ModelHistoryItem {
-            session_id: "session-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            user: "ordinary user".to_string(),
-            assistant: Some("ordinary assistant".to_string()),
-            started_at: "2026-01-01T00:00:00Z".to_string(),
-            source: "reconstructed_session_history".to_string(),
-            checkpoint_id: None,
-        }];
-        let runtime = vec![RuntimeInputMessage {
-            text: "runtime command context".to_string(),
-            metadata: json!({"source":"runtime_command_context", "commandContextId":"cmdctx-test"}),
-        }];
-        let input = responses_input_from_history(&history, &runtime, Some("current user"));
-        assert_eq!(input.len(), 4);
-        assert_eq!(input[0]["metadata"]["source"], "reconstructed_session_history");
-        assert_eq!(input[1]["metadata"]["source"], "reconstructed_session_history");
-        assert_eq!(input[2]["metadata"]["source"], "runtime_command_context");
-        assert_eq!(input[3]["role"], "user");
-        assert!(input[3].get("metadata").is_none());
-    }
 
     #[test]
     fn complete_execute_code_tool_schema_is_identical_across_command_contexts() {

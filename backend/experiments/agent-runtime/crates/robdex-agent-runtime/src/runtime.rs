@@ -4,10 +4,10 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{approvals, command_registry, compaction, db, routing};
+use crate::{approvals, command_registry, compaction, db, model_input, routing};
 use crate::lifecycle::{self, TerminalStatus};
 use crate::model::codex_adapter::{bounded_raw_response, concise_response_summary, CodexBackedModelClient};
-use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelInitialTurn, RuntimeInputMessage};
+use crate::model::{ModelClient, ModelFinalTurn, ModelInitialTurn, RuntimeInputMessage};
 use crate::policy::PolicyEngine;
 use crate::starlark_host::{ExecutionRoot, execute_code};
 
@@ -66,22 +66,14 @@ fn model_request_evidence(
             .map(|message| json!({"metadata": message.metadata}))
             .collect::<Vec<_>>(),
         "commandContext": serde_json::to_value(command_context).unwrap_or(Value::Null),
+        "roleEpoch": runtime_messages.iter().find_map(|message| message.metadata.get("roleEpoch").cloned()),
+        "contextEpoch": runtime_messages.iter().find_map(|message| message.metadata.get("contextEpoch").cloned()),
+        "contextEventWatermark": runtime_messages.iter().find_map(|message| message.metadata.get("contextEventWatermark").cloned()),
+        "promptCacheKey": request_shape.get("prompt_cache_key").cloned(),
+        "compactedStateIncluded": request_shape.get("input").and_then(Value::as_array).is_some_and(|items| {
+            items.iter().any(|item| item.get("type").and_then(Value::as_str) == Some("compaction"))
+        }),
     })
-}
-
-fn model_history_from_items(history: &[db::HistoryItem]) -> Vec<ModelHistoryItem> {
-    history
-        .iter()
-        .map(|item| ModelHistoryItem {
-            session_id: item.session_id.to_string(),
-            turn_id: item.turn_id.to_string(),
-            user: item.user.clone(),
-            assistant: item.assistant.clone(),
-            started_at: item.started_at.to_rfc3339(),
-            source: item.source.clone(),
-            checkpoint_id: item.checkpoint_id.map(|id| id.to_string()),
-        })
-        .collect()
 }
 
 fn runtime_model_role_instructions(role_instructions: &str) -> String {
@@ -100,7 +92,7 @@ fn runtime_model_role_instructions(role_instructions: &str) -> String {
 }
 
 fn model_tool_request_shape(
-    role_instructions: &str,
+    role_snapshot: &crate::roles::RoleSnapshot,
     history: &[db::HistoryItem],
     runtime_messages: &[RuntimeInputMessage],
     execute_code_contract: &str,
@@ -108,11 +100,10 @@ fn model_tool_request_shape(
     message: &str,
     model: &str,
 ) -> Value {
-    let role_instructions = runtime_model_role_instructions(role_instructions);
     CodexBackedModelClient::request_tool_call_request_shape(
         model,
-        &role_instructions,
-        &model_history_from_items(history),
+        role_snapshot,
+        &model_input::model_history_from_items(history),
         runtime_messages,
         execute_code_contract,
         request_registry_contract,
@@ -136,20 +127,20 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
     let session = db::ensure_session_open(pool, session_id).await?;
     let workdir = session.workdir.clone();
     let role_snapshot = db::session_role_snapshot(pool, session_id).await?;
-    let model_role_instructions = runtime_model_role_instructions(&role_snapshot.instruction_text);
+    let mut model_role_snapshot = role_snapshot.clone();
+    model_role_snapshot.instruction_text = runtime_model_role_instructions(&role_snapshot.instruction_text);
+    let model_role_instructions = model_role_snapshot.instruction_text.clone();
     let project_key = session.project_key.clone();
     let live_commands = command_registry::live_visible_commands(pool, &role_snapshot, project_key.as_deref()).await?;
     let previous_command_context = latest_command_context_evidence(pool, session_id).await?;
     let runtime_command_context = command_registry::runtime_command_context_message(&live_commands, previous_command_context.as_ref());
-    let runtime_messages = vec![RuntimeInputMessage {
-        text: runtime_command_context.text.clone(),
-        metadata: runtime_command_context.metadata.clone(),
-    }];
+    let context_snapshot = model_input::persist_context_snapshot(pool, &session, &model_role_snapshot, &runtime_command_context.evidence, None).await?;
+    let runtime_messages = model_input::runtime_developer_messages(&context_snapshot, &runtime_command_context);
     let execute_code_contract = command_registry::stable_execute_code_contract();
     let request_registry_contract = command_registry::request_tool_contract();
     let prior_history_before_compaction = db::reconstructed_history(pool, session_id).await?;
     let pre_send_request_shape = model_tool_request_shape(
-        &model_role_instructions,
+        &model_role_snapshot,
         &prior_history_before_compaction,
         &runtime_messages,
         &execute_code_contract,
@@ -162,7 +153,7 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
         compaction::compact_session_through_latest_completed_turn(pool, session_id, budget).await?;
         let rebuilt_history = db::reconstructed_history(pool, session_id).await?;
         let rebuilt_request_shape = model_tool_request_shape(
-            &model_role_instructions,
+            &model_role_snapshot,
             &rebuilt_history,
             &runtime_messages,
             &execute_code_contract,
@@ -180,7 +171,7 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
         }
     }
     let prior_history = db::reconstructed_history(pool, session_id).await?;
-    let model_history = model_history_from_items(&prior_history);
+    let model_history = model_input::model_history_from_items(&prior_history);
 
     let turn_id = Uuid::new_v4();
     let turn_started = Utc::now();
@@ -207,6 +198,18 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
         json!({"input": message}),
     )
     .await?;
+    sqlx::query("UPDATE session_context_snapshots SET turn_id=$1 WHERE session_id=$2 AND context_epoch=$3")
+        .bind(turn_id)
+        .bind(session_id)
+        .bind(context_snapshot.context_epoch)
+        .execute(pool)
+        .await?;
+    sqlx::query("UPDATE session_context_events SET turn_id=$1 WHERE session_id=$2 AND context_epoch=$3")
+        .bind(turn_id)
+        .bind(session_id)
+        .bind(context_snapshot.context_epoch)
+        .execute(pool)
+        .await?;
     let _route = match routing::decide_route(pool, session_id, Some(turn_id), &role_snapshot).await {
         Ok(route) => route,
         Err(error) => {
@@ -215,7 +218,7 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
         }
     };
 
-    let initial_turn = match model.request_tool_call(&model_role_instructions, &model_history, &runtime_messages, &execute_code_contract, &request_registry_contract, message).await {
+    let initial_turn = match model.request_tool_call(&model_role_snapshot, &model_history, &runtime_messages, &execute_code_contract, &request_registry_contract, message).await {
         Ok(turn) => turn,
         Err(error) => {
             finalize_failed_started_turn(pool, session_id, turn_id, "model_dispatch", &error.to_string()).await?;
@@ -410,8 +413,9 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
     .await?;
     let final_response = match model
         .submit_tool_result(
-            &model_role_instructions,
+            &model_role_snapshot,
             &model_history,
+            &runtime_messages,
             &plan.raw_response,
             &plan.tool_call.call_identity,
             &result_json,
@@ -610,6 +614,26 @@ async fn finalize_failed_started_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::roles::{LifecycleAuthorityMetadata, ManifestDecision, ModelDefaults, RoleSnapshot, RoutingMetadata, VisibilityMetadata};
+    use std::collections::BTreeMap;
+
+    fn role_snapshot(instruction_text: &str) -> RoleSnapshot {
+        RoleSnapshot {
+            id: "test-role".to_string(),
+            version: "1.0.0".to_string(),
+            display_name: "Test Role".to_string(),
+            role_version_id: Uuid::new_v4(),
+            instruction_text: instruction_text.to_string(),
+            model_defaults: ModelDefaults { model: "model-proof".to_string(), reasoning_effort: "medium".to_string() },
+            capabilities: vec!["tool.execute_code".to_string()],
+            policy: BTreeMap::from([("tool.execute_code".to_string(), ManifestDecision::Allow)]),
+            routing: RoutingMetadata { mode: "direct".to_string(), default_recipient: None, allowed_recipients: vec![], reserved_actions: vec![] },
+            visibility: VisibilityMetadata { listed: true, owner_visible: true },
+            lifecycle_authority: LifecycleAuthorityMetadata { can_spawn_agents: false, can_archive_agents: false, reserved_actions: vec![] },
+            manifest: json!({}),
+            created_at: Utc::now(),
+        }
+    }
 
     #[test]
     fn model_request_evidence_excludes_synthetic_catalog_text() {
@@ -654,7 +678,7 @@ mod tests {
     #[test]
     fn outbound_model_request_shape_uses_selected_session_model() {
         let request_shape = model_tool_request_shape(
-            "role instructions",
+            &role_snapshot("role instructions"),
             &[],
             &[],
             "execute contract",
@@ -673,7 +697,7 @@ mod tests {
             ["Choose exactly one native", " tool per turn:"].concat()
         );
         let request_shape = model_tool_request_shape(
-            &legacy_role,
+            &role_snapshot(&runtime_model_role_instructions(&legacy_role)),
             &[],
             &[],
             "execute contract",
@@ -681,10 +705,32 @@ mod tests {
             "Hi",
             "model-proof",
         );
-        let instructions = request_shape["instructions"].as_str().expect("instructions");
         assert_eq!(request_shape["tool_choice"], "auto");
-        assert!(instructions.contains("Reply directly when no tool is needed"));
-        assert!(!instructions.contains(&["Choose exactly one native", " tool"].concat()));
-        assert!(!instructions.contains(&["must choose", " exactly one"].concat()));
+        let input_text = serde_json::to_string(&request_shape["input"]).expect("input json");
+        assert!(input_text.contains("Reply directly when no tool is needed"));
+        assert!(!input_text.contains(&["Choose exactly one native", " tool"].concat()));
+        assert!(!request_shape.as_object().expect("object").contains_key("instructions"));
+    }
+
+    #[test]
+    fn prompt_cache_key_includes_role_and_context_epoch() {
+        let role = role_snapshot("role instructions");
+        let runtime_messages = vec![RuntimeInputMessage {
+            text: "<runtime_context epoch=\"42\"></runtime_context>".to_string(),
+            metadata: json!({"source":"runtime_context","contextEpoch":42}),
+        }];
+        let request_shape = model_tool_request_shape(
+            &role,
+            &[],
+            &runtime_messages,
+            "execute contract",
+            "registry contract",
+            "cache key proof",
+            "model-proof",
+        );
+        let cache_key = request_shape["prompt_cache_key"].as_str().expect("cache key");
+        assert!(cache_key.contains("robdex-agent-runtime-kernel-v2"));
+        assert!(cache_key.contains(&crate::model_input::role_epoch(&role)));
+        assert!(cache_key.contains("context-42"));
     }
 }
