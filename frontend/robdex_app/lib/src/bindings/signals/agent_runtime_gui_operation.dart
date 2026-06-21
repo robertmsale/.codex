@@ -356,8 +356,6 @@ class AgentRuntimeGuiOperationCreateProject extends AgentRuntimeGuiOperation {
     required this.defaultWorktreeRoot,
     required this.defaultRoleId,
     required this.defaultModel,
-    required this.tracked,
-    required this.listed,
   }) : super();
 
   static AgentRuntimeGuiOperationCreateProject load(BinaryDeserializer deserializer) {
@@ -369,8 +367,6 @@ class AgentRuntimeGuiOperationCreateProject extends AgentRuntimeGuiOperation {
       defaultWorktreeRoot: deserializer.deserializeString(),
       defaultRoleId: deserializer.deserializeString(),
       defaultModel: deserializer.deserializeString(),
-      tracked: deserializer.deserializeBool(),
-      listed: deserializer.deserializeBool(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -382,8 +378,6 @@ class AgentRuntimeGuiOperationCreateProject extends AgentRuntimeGuiOperation {
   final String defaultWorktreeRoot;
   final String defaultRoleId;
   final String defaultModel;
-  final bool tracked;
-  final bool listed;
 
   AgentRuntimeGuiOperationCreateProject copyWith({
     String? projectKey,
@@ -392,8 +386,6 @@ class AgentRuntimeGuiOperationCreateProject extends AgentRuntimeGuiOperation {
     String? defaultWorktreeRoot,
     String? defaultRoleId,
     String? defaultModel,
-    bool? tracked,
-    bool? listed,
   }) {
     return AgentRuntimeGuiOperationCreateProject(
       projectKey: projectKey ?? this.projectKey,
@@ -402,8 +394,6 @@ class AgentRuntimeGuiOperationCreateProject extends AgentRuntimeGuiOperation {
       defaultWorktreeRoot: defaultWorktreeRoot ?? this.defaultWorktreeRoot,
       defaultRoleId: defaultRoleId ?? this.defaultRoleId,
       defaultModel: defaultModel ?? this.defaultModel,
-      tracked: tracked ?? this.tracked,
-      listed: listed ?? this.listed,
     );
   }
 
@@ -416,8 +406,6 @@ class AgentRuntimeGuiOperationCreateProject extends AgentRuntimeGuiOperation {
     serializer.serializeString(defaultWorktreeRoot);
     serializer.serializeString(defaultRoleId);
     serializer.serializeString(defaultModel);
-    serializer.serializeBool(tracked);
-    serializer.serializeBool(listed);
     serializer.decreaseContainerDepth();
   }
 
@@ -432,9 +420,7 @@ class AgentRuntimeGuiOperationCreateProject extends AgentRuntimeGuiOperation {
       && defaultWorkdir == other.defaultWorkdir
       && defaultWorktreeRoot == other.defaultWorktreeRoot
       && defaultRoleId == other.defaultRoleId
-      && defaultModel == other.defaultModel
-      && tracked == other.tracked
-      && listed == other.listed;
+      && defaultModel == other.defaultModel;
   }
 
   @override
@@ -445,8 +431,6 @@ class AgentRuntimeGuiOperationCreateProject extends AgentRuntimeGuiOperation {
         defaultWorktreeRoot,
         defaultRoleId,
         defaultModel,
-        tracked,
-        listed,
       );
 
   @override
@@ -460,9 +444,7 @@ class AgentRuntimeGuiOperationCreateProject extends AgentRuntimeGuiOperation {
         'defaultWorkdir: $defaultWorkdir, '
         'defaultWorktreeRoot: $defaultWorktreeRoot, '
         'defaultRoleId: $defaultRoleId, '
-        'defaultModel: $defaultModel, '
-        'tracked: $tracked, '
-        'listed: $listed'
+        'defaultModel: $defaultModel'
         ')';
       return true;
     }());
@@ -480,8 +462,6 @@ class AgentRuntimeGuiOperationUpdateProject extends AgentRuntimeGuiOperation {
     required this.defaultWorktreeRoot,
     required this.defaultRoleId,
     required this.defaultModel,
-    required this.tracked,
-    required this.listed,
   }) : super();
 
   static AgentRuntimeGuiOperationUpdateProject load(BinaryDeserializer deserializer) {
@@ -493,8 +473,6 @@ class AgentRuntimeGuiOperationUpdateProject extends AgentRuntimeGuiOperation {
       defaultWorktreeRoot: deserializer.deserializeString(),
       defaultRoleId: deserializer.deserializeString(),
       defaultModel: deserializer.deserializeString(),
-      tracked: deserializer.deserializeBool(),
-      listed: deserializer.deserializeBool(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -506,8 +484,6 @@ class AgentRuntimeGuiOperationUpdateProject extends AgentRuntimeGuiOperation {
   final String defaultWorktreeRoot;
   final String defaultRoleId;
   final String defaultModel;
-  final bool tracked;
-  final bool listed;
 
   AgentRuntimeGuiOperationUpdateProject copyWith({
     String? projectKey,
@@ -516,8 +492,6 @@ class AgentRuntimeGuiOperationUpdateProject extends AgentRuntimeGuiOperation {
     String? defaultWorktreeRoot,
     String? defaultRoleId,
     String? defaultModel,
-    bool? tracked,
-    bool? listed,
   }) {
     return AgentRuntimeGuiOperationUpdateProject(
       projectKey: projectKey ?? this.projectKey,
@@ -526,8 +500,6 @@ class AgentRuntimeGuiOperationUpdateProject extends AgentRuntimeGuiOperation {
       defaultWorktreeRoot: defaultWorktreeRoot ?? this.defaultWorktreeRoot,
       defaultRoleId: defaultRoleId ?? this.defaultRoleId,
       defaultModel: defaultModel ?? this.defaultModel,
-      tracked: tracked ?? this.tracked,
-      listed: listed ?? this.listed,
     );
   }
 
@@ -540,8 +512,6 @@ class AgentRuntimeGuiOperationUpdateProject extends AgentRuntimeGuiOperation {
     serializer.serializeString(defaultWorktreeRoot);
     serializer.serializeString(defaultRoleId);
     serializer.serializeString(defaultModel);
-    serializer.serializeBool(tracked);
-    serializer.serializeBool(listed);
     serializer.decreaseContainerDepth();
   }
 
@@ -556,9 +526,7 @@ class AgentRuntimeGuiOperationUpdateProject extends AgentRuntimeGuiOperation {
       && defaultWorkdir == other.defaultWorkdir
       && defaultWorktreeRoot == other.defaultWorktreeRoot
       && defaultRoleId == other.defaultRoleId
-      && defaultModel == other.defaultModel
-      && tracked == other.tracked
-      && listed == other.listed;
+      && defaultModel == other.defaultModel;
   }
 
   @override
@@ -569,8 +537,6 @@ class AgentRuntimeGuiOperationUpdateProject extends AgentRuntimeGuiOperation {
         defaultWorktreeRoot,
         defaultRoleId,
         defaultModel,
-        tracked,
-        listed,
       );
 
   @override
@@ -584,9 +550,7 @@ class AgentRuntimeGuiOperationUpdateProject extends AgentRuntimeGuiOperation {
         'defaultWorkdir: $defaultWorkdir, '
         'defaultWorktreeRoot: $defaultWorktreeRoot, '
         'defaultRoleId: $defaultRoleId, '
-        'defaultModel: $defaultModel, '
-        'tracked: $tracked, '
-        'listed: $listed'
+        'defaultModel: $defaultModel'
         ')';
       return true;
     }());

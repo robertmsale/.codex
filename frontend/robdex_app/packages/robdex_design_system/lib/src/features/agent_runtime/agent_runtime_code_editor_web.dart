@@ -50,14 +50,22 @@ class _AgentRuntimeCodeEditorState extends State<AgentRuntimeCodeEditor> {
 
   @override
   Widget build(BuildContext context) {
-    return CodeForgeWeb(
-      controller: _codeController,
-      readOnly: widget.readOnly,
-      lineWrap: true,
-      enableGutter: false,
-      enableFolding: false,
-      textStyle: const TextStyle(fontSize: 12, color: Color(0xFFE5EDF8)),
-      innerPadding: const EdgeInsets.all(8),
+    return Semantics(
+      label: 'CodeForge role instructions editor',
+      value: 'CodeForge active',
+      textField: true,
+      child: CodeForgeWeb(
+        controller: _codeController,
+        readOnly: widget.readOnly,
+        lineWrap: true,
+        enableGutter: true,
+        enableFolding: false,
+        editorTheme: const {
+          'root': TextStyle(color: Color(0xFFE5EDF8), backgroundColor: Color(0xFF07101A)),
+        },
+        textStyle: const TextStyle(fontSize: 12, color: Color(0xFFE5EDF8)),
+        innerPadding: const EdgeInsets.all(8),
+      ),
     );
   }
 }

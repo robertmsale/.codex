@@ -729,8 +729,38 @@ mod tests {
             "model-proof",
         );
         let cache_key = request_shape["prompt_cache_key"].as_str().expect("cache key");
-        assert!(cache_key.contains("robdex-agent-runtime-kernel-v2"));
-        assert!(cache_key.contains(&crate::model_input::role_epoch(&role)));
-        assert!(cache_key.contains("context-42"));
+        assert!(cache_key.len() <= 64);
+        assert!(cache_key.starts_with("rar2:"));
+        assert!(cache_key.ends_with(":c42"));
+
+        let changed_role = role_snapshot("changed role instructions");
+        let changed_request_shape = model_tool_request_shape(
+            &changed_role,
+            &[],
+            &runtime_messages,
+            "execute contract",
+            "registry contract",
+            "cache key proof",
+            "model-proof",
+        );
+        let changed_role_cache_key = changed_request_shape["prompt_cache_key"].as_str().expect("cache key");
+        assert_ne!(cache_key, changed_role_cache_key);
+
+        let changed_runtime_messages = vec![RuntimeInputMessage {
+            text: "<runtime_context epoch=\"43\"></runtime_context>".to_string(),
+            metadata: json!({"source":"runtime_context","contextEpoch":43}),
+        }];
+        let changed_context_shape = model_tool_request_shape(
+            &role,
+            &[],
+            &changed_runtime_messages,
+            "execute contract",
+            "registry contract",
+            "cache key proof",
+            "model-proof",
+        );
+        let changed_context_cache_key = changed_context_shape["prompt_cache_key"].as_str().expect("cache key");
+        assert_ne!(cache_key, changed_context_cache_key);
+        assert!(changed_context_cache_key.ends_with(":c43"));
     }
 }

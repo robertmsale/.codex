@@ -188,6 +188,30 @@ class _AgentRuntimeWorkbenchHostState extends State<AgentRuntimeWorkbenchHost> {
   }
 
   Future<void> _showOperationsSurface(BuildContext context, AgentRuntimeWorkbenchData data, String surfaceId, String selectedSessionId) {
+    if (surfaceId == 'roleAdmin') {
+      return Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (context) => AnimatedBuilder(
+            animation: _controller,
+            builder: (context, _) => AgentRuntimeRoleManagerPage(
+              data: _controller.data.roleAdmin,
+              onClose: () => Navigator.of(context).maybePop(),
+              onValidate: _controller.validateRoleDraft,
+              onCreate: _controller.createRoleFromDraft,
+              onUpdate: _controller.updateRoleFromDraft,
+              onExport: _controller.exportRole,
+              onArchive: _controller.archiveRole,
+              onUnarchive: _controller.unarchiveRole,
+              onActivate: _controller.activateRoleVersion,
+              onShowDetail: _controller.showRoleDetail,
+              onShowVersions: _controller.listRoleVersions,
+              onShowVersionData: _controller.showRoleVersion,
+            ),
+          ),
+        ),
+      );
+    }
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -379,9 +403,17 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
         : projectChoices.isNotEmpty
             ? projectChoices.first.id
             : '__unassigned__';
-    _role = widget.data.roleAdmin.rows.isNotEmpty ? widget.data.roleAdmin.rows.first.id : '';
     final models = _modelOptions();
-    final roleDefault = widget.data.roleAdmin.selectedDetail?.model.trim() ?? '';
+    final projectDefaults = _projectDefaults(_project);
+    final roleIds = widget.data.roleAdmin.rows.map((role) => role.id).toSet();
+    final projectRoleDefault = projectDefaults?.defaultRoleId.trim() ?? '';
+    _role = projectRoleDefault.isNotEmpty && roleIds.contains(projectRoleDefault)
+        ? projectRoleDefault
+        : widget.data.roleAdmin.rows.isNotEmpty
+            ? widget.data.roleAdmin.rows.first.id
+            : '';
+    final projectModelDefault = projectDefaults?.defaultModel.trim() ?? '';
+    final roleDefault = projectModelDefault.isNotEmpty ? projectModelDefault : widget.data.roleAdmin.selectedDetail?.model.trim() ?? '';
     final modelIds = models.map((model) => model.id).toSet();
     _model = roleDefault.isNotEmpty && modelIds.contains(roleDefault)
         ? roleDefault
@@ -391,8 +423,8 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
     _title = TextEditingController(text: 'New session');
     _name = TextEditingController(text: _sessionNameFromTitle('New session'));
     _title.addListener(_syncGeneratedName);
-    _workdir = TextEditingController(text: '.');
-    _worktreeRoot = TextEditingController(text: '.');
+    _workdir = TextEditingController(text: _projectDefaultPath(projectDefaults?.defaultWorkdir));
+    _worktreeRoot = TextEditingController(text: _projectDefaultPath(projectDefaults?.defaultWorktreeRoot));
   }
 
   @override
@@ -450,7 +482,7 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
                         key: const ValueKey('agentRuntime.createSession.project'),
                         initialValue: projects.any((project) => project.id == _project) ? _project : null,
                         items: [for (final project in projects) DropdownMenuItem(value: project.id, child: Text(project.title, overflow: TextOverflow.ellipsis))],
-                        onChanged: (value) => setState(() => _project = value ?? ''),
+                        onChanged: (value) => _applyProjectDefaults(value ?? ''),
                         isExpanded: true,
                         decoration: _runtimeInputDecoration(hintText: 'Choose project'),
                       ),
@@ -590,6 +622,39 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
     }).toList(growable: false);
   }
 
+  ConversationProject? _projectDefaults(String projectId) {
+    for (final project in widget.shell.projects) {
+      if (project.id == projectId) {
+        return project;
+      }
+    }
+    return null;
+  }
+
+  String _projectDefaultPath(String? value) {
+    final trimmed = value?.trim() ?? '';
+    return trimmed.isEmpty ? '.' : trimmed;
+  }
+
+  void _applyProjectDefaults(String projectId) {
+    final project = _projectDefaults(projectId);
+    final roleIds = widget.data.roleAdmin.rows.map((role) => role.id).toSet();
+    final projectRoleDefault = project?.defaultRoleId.trim() ?? '';
+    final modelIds = _modelOptions().map((model) => model.id).toSet();
+    final projectModelDefault = project?.defaultModel.trim() ?? '';
+    setState(() {
+      _project = projectId;
+      if (projectRoleDefault.isNotEmpty && roleIds.contains(projectRoleDefault)) {
+        _role = projectRoleDefault;
+      }
+      if (projectModelDefault.isNotEmpty && modelIds.contains(projectModelDefault)) {
+        _model = projectModelDefault;
+      }
+      _workdir.text = _projectDefaultPath(project?.defaultWorkdir);
+      _worktreeRoot.text = _projectDefaultPath(project?.defaultWorktreeRoot);
+    });
+  }
+
   void _syncGeneratedName() {
     final next = _sessionNameFromTitle(_title.text);
     if (_name.text != next) {
@@ -627,7 +692,7 @@ InputDecoration _runtimeInputDecoration({required String hintText}) {
 }
 
 class _RuntimeFormSection extends StatelessWidget {
-  const _RuntimeFormSection({required this.title, required this.description, required this.children});
+  const _RuntimeFormSection({required this.title, this.description = '', required this.children});
 
   final String title;
   final String description;
@@ -640,8 +705,10 @@ class _RuntimeFormSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(title, style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
-        const SizedBox(height: 4),
-        Text(description, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+        if (description.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(description, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+        ],
         const SizedBox(height: 10),
         ...children,
       ],
@@ -662,7 +729,7 @@ class _RuntimeFormGrid extends StatelessWidget {
       children: [
         for (final child in children)
           SizedBox(
-            width: 180,
+            width: 188,
             child: child,
           ),
       ],
@@ -870,8 +937,6 @@ class AgentRuntimeCreateProjectDialog extends StatefulWidget {
     required String defaultWorktreeRoot,
     required String defaultRoleId,
     required String defaultModel,
-    required bool tracked,
-    required bool listed,
   }) onCreate;
 
   @override
@@ -885,8 +950,6 @@ class _CreateProjectDialogState extends State<AgentRuntimeCreateProjectDialog> {
   late final TextEditingController _worktreeRoot;
   late String _role;
   late String _model;
-  bool _tracked = true;
-  bool _listed = true;
   String? _error;
 
   @override
@@ -918,13 +981,12 @@ class _CreateProjectDialogState extends State<AgentRuntimeCreateProjectDialog> {
       title: const Text('Create project'),
       contentPadding: const EdgeInsets.fromLTRB(24, 12, 24, 10),
       content: SizedBox(
-        width: 700,
+        width: 390,
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('Create a project with default settings for future sessions.', style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
               if (_error != null) ...[const SizedBox(height: 14), _RuntimeFormNotice(message: _error!, tone: _RuntimeFormNoticeTone.error)],
               if (modelUnavailable) ...[
                 const SizedBox(height: 14),
@@ -933,7 +995,6 @@ class _CreateProjectDialogState extends State<AgentRuntimeCreateProjectDialog> {
               const SizedBox(height: 18),
               _RuntimeFormSection(
                 title: 'Project identity',
-                description: 'The key is set once during creation. It is shown as read-only metadata after the project exists.',
                 children: [
                   _RuntimeFormGrid(children: [
                     _RuntimeLabeledField(label: 'Project key', child: TextField(key: const ValueKey('agentRuntime.createProject.key'), controller: _key, decoration: _runtimeInputDecoration(hintText: 'project-key'))),
@@ -944,7 +1005,6 @@ class _CreateProjectDialogState extends State<AgentRuntimeCreateProjectDialog> {
               const SizedBox(height: 16),
               _RuntimeFormSection(
                 title: 'Defaults',
-                description: 'These defaults seed new sessions in this project.',
                 children: [
                   _RuntimeFormGrid(children: [
                     _RuntimeLabeledField(label: 'Default role', child: _roleDropdown(key: const ValueKey('agentRuntime.createProject.role'), roles: roles, value: _role, onChanged: (value) => setState(() => _role = value))),
@@ -955,7 +1015,6 @@ class _CreateProjectDialogState extends State<AgentRuntimeCreateProjectDialog> {
               const SizedBox(height: 16),
               _RuntimeFormSection(
                 title: 'Workspace',
-                description: 'Default paths for commands and worktree context.',
                 children: [
                   _RuntimeFormGrid(children: [
                     _RuntimeLabeledField(label: 'Default workdir', child: TextField(key: const ValueKey('agentRuntime.createProject.workdir'), controller: _workdir, decoration: _runtimeInputDecoration(hintText: '/path/to/workdir'))),
@@ -963,9 +1022,6 @@ class _CreateProjectDialogState extends State<AgentRuntimeCreateProjectDialog> {
                   ]),
                 ],
               ),
-              const SizedBox(height: 12),
-              _RuntimeSwitchRow(label: 'Tracked', value: _tracked, onChanged: (value) => setState(() => _tracked = value)),
-              _RuntimeSwitchRow(label: 'Listed', value: _listed, onChanged: (value) => setState(() => _listed = value)),
             ],
           ),
         ),
@@ -1006,8 +1062,6 @@ class _CreateProjectDialogState extends State<AgentRuntimeCreateProjectDialog> {
       defaultWorktreeRoot: _worktreeRoot.text,
       defaultRoleId: _role,
       defaultModel: _model,
-      tracked: _tracked,
-      listed: _listed,
     );
     Navigator.of(context).pop();
   }
@@ -1168,8 +1222,6 @@ class AgentRuntimeProjectSettingsDialog extends StatefulWidget {
     required String defaultWorktreeRoot,
     required String defaultRoleId,
     required String defaultModel,
-    required bool tracked,
-    required bool listed,
   }) onSave;
   final ValueChanged<String> onArchive;
   final ValueChanged<String> onUnarchive;
@@ -1184,8 +1236,6 @@ class _ProjectSettingsDialogState extends State<AgentRuntimeProjectSettingsDialo
   late final TextEditingController _worktreeRoot;
   late String _role;
   late String _model;
-  bool _tracked = true;
-  bool _listed = true;
   String? _error;
   bool get _hasCanonicalProject => widget.project != null;
 
@@ -1198,8 +1248,6 @@ class _ProjectSettingsDialogState extends State<AgentRuntimeProjectSettingsDialo
     _worktreeRoot = TextEditingController(text: project?.defaultWorktreeRoot ?? '');
     _role = project?.defaultRoleId ?? '';
     _model = project?.defaultModel ?? '';
-    _tracked = project?.tracked ?? false;
-    _listed = project?.listed ?? false;
   }
 
   @override
@@ -1220,7 +1268,7 @@ class _ProjectSettingsDialogState extends State<AgentRuntimeProjectSettingsDialo
       title: const Text('Project settings'),
       contentPadding: const EdgeInsets.fromLTRB(24, 12, 24, 10),
       content: SizedBox(
-        width: 700,
+        width: 390,
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1259,9 +1307,6 @@ class _ProjectSettingsDialogState extends State<AgentRuntimeProjectSettingsDialo
                   ]),
                 ],
               ),
-              const SizedBox(height: 12),
-              _RuntimeSwitchRow(label: 'Tracked', value: _tracked, onChanged: (value) => setState(() => _tracked = value)),
-              _RuntimeSwitchRow(label: 'Listed', value: _listed, onChanged: (value) => setState(() => _listed = value)),
             ],
           ),
         ),
@@ -1305,8 +1350,6 @@ class _ProjectSettingsDialogState extends State<AgentRuntimeProjectSettingsDialo
       defaultWorktreeRoot: _worktreeRoot.text,
       defaultRoleId: _role,
       defaultModel: _model,
-      tracked: _tracked,
-      listed: _listed,
     );
     _popDialogIfPresent(context);
   }

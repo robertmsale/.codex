@@ -180,8 +180,6 @@ class RobdexDesignLabHome extends StatelessWidget {
               required defaultWorktreeRoot,
               required defaultRoleId,
               required defaultModel,
-              required tracked,
-              required listed,
             }) {},
           ),
         ),
@@ -201,8 +199,6 @@ class RobdexDesignLabHome extends StatelessWidget {
               defaultWorktreeRoot: '/Users/robertsale/.codex',
               defaultRoleId: 'runtime-allow',
               defaultModel: 'codex-live-model',
-              tracked: true,
-              listed: true,
             ),
             onSave: ({
               required projectKey,
@@ -211,8 +207,6 @@ class RobdexDesignLabHome extends StatelessWidget {
               required defaultWorktreeRoot,
               required defaultRoleId,
               required defaultModel,
-              required tracked,
-              required listed,
             }) {},
             onArchive: (_) {},
             onUnarchive: (_) {},
@@ -265,7 +259,23 @@ class RobdexDesignLabHome extends StatelessWidget {
       );
     }
     if (surface == 'agentRuntimeRoleManagementDetail') {
-      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'roleAdmin');
+      return Scaffold(
+        backgroundColor: const Color(0xFF05090F),
+        body: AgentRuntimeRoleManagerPage(
+          data: mockAgentRuntimeConnected.roleAdmin,
+          onClose: () {},
+          onValidate: (_) {},
+          onCreate: (_) {},
+          onUpdate: (_) {},
+          onExport: (_) {},
+          onArchive: (_) {},
+          onUnarchive: (_) {},
+          onActivate: (_, _) {},
+          onShowDetail: (_) {},
+          onShowVersions: (_) {},
+          onShowVersionData: (_) {},
+        ),
+      );
     }
     if (surface == 'agentRuntimeOperationsDetail') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);

@@ -328,8 +328,6 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     required String defaultWorktreeRoot,
     required String defaultRoleId,
     required String defaultModel,
-    required bool tracked,
-    required bool listed,
   }) {
     _dispatchOperation(
       'project-create',
@@ -340,8 +338,6 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
         defaultWorktreeRoot: defaultWorktreeRoot.trim(),
         defaultRoleId: defaultRoleId.trim(),
         defaultModel: defaultModel.trim(),
-        tracked: tracked,
-        listed: listed,
       ),
     );
   }
@@ -353,8 +349,6 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     required String defaultWorktreeRoot,
     required String defaultRoleId,
     required String defaultModel,
-    required bool tracked,
-    required bool listed,
   }) {
     _dispatchOperation(
       'project-update',
@@ -365,8 +359,6 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
         defaultWorktreeRoot: defaultWorktreeRoot.trim(),
         defaultRoleId: defaultRoleId.trim(),
         defaultModel: defaultModel.trim(),
-        tracked: tracked,
-        listed: listed,
       ),
     );
   }
@@ -1024,8 +1016,6 @@ ConversationShellData _shellData(bindings.AgentRuntimeConversationShellViewModel
               defaultWorktreeRoot: project.defaultWorktreeRoot,
               defaultRoleId: project.defaultRoleId,
               defaultModel: project.defaultModel,
-              tracked: project.tracked,
-              listed: project.listed,
               archived: project.archived,
             ))
         .toList(growable: false),

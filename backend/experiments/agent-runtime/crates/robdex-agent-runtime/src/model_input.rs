@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -162,10 +163,17 @@ fn truncate_chars(value: &str, limit: usize) -> String {
 }
 
 pub fn prompt_cache_key(role: &RoleSnapshot, snapshot: Option<&ContextSnapshotRecord>) -> String {
+    let role_epoch = role_epoch(role);
     match snapshot {
-        Some(snapshot) => format!("robdex-agent-runtime-kernel-v2:{}:context-{}", role_epoch(role), snapshot.context_epoch),
-        None => format!("robdex-agent-runtime-kernel-v2:{}", role_epoch(role)),
+        Some(snapshot) => prompt_cache_key_from_epochs(&role_epoch, Some(&snapshot.context_epoch.to_string())),
+        None => prompt_cache_key_from_epochs(&role_epoch, None),
     }
+}
+
+pub fn prompt_cache_key_from_epochs(role_epoch: &str, context_epoch: Option<&str>) -> String {
+    let role_hash = format!("{:x}", Sha256::digest(role_epoch.as_bytes()));
+    let context = context_epoch.unwrap_or("none");
+    format!("rar2:{}:c{}", &role_hash[..24], context)
 }
 
 async fn project_label(pool: &PgPool, project_key: Option<&str>) -> Result<(String, String)> {

@@ -54,7 +54,7 @@ async fn project_summaries(pool: &PgPool) -> Result<Vec<ProjectSummary>> {
     let rows = sqlx::query(
         r#"
         SELECT project_key, display_name, default_workdir, default_worktree_root,
-               default_role_id, default_model, tracked, listed, archived, created_at, updated_at
+               default_role_id, default_model, archived, created_at, updated_at
         FROM projects
         ORDER BY lower(display_name), project_key
         "#,
@@ -70,8 +70,6 @@ async fn project_summaries(pool: &PgPool) -> Result<Vec<ProjectSummary>> {
             default_worktree_root: row.get("default_worktree_root"),
             default_role_id: row.get("default_role_id"),
             default_model: row.get("default_model"),
-            tracked: row.get("tracked"),
-            listed: row.get("listed"),
             archived: row.get("archived"),
             created_at: optional_time(row.get("created_at")),
             updated_at: optional_time(row.get("updated_at")),

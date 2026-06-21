@@ -157,8 +157,8 @@ Every operation uses the API error packet
 | `SelectSession` | local selected-session update, then snapshot and WebSocket reconnect with `selectedSessionId` | local + GET/WS | selected session id | fresh `RuntimeProjection` and stream | `RehydrateAndReconnect` |
 | `CreateSession` | `/sessions` | POST | `{role, project, model, workdir, worktreeRoot, title, name}`; `project` may be the explicit `__unassigned__` sentinel | `{sessionId}` | `WaitForDelta` |
 | `ListProjects` | `/projects` | GET | none | canonical DB-backed project rows | `DirectResult` |
-| `CreateProject` | `/projects` | POST | `{projectKey, displayName, defaultWorkdir, defaultWorktreeRoot, defaultRoleId, defaultModel, tracked, listed}` | `{project}` | `WaitForDelta` |
-| `UpdateProject` | `/projects/{projectKey}` | POST | `{displayName, defaultWorkdir, defaultWorktreeRoot, defaultRoleId, defaultModel, tracked, listed}` | `{project}` | `WaitForDelta` |
+| `CreateProject` | `/projects` | POST | `{projectKey, displayName, defaultWorkdir, defaultWorktreeRoot, defaultRoleId, defaultModel}` | `{project}` | `WaitForDelta` |
+| `UpdateProject` | `/projects/{projectKey}` | POST | `{displayName, defaultWorkdir, defaultWorktreeRoot, defaultRoleId, defaultModel}` | `{project}` | `WaitForDelta` |
 | `ArchiveProject` | `/projects/{projectKey}/archive` | POST | `{}` | `{project}` | `WaitForDelta` |
 | `UnarchiveProject` | `/projects/{projectKey}/unarchive` | POST | `{}` | `{project}` | `WaitForDelta` |
 | `SendMessage` | `/sessions/{sessionId}/send` | POST | `{message}` | `{sessionId, turnId, status}` | `WaitForDelta` |
@@ -1236,7 +1236,7 @@ Server routes added for the editor:
 
 The Rust GUI operation vocabulary includes direct-result role operations for metadata, validation, inspection, version listing, version detail, and export. Create, update, activate, archive, and unarchive operations are wait-for-delta mutations; role changes are visible through `RuntimeProjection.roles` and role semantic deltas. The Rust-owned `AgentRuntimeWorkbenchViewModel` exposes a `roleAdmin` section with role rows, selected role detail, version rows, draft summary, validation errors, and role action states. Dart renders those constructor-ready fields and may hold only ephemeral editor/controller text state.
 
-The design-system workbench-shell panel provides editable controls for role identity, version, display name, model defaults, capabilities, policy decisions, routing/default recipient/allowed recipients/reserved actions, visibility, lifecycle authority, validation feedback, and action buttons. It uses `code_forge` as the actual Markdown instruction editor; edited CodeForge content is included as inline `instructionText` in validate/create/update draft submissions. Static Design Lab/workbench-shell mock states include empty/disconnected role admin, selected role with versions, editable draft summary, validation errors, and action-ready states.
+The design-system Role Manager is a full-screen page launched from the Runtime Operations Role Admin entry. It provides editable controls for role identity, version, display name, model defaults, capabilities, policy decisions, routing/default recipient/allowed recipients/reserved actions, visibility, lifecycle authority, validation feedback, version history, activation, archive/unarchive, export, and inspection actions. It uses `code_forge` as the Markdown instruction editor; edited CodeForge content is included as inline `instructionText` in validate/create/update draft submissions. Static Design Lab/workbench-shell mock states render the same exported page component used by the product route.
 
 ## Approval and routing foundation
 

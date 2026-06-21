@@ -16,8 +16,6 @@ pub struct ProjectRow {
     pub default_worktree_root: String,
     pub default_role_id: Option<String>,
     pub default_model: String,
-    pub tracked: bool,
-    pub listed: bool,
     pub archived: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -43,8 +41,6 @@ fn project_row(row: sqlx::postgres::PgRow) -> ProjectRow {
         default_worktree_root: row.get("default_worktree_root"),
         default_role_id: row.get("default_role_id"),
         default_model: row.get("default_model"),
-        tracked: row.get("tracked"),
-        listed: row.get("listed"),
         archived: row.get("archived"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
@@ -75,7 +71,7 @@ pub async fn list_projects(pool: &PgPool, include_archived: bool) -> Result<Vec<
     let rows = sqlx::query(
         r#"
         SELECT project_key, display_name, default_workdir, default_worktree_root,
-               default_role_id, default_model, tracked, listed, archived, created_at, updated_at
+               default_role_id, default_model, archived, created_at, updated_at
         FROM projects
         WHERE ($1::bool OR archived = false)
         ORDER BY lower(display_name), project_key
@@ -96,8 +92,6 @@ pub async fn create_project(
     default_worktree_root: &str,
     default_role_id: Option<&str>,
     default_model: &str,
-    tracked: bool,
-    listed: bool,
 ) -> Result<ProjectRow> {
     validate_project_key(project_key)?;
     if display_name.trim().is_empty()
@@ -111,11 +105,11 @@ pub async fn create_project(
         r#"
         INSERT INTO projects (
             project_key, display_name, default_workdir, default_worktree_root,
-            default_role_id, default_model, tracked, listed, archived
+            default_role_id, default_model, archived
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false)
+        VALUES ($1,$2,$3,$4,$5,$6,false)
         RETURNING project_key, display_name, default_workdir, default_worktree_root,
-                  default_role_id, default_model, tracked, listed, archived, created_at, updated_at
+                  default_role_id, default_model, archived, created_at, updated_at
         "#,
     )
     .bind(project_key)
@@ -124,8 +118,6 @@ pub async fn create_project(
     .bind(default_worktree_root.trim())
     .bind(default_role_id.filter(|value| !value.trim().is_empty()))
     .bind(default_model.trim())
-    .bind(tracked)
-    .bind(listed)
     .fetch_one(pool)
     .await?;
     append_admin_event(pool, "project", None, "project.created", Some("created"), json!({"projectKey": project_key})).await?;
@@ -141,8 +133,6 @@ pub async fn update_project(
     default_worktree_root: &str,
     default_role_id: Option<&str>,
     default_model: &str,
-    tracked: bool,
-    listed: bool,
 ) -> Result<ProjectRow> {
     validate_project_key(project_key)?;
     if display_name.trim().is_empty()
@@ -156,11 +146,11 @@ pub async fn update_project(
         r#"
         UPDATE projects
         SET display_name=$2, default_workdir=$3, default_worktree_root=$4,
-            default_role_id=$5, default_model=$6, tracked=$7, listed=$8,
+            default_role_id=$5, default_model=$6,
             updated_at=now()
         WHERE project_key=$1
         RETURNING project_key, display_name, default_workdir, default_worktree_root,
-                  default_role_id, default_model, tracked, listed, archived, created_at, updated_at
+                  default_role_id, default_model, archived, created_at, updated_at
         "#,
     )
     .bind(project_key)
@@ -169,8 +159,6 @@ pub async fn update_project(
     .bind(default_worktree_root.trim())
     .bind(default_role_id.filter(|value| !value.trim().is_empty()))
     .bind(default_model.trim())
-    .bind(tracked)
-    .bind(listed)
     .fetch_one(pool)
     .await?;
     append_admin_event(pool, "project", None, "project.updated", Some("updated"), json!({"projectKey": project_key})).await?;
@@ -185,7 +173,7 @@ pub async fn set_project_archived(pool: &PgPool, project_key: &str, archived: bo
         SET archived=$2, updated_at=now()
         WHERE project_key=$1
         RETURNING project_key, display_name, default_workdir, default_worktree_root,
-                  default_role_id, default_model, tracked, listed, archived, created_at, updated_at
+                  default_role_id, default_model, archived, created_at, updated_at
         "#,
     )
     .bind(project_key)

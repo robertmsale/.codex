@@ -318,7 +318,7 @@ async fn snapshot(
             json!({"id": "__all__", "displayLabel": "All", "selected": selected_project_id.is_none()}),
             json!({"id": "__unassigned__", "displayLabel": "Unassigned", "selected": selected_project_id.as_deref() == Some("__unassigned__")}),
         ];
-        project_options.extend(projection.projects.iter().filter(|project| !project.archived && project.listed).map(|project| {
+        project_options.extend(projection.projects.iter().filter(|project| !project.archived).map(|project| {
             json!({
                 "id": project.project_key,
                 "displayLabel": project.display_name,
@@ -402,18 +402,18 @@ struct CreateSessionRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 struct ProjectSettingsRequest {
     display_name: String,
     default_workdir: String,
     default_worktree_root: String,
     default_role_id: Option<String>,
     default_model: String,
-    tracked: bool,
-    listed: bool,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 struct CreateProjectRequest {
     project_key: String,
     display_name: String,
@@ -421,8 +421,6 @@ struct CreateProjectRequest {
     default_worktree_root: String,
     default_role_id: Option<String>,
     default_model: String,
-    tracked: bool,
-    listed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -484,8 +482,6 @@ async fn create_project(
         request.default_worktree_root.trim(),
         request.default_role_id.as_deref(),
         request.default_model.trim(),
-        request.tracked,
-        request.listed,
     )
     .await?;
     Ok(Json(json!({"project": project_json(project)})))
@@ -505,8 +501,6 @@ async fn update_project(
         request.default_worktree_root.trim(),
         request.default_role_id.as_deref(),
         request.default_model.trim(),
-        request.tracked,
-        request.listed,
     )
     .await
     .map_err(|error| map_missing_entity(error, "project", project_key.trim()))?;
@@ -557,8 +551,6 @@ async fn project_from_intent(pool: &PgPool, project_intent: &str) -> Result<Opti
             ".",
             None,
             "gpt-5.4-mini",
-            true,
-            true,
         )
         .await?;
     }
@@ -573,8 +565,6 @@ fn project_json(project: db::ProjectRow) -> Value {
         "defaultWorktreeRoot": project.default_worktree_root,
         "defaultRoleId": project.default_role_id,
         "defaultModel": project.default_model,
-        "tracked": project.tracked,
-        "listed": project.listed,
         "archived": project.archived,
         "createdAt": project.created_at.to_rfc3339(),
         "updatedAt": project.updated_at.to_rfc3339(),
@@ -1987,8 +1977,6 @@ mod tests {
                         default_worktree_root: "/tmp/zeta".to_string(),
                         default_role_id: Some("runtime-no-rg".to_string()),
                         default_model: "gpt-5.4-mini".to_string(),
-                        tracked: true,
-                        listed: true,
                     },
                 },
             })
@@ -2006,16 +1994,14 @@ mod tests {
                         default_worktree_root: "/tmp/zeta-root".to_string(),
                         default_role_id: Some("runtime-allow".to_string()),
                         default_model: "gpt-5.5".to_string(),
-                        tracked: false,
-                        listed: true,
                     },
                 },
             })
             .await;
         assert!(update.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model } if view_model.shell.projects.iter().any(|row| row.id == "zeta-project" && row.title == "Zeta Updated"))), "project update must update rendered rail data: {update:?}");
 
-        let row: (String, String, String, Option<String>, String, bool, bool, bool) = sqlx::query_as(
-            "SELECT display_name, default_workdir, default_worktree_root, default_role_id, default_model, tracked, listed, archived FROM projects WHERE project_key='zeta-project'",
+        let row: (String, String, String, Option<String>, String, bool) = sqlx::query_as(
+            "SELECT display_name, default_workdir, default_worktree_root, default_role_id, default_model, archived FROM projects WHERE project_key='zeta-project'",
         )
         .fetch_one(&test_db.pool)
         .await
@@ -2026,8 +2012,6 @@ mod tests {
         assert_eq!(row.3.as_deref(), Some("runtime-allow"));
         assert_eq!(row.4, "gpt-5.5");
         assert!(!row.5);
-        assert!(row.6);
-        assert!(!row.7);
 
         let archived = transport
             .send(GuiTransportRequestPacket {
@@ -2107,6 +2091,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn project_create_update_reject_obsolete_tracked_listed_fields() {
+        let test_db = validation_db().await;
+        let state = ServerState::new_with_identity(test_db.pool.clone(), "project-obsolete-fields-validation".to_string());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.expect("serve");
+        });
+        let base_url = format!("http://{addr}");
+        let http = reqwest::Client::new();
+
+        let create = http
+            .post(format!("{base_url}/projects"))
+            .json(&json!({
+                "projectKey": "obsolete-project",
+                "displayName": "Obsolete Project",
+                "defaultWorkdir": ".",
+                "defaultWorktreeRoot": ".",
+                "defaultRoleId": "runtime-no-rg",
+                "defaultModel": "gpt-5.4-mini",
+                "tracked": true,
+                "listed": true
+            }))
+            .send()
+            .await
+            .expect("create response");
+        assert_eq!(create.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        let created: Value = http
+            .post(format!("{base_url}/projects"))
+            .json(&json!({
+                "projectKey": "obsolete-project",
+                "displayName": "Obsolete Project",
+                "defaultWorkdir": ".",
+                "defaultWorktreeRoot": ".",
+                "defaultRoleId": "runtime-no-rg",
+                "defaultModel": "gpt-5.4-mini"
+            }))
+            .send()
+            .await
+            .expect("create response")
+            .error_for_status()
+            .expect("create ok")
+            .json()
+            .await
+            .expect("create json");
+        assert_eq!(created["project"]["projectKey"], "obsolete-project");
+        assert!(created["project"].get("tracked").is_none());
+        assert!(created["project"].get("listed").is_none());
+
+        let update = http
+            .post(format!("{base_url}/projects/obsolete-project"))
+            .json(&json!({
+                "displayName": "Obsolete Updated",
+                "defaultWorkdir": ".",
+                "defaultWorktreeRoot": ".",
+                "defaultRoleId": "runtime-allow",
+                "defaultModel": "gpt-5.5",
+                "tracked": false,
+                "listed": false
+            }))
+            .send()
+            .await
+            .expect("update response");
+        assert_eq!(update.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        let row: (String, bool) = sqlx::query_as("SELECT display_name, archived FROM projects WHERE project_key='obsolete-project'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("project row");
+        assert_eq!(row.0, "Obsolete Project");
+        assert!(!row.1);
+
+        server.abort();
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
     async fn gui_disconnect_returns_disconnected_surface_without_mutating_sessions_or_projects() {
         let test_db = validation_db().await;
         let state = ServerState::new_with_identity(test_db.pool.clone(), "disconnect-validation".to_string());
@@ -2126,8 +2188,6 @@ mod tests {
             "/tmp/disconnect",
             Some("runtime-no-rg"),
             "gpt-5.4-mini",
-            true,
-            true,
         )
         .await
         .expect("project");
@@ -2217,10 +2277,10 @@ mod tests {
         let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg")
             .await
             .expect("role");
-        let _ = db::create_project(&test_db.pool, "alpha-project", "Alpha Project", "/tmp/alpha", "/tmp/alpha", Some("runtime-no-rg"), "gpt-5.4-mini", true, true)
+        let _ = db::create_project(&test_db.pool, "alpha-project", "Alpha Project", "/tmp/alpha", "/tmp/alpha", Some("runtime-no-rg"), "gpt-5.4-mini")
             .await
             .expect("alpha project");
-        let _ = db::create_project(&test_db.pool, "zeta-project", "Zeta Project", "/tmp/zeta", "/tmp/zeta", Some("runtime-no-rg"), "gpt-5.4-mini", true, true)
+        let _ = db::create_project(&test_db.pool, "zeta-project", "Zeta Project", "/tmp/zeta", "/tmp/zeta", Some("runtime-no-rg"), "gpt-5.4-mini")
             .await
             .expect("zeta project");
         let historical_unassigned = db::new_session(&test_db.pool, &role, None, "/tmp/unassigned", Some("/tmp/unassigned"), Some("Historical unassigned"), Some("historical-unassigned"))
@@ -2360,10 +2420,10 @@ mod tests {
         let base_url = format!("http://{addr}");
         let transport = GuiTransportHandle::spawn();
 
-        let _ = db::create_project(&test_db.pool, "alpha-project", "Alpha Project", "/tmp/alpha", "/tmp/alpha-root", Some("runtime-no-rg"), "gpt-5.4-mini", true, true)
+        let _ = db::create_project(&test_db.pool, "alpha-project", "Alpha Project", "/tmp/alpha", "/tmp/alpha-root", Some("runtime-no-rg"), "gpt-5.4-mini")
             .await
             .expect("alpha project");
-        let _ = db::create_project(&test_db.pool, "zeta-project", "Zeta Project", "/tmp/zeta", "/tmp/zeta-root", Some("runtime-no-rg"), "gpt-5.4-mini", true, true)
+        let _ = db::create_project(&test_db.pool, "zeta-project", "Zeta Project", "/tmp/zeta", "/tmp/zeta-root", Some("runtime-no-rg"), "gpt-5.4-mini")
             .await
             .expect("zeta project");
 
@@ -2838,8 +2898,6 @@ mod tests {
                         default_worktree_root: ".".to_string(),
                         default_role_id: Some("runtime-no-rg".to_string()),
                         default_model: "gpt-5.4-mini".to_string(),
-                        tracked: true,
-                        listed: true,
                     },
                 },
             })
@@ -2855,8 +2913,6 @@ mod tests {
                         default_worktree_root: ".".to_string(),
                         default_role_id: Some("runtime-no-rg".to_string()),
                         default_model: "gpt-5.4-mini".to_string(),
-                        tracked: true,
-                        listed: true,
                     },
                 },
             })
@@ -2874,8 +2930,6 @@ mod tests {
                         default_worktree_root: ".".to_string(),
                         default_role_id: Some("runtime-no-rg".to_string()),
                         default_model: "gpt-5.4-mini".to_string(),
-                        tracked: true,
-                        listed: true,
                     },
                 },
             })
@@ -3342,8 +3396,6 @@ mod tests {
                         default_worktree_root: ".".to_string(),
                         default_role_id: Some("runtime-no-rg".to_string()),
                         default_model: "gpt-5.4-mini".to_string(),
-                        tracked: true,
-                        listed: true,
                     },
                 },
             })

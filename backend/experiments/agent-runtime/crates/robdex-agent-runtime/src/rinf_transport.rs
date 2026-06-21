@@ -259,8 +259,6 @@ pub struct AgentRuntimeShellProjectRow {
     pub default_worktree_root: String,
     pub default_role_id: Option<String>,
     pub default_model: String,
-    pub tracked: bool,
-    pub listed: bool,
     pub archived: bool,
 }
 
@@ -671,8 +669,6 @@ fn shell_project_rows(projection: Option<&RuntimeProjection>, selected_project_i
             default_worktree_root: String::new(),
             default_role_id: None,
             default_model: String::new(),
-            tracked: false,
-            listed: true,
             archived: false,
         },
         AgentRuntimeShellProjectRow {
@@ -685,8 +681,6 @@ fn shell_project_rows(projection: Option<&RuntimeProjection>, selected_project_i
             default_worktree_root: String::new(),
             default_role_id: None,
             default_model: String::new(),
-            tracked: false,
-            listed: true,
             archived: false,
         },
     ];
@@ -695,7 +689,7 @@ fn shell_project_rows(projection: Option<&RuntimeProjection>, selected_project_i
             projection
                 .projects
                 .iter()
-                .filter(|project| !project.archived && project.listed)
+                .filter(|project| !project.archived)
                 .map(|project| AgentRuntimeShellProjectRow {
                     id: project.project_key.clone(),
                     title: project.display_name.clone(),
@@ -706,8 +700,6 @@ fn shell_project_rows(projection: Option<&RuntimeProjection>, selected_project_i
                     default_worktree_root: project.default_worktree_root.clone(),
                     default_role_id: project.default_role_id.clone(),
                     default_model: project.default_model.clone(),
-                    tracked: project.tracked,
-                    listed: project.listed,
                     archived: project.archived,
                 }),
         );
@@ -2591,7 +2583,7 @@ fn role_admin_view(projection: Option<&RuntimeProjection>, model_options: &[Agen
         .unwrap_or_default();
     AgentRuntimeRoleAdminView {
         title: format!("Role Admin ({})", rows.len()),
-        subtitle: "DB-backed immutable role versions".to_string(),
+        subtitle: "Immutable role versions".to_string(),
         empty_title: "No roles projected".to_string(),
         empty_text: "Connect to inspect role definitions or create a role.".to_string(),
         rows,
@@ -3575,8 +3567,6 @@ mod tests {
                             default_worktree_root: "/tmp/alpha".to_string(),
                             default_role_id: Some("runtime-no-rg".to_string()),
                             default_model: "gpt-5.4-mini".to_string(),
-                            tracked: true,
-                            listed: true,
                             archived: false,
                             created_at: None,
                             updated_at: None,
@@ -3588,8 +3578,6 @@ mod tests {
                             default_worktree_root: "/tmp/zeta".to_string(),
                             default_role_id: Some("runtime-no-rg".to_string()),
                             default_model: "gpt-5.4-mini".to_string(),
-                            tracked: true,
-                            listed: true,
                             archived: false,
                             created_at: None,
                             updated_at: None,
@@ -3686,8 +3674,6 @@ mod tests {
                         default_worktree_root: "/tmp/zeta".to_string(),
                         default_role_id: Some("runtime-no-rg".to_string()),
                         default_model: "gpt-5.4-mini".to_string(),
-                        tracked: true,
-                        listed: true,
                         archived: false,
                         created_at: None,
                         updated_at: None,
@@ -5180,8 +5166,6 @@ mod tests {
                         default_worktree_root: "/tmp/zeta".to_string(),
                         default_role_id: Some("runtime-no-rg".to_string()),
                         default_model: "gpt-5.4-mini".to_string(),
-                        tracked: true,
-                        listed: true,
                     },
                 },
             ))

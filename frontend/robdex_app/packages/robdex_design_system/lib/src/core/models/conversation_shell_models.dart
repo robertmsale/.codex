@@ -54,8 +54,6 @@ class ConversationProject {
     this.defaultWorktreeRoot = '',
     this.defaultRoleId = '',
     this.defaultModel = '',
-    this.tracked = false,
-    this.listed = true,
     this.archived = false,
   });
   final String id;
@@ -68,8 +66,6 @@ class ConversationProject {
   final String defaultWorktreeRoot;
   final String defaultRoleId;
   final String defaultModel;
-  final bool tracked;
-  final bool listed;
   final bool archived;
 }
 

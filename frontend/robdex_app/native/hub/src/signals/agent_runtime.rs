@@ -32,8 +32,8 @@ pub enum AgentRuntimeGuiOperation {
     SelectWorkflowMemory { memory_id: String },
     CreateSession { role: String, project: String, model: String, workdir: String, worktree_root: String, title: String, name: String },
     ListProjects,
-    CreateProject { project_key: String, display_name: String, default_workdir: String, default_worktree_root: String, default_role_id: String, default_model: String, tracked: bool, listed: bool },
-    UpdateProject { project_key: String, display_name: String, default_workdir: String, default_worktree_root: String, default_role_id: String, default_model: String, tracked: bool, listed: bool },
+    CreateProject { project_key: String, display_name: String, default_workdir: String, default_worktree_root: String, default_role_id: String, default_model: String },
+    UpdateProject { project_key: String, display_name: String, default_workdir: String, default_worktree_root: String, default_role_id: String, default_model: String },
     ArchiveProject { project_key: String },
     UnarchiveProject { project_key: String },
     UpdateRuntimeSettings { base_url: String, selected_project_id: String },
@@ -337,8 +337,6 @@ pub struct AgentRuntimeShellProjectRow {
     pub default_worktree_root: String,
     pub default_role_id: String,
     pub default_model: String,
-    pub tracked: bool,
-    pub listed: bool,
     pub archived: bool,
 }
 

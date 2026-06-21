@@ -744,7 +744,7 @@ class AgentRuntimeRoleAdminData {
     final editorDraft = json['editorDraft'];
     return AgentRuntimeRoleAdminData(
       title: '${json['title'] ?? 'Role Admin'}',
-      subtitle: '${json['subtitle'] ?? 'DB-backed immutable role versions'}',
+      subtitle: '${json['subtitle'] ?? 'Immutable role versions'}',
       emptyTitle: '${json['emptyTitle'] ?? 'No roles projected'}',
       emptyText: '${json['emptyText'] ?? 'Hydrate the runtime projection to inspect roles.'}',
       rows: _objects(json['rows']).map(AgentRuntimeRoleRow.fromJson).toList(growable: false),

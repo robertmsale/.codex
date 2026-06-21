@@ -299,7 +299,14 @@ void main() {
       appTitle: 'Agent Runtime',
       connectionLabel: 'Connected',
       projects: const [
-        ConversationProject(id: 'project-a', title: 'Project A'),
+        ConversationProject(
+          id: 'project-a',
+          title: 'Project A',
+          defaultWorkdir: '/work/project-a',
+          defaultWorktreeRoot: '/work/project-a/root',
+          defaultRoleId: 'runtime-safe-builder',
+          defaultModel: 'codex-live-model',
+        ),
       ],
       sessions: const [
         ConversationSession(
@@ -567,7 +574,7 @@ void main() {
     expect(sentRequests, hasLength(1));
   });
 
-  test('project CRUD actions send generated typed operation intents', () {
+  test('project CRUD actions send generated typed operation intents without project visibility payload', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
     final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
@@ -583,8 +590,6 @@ void main() {
       defaultWorktreeRoot: '/work/a',
       defaultRoleId: 'runtime-no-rg',
       defaultModel: 'gpt-5.4-mini',
-      tracked: true,
-      listed: true,
     );
     controller.updateProject(
       projectKey: 'project-a',
@@ -593,8 +598,6 @@ void main() {
       defaultWorktreeRoot: '/work/alpha',
       defaultRoleId: 'runtime-allow',
       defaultModel: 'gpt-5.5',
-      tracked: false,
-      listed: true,
     );
     controller.archiveProject('project-a');
 
@@ -603,7 +606,8 @@ void main() {
     final update = (sentRequests[1] as bindings.AgentRuntimeRequestDispatchOperation).operation as bindings.AgentRuntimeGuiOperationUpdateProject;
     expect(update.projectKey, 'project-a');
     expect(update.defaultModel, 'gpt-5.5');
-    expect(update.tracked, false);
+    expect(update.toString(), isNot(contains('tracked')));
+    expect(update.toString(), isNot(contains('listed')));
     final archive = (sentRequests[2] as bindings.AgentRuntimeRequestDispatchOperation).operation as bindings.AgentRuntimeGuiOperationArchiveProject;
     expect(archive.projectKey, 'project-a');
   });
@@ -983,7 +987,14 @@ void main() {
       projects: const [
         ConversationProject(id: '__all__', title: 'All'),
         ConversationProject(id: '__unassigned__', title: 'Unassigned'),
-        ConversationProject(id: 'project-a', title: 'Project A'),
+        ConversationProject(
+          id: 'project-a',
+          title: 'Project A',
+          defaultWorkdir: '/work/project-a',
+          defaultWorktreeRoot: '/work/project-a/root',
+          defaultRoleId: 'runtime-safe-builder',
+          defaultModel: 'codex-live-model',
+        ),
       ],
       sessions: const [
         ConversationSession(
@@ -1633,12 +1644,37 @@ void main() {
     await tester.tap(find.widgetWithText(OutlinedButton, 'Deny').first);
     await tester.tap(find.widgetWithText(OutlinedButton, 'Apply'));
 
-    await pumpOperations(focusSurfaceId: 'roleAdmin');
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Show role detail'));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentRuntimeRoleManagerPage(
+            data: mockAgentRuntimeConnected.roleAdmin,
+            onValidate: (_) => events.add('role.validate'),
+            onCreate: (_) => events.add('role.create'),
+            onUpdate: (_) => events.add('role.update'),
+            onExport: (_) => events.add('role.export'),
+            onArchive: (_) => events.add('role.archive'),
+            onUnarchive: (_) => events.add('role.unarchive'),
+            onActivate: (_, _) => events.add('role.activate'),
+            onShowDetail: (_) => events.add('role.detail'),
+            onShowVersions: (_) => events.add('role.versions'),
+            onShowVersionData: (_) => events.add('role.versionData'),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Validate Draft'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Save Version'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Export'));
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Show detail'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Show detail'));
     await tester.tap(find.widgetWithText(OutlinedButton, 'Show versions'));
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Show current version data'));
     await tester.tap(find.widgetWithText(OutlinedButton, 'Show data').first);
     await tester.tap(find.widgetWithText(OutlinedButton, 'Activate').last);
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Archive'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Archive'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Unarchive'));
 
     await pumpOperations(focusSurfaceId: 'workflowMemory');
     await tester.tap(find.text('Use saved output excerpts'));
@@ -1679,7 +1715,7 @@ void main() {
     );
   });
 
-  testWidgets('Create Project modal validates key and submits a fully populated typed draft', (tester) async {
+  testWidgets('Create Project modal validates key and submits a fully populated typed draft without visibility controls', (tester) async {
     Map<String, Object?>? submitted;
     await tester.pumpWidget(
       MaterialApp(
@@ -1694,8 +1730,6 @@ void main() {
               required defaultWorktreeRoot,
               required defaultRoleId,
               required defaultModel,
-              required tracked,
-              required listed,
             }) {
               submitted = {
                 'projectKey': projectKey,
@@ -1704,8 +1738,6 @@ void main() {
                 'defaultWorktreeRoot': defaultWorktreeRoot,
                 'defaultRoleId': defaultRoleId,
                 'defaultModel': defaultModel,
-                'tracked': tracked,
-                'listed': listed,
               };
             },
           ),
@@ -1715,6 +1747,11 @@ void main() {
 
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.createProject.key')), 'bad key with spaces');
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.createProject.displayName')), 'Bad Project');
+    expect(find.text('Tracked'), findsNothing);
+    expect(find.text('Listed'), findsNothing);
+    expect(find.text('Visibility'), findsNothing);
+    expect(find.text('Hidden'), findsNothing);
+    expect(find.text('Invisible'), findsNothing);
     await tester.tap(find.text('Create'));
     await tester.pump();
     expect(submitted, isNull);
@@ -1740,8 +1777,6 @@ void main() {
     expect(submitted!['defaultWorktreeRoot'], '/work/validation/root');
     expect(submitted!['defaultRoleId'], isNot(''));
     expect(submitted!['defaultModel'], mockAgentRuntimeConnected.modelOptions.single.id);
-    expect(submitted!['tracked'], true);
-    expect(submitted!['listed'], true);
   });
 
   testWidgets('Create Session modal uses a structured non-overlapping form and runtime model options', (tester) async {
@@ -1754,7 +1789,14 @@ void main() {
       projects: [
         ConversationProject(id: '__all__', title: 'All'),
         ConversationProject(id: '__unassigned__', title: 'Unassigned'),
-        ConversationProject(id: 'project-a', title: 'Project A'),
+        ConversationProject(
+          id: 'project-a',
+          title: 'Project A',
+          defaultWorkdir: '/work/project-a',
+          defaultWorktreeRoot: '/work/project-a/root',
+          defaultRoleId: 'runtime-safe-builder',
+          defaultModel: 'codex-live-model',
+        ),
       ],
       sessions: [],
       selectedSessionId: null,
@@ -1813,6 +1855,9 @@ void main() {
     }
     expect(find.byKey(const ValueKey('agentRuntime.createSession.model')), findsOneWidget);
     expect(find.text('Codex live model'), findsOneWidget);
+    expect(find.text('Runtime Safe Builder'), findsOneWidget);
+    expect(find.text('/work/project-a'), findsOneWidget);
+    expect(find.text('/work/project-a/root'), findsOneWidget);
 
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.createSession.title')), 'Live Test Session');
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.createSession.workdir')), '/work/live');
@@ -1876,7 +1921,7 @@ void main() {
     expect(submitted, isNull);
   });
 
-  testWidgets('Project Settings modal saves every field and exposes archive and unarchive typed actions', (tester) async {
+  testWidgets('Project Settings modal saves every field and exposes only archive and unarchive lifecycle actions', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1200, 1000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final actions = <String>[];
@@ -1888,8 +1933,6 @@ void main() {
       defaultWorktreeRoot: '/canonical/worktree',
       defaultRoleId: 'runtime-allow',
       defaultModel: 'codex-live-model',
-      tracked: false,
-      listed: true,
     );
     await tester.pumpWidget(
       MaterialApp(
@@ -1905,8 +1948,6 @@ void main() {
               required defaultWorktreeRoot,
               required defaultRoleId,
               required defaultModel,
-              required tracked,
-              required listed,
             }) {
               saved = {
                 'projectKey': projectKey,
@@ -1915,8 +1956,6 @@ void main() {
                 'defaultWorktreeRoot': defaultWorktreeRoot,
                 'defaultRoleId': defaultRoleId,
                 'defaultModel': defaultModel,
-                'tracked': tracked,
-                'listed': listed,
               };
             },
             onArchive: (id) => actions.add('archive:$id'),
@@ -1928,6 +1967,11 @@ void main() {
 
     expect(find.text('Project settings'), findsOneWidget);
     expect(find.text('Project key'), findsOneWidget);
+    expect(find.text('Tracked'), findsNothing);
+    expect(find.text('Listed'), findsNothing);
+    expect(find.text('Visibility'), findsNothing);
+    expect(find.text('Hidden'), findsNothing);
+    expect(find.text('Invisible'), findsNothing);
     expect(find.widgetWithText(TextField, 'Project key'), findsNothing);
     expect(find.byKey(const ValueKey('agentRuntime.projectSettings.model')), findsOneWidget);
     expect(find.widgetWithText(TextField, 'Canonical Project'), findsOneWidget);
@@ -1954,8 +1998,6 @@ void main() {
               required defaultWorktreeRoot,
               required defaultRoleId,
               required defaultModel,
-              required tracked,
-              required listed,
             }) {
               saved = {
                 'projectKey': projectKey,
@@ -1964,8 +2006,6 @@ void main() {
                 'defaultWorktreeRoot': defaultWorktreeRoot,
                 'defaultRoleId': defaultRoleId,
                 'defaultModel': defaultModel,
-                'tracked': tracked,
-                'listed': listed,
               };
             },
             onArchive: (id) => actions.add('archive:$id'),
@@ -1995,8 +2035,6 @@ void main() {
               required defaultWorktreeRoot,
               required defaultRoleId,
               required defaultModel,
-              required tracked,
-              required listed,
             }) {
               saved = {
                 'projectKey': projectKey,
@@ -2005,8 +2043,6 @@ void main() {
                 'defaultWorktreeRoot': defaultWorktreeRoot,
                 'defaultRoleId': defaultRoleId,
                 'defaultModel': defaultModel,
-                'tracked': tracked,
-                'listed': listed,
               };
             },
             onArchive: (id) => actions.add('archive:$id'),
@@ -2045,8 +2081,6 @@ void main() {
               required defaultWorktreeRoot,
               required defaultRoleId,
               required defaultModel,
-              required tracked,
-              required listed,
             }) {
               saved = {
                 'projectKey': projectKey,

@@ -13,8 +13,6 @@ class AgentRuntimeShellProjectRow {
     required this.defaultWorktreeRoot,
     required this.defaultRoleId,
     required this.defaultModel,
-    required this.tracked,
-    required this.listed,
     required this.archived,
   });
 
@@ -29,8 +27,6 @@ class AgentRuntimeShellProjectRow {
       defaultWorktreeRoot: deserializer.deserializeString(),
       defaultRoleId: deserializer.deserializeString(),
       defaultModel: deserializer.deserializeString(),
-      tracked: deserializer.deserializeBool(),
-      listed: deserializer.deserializeBool(),
       archived: deserializer.deserializeBool(),
     );
     deserializer.decreaseContainerDepth();
@@ -54,8 +50,6 @@ class AgentRuntimeShellProjectRow {
   final String defaultWorktreeRoot;
   final String defaultRoleId;
   final String defaultModel;
-  final bool tracked;
-  final bool listed;
   final bool archived;
 
   AgentRuntimeShellProjectRow copyWith({
@@ -67,8 +61,6 @@ class AgentRuntimeShellProjectRow {
     String? defaultWorktreeRoot,
     String? defaultRoleId,
     String? defaultModel,
-    bool? tracked,
-    bool? listed,
     bool? archived,
   }) {
     return AgentRuntimeShellProjectRow(
@@ -80,8 +72,6 @@ class AgentRuntimeShellProjectRow {
       defaultWorktreeRoot: defaultWorktreeRoot ?? this.defaultWorktreeRoot,
       defaultRoleId: defaultRoleId ?? this.defaultRoleId,
       defaultModel: defaultModel ?? this.defaultModel,
-      tracked: tracked ?? this.tracked,
-      listed: listed ?? this.listed,
       archived: archived ?? this.archived,
     );
   }
@@ -96,8 +86,6 @@ class AgentRuntimeShellProjectRow {
     serializer.serializeString(defaultWorktreeRoot);
     serializer.serializeString(defaultRoleId);
     serializer.serializeString(defaultModel);
-    serializer.serializeBool(tracked);
-    serializer.serializeBool(listed);
     serializer.serializeBool(archived);
     serializer.decreaseContainerDepth();
   }
@@ -122,8 +110,6 @@ class AgentRuntimeShellProjectRow {
       && defaultWorktreeRoot == other.defaultWorktreeRoot
       && defaultRoleId == other.defaultRoleId
       && defaultModel == other.defaultModel
-      && tracked == other.tracked
-      && listed == other.listed
       && archived == other.archived;
   }
 
@@ -137,8 +123,6 @@ class AgentRuntimeShellProjectRow {
         defaultWorktreeRoot,
         defaultRoleId,
         defaultModel,
-        tracked,
-        listed,
         archived,
       );
 
@@ -156,8 +140,6 @@ class AgentRuntimeShellProjectRow {
         'defaultWorktreeRoot: $defaultWorktreeRoot, '
         'defaultRoleId: $defaultRoleId, '
         'defaultModel: $defaultModel, '
-        'tracked: $tracked, '
-        'listed: $listed, '
         'archived: $archived'
         ')';
       return true;

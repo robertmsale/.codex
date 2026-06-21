@@ -392,7 +392,7 @@ fn prompt_cache_key_for_runtime(role: &RoleSnapshot, runtime_messages: &[Runtime
         .find_map(|message| message.metadata.get("contextEpoch").and_then(Value::as_i64))
         .map(|epoch| epoch.to_string())
         .unwrap_or_else(|| "none".to_string());
-    format!("robdex-agent-runtime-kernel-v2:{role_epoch}:context-{context_epoch}")
+    model_input::prompt_cache_key_from_epochs(&role_epoch, Some(&context_epoch))
 }
 
 #[async_trait]

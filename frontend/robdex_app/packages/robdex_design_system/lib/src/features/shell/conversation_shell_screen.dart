@@ -654,12 +654,6 @@ class _ConversationPaperSurfacePainter extends CustomPainter {
       activeShader.setFloat(2, 0.0);
       canvas.drawRect(rect, Paint()..shader = activeShader);
     }
-    final hairline = Paint()
-      ..color = const Color(0x12FFFFFF)
-      ..strokeWidth = 0.5;
-    for (double y = 0; y < size.height; y += 18) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), hairline);
-    }
   }
 
   @override
