@@ -1,7 +1,4 @@
 #!/bin/bash
 set -euo pipefail
 
-cat >/dev/null
-
-printf '%s\n' 'worker archived' > worker-archived
-printf '%s\n' '{"ok":true}'
+exec python3 ./.codex/hooks/local_worktree_flow.py archive worker

@@ -85,8 +85,7 @@ features. Enable them only through the explicit `privileged-exec`, `gui`, or
 
 ## QA Runtime
 
-The public bootstrap path does not start or require the old managed QA harness
-or Flutter simulator broker. For QA validation, assign:
+For QA validation, assign:
 
 - a normal worktree path;
 - a device UDID;
@@ -99,9 +98,6 @@ designer-flutter-run --session qa-app --device-id <UDID> --workdir <worktree>
 designer-drive hierarchy --device-id <UDID>
 designer-drive screenshot --device-id <UDID> --out current.png
 ```
-
-The old `flutter-sim reserve/reboot` broker flow is legacy/deprecated and is
-not part of the default install.
 
 ## Config Safety
 

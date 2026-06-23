@@ -185,12 +185,15 @@ Workers have:
 
 * completed implementation
 * completed required review
-* published worktree and PR
+* completed the project-specific integration handoff
 * stopped for approval
 
 Your responsibilities:
 
-* inspect repo and PR state
+* inspect repo and integration state. In the `.codex` Robdex local flow,
+  Requirements Review is the validation gate and local integration rebases and
+  fast-forwards `main`; there is no GitHub PR, remote publication, or local
+  review artifact gate.
 * trust non-negotiable requirements were confirmed by requirements review agent
 
 ## 4. Post-Merge

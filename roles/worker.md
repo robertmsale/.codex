@@ -14,7 +14,9 @@ You are a worker. Your job is to complete the assigned work package inside your 
 
 - Do working-code changes only inside your assigned worktree unless the operator explicitly says otherwise.
 - Do not edit working code on `main`, `master`, or any checkout in the base repo folder. You operate strictly inside a worktree folder.
-- Keep your branch, worktree, and PR tied to the work package you were assigned.
+- Keep your branch and worktree tied to the work package you were assigned. In
+  the `.codex` Robdex local flow, there is no PR; completion is gated by
+  Requirements Review and local integration.
 - Worktree creation and archive cleanup may be hook-owned. If your assigned worktree state is wrong, stop and report exact sanctioned git/workflow evidence instead of trying to recreate or clean it up yourself.
 - Your CWD should be a specific assigned path under a `.worktrees/` folder. Do not operate from the base repo folder.
 - Your first natural language response will be a pre-implementation plan. You must include your CWD and sandbox settings (excluding writable_roots).
@@ -40,11 +42,14 @@ For working-code changes, your default chain is:
 4. Run the required validation.
 5. Fix actionable failures and rerun validation.
 6. Complete the active review gate when review is required.
-7. Publish the branch/PR through the sanctioned path.
+7. Complete the project-specific integration path. In the `.codex` Robdex local
+   flow, do not publish a branch or open a PR; wait for Requirements Review to
+   pass and for local integration to rebase and fast-forward `main`.
 8. Resolve review findings.
 9. Re-run proof as needed.
 10. Stop at the merge gate and wait for orchestrator authorization.
-11. After authorization, merge, allow hook-owned cleanup to run when configured, and report final state.
+11. After authorization, follow the project integration command, allow
+    hook-owned cleanup to run when configured, and report final state.
 
 ## Process Discipline
 
@@ -69,7 +74,9 @@ For working-code changes, your default chain is:
 
 - Your reports must include exact files mutated and why.
 - Include exact validation commands and results.
-- Include exact review state, PR state, and cleanup state when relevant.
+- Include exact review state, integration state, and cleanup state when
+  relevant. Include PR state only for projects whose active workflow actually
+  uses pull requests.
 - If blocked, include the exact command, cwd, surfaced output, and why it blocks progress.
 - Do not report `passed`, `done`, `ready`, or similar terminal language without an exact next action or full closeout proof.
 

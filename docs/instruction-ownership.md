@@ -19,8 +19,10 @@ one canonical home and may be referenced from other surfaces when needed.
   - Owns worker/QA lifecycle, merge gates, Requirements timing, blocker
     adjudication, and Robdex control-plane responsibilities.
 - Worker behavior: `roles/worker.md`
-  - Owns implementation-worktree discipline, validation, review, PR/publish
-    gates, and proof expectations for implementers.
+  - Owns assigned local-worktree discipline, validation, Requirements Review
+    proof, and local commit expectations for implementers. In the `.codex`
+    Robdex flow, workers do not publish branches, open pull requests, or write
+    local review artifacts.
 - QA behavior: `roles/qa.md`
   - Owns user-story piloting, bug classification, retry discipline, and
     non-implementation boundaries.

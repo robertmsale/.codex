@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+
+exec python3 ./.codex/hooks/local_worktree_flow.py integrate "$@"
