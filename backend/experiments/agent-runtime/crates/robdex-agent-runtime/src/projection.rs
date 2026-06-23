@@ -499,6 +499,10 @@ async fn selected_session_detail(
         map.insert("requirementsReview".to_string(), serde_json::to_value(&requirements).unwrap_or(serde_json::Value::Null));
     }
     let requirements_review = requirements_review_summary(pool, session_id).await?;
+    let active_turn_id = crate::db::active_turn_id(pool, session_id).await?.map(|id| id.to_string());
+    let (queued_submitted_input_count, applied_steering_count, submit_disposition, submit_status) =
+        crate::db::submitted_input_counts(pool, session_id).await?;
+    let terminal_submission_rejection = crate::db::latest_rejected_submitted_input(pool, session_id).await?;
     Ok(Some(SelectedSessionDetail {
         id: row.get::<Uuid, _>("id").to_string(),
         role_id: row.get("role_id"),
@@ -511,6 +515,12 @@ async fn selected_session_detail(
         status: row.get("status"),
         pending_approval_count: pending_approval_count.max(0) as u64,
         managed_process_count: managed_process_count.max(0) as u64,
+        active_turn_id,
+        queued_submitted_input_count: queued_submitted_input_count.max(0) as u64,
+        applied_steering_count: applied_steering_count.max(0) as u64,
+        submit_disposition,
+        submit_status,
+        terminal_submission_rejection,
         metadata,
         requirements_review,
     }))
@@ -639,6 +649,10 @@ async fn selected_chat_entries(
             is_tool: false,
         });
 
+        for submitted in submitted_input_chat_entries_for_turn(pool, turn_id).await? {
+            entries.push(submitted);
+        }
+
         for tool in tool_chat_entries(pool, session_id, turn_id).await? {
             entries.push(tool);
         }
@@ -651,6 +665,59 @@ async fn selected_chat_entries(
         entries = entries.split_off(entries.len() - 50);
     }
     Ok(entries)
+}
+
+async fn submitted_input_chat_entries_for_turn(pool: &PgPool, turn_id: Uuid) -> Result<Vec<AgentRuntimeChatEntry>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, actor, role, content, disposition, status, ordering_key, accepted_at, applied_at
+        FROM submitted_inputs
+        WHERE target_turn_id = $1 AND status IN ('accepted','applied')
+        ORDER BY ordering_key ASC
+        "#,
+    )
+    .bind(turn_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let id = row.get::<Uuid, _>("id");
+            let role: String = row.get("role");
+            let actor: String = row.get("actor");
+            let status: String = row.get("status");
+            let disposition: String = row.get("disposition");
+            let ordering_key: i64 = row.get("ordering_key");
+            let accepted_at: Option<chrono::DateTime<chrono::Utc>> = row.get("accepted_at");
+            let applied_at: Option<chrono::DateTime<chrono::Utc>> = row.get("applied_at");
+            let author = if role == "operator" || actor == "operator" { "Operator" } else { "User" }.to_string();
+            let subtitle = match (status.as_str(), disposition.as_str()) {
+                ("applied", "active_turn_steering") => "added to live turn",
+                ("accepted", "queued_continuation_after_compaction") => "waiting for compaction",
+                ("accepted", "queued_next_turn_after_final_output") => "queued for next turn",
+                ("accepted", _) => "queued",
+                ("applied", _) => "delivered",
+                _ => status.as_str(),
+            }
+            .to_string();
+            AgentRuntimeChatEntry {
+                id: format!("submitted:{id}:{}", ordering_key),
+                author: author.clone(),
+                display_label: author,
+                timestamp: accepted_at.or(applied_at).map(time),
+                body: row.get("content"),
+                subtitle: subtitle.clone(),
+                kind: "message".to_string(),
+                status: subtitle,
+                process_id: None,
+                command: String::new(),
+                output: String::new(),
+                delivery_state: if status == "applied" { "delivered" } else { "queued" }.to_string(),
+                is_streaming: false,
+                is_tool: false,
+            }
+        })
+        .collect())
 }
 
 async fn turn_chat_entry(pool: &PgPool, turn_id: Uuid) -> Result<Option<AgentRuntimeChatEntry>> {
@@ -746,12 +813,17 @@ async fn tool_chat_entries(
         r#"
         SELECT tc.id AS tool_id, tc.tool_name, tc.status AS tool_status, tc.result, tc.started_at,
                sr.id AS script_id, sr.source, sr.status AS script_status, sr.final_output,
-               COALESCE(sr.final_output, sr.stdout, '') AS script_output,
+               COALESCE(sr.final_output, '') AS script_output,
                mp.id AS process_id, mp.handle AS process_handle, mp.binary_name, mp.argv, mp.status AS process_status,
                (
-                   SELECT artifact.id::text || E'\n' || content FROM execution_output_artifacts artifact
+                   SELECT string_agg(
+                       artifact.stream || ' artifact ' || artifact.id::text || ' (' || artifact.byte_count::text || ' bytes, ' || artifact.line_count::text || ' lines)',
+                       E'\n'
+                       ORDER BY artifact.stream ASC, artifact.created_at ASC
+                   )
+                   FROM execution_output_artifacts artifact
                    WHERE artifact.tool_call_id = tc.id OR artifact.script_run_id = sr.id OR artifact.process_id = mp.id
-                   ORDER BY artifact.created_at DESC LIMIT 1
+                     AND artifact.stream IN ('stdout', 'stderr')
                ) AS artifact_output
         FROM tool_calls tc
         LEFT JOIN script_runs sr ON sr.tool_call_id = tc.id
@@ -795,7 +867,12 @@ async fn tool_chat_entries(
                     })
                 })
                 .unwrap_or_else(|| tool_name.clone());
-            let output = artifact_output.or(script_output).unwrap_or_default();
+            let output = match (script_output.filter(|value| !value.is_empty()), artifact_output.filter(|value| !value.is_empty())) {
+                (Some(explicit), Some(artifacts)) => format!("{explicit}\n{artifacts}"),
+                (Some(explicit), None) => explicit,
+                (None, Some(artifacts)) => artifacts,
+                (None, None) => String::new(),
+            };
             let process = process_id.map(|id| id.to_string());
             AgentRuntimeChatEntry {
                 id: format!("tool:{tool_id}:{}", script_id.map(|id| id.to_string()).unwrap_or_else(|| "call".to_string())),
@@ -1524,7 +1601,7 @@ mod tests {
             .bind(tool_id)
             .bind(script_id)
             .bind(process_id)
-            .bind("artifact bounded output preview")
+            .bind("artifact bounded output preview hidden-full-body-sentinel")
             .bind(json!({"artifactIdentifier":"stdout-artifact"}))
             .execute(pool)
             .await
@@ -1605,9 +1682,19 @@ mod tests {
     async fn selected_tool_rows_carry_canonical_chat_timeline_fields() {
         let (admin_url, database_name, pool) = create_validation_database("tool_row_fields").await;
         let (session_id, _turn_id, _tool_id, _script_id, process_id, artifact_id, _model_event_id, _final_text) = seed_durable_selected_chat(&pool).await;
+        let after: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sequence), 0) FROM event_stream")
+            .fetch_one(&pool)
+            .await
+            .expect("watermark");
+        sqlx::query("INSERT INTO event_stream (session_id, entity_type, entity_id, event_type, status, payload) VALUES ($1,'process',$2,'process.output','completed',$3)")
+            .bind(session_id)
+            .bind(process_id)
+            .bind(json!({"reason":"projection safety delta"}))
+            .execute(&pool)
+            .await
+            .expect("process output event");
         let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
-        drop(pool);
-        drop_validation_database(&admin_url, &database_name).await;
+        let deltas = build_projection_deltas_after(&pool, after, Some(session_id), 100).await.expect("projection deltas");
 
         let tool = snapshot
             .selected_chat_entries
@@ -1621,10 +1708,157 @@ mod tests {
         let expected_process_id = process_id.to_string();
         assert_eq!(tool.process_id.as_deref(), Some(expected_process_id.as_str()));
         assert!(tool.command.contains("output('canonical tool output')"));
-        assert!(tool.output.contains("artifact bounded output preview"));
+        assert!(!tool.output.contains("artifact bounded output preview hidden-full-body-sentinel"));
         assert!(tool.output.contains(&artifact_id.to_string()));
+        assert!(tool.output.contains("stdout artifact"));
+        assert!(tool.output.contains("64 bytes"));
+        assert!(!tool.output.contains("combined"));
         assert!(tool.subtitle.contains("proc-chat-1") || tool.subtitle.contains("execute_code"));
         assert_eq!(tool.delivery_state, "delivered");
+        let delta_text = serde_json::to_string(&deltas).expect("delta json");
+        assert!(delta_text.contains(&artifact_id.to_string()));
+        assert!(delta_text.contains("stdout artifact"));
+        assert!(!delta_text.contains("artifact bounded output preview hidden-full-body-sentinel"));
+        assert!(!delta_text.contains("combined"));
+        drop(pool);
+        drop_validation_database(&admin_url, &database_name).await;
+    }
+
+    #[tokio::test]
+    async fn submitted_steering_inputs_render_inside_the_owning_turn_in_timeline_order() {
+        let (admin_url, database_name, pool) = create_validation_database("submitted_input_chat_order").await;
+        let (session_id, turn_id, _tool_id, _script_id, _process_id, _artifact_id, _model_event_id, final_text) =
+            seed_durable_selected_chat(&pool).await;
+        let submitted_id = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO submitted_inputs (
+                id, session_id, target_turn_id, actor, source, role, content, payload,
+                disposition, status, observed_lifecycle_state, accepted_at, applied_at
+            )
+            VALUES ($1,$2,$3,'operator','gui','operator',$4,$5,
+                'active_turn_steering','applied','open',now(),now())
+            "#,
+        )
+        .bind(submitted_id)
+        .bind(session_id)
+        .bind(turn_id)
+        .bind("Apply this steering after the tool output is durable.")
+        .bind(json!({"content":"Apply this steering after the tool output is durable."}))
+        .execute(&pool)
+        .await
+        .expect("insert submitted steering");
+
+        let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
+        drop(pool);
+        drop_validation_database(&admin_url, &database_name).await;
+
+        let ids = snapshot
+            .selected_chat_entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>();
+        let user_index = ids.iter().position(|id| id.starts_with(&format!("turn:{turn_id}:user"))).expect("turn user entry");
+        let steering_index = ids.iter().position(|id| id.starts_with(&format!("submitted:{submitted_id}:"))).expect("submitted steering entry");
+        let tool_index = ids.iter().position(|id| id.starts_with("tool:")).expect("tool entry");
+        let assistant_index = ids.iter().position(|id| id.starts_with("model:")).expect("assistant entry");
+        assert!(user_index < steering_index, "steering must render after initial user input");
+        assert!(steering_index < tool_index, "steering must render inside the owning turn before durable tool output");
+        assert!(tool_index < assistant_index, "tool output remains before final assistant output");
+        let steering = &snapshot.selected_chat_entries[steering_index];
+        assert_eq!(steering.body, "Apply this steering after the tool output is durable.");
+        assert_eq!(steering.delivery_state, "delivered");
+        assert_eq!(snapshot.selected_chat_entries[assistant_index].body, final_text);
+    }
+
+    #[tokio::test]
+    async fn post_final_and_post_compaction_submitted_inputs_render_as_placed_user_turns_with_audit_rows() {
+        let (admin_url, database_name, pool) = create_validation_database("submitted_input_placed_turns").await;
+        db::init(&pool).await.expect("init schema");
+        let session_id = Uuid::new_v4();
+        let final_turn_id = Uuid::new_v4();
+        let post_final_turn_id = Uuid::new_v4();
+        let post_compaction_turn_id = Uuid::new_v4();
+        let post_final_submitted_id = Uuid::new_v4();
+        let post_compaction_submitted_id = Uuid::new_v4();
+        let checkpoint_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','project-a','/tmp/project-a','Placed submitted chat',true)")
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .expect("insert session");
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at, completed_at) VALUES ($1,$2,'user','initial before committed final','completed',now() - interval '4 minutes',now() - interval '4 minutes')")
+            .bind(final_turn_id)
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .expect("insert final turn");
+        sqlx::query("INSERT INTO model_events (id, session_id, turn_id, event_type, payload, created_at) VALUES ($1,$2,$3,'final_response',$4,now() - interval '4 minutes')")
+            .bind(Uuid::new_v4())
+            .bind(session_id)
+            .bind(final_turn_id)
+            .bind(json!({"finalText":"committed final stays before next input"}))
+            .execute(&pool)
+            .await
+            .expect("insert final response");
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at, completed_at) VALUES ($1,$2,'user','first input after committed final','completed',now() - interval '3 minutes',now() - interval '3 minutes')")
+            .bind(post_final_turn_id)
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .expect("post-final turn");
+        sqlx::query("INSERT INTO submitted_inputs (id, session_id, actor, source, role, content, payload, disposition, status, observed_lifecycle_state, placement_turn_id, accepted_at, applied_at) VALUES ($1,$2,'operator','gui','user','first input after committed final',$3,'queued_next_turn_after_final_output','applied','open',$4,now() - interval '3 minutes',now() - interval '3 minutes')")
+            .bind(post_final_submitted_id)
+            .bind(session_id)
+            .bind(json!({"content":"first input after committed final"}))
+            .bind(post_final_turn_id)
+            .execute(&pool)
+            .await
+            .expect("post-final submitted audit");
+        sqlx::query("INSERT INTO compaction_checkpoints (id, session_id, status, compacted_through_turn_id, replacement_context, summary, completed_at) VALUES ($1,$2,'completed',$3,'compacted before queued input',$4,now() - interval '2 minutes')")
+            .bind(checkpoint_id)
+            .bind(session_id)
+            .bind(post_final_turn_id)
+            .bind(json!({"summary":"compaction completed before queued input placement"}))
+            .execute(&pool)
+            .await
+            .expect("checkpoint");
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at, completed_at) VALUES ($1,$2,'user','first input after compaction','completed',now() - interval '60 seconds',now() - interval '60 seconds')")
+            .bind(post_compaction_turn_id)
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .expect("post-compaction turn");
+        sqlx::query("INSERT INTO submitted_inputs (id, session_id, actor, source, role, content, payload, disposition, status, observed_lifecycle_state, placement_turn_id, accepted_at, applied_at) VALUES ($1,$2,'operator','gui','user','first input after compaction',$3,'queued_continuation_after_compaction','applied','open',$4,now() - interval '90 seconds',now() - interval '60 seconds')")
+            .bind(post_compaction_submitted_id)
+            .bind(session_id)
+            .bind(json!({"content":"first input after compaction"}))
+            .bind(post_compaction_turn_id)
+            .execute(&pool)
+            .await
+            .expect("post-compaction submitted audit");
+
+        let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
+        let audit_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE id IN ($1,$2) AND status='applied' AND placement_turn_id IS NOT NULL")
+            .bind(post_final_submitted_id)
+            .bind(post_compaction_submitted_id)
+            .fetch_one(&pool)
+            .await
+            .expect("audit count");
+        drop(pool);
+        drop_validation_database(&admin_url, &database_name).await;
+
+        assert_eq!(audit_count, 2, "visible placement must preserve submitted-input audit rows");
+        let bodies = snapshot
+            .selected_chat_entries
+            .iter()
+            .map(|entry| entry.body.as_str())
+            .collect::<Vec<_>>();
+        let final_index = bodies.iter().position(|body| *body == "committed final stays before next input").expect("final response");
+        let post_final_index = bodies.iter().position(|body| *body == "first input after committed final").expect("post-final input");
+        let post_compaction_index = bodies.iter().position(|body| *body == "first input after compaction").expect("post-compaction input");
+        assert!(final_index < post_final_index, "post-final submitted input must render after the committed final response");
+        assert!(post_final_index < post_compaction_index, "compaction-queued input must render after prior placed turn");
     }
 
     #[tokio::test]

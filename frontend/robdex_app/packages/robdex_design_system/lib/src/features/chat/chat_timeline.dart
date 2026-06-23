@@ -46,6 +46,7 @@ class ChatTimeline extends StatefulWidget {
     this.onTerminalPressed,
     this.composerDisabledHint,
     this.composerPlaceholder,
+    this.composerStatusMessage,
   });
 
   final String? threadId;
@@ -76,6 +77,7 @@ class ChatTimeline extends StatefulWidget {
   final VoidCallback? onTerminalPressed;
   final String? composerDisabledHint;
   final String? composerPlaceholder;
+  final String? composerStatusMessage;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -253,6 +255,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
             onTerminalPressed: widget.onTerminalPressed,
             disabledHint: widget.composerDisabledHint ?? 'Select a thread to enable the composer.',
             placeholder: widget.composerPlaceholder ?? 'Message selected thread...',
+            statusMessage: widget.composerStatusMessage,
             onSend: widget.onSend,
             onInterrupt: widget.onInterrupt,
           ),

@@ -66,6 +66,9 @@ struct StoredArtifact {
 }
 
 pub async fn store(pool: &PgPool, artifact: NewOutputArtifact<'_>) -> Result<OutputArtifactEnvelope> {
+    if artifact.stream == "combined" {
+        bail!("fake combined execution output artifacts are not supported; persist stdout and stderr separately");
+    }
     let byte_count = artifact.content.len();
     let line_count = line_count(artifact.content);
     sqlx::query(
@@ -97,7 +100,7 @@ pub async fn store(pool: &PgPool, artifact: NewOutputArtifact<'_>) -> Result<Out
 
 pub async fn last_artifact_id(pool: &PgPool, session_id: Uuid) -> Result<Option<Uuid>> {
     Ok(sqlx::query_scalar(
-        "SELECT id FROM execution_output_artifacts WHERE session_id=$1 ORDER BY created_at DESC LIMIT 1",
+        "SELECT id FROM execution_output_artifacts WHERE session_id=$1 ORDER BY (byte_count > 0) DESC, created_at DESC LIMIT 1",
     )
     .bind(session_id)
     .fetch_optional(pool)

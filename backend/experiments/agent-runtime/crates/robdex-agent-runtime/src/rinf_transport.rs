@@ -68,13 +68,13 @@ pub enum GuiTransportRequest {
     DispatchOperation {
         operation: GuiOperationRequest,
     },
-    ConsumeStreamOnce,
+    ReadNextGuiStreamPacket,
     Disconnect,
 }
 
 impl GuiTransportRequest {
     fn cancels_pending_stream_read(&self) -> bool {
-        !matches!(self, GuiTransportRequest::ConsumeStreamOnce)
+        !matches!(self, GuiTransportRequest::ReadNextGuiStreamPacket)
     }
 }
 
@@ -617,7 +617,9 @@ impl AgentRuntimeConversationShellViewModel {
                 .unwrap_or_default(),
             dynamic_roles,
             actions: view.actions.clone(),
-            settings: vec![
+            settings: {
+                let selected_detail = projection.and_then(|projection| projection.selected_session.as_ref());
+                let mut settings = vec![
                 AgentRuntimeWorkbenchFact {
                     label: "Connection".to_string(),
                     value: view.connection_state.clone(),
@@ -626,7 +628,15 @@ impl AgentRuntimeConversationShellViewModel {
                     label: "Base URL".to_string(),
                     value: view.base_url.clone(),
                 },
-            ],
+                ];
+                if let Some(session) = selected_detail {
+                    settings.push(AgentRuntimeWorkbenchFact {
+                        label: "Submission".to_string(),
+                        value: submission_feedback_label(session),
+                    });
+                }
+                settings
+            },
             role_management: view.role_admin.clone(),
             workflow_memory: view.workflow_memory.clone(),
             command_registry_requests,
@@ -635,6 +645,38 @@ impl AgentRuntimeConversationShellViewModel {
             operation_surfaces: operation_surfaces(projection, controller_state, view),
         }
     }
+}
+
+fn submission_feedback_label(
+    session: &robdex_agent_runtime_projection::SelectedSessionDetail,
+) -> String {
+    let live_turn = if session.active_turn_id.is_some() {
+        "Live turn active"
+    } else {
+        "No live turn"
+    };
+    let disposition = match session.submit_disposition.as_deref() {
+        Some("idle_turn_start") => "Starting next turn",
+        Some("active_turn_steering") => "Added to live turn",
+        Some("queued_next_turn_after_final_output") => "Queued for next turn",
+        Some("queued_continuation_after_compaction") => "Waiting for compaction",
+        Some(_) => "Submission updated",
+        None => "No submitted input",
+    };
+    let status = match session.submit_status.as_deref() {
+        Some("accepted") => "Accepted",
+        Some("applied") => "Applied",
+        Some("failed") => "Needs attention",
+        Some("rejected") => "Rejected",
+        Some("abandoned") => "Stopped",
+        Some(_) => "Updated",
+        None => "Ready",
+    };
+    format!(
+        "{live_turn} · {disposition} · {status} · queued {} · applied {}",
+        session.queued_submitted_input_count,
+        session.applied_steering_count
+    )
 }
 
 fn agent_runtime_chat_entry(entry: &robdex_agent_runtime_projection::AgentRuntimeChatEntry) -> AgentRuntimeChatEntry {
@@ -1018,6 +1060,7 @@ fn process_rows(
                     item.payload.get("endOfSessionBehavior").and_then(Value::as_str).unwrap_or("unknown"),
                     item.payload.get("stdinPolicy").and_then(Value::as_str).unwrap_or("unknown"),
                     item.payload.get("artifactId").and_then(Value::as_str)
+                        .or_else(|| item.payload.get("stdoutArtifactId").and_then(Value::as_str))
                         .or_else(|| item.payload.get("payload").and_then(|payload| payload.get("cursor")).and_then(Value::as_str))
                         .or(item.summary.as_deref())
                         .unwrap_or("none"),
@@ -1264,6 +1307,18 @@ fn requirements_review_actions(selected: Option<&SelectedSessionDetail>) -> Vec<
             subtitle: "Show submitted claims and review outcomes".to_string(),
             kind: "requirementsPackets".to_string(),
             state_text: "ready".to_string(),
+            tone: "info".to_string(),
+        },
+        AgentRuntimeWorkbenchActionRow {
+            id: format!("requirements:{}:reviewer-input", session.id),
+            title: "Send review clarification".to_string(),
+            subtitle: if session.requirements_review.as_ref().and_then(|summary| summary.reviewer_session_id.as_ref()).is_some() {
+                "Route waiver, correction, or clarification to the active reviewer"
+            } else {
+                "Unavailable until a reviewer session exists"
+            }.to_string(),
+            kind: "requirementsReviewerInput".to_string(),
+            state_text: if session.requirements_review.as_ref().and_then(|summary| summary.reviewer_session_id.as_ref()).is_some() { "ready" } else { "unavailable" }.to_string(),
             tone: "info".to_string(),
         },
         AgentRuntimeWorkbenchActionRow {
@@ -2214,7 +2269,7 @@ impl GuiTransportRunner {
 
     fn should_append_workbench_view(intent: &GuiTransportRequest) -> bool {
         match intent {
-            GuiTransportRequest::ConsumeStreamOnce => false,
+            GuiTransportRequest::ReadNextGuiStreamPacket => false,
             GuiTransportRequest::DispatchOperation {
                 operation:
                     GuiOperationRequest::SendMessage { .. }
@@ -2408,7 +2463,7 @@ impl GuiTransportRunner {
                 let result = self.controller.dispatch(operation).await;
                 Ok(self.operation_outputs(result))
             }
-            GuiTransportRequest::ConsumeStreamOnce => {
+            GuiTransportRequest::ReadNextGuiStreamPacket => {
                 let _ = *self.stream_cancel.borrow_and_update();
                 let Some(outcome) = self
                     .controller
@@ -3330,6 +3385,12 @@ mod tests {
                         status: "open".to_string(),
                         pending_approval_count: 1,
                         managed_process_count: 2,
+                        active_turn_id: None,
+                        queued_submitted_input_count: 0,
+                        applied_steering_count: 0,
+                        submit_disposition: None,
+                        submit_status: None,
+                        terminal_submission_rejection: None,
                         metadata: json!({"model":"gpt-5.4-mini"}),
                         requirements_review: None,
                     }),
@@ -3370,7 +3431,7 @@ mod tests {
                             event_type: "process.output".to_string(),
                             status: Some("completed".to_string()),
                             summary: Some("Output flushed".to_string()),
-                            payload: json!({"handle":"proc-allow","binary":"python","argv":["-u","worker.py"],"cwd":"/tmp/transport","endOfTurnBehavior":"continue","endOfSessionBehavior":"terminate","stdinPolicy":"allow","artifactId":"artifact-process-output"}),
+                            payload: json!({"handle":"proc-allow","binary":"python","argv":["-u","worker.py"],"cwd":"/tmp/transport","endOfTurnBehavior":"continue","endOfSessionBehavior":"terminate","stdinPolicy":"allow","stdoutArtifactId":"artifact-process-stdout","stderrArtifactId":"artifact-process-stderr"}),
                             created_at: Some("2026-06-18T00:00:02Z".to_string()),
                         },
                     ],
@@ -3484,7 +3545,7 @@ mod tests {
             .route("/command-registry/requests/request-1/preview-decision", post(Json(json!({"requestId":"request-1","previewResult":"valid","status":"previewed"}))))
             .route("/command-registry/requests/request-1/decide", post(Json(json!({"requestId":"request-1","status":"approved","finalScope":{"scopeType":"project","projectKey":"transport-project"},"finalExecutionPolicy":{"decision":"allow"}}))))
             .route("/command-registry/requests/request-1/apply", post(Json(json!({"requestId":"request-1","applicationStatus":"applied","actionId":"cmd.transport.pending"}))))
-            .route("/sessions/session-1/processes/proc-allow/flush", post(Json(json!({"handle":"proc-allow","status":"flushed","artifact":{"artifactId":"artifact-process-output","preview":"bounded process output"}}))))
+            .route("/sessions/session-1/processes/proc-allow/flush", post(Json(json!({"handle":"proc-allow","status":"flushed","stdoutArtifact":{"artifactId":"artifact-process-stdout","preview":"bounded process stdout"},"stderrArtifact":{"artifactId":"artifact-process-stderr","preview":""}}))))
             .route("/sessions/session-1/processes/proc-allow/input", post(Json(json!({"handle":"proc-allow","status":"input accepted"}))))
             .route("/sessions/session-1/processes/proc-allow/terminate", post(Json(json!({"handle":"proc-allow","status":"terminated"}))))
             .route("/health", get(Json(json!({"ok":true}))));
@@ -4543,6 +4604,12 @@ mod tests {
                 status: "open".to_string(),
                 pending_approval_count: 1,
                 managed_process_count: 2,
+                active_turn_id: Some("turn-queued".to_string()),
+                queued_submitted_input_count: 2,
+                applied_steering_count: 3,
+                submit_disposition: Some("active_turn_steering".to_string()),
+                submit_status: Some("accepted".to_string()),
+                terminal_submission_rejection: None,
                 metadata: json!({"createdAt":"2026-06-18T00:00:00Z","model":"gpt-5.4-mini"}),
                 requirements_review: None,
             }),
@@ -4583,7 +4650,7 @@ mod tests {
                     event_type: "process.output".to_string(),
                     status: Some("completed".to_string()),
                     summary: Some("latest output cursor 7".to_string()),
-                    payload: json!({"handle":"proc-allow","binary":"python","argv":["-u","worker.py"],"cwd":"/tmp/project-a","endOfTurnBehavior":"continue","endOfSessionBehavior":"terminate","stdinPolicy":"allow","artifactId":"artifact-process-output","stream":"combined"}),
+                    payload: json!({"handle":"proc-allow","binary":"python","argv":["-u","worker.py"],"cwd":"/tmp/project-a","endOfTurnBehavior":"continue","endOfSessionBehavior":"terminate","stdinPolicy":"allow","stdoutArtifactId":"artifact-process-stdout","stderrArtifactId":"artifact-process-stderr","streams":["stdout","stderr"]}),
                     created_at: Some("2026-06-18T00:00:40Z".to_string()),
                 },
                 TimelineItem {
@@ -4953,6 +5020,18 @@ mod tests {
         assert_eq!(shell.workflow_memory.rows.len(), 2);
         assert_eq!(shell.role_management.rows[0].id, "runtime-allow");
         assert!(shell.settings.iter().any(|fact| fact.label == "Connection" && fact.value == "streaming"));
+        assert!(shell.settings.iter().any(|fact| {
+            fact.label == "Submission"
+                && fact.value.contains("Live turn active")
+                && fact.value.contains("queued 2")
+                && fact.value.contains("applied 3")
+                && fact.value.contains("Added to live turn")
+                && fact.value.contains("Accepted")
+                && !fact.value.contains("turn-queued")
+                && !fact.value.contains("active_turn_steering")
+                && !fact.value.contains("status=")
+                && !fact.value.contains("disposition=")
+        }));
         assert!(shell.diagnostics.iter().any(|fact| fact.label == "Selected session"));
         let surface_titles = shell.operation_surfaces.iter().map(|surface| surface.title.as_str()).collect::<Vec<_>>();
         assert!(surface_titles.contains(&"Session"));
@@ -5011,7 +5090,7 @@ mod tests {
         assert!(workflow_memory.actions.iter().any(|action| action.id.ends_with(":notHelpful")));
         let process_manager = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "processManager").expect("process manager surface");
         assert!(process_manager.rows.iter().any(|row| row.label == "Managed processes" && row.value == "2"));
-        assert!(process_manager.rows.iter().any(|row| row.label == "proc-allow" && row.value.contains("binary=python") && row.value.contains("argv=[\"-u\",\"worker.py\"]") && row.value.contains("cwd=/tmp/project-a") && row.value.contains("stdinPolicy=allow") && row.value.contains("latestOutput=artifact-process-output")));
+        assert!(process_manager.rows.iter().any(|row| row.label == "proc-allow" && row.value.contains("binary=python") && row.value.contains("argv=[\"-u\",\"worker.py\"]") && row.value.contains("cwd=/tmp/project-a") && row.value.contains("stdinPolicy=allow") && row.value.contains("latestOutput=artifact-process-stdout")));
         assert!(process_manager.rows.iter().any(|row| row.label == "proc-forbid" && row.value.contains("binary=tail") && row.value.contains("stdinPolicy=forbid")));
         assert!(process_manager.actions.iter().any(|action| action.id == "proc-allow" && action.kind == "processFlush" && action.state_text == "ready"));
         assert!(process_manager.actions.iter().any(|action| action.id == "proc-allow" && action.kind == "processInput" && action.state_text == "ready"));
@@ -5283,7 +5362,7 @@ mod tests {
         assert_project_filter_preserved(&send, "zeta-project", &zeta_session_id);
 
         let stream = transport
-            .send(packet("filter-preserve-stream", GuiTransportRequest::ConsumeStreamOnce))
+            .send(packet("filter-preserve-stream", GuiTransportRequest::ReadNextGuiStreamPacket))
             .await;
         assert!(stream.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::StreamOutcome { controller_state, .. }
             if controller_state["selectedProjectId"] == "zeta-project"
@@ -5321,7 +5400,7 @@ mod tests {
         assert_project_filter_preserved(&selected, "zeta-project", &zeta_session_id);
 
         let resync = transport
-            .send(packet("filter-resync-poll", GuiTransportRequest::ConsumeStreamOnce))
+            .send(packet("filter-resync-poll", GuiTransportRequest::ReadNextGuiStreamPacket))
             .await;
         assert!(resync.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::StreamOutcome { outcome, controller_state, .. }
             if matches!(outcome, GuiStreamOutcomePacket::ResyncRequired { .. })
@@ -5412,7 +5491,7 @@ mod tests {
         )), "unexpected create outputs: {created:?}");
 
         let stream = transport
-            .send(packet("stream-1", GuiTransportRequest::ConsumeStreamOnce))
+            .send(packet("stream-1", GuiTransportRequest::ReadNextGuiStreamPacket))
             .await;
         assert!(stream.iter().any(|packet| matches!(
             &packet.output,
@@ -5430,7 +5509,7 @@ mod tests {
         )));
 
         let idle_stream = transport
-            .send(packet("stream-idle", GuiTransportRequest::ConsumeStreamOnce))
+            .send(packet("stream-idle", GuiTransportRequest::ReadNextGuiStreamPacket))
             .await;
         assert!(idle_stream.iter().any(|packet| matches!(
             &packet.output,
@@ -5486,7 +5565,7 @@ mod tests {
         let pending_transport = transport.clone();
         let pending = tokio::spawn(async move {
             pending_transport
-                .send(packet("pending-read-stream", GuiTransportRequest::ConsumeStreamOnce))
+                .send(packet("pending-read-stream", GuiTransportRequest::ReadNextGuiStreamPacket))
                 .await
         });
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -5599,7 +5678,7 @@ mod tests {
         let mut saw_terminal = false;
         for index in 0..300 {
             let outputs = transport
-                .send(packet(&format!("live-stream-{index}"), GuiTransportRequest::ConsumeStreamOnce))
+                .send(packet(&format!("live-stream-{index}"), GuiTransportRequest::ReadNextGuiStreamPacket))
                 .await;
             let rendered = serde_json::to_string(&outputs).expect("outputs json");
             saw_user |= rendered.contains("\"author\":\"User\"") || rendered.contains("\\\"author\\\":\\\"User\\\"");
@@ -5687,7 +5766,7 @@ mod tests {
             let pending_transport = transport.clone();
             let pending = tokio::spawn(async move {
                 pending_transport
-                    .send(packet(&format!("{label}-stream"), GuiTransportRequest::ConsumeStreamOnce))
+                    .send(packet(&format!("{label}-stream"), GuiTransportRequest::ReadNextGuiStreamPacket))
                     .await
             });
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -5773,7 +5852,7 @@ mod tests {
 
         for index in 0..11 {
             let outputs = transport
-                .send(packet(&format!("perf-stream-{index}"), GuiTransportRequest::ConsumeStreamOnce))
+                .send(packet(&format!("perf-stream-{index}"), GuiTransportRequest::ReadNextGuiStreamPacket))
                 .await;
             record_agent_runtime_outputs(&mut diagnostics, &outputs, &mut last_modal_count, &mut last_rail_count);
         }
@@ -6150,7 +6229,7 @@ mod tests {
             GuiTransportOutput::WorkbenchView { view_model }
                 if view_model.shell.operation_surfaces.iter().any(|surface| {
                     surface.surface_id == "processManager"
-                        && surface.rows.iter().any(|row| row.label == "proc-allow" && row.value.contains("latestOutput=artifact-process-output"))
+                        && surface.rows.iter().any(|row| row.label == "proc-allow" && row.value.contains("latestOutput=artifact-process-stdout"))
                         && surface.actions.iter().any(|action| action.kind == "processInput" && action.id == "proc-allow" && action.state_text == "ready")
                         && surface.actions.iter().any(|action| action.kind == "processInput" && action.id == "proc-forbid" && action.state_text == "disabled: stdin rejected")
                 })
@@ -6190,7 +6269,7 @@ mod tests {
     async fn transport_maps_controller_errors_to_typed_error_packets() {
         let transport = GuiTransportHandle::spawn();
         let outputs = transport
-            .send(packet("stream-before-connect", GuiTransportRequest::ConsumeStreamOnce))
+            .send(packet("stream-before-connect", GuiTransportRequest::ReadNextGuiStreamPacket))
             .await;
         assert_eq!(outputs.len(), 2);
         match &outputs[0].output {

@@ -514,6 +514,7 @@ class _ConversationCenter extends StatelessWidget {
               composerEnabled: data.composerEnabled,
               composerDisabledHint: data.composerDisabledHint,
               composerPlaceholder: data.composerPlaceholder,
+              composerStatusMessage: data.composerStatusMessage,
               isRunning: data.isRunning,
               selection: WorkspaceSelection(
                 projectId: data.projects.isEmpty ? null : data.projects.first.id,
