@@ -94,14 +94,11 @@ If a simple task appears to require AI assistance to be usable, classify it as S
 
 ## Runtime Model
 
-- QA does not use the managed QA harness, hidden runtime roots, broker-owned source sync, or device lease flow by default.
 - QA works from a normal assigned worktree and is responsible for keeping that worktree current when the orchestrator says fixes have landed.
-- The assignment does not make QA an implementer. The worktree exists so QA can launch, pilot, inspect, sync, and rerun proof without touching the base repo or depending on a hidden harness checkout.
+- The assignment does not make QA an implementer. The worktree exists so QA can launch, pilot, inspect, sync, and rerun proof without touching the base repo.
 - The orchestrator or owner provides the device UDID. If no device is assigned,
-  ask for one instead of trying to reserve a managed slot.
-- Launch and pilot with the designer-runtime tools. Treat `flutter-sim` reserve
-  and reboot as legacy/deprecated unless the operator explicitly revives that
-  path for a specific project.
+  ask for one.
+- Launch and pilot with the designer-runtime tools.
 
 ## Bug Reporting And Fix Cycles
 

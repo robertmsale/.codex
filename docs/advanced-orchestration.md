@@ -120,7 +120,11 @@ Use `design-lab-capture` for Design Lab screenshots and simulator/runtime captur
 
 The active QA model is intentionally lightweight:
 
-- The orchestrator or owner assigns QA a normal worktree and a device UDID.
+- The project lifecycle hook creates a QA worktree under `.worktrees/` on a
+  local `codex/<stable-agent-slug>` branch; the bridge starts the QA thread in
+  that hook-returned cwd.
+- The orchestrator or owner assigns QA a device UDID when device validation is
+  needed.
 - QA remains a non-implementer even though it has a normal checkout.
 - QA launches from that worktree with `designer-flutter-run`.
 - QA pilots with `designer-drive`, captures evidence with `designer-drive
@@ -128,10 +132,26 @@ The active QA model is intentionally lightweight:
 - QA reports product, usability, environment, or tooling findings to the
   orchestrator with concrete repro steps.
 
-The old managed QA harness, Flutter simulator broker, hidden runtime roots,
-broker-owned source sync, and device lease flow are legacy/deprecated. They are
-not required for normal Robdex orchestration and should not be the default path
-for new QA work.
+## Local Worker and QA Worktree Flow
+
+For the live `.codex` Robdex project, worker and QA lifecycle is local-only:
+
+1. Orchestrator decomposes owner-approved work and spawns worker or QA agents.
+2. Project hooks create a local branch named `codex/<stable-agent-slug>` and an
+   isolated worktree under `.worktrees/<stable-agent-slug>`.
+3. The bridge validates the hook-returned `worktreePath` and uses it as the
+   Codex `thread/start` cwd. Rejected paths fail spawn instead of falling back
+   to the shared project cwd.
+4. Workers commit locally in the assigned worktree. QA uses the assigned
+   worktree only for validation and evidence.
+5. Requirements Review is the completion gate. Do not add a separate review
+   file, reviewer branch, GitHub review, or local review artifact gate.
+6. After Requirements pass, `.codex/local-integrate <worktree> --thread-id
+   <thread>` rebases the worker branch onto local `main`, fast-forwards local
+   `main`, then removes the worker worktree and local branch.
+
+This flow does not require GitHub, `gh`, remote branch publication, pull
+requests, remote merge state, or review metadata.
 
 ## Privileged Execution
 
@@ -142,10 +162,10 @@ was not hidden inside shell redirection, substitution, or compound execution.
 
 ## Hooks
 
-Hooks can integrate project lifecycle events such as worker creation, archive,
-or metadata updates. Public setup should treat hooks as optional and project
-owned. A failed hook should report exact exit status and output without mutating
-global config.
+Hooks integrate project lifecycle events such as worker or QA creation and
+archive cleanup. Public setup should treat hooks as optional and project owned.
+A failed hook should report exact exit status and output without mutating global
+config.
 
 ## Safe Multi-Agent Workflow
 

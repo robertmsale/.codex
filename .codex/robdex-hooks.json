@@ -2,6 +2,8 @@
   "version": 1,
   "hooks": {
     "onWorkerCreate": "./.codex/hooks/on-worker-create",
-    "onWorkerArchive": "./.codex/hooks/on-worker-archive"
+    "onWorkerArchive": "./.codex/hooks/on-worker-archive",
+    "onQaCreate": "./.codex/hooks/on-qa-create",
+    "onQaArchive": "./.codex/hooks/on-qa-archive"
   }
 }

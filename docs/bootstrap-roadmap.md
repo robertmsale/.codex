@@ -40,8 +40,8 @@ Remaining blockers:
 
 - `config.toml` is a personal live config, not an install template.
 - generated supervisor/systemd/launchd templates are not implemented yet.
-- legacy Flutter/QA helper services may still encode host-specific paths, but
-  they are deprecated and outside the active simplified QA workflow.
+- host-specific helper services may still encode local paths outside the active
+  local worker/QA worktree workflow.
 
 ### 2. Doctor Diagnostics
 
@@ -155,8 +155,7 @@ Explicit limitation:
 - Added public install and Linux support docs.
 - Added advanced orchestration and GUI packaging docs.
 - Simplified QA direction: QA uses assigned worktrees and device UDIDs with
-  designer-runtime tooling; managed QA harness and Flutter simulator broker
-  paths are legacy/deprecated.
+  designer-runtime tooling.
 
 ## Remaining Work
 

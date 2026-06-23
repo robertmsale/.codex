@@ -54,7 +54,6 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/state/app", get(app_state))
         .route("/state/snapshot", get(snapshot))
         .route("/workbench/bootstrap", get(workbench_bootstrap))
-        .route("/services/qa-harness/summary", get(legacy_qa_harness_http))
         .route("/state/project-catalog", post(save_project_catalog_http))
         .route("/global-settings", post(global_settings_update_http))
         .route("/projects", post(project_create_http))
@@ -70,9 +69,6 @@ pub fn build_router(runtime: Arc<BridgeRuntime>) -> Router {
         .route("/threads/{thread_id}/stats", get(thread_stats_http))
         .route("/stats/period", get(period_stats_http))
         .route("/threads/{thread_id}/commands/terminate", post(thread_command_terminate_http))
-        .route("/threads/{thread_id}/qa/devices", get(legacy_qa_harness_http))
-        .route("/threads/{thread_id}/qa/devices/{device_key}/reserve", post(legacy_qa_harness_http))
-        .route("/threads/{thread_id}/qa/devices/{device_key}/reboot", post(legacy_qa_harness_http))
         .route("/threads/{thread_id}/processes/register", post(thread_process_register_http))
         .route("/threads/{thread_id}/processes/{process_id}/complete", post(thread_process_complete_http))
         .route("/threads/{thread_id}/running-state", post(thread_running_state_http))
@@ -173,18 +169,6 @@ async fn models(State(runtime): State<Arc<BridgeRuntime>>) -> impl IntoResponse 
 
 async fn workbench_bootstrap(State(runtime): State<Arc<BridgeRuntime>>) -> impl IntoResponse {
     (StatusCode::OK, Json(runtime.workbench_snapshot_value().await)).into_response()
-}
-
-async fn legacy_qa_harness_http() -> impl IntoResponse {
-    (
-        StatusCode::GONE,
-        Json(json!({
-            "ok": false,
-            "status": "deprecated",
-            "error": "Managed QA harness and flutter-sim broker endpoints are deprecated. QA agents should use an assigned worktree and device UDID with designer-runtime tooling.",
-        })),
-    )
-        .into_response()
 }
 
 async fn save_project_catalog_http(
@@ -2057,26 +2041,4 @@ mod tests {
         assert!(event_text.contains("\"connected\""));
     }
 
-    #[tokio::test]
-    async fn legacy_qa_harness_routes_are_deprecated() {
-        let temp = TempDir::new().expect("tempdir");
-        let runtime = BridgeRuntime::new(sample_settings(&temp)).await.expect("runtime");
-        let addr = spawn_server(runtime).await;
-        let client = reqwest::Client::new();
-
-        let devices = client
-            .get(format!("http://{addr}/threads/test/qa/devices"))
-            .send()
-            .await
-            .expect("devices response");
-        assert_eq!(devices.status(), reqwest::StatusCode::GONE);
-
-        let reserve = client
-            .post(format!("http://{addr}/threads/test/qa/devices/example/reserve"))
-            .json(&serde_json::json!({}))
-            .send()
-            .await
-            .expect("reserve response");
-        assert_eq!(reserve.status(), reqwest::StatusCode::GONE);
-    }
 }

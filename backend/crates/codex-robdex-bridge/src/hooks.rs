@@ -303,14 +303,14 @@ fn hook_runtime_path() -> String {
     segments.join(":")
 }
 
-pub fn default_worker_branch_name(agent_name: &str) -> String {
-    format!("codex/{}", kebab_case(agent_name))
+pub fn default_local_agent_branch_name(role: &str, agent_name: &str) -> String {
+    format!("codex/{}-{}", kebab_case(role), kebab_case(agent_name))
 }
 
-pub fn default_worker_worktree_path(project_root: &str, agent_name: &str) -> String {
+pub fn default_local_agent_worktree_path(project_root: &str, role: &str, agent_name: &str) -> String {
     let root = Path::new(project_root);
     root.join(".worktrees")
-        .join(kebab_case(agent_name))
+        .join(format!("{}-{}", kebab_case(role), kebab_case(agent_name)))
         .display()
         .to_string()
 }
@@ -356,8 +356,8 @@ pub fn worker_create_payload(
         },
         "spawn": spawn,
         "defaults": {
-            "branchName": default_worker_branch_name(agent_name),
-            "worktreePath": default_worker_worktree_path(project_root, agent_name),
+            "branchName": default_local_agent_branch_name(role, agent_name),
+            "worktreePath": default_local_agent_worktree_path(project_root, role, agent_name),
         }
     });
     if let Some(thread_id) = thread_id.filter(|value| !value.trim().is_empty()) {
@@ -425,6 +425,10 @@ pub fn qa_create_payload(
             "role": role,
         },
         "spawn": spawn,
+        "defaults": {
+            "branchName": default_local_agent_branch_name(role, agent_name),
+            "worktreePath": default_local_agent_worktree_path(project_root, role, agent_name),
+        }
     });
     if let Some(thread_id) = thread_id.filter(|value| !value.trim().is_empty()) {
         payload["threadId"] = Value::String(thread_id.to_string());
@@ -928,12 +932,12 @@ mod tests {
     #[test]
     fn worker_defaults_use_kebab_case_names() {
         assert_eq!(
-            default_worker_branch_name("Worker QA Workflow Print View"),
-            "codex/worker-qa-workflow-print-view"
+            default_local_agent_branch_name("worker", "Worker QA Workflow Print View"),
+            "codex/worker-worker-qa-workflow-print-view"
         );
         assert_eq!(
-            default_worker_worktree_path("/tmp/project", "Worker QA Workflow Print View"),
-            "/tmp/project/.worktrees/worker-qa-workflow-print-view"
+            default_local_agent_worktree_path("/tmp/project", "worker", "Worker QA Workflow Print View"),
+            "/tmp/project/.worktrees/worker-worker-qa-workflow-print-view"
         );
     }
 

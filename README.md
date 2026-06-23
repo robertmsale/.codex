@@ -13,10 +13,19 @@ For public bootstrap/install guidance, start with
 overlay/tooling install; do not clone this repository over an existing
 `~/.codex`.
 
-QA now follows the simplified direct runtime model: assign a QA agent a normal
-worktree and device UDID, then use `designer-flutter-run`, `designer-drive`, and
-`designer-crop-screenshot` for launch, piloting, and evidence. The older managed
-QA harness / Flutter simulator broker stack is legacy/deprecated.
+Robdex worker and QA agents use the local-only worktree lifecycle in this
+repository. Project hooks create branches named `codex/<stable-agent-slug>` and
+worktrees under `.worktrees/<stable-agent-slug>`, the bridge starts each worker
+or QA thread in the hook-returned worktree, and Requirements Review is the
+completion gate. Completed worker branches are integrated with
+`.codex/local-integrate`; that command rebases the worker branch onto local
+`main`, fast-forwards local `main`, then removes the worktree and local branch.
+GitHub pull requests, remote branch publishing, local review files, and
+review-file-producing reviewer agents are not part of this local `.codex` flow.
+
+QA now follows the same local worktree model with a device UDID, then uses
+`designer-flutter-run`, `designer-drive`, and `designer-crop-screenshot` for
+launch, piloting, and evidence.
 
 ## What Lives Here
 
@@ -42,7 +51,9 @@ Important skills in active use:
   Robdex messaging and worker orchestration surface.
 
 - `gh-version-control-workflow`
-  Script-first worktree and publish workflow for mutating git/gh operations.
+  General git/GitHub helper skill. The `.codex` Robdex worker/QA lifecycle does
+  not publish branches or open pull requests; use `.codex/local-integrate` for
+  completed local worker branches.
 
 - `safe-delete`
   Non-destructive delete flow. Throws items into `/tmp` to be reconciled manually or on reboot.
@@ -68,7 +79,7 @@ Current layout:
 Notable pieces:
 
 - Rust Robdex bridge
-- legacy simulator broker and Flutter helper services
+- Flutter helper services
 
 See [`backend/README.md`](~/.codex/backend/README.md) for the service-level breakdown.
 
