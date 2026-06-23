@@ -673,6 +673,9 @@ pub struct SessionSummary {
     pub forked_from_turn_id: Option<Uuid>,
     pub root_session_id: Option<Uuid>,
     pub fork_depth: i32,
+    pub parent_session_id: Option<Uuid>,
+    pub session_kind: String,
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -690,7 +693,8 @@ pub async fn session_record(pool: &PgPool, session_id: Uuid) -> Result<SessionSu
     let row = sqlx::query(
         r#"
         SELECT id, status, tracked, role_id, role_version, project_key, workdir, worktree_root, title, name, created_at,
-               closed_at, archived_at, forked_from_session_id, forked_from_turn_id, root_session_id, fork_depth
+               closed_at, archived_at, forked_from_session_id, forked_from_turn_id, root_session_id, fork_depth,
+               parent_session_id, session_kind, hidden
         FROM sessions WHERE id = $1
         "#,
     )
@@ -719,6 +723,9 @@ pub async fn session_record(pool: &PgPool, session_id: Uuid) -> Result<SessionSu
         forked_from_turn_id: row.get("forked_from_turn_id"),
         root_session_id: row.get("root_session_id"),
         fork_depth: row.get("fork_depth"),
+        parent_session_id: row.get("parent_session_id"),
+        session_kind: row.get("session_kind"),
+        hidden: row.get("hidden"),
     })
 }
 
@@ -734,9 +741,10 @@ pub async fn list_sessions(pool: &PgPool, include_all: bool) -> Result<Vec<Sessi
     let rows = sqlx::query(
         r#"
         SELECT id, status, tracked, role_id, role_version, project_key, workdir, worktree_root, title, name, created_at,
-               closed_at, archived_at, forked_from_session_id, forked_from_turn_id, root_session_id, fork_depth
+               closed_at, archived_at, forked_from_session_id, forked_from_turn_id, root_session_id, fork_depth,
+               parent_session_id, session_kind, hidden
         FROM sessions
-        WHERE ($1::bool OR tracked = true)
+        WHERE ($1::bool OR tracked = true) AND hidden = false
         ORDER BY updated_at DESC, created_at DESC
         "#,
     )
@@ -761,6 +769,9 @@ pub async fn list_sessions(pool: &PgPool, include_all: bool) -> Result<Vec<Sessi
         forked_from_turn_id: row.get("forked_from_turn_id"),
         root_session_id: row.get("root_session_id"),
         fork_depth: row.get("fork_depth"),
+        parent_session_id: row.get("parent_session_id"),
+        session_kind: row.get("session_kind"),
+        hidden: row.get("hidden"),
     }).collect())
 }
 
@@ -790,6 +801,8 @@ pub async fn archive_session(pool: &PgPool, session_id: Uuid) -> Result<()> {
     let result = sqlx::query("UPDATE sessions SET tracked = false, archived_at = COALESCE(archived_at, now()), updated_at = now() WHERE id = $1")
         .bind(session_id).execute(pool).await?;
     if result.rows_affected() != 1 { return Err(RuntimeDomainError::not_found("session", session_id).into()); }
+    crate::god_mode::revoke_active(pool, session_id, "runtime", "session archived").await?;
+    crate::requirements::close_nested_reviewers(pool, session_id).await?;
     append_event(pool, session_id, None, "session", Some(session_id), "session.archived", Some("archived"), json!({"tracked": false})).await?;
     Ok(())
 }
@@ -847,6 +860,8 @@ pub async fn close_session(pool: &PgPool, session_id: Uuid, reason: &str, live_t
     .execute(pool)
     .await?;
     if result.rows_affected() != 1 { return Err(RuntimeDomainError::conflict(format!("session close blocked: session missing or not open: {session_id}")).into()); }
+    crate::god_mode::revoke_active(pool, session_id, "runtime", "session closed").await?;
+    crate::requirements::close_nested_reviewers(pool, session_id).await?;
     append_event(pool, session_id, None, "session", Some(session_id), "session.closed", Some("closed"), json!({"reason": reason, "liveProcessesTerminated": live_terminated, "processRowsMarked": db_processes})).await?;
     Ok(())
 }

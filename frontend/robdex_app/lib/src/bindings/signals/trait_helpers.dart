@@ -73,6 +73,18 @@ class TraitHelpers {
     return List.generate(length, (_) => AgentRuntimeOperationSurface.deserialize(deserializer));
   }
 
+  static void serializeVectorAgentRuntimeRequirementInput(List<AgentRuntimeRequirementInput> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeRequirementInput> deserializeVectorAgentRuntimeRequirementInput(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeRequirementInput.deserialize(deserializer));
+  }
+
   static void serializeVectorAgentRuntimeRolePolicyEntry(List<AgentRuntimeRolePolicyEntry> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {

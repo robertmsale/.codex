@@ -232,6 +232,8 @@ impl GuiBackendController {
             | GuiOperationRequest::InputProcess { .. }
             | GuiOperationRequest::FlushProcess { .. }
             | GuiOperationRequest::CompactSession { .. }
+            | GuiOperationRequest::GrantGodMode { .. }
+            | GuiOperationRequest::RevokeGodMode { .. }
             | GuiOperationRequest::CloseSession { .. }
             | GuiOperationRequest::ArchiveSession { .. }
             | GuiOperationRequest::ForkSession { .. }
@@ -255,7 +257,11 @@ impl GuiBackendController {
             | GuiOperationRequest::ExportRole { .. }
             | GuiOperationRequest::ActivateRoleVersion { .. }
             | GuiOperationRequest::ArchiveRole { .. }
-            | GuiOperationRequest::UnarchiveRole { .. } => self.dispatch_server_operation(request).await,
+            | GuiOperationRequest::UnarchiveRole { .. }
+            | GuiOperationRequest::SetRequirements { .. }
+            | GuiOperationRequest::ClearRequirements { .. }
+            | GuiOperationRequest::ShowRequirementsStatus { .. }
+            | GuiOperationRequest::ListRequirementsPackets { .. } => self.dispatch_server_operation(request).await,
         }
     }
 
@@ -349,7 +355,9 @@ impl GuiBackendController {
             | GuiOperationRequest::ShowRoleDetail { .. }
             | GuiOperationRequest::ListRoleVersions { .. }
             | GuiOperationRequest::ShowRoleVersion { .. }
-            | GuiOperationRequest::ExportRole { .. } => Ok(GuiOperationOutcome::DirectValue { value }),
+            | GuiOperationRequest::ExportRole { .. }
+            | GuiOperationRequest::ShowRequirementsStatus { .. }
+            | GuiOperationRequest::ListRequirementsPackets { .. } => Ok(GuiOperationOutcome::DirectValue { value }),
             GuiOperationRequest::CreateSession { .. } => {
                 let entity_id = value.get("sessionId").and_then(Value::as_str).map(str::to_string);
                 if let Some(id) = entity_id.as_deref() {
@@ -381,6 +389,13 @@ impl GuiBackendController {
                 entity_id: Some(handle.clone()),
             }),
             GuiOperationRequest::CompactSession { session_id, .. } => {
+                let _ = self.hydrate_current().await?;
+                Ok(GuiOperationOutcome::Accepted {
+                    entity_id: Some(session_id.clone()),
+                })
+            }
+            GuiOperationRequest::GrantGodMode { session_id, .. }
+            | GuiOperationRequest::RevokeGodMode { session_id, .. } => {
                 let _ = self.hydrate_current().await?;
                 Ok(GuiOperationOutcome::Accepted {
                     entity_id: Some(session_id.clone()),
@@ -418,7 +433,9 @@ impl GuiBackendController {
             | GuiOperationRequest::UpdateRoleFromDraft { .. }
             | GuiOperationRequest::ActivateRoleVersion { .. }
             | GuiOperationRequest::ArchiveRole { .. }
-            | GuiOperationRequest::UnarchiveRole { .. } => self.hydrate_current().await,
+            | GuiOperationRequest::UnarchiveRole { .. }
+            | GuiOperationRequest::SetRequirements { .. }
+            | GuiOperationRequest::ClearRequirements { .. } => self.hydrate_current().await,
             GuiOperationRequest::Connect { .. }
             | GuiOperationRequest::Hydrate { .. }
             | GuiOperationRequest::Rehydrate { .. }
@@ -463,6 +480,8 @@ impl GuiBackendController {
             GuiOperationRequest::InputProcess { session_id, handle, .. } => format!("/sessions/{session_id}/processes/{handle}/input"),
             GuiOperationRequest::FlushProcess { session_id, handle } => format!("/sessions/{session_id}/processes/{handle}/flush"),
             GuiOperationRequest::CompactSession { session_id, .. } => format!("/sessions/{session_id}/compact"),
+            GuiOperationRequest::GrantGodMode { session_id, .. } => format!("/sessions/{session_id}/god-mode/grant"),
+            GuiOperationRequest::RevokeGodMode { session_id, .. } => format!("/sessions/{session_id}/god-mode/revoke"),
             GuiOperationRequest::CloseSession { session_id, .. } => format!("/sessions/{session_id}/close"),
             GuiOperationRequest::ArchiveSession { session_id } => format!("/sessions/{session_id}/archive"),
             GuiOperationRequest::ForkSession { session_id, .. } => format!("/sessions/{session_id}/fork"),
@@ -513,6 +532,10 @@ impl GuiBackendController {
             GuiOperationRequest::ActivateRoleVersion { role_id, .. } => format!("/roles/{role_id}/activate"),
             GuiOperationRequest::ArchiveRole { role_id } => format!("/roles/{role_id}/archive"),
             GuiOperationRequest::UnarchiveRole { role_id } => format!("/roles/{role_id}/unarchive"),
+            GuiOperationRequest::SetRequirements { session_id, .. } => format!("/sessions/{session_id}/requirements"),
+            GuiOperationRequest::ClearRequirements { session_id } => format!("/sessions/{session_id}/requirements/clear"),
+            GuiOperationRequest::ShowRequirementsStatus { session_id } => format!("/sessions/{session_id}/requirements"),
+            GuiOperationRequest::ListRequirementsPackets { session_id } => format!("/sessions/{session_id}/requirements/packets"),
             GuiOperationRequest::Connect { .. }
             | GuiOperationRequest::Hydrate { .. }
             | GuiOperationRequest::Rehydrate { .. }

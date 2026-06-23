@@ -659,6 +659,7 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
         AgentRuntimeActionItem(id: 'session-a', title: 'Close session', subtitle: 'Runtime validation', kind: 'closeSession', stateText: 'Ready', tone: 'info'),
         AgentRuntimeActionItem(id: 'session-a', title: 'Archive session', subtitle: 'Runtime validation', kind: 'archiveSession', stateText: 'Ready', tone: 'info'),
         AgentRuntimeActionItem(id: 'session-a', title: 'Fork session', subtitle: 'Runtime validation', kind: 'forkSession', stateText: 'Ready', tone: 'info'),
+        AgentRuntimeActionItem(id: 'session-a', title: 'Enable God Mode', subtitle: 'Allow break-glass host zsh shell for this session.', kind: 'godModeGrant', stateText: 'Disabled', tone: 'warning'),
       ],
     ),
     AgentRuntimeOperationSurface(

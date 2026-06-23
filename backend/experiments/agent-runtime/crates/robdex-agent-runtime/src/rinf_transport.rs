@@ -7,7 +7,7 @@
 use robdex_agent_runtime_projection::{
     ApiErrorPacket, CommandRegistryRequestSummary, GuiConnectionState, GuiControllerState,
     GuiOperationRequest, GuiOperationResult, PendingApprovalSummary, RoleSummary, RuntimeProjection,
-    SessionListItem, TimelineItem, WorkflowMemorySummary,
+    SelectedSessionDetail, SessionListItem, TimelineItem, WorkflowMemorySummary,
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -788,7 +788,7 @@ fn operation_surfaces(
             AgentRuntimeWorkbenchActionRow {
                 id: "diagnostics:rehydrate".to_string(),
                 title: "Rehydrate".to_string(),
-                subtitle: "Rehydrate from the Rust-owned projection".to_string(),
+                subtitle: "Refresh the selected runtime state".to_string(),
                 kind: "diagnosticsRehydrate".to_string(),
                 state_text: "ready".to_string(),
                 tone: "info".to_string(),
@@ -808,6 +808,17 @@ fn operation_surfaces(
         subtitle: view.workflow_memory.subtitle.clone(),
         rows: workflow_memory_surface_rows(&view.workflow_memory),
         actions: view.workflow_memory.feedback_actions.clone(),
+    });
+    surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "requirementsReview".to_string(),
+        title: "Requirements Review".to_string(),
+        subtitle: selected
+            .and_then(|session| session.requirements_review.as_ref())
+            .map(|summary| if summary.active { "Active contract" } else { "No active contract" })
+            .unwrap_or("No selected session")
+            .to_string(),
+        rows: requirements_review_surface_rows(selected),
+        actions: requirements_review_actions(selected),
     });
     surfaces.push(AgentRuntimeOperationSurface {
         surface_id: "approvals".to_string(),
@@ -914,7 +925,7 @@ fn session_actions(selected: Option<&robdex_agent_runtime_projection::SelectedSe
     let Some(session) = selected else {
         return Vec::new();
     };
-    ["closeSession", "archiveSession", "forkSession"]
+    let mut actions: Vec<AgentRuntimeWorkbenchActionRow> = ["closeSession", "archiveSession", "forkSession"]
         .iter()
         .map(|kind| AgentRuntimeWorkbenchActionRow {
             id: session.id.clone(),
@@ -928,7 +939,27 @@ fn session_actions(selected: Option<&robdex_agent_runtime_projection::SelectedSe
             state_text: "ready".to_string(),
             tone: "info".to_string(),
         })
-        .collect()
+        .collect();
+    let god_mode_active = session
+        .metadata
+        .get("godMode")
+        .and_then(|value| value.get("active"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    actions.push(AgentRuntimeWorkbenchActionRow {
+        id: session.id.clone(),
+        title: if god_mode_active { "Revoke God Mode" } else { "Enable God Mode" }.to_string(),
+        subtitle: if god_mode_active {
+            "Disable break-glass host shell for this session."
+        } else {
+            "Allow break-glass host zsh shell for this session."
+        }
+        .to_string(),
+        kind: if god_mode_active { "godModeRevoke" } else { "godModeGrant" }.to_string(),
+        state_text: if god_mode_active { "Active" } else { "Disabled" }.to_string(),
+        tone: if god_mode_active { "danger" } else { "warning" }.to_string(),
+    });
+    actions
 }
 
 fn statistics_rows(projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> Vec<AgentRuntimeWorkbenchFact> {
@@ -1180,6 +1211,70 @@ fn workflow_memory_surface_rows(view: &AgentRuntimeWorkflowMemoryView) -> Vec<Ag
         fact("Recent memory event", format!("id={} · type={} · created={} · payload={}", event.id, event.title, event.created_at.as_deref().unwrap_or("unknown"), event.subtitle).as_str())
     }));
     rows
+}
+
+fn requirements_review_surface_rows(selected: Option<&SelectedSessionDetail>) -> Vec<AgentRuntimeWorkbenchFact> {
+    let Some(session) = selected else {
+        return vec![fact("State", "Select a session to review its completion contract")];
+    };
+    let Some(summary) = &session.requirements_review else {
+        return vec![fact("State", "Review details are unavailable for this session")];
+    };
+    let mut rows = vec![
+        fact("Active", if summary.active { "yes" } else { "no" }),
+        fact("Progress", format!("total={} · unresolved={} · passed={} · blocked={} · waived={}", summary.total, summary.unresolved, summary.passed, summary.blocked, summary.waived).as_str()),
+        fact("Review status", requirements_review_status_label(summary.review_status.as_deref())),
+        fact("Review session", if summary.reviewer_session_id.is_some() { "ready for audit" } else { "waiting for a reviewable claim" }),
+        fact("Packets", format!("{}", summary.packets.len()).as_str()),
+    ];
+    if let Some(action) = &summary.owner_action {
+        rows.push(fact("Owner action", action.get("status").and_then(Value::as_str).unwrap_or("available")));
+    }
+    rows
+}
+
+fn requirements_review_status_label(status: Option<&str>) -> &'static str {
+    match status {
+        Some("ready") => "Awaiting review",
+        Some("inReview") => "In review",
+        Some("reviewed") => "Reviewed",
+        Some("closed") => "Closed",
+        Some("inactive") => "Inactive",
+        Some("failed") => "Needs correction",
+        Some(_) => "Needs attention",
+        None => "No review started",
+    }
+}
+
+fn requirements_review_actions(selected: Option<&SelectedSessionDetail>) -> Vec<AgentRuntimeWorkbenchActionRow> {
+    let Some(session) = selected else { return Vec::new(); };
+    let active = session.requirements_review.as_ref().map(|summary| summary.active).unwrap_or(false);
+    vec![
+        AgentRuntimeWorkbenchActionRow {
+            id: format!("requirements:{}:status", session.id),
+            title: "Show Requirements status".to_string(),
+            subtitle: "Show current review progress".to_string(),
+            kind: "requirementsStatus".to_string(),
+            state_text: "ready".to_string(),
+            tone: "info".to_string(),
+        },
+        AgentRuntimeWorkbenchActionRow {
+            id: format!("requirements:{}:packets", session.id),
+            title: "Show Requirements packets".to_string(),
+            subtitle: "Show submitted claims and review outcomes".to_string(),
+            kind: "requirementsPackets".to_string(),
+            state_text: "ready".to_string(),
+            tone: "info".to_string(),
+        },
+        AgentRuntimeWorkbenchActionRow {
+            id: format!("requirements:{}:clear", session.id),
+            title: "Clear active Requirements".to_string(),
+            subtitle: if active { "Stop enforcing the active completion contract" } else { "Unavailable until requirements are active" }.to_string(),
+            kind: "requirementsClear".to_string(),
+            state_text: if active { "ready" } else { "unavailable" }.to_string(),
+            tone: if active { "warn" } else { "muted" }.to_string(),
+        },
+    ]
 }
 
 fn approval_surface_actions(projection: Option<&RuntimeProjection>) -> Vec<AgentRuntimeWorkbenchActionRow> {
@@ -3236,6 +3331,7 @@ mod tests {
                         pending_approval_count: 1,
                         managed_process_count: 2,
                         metadata: json!({"model":"gpt-5.4-mini"}),
+                        requirements_review: None,
                     }),
                     timeline: vec![
                         TimelineItem {
@@ -4448,6 +4544,7 @@ mod tests {
                 pending_approval_count: 1,
                 managed_process_count: 2,
                 metadata: json!({"createdAt":"2026-06-18T00:00:00Z","model":"gpt-5.4-mini"}),
+                requirements_review: None,
             }),
             timeline: vec![
                 TimelineItem {

@@ -35,6 +35,7 @@ part 'agent_runtime_projection_snapshot.dart';
 part 'agent_runtime_registry_scope.dart';
 part 'agent_runtime_request.dart';
 part 'agent_runtime_request_signal.dart';
+part 'agent_runtime_requirement_input.dart';
 part 'agent_runtime_role_admin_view.dart';
 part 'agent_runtime_role_detail.dart';
 part 'agent_runtime_role_editor_draft.dart';

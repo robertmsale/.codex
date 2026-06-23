@@ -83,6 +83,8 @@ class _AgentRuntimeWorkbenchHostState extends State<AgentRuntimeWorkbenchHost> {
             onProcessInput: _controller.inputProcess,
             onProcessFlush: _controller.flushProcess,
             onCompactSession: _controller.compactSession,
+            onGodModeGrant: _controller.grantGodMode,
+            onGodModeRevoke: _controller.revokeGodMode,
           );
         }
         final shell = _controller.shellData;
@@ -173,6 +175,8 @@ class _AgentRuntimeWorkbenchHostState extends State<AgentRuntimeWorkbenchHost> {
       onProcessInput: _controller.inputProcess,
       onProcessFlush: _controller.flushProcess,
       onCompactSession: _controller.compactSession,
+      onGodModeGrant: _controller.grantGodMode,
+      onGodModeRevoke: _controller.revokeGodMode,
       onApprovalApprove: _controller.approveAction,
       onApprovalDeny: _controller.denyAction,
       onApprovalResume: _controller.resumeApproval,
@@ -501,7 +505,7 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
                     ),
                     _RuntimeLabeledField(
                       label: 'Model',
-                      helper: modelOptions.isEmpty ? 'No model options were provided by the runtime projection.' : 'Model option supplied by Rust-owned runtime data.',
+                      helper: modelOptions.isEmpty ? 'No model options are available for this session.' : 'Model option available for this session.',
                       child: modelOptions.isEmpty
                           ? TextField(
                               key: const ValueKey('agentRuntime.createSession.noModel'),

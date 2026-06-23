@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use uuid::Uuid;
 use std::collections::BTreeSet;
 
-use robdex_agent_runtime::{approvals, command_registry, compaction, db, routing, runtime};
+use robdex_agent_runtime::{approvals, command_registry, compaction, db, requirements, routing, runtime};
 use robdex_agent_runtime::roles::{DEFAULT_ROLE_ID, RoleRegistry};
 
 const DEFAULT_DATABASE_URL: &str =
@@ -48,11 +48,65 @@ enum Command {
         #[command(subcommand)]
         command: CommandRegistryCommand,
     },
+    Requirements {
+        #[command(subcommand)]
+        command: RequirementsCommand,
+    },
     Compact {
         #[arg(long)]
         session: Uuid,
         #[arg(long = "through-turn")]
         through_turn: Option<Uuid>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RequirementsCommand {
+    SetJson {
+        #[arg(long)]
+        session: Uuid,
+        file: std::path::PathBuf,
+    },
+    SetComposed {
+        #[arg(long)]
+        session: Uuid,
+        #[arg(long = "permanent")]
+        permanent: Vec<std::path::PathBuf>,
+        #[arg(long = "include")]
+        include: Vec<std::path::PathBuf>,
+        #[arg(long = "task")]
+        task: std::path::PathBuf,
+    },
+    SetLines {
+        #[arg(long)]
+        session: Uuid,
+        file: std::path::PathBuf,
+    },
+    Status {
+        session: Uuid,
+    },
+    Packets {
+        session: Uuid,
+    },
+    Detail {
+        session: Uuid,
+    },
+    RecordClaim {
+        #[arg(long)]
+        session: Uuid,
+        #[arg(long)]
+        turn: Uuid,
+        file: std::path::PathBuf,
+    },
+    RecordVerdict {
+        #[arg(long)]
+        reviewer: Uuid,
+        #[arg(long)]
+        turn: Uuid,
+        file: std::path::PathBuf,
+    },
+    Clear {
+        session: Uuid,
     },
 }
 
@@ -273,6 +327,70 @@ async fn main() -> Result<()> {
             };
             println!("{}", serde_json::to_string_pretty(&checkpoint)?);
         }
+        Command::Requirements { command } => match command {
+            RequirementsCommand::SetJson { session, file } => {
+                let input = requirements::load_requirement_set_file(&file)?;
+                let set_id = requirements::set_active_requirements(&pool, session, input).await?;
+                println!("{set_id}");
+            }
+            RequirementsCommand::SetComposed { session, permanent, include, task } => {
+                let permanent = permanent.iter().map(|path| requirements::load_requirement_set_file(path)).collect::<Result<Vec<_>>>()?;
+                let include = include.iter().map(|path| requirements::load_requirement_set_file(path)).collect::<Result<Vec<_>>>()?;
+                let task = requirements::load_requirement_set_file(&task)?;
+                let input = requirements::compose_requirement_sets(&permanent, &include, task)?;
+                let set_id = requirements::set_active_requirements(&pool, session, input).await?;
+                println!("{set_id}");
+            }
+            RequirementsCommand::SetLines { session, file } => {
+                let raw = std::fs::read_to_string(file)?;
+                let input = requirements::requirement_set_from_lines(&raw)?;
+                let set_id = requirements::set_active_requirements(&pool, session, input).await?;
+                println!("{set_id}");
+            }
+            RequirementsCommand::Status { session } => {
+                println!("{}", serde_json::to_string_pretty(&requirements::status(&pool, session).await?)?);
+            }
+            RequirementsCommand::Packets { session } => {
+                println!("{}", serde_json::to_string_pretty(&requirements::packet_history(&pool, session).await?)?);
+            }
+            RequirementsCommand::Detail { session } => {
+                let status = requirements::status(&pool, session).await?;
+                let reviewer = if let Some(reviewer_id) = status.reviewer_session_id {
+                    Some(db::session_record(&pool, reviewer_id).await?)
+                } else {
+                    None
+                };
+                let detail = serde_json::json!({
+                    "sourceSessionId": session,
+                    "status": status,
+                    "reviewerSession": reviewer.as_ref().map(|record| serde_json::json!({
+                        "id": record.id,
+                        "parentSessionId": record.parent_session_id,
+                        "sessionKind": record.session_kind,
+                        "hidden": record.hidden,
+                        "projectKey": record.project_key,
+                        "workdir": record.workdir,
+                        "worktreeRoot": record.worktree_root,
+                        "status": record.status,
+                    })),
+                    "packets": requirements::packet_history(&pool, session).await?,
+                });
+                println!("{}", serde_json::to_string_pretty(&detail)?);
+            }
+            RequirementsCommand::RecordClaim { session, turn, file } => {
+                let raw = std::fs::read_to_string(file)?;
+                println!("{}", serde_json::to_string_pretty(&requirements::record_source_final_response(&pool, session, turn, &raw).await?)?);
+            }
+            RequirementsCommand::RecordVerdict { reviewer, turn, file } => {
+                let raw = std::fs::read_to_string(file)?;
+                let processed = requirements::record_reviewer_verdict(&pool, reviewer, turn, &raw).await?;
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({"reviewerSessionId": reviewer, "processed": processed}))?);
+            }
+            RequirementsCommand::Clear { session } => {
+                requirements::deactivate(&pool, session, "cleared").await?;
+                println!("cleared {session}");
+            }
+        },
         Command::Events { session } => {
             db::print_events(&pool, session).await?;
         }

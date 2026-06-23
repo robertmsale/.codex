@@ -93,6 +93,13 @@ product specification.
 17. Resident server MVP.
 18. Semantic WebSocket deltas.
 19. Core admin APIs.
+20. Session-scoped God Mode shell: `execute_code` exposes native
+    `shell(script, mode).sync()/async()` only when an active PostgreSQL grant
+    exists for the session. Command registry remains the normal durable command
+    interface. `shell(...)` is the explicit break-glass host `/bin/zsh`
+    affordance, defaults to `-lc`, accepts explicit `-lc`, `-c`, and login-shell
+    `-l`, persists audit/output artifacts, and is revoked on session
+    close/archive.
 20. Typed API error shape and error mapping polish.
 21. Resident server validation harness.
 22. Runtime operations hardening and local service wrapper.
@@ -224,7 +231,7 @@ product specification.
 
 ## Active slice
 
-Role Admin UI structured editor is implemented as a full-screen Role Manager: DB-backed role draft validation, create/update immutable versions, activate/archive/unarchive/export routes, role projection/view-model fields, Rust GUI operations, and the design-system Role Manager page are now in place. The compaction kernel is implemented on top of PostgreSQL-backed output artifacts. Workflow Memory inspection plus feedback is implemented inside Agent Runtime modal operations surfaces: Rust-owned workflow-memory rows/detail/events/source metadata, Rust-owned row selection with deterministic fallback, and session-scoped attempted/helpful/not-helpful actions. iCloud remote profile discovery is implemented as a sync-safe sentinel transport with Rust-owned profile parsing and /health connectability checks. Document-import remote profile UX is implemented as an app-local profile acquisition path: Dart sends import/refresh/connect intents, Rust validates and stores a sanitized profile copy, and /health remains the connectability authority. The current shell slice keeps the connected Agent Runtime UI in the canonical Robdex Workbench pattern with brushed-metal left project/session rail, center real chat transcript in `ChatTimeline`, shared `ComposerPanel`, toolbar modal/sheet operations surfaces except Role Manager which opens full-screen, typed Rinf operations, table-derived stats, project-aware/model-aware creation, selected-chat deltas, and lifecycle reconciliation. Connected Agent Runtime must not regress to a dashboard shell, permanent operations pane or diagnostics-first interaction model. Remaining gates are mDNS/Bonjour discovery, native iOS file-picker polish beyond the typed import boundary, broader execution expansion after GUI/runtime lifecycle is stable, workflow-memory editing/curation if the owner explicitly scopes it later, and any owner-approved production Robdex integration. Tokenizer-based accounting remains intentionally out of scope.
+Role Admin UI structured editor is implemented as a full-screen Role Manager: DB-backed role draft validation, create/update immutable versions, activate/archive/unarchive/export routes, role projection/view-model fields, Rust GUI operations, and the design-system Role Manager page are now in place. Requirements Review is now a session-scoped PostgreSQL contract: active requirement sets, progress, submitted packets, and linked audit sessions are durable runtime state; selected-session projections and deltas expose review summary/detail while ordinary session lists show only source work sessions. The compaction kernel is implemented on top of PostgreSQL-backed output artifacts. Workflow Memory inspection plus feedback is implemented inside Agent Runtime modal operations surfaces: Rust-owned workflow-memory rows/detail/events/source metadata, Rust-owned row selection with deterministic fallback, and session-scoped attempted/helpful/not-helpful actions. iCloud remote profile discovery is implemented as a sync-safe sentinel transport with Rust-owned profile parsing and /health connectability checks. Document-import remote profile UX is implemented as an app-local profile acquisition path: Dart sends import/refresh/connect intents, Rust validates and stores a sanitized profile copy, and /health remains the connectability authority. The current shell slice keeps the connected Agent Runtime UI in the canonical Robdex Workbench pattern with brushed-metal left project/session rail, center real chat transcript in `ChatTimeline`, shared `ComposerPanel`, toolbar modal/sheet operations surfaces except Role Manager which opens full-screen, typed Rinf operations, table-derived stats, project-aware/model-aware creation, selected-chat deltas, and lifecycle reconciliation. Connected Agent Runtime must not regress to a dashboard shell, permanent operations pane or diagnostics-first interaction model. Remaining gates are mDNS/Bonjour discovery, native iOS file-picker polish beyond the typed import boundary, broader execution expansion after GUI/runtime lifecycle is stable, workflow-memory editing/curation if the owner explicitly scopes it later, and any owner-approved production Robdex integration. Tokenizer-based accounting remains intentionally out of scope.
 
 ## Validation baseline
 
@@ -258,6 +265,7 @@ scripts/validate-approver-ergonomics.sh
 scripts/validate-role-admin-ux.sh
 scripts/validate-mutation-actions.sh
 scripts/validate-workflow-memory.sh
+scripts/validate-requirements-review.sh
 ```
 
 Live-model or external-service tests are opt-in only:

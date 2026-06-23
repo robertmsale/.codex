@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::errors::{RuntimeDomainError, RuntimeErrorKind};
 use crate::model::ModelClient;
-use crate::{approvals, command_registry, compaction, db, projection, routing, runtime, starlark_host, workflow_memory};
+use crate::{approvals, command_registry, compaction, db, projection, requirements, routing, runtime, starlark_host, workflow_memory};
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -199,6 +199,11 @@ pub fn app(state: ServerState) -> Router {
         .route("/sessions/{session_id}/history", get(session_history))
         .route("/sessions/{session_id}/send", post(send_message))
         .route("/sessions/{session_id}/compact", post(compact_session))
+        .route("/sessions/{session_id}/god-mode/grant", post(grant_god_mode))
+        .route("/sessions/{session_id}/god-mode/revoke", post(revoke_god_mode))
+        .route("/sessions/{session_id}/requirements", get(requirements_status).post(set_requirements))
+        .route("/sessions/{session_id}/requirements/clear", post(clear_requirements))
+        .route("/sessions/{session_id}/requirements/packets", get(requirements_packets))
         .route("/sessions/{session_id}/settings", post(update_session_settings))
         .route("/sessions/{session_id}/close", post(close_session))
         .route("/sessions/{session_id}/archive", post(archive_session))
@@ -764,6 +769,66 @@ struct CloseRequest {
     reason: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct GodModeRequest {
+    reason: String,
+}
+
+async fn grant_god_mode(
+    State(state): State<ServerState>,
+    Path(session_id): Path<Uuid>,
+    payload: std::result::Result<Json<GodModeRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let request = parse_json(payload)?;
+    let grant = crate::god_mode::grant_session(&state.pool, session_id, "gui", &request.reason, None).await?;
+    Ok(Json(json!({"sessionId": session_id, "grantId": grant.id, "status": grant.status})))
+}
+
+async fn revoke_god_mode(
+    State(state): State<ServerState>,
+    Path(session_id): Path<Uuid>,
+    payload: std::result::Result<Json<GodModeRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let request = parse_json(payload)?;
+    crate::god_mode::revoke_active(&state.pool, session_id, "gui", &request.reason).await?;
+    Ok(Json(json!({"sessionId": session_id, "status": "revoked"})))
+}
+
+async fn set_requirements(
+    State(state): State<ServerState>,
+    Path(session_id): Path<Uuid>,
+    payload: std::result::Result<Json<requirements::RequirementSetInput>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let request = parse_json(payload)?;
+    let set_id = requirements::set_active_requirements(&state.pool, session_id, request).await?;
+    let status = requirements::status(&state.pool, session_id).await?;
+    Ok(Json(json!({"sessionId": session_id, "requirementSetId": set_id, "status": status})))
+}
+
+async fn requirements_status(
+    State(state): State<ServerState>,
+    Path(session_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let status = requirements::status(&state.pool, session_id).await?;
+    Ok(Json(json!({"sessionId": session_id, "requirements": status})))
+}
+
+async fn requirements_packets(
+    State(state): State<ServerState>,
+    Path(session_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let packets = requirements::packet_history(&state.pool, session_id).await?;
+    Ok(Json(json!({"sessionId": session_id, "packets": packets})))
+}
+
+async fn clear_requirements(
+    State(state): State<ServerState>,
+    Path(session_id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    requirements::deactivate(&state.pool, session_id, "cleared").await?;
+    Ok(Json(json!({"sessionId": session_id, "status": "inactive"})))
+}
+
 async fn close_session(
     State(state): State<ServerState>,
     Path(session_id): Path<Uuid>,
@@ -1267,6 +1332,7 @@ mod tests {
         request_error: Option<&'static str>,
         final_error: Option<&'static str>,
         direct_final_text: Option<&'static str>,
+        reviewer_final_text: Option<&'static str>,
         tool_name: Option<&'static str>,
         tool_arguments: Option<Value>,
         model_name: Option<&'static str>,
@@ -1305,7 +1371,7 @@ mod tests {
                 message,
             );
             self.observed_request_shapes.lock().expect("request shapes").push(request_shape.clone());
-            if let Some(final_text) = self.direct_final_text {
+            if let Some(final_text) = if role.id == "requirements-reviewer" { self.reviewer_final_text.or(self.direct_final_text) } else { self.direct_final_text } {
                 return Ok(ModelInitialTurn::FinalResponse(ModelFinalTurn {
                     provider: "fake".to_string(),
                     model: model_name.to_string(),
@@ -5002,6 +5068,402 @@ output(outputs.stats(artifact))
             .expect("current turn count");
         assert_eq!(turns, 0, "fail-closed rejection must happen before creating the current running turn");
 
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn requirements_review_creates_hidden_reviewer_and_filters_top_level_sessions() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-project"), ".", Some("."), None, None).await.expect("source session");
+        let set_id = requirements::set_active_requirements(&test_db.pool, source, requirements::RequirementSetInput {
+            title: Some("test requirements".to_string()),
+            requirements: vec![requirements::RequirementInput {
+                key: "prove_hidden_reviewer".to_string(),
+                statement: "Create a hidden reviewer session and keep top-level lists clean.".to_string(),
+                severity: "must".to_string(),
+                verification_method: json!({"method":"test"}),
+            }],
+        }).await.expect("set requirements");
+        let turn_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user','claim','completed',now())")
+            .bind(turn_id)
+            .bind(source)
+            .execute(&test_db.pool)
+            .await
+            .expect("turn");
+        let claim = json!({
+            "summary": "done",
+            "requirements": {
+                "prove_hidden_reviewer": {
+                    "claim": "satisfied",
+                    "evidence": ["test evidence"],
+                    "justification": "reviewable",
+                    "risk": "low"
+                }
+            }
+        }).to_string();
+        let outcome = requirements::record_source_final_response(&test_db.pool, source, turn_id, &claim).await.expect("claim outcome").expect("claim record");
+        assert_eq!(outcome.outcome, requirements::SourcePacketOutcome::Reviewable);
+        let status = requirements::status(&test_db.pool, source).await.expect("status");
+        assert_eq!(status.active_set_id, Some(set_id));
+        let reviewer_id = status.reviewer_session_id.expect("reviewer");
+        let reviewer = db::session_record(&test_db.pool, reviewer_id).await.expect("reviewer record");
+        assert_eq!(reviewer.parent_session_id, Some(source));
+        assert_eq!(reviewer.session_kind, "requirementsReviewer");
+        assert!(reviewer.hidden);
+        let list = db::list_sessions(&test_db.pool, true).await.expect("list sessions");
+        assert!(list.iter().any(|session| session.id == source));
+        assert!(!list.iter().any(|session| session.id == reviewer_id));
+        let snapshot = projection::build_runtime_projection_snapshot(&test_db.pool, Some(source)).await.expect("snapshot");
+        assert!(snapshot.sessions.iter().any(|session| session.id == source.to_string()));
+        assert!(!snapshot.sessions.iter().any(|session| session.id == reviewer_id.to_string()));
+        assert_eq!(snapshot.selected_session.unwrap().metadata.pointer("/requirementsReview/reviewerSessionId").and_then(Value::as_str), Some(reviewer_id.to_string().as_str()));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn requirements_reviewer_verdict_updates_progress_and_deactivates_on_pass() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-verdict"), ".", Some("."), None, None).await.expect("source session");
+        requirements::set_active_requirements(&test_db.pool, source, requirements::RequirementSetInput {
+            title: Some("verdict requirements".to_string()),
+            requirements: vec![
+                requirements::RequirementInput { key: "first_requirement".to_string(), statement: "First requirement passes.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) },
+                requirements::RequirementInput { key: "second_requirement".to_string(), statement: "Second requirement remains waived.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) },
+            ],
+        }).await.expect("set requirements");
+        let claim_turn = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user','claim','completed',now())")
+            .bind(claim_turn)
+            .bind(source)
+            .execute(&test_db.pool)
+            .await
+            .expect("claim turn");
+        let claim = json!({"summary":"done","requirements":{
+            "first_requirement":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"},
+            "second_requirement":{"claim":"blocked","evidence":["waiver request"],"justification":"needs waiver review","risk":"medium"}
+        }}).to_string();
+        requirements::record_source_final_response(&test_db.pool, source, claim_turn, &claim).await.expect("claim");
+        let reviewer_id = requirements::status(&test_db.pool, source).await.expect("status").reviewer_session_id.expect("reviewer");
+        let verdict_turn = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'assistant','verdict','completed',now())")
+            .bind(verdict_turn)
+            .bind(reviewer_id)
+            .execute(&test_db.pool)
+            .await
+            .expect("verdict turn");
+        let verdict = json!({
+            "summary": "all pass",
+            "requirements": {
+                "first_requirement": {"verdict": "pass", "evidence": ["ok"], "justification": "complete", "risk": "low"},
+                "second_requirement": {"verdict": "waiverAccepted", "evidence": ["waived"], "justification": "waiver accepted", "risk": "medium"}
+            },
+            "overallVerdict": "pass",
+            "route": "source"
+        }).to_string();
+        assert!(requirements::record_reviewer_verdict(&test_db.pool, reviewer_id, verdict_turn, &verdict).await.expect("verdict"));
+        let inactive = requirements::status(&test_db.pool, source).await.expect("inactive");
+        assert!(!inactive.active);
+        let packets = requirements::packet_history(&test_db.pool, source).await.expect("packets");
+        assert!(packets.iter().any(|packet| packet["packetKind"] == "claim"));
+        assert!(packets.iter().any(|packet| packet["packetKind"] == "verdict"));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn requirements_schema_attaches_only_for_active_source_turns() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let active_session = db::new_session(&test_db.pool, &role, Some("requirements-schema"), ".", Some("."), None, None).await.expect("active");
+        let inactive_session = db::new_session(&test_db.pool, &role, Some("requirements-schema"), ".", Some("."), None, None).await.expect("inactive");
+        requirements::set_active_requirements(&test_db.pool, active_session, requirements::RequirementSetInput {
+            title: Some("schema requirements".to_string()),
+            requirements: vec![requirements::RequirementInput { key: "schema_attached".to_string(), statement: "Schema is attached.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
+        }).await.expect("set requirements");
+        let observed = Arc::new(StdMutex::new(Vec::<Value>::new()));
+        let fake = FakeModelClient {
+            observed_request_shapes: Arc::clone(&observed),
+            direct_final_text: Some(r#"{"summary":"progress","requirements":null}"#),
+            ..Default::default()
+        };
+        runtime::send_with_model_client(&test_db.pool, active_session, "active", &fake, compaction::CompactionBudget::from_env()).await.expect("active send");
+        runtime::send_with_model_client(&test_db.pool, inactive_session, "inactive", &fake, compaction::CompactionBudget::from_env()).await.expect("inactive send");
+        let shapes = observed.lock().expect("shapes");
+        assert_eq!(shapes.len(), 2);
+        assert_eq!(shapes[0].pointer("/requirements_schema_evidence/kind").and_then(Value::as_str), Some("sourceClaim"));
+        assert_eq!(shapes[0].pointer("/text/format/type").and_then(Value::as_str), Some("json_schema"));
+        assert_eq!(shapes[0].pointer("/requirements_schema_evidence/canonicalCount").and_then(Value::as_u64), Some(1));
+        println!("SOURCE_REQUIREMENTS_SCHEMA_EXAMPLE={}", serde_json::to_string_pretty(&shapes[0]["text"]["format"]).expect("source schema evidence"));
+        println!("SOURCE_REQUIREMENTS_SCHEMA_EVIDENCE={}", serde_json::to_string_pretty(&shapes[0]["requirements_schema_evidence"]).expect("source schema metadata"));
+        assert!(shapes[1].get("requirements_schema_evidence").is_none());
+        assert!(shapes[1].pointer("/text/format").is_none());
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn requirements_reviewable_source_claim_dispatches_fake_reviewer_and_updates_progress() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-dispatch"), ".", Some("."), None, None).await.expect("source");
+        requirements::set_active_requirements(&test_db.pool, source, requirements::RequirementSetInput {
+            title: Some("dispatch requirements".to_string()),
+            requirements: vec![requirements::RequirementInput {
+                key: "dispatch_happens".to_string(),
+                statement: "A reviewable source claim starts a nested reviewer turn.".to_string(),
+                severity: "must".to_string(),
+                verification_method: json!({"method":"test"}),
+            }],
+        }).await.expect("set");
+        let observed = Arc::new(StdMutex::new(Vec::<Value>::new()));
+        let fake = FakeModelClient {
+            observed_request_shapes: Arc::clone(&observed),
+            direct_final_text: Some(r#"{"summary":"source done","requirements":{"dispatch_happens":{"claim":"satisfied","evidence":["turn"],"justification":"done","risk":"low"}}}"#),
+            reviewer_final_text: Some(r#"{"summary":"passes","requirements":{"dispatch_happens":{"verdict":"pass","evidence":["reviewed"],"justification":"ok","risk":"low"}},"overallVerdict":"pass","route":"source"}"#),
+            ..Default::default()
+        };
+        runtime::send_with_model_client(&test_db.pool, source, "claim completion", &fake, compaction::CompactionBudget::default()).await.expect("send");
+        let reviewer_id: Uuid = sqlx::query_scalar("SELECT id FROM sessions WHERE parent_session_id=$1 AND session_kind='requirementsReviewer' AND hidden=true")
+            .bind(source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("reviewer");
+        let reviewer_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1")
+            .bind(reviewer_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("reviewer turns");
+        assert_eq!(reviewer_turns, 1);
+        let shapes = observed.lock().expect("observed shapes");
+        assert!(shapes.iter().any(|shape| shape.pointer("/requirements_schema_evidence/kind").and_then(Value::as_str) == Some("reviewerVerdict")));
+        if let Some(reviewer_shape) = shapes.iter().find(|shape| shape.pointer("/requirements_schema_evidence/kind").and_then(Value::as_str) == Some("reviewerVerdict")) {
+            println!("REVIEWER_REQUIREMENTS_SCHEMA_EXAMPLE={}", serde_json::to_string_pretty(&reviewer_shape["text"]["format"]).expect("reviewer schema evidence"));
+            println!("REVIEWER_REQUIREMENTS_SCHEMA_EVIDENCE={}", serde_json::to_string_pretty(&reviewer_shape["requirements_schema_evidence"]).expect("reviewer schema metadata"));
+        }
+        let inactive = requirements::status(&test_db.pool, source).await.expect("status");
+        assert!(!inactive.active, "pass verdict deactivates the active RequirementSet");
+        let packets = requirements::packet_history(&test_db.pool, source).await.expect("packets");
+        assert!(packets.iter().any(|packet| packet["packetKind"] == "claim"));
+        assert!(packets.iter().any(|packet| packet["packetKind"] == "verdict"));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn requirements_non_reviewable_packets_emit_corrections_and_do_not_create_reviewer() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-corrections"), ".", Some("."), None, None).await.expect("source");
+        requirements::set_active_requirements(&test_db.pool, source, requirements::RequirementSetInput {
+            title: Some("correction requirements".to_string()),
+            requirements: vec![requirements::RequirementInput {
+                key: "work_first".to_string(),
+                statement: "Work must be done before review.".to_string(),
+                severity: "must".to_string(),
+                verification_method: json!({"method":"test"}),
+            }],
+        }).await.expect("set");
+        for body in [
+            r#"{"summary":"commentary","requirements":null}"#,
+            r#"{"summary":"not yet","requirements":{"work_first":{"claim":"notSatisfied","evidence":[],"justification":"not yet","risk":"unknown"}}}"#,
+            "not json",
+        ] {
+            let turn_id = Uuid::new_v4();
+            sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user','claim','completed',now())")
+                .bind(turn_id)
+                .bind(source)
+                .execute(&test_db.pool)
+                .await
+                .expect("turn");
+            requirements::record_source_final_response(&test_db.pool, source, turn_id, body).await.expect("packet");
+        }
+        let reviewers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE parent_session_id=$1 AND session_kind='requirementsReviewer'")
+            .bind(source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("reviewer count");
+        assert_eq!(reviewers, 0);
+        let corrections: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='requirements.sourceCorrection'")
+            .bind(source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("corrections");
+        assert_eq!(corrections, 3);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn requirements_lifecycle_close_archive_and_fork_preserve_hidden_reviewer_semantics() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-lifecycle"), ".", Some("."), None, None).await.expect("source");
+        requirements::set_active_requirements(&test_db.pool, source, requirements::RequirementSetInput {
+            title: Some("lifecycle requirements".to_string()),
+            requirements: vec![requirements::RequirementInput { key: "lifecycle_checked".to_string(), statement: "Lifecycle is checked.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
+        }).await.expect("set");
+        let turn_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user','claim','completed',now())")
+            .bind(turn_id)
+            .bind(source)
+            .execute(&test_db.pool)
+            .await
+            .expect("turn");
+        requirements::record_source_final_response(&test_db.pool, source, turn_id, r#"{"summary":"done","requirements":{"lifecycle_checked":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
+        let reviewer = requirements::status(&test_db.pool, source).await.expect("status").reviewer_session_id.expect("reviewer");
+        let fork_turn = insert_completed_turn(&test_db.pool, source, "before fork", "assistant").await;
+        let fork = db::fork_session(&test_db.pool, source, fork_turn).await.expect("fork");
+        let fork_reviewers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE parent_session_id=$1 AND session_kind='requirementsReviewer'")
+            .bind(fork)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("fork reviewers");
+        assert_eq!(fork_reviewers, 0);
+        db::archive_session(&test_db.pool, source).await.expect("archive");
+        assert!(!db::list_sessions(&test_db.pool, true).await.expect("list").iter().any(|session| session.id == reviewer));
+        assert_eq!(db::session_record(&test_db.pool, reviewer).await.expect("exact reviewer").id, reviewer);
+        db::close_session(&test_db.pool, source, "done", 0).await.expect("close");
+        let status: String = sqlx::query_scalar("SELECT status FROM sessions WHERE id=$1")
+            .bind(reviewer)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("reviewer status");
+        assert_eq!(status, "closed");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn requirements_server_api_and_gui_projection_shapes_are_typed_and_reviewers_hidden() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-api"), ".", Some("."), None, None).await.expect("source");
+        let app = app(ServerState::new(test_db.pool.clone()));
+        let (status, body) = request_json(app.clone(), Method::POST, &format!("/sessions/{source}/requirements"), json!({
+            "title": "api requirements",
+            "requirements": [{"key":"api_visible","statement":"API shape is visible.","severity":"must","verificationMethod":{"method":"test"}}]
+        })).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.pointer("/status/active").and_then(Value::as_bool), Some(true));
+        let (status, body) = request_json(app.clone(), Method::GET, &format!("/sessions/{source}/requirements"), Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.pointer("/requirements/progress/0/requirementKey").and_then(Value::as_str), Some("api_visible"));
+        let claim_turn = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user','claim','completed',now())")
+            .bind(claim_turn)
+            .bind(source)
+            .execute(&test_db.pool)
+            .await
+            .expect("turn");
+        requirements::record_source_final_response(&test_db.pool, source, claim_turn, r#"{"summary":"done","requirements":{"api_visible":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
+        let reviewer = requirements::status(&test_db.pool, source).await.expect("status").reviewer_session_id.expect("reviewer");
+        let (status, body) = request_json(app.clone(), Method::GET, &format!("/sessions/{source}/requirements/packets"), Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.pointer("/packets/0/packetKind").and_then(Value::as_str), Some("claim"));
+        let snapshot = projection::build_runtime_projection_snapshot(&test_db.pool, Some(source)).await.expect("snapshot");
+        let selected = snapshot.selected_session.expect("selected");
+        let reviewer_text = reviewer.to_string();
+        assert_eq!(selected.requirements_review.as_ref().and_then(|summary| summary.reviewer_session_id.as_deref()), Some(reviewer_text.as_str()));
+        assert!(!snapshot.sessions.iter().any(|session| session.id == reviewer_text));
+        let (status, body) = request_json(app.clone(), Method::POST, &format!("/sessions/{source}/requirements/clear"), json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.pointer("/status").and_then(Value::as_str), Some("inactive"));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn requirements_rows_and_packets_survive_compaction() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-compact"), ".", Some("."), None, None).await.expect("source");
+        requirements::set_active_requirements(&test_db.pool, source, requirements::RequirementSetInput {
+            title: Some("compact requirements".to_string()),
+            requirements: vec![requirements::RequirementInput { key: "compact_preserves".to_string(), statement: "Compaction preserves requirements state.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
+        }).await.expect("set");
+        let turn = insert_completed_turn(&test_db.pool, source, "claim", r#"{"summary":"commentary","requirements":null}"#).await;
+        requirements::record_source_final_response(&test_db.pool, source, turn, r#"{"summary":"commentary","requirements":null}"#).await.expect("packet");
+        compaction::compact_session_through_turn(&test_db.pool, source, turn, compaction::CompactionBudget::default()).await.expect("compact");
+        let status = requirements::status(&test_db.pool, source).await.expect("status");
+        assert!(status.active);
+        assert_eq!(status.total, 1);
+        let packets = requirements::packet_history(&test_db.pool, source).await.expect("packets");
+        assert!(packets.iter().any(|packet| packet["packetKind"] == "claimNull"));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn requirements_invalid_source_packet_is_recorded_and_not_routed() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-invalid-source"), ".", Some("."), None, None).await.expect("source");
+        requirements::set_active_requirements(&test_db.pool, source, requirements::RequirementSetInput {
+            title: Some("invalid source requirements".to_string()),
+            requirements: vec![requirements::RequirementInput { key: "schema_checked".to_string(), statement: "Source packet schema is checked.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
+        }).await.expect("set");
+        let turn = insert_completed_turn(&test_db.pool, source, "claim", "assistant").await;
+        let invalid = r#"{"summary":"done","requirements":{"schema_checked":{"claim":"satisfied","evidence":["e"],"justification":"missing risk"}}}"#;
+        let record = requirements::record_source_final_response(&test_db.pool, source, turn, invalid).await.expect("record").expect("active");
+        assert_eq!(record.outcome, requirements::SourcePacketOutcome::Invalid);
+        let reviewer_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE parent_session_id=$1 AND session_kind='requirementsReviewer'")
+            .bind(source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("reviewers");
+        assert_eq!(reviewer_count, 0);
+        let packets = requirements::packet_history(&test_db.pool, source).await.expect("packets");
+        assert!(packets.iter().any(|packet| packet["packetKind"] == "claimInvalid" && packet["validationError"].as_str().unwrap_or_default().contains("risk")));
+        let corrections: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='requirements.sourceCorrection' AND status='requirementsInvalid'")
+            .bind(source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("corrections");
+        assert_eq!(corrections, 1);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn requirements_invalid_reviewer_packet_does_not_mutate_progress() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-invalid-reviewer"), ".", Some("."), None, None).await.expect("source");
+        requirements::set_active_requirements(&test_db.pool, source, requirements::RequirementSetInput {
+            title: Some("invalid reviewer requirements".to_string()),
+            requirements: vec![requirements::RequirementInput { key: "verdict_checked".to_string(), statement: "Reviewer verdict schema is checked.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
+        }).await.expect("set");
+        let claim_turn = insert_completed_turn(&test_db.pool, source, "claim", "assistant").await;
+        requirements::record_source_final_response(&test_db.pool, source, claim_turn, r#"{"summary":"done","requirements":{"verdict_checked":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
+        let reviewer = requirements::status(&test_db.pool, source).await.expect("status").reviewer_session_id.expect("reviewer");
+        let verdict_turn = insert_completed_turn(&test_db.pool, reviewer, "verdict", "assistant").await;
+        let invalid = r#"{"summary":"bad","requirements":{"verdict_checked":{"verdict":"pass","evidence":["e"],"justification":"j","risk":"low"}},"route":"source"}"#;
+        assert!(requirements::record_reviewer_verdict(&test_db.pool, reviewer, verdict_turn, invalid).await.expect("verdict processed"));
+        let status = requirements::status(&test_db.pool, source).await.expect("status");
+        assert!(status.active);
+        assert_eq!(status.unresolved, 1);
+        assert_eq!(status.passed, 0);
+        assert!(status.latest_verdict_packet_id.is_none());
+        let packets = requirements::packet_history(&test_db.pool, source).await.expect("packets");
+        assert!(packets.iter().any(|packet| packet["packetKind"] == "verdictInvalid" && packet["validationError"].as_str().unwrap_or_default().contains("overallVerdict")));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn requirements_reviewer_reconstruction_context_survives_compaction() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-reviewer-reconstruction"), ".", Some("."), None, None).await.expect("source");
+        requirements::set_active_requirements(&test_db.pool, source, requirements::RequirementSetInput {
+            title: Some("reconstruction requirements".to_string()),
+            requirements: vec![requirements::RequirementInput { key: "reconstructs_claim".to_string(), statement: "Reviewer reconstruction includes source claim context.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
+        }).await.expect("set");
+        let turn = insert_completed_turn(&test_db.pool, source, "claim", "assistant").await;
+        requirements::record_source_final_response(&test_db.pool, source, turn, r#"{"summary":"done","requirements":{"reconstructs_claim":{"claim":"satisfied","evidence":["claim evidence"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
+        let reviewer = requirements::status(&test_db.pool, source).await.expect("status").reviewer_session_id.expect("reviewer");
+        compaction::compact_session_through_turn(&test_db.pool, source, turn, compaction::CompactionBudget::default()).await.expect("compact source");
+        let runtime_message = requirements::requirements_runtime_message(&test_db.pool, reviewer).await.expect("runtime message").expect("reviewer schema");
+        assert!(runtime_message.text.contains("<requirements_review_context>"));
+        assert!(runtime_message.text.contains("canonicalSet"));
+        assert!(runtime_message.text.contains("latestClaimPacket"));
+        assert!(runtime_message.text.contains("reconstructs_claim"));
+        assert!(runtime_message.text.contains("claim evidence"));
+        println!("REVIEWER_RECONSTRUCTION_CONTEXT={}", runtime_message.text);
         test_db.cleanup().await;
     }
 

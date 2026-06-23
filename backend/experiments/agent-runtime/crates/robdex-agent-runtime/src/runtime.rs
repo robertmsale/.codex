@@ -135,8 +135,12 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
     let previous_command_context = latest_command_context_evidence(pool, session_id).await?;
     let runtime_command_context = command_registry::runtime_command_context_message(&live_commands, previous_command_context.as_ref());
     let context_snapshot = model_input::persist_context_snapshot(pool, &session, &model_role_snapshot, &runtime_command_context.evidence, None).await?;
-    let runtime_messages = model_input::runtime_developer_messages(&context_snapshot, &runtime_command_context);
-    let execute_code_contract = command_registry::stable_execute_code_contract();
+    let mut runtime_messages = model_input::runtime_developer_messages(&context_snapshot, &runtime_command_context);
+    if let Some(requirements_message) = crate::requirements::requirements_runtime_message(pool, session_id).await? {
+        runtime_messages.push(requirements_message);
+    }
+    let god_mode_shell_active = crate::god_mode::active_grant(pool, session_id).await?.is_some();
+    let execute_code_contract = command_registry::stable_execute_code_contract_with_god_mode_shell(god_mode_shell_active);
     let request_registry_contract = command_registry::request_tool_contract();
     let prior_history_before_compaction = db::reconstructed_history(pool, session_id).await?;
     let pre_send_request_shape = model_tool_request_shape(
@@ -235,6 +239,8 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
                 &prior_history,
                 &model_role_instructions,
                 final_response,
+                model,
+                budget,
             )
             .await?;
             println!("turn {turn_id} completed");
@@ -485,6 +491,8 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
     )
     .await?;
 
+    classify_requirements_final_response(pool, session_id, turn_id, &final_response.final_text, model, budget).await?;
+
     println!("turn {turn_id} {}", status.as_str());
     Ok(turn_id)
 }
@@ -496,6 +504,8 @@ async fn complete_direct_final_response(
     prior_history: &[db::HistoryItem],
     role_instructions: &str,
     final_response: ModelFinalTurn,
+    model: &(impl ModelClient + Sync + ?Sized),
+    budget: compaction::CompactionBudget,
 ) -> Result<()> {
     let final_model_event_id = Uuid::new_v4();
     sqlx::query(
@@ -552,6 +562,43 @@ async fn complete_direct_final_response(
         json!({"directAssistantResponse": true}),
     )
     .await?;
+    classify_requirements_final_response(pool, session_id, turn_id, &final_response.final_text, model, budget).await?;
+    Ok(())
+}
+
+async fn classify_requirements_final_response(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Uuid,
+    final_text: &str,
+    model: &(impl ModelClient + Sync + ?Sized),
+    budget: compaction::CompactionBudget,
+) -> Result<()> {
+    let session = db::session_record(pool, session_id).await?;
+    if session.session_kind == "requirementsReviewer" {
+        let _ = crate::requirements::record_reviewer_verdict(pool, session_id, turn_id, final_text).await?;
+    } else {
+        if let Some(record) = crate::requirements::record_source_final_response(pool, session_id, turn_id, final_text).await?
+            && record.outcome == crate::requirements::SourcePacketOutcome::Reviewable
+            && let Some(reviewer_session_id) = record.reviewer_session_id
+        {
+            db::append_event(pool, session_id, Some(turn_id), "requirements", Some(record.packet_id), "requirements.reviewerDispatchQueued", Some("queued"), json!({"reviewerSessionId": reviewer_session_id, "requirementSetId": record.requirement_set_id})).await?;
+            let status = crate::requirements::status(pool, session_id).await?;
+            let packet_id_text = record.packet_id.to_string();
+            let claim_packet = crate::requirements::packet_history(pool, session_id)
+                .await?
+                .into_iter()
+                .find(|packet| packet["id"].as_str() == Some(packet_id_text.as_str()))
+                .unwrap_or_else(|| json!({"id": record.packet_id}));
+            let prompt = format!(
+                "Review source Requirements claim packet for RequirementSet {set_id}.\n<source_claim_packet>{claim}</source_claim_packet>\n<requirement_progress>{progress}</requirement_progress>\nUse the canonical Requirements Review schema and return a verdict packet.",
+                set_id = record.requirement_set_id,
+                claim = claim_packet,
+                progress = serde_json::to_string(&status.progress).unwrap_or_else(|_| "[]".to_string()),
+            );
+            let _ = Box::pin(send_with_model_client(pool, reviewer_session_id, &prompt, model, budget)).await?;
+        }
+    }
     Ok(())
 }
 

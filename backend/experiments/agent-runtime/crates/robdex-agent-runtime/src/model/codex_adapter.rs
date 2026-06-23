@@ -53,6 +53,14 @@ pub struct CodexModelOptionsProvider {
     auth_path: PathBuf,
 }
 
+fn tagged_json_block(text: &str, tag: &str) -> Option<Value> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&close)? + start;
+    serde_json::from_str::<Value>(&text[start..end]).ok()
+}
+
 #[derive(Debug, Deserialize)]
 struct AuthJson {
     #[serde(rename = "OPENAI_API_KEY")]
@@ -187,7 +195,11 @@ impl CodexBackedModelClient {
             metadata: json!({"source": "runtime_tool_policy"}),
         });
         let cache_key = prompt_cache_key_for_runtime(role, &runtime_messages);
-        json!({
+        let requirements_schema = runtime_messages
+            .iter()
+            .find(|message| message.metadata.get("source").and_then(Value::as_str) == Some("requirements_output_schema"))
+            .and_then(|message| tagged_json_block(&message.text, "requirements_schema"));
+        let mut body = json!({
             "model": model,
             "input": model_input::responses_input(role, history, &runtime_messages, Some(message)),
             "tools": [tool, request_tool],
@@ -196,7 +208,12 @@ impl CodexBackedModelClient {
             "store": false,
             "stream": true,
             "prompt_cache_key": cache_key,
-        })
+        });
+        if let Some(schema) = requirements_schema {
+            body["text"] = json!({"format": {"type": "json_schema", "name": schema["name"], "schema": schema["schema"], "strict": true}});
+            body["requirements_schema_evidence"] = schema["metadata"].clone();
+        }
+        body
     }
 
     #[cfg(test)]
@@ -486,13 +503,21 @@ impl ModelClient for CodexBackedModelClient {
             "output": result_text
         }));
         let cache_key = prompt_cache_key_for_runtime(role, &runtime_messages);
-        let body = json!({
+        let requirements_schema = runtime_messages
+            .iter()
+            .find(|message| message.metadata.get("source").and_then(Value::as_str) == Some("requirements_output_schema"))
+            .and_then(|message| tagged_json_block(&message.text, "requirements_schema"));
+        let mut body = json!({
             "model": self.model,
             "input": input,
             "store": false,
             "stream": true,
             "prompt_cache_key": cache_key,
         });
+        if let Some(schema) = requirements_schema {
+            body["text"] = json!({"format": {"type": "json_schema", "name": schema["name"], "schema": schema["schema"], "strict": true}});
+            body["requirements_schema_evidence"] = schema["metadata"].clone();
+        }
         let raw_response = self.post_responses(&body).await?;
         Ok(ModelFinalTurn {
             provider: "chatgpt-codex-responses".to_string(),

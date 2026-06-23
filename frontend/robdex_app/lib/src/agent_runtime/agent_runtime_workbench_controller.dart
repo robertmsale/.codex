@@ -54,6 +54,34 @@ bindings.AgentRuntimeGuiOperation agentRuntimeWorkflowMemorySelectOperationForTe
 }
 
 @visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeSetRequirementsOperationForTest(
+  String sessionId,
+  List<bindings.AgentRuntimeRequirementInput> requirements, {
+  String title = '',
+}) {
+  return bindings.AgentRuntimeGuiOperationSetRequirements(
+    sessionId: sessionId,
+    title: title,
+    requirements: requirements,
+  );
+}
+
+@visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeClearRequirementsOperationForTest(String sessionId) {
+  return bindings.AgentRuntimeGuiOperationClearRequirements(sessionId: sessionId);
+}
+
+@visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeRequirementsStatusOperationForTest(String sessionId) {
+  return bindings.AgentRuntimeGuiOperationShowRequirementsStatus(sessionId: sessionId);
+}
+
+@visibleForTesting
+bindings.AgentRuntimeGuiOperation agentRuntimeRequirementsPacketsOperationForTest(String sessionId) {
+  return bindings.AgentRuntimeGuiOperationListRequirementsPackets(sessionId: sessionId);
+}
+
+@visibleForTesting
 bindings.AgentRuntimeGuiOperation agentRuntimeCloseSessionOperationForTest(String sessionId) {
   return bindings.AgentRuntimeGuiOperationCloseSession(sessionId: sessionId, reason: 'Closed from Agent Runtime shell');
 }
@@ -501,6 +529,14 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
 
   void compactSession(AgentRuntimeActionItem action) {
     _dispatchOperation('session-compact', bindings.AgentRuntimeGuiOperationCompactSession(sessionId: action.id, throughTurn: ''));
+  }
+
+  void grantGodMode(AgentRuntimeActionItem action) {
+    _dispatchOperation('god-mode-grant', bindings.AgentRuntimeGuiOperationGrantGodMode(sessionId: action.id, reason: 'Owner enabled break-glass shell for this session'));
+  }
+
+  void revokeGodMode(AgentRuntimeActionItem action) {
+    _dispatchOperation('god-mode-revoke', bindings.AgentRuntimeGuiOperationRevokeGodMode(sessionId: action.id, reason: 'Owner revoked break-glass shell for this session'));
   }
 
   void approveCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId, AgentRuntimeCommandRegistryDecisionDraft decision) {

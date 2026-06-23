@@ -656,6 +656,10 @@ POST /sessions/{sessionId}/send
 POST /sessions/{sessionId}/close
 POST /sessions/{sessionId}/archive
 POST /sessions/{sessionId}/fork
+GET  /sessions/{sessionId}/requirements
+POST /sessions/{sessionId}/requirements
+POST /sessions/{sessionId}/requirements/clear
+GET  /sessions/{sessionId}/requirements/packets
 GET  /approvals
 GET  /approvals/{approvalId}
 POST /approvals/{approvalId}/decide
@@ -1012,7 +1016,62 @@ robdex-agent-runtime sessions history <session-id>
 robdex-agent-runtime sessions close <session-id> --reason <text>
 robdex-agent-runtime sessions archive <session-id>
 robdex-agent-runtime sessions fork <session-id> --at-turn <completed-turn-id>
+robdex-agent-runtime requirements set-json --session <session-id> requirements.json
+robdex-agent-runtime requirements set-composed --session <session-id> --permanent project.json --include shared.yaml --task task.json
+robdex-agent-runtime requirements set-lines --session <session-id> requirements.txt
+robdex-agent-runtime requirements status <session-id>
+robdex-agent-runtime requirements packets <session-id>
+robdex-agent-runtime requirements detail <session-id>
+robdex-agent-runtime requirements clear <session-id>
 ```
+
+## Requirements Review
+
+Requirements Review is a session-scoped contract stored in PostgreSQL. A source
+session may have one active `RequirementSet`; canonical requirements, progress,
+review bindings, and claim/verdict packets are durable audit records. Source
+turn final responses are classified as requirement packets when an active set is
+enforced. A reviewable claim packet creates or reuses exactly one nested
+`requirementsReviewer` session for the source session and active set.
+
+Requirements reviewer sessions are real Agent Runtime sessions: they have role
+snapshots, turns, model events, tool calls, script runs, output artifacts,
+compaction records, and audit events. They are also marked
+`session_kind='requirementsReviewer'`, `parent_session_id=<source>`, and
+`hidden=true`. Normal session lists, project rails, recent-session surfaces, and
+ordinary session-count UX exclude these hidden reviewer sessions. Direct audit
+inspection by exact reviewer id remains available through exact session routes,
+and the selected source session exposes Requirements Review summary in its
+typed projection field and metadata. WebSocket deltas emit
+`RequirementsReviewUpdate` for selected-source changes; nested reviewer sessions
+are never inserted into normal top-level session lists by those deltas.
+
+The Workbench/Rinf boundary exposes Requirements Review through typed
+`GuiOperationRequest`/Rinf operations: set a RequirementSet, clear/deactivate
+the active set, show status, and list packet history. Dart sends those typed
+intents and renders Rust-owned status/detail state; Dart does not validate
+RequirementSets, choose reviewer sessions, route verdicts, or synthesize review
+progress.
+
+Composable Requirements are import/config artifacts. Activation merges
+project-permanent files first, explicit include files second, and the task file
+last; duplicate semantic keys are rejected before PostgreSQL persistence. After
+activation, PostgreSQL rows are the runtime source of truth.
+
+The seeded `requirements-reviewer` role is adversarial and non-implementing. Its
+default policy permits bounded inspection (`fs.read`, `workflow_memory.search`,
+and `tool.execute_code`) and explicitly denies mutation and command-registry
+administration actions such as `fs.write`, `patch.apply`,
+`command_registry.request`, `command_registry.decide`, and
+`command_registry.apply`.
+
+Model requests that can produce final assistant text receive a Requirements
+structured-output schema only when an active enforced set exists for the source
+or when the turn belongs to the nested reviewer. Schema evidence records schema
+kind, RequirementSet id, canonical requirement count, unresolved requirement
+count, and source/reviewer mode at the model boundary. Source schemas contain
+only unresolved claims; reviewer schemas carry the full canonical contract so a
+reviewer can re-fail prior passes.
 
 The `worktree_root`, `title`, and `name` fields are explicit session metadata:
 `worktree_root` records the optional owning worktree/root for audit and tooling,
@@ -1065,6 +1124,24 @@ versions at every tool boundary, merges global plus matching project commands,
 rejects ambiguous action identifier conflicts before surfacing commands, and
 builds the Starlark `cmd` surface from that live registry.
 
+God Mode is a session-scoped break-glass host shell grant. A grant is stored in
+PostgreSQL with the session id, granting actor, reason, active/revoked status,
+timestamps, optional expiry, and audit events. While a grant is active,
+`execute_code` exposes `shell(script, mode="-lc").sync()` and
+`shell(script, mode="-lc").async()`. The shell affordance is a native Starlark
+host affordance, not a command-registry entry: it does not create a command
+definition or action id, and it does not use command-registry path, argument,
+environment, mutation-class, or forbidden-argument policy. Enabled shell runs
+use `/bin/zsh` with accepted modes `-lc`, `-l`, and `-c`; explicit `-l` invokes
+zsh as a login shell with `-c` script execution instead of being collapsed into
+plain `-lc`. Shell runs default to the session execution root, run as the Agent
+Runtime service OS user, and persist audit rows,
+events, process handles, and output artifacts. Without an active grant the
+`shell(...)` function fails closed with `God Mode required: shell(...) disabled`
+and does not spawn a process. Closing or archiving a session revokes the active
+grant; async shell processes are session-owned managed processes with
+end-of-session behavior `terminate`.
+
 Model-facing native tool schemas are cache-stable. The `execute_code` and
 `request_command_registry_change` tool descriptions describe permanent behavior
 only and do not embed the live visible command list. For each model request, the
@@ -1094,14 +1171,15 @@ fail when called. Newly approved or inserted commands are visible in the
 synthetic command context and Starlark discovery output on the next model/tool
 boundary without server restart.
 
-Registry-defined command execution remains structured. There is no raw shell:
-commands run only through argv arrays, execution-root cwd enforcement, explicit
-env policy, max-runtime/output limits, binary resolution policy, and the stored
-final execution policy selected by the approver. A final policy of `allow`
-executes immediately, `deny` leaves the command visible but blocks before side
-effects, and `ownerApproval` or `orchestratorApproval` creates the matching
-approval request and paused action before side effects. Role policy does not
-override scoped command final execution policy. Each `command_runs` row records the exact `command_version_id` used
+Registry-defined command execution remains structured. Outside an active
+session-scoped God Mode grant, there is no shell escape hatch: commands run only
+through argv arrays, execution-root cwd enforcement, explicit env policy,
+max-runtime/output limits, binary resolution policy, and the stored final
+execution policy selected by the approver. A final policy of `allow` executes
+immediately, `deny` leaves the command visible but blocks before side effects,
+and `ownerApproval` or `orchestratorApproval` creates the matching approval
+request and paused action before side effects. Role policy does not override
+scoped command final execution policy. Each `command_runs` row records the exact `command_version_id` used
 so historical traces remain attributable after later registry changes.
 
 Role policy remains authority for native kernel actions such as
@@ -1306,6 +1384,7 @@ scripts/validate-mutation-actions.sh
 scripts/validate-command-registry.sh
 scripts/validate-role-admin-ux.sh
 scripts/validate-workflow-memory.sh
+scripts/validate-requirements-review.sh
 ```
 
 Server/admin deterministic validation is covered by `cargo test` from this

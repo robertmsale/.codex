@@ -224,6 +224,119 @@ CREATE INDEX IF NOT EXISTS managed_processes_session_handle_idx ON managed_proce
 CREATE INDEX IF NOT EXISTS process_output_chunks_process_idx ON process_output_chunks(process_id, chunk_index);
 ALTER TABLE managed_processes ADD COLUMN IF NOT EXISTS end_of_session_behavior TEXT NOT NULL DEFAULT 'block';
 
+CREATE TABLE IF NOT EXISTS god_mode_grants (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    granted_by TEXT NOT NULL,
+    granted_by_kind TEXT NOT NULL DEFAULT 'operator',
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    revoked_by TEXT,
+    revoked_reason TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS god_mode_grants_session_idx ON god_mode_grants(session_id, status, granted_at DESC);
+
+CREATE TABLE IF NOT EXISTS shell_runs (
+    id UUID PRIMARY KEY,
+    script_run_id UUID NOT NULL REFERENCES script_runs(id) ON DELETE CASCADE,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    tool_call_id UUID REFERENCES tool_calls(id) ON DELETE SET NULL,
+    god_mode_grant_id UUID REFERENCES god_mode_grants(id) ON DELETE SET NULL,
+    invocation_mode TEXT NOT NULL,
+    shell_path TEXT NOT NULL,
+    script_hash TEXT NOT NULL,
+    script_source TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ,
+    duration_ms BIGINT,
+    stdout_artifact_id UUID,
+    stderr_artifact_id UUID,
+    combined_artifact_id UUID,
+    process_id UUID REFERENCES managed_processes(id) ON DELETE SET NULL,
+    exit_status INTEGER,
+    failure TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS shell_runs_session_idx ON shell_runs(session_id, started_at DESC);
+
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS parent_session_id UUID REFERENCES sessions(id) ON DELETE SET NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'source';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS sessions_parent_kind_idx ON sessions(parent_session_id, session_kind, hidden);
+
+CREATE TABLE IF NOT EXISTS requirement_sets (
+    id UUID PRIMARY KEY,
+    source_session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    title TEXT,
+    canonical_set JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    enforce_on_turns BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deactivated_at TIMESTAMPTZ,
+    outcome TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS requirement_sets_source_active_idx ON requirement_sets(source_session_id, status, enforce_on_turns);
+
+CREATE TABLE IF NOT EXISTS requirement_items (
+    id UUID PRIMARY KEY,
+    requirement_set_id UUID NOT NULL REFERENCES requirement_sets(id) ON DELETE CASCADE,
+    requirement_key TEXT NOT NULL,
+    statement TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    verification_method JSONB NOT NULL DEFAULT '{}'::jsonb,
+    sort_order INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(requirement_set_id, requirement_key)
+);
+
+CREATE TABLE IF NOT EXISTS requirement_progress (
+    requirement_set_id UUID NOT NULL REFERENCES requirement_sets(id) ON DELETE CASCADE,
+    requirement_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unresolved',
+    latest_claim JSONB,
+    latest_verdict JSONB,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY(requirement_set_id, requirement_key)
+);
+
+CREATE TABLE IF NOT EXISTS requirement_review_bindings (
+    id UUID PRIMARY KEY,
+    requirement_set_id UUID NOT NULL REFERENCES requirement_sets(id) ON DELETE CASCADE,
+    source_session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    reviewer_session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    status TEXT NOT NULL,
+    latest_claim_packet_id UUID,
+    latest_verdict_packet_id UUID,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(requirement_set_id, source_session_id)
+);
+
+CREATE TABLE IF NOT EXISTS requirement_packets (
+    id UUID PRIMARY KEY,
+    requirement_set_id UUID NOT NULL REFERENCES requirement_sets(id) ON DELETE CASCADE,
+    source_session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    reviewer_session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    packet_kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    validation_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS requirement_packets_source_idx ON requirement_packets(source_session_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS execution_output_artifacts (
     id UUID PRIMARY KEY,
     session_id UUID REFERENCES sessions(id) ON DELETE CASCADE,

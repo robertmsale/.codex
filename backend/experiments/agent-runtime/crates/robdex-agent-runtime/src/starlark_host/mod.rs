@@ -130,7 +130,7 @@ pub fn register_test_terminable_process(session_id: Uuid) -> Result<(Uuid, Strin
     let process = ManagedProcess {
         id,
         handle: handle.clone(),
-        command_version_id: command_version.version_id,
+        command_version_id: Some(command_version.version_id),
         binary_name: command_version.binary_name.clone(),
         binary_path: "/bin/sleep".to_string(),
         argv: vec!["30".to_string()],
@@ -143,9 +143,15 @@ pub fn register_test_terminable_process(session_id: Uuid) -> Result<(Uuid, Strin
         started: Instant::now(),
         started_at: Utc::now(),
         status: "running".to_string(),
+        end_of_turn_behavior: command_version.end_of_turn_behavior.clone(),
         end_of_session_behavior: "terminate".to_string(),
+        max_runtime: command_version.max_runtime,
+        min_await_ms: command_version.min_await_ms,
+        max_await_ms: command_version.max_await_ms,
+        terminate_grace_ms: command_version.terminate_grace_ms,
+        output_limit: command_version.output_limit,
+        stdin_policy: command_version.stdin_policy.clone(),
         termination_reason: None,
-        command_version,
     };
     let mut manager = PROCESS_MANAGER
         .lock()
@@ -281,6 +287,7 @@ struct HostKernel {
     script_run_id: Uuid,
     root: ExecutionRoot,
     commands: std::collections::BTreeMap<String, CommandVersion>,
+    god_mode_grant_id: Option<Uuid>,
     role_snapshot: RoleSnapshot,
     memory_candidates: RefCell<Vec<RememberCandidate>>,
     output: RefCell<Vec<String>>,
@@ -291,8 +298,7 @@ struct HostKernel {
 struct ManagedProcess {
     id: Uuid,
     handle: String,
-    command_version: CommandVersion,
-    command_version_id: Uuid,
+    command_version_id: Option<Uuid>,
     binary_name: String,
     binary_path: String,
     argv: Vec<String>,
@@ -305,7 +311,14 @@ struct ManagedProcess {
     started: Instant,
     started_at: chrono::DateTime<Utc>,
     status: String,
+    end_of_turn_behavior: String,
     end_of_session_behavior: String,
+    max_runtime: Option<Duration>,
+    min_await_ms: i64,
+    max_await_ms: i64,
+    terminate_grace_ms: i64,
+    output_limit: usize,
+    stdin_policy: String,
     termination_reason: Option<String>,
 }
 
@@ -313,7 +326,7 @@ struct ManagedProcess {
 struct ManagedProcessRecord {
     id: Uuid,
     handle: String,
-    command_version_id: Uuid,
+    command_version_id: Option<Uuid>,
     binary_name: String,
     binary_path: String,
     argv: Vec<String>,
@@ -351,12 +364,32 @@ enum HostRecord {
     Policy(PolicyDecisionRecord),
     HostApi(HostApiRecord),
     Command(CommandRecord),
+    Shell(ShellRecord),
     ManagedProcess(ManagedProcessRecord),
     ProcessOutput(ProcessOutputRecord),
     ApprovalPause(ApprovalPauseRecord),
     FileMutation(FileMutationRecord),
     PatchRun(PatchRunRecord),
     WorkflowMemory(WorkflowMemoryRecord),
+}
+
+#[derive(Debug)]
+struct ShellRecord {
+    id: Uuid,
+    god_mode_grant_id: Option<Uuid>,
+    invocation_mode: String,
+    shell_path: String,
+    script: String,
+    cwd: String,
+    status: String,
+    stdout_artifact_id: Option<Uuid>,
+    stderr_artifact_id: Option<Uuid>,
+    combined_artifact_id: Option<Uuid>,
+    process_id: Option<Uuid>,
+    exit_status: Option<i32>,
+    failure: Option<String>,
+    duration_ms: i64,
+    metadata: JsonValue,
 }
 
 #[derive(Debug)]
@@ -470,6 +503,7 @@ pub async fn execute_code(
 
     let project_key = crate::db::session_project_key(pool, session_id).await?;
     let live_commands = command_registry::live_visible_commands(pool, role_snapshot, project_key.as_deref()).await?;
+    let god_mode_grant_id = crate::god_mode::active_grant(pool, session_id).await?.map(|grant| grant.id);
     let mut process_handles = crate::db::session_process_handles(pool, session_id).await?;
     process_handles.extend(active_process_handles(session_id));
     process_handles.sort();
@@ -481,6 +515,7 @@ pub async fn execute_code(
         source,
         root.clone(),
         role_snapshot.clone(),
+        god_mode_grant_id,
         live_commands,
         process_handles,
     );
@@ -654,6 +689,7 @@ fn evaluate_starlark(
     source: &str,
     root: ExecutionRoot,
     role_snapshot: RoleSnapshot,
+    god_mode_grant_id: Option<Uuid>,
     live_commands: Vec<CommandVersion>,
     process_handles: Vec<String>,
 ) -> EvalResult {
@@ -669,13 +705,23 @@ fn evaluate_starlark(
         }
     };
     let source = command_registry::normalize_describe_affordances(source, &live_commands);
-    let script = format!("{prelude}\n{source}");
+    let shell_prelude = r#"
+def __shell_start(script, mode="-lc", cwd="."):
+    handle = __shell.start(script, mode, cwd)
+    proc[handle] = __proc_obj(handle)
+    return handle
+def shell(script, mode="-lc", cwd="."):
+    return struct(**{"sync": lambda: __shell.sync(script, mode, cwd), "async": lambda: __shell_start(script, mode, cwd), "async_": lambda: __shell_start(script, mode, cwd)})
+"#;
+    let source = source.replace(".async()", ".async_()");
+    let script = format!("{prelude}\n{shell_prelude}\n{source}");
     let kernel = HostKernel {
         pool,
         session_id,
         script_run_id,
         root,
         commands: live_commands.into_iter().map(|command| (command.action_id.clone(), command)).collect(),
+        god_mode_grant_id,
         role_snapshot,
         memory_candidates: RefCell::new(Vec::new()),
         output: RefCell::new(Vec::new()),
@@ -710,10 +756,32 @@ fn add_host_builtins(builder: &mut GlobalsBuilder) {
     builder.namespace("patch", patch_builtins);
     builder.namespace_no_docs("__cmd", cmd_dynamic_builtins);
     builder.namespace_no_docs("__proc", proc_dynamic_builtins);
+    builder.namespace_no_docs("__shell", shell_dynamic_builtins);
     builder.namespace("workflow_memory", workflow_memory_builtins);
     builder.namespace("outputs", output_artifact_builtins);
     struct_builtins(builder);
     output_builtins(builder);
+}
+
+#[starlark_module]
+fn shell_dynamic_builtins(builder: &mut GlobalsBuilder) {
+    fn sync<'v>(
+        script: &'v str,
+        #[starlark(default = "-lc")] mode: &'v str,
+        #[starlark(default = ".")] cwd: &'v str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<String> {
+        host_kernel(eval).run_shell_sync(script, mode, cwd)
+    }
+
+    fn start<'v>(
+        script: &'v str,
+        #[starlark(default = "-lc")] mode: &'v str,
+        #[starlark(default = ".")] cwd: &'v str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<String> {
+        host_kernel(eval).start_shell_async(script, mode, cwd)
+    }
 }
 
 fn active_process_handles(session_id: Uuid) -> Vec<String> {
@@ -728,6 +796,25 @@ fn active_process_handles(session_id: Uuid) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn spawn_reader(stream: Option<impl Read + Send + 'static>, target: Arc<Mutex<String>>) {
+    if let Some(mut stream) = stream {
+        thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Ok(mut buffer) = target.lock() {
+                            buffer.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+}
+
 pub async fn terminate_managed_process(pool: &PgPool, session_id: Uuid, handle: &str) -> Result<JsonValue> {
     let record = {
         let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
@@ -736,7 +823,7 @@ pub async fn terminate_managed_process(pool: &PgPool, session_id: Uuid, handle: 
             .and_then(|processes| processes.get_mut(handle))
             .ok_or_else(|| anyhow::anyhow!("session process is not attached to this runtime: {handle}"))?;
         proc.terminate("terminated", true)?;
-        proc.snapshot_record("process.terminated", json!({"handle": handle, "terminateGraceMs": proc.command_version.terminate_grace_ms}))
+        proc.snapshot_record("process.terminated", json!({"handle": handle, "terminateGraceMs": proc.terminate_grace_ms}))
     };
     persist_managed_process_control_record(pool, session_id, record).await?;
     Ok(json!({"handle": handle, "status": "terminated"}))
@@ -749,7 +836,7 @@ pub async fn input_managed_process(pool: &PgPool, session_id: Uuid, handle: &str
             .get_mut(&session_id)
             .and_then(|processes| processes.get_mut(handle))
             .ok_or_else(|| anyhow::anyhow!("session process is not attached to this runtime: {handle}"))?;
-        if proc.command_version.stdin_policy != "allow" {
+        if proc.stdin_policy != "allow" {
             bail!("process input is not allowed for this handle");
         }
         if let Some(stdin) = proc.child.stdin.as_mut() {
@@ -799,7 +886,7 @@ fn spawn_max_runtime_supervisor(
     turn_id: Option<Uuid>,
     process_id: Uuid,
     handle: String,
-    command_version_id: Uuid,
+    command_version_id: Option<Uuid>,
     max_runtime_ms: i64,
 ) {
     tokio::spawn(async move {
@@ -1188,6 +1275,198 @@ impl HostKernel {
         Ok(output)
     }
 
+    fn require_shell_grant(&self) -> anyhow::Result<Uuid> {
+        let grant_id = self.god_mode_grant_id.ok_or_else(|| anyhow::anyhow!("God Mode required: shell(...) disabled"))?;
+        #[cfg(test)]
+        if grant_id == Uuid::nil() {
+            return Ok(grant_id);
+        }
+        let grant = block_on_host_future(crate::god_mode::require_active_grant(&self.pool, self.session_id))?;
+        if grant.id != grant_id {
+            bail!("God Mode required: shell(...) disabled");
+        }
+        Ok(grant_id)
+    }
+
+    fn shell_argv(mode: &str, script: &str) -> anyhow::Result<Vec<String>> {
+        match mode {
+            "-lc" => Ok(vec!["-lc".to_string(), script.to_string()]),
+            "-c" => Ok(vec!["-c".to_string(), script.to_string()]),
+            "-l" => Ok(vec!["-l".to_string(), "-c".to_string(), script.to_string()]),
+            other => bail!("invalid shell mode: {other}; expected -lc, -l, or -c"),
+        }
+    }
+
+    fn run_shell_sync(&self, script: &str, mode: &str, cwd: &str) -> anyhow::Result<String> {
+        if self.god_mode_grant_id.is_none() {
+            self.records.borrow_mut().push(HostRecord::Shell(ShellRecord {
+                id: Uuid::new_v4(),
+                god_mode_grant_id: None,
+                invocation_mode: mode.to_string(),
+                shell_path: "/bin/zsh".to_string(),
+                script: script.to_string(),
+                cwd: cwd.to_string(),
+                status: "rejected".to_string(),
+                stdout_artifact_id: None,
+                stderr_artifact_id: None,
+                combined_artifact_id: None,
+                process_id: None,
+                exit_status: None,
+                failure: Some("God Mode required: shell(...) disabled".to_string()),
+                duration_ms: 0,
+                metadata: json!({"reason": "godModeRequired"}),
+            }));
+            bail!("God Mode required: shell(...) disabled");
+        }
+        let grant_id = self.require_shell_grant()?;
+        let argv = Self::shell_argv(mode, script)?;
+        let resolved_cwd = self.root.resolve_cwd(if cwd.trim().is_empty() { "." } else { cwd })?;
+        let started = Instant::now();
+        let shell_path = "/bin/zsh";
+        let output = Command::new(shell_path)
+            .args(&argv)
+            .current_dir(&resolved_cwd)
+            .output()
+            .with_context(|| "failed to run God Mode shell through /bin/zsh")?;
+        let duration_ms = started.elapsed().as_millis() as i64;
+        let full_stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let full_stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let combined = if full_stderr.is_empty() { full_stdout.clone() } else { format!("{}{}", full_stdout, full_stderr) };
+        let (visible, visible_truncated) = truncate_text(&combined, OUTPUT_LIMIT_BYTES);
+        let status = if output.status.success() { "completed" } else { "failed" }.to_string();
+        self.records.borrow_mut().push(HostRecord::Shell(ShellRecord {
+            id: Uuid::new_v4(),
+            god_mode_grant_id: Some(grant_id),
+            invocation_mode: mode.to_string(),
+            shell_path: shell_path.to_string(),
+            script: script.to_string(),
+            cwd: resolved_cwd.display().to_string(),
+            status: status.clone(),
+            stdout_artifact_id: None,
+            stderr_artifact_id: None,
+            combined_artifact_id: None,
+            process_id: None,
+            exit_status: output.status.code(),
+            failure: if output.status.success() { None } else { Some(format!("zsh exited with status {:?}", output.status.code())) },
+            duration_ms,
+            metadata: json!({"argv": argv, "stdout": full_stdout, "stderr": full_stderr, "visibleTruncated": visible_truncated}),
+        }));
+        self.records.borrow_mut().push(HostRecord::HostApi(HostApiRecord {
+            id: Uuid::new_v4(),
+            action: "shell.sync".to_string(),
+            status: status.clone(),
+            input: json!({"mode": mode, "cwd": resolved_cwd, "scriptHash": format!("{:x}", Sha256::digest(script.as_bytes())), "godModeGrantId": grant_id}),
+            output: json!({"stdoutBytes": full_stdout.len(), "stderrBytes": full_stderr.len()}),
+            duration_ms,
+            truncation: json!({"visibleTruncated": visible_truncated, "limitBytes": OUTPUT_LIMIT_BYTES}),
+        }));
+        self.output.borrow_mut().push(visible.clone());
+        if !output.status.success() {
+            bail!("shell(...).sync() failed: {visible}");
+        }
+        Ok(visible)
+    }
+
+    fn start_shell_async(&self, script: &str, mode: &str, cwd: &str) -> anyhow::Result<String> {
+        if self.god_mode_grant_id.is_none() {
+            self.records.borrow_mut().push(HostRecord::Shell(ShellRecord {
+                id: Uuid::new_v4(),
+                god_mode_grant_id: None,
+                invocation_mode: mode.to_string(),
+                shell_path: "/bin/zsh".to_string(),
+                script: script.to_string(),
+                cwd: cwd.to_string(),
+                status: "rejected".to_string(),
+                stdout_artifact_id: None,
+                stderr_artifact_id: None,
+                combined_artifact_id: None,
+                process_id: None,
+                exit_status: None,
+                failure: Some("God Mode required: shell(...) disabled".to_string()),
+                duration_ms: 0,
+                metadata: json!({"reason": "godModeRequired"}),
+            }));
+            bail!("God Mode required: shell(...) disabled");
+        }
+        let grant_id = self.require_shell_grant()?;
+        let argv = Self::shell_argv(mode, script)?;
+        let resolved_cwd = self.root.resolve_cwd(if cwd.trim().is_empty() { "." } else { cwd })?;
+        let handle = format!("shell_{}", Uuid::new_v4().simple());
+        let shell_path = "/bin/zsh";
+        let mut command = Command::new(shell_path);
+        command.args(&argv).current_dir(&resolved_cwd).stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::piped());
+        command.process_group(0);
+        let mut child = command.spawn().with_context(|| "failed to start God Mode shell through /bin/zsh")?;
+        let child_pid = child.id();
+        let stdout_buf = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = Arc::new(Mutex::new(String::new()));
+        spawn_reader(child.stdout.take(), Arc::clone(&stdout_buf));
+        spawn_reader(child.stderr.take(), Arc::clone(&stderr_buf));
+        let process_id = Uuid::new_v4();
+        self.records.borrow_mut().push(HostRecord::ManagedProcess(ManagedProcessRecord {
+            id: process_id,
+            handle: handle.clone(),
+            command_version_id: None,
+            binary_name: "zsh".to_string(),
+            binary_path: shell_path.to_string(),
+            argv: argv.clone(),
+            cwd: resolved_cwd.display().to_string(),
+            os_pid: Some(child_pid as i64),
+            os_pgid: Some(child_pid as i64),
+            status: "running".to_string(),
+            end_of_turn_behavior: "continue".to_string(),
+            end_of_session_behavior: "terminate".to_string(),
+            max_runtime_ms: None,
+            termination_reason: None,
+            event: "shell.started".to_string(),
+            payload: json!({"handle": handle, "godModeGrantId": grant_id, "mode": mode, "scriptHash": format!("{:x}", Sha256::digest(script.as_bytes()))}),
+        }));
+        self.records.borrow_mut().push(HostRecord::Shell(ShellRecord {
+            id: Uuid::new_v4(),
+            god_mode_grant_id: Some(grant_id),
+            invocation_mode: mode.to_string(),
+            shell_path: shell_path.to_string(),
+            script: script.to_string(),
+            cwd: resolved_cwd.display().to_string(),
+            status: "running".to_string(),
+            stdout_artifact_id: None,
+            stderr_artifact_id: None,
+            combined_artifact_id: None,
+            process_id: Some(process_id),
+            exit_status: None,
+            failure: None,
+            duration_ms: 0,
+            metadata: json!({"argv": argv, "handle": handle}),
+        }));
+        PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?.entry(self.session_id).or_default().insert(handle.clone(), ManagedProcess {
+            id: process_id,
+            handle: handle.clone(),
+            command_version_id: None,
+            binary_name: "zsh".to_string(),
+            binary_path: shell_path.to_string(),
+            argv,
+            cwd: resolved_cwd.display().to_string(),
+            child,
+            stdout: stdout_buf,
+            stderr: stderr_buf,
+            stdout_flush_cursor: 0,
+            stderr_flush_cursor: 0,
+            started: Instant::now(),
+            started_at: Utc::now(),
+            status: "running".to_string(),
+            end_of_turn_behavior: "continue".to_string(),
+            end_of_session_behavior: "terminate".to_string(),
+            max_runtime: None,
+            min_await_ms: 0,
+            max_await_ms: 600_000,
+            terminate_grace_ms: 1_000,
+            output_limit: OUTPUT_LIMIT_BYTES,
+            stdin_policy: "allow".to_string(),
+            termination_reason: None,
+        });
+        Ok(handle)
+    }
+
     fn run_registry_command(&self, action: &str, args: Vec<String>, cwd: &str) -> anyhow::Result<String> {
         let command_version = self
             .commands
@@ -1255,7 +1534,7 @@ impl HostKernel {
         self.records.borrow_mut().push(HostRecord::ManagedProcess(ManagedProcessRecord {
             id: process_id,
             handle: handle.clone(),
-            command_version_id: command_version.version_id,
+            command_version_id: Some(command_version.version_id),
             binary_name: command_version.binary_name.clone(),
             binary_path: binary_path.display().to_string(),
             argv: argv.clone(),
@@ -1278,8 +1557,7 @@ impl HostKernel {
             .insert(handle.clone(), ManagedProcess {
             id: process_id,
             handle: handle.clone(),
-            command_version: command_version.clone(),
-            command_version_id: command_version.version_id,
+            command_version_id: Some(command_version.version_id),
             binary_name: command_version.binary_name.clone(),
             binary_path: binary_path.display().to_string(),
             argv,
@@ -1292,7 +1570,14 @@ impl HostKernel {
             started: Instant::now(),
             started_at,
             status: "running".to_string(),
+            end_of_turn_behavior: command_version.end_of_turn_behavior.clone(),
             end_of_session_behavior: end_of_session_behavior(&command_version),
+            max_runtime: command_version.max_runtime,
+            min_await_ms: command_version.min_await_ms,
+            max_await_ms: command_version.max_await_ms,
+            terminate_grace_ms: command_version.terminate_grace_ms,
+            output_limit: command_version.output_limit,
+            stdin_policy: command_version.stdin_policy.clone(),
             termination_reason: None,
         });
         Ok(handle)
@@ -1314,8 +1599,8 @@ impl HostKernel {
         let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
         let proc = manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)).ok_or_else(|| anyhow::anyhow!("session-only process no longer attached to this runtime session: {handle}"))?;
         let requested_ms = (mins.max(0) as u64).saturating_mul(60_000);
-        let min_ms = proc.command_version.min_await_ms.max(0) as u64;
-        let max_ms = proc.command_version.max_await_ms.max(0) as u64;
+        let min_ms = proc.min_await_ms.max(0) as u64;
+        let max_ms = proc.max_await_ms.max(0) as u64;
         let wait_ms = requested_ms.max(min_ms);
         if max_ms > 0 && wait_ms > max_ms {
             bail!("await_for exceeds maxAwaitMs: requested {wait_ms}ms, max {max_ms}ms");
@@ -1365,14 +1650,14 @@ impl HostKernel {
         let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
         let proc = manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)).ok_or_else(|| anyhow::anyhow!("session-only process no longer attached to this runtime session: {handle}"))?;
         proc.terminate("terminated", true)?;
-        self.records.borrow_mut().push(HostRecord::ManagedProcess(proc.snapshot_record("process.terminated", json!({"handle": handle, "terminateGraceMs": proc.command_version.terminate_grace_ms}))));
+        self.records.borrow_mut().push(HostRecord::ManagedProcess(proc.snapshot_record("process.terminated", json!({"handle": handle, "terminateGraceMs": proc.terminate_grace_ms}))));
         Ok("terminated".to_string())
     }
 
     fn proc_input(&self, handle: &str, text: &str) -> anyhow::Result<String> {
         let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
         let proc = manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)).ok_or_else(|| anyhow::anyhow!("session-only process no longer attached to this runtime session: {handle}"))?;
-        if proc.command_version.stdin_policy != "allow" {
+        if proc.stdin_policy != "allow" {
             bail!("stdinPolicy forbids input for process handle: {handle}");
         }
         if let Some(stdin) = proc.child.stdin.as_mut() {
@@ -1687,7 +1972,7 @@ impl HostKernel {
         };
         let mut remove_handles = Vec::new();
         for (handle, process) in processes.iter_mut() {
-            if process.status == "running" && process.command_version.end_of_turn_behavior == "terminate" {
+            if process.status == "running" && process.end_of_turn_behavior == "terminate" {
                 let _ = process.terminate("endOfTurnCleanup", true);
                 self.records.borrow_mut().push(HostRecord::ManagedProcess(process.snapshot_record("process.endOfTurnCleanup", json!({"handle": process.handle}))));
                 remove_handles.push(handle.clone());
@@ -1710,7 +1995,7 @@ impl ManagedProcess {
         }
         match self.child.try_wait()? {
             Some(status) => {
-                if self.command_version.max_runtime.is_some_and(|max| self.started.elapsed() >= max) && !status.success() {
+                if self.max_runtime.is_some_and(|max| self.started.elapsed() >= max) && !status.success() {
                     self.status = "maxRuntimeExceeded".to_string();
                     self.termination_reason = Some("maxRuntimeExceeded".to_string());
                 } else {
@@ -1725,7 +2010,7 @@ impl ManagedProcess {
 
     fn enforce_max_runtime(&mut self) -> anyhow::Result<()> {
         if self.status == "running" {
-            if let Some(max_runtime) = self.command_version.max_runtime {
+            if let Some(max_runtime) = self.max_runtime {
                 if self.started.elapsed() >= max_runtime {
                     self.terminate("maxRuntimeExceeded", false)?;
                 }
@@ -1739,7 +2024,7 @@ impl ManagedProcess {
             return Ok(());
         }
         if graceful {
-            terminate_process_group(self.child.id(), self.command_version.terminate_grace_ms);
+            terminate_process_group(self.child.id(), self.terminate_grace_ms);
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -1759,7 +2044,7 @@ impl ManagedProcess {
         }
         let new = text.get(self.stdout_flush_cursor..).unwrap_or("").to_string();
         self.stdout_flush_cursor = text.len();
-        let truncated = new.len() > self.command_version.output_limit;
+        let truncated = new.len() > self.output_limit;
         (new, truncated)
     }
 
@@ -1774,7 +2059,7 @@ impl ManagedProcess {
         }
         let new = text.get(self.stderr_flush_cursor..).unwrap_or("").to_string();
         self.stderr_flush_cursor = text.len();
-        let truncated = new.len() > self.command_version.output_limit;
+        let truncated = new.len() > self.output_limit;
         (new, truncated)
     }
 
@@ -1790,9 +2075,9 @@ impl ManagedProcess {
             os_pid: Some(self.child.id() as i64),
             os_pgid: Some(self.child.id() as i64),
             status: self.status.clone(),
-            end_of_turn_behavior: self.command_version.end_of_turn_behavior.clone(),
+            end_of_turn_behavior: self.end_of_turn_behavior.clone(),
             end_of_session_behavior: self.end_of_session_behavior.clone(),
-            max_runtime_ms: self.command_version.max_runtime.map(|d| d.as_millis() as i64),
+            max_runtime_ms: self.max_runtime.map(|d| d.as_millis() as i64),
             termination_reason: self.termination_reason.clone(),
             event: event.to_string(),
             payload: json!({"startedAt": self.started_at, "details": payload}),
@@ -2164,8 +2449,7 @@ async fn execute_resumed_async_command_with_version(
         .insert(handle.clone(), ManagedProcess {
             id: process_id,
             handle: handle.clone(),
-            command_version: command_version.clone(),
-            command_version_id: command_version.version_id,
+            command_version_id: Some(command_version.version_id),
             binary_name: command_version.binary_name.clone(),
             binary_path: binary_path.display().to_string(),
             argv: argv.clone(),
@@ -2178,7 +2462,14 @@ async fn execute_resumed_async_command_with_version(
             started: Instant::now(),
             started_at: Utc::now(),
             status: "running".to_string(),
+            end_of_turn_behavior: command_version.end_of_turn_behavior.clone(),
             end_of_session_behavior: end_of_session_behavior(&command_version),
+            max_runtime: command_version.max_runtime,
+            min_await_ms: command_version.min_await_ms,
+            max_await_ms: command_version.max_await_ms,
+            terminate_grace_ms: command_version.terminate_grace_ms,
+            output_limit: command_version.output_limit,
+            stdin_policy: command_version.stdin_policy.clone(),
             termination_reason: None,
         });
     sqlx::query(
@@ -2212,7 +2503,7 @@ async fn execute_resumed_async_command_with_version(
             turn_id,
             process_id,
             handle.clone(),
-            command_version.version_id,
+            Some(command_version.version_id),
             max_runtime_ms,
         );
     }
@@ -2614,6 +2905,121 @@ async fn persist_record(
             )
             .await?;
         }
+        HostRecord::Shell(shell) => {
+            let full_stdout = shell.metadata.get("stdout").and_then(JsonValue::as_str).unwrap_or("").to_string();
+            let full_stderr = shell.metadata.get("stderr").and_then(JsonValue::as_str).unwrap_or("").to_string();
+            let combined = if full_stderr.is_empty() { full_stdout.clone() } else { format!("{}{}", full_stdout, full_stderr) };
+            let mut stdout_artifact_id = shell.stdout_artifact_id;
+            let mut stderr_artifact_id = shell.stderr_artifact_id;
+            let mut combined_artifact_id = shell.combined_artifact_id;
+            let artifacts = if shell.status == "running" {
+                json!({})
+            } else {
+                let stdout_id = stdout_artifact_id.unwrap_or_else(Uuid::new_v4);
+                let stderr_id = stderr_artifact_id.unwrap_or_else(Uuid::new_v4);
+                let combined_id = combined_artifact_id.unwrap_or_else(Uuid::new_v4);
+                stdout_artifact_id = Some(stdout_id);
+                stderr_artifact_id = Some(stderr_id);
+                combined_artifact_id = Some(combined_id);
+                let stdout_artifact = output_artifacts::store(pool, NewOutputArtifact {
+                    id: stdout_id,
+                    session_id,
+                    turn_id: Some(turn_id),
+                    tool_call_id: Some(tool_call_id),
+                    script_run_id: Some(script_run_id),
+                    command_run_id: None,
+                    process_id: shell.process_id,
+                    source_type: "shell_run",
+                    stream: "stdout",
+                    content: &full_stdout,
+                    metadata: json!({"godModeGrantId": shell.god_mode_grant_id, "mode": shell.invocation_mode}),
+                }).await?;
+                let stderr_artifact = output_artifacts::store(pool, NewOutputArtifact {
+                    id: stderr_id,
+                    session_id,
+                    turn_id: Some(turn_id),
+                    tool_call_id: Some(tool_call_id),
+                    script_run_id: Some(script_run_id),
+                    command_run_id: None,
+                    process_id: shell.process_id,
+                    source_type: "shell_run",
+                    stream: "stderr",
+                    content: &full_stderr,
+                    metadata: json!({"godModeGrantId": shell.god_mode_grant_id, "mode": shell.invocation_mode}),
+                }).await?;
+                let combined_artifact = output_artifacts::store(pool, NewOutputArtifact {
+                    id: combined_id,
+                    session_id,
+                    turn_id: Some(turn_id),
+                    tool_call_id: Some(tool_call_id),
+                    script_run_id: Some(script_run_id),
+                    command_run_id: None,
+                    process_id: shell.process_id,
+                    source_type: "shell_run",
+                    stream: "combined",
+                    content: &combined,
+                    metadata: json!({"godModeGrantId": shell.god_mode_grant_id, "mode": shell.invocation_mode}),
+                }).await?;
+                json!({"stdout": stdout_artifact, "stderr": stderr_artifact, "combined": combined_artifact})
+            };
+            sqlx::query(
+                r#"
+                INSERT INTO shell_runs (
+                    id, script_run_id, session_id, turn_id, tool_call_id, god_mode_grant_id,
+                    invocation_mode, shell_path, script_hash, script_source, cwd, status,
+                    completed_at, duration_ms, stdout_artifact_id, stderr_artifact_id, combined_artifact_id,
+                    process_id, exit_status, failure, metadata
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    CASE WHEN $12 = 'running' THEN NULL ELSE now() END, $13, $14, $15, $16, $17, $18, $19, $20)
+                "#,
+            )
+            .bind(shell.id)
+            .bind(script_run_id)
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(tool_call_id)
+            .bind(shell.god_mode_grant_id)
+            .bind(&shell.invocation_mode)
+            .bind(&shell.shell_path)
+            .bind(format!("{:x}", Sha256::digest(shell.script.as_bytes())))
+            .bind(&shell.script)
+            .bind(&shell.cwd)
+            .bind(&shell.status)
+            .bind(shell.duration_ms)
+            .bind(stdout_artifact_id)
+            .bind(stderr_artifact_id)
+            .bind(combined_artifact_id)
+            .bind(shell.process_id)
+            .bind(shell.exit_status)
+            .bind(&shell.failure)
+            .bind(&shell.metadata)
+            .execute(pool)
+            .await?;
+            db::append_event(
+                pool,
+                session_id,
+                Some(turn_id),
+                "shell",
+                Some(shell.id),
+                if shell.status == "running" { "shell.started" } else { "shell.completed" },
+                Some(&shell.status),
+                json!({
+                    "godModeGrantId": shell.god_mode_grant_id,
+                    "mode": shell.invocation_mode,
+                    "shellPath": shell.shell_path,
+                    "cwd": shell.cwd,
+                    "status": shell.status,
+                    "scriptHash": format!("{:x}", Sha256::digest(shell.script.as_bytes())),
+                    "processId": shell.process_id,
+                    "exitStatus": shell.exit_status,
+                    "failure": shell.failure,
+                    "durationMs": shell.duration_ms,
+                    "artifacts": artifacts,
+                }),
+            )
+            .await?;
+        }
         HostRecord::ManagedProcess(process) => {
             sqlx::query(
                 r#"
@@ -2987,7 +3393,7 @@ mod tests {
     };
     use chrono::Utc;
     use serde_json::json;
-    use sqlx::postgres::PgPoolOptions;
+    use sqlx::{postgres::PgPoolOptions, Row};
     use std::collections::BTreeMap;
 
     fn test_pool() -> PgPool {
@@ -3067,6 +3473,7 @@ mod tests {
             "output(cmd.describe())\noutput(cmd[\"echo_tool\"].describe())\noutput(cmd[\"echo_tool\"].run.describe())",
             root,
             test_role(),
+            None,
             vec![cmd],
             vec![],
         );
@@ -3089,6 +3496,7 @@ mod tests {
             source,
             root.clone(),
             test_role(),
+            None,
             vec![],
             vec![],
         );
@@ -3101,6 +3509,7 @@ mod tests {
             source,
             root,
             test_role(),
+            None,
             vec![cmd],
             vec![],
         );
@@ -3114,18 +3523,18 @@ mod tests {
         let other_session = Uuid::new_v4();
         let root = ExecutionRoot::new(".").unwrap();
         let cmd = test_command("yes", &["/usr/bin/yes"], "cmd.yes.run", "yes", "forbid", "continue", Some(Duration::from_millis(500)));
-        let first = evaluate_starlark(test_pool(), session, Uuid::new_v4(), "h = cmd[\"yes\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), vec![cmd.clone()], vec![]);
+        let first = evaluate_starlark(test_pool(), session, Uuid::new_v4(), "h = cmd[\"yes\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), None, vec![cmd.clone()], vec![]);
         assert!(first.error.is_none(), "{:?}", first.error);
         let handle = first.output.trim().trim_matches('"').to_string();
         assert!(handle.starts_with("proc_"));
         assert!(first.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.continued")));
 
-        let second = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("proc[{handle:?}].await_for(mins=0); out = proc[{handle:?}].flush_buffer(); proc[{handle:?}].terminate(); output(out)"), root.clone(), test_role(), vec![cmd.clone()], vec![handle.clone()]);
+        let second = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("proc[{handle:?}].await_for(mins=0); out = proc[{handle:?}].flush_buffer(); proc[{handle:?}].terminate(); output(out)"), root.clone(), test_role(), None, vec![cmd.clone()], vec![handle.clone()]);
         assert!(second.error.is_none(), "{:?}", second.error);
         assert!(second.output.contains('y'));
         assert!(second.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.terminated")));
 
-        let isolated = evaluate_starlark(test_pool(), other_session, Uuid::new_v4(), &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle]);
+        let isolated = evaluate_starlark(test_pool(), other_session, Uuid::new_v4(), &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), None, vec![cmd], vec![handle]);
         assert!(isolated.error.unwrap_or_default().contains("session-only process no longer attached"));
     }
 
@@ -3143,7 +3552,7 @@ first = proc[h].flush_buffer()
 second = proc[h].flush_buffer()
 output(first + "|second=" + second)
 "#;
-        let result = evaluate_starlark(test_pool(), session, Uuid::new_v4(), script, root, test_role(), vec![cmd], vec![]);
+        let result = evaluate_starlark(test_pool(), session, Uuid::new_v4(), script, root, test_role(), None, vec![cmd], vec![]);
         assert!(result.error.is_none(), "{:?}", result.error);
         assert!(result.output.contains("hello-process"));
         assert!(result.output.contains("|second="));
@@ -3161,17 +3570,209 @@ output(first + "|second=" + second)
         let session = Uuid::new_v4();
         let root = ExecutionRoot::new(".").unwrap();
         let cmd = test_command("yes", &["/usr/bin/yes"], "cmd.yes.max.run", "yes_max", "forbid", "continue", Some(Duration::from_millis(100)));
-        let first = evaluate_starlark(test_pool(), session, Uuid::new_v4(), "h = cmd[\"yes_max\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), vec![cmd.clone()], vec![]);
+        let first = evaluate_starlark(test_pool(), session, Uuid::new_v4(), "h = cmd[\"yes_max\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), None, vec![cmd.clone()], vec![]);
         assert!(first.error.is_none(), "{:?}", first.error);
         let handle = first.output.trim().trim_matches('"').to_string();
         thread::sleep(Duration::from_millis(250));
-        let second = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("running = proc[{handle:?}].is_running(); output(str(running))"), root.clone(), test_role(), vec![cmd.clone()], vec![handle.clone()]);
+        let second = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("running = proc[{handle:?}].is_running(); output(str(running))"), root.clone(), test_role(), None, vec![cmd.clone()], vec![handle.clone()]);
         assert!(second.error.is_none(), "{:?}", second.error);
         assert!(second.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.status == "maxRuntimeExceeded" || process.event == "process.continued")));
 
         PROCESS_MANAGER.lock().unwrap().remove(&session);
-        let detached = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), vec![cmd], vec![handle]);
+        let detached = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), None, vec![cmd], vec![handle]);
         assert!(detached.error.unwrap_or_default().contains("session-only process no longer attached"));
+    }
+
+    #[tokio::test]
+    async fn shell_is_present_but_disabled_without_god_mode_grant() {
+        let result = evaluate_starlark(
+            test_pool(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            r#"shell("echo should-not-run").sync()"#,
+            ExecutionRoot::new(".").unwrap(),
+            test_role(),
+            None,
+            vec![],
+            vec![],
+        );
+        let error = result.error.unwrap_or_default();
+        assert!(error.contains("God Mode required: shell(...) disabled"), "{error}");
+        assert!(!result.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(_))));
+        assert!(result.records.iter().any(|record| matches!(record, HostRecord::Shell(shell) if shell.status == "rejected")));
+        let async_result = evaluate_starlark(
+            test_pool(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            r#"shell("echo should-not-run").async()"#,
+            ExecutionRoot::new(".").unwrap(),
+            test_role(),
+            None,
+            vec![],
+            vec![],
+        );
+        assert!(async_result.error.unwrap_or_default().contains("God Mode required: shell(...) disabled"));
+    }
+
+    #[tokio::test]
+    async fn registry_command_output_survives_before_disabled_shell_failure() {
+        let cmd = test_command("echo", &["/bin/echo"], "cmd.echo.integration", "echo_tool", "forbid", "terminate", None);
+        let result = evaluate_starlark(
+            test_pool(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            r#"output(cmd["echo_tool"].run(args=["registry-ok"], cwd=".").sync())
+shell("echo should-not-run").sync()
+output("unreachable")"#,
+            ExecutionRoot::new(".").unwrap(),
+            test_role(),
+            None,
+            vec![cmd],
+            vec![],
+        );
+        assert!(result.output.contains("registry-ok"), "registry output was not preserved: {}", result.output);
+        let error = result.error.unwrap_or_default();
+        assert!(error.contains("God Mode required: shell(...) disabled"), "{error}");
+        assert!(result.records.iter().any(|record| matches!(record, HostRecord::Command(command) if command.stdout.contains("registry-ok"))));
+        assert!(result.records.iter().any(|record| matches!(record, HostRecord::Shell(shell) if shell.status == "rejected")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn god_mode_shell_sync_modes_and_async_handle_are_available_with_grant() {
+        let session = Uuid::new_v4();
+        let root = ExecutionRoot::new(".").unwrap();
+        let sync_result = evaluate_starlark(
+            test_pool(),
+            session,
+            Uuid::new_v4(),
+            r#"output(shell("printf sync-ok", mode="-lc").sync())
+output(shell("printf c-ok", mode="-c").sync())
+output(shell("printf login-ok", mode="-l").sync())"#,
+            root.clone(),
+            test_role(),
+            Some(Uuid::nil()),
+            vec![],
+            vec![],
+        );
+        assert!(sync_result.error.is_none(), "{:?}", sync_result.error);
+        assert!(sync_result.output.contains("sync-ok"));
+        assert!(sync_result.output.contains("c-ok"));
+        assert!(sync_result.output.contains("login-ok"));
+        assert!(sync_result.records.iter().filter(|record| matches!(record, HostRecord::Shell(shell) if shell.status == "completed")).count() >= 3);
+        assert!(sync_result.records.iter().any(|record| matches!(record, HostRecord::Shell(shell) if shell.invocation_mode == "-l" && shell.metadata["argv"].as_array().is_some_and(|argv| argv.iter().any(|value| value == "-l")))));
+        let invalid = evaluate_starlark(
+            test_pool(),
+            session,
+            Uuid::new_v4(),
+            r#"shell("printf bad", mode="-x").sync()"#,
+            root.clone(),
+            test_role(),
+            Some(Uuid::nil()),
+            vec![],
+            vec![],
+        );
+        assert!(invalid.error.unwrap_or_default().contains("invalid shell mode"));
+        let async_result = evaluate_starlark(
+            test_pool(),
+            session,
+            Uuid::new_v4(),
+            r#"handle = shell("read line; printf shell-input:%s\\n \"$line\"; sleep 1").async()
+proc[handle].input("typed-stdin\n")
+proc[handle].await_for(mins=1)
+flushed = proc[handle].flush_buffer()
+terminated = proc[handle].terminate()
+output(handle + "\n" + flushed + "\n" + terminated)"#,
+            root.clone(),
+            test_role(),
+            Some(Uuid::nil()),
+            vec![],
+            vec![],
+        );
+        assert!(async_result.error.is_none(), "{:?}", async_result.error);
+        assert!(async_result.output.contains("shell_"));
+        assert!(async_result.output.contains("shell-input:typed-stdin"), "{}", async_result.output);
+        assert!(async_result.output.contains("terminated"), "{}", async_result.output);
+        assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.command_version_id.is_none() && process.end_of_session_behavior == "terminate")));
+        assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.stdin")));
+        assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.awaited")));
+        assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ProcessOutput(output) if output.stream == "combined" && output.content.contains("shell-input:typed-stdin"))));
+        assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.terminated")));
+        let _ = terminate_session_processes_for_close(session);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn god_mode_shell_runs_persist_full_output_artifacts_and_are_retrievable() -> Result<()> {
+        let database_url = std::env::var("ROBDEX_AGENT_RUNTIME_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("ROBDEX_AGENT_RUNTIME_DATABASE_URL"))
+            .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1:5432/robdex_agent_runtime".to_string());
+        let pool = PgPoolOptions::new().max_connections(5).connect(&database_url).await?;
+        crate::db::init(&pool).await?;
+        let role = test_role();
+        let root_dir = std::env::temp_dir().join(format!("agent-runtime-shell-artifacts-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root_dir)?;
+        let root = ExecutionRoot::new(&root_dir)?;
+        let session = crate::db::new_session(&pool, &role, Some("shell-artifacts"), root_dir.to_str().unwrap(), None, None, None).await?;
+        let grant = crate::god_mode::grant_session(&pool, session, "test", "verify shell artifact persistence", None).await?;
+        let turn_id = Uuid::new_v4();
+        let tool_call_id = Uuid::new_v4();
+        let source = r#"result = shell("printf 'out-line\n'; printf 'err-line\n' 1>&2").sync()
+output(result)"#;
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user',$3,'running',now())")
+            .bind(turn_id)
+            .bind(session)
+            .bind(source)
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, started_at) VALUES ($1,$2,$3,'execute_code',$4,$5,'running',now())")
+            .bind(tool_call_id)
+            .bind(session)
+            .bind(turn_id)
+            .bind(format!("call_{tool_call_id}"))
+            .bind(json!({"source": source}))
+            .execute(&pool)
+            .await?;
+
+        let packet = execute_code(&pool, session, turn_id, tool_call_id, source, &root, &role).await?;
+        assert!(packet.ok, "{packet:?}");
+
+        let row = sqlx::query(
+            r#"
+            SELECT god_mode_grant_id, invocation_mode, shell_path, script_hash, script_source, cwd,
+                   status, stdout_artifact_id, stderr_artifact_id, combined_artifact_id,
+                   process_id, exit_status, failure
+            FROM shell_runs
+            WHERE session_id = $1
+            ORDER BY started_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(session)
+        .fetch_one(&pool)
+        .await?;
+        let persisted_grant_id: Uuid = row.try_get("god_mode_grant_id")?;
+        assert_eq!(persisted_grant_id, grant.id);
+        assert_eq!(row.try_get::<String, _>("invocation_mode")?, "-lc");
+        assert_eq!(row.try_get::<String, _>("shell_path")?, "/bin/zsh");
+        assert!(!row.try_get::<String, _>("script_hash")?.is_empty());
+        assert!(row.try_get::<String, _>("script_source")?.contains("out-line"));
+        assert!(row.try_get::<String, _>("cwd")?.ends_with(root_dir.file_name().unwrap().to_string_lossy().as_ref()));
+        assert_eq!(row.try_get::<String, _>("status")?, "completed");
+        assert!(row.try_get::<Option<Uuid>, _>("process_id")?.is_none());
+        assert_eq!(row.try_get::<Option<i32>, _>("exit_status")?, Some(0));
+        assert!(row.try_get::<Option<String>, _>("failure")?.is_none());
+        let stdout_artifact_id: Uuid = row.try_get("stdout_artifact_id")?;
+        let stderr_artifact_id: Uuid = row.try_get("stderr_artifact_id")?;
+        let combined_artifact_id: Uuid = row.try_get("combined_artifact_id")?;
+
+        let stdout = output_artifacts::retrieve(&pool, session, stdout_artifact_id, "head", Some(10), None, None, None, None).await?;
+        let stderr = output_artifacts::retrieve(&pool, session, stderr_artifact_id, "head", Some(10), None, None, None, None).await?;
+        let combined = output_artifacts::retrieve(&pool, session, combined_artifact_id, "head", Some(10), None, None, None, None).await?;
+        assert!(stdout.content.contains("out-line"), "{stdout:?}");
+        assert!(stderr.content.contains("err-line"), "{stderr:?}");
+        assert!(combined.content.contains("out-line"), "{combined:?}");
+        assert!(combined.content.contains("err-line"), "{combined:?}");
+        assert!(combined.byte_count >= stdout.byte_count + stderr.byte_count);
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]

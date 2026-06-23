@@ -1,9 +1,10 @@
 use anyhow::Result;
 use robdex_agent_runtime_projection::{
     timeline_by_sequence, timeline_item_id, AgentRuntimeChatEntry, CommandRegistryRequestSummary,
-    CommandRegistrySummary, PendingApprovalSummary, ProjectSummary, RoleSummary, RuntimeDelta, RuntimeStatistics,
-    RuntimeDeltaKind, RuntimeProjection, SelectedSessionDetail, ServerStatusProjection,
-    SessionListItem, TimelineItem, WorkflowMemoryEventSummary, WorkflowMemorySummary,
+    CommandRegistrySummary, PendingApprovalSummary, ProjectSummary, RequirementsPacketSummary,
+    RequirementsReviewSummary, RoleSummary, RuntimeDelta, RuntimeStatistics, RuntimeDeltaKind,
+    RuntimeProjection, SelectedSessionDetail, ServerStatusProjection, SessionListItem, TimelineItem,
+    WorkflowMemoryEventSummary, WorkflowMemorySummary,
 };
 use serde_json::Value;
 use sqlx::{PgPool, Row};
@@ -316,6 +317,16 @@ async fn projection_deltas_from_event_row(
             }
             deltas.push(same_row_delta(watermark, RuntimeDeltaKind::WorkflowMemoryEvent { item }));
         }
+        event if event.starts_with("requirements.") => {
+            if let Some(session_id) = uuid_from_option(item.session_id.as_deref())
+                && let Some(summary) = requirements_review_summary(pool, session_id).await?
+            {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::RequirementsReviewUpdate {
+                    session_id: session_id.to_string(),
+                    summary,
+                }));
+            }
+        }
         _ => {}
     }
     Ok(deltas)
@@ -373,7 +384,7 @@ async fn session_list_items(pool: &PgPool) -> Result<Vec<SessionListItem>> {
         SELECT id, status, role_id, role_version, project_key, workdir, title, name, tracked,
                archived_at, closed_at, updated_at
         FROM sessions
-        WHERE archived_at IS NULL AND (tracked = true OR status <> 'open')
+        WHERE archived_at IS NULL AND hidden = false AND (tracked = true OR status <> 'open')
         ORDER BY updated_at DESC, created_at DESC
         "#,
     )
@@ -404,7 +415,7 @@ async fn session_list_item(pool: &PgPool, session_id: Uuid) -> Result<Option<Ses
         SELECT id, status, role_id, role_version, project_key, workdir, title, name, tracked,
                archived_at, closed_at, updated_at
         FROM sessions
-        WHERE id = $1 AND archived_at IS NULL AND (tracked = true OR status <> 'open')
+        WHERE id = $1 AND archived_at IS NULL AND hidden = false AND (tracked = true OR status <> 'open')
         "#,
     )
     .bind(session_id)
@@ -460,6 +471,7 @@ async fn selected_session_detail(
     .fetch_one(pool)
     .await?
     .get("count");
+    let god_mode = crate::god_mode::active_grant(pool, session_id).await?;
     let mut metadata: serde_json::Value = row.get("metadata");
     if let Some(model) = row
         .get::<serde_json::Value, _>("role_snapshot")
@@ -470,6 +482,23 @@ async fn selected_session_detail(
     {
         map.insert("model".to_string(), serde_json::Value::String(model.to_string()));
     }
+    if let Some(map) = metadata.as_object_mut() {
+        if let Some(grant) = god_mode {
+            map.insert("godMode".to_string(), serde_json::json!({
+                "active": true,
+                "grantId": grant.id,
+                "reason": grant.reason,
+                "grantedBy": grant.granted_by,
+                "grantedAt": grant.granted_at,
+                "expiresAt": grant.expires_at,
+            }));
+        } else {
+            map.insert("godMode".to_string(), serde_json::json!({"active": false}));
+        }
+        let requirements = crate::requirements::status(pool, session_id).await?;
+        map.insert("requirementsReview".to_string(), serde_json::to_value(&requirements).unwrap_or(serde_json::Value::Null));
+    }
+    let requirements_review = requirements_review_summary(pool, session_id).await?;
     Ok(Some(SelectedSessionDetail {
         id: row.get::<Uuid, _>("id").to_string(),
         role_id: row.get("role_id"),
@@ -483,6 +512,39 @@ async fn selected_session_detail(
         pending_approval_count: pending_approval_count.max(0) as u64,
         managed_process_count: managed_process_count.max(0) as u64,
         metadata,
+        requirements_review,
+    }))
+}
+
+pub async fn requirements_review_summary(pool: &PgPool, session_id: Uuid) -> Result<Option<RequirementsReviewSummary>> {
+    let status = crate::requirements::status(pool, session_id).await?;
+    let packets = crate::requirements::packet_history(pool, session_id)
+        .await?
+        .into_iter()
+        .map(|packet| RequirementsPacketSummary {
+            id: packet["id"].as_str().unwrap_or_default().to_string(),
+            requirement_set_id: packet["requirementSetId"].as_str().unwrap_or_default().to_string(),
+            packet_kind: packet["packetKind"].as_str().unwrap_or_default().to_string(),
+            status: packet["status"].as_str().unwrap_or_default().to_string(),
+            reviewer_session_id: packet["reviewerSessionId"].as_str().map(str::to_string),
+            turn_id: packet["turnId"].as_str().map(str::to_string),
+        })
+        .collect();
+    Ok(Some(RequirementsReviewSummary {
+        active: status.active,
+        active_set_id: status.active_set_id.map(|id| id.to_string()),
+        total: status.total,
+        unresolved: status.unresolved,
+        passed: status.passed,
+        blocked: status.blocked,
+        waived: status.waived,
+        reviewer_session_id: status.reviewer_session_id.map(|id| id.to_string()),
+        review_status: status.review_status,
+        latest_claim_packet_id: status.latest_claim_packet_id.map(|id| id.to_string()),
+        latest_verdict_packet_id: status.latest_verdict_packet_id.map(|id| id.to_string()),
+        packets,
+        progress: status.progress,
+        owner_action: status.owner_action,
     }))
 }
 

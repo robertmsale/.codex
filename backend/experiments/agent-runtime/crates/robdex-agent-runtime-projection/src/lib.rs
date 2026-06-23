@@ -96,6 +96,41 @@ pub struct SelectedSessionDetail {
     pub pending_approval_count: u64,
     pub managed_process_count: u64,
     pub metadata: Value,
+    #[serde(default)]
+    pub requirements_review: Option<RequirementsReviewSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RequirementsReviewSummary {
+    pub active: bool,
+    pub active_set_id: Option<String>,
+    pub total: usize,
+    pub unresolved: usize,
+    pub passed: usize,
+    pub blocked: usize,
+    pub waived: usize,
+    pub reviewer_session_id: Option<String>,
+    pub review_status: Option<String>,
+    pub latest_claim_packet_id: Option<String>,
+    pub latest_verdict_packet_id: Option<String>,
+    #[serde(default)]
+    pub packets: Vec<RequirementsPacketSummary>,
+    #[serde(default)]
+    pub progress: Vec<Value>,
+    #[serde(default)]
+    pub owner_action: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RequirementsPacketSummary {
+    pub id: String,
+    pub requirement_set_id: String,
+    pub packet_kind: String,
+    pub status: String,
+    pub reviewer_session_id: Option<String>,
+    pub turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -597,6 +632,8 @@ pub enum GuiOperationName {
     InputProcess,
     FlushProcess,
     CompactSession,
+    GrantGodMode,
+    RevokeGodMode,
     CloseSession,
     ArchiveSession,
     ForkSession,
@@ -621,6 +658,10 @@ pub enum GuiOperationName {
     ActivateRoleVersion,
     ArchiveRole,
     UnarchiveRole,
+    SetRequirements,
+    ClearRequirements,
+    ShowRequirementsStatus,
+    ListRequirementsPackets,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -645,6 +686,8 @@ pub enum GuiOperationRequest {
     InputProcess { session_id: String, handle: String, text: String },
     FlushProcess { session_id: String, handle: String },
     CompactSession { session_id: String, through_turn: Option<String> },
+    GrantGodMode { session_id: String, reason: String },
+    RevokeGodMode { session_id: String, reason: String },
     CloseSession { session_id: String, reason: Option<String> },
     ArchiveSession { session_id: String },
     ForkSession { session_id: String, at_turn: String },
@@ -669,6 +712,10 @@ pub enum GuiOperationRequest {
     ActivateRoleVersion { role_id: String, version_id: String },
     ArchiveRole { role_id: String },
     UnarchiveRole { role_id: String },
+    SetRequirements { session_id: String, title: Option<String>, requirements: Vec<Value> },
+    ClearRequirements { session_id: String },
+    ShowRequirementsStatus { session_id: String },
+    ListRequirementsPackets { session_id: String },
 }
 
 impl GuiOperationRequest {
@@ -693,6 +740,8 @@ impl GuiOperationRequest {
             Self::InputProcess { .. } => GuiOperationName::InputProcess,
             Self::FlushProcess { .. } => GuiOperationName::FlushProcess,
             Self::CompactSession { .. } => GuiOperationName::CompactSession,
+            Self::GrantGodMode { .. } => GuiOperationName::GrantGodMode,
+            Self::RevokeGodMode { .. } => GuiOperationName::RevokeGodMode,
             Self::CloseSession { .. } => GuiOperationName::CloseSession,
             Self::ArchiveSession { .. } => GuiOperationName::ArchiveSession,
             Self::ForkSession { .. } => GuiOperationName::ForkSession,
@@ -717,6 +766,10 @@ impl GuiOperationRequest {
             Self::ActivateRoleVersion { .. } => GuiOperationName::ActivateRoleVersion,
             Self::ArchiveRole { .. } => GuiOperationName::ArchiveRole,
             Self::UnarchiveRole { .. } => GuiOperationName::UnarchiveRole,
+            Self::SetRequirements { .. } => GuiOperationName::SetRequirements,
+            Self::ClearRequirements { .. } => GuiOperationName::ClearRequirements,
+            Self::ShowRequirementsStatus { .. } => GuiOperationName::ShowRequirementsStatus,
+            Self::ListRequirementsPackets { .. } => GuiOperationName::ListRequirementsPackets,
         }
     }
 
@@ -736,6 +789,8 @@ impl GuiOperationRequest {
             | Self::InputProcess { .. }
             | Self::FlushProcess { .. }
             | Self::CompactSession { .. }
+            | Self::GrantGodMode { .. }
+            | Self::RevokeGodMode { .. }
             | Self::CloseSession { .. }
             | Self::ArchiveSession { .. }
             | Self::ForkSession { .. }
@@ -748,7 +803,9 @@ impl GuiOperationRequest {
             | Self::UpdateRoleFromDraft { .. }
             | Self::ActivateRoleVersion { .. }
             | Self::ArchiveRole { .. }
-            | Self::UnarchiveRole { .. } => GuiOperationExpectation::WaitForDelta,
+            | Self::UnarchiveRole { .. }
+            | Self::SetRequirements { .. }
+            | Self::ClearRequirements { .. } => GuiOperationExpectation::WaitForDelta,
             Self::ListProjects
             | Self::ListCommandRegistry { .. }
             | Self::ShowCommand { .. }
@@ -760,7 +817,9 @@ impl GuiOperationRequest {
             | Self::ShowRoleDetail { .. }
             | Self::ListRoleVersions { .. }
             | Self::ShowRoleVersion { .. }
-            | Self::ExportRole { .. } => GuiOperationExpectation::DirectResult,
+            | Self::ExportRole { .. }
+            | Self::ShowRequirementsStatus { .. }
+            | Self::ListRequirementsPackets { .. } => GuiOperationExpectation::DirectResult,
         }
     }
 
@@ -785,6 +844,8 @@ impl GuiOperationRequest {
             Self::InputProcess { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/processes/{handle}/input", r#"{"text"}"#, r#"{"handle","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::FlushProcess { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/processes/{handle}/flush", "{}", r#"{"handle","status","artifact"}"#, GuiOperationExpectation::WaitForDelta),
             Self::CompactSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/compact", r#"{"throughTurn"?}"#, r#"{"sessionId","checkpointId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::GrantGodMode { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/god-mode/grant", r#"{"reason"}"#, r#"{"sessionId","grantId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::RevokeGodMode { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/god-mode/revoke", r#"{"reason"}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::CloseSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/close", r#"{"reason"?}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ArchiveSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/archive", "{}", r#"{"sessionId","tracked"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ForkSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/fork", r#"{"atTurn"}"#, r#"{"sessionId","forkedFromSessionId","forkedFromTurnId"}"#, GuiOperationExpectation::WaitForDelta),
@@ -809,6 +870,10 @@ impl GuiOperationRequest {
             Self::ActivateRoleVersion { .. } => http_mapping(self.name(), "POST", "/roles/{roleId}/activate", r#"{"versionId"}"#, r#"{"roleId","versionId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ArchiveRole { .. } => http_mapping(self.name(), "POST", "/roles/{roleId}/archive", "{}", r#"{"roleId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::UnarchiveRole { .. } => http_mapping(self.name(), "POST", "/roles/{roleId}/unarchive", "{}", r#"{"roleId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::SetRequirements { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/requirements", r#"{"title"?,"requirements":[RequirementInput]}"#, r#"{"requirementSetId"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ClearRequirements { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/requirements/clear", "{}", r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ShowRequirementsStatus { .. } => http_mapping(self.name(), "GET", "/sessions/{sessionId}/requirements", "none", "RequirementStatus", GuiOperationExpectation::DirectResult),
+            Self::ListRequirementsPackets { .. } => http_mapping(self.name(), "GET", "/sessions/{sessionId}/requirements/packets", "none", "Vec<RequirementPacket>", GuiOperationExpectation::DirectResult),
         }
     }
 
@@ -830,7 +895,9 @@ impl GuiOperationRequest {
             | Self::ShowRoleDetail { .. }
             | Self::ListRoleVersions { .. }
             | Self::ShowRoleVersion { .. }
-            | Self::ExportRole { .. } => None,
+            | Self::ExportRole { .. }
+            | Self::ShowRequirementsStatus { .. }
+            | Self::ListRequirementsPackets { .. } => None,
             Self::CreateSession { role, project, model, workdir, worktree_root, title, name } => Some(json!({
                 "role": role,
                 "project": project,
@@ -869,6 +936,7 @@ impl GuiOperationRequest {
             Self::SendMessage { message, .. } => Some(json!({"message": message})),
             Self::TerminateProcess { .. } | Self::FlushProcess { .. } => Some(json!({})),
             Self::CompactSession { through_turn, .. } => Some(json!({"throughTurn": through_turn})),
+            Self::GrantGodMode { reason, .. } | Self::RevokeGodMode { reason, .. } => Some(json!({"reason": reason})),
             Self::InputProcess { text, .. } => Some(json!({"text": text})),
             Self::CloseSession { reason, .. } => Some(json!({"reason": reason})),
             Self::ArchiveSession { .. } | Self::ResumeApproval { .. } => Some(json!({})),
@@ -881,6 +949,8 @@ impl GuiOperationRequest {
             Self::ValidateRoleDraft { draft } | Self::CreateRoleFromDraft { draft } | Self::UpdateRoleFromDraft { draft, .. } => Some(serde_json::to_value(draft).expect("role draft serializes")),
             Self::ActivateRoleVersion { version_id, .. } => Some(json!({"versionId": version_id})),
             Self::ArchiveRole { .. } | Self::UnarchiveRole { .. } => Some(json!({})),
+            Self::SetRequirements { title, requirements, .. } => Some(json!({"title": title, "requirements": requirements})),
+            Self::ClearRequirements { .. } => Some(json!({})),
         }
     }
 }
@@ -1103,7 +1173,7 @@ pub const DART_ALLOWED_EPHEMERAL_RESPONSIBILITIES: &[&str] = &[
     "localLayout",
 ];
 
-pub const GUI_OPERATION_VARIANT_COUNT: usize = 43;
+pub const GUI_OPERATION_VARIANT_COUNT: usize = 49;
 
 impl Default for RuntimeProjection {
     fn default() -> Self {
@@ -1184,6 +1254,7 @@ pub enum RuntimeDeltaKind {
     CommandRegistryRequestRemove { request_id: String },
     WorkflowMemoryUpsert { memory: WorkflowMemorySummary },
     WorkflowMemoryEvent { item: TimelineItem },
+    RequirementsReviewUpdate { session_id: String, summary: RequirementsReviewSummary },
     ResyncRequired { reason: String },
 }
 
@@ -1324,6 +1395,13 @@ fn apply_delta_kind(projection: &mut RuntimeProjection, kind: RuntimeDeltaKind) 
         RuntimeDeltaKind::CommandRegistryRequestUpsert { request } => upsert_by(&mut projection.command_registry_requests, request, |item| item.id.as_str()),
         RuntimeDeltaKind::CommandRegistryRequestRemove { request_id } => remove_by(&mut projection.command_registry_requests, |item| item.id == request_id),
         RuntimeDeltaKind::WorkflowMemoryUpsert { memory } => upsert_by(&mut projection.workflow_memories, memory, |item| item.id.as_str()),
+        RuntimeDeltaKind::RequirementsReviewUpdate { session_id, summary } => {
+            if let Some(session) = projection.selected_session.as_mut().filter(|session| session.id == session_id) {
+                replace_if_changed(&mut session.requirements_review, Some(summary))
+            } else {
+                false
+            }
+        }
         RuntimeDeltaKind::ResyncRequired { reason } => {
             mark_resync_required(projection, &reason, None, None);
             true
@@ -1548,6 +1626,8 @@ mod tests {
             GuiOperationRequest::InputProcess { session_id: "session-1".to_string(), handle: "proc_1".to_string(), text: "hello".to_string() },
             GuiOperationRequest::FlushProcess { session_id: "session-1".to_string(), handle: "proc_1".to_string() },
             GuiOperationRequest::CompactSession { session_id: "session-1".to_string(), through_turn: None },
+            GuiOperationRequest::GrantGodMode { session_id: "session-1".to_string(), reason: "break-glass host shell needed".to_string() },
+            GuiOperationRequest::RevokeGodMode { session_id: "session-1".to_string(), reason: "break-glass complete".to_string() },
             GuiOperationRequest::CloseSession { session_id: "session-1".to_string(), reason: Some("done".to_string()) },
             GuiOperationRequest::ArchiveSession { session_id: "session-1".to_string() },
             GuiOperationRequest::ForkSession { session_id: "session-1".to_string(), at_turn: "turn-1".to_string() },
@@ -1572,6 +1652,10 @@ mod tests {
             GuiOperationRequest::ActivateRoleVersion { role_id: "gui-role".to_string(), version_id: "00000000-0000-0000-0000-000000000001".to_string() },
             GuiOperationRequest::ArchiveRole { role_id: "gui-role".to_string() },
             GuiOperationRequest::UnarchiveRole { role_id: "gui-role".to_string() },
+            GuiOperationRequest::SetRequirements { session_id: "session-1".to_string(), title: Some("contract".to_string()), requirements: vec![json!({"key":"prove_it","statement":"Prove it.","severity":"must","verificationMethod":{"method":"review"}})] },
+            GuiOperationRequest::ClearRequirements { session_id: "session-1".to_string() },
+            GuiOperationRequest::ShowRequirementsStatus { session_id: "session-1".to_string() },
+            GuiOperationRequest::ListRequirementsPackets { session_id: "session-1".to_string() },
         ]
     }
 
@@ -1610,6 +1694,7 @@ mod tests {
             pending_approval_count: 0,
             managed_process_count: 0,
             metadata: Value::Null,
+            requirements_review: None,
         });
         projection.apply_delta(delta(1, RuntimeDeltaKind::SessionUpsert { session: session("session-1") }));
         projection.apply_delta(delta(2, RuntimeDeltaKind::SessionArchive {
@@ -1650,9 +1735,69 @@ mod tests {
             pending_approval_count: 0,
             managed_process_count: 0,
             metadata: Value::Null,
+            requirements_review: None,
         };
         projection.apply_delta(delta(1, RuntimeDeltaKind::SelectedSessionReplace { session: Some(detail.clone()) }));
         assert_eq!(projection.selected_session, Some(detail));
+    }
+
+    #[test]
+    fn requirements_review_delta_updates_only_selected_source_detail() {
+        let mut projection = RuntimeProjection::default();
+        projection.selected_session = Some(SelectedSessionDetail {
+            id: "session-1".to_string(),
+            role_id: Some("role".to_string()),
+            role_version: Some("1".to_string()),
+            project_key: None,
+            workdir: ".".to_string(),
+            worktree_root: None,
+            title: Some("selected".to_string()),
+            name: None,
+            status: "open".to_string(),
+            pending_approval_count: 0,
+            managed_process_count: 0,
+            metadata: Value::Null,
+            requirements_review: None,
+        });
+        let summary = RequirementsReviewSummary {
+            active: true,
+            active_set_id: Some("set-1".to_string()),
+            total: 2,
+            unresolved: 1,
+            passed: 1,
+            blocked: 0,
+            waived: 0,
+            reviewer_session_id: Some("reviewer-1".to_string()),
+            review_status: Some("inReview".to_string()),
+            latest_claim_packet_id: Some("claim-1".to_string()),
+            latest_verdict_packet_id: None,
+            packets: vec![RequirementsPacketSummary {
+                id: "claim-1".to_string(),
+                requirement_set_id: "set-1".to_string(),
+                packet_kind: "claim".to_string(),
+                status: "reviewable".to_string(),
+                reviewer_session_id: Some("reviewer-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
+            }],
+            progress: vec![json!({"requirementKey":"a","status":"passed"})],
+            owner_action: None,
+        };
+        assert_eq!(
+            projection.apply_delta(delta(1, RuntimeDeltaKind::RequirementsReviewUpdate {
+                session_id: "session-1".to_string(),
+                summary: summary.clone(),
+            })),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(projection.selected_session.as_ref().and_then(|session| session.requirements_review.clone()), Some(summary));
+        assert_eq!(
+            projection.apply_delta(delta(2, RuntimeDeltaKind::RequirementsReviewUpdate {
+                session_id: "other-session".to_string(),
+                summary: RequirementsReviewSummary { active: false, ..projection.selected_session.as_ref().unwrap().requirements_review.clone().unwrap() },
+            })),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(projection.selected_session.as_ref().unwrap().requirements_review.as_ref().unwrap().active_set_id.as_deref(), Some("set-1"));
     }
 
     #[test]

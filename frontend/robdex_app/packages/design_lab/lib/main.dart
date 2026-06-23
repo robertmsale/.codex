@@ -280,6 +280,45 @@ class RobdexDesignLabHome extends StatelessWidget {
     if (surface == 'agentRuntimeOperationsDetail') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);
     }
+    if (surface == 'agentRuntimeGodModeSessionSurface') {
+      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'session');
+    }
+    if (surface == 'agentRuntimeGodModeSessionDetailOnly') {
+      return Scaffold(
+        backgroundColor: const Color(0xFF0E141B),
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: AgentRuntimeOperationsDetail(
+                data: mockAgentRuntimeConnected,
+                focusSurfaceId: 'session',
+                onSessionClose: (_) {},
+                onSessionArchive: (_) {},
+                onSessionFork: (_) {},
+                onGodModeGrant: (_) {},
+                onGodModeRevoke: (_) {},
+                onProcessTerminate: (_) {},
+                onProcessInput: (_, _) {},
+                onProcessFlush: (_) {},
+                onCompactSession: (_) {},
+                onApprovalApprove: (_, _) {},
+                onApprovalDeny: (_, _) {},
+                onApprovalResume: (_) {},
+                onCommandRegistryApprove: (_, _) {},
+                onCommandRegistryDeny: (_, _) {},
+                onCommandRegistryPreview: (_, _) {},
+                onCommandRegistryApply: (_) {},
+                onCommandRegistryReview: (_) {},
+                onCommandRegistryShowCommand: (_, _, _) {},
+                onCommandRegistryListInstalled: (_, _) {},
+                onCommandRegistryListRequests: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     if (surface == 'agentRuntimeActiveResponse') {
       return _AgentRuntimeScenario(
         data: mockAgentRuntimeConnected.copyWith(
@@ -622,6 +661,8 @@ class _AgentRuntimeScenarioState extends State<_AgentRuntimeScenario> {
         onProcessInput: (_, _) {},
         onProcessFlush: (_) {},
         onCompactSession: (_) {},
+        onGodModeGrant: (_) {},
+        onGodModeRevoke: (_) {},
         onApprovalApprove: (_, _) {},
         onApprovalResume: (_) {},
         onCommandRegistryApprove: (_, _) {},

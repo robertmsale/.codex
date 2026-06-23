@@ -48,6 +48,8 @@ class AgentRuntimeWorkbench extends StatelessWidget {
     this.onProcessInput,
     this.onProcessFlush,
     this.onCompactSession,
+    this.onGodModeGrant,
+    this.onGodModeRevoke,
     this.onApprovalApprove,
     this.onApprovalDeny,
     this.onApprovalResume,
@@ -93,6 +95,8 @@ class AgentRuntimeWorkbench extends StatelessWidget {
   final AgentRuntimeProcessInputAction? onProcessInput;
   final ValueChanged<String>? onProcessFlush;
   final ValueChanged<AgentRuntimeActionItem>? onCompactSession;
+  final ValueChanged<AgentRuntimeActionItem>? onGodModeGrant;
+  final ValueChanged<AgentRuntimeActionItem>? onGodModeRevoke;
   final AgentRuntimeActionReason? onApprovalApprove;
   final AgentRuntimeActionReason? onApprovalDeny;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalResume;
@@ -170,6 +174,8 @@ class AgentRuntimeWorkbench extends StatelessWidget {
                                   onProcessInput: onProcessInput,
                                   onProcessFlush: onProcessFlush,
                                   onCompactSession: onCompactSession,
+                                  onGodModeGrant: onGodModeGrant,
+                                  onGodModeRevoke: onGodModeRevoke,
                                   onApprovalApprove: onApprovalApprove,
                                   onApprovalDeny: onApprovalDeny,
                                   onApprovalResume: onApprovalResume,
@@ -219,6 +225,8 @@ class AgentRuntimeWorkbench extends StatelessWidget {
                                           onProcessInput: onProcessInput,
                                           onProcessFlush: onProcessFlush,
                                           onCompactSession: onCompactSession,
+                                          onGodModeGrant: onGodModeGrant,
+                                          onGodModeRevoke: onGodModeRevoke,
                                           onApprovalApprove: onApprovalApprove,
                                           onApprovalDeny: onApprovalDeny,
                                           onApprovalResume: onApprovalResume,
@@ -610,6 +618,8 @@ class _DetailsPanel extends StatelessWidget {
     this.onProcessInput,
     this.onProcessFlush,
     this.onCompactSession,
+    this.onGodModeGrant,
+    this.onGodModeRevoke,
     this.onApprovalApprove,
     this.onApprovalDeny,
     this.onApprovalResume,
@@ -646,6 +656,8 @@ class _DetailsPanel extends StatelessWidget {
   final AgentRuntimeProcessInputAction? onProcessInput;
   final ValueChanged<String>? onProcessFlush;
   final ValueChanged<AgentRuntimeActionItem>? onCompactSession;
+  final ValueChanged<AgentRuntimeActionItem>? onGodModeGrant;
+  final ValueChanged<AgentRuntimeActionItem>? onGodModeRevoke;
   final AgentRuntimeActionReason? onApprovalApprove;
   final AgentRuntimeActionReason? onApprovalDeny;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalResume;
@@ -769,6 +781,10 @@ class _DetailsPanel extends StatelessWidget {
           return onCompactSession == null ? null : () => onCompactSession!(action);
         case 'compactionUnavailable':
           return null;
+        case 'godModeGrant':
+          return onGodModeGrant == null ? null : () => onGodModeGrant!(action);
+        case 'godModeRevoke':
+          return onGodModeRevoke == null ? null : () => onGodModeRevoke!(action);
         case 'approval':
           return null;
         case 'approvalDeny':
@@ -820,6 +836,8 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
     this.onProcessInput,
     this.onProcessFlush,
     this.onCompactSession,
+    this.onGodModeGrant,
+    this.onGodModeRevoke,
     this.onApprovalApprove,
     this.onApprovalDeny,
     this.onApprovalResume,
@@ -856,6 +874,8 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
   final AgentRuntimeProcessInputAction? onProcessInput;
   final ValueChanged<String>? onProcessFlush;
   final ValueChanged<AgentRuntimeActionItem>? onCompactSession;
+  final ValueChanged<AgentRuntimeActionItem>? onGodModeGrant;
+  final ValueChanged<AgentRuntimeActionItem>? onGodModeRevoke;
   final AgentRuntimeActionReason? onApprovalApprove;
   final AgentRuntimeActionReason? onApprovalDeny;
   final ValueChanged<AgentRuntimeActionItem>? onApprovalResume;
@@ -905,6 +925,8 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
       onCommandRegistryListInstalled: onCommandRegistryListInstalled,
       onCommandRegistryListRequests: onCommandRegistryListRequests,
       onCompactSession: onCompactSession,
+      onGodModeGrant: onGodModeGrant,
+      onGodModeRevoke: onGodModeRevoke,
     );
   }
 }

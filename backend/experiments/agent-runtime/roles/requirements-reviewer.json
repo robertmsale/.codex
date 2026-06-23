@@ -1,0 +1,49 @@
+{
+  "id": "requirements-reviewer",
+  "version": "1.0.0",
+  "displayName": "Requirements Reviewer",
+  "prompt": {
+    "path": "prompts/requirements-reviewer.md"
+  },
+  "modelDefaults": {
+    "model": "gpt-5.5",
+    "reasoningEffort": "medium"
+  },
+  "capabilities": [
+    "fs.read",
+    "workflow_memory.search",
+    "fs.write",
+    "patch.apply",
+    "command_registry.request",
+    "command_registry.decide",
+    "command_registry.apply",
+    "tool.execute_code"
+  ],
+  "policy": {
+    "fs.read": "allow",
+    "workflow_memory.search": "allow",
+    "fs.write": "deny",
+    "patch.apply": "deny",
+    "command_registry.request": "deny",
+    "command_registry.decide": "deny",
+    "command_registry.apply": "deny",
+    "tool.execute_code": "allow"
+  },
+  "routing": {
+    "mode": "direct",
+    "defaultRecipient": "owner",
+    "allowedRecipients": [
+      "owner"
+    ],
+    "reservedActions": []
+  },
+  "visibility": {
+    "listed": false,
+    "ownerVisible": false
+  },
+  "lifecycleAuthority": {
+    "canSpawnAgents": false,
+    "canArchiveAgents": false,
+    "reservedActions": []
+  }
+}

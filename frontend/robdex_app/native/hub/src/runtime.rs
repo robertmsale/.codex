@@ -1428,6 +1428,8 @@ fn typed_gui_operation(operation: AgentRuntimeGuiOperation) -> std::result::Resu
             session_id,
             through_turn: non_empty(through_turn),
         },
+        AgentRuntimeGuiOperation::GrantGodMode { session_id, reason } => GuiOperationRequest::GrantGodMode { session_id, reason },
+        AgentRuntimeGuiOperation::RevokeGodMode { session_id, reason } => GuiOperationRequest::RevokeGodMode { session_id, reason },
         AgentRuntimeGuiOperation::CloseSession { session_id, reason } => GuiOperationRequest::CloseSession { session_id, reason: non_empty(reason) },
         AgentRuntimeGuiOperation::ArchiveSession { session_id } => GuiOperationRequest::ArchiveSession { session_id },
         AgentRuntimeGuiOperation::ForkSession { session_id, at_turn } => GuiOperationRequest::ForkSession { session_id, at_turn },
@@ -1478,6 +1480,23 @@ fn typed_gui_operation(operation: AgentRuntimeGuiOperation) -> std::result::Resu
         AgentRuntimeGuiOperation::ActivateRoleVersion { role_id, version_id } => GuiOperationRequest::ActivateRoleVersion { role_id, version_id },
         AgentRuntimeGuiOperation::ArchiveRole { role_id } => GuiOperationRequest::ArchiveRole { role_id },
         AgentRuntimeGuiOperation::UnarchiveRole { role_id } => GuiOperationRequest::UnarchiveRole { role_id },
+        AgentRuntimeGuiOperation::SetRequirements { session_id, title, requirements } => GuiOperationRequest::SetRequirements {
+            session_id,
+            title: non_empty(title),
+            requirements: requirements.into_iter().map(|item| serde_json::json!({
+                "key": item.key,
+                "statement": item.statement,
+                "severity": if item.severity.is_empty() { "must".to_string() } else { item.severity },
+                "verificationMethod": if item.verification_method.is_empty() {
+                    serde_json::json!({"method":"review"})
+                } else {
+                    serde_json::from_str(&item.verification_method).unwrap_or_else(|_| serde_json::json!({"method": item.verification_method}))
+                },
+            })).collect(),
+        },
+        AgentRuntimeGuiOperation::ClearRequirements { session_id } => GuiOperationRequest::ClearRequirements { session_id },
+        AgentRuntimeGuiOperation::ShowRequirementsStatus { session_id } => GuiOperationRequest::ShowRequirementsStatus { session_id },
+        AgentRuntimeGuiOperation::ListRequirementsPackets { session_id } => GuiOperationRequest::ListRequirementsPackets { session_id },
     })
 }
 

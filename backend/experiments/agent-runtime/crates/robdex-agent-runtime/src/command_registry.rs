@@ -401,6 +401,14 @@ pub fn stable_execute_code_contract() -> String {
     "Evaluate Starlark in the experimental host runtime. Use output(value) to emit final tool output; host calls return script values and do not implicitly become final output. Full command/process/script output is stored as durable output artifacts; default tool results expose bounded envelopes with artifact ids, byte/line counts, truncation metadata, preview, and tail only. Retrieve stored output intentionally with bounded helpers: outputs.last(), outputs.head(id, lines=N), outputs.tail(id, lines=N), outputs.slice(id, start_line=A, end_line=B), outputs.search(id, pattern, context=N), and outputs.stats(id). Native APIs: fs.read(path), fs.write(path, content), patch.apply(unified_diff), workflow_memory.help(), workflow_memory.remember_when(condition, title, reason), workflow_memory.mark_attempted(id, variant=True), and workflow_memory.mark_not_helpful(id, reason). Registered commands are accessed through cmd[\"object\"].method(...).sync() for synchronous execution or .start() for a managed async process handle. Inspect available registered commands with cmd.describe(), cmd[\"object\"].describe(), and cmd[\"object\"].method.describe() before using command-specific details. Use proc[handle].is_running(), await_for(mins=N), flush_buffer(), terminate(), and input(text) for managed processes. Handles are opaque session-only values, not OS PIDs. No raw shell, network, arbitrary environment, unregistered binaries, or undocumented command surfaces are available.".to_string()
 }
 
+pub fn stable_execute_code_contract_with_god_mode_shell(enabled: bool) -> String {
+    let mut contract = stable_execute_code_contract();
+    if enabled {
+        contract.push_str(" God Mode is active for this session: shell(script, mode=\"-lc\").sync() and shell(script, mode=\"-lc\").async() are available as a break-glass host zsh affordance. shell(...) runs /bin/zsh from the session execution root by default with host environment/filesystem access available to the runtime service user; accepted modes are -lc, -l, and -c. Use shell(...) only when the registry/native APIs cannot satisfy the request, and keep output bounded through artifacts.");
+    }
+    contract
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

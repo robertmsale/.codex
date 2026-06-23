@@ -43,6 +43,8 @@ pub enum AgentRuntimeGuiOperation {
     InputProcess { session_id: String, handle: String, text: String },
     FlushProcess { session_id: String, handle: String },
     CompactSession { session_id: String, through_turn: String },
+    GrantGodMode { session_id: String, reason: String },
+    RevokeGodMode { session_id: String, reason: String },
     CloseSession { session_id: String, reason: String },
     ArchiveSession { session_id: String },
     ForkSession { session_id: String, at_turn: String },
@@ -67,6 +69,19 @@ pub enum AgentRuntimeGuiOperation {
     ActivateRoleVersion { role_id: String, version_id: String },
     ArchiveRole { role_id: String },
     UnarchiveRole { role_id: String },
+    SetRequirements { session_id: String, title: String, requirements: Vec<AgentRuntimeRequirementInput> },
+    ClearRequirements { session_id: String },
+    ShowRequirementsStatus { session_id: String },
+    ListRequirementsPackets { session_id: String },
+}
+
+#[derive(Clone, Debug, Deserialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeRequirementInput {
+    pub key: String,
+    pub statement: String,
+    pub severity: String,
+    pub verification_method: String,
 }
 
 #[derive(Clone, Debug, Deserialize, SignalPiece)]

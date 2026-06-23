@@ -68,6 +68,28 @@ void main() {
     expect((operation as bindings.AgentRuntimeGuiOperationSelectWorkflowMemory).memoryId, 'memory-2');
   });
 
+  test('requirements review operations map to typed Rust envelopes', () {
+    final requirement = bindings.AgentRuntimeRequirementInput(
+      key: 'prove_contract',
+      statement: 'Prove the contract.',
+      severity: 'must',
+      verificationMethod: '{"method":"test"}',
+    );
+    final set = agentRuntimeSetRequirementsOperationForTest('session-1', [requirement], title: 'Contract');
+    final clear = agentRuntimeClearRequirementsOperationForTest('session-1');
+    final status = agentRuntimeRequirementsStatusOperationForTest('session-1');
+    final packets = agentRuntimeRequirementsPacketsOperationForTest('session-1');
+
+    expect(set, isA<bindings.AgentRuntimeGuiOperationSetRequirements>());
+    final typedSet = set as bindings.AgentRuntimeGuiOperationSetRequirements;
+    expect(typedSet.sessionId, 'session-1');
+    expect(typedSet.title, 'Contract');
+    expect(typedSet.requirements.single.key, 'prove_contract');
+    expect(clear, isA<bindings.AgentRuntimeGuiOperationClearRequirements>());
+    expect(status, isA<bindings.AgentRuntimeGuiOperationShowRequirementsStatus>());
+    expect(packets, isA<bindings.AgentRuntimeGuiOperationListRequirementsPackets>());
+  });
+
   test('iCloud remote discovery typed signals are stable generated intents', () {
     expect(agentRuntimeIcloudRefreshIntentForTest(), isA<bindings.AgentRuntimeRequestRefreshIcloudRemoteDiscovery>());
     expect(agentRuntimeIcloudConnectIntentForTest(), isA<bindings.AgentRuntimeRequestConnectIcloudRemoteRuntime>());
