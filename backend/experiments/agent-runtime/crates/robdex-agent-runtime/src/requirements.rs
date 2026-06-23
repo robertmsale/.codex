@@ -814,6 +814,29 @@ pub async fn status(pool: &PgPool, source_session_id: Uuid) -> Result<Requiremen
     })
 }
 
+pub async fn active_reviewer_for_source(pool: &PgPool, source_session_id: Uuid) -> Result<Option<Uuid>> {
+    let Some(active) = active_requirement_set(pool, source_session_id).await? else {
+        return Ok(None);
+    };
+    let reviewer = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT reviewer_session_id
+        FROM requirement_review_bindings
+        WHERE requirement_set_id=$1
+          AND source_session_id=$2
+          AND status IN ('ready','inReview')
+          AND reviewer_session_id IS NOT NULL
+        ORDER BY updated_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(active.id)
+    .bind(source_session_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(reviewer)
+}
+
 async fn progress_rows(pool: &PgPool, set_id: Uuid) -> Result<Vec<Value>> {
     let rows = sqlx::query("SELECT requirement_key, status, latest_verdict, updated_at FROM requirement_progress WHERE requirement_set_id=$1 ORDER BY requirement_key ASC")
         .bind(set_id)

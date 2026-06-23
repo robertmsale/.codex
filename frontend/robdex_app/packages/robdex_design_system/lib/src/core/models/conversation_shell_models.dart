@@ -19,6 +19,7 @@ class ConversationShellData {
     this.sessionLabel = 'Sessions',
     this.composerPlaceholder = 'Message selected session...',
     this.composerDisabledHint = 'Select a session to enable the composer.',
+    this.composerStatusMessage,
     this.inlineErrorMessage,
   });
 
@@ -39,6 +40,7 @@ class ConversationShellData {
   final String sessionLabel;
   final String composerPlaceholder;
   final String composerDisabledHint;
+  final String? composerStatusMessage;
   final String? inlineErrorMessage;
 }
 

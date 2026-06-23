@@ -261,7 +261,8 @@ impl GuiBackendController {
             | GuiOperationRequest::SetRequirements { .. }
             | GuiOperationRequest::ClearRequirements { .. }
             | GuiOperationRequest::ShowRequirementsStatus { .. }
-            | GuiOperationRequest::ListRequirementsPackets { .. } => self.dispatch_server_operation(request).await,
+            | GuiOperationRequest::ListRequirementsPackets { .. }
+            | GuiOperationRequest::SubmitRequirementsReviewerInput { .. } => self.dispatch_server_operation(request).await,
         }
     }
 
@@ -378,7 +379,11 @@ impl GuiBackendController {
             }
             GuiOperationRequest::SendMessage { .. } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: {
-                    let id = value.get("turnId").and_then(Value::as_str).map(str::to_string);
+                    let id = value
+                        .get("turnId")
+                        .and_then(Value::as_str)
+                        .or_else(|| value.get("submittedInputId").and_then(Value::as_str))
+                        .map(str::to_string);
                     let _ = self.hydrate_current().await?;
                     id
                 },
@@ -435,7 +440,8 @@ impl GuiBackendController {
             | GuiOperationRequest::ArchiveRole { .. }
             | GuiOperationRequest::UnarchiveRole { .. }
             | GuiOperationRequest::SetRequirements { .. }
-            | GuiOperationRequest::ClearRequirements { .. } => self.hydrate_current().await,
+            | GuiOperationRequest::ClearRequirements { .. }
+            | GuiOperationRequest::SubmitRequirementsReviewerInput { .. } => self.hydrate_current().await,
             GuiOperationRequest::Connect { .. }
             | GuiOperationRequest::Hydrate { .. }
             | GuiOperationRequest::Rehydrate { .. }
@@ -536,6 +542,7 @@ impl GuiBackendController {
             GuiOperationRequest::ClearRequirements { session_id } => format!("/sessions/{session_id}/requirements/clear"),
             GuiOperationRequest::ShowRequirementsStatus { session_id } => format!("/sessions/{session_id}/requirements"),
             GuiOperationRequest::ListRequirementsPackets { session_id } => format!("/sessions/{session_id}/requirements/packets"),
+            GuiOperationRequest::SubmitRequirementsReviewerInput { source_session_id, .. } => format!("/sessions/{source_session_id}/requirements/reviewer/send"),
             GuiOperationRequest::Connect { .. }
             | GuiOperationRequest::Hydrate { .. }
             | GuiOperationRequest::Rehydrate { .. }

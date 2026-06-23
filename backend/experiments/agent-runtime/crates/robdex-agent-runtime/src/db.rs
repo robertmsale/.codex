@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use serde::{Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use uuid::Uuid;
@@ -689,6 +689,26 @@ pub struct HistoryItem {
     pub checkpoint_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmittedInputRecord {
+    pub id: Uuid,
+    pub session_id: Uuid,
+    pub target_turn_id: Option<Uuid>,
+    pub source_parent_session_id: Option<Uuid>,
+    pub actor: String,
+    pub source: String,
+    pub role: String,
+    pub content: String,
+    pub payload: Value,
+    pub disposition: String,
+    pub status: String,
+    pub ordering_key: i64,
+    pub observed_lifecycle_state: String,
+    pub placement_turn_id: Option<Uuid>,
+    pub failure_metadata: Value,
+}
+
 pub async fn session_record(pool: &PgPool, session_id: Uuid) -> Result<SessionSummary> {
     let row = sqlx::query(
         r#"
@@ -734,7 +754,372 @@ pub async fn ensure_session_open(pool: &PgPool, session_id: Uuid) -> Result<Sess
     if session.status != "open" {
         return Err(RuntimeDomainError::conflict(format!("session {session_id} is not open: {}", session.status)).into());
     }
+    if session.archived_at.is_some() || (!session.tracked && session.session_kind != "requirementsReviewer") {
+        return Err(RuntimeDomainError::conflict(format!("session {session_id} is archived")).into());
+    }
     Ok(session)
+}
+
+fn submitted_input_record(row: sqlx::postgres::PgRow) -> SubmittedInputRecord {
+    SubmittedInputRecord {
+        id: row.get("id"),
+        session_id: row.get("session_id"),
+        target_turn_id: row.get("target_turn_id"),
+        source_parent_session_id: row.get("source_parent_session_id"),
+        actor: row.get("actor"),
+        source: row.get("source"),
+        role: row.get("role"),
+        content: row.get("content"),
+        payload: row.get("payload"),
+        disposition: row.get("disposition"),
+        status: row.get("status"),
+        ordering_key: row.get("ordering_key"),
+        observed_lifecycle_state: row.get("observed_lifecycle_state"),
+        placement_turn_id: row.get("placement_turn_id"),
+        failure_metadata: row.get("failure_metadata"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn record_accepted_submitted_input(
+    pool: &PgPool,
+    session: &SessionSummary,
+    target_turn_id: Option<Uuid>,
+    actor: &str,
+    source: &str,
+    role: &str,
+    content: &str,
+    disposition: &str,
+) -> Result<SubmittedInputRecord> {
+    let id = Uuid::new_v4();
+    let row = sqlx::query(
+        r#"
+        INSERT INTO submitted_inputs (
+            id, session_id, target_turn_id, source_parent_session_id, actor, source, role,
+            content, payload, disposition, status, observed_lifecycle_state, accepted_at
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'accepted',$11,now())
+        RETURNING id, session_id, target_turn_id, source_parent_session_id, actor, source, role,
+                  content, payload, disposition, status, ordering_key, observed_lifecycle_state,
+                  placement_turn_id, failure_metadata
+        "#,
+    )
+    .bind(id)
+    .bind(session.id)
+    .bind(target_turn_id)
+    .bind(session.parent_session_id)
+    .bind(actor)
+    .bind(source)
+    .bind(role)
+    .bind(content)
+    .bind(json!({"content": content}))
+    .bind(disposition)
+    .bind(if session.archived_at.is_some() { "archived" } else { session.status.as_str() })
+    .fetch_one(pool)
+    .await?;
+    append_event(
+        pool,
+        session.id,
+        target_turn_id,
+        "submitted_input",
+        Some(id),
+        "submitted_input.accepted",
+        Some(disposition),
+        json!({"submittedInputId": id, "disposition": disposition, "status": "accepted", "sourceParentSessionId": session.parent_session_id}),
+    )
+    .await?;
+    Ok(submitted_input_record(row))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn record_accepted_submitted_input_atomic(
+    pool: &PgPool,
+    session_id: Uuid,
+    compaction_active: bool,
+    already_active: bool,
+    actor: &str,
+    source: &str,
+    role: &str,
+    content: &str,
+) -> Result<SubmittedInputRecord> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(session_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let session_row = sqlx::query(
+        r#"
+        SELECT id, status, tracked, parent_session_id, session_kind, archived_at
+        FROM sessions
+        WHERE id=$1
+        FOR UPDATE
+        "#,
+    )
+    .bind(session_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| RuntimeDomainError::not_found("session", session_id))?;
+    let status: String = session_row.get("status");
+    let tracked: bool = session_row.get("tracked");
+    let session_kind: String = session_row.get("session_kind");
+    let archived_at: Option<chrono::DateTime<chrono::Utc>> = session_row.get("archived_at");
+    if status != "open" {
+        return Err(RuntimeDomainError::conflict(format!("session {session_id} is not open: {status}")).into());
+    }
+    if archived_at.is_some() || (!tracked && session_kind != "requirementsReviewer") {
+        return Err(RuntimeDomainError::conflict(format!("session {session_id} is archived")).into());
+    }
+    let target_turn_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM turns WHERE session_id=$1 AND status='running' ORDER BY started_at DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let final_output_committed = if let Some(turn_id) = target_turn_id {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM model_events WHERE session_id=$1 AND turn_id=$2 AND event_type='final_response')",
+        )
+        .bind(session_id)
+        .bind(turn_id)
+        .fetch_one(&mut *tx)
+        .await?
+    } else {
+        false
+    };
+    let disposition = if compaction_active {
+        "queued_continuation_after_compaction"
+    } else if final_output_committed {
+        "queued_next_turn_after_final_output"
+    } else if target_turn_id.is_some() {
+        "active_turn_steering"
+    } else if already_active {
+        "queued_next_turn_after_final_output"
+    } else {
+        "idle_turn_start"
+    };
+    let id = Uuid::new_v4();
+    let row = sqlx::query(
+        r#"
+        INSERT INTO submitted_inputs (
+            id, session_id, target_turn_id, source_parent_session_id, actor, source, role,
+            content, payload, disposition, status, observed_lifecycle_state, accepted_at
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'accepted',$11,now())
+        RETURNING id, session_id, target_turn_id, source_parent_session_id, actor, source, role,
+                  content, payload, disposition, status, ordering_key, observed_lifecycle_state,
+                  placement_turn_id, failure_metadata
+        "#,
+    )
+    .bind(id)
+    .bind(session_id)
+    .bind(target_turn_id)
+    .bind(session_row.get::<Option<Uuid>, _>("parent_session_id"))
+    .bind(actor)
+    .bind(source)
+    .bind(role)
+    .bind(content)
+    .bind(json!({"content": content}))
+    .bind(disposition)
+    .bind(status.as_str())
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO event_stream (session_id, turn_id, entity_type, entity_id, event_type, status, payload)
+        VALUES ($1,$2,'submitted_input',$3,'submitted_input.accepted',$4,$5)
+        "#,
+    )
+    .bind(session_id)
+    .bind(target_turn_id)
+    .bind(id)
+    .bind(disposition)
+    .bind(json!({"submittedInputId": id, "disposition": disposition, "status": "accepted", "sourceParentSessionId": session_row.get::<Option<Uuid>, _>("parent_session_id")}))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(submitted_input_record(row))
+}
+
+pub async fn record_rejected_submitted_input(
+    pool: &PgPool,
+    session_id: Uuid,
+    actor: &str,
+    source: &str,
+    role: &str,
+    content: &str,
+    observed_lifecycle_state: &str,
+    reason: &str,
+) -> Result<Uuid> {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO submitted_inputs (
+            id, session_id, actor, source, role, content, payload, disposition, status,
+            observed_lifecycle_state, failure_metadata, rejected_at
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,'rejected_terminal','rejected',$8,$9,now())
+        "#,
+    )
+    .bind(id)
+    .bind(session_id)
+    .bind(actor)
+    .bind(source)
+    .bind(role)
+    .bind(content)
+    .bind(json!({"content": content}))
+    .bind(observed_lifecycle_state)
+    .bind(json!({"reason": reason}))
+    .execute(pool)
+    .await?;
+    append_event(
+        pool,
+        session_id,
+        None,
+        "submitted_input",
+        Some(id),
+        "submitted_input.rejected",
+        Some("rejected"),
+        json!({"submittedInputId": id, "reason": reason, "observedLifecycleState": observed_lifecycle_state}),
+    )
+    .await?;
+    Ok(id)
+}
+
+pub async fn next_accepted_submitted_input(pool: &PgPool, session_id: Uuid) -> Result<Option<SubmittedInputRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, session_id, target_turn_id, source_parent_session_id, actor, source, role,
+               content, payload, disposition, status, ordering_key, observed_lifecycle_state,
+               placement_turn_id, failure_metadata
+        FROM submitted_inputs
+        WHERE session_id=$1 AND status='accepted'
+        ORDER BY ordering_key ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(submitted_input_record))
+}
+
+pub async fn next_accepted_submitted_input_for_turn(pool: &PgPool, session_id: Uuid, turn_id: Uuid) -> Result<Option<SubmittedInputRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, session_id, target_turn_id, source_parent_session_id, actor, source, role,
+               content, payload, disposition, status, ordering_key, observed_lifecycle_state,
+               placement_turn_id, failure_metadata
+        FROM submitted_inputs
+        WHERE session_id=$1 AND target_turn_id=$2 AND status='accepted'
+        ORDER BY ordering_key ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(session_id)
+    .bind(turn_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(submitted_input_record))
+}
+
+pub async fn sessions_with_accepted_submitted_inputs(pool: &PgPool) -> Result<Vec<Uuid>> {
+    let rows = sqlx::query_scalar(
+        r#"
+        SELECT DISTINCT si.session_id
+        FROM submitted_inputs si
+        JOIN sessions s ON s.id = si.session_id
+        WHERE si.status='accepted'
+          AND s.status='open'
+          AND s.archived_at IS NULL
+          AND (s.tracked=true OR s.session_kind='requirementsReviewer')
+        ORDER BY si.session_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn submitted_input_counts(pool: &PgPool, session_id: Uuid) -> Result<(i64, i64, Option<String>, Option<String>)> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*) FILTER (WHERE status='accepted') AS queued,
+            COUNT(*) FILTER (WHERE status='applied') AS applied,
+            (array_agg(disposition ORDER BY ordering_key DESC) FILTER (WHERE status IN ('accepted','applied','failed','rejected')))[1] AS disposition,
+            (array_agg(status ORDER BY ordering_key DESC) FILTER (WHERE status IN ('accepted','applied','failed','rejected')))[1] AS status
+        FROM submitted_inputs
+        WHERE session_id=$1
+        "#,
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await?;
+    Ok((
+        row.get::<i64, _>("queued"),
+        row.get::<i64, _>("applied"),
+        row.get::<Option<String>, _>("disposition"),
+        row.get::<Option<String>, _>("status"),
+    ))
+}
+
+pub async fn latest_rejected_submitted_input(pool: &PgPool, session_id: Uuid) -> Result<Option<Value>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, failure_metadata, observed_lifecycle_state, rejected_at
+        FROM submitted_inputs
+        WHERE session_id=$1 AND status='rejected'
+        ORDER BY ordering_key DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| {
+        json!({
+            "submittedInputId": row.get::<Uuid, _>("id"),
+            "observedLifecycleState": row.get::<String, _>("observed_lifecycle_state"),
+            "failureMetadata": row.get::<Value, _>("failure_metadata"),
+            "rejectedAt": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("rejected_at").map(|time| time.to_rfc3339()),
+        })
+    }))
+}
+
+pub async fn active_turn_id(pool: &PgPool, session_id: Uuid) -> Result<Option<Uuid>> {
+    Ok(sqlx::query_scalar("SELECT id FROM turns WHERE session_id=$1 AND status='running' ORDER BY started_at DESC LIMIT 1")
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?)
+}
+
+pub async fn mark_submitted_input_applied(pool: &PgPool, id: Uuid, placement_turn_id: Uuid) -> Result<()> {
+    sqlx::query("UPDATE submitted_inputs SET status='applied', placement_turn_id=$2, applied_at=now(), updated_at=now() WHERE id=$1")
+        .bind(id)
+        .bind(placement_turn_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn mark_submitted_input_failed(pool: &PgPool, id: Uuid, reason: &str) -> Result<()> {
+    sqlx::query("UPDATE submitted_inputs SET status='failed', failure_metadata=$2, updated_at=now() WHERE id=$1")
+        .bind(id)
+        .bind(json!({"reason": reason}))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn abandon_unapplied_submitted_inputs(pool: &PgPool, session_id: Uuid, reason: &str) -> Result<u64> {
+    let result = sqlx::query(
+        "UPDATE submitted_inputs SET status='abandoned', failure_metadata=$2, abandoned_at=now(), updated_at=now() WHERE session_id=$1 AND status='accepted'",
+    )
+    .bind(session_id)
+    .bind(json!({"reason": reason}))
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 pub async fn list_sessions(pool: &PgPool, include_all: bool) -> Result<Vec<SessionSummary>> {
@@ -798,25 +1183,51 @@ pub async fn show_session(pool: &PgPool, session_id: Uuid) -> Result<Value> {
 }
 
 pub async fn archive_session(pool: &PgPool, session_id: Uuid) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(session_id.to_string())
+        .execute(&mut *tx)
+        .await?;
     let result = sqlx::query("UPDATE sessions SET tracked = false, archived_at = COALESCE(archived_at, now()), updated_at = now() WHERE id = $1")
-        .bind(session_id).execute(pool).await?;
+        .bind(session_id).execute(&mut *tx).await?;
     if result.rows_affected() != 1 { return Err(RuntimeDomainError::not_found("session", session_id).into()); }
+    let abandoned = sqlx::query(
+        "UPDATE submitted_inputs SET status='abandoned', failure_metadata=$2, abandoned_at=now(), updated_at=now() WHERE session_id=$1 AND status='accepted'",
+    )
+    .bind(session_id)
+    .bind(json!({"reason": "session archived"}))
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
     crate::god_mode::revoke_active(pool, session_id, "runtime", "session archived").await?;
     crate::requirements::close_nested_reviewers(pool, session_id).await?;
     append_event(pool, session_id, None, "session", Some(session_id), "session.archived", Some("archived"), json!({"tracked": false})).await?;
+    if abandoned > 0 {
+        append_event(pool, session_id, None, "submitted_input", None, "submitted_input.abandoned", Some("abandoned"), json!({"count": abandoned, "reason": "session archived"})).await?;
+    }
     Ok(())
 }
 
 pub async fn close_session(pool: &PgPool, session_id: Uuid, reason: &str, live_terminated: usize) -> Result<()> {
-    let session = session_record(pool, session_id).await?;
-    if session.status != "open" {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(session_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let session_status = sqlx::query_scalar::<_, String>("SELECT status FROM sessions WHERE id=$1 FOR UPDATE")
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| RuntimeDomainError::not_found("session", session_id))?;
+    if session_status != "open" {
         return Err(RuntimeDomainError::conflict(format!("session close blocked: session missing or not open: {session_id}")).into());
     }
     let running = sqlx::query(
         "SELECT id, handle, end_of_session_behavior FROM managed_processes WHERE session_id = $1 AND status = 'running' ORDER BY start_time ASC",
     )
     .bind(session_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
     let blocked: Vec<Value> = running
         .iter()
@@ -842,6 +1253,7 @@ pub async fn close_session(pool: &PgPool, session_id: Uuid, reason: &str, live_t
                 }
             })
             .collect();
+        tx.commit().await?;
         append_event(pool, session_id, None, "session", Some(session_id), "session.closeBlocked", Some("blocked"), json!({"reason": "running managed processes block session close", "blocked": blocked, "unownedTerminable": unowned, "liveTerminated": live_terminated, "terminableRows": terminable})).await?;
         return Err(RuntimeDomainError::conflict(format!("session close blocked by running managed processes: {session_id}")).into());
     }
@@ -849,7 +1261,7 @@ pub async fn close_session(pool: &PgPool, session_id: Uuid, reason: &str, live_t
         "UPDATE managed_processes SET status = 'sessionClosed', end_time = COALESCE(end_time, now()), termination_reason = 'sessionClosed' WHERE session_id = $1 AND status = 'running' AND end_of_session_behavior = 'terminate'",
     )
     .bind(session_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?
     .rows_affected();
     let result = sqlx::query(
@@ -857,12 +1269,24 @@ pub async fn close_session(pool: &PgPool, session_id: Uuid, reason: &str, live_t
     )
     .bind(session_id)
     .bind(reason)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
     if result.rows_affected() != 1 { return Err(RuntimeDomainError::conflict(format!("session close blocked: session missing or not open: {session_id}")).into()); }
+    let abandoned = sqlx::query(
+        "UPDATE submitted_inputs SET status='abandoned', failure_metadata=$2, abandoned_at=now(), updated_at=now() WHERE session_id=$1 AND status='accepted'",
+    )
+    .bind(session_id)
+    .bind(json!({"reason": "session closed"}))
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
     crate::god_mode::revoke_active(pool, session_id, "runtime", "session closed").await?;
     crate::requirements::close_nested_reviewers(pool, session_id).await?;
     append_event(pool, session_id, None, "session", Some(session_id), "session.closed", Some("closed"), json!({"reason": reason, "liveProcessesTerminated": live_terminated, "processRowsMarked": db_processes})).await?;
+    if abandoned > 0 {
+        append_event(pool, session_id, None, "submitted_input", None, "submitted_input.abandoned", Some("abandoned"), json!({"count": abandoned, "reason": "session closed"})).await?;
+    }
     Ok(())
 }
 

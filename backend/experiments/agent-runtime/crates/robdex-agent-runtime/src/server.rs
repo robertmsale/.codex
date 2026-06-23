@@ -27,7 +27,8 @@ use crate::{approvals, command_registry, compaction, db, projection, requirement
 pub struct ServerState {
     pub pool: PgPool,
     pub runtime_identity: String,
-    pub active_sends: Arc<Mutex<HashSet<Uuid>>>,
+    pub active_submit_drains: Arc<Mutex<HashSet<Uuid>>>,
+    pub active_compactions: Arc<Mutex<HashSet<Uuid>>>,
     pub shutdown_tx: watch::Sender<bool>,
     pub shutdown: watch::Receiver<bool>,
     pub model_client: Option<Arc<dyn ModelClient + Send + Sync>>,
@@ -47,7 +48,8 @@ impl ServerState {
         Self {
             pool,
             runtime_identity,
-            active_sends: Arc::new(Mutex::new(HashSet::new())),
+            active_submit_drains: Arc::new(Mutex::new(HashSet::new())),
+            active_compactions: Arc::new(Mutex::new(HashSet::new())),
             shutdown_tx,
             shutdown,
             model_client: None,
@@ -60,7 +62,8 @@ impl ServerState {
         Self {
             pool,
             runtime_identity,
-            active_sends: Arc::new(Mutex::new(HashSet::new())),
+            active_submit_drains: Arc::new(Mutex::new(HashSet::new())),
+            active_compactions: Arc::new(Mutex::new(HashSet::new())),
             shutdown_tx,
             shutdown: shutdown_rx,
             model_client: Some(model_client),
@@ -186,6 +189,7 @@ fn parse_json<T>(payload: std::result::Result<Json<T>, JsonRejection>) -> Result
 }
 
 pub fn app(state: ServerState) -> Router {
+    state.reconcile_submitted_inputs();
     Router::new()
         .route("/health", get(health))
         .route("/state/snapshot", get(snapshot))
@@ -204,6 +208,7 @@ pub fn app(state: ServerState) -> Router {
         .route("/sessions/{session_id}/requirements", get(requirements_status).post(set_requirements))
         .route("/sessions/{session_id}/requirements/clear", post(clear_requirements))
         .route("/sessions/{session_id}/requirements/packets", get(requirements_packets))
+        .route("/sessions/{session_id}/requirements/reviewer/send", post(send_requirements_reviewer_message))
         .route("/sessions/{session_id}/settings", post(update_session_settings))
         .route("/sessions/{session_id}/close", post(close_session))
         .route("/sessions/{session_id}/archive", post(archive_session))
@@ -663,22 +668,34 @@ async fn compact_session(
     payload: std::result::Result<Json<CompactSessionRequest>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let request = parse_json(payload)?;
-    let checkpoint = if let Some(through_turn) = request.through_turn {
+    state.active_compactions.lock().await.insert(session_id);
+    let checkpoint_result = if let Some(through_turn) = request.through_turn {
         compaction::compact_session_through_turn(
             &state.pool,
             session_id,
             through_turn,
             compaction::CompactionBudget::from_env(),
         )
-        .await?
+        .await
     } else {
         compaction::compact_session_through_latest_completed_turn(
             &state.pool,
             session_id,
             compaction::CompactionBudget::from_env(),
         )
-        .await?
+        .await
     };
+    state.active_compactions.lock().await.remove(&session_id);
+    if db::next_accepted_submitted_input(&state.pool, session_id).await?.is_some() {
+        let should_spawn = {
+            let mut active = state.active_submit_drains.lock().await;
+            active.insert(session_id)
+        };
+        if should_spawn {
+            spawn_submit_worker(state.clone(), session_id);
+        }
+    }
+    let checkpoint = checkpoint_result?;
     Ok(Json(json!({
         "sessionId": session_id,
         "checkpointId": checkpoint.id,
@@ -687,81 +704,229 @@ async fn compact_session(
     })))
 }
 
+async fn dispatch_one_submitted_input(
+    pool: &PgPool,
+    session_id: Uuid,
+    input: db::SubmittedInputRecord,
+    model_client: Option<Arc<dyn ModelClient + Send + Sync>>,
+) -> Result<Uuid> {
+    let result = if let Some(model) = model_client {
+        runtime::send_with_model_client(
+            pool,
+            session_id,
+            &input.content,
+            model.as_ref(),
+            compaction::CompactionBudget::from_env(),
+        )
+        .await
+    } else {
+        runtime::send(pool, session_id, &input.content).await
+    };
+    match result {
+        Ok(turn_id) => {
+            db::mark_submitted_input_applied(pool, input.id, turn_id).await?;
+            db::append_event(
+                pool,
+                session_id,
+                Some(turn_id),
+                "submitted_input",
+                Some(input.id),
+                "submitted_input.applied",
+                Some("applied"),
+                json!({"submittedInputId": input.id, "placementTurnId": turn_id, "disposition": input.disposition}),
+            )
+            .await?;
+            Ok(turn_id)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn spawn_submit_worker(state: ServerState, session_id: Uuid) {
+    tokio::spawn(async move {
+        loop {
+            let next = match db::next_accepted_submitted_input(&state.pool, session_id).await {
+                Ok(Some(input)) => input,
+                Ok(None) => break,
+                Err(error) => {
+                    let _ = db::append_event(&state.pool, session_id, None, "submitted_input", None, "submitted_input.drainFailed", Some("failed"), json!({"error": error.to_string()})).await;
+                    break;
+                }
+            };
+            if let Err(error) = db::ensure_session_open(&state.pool, session_id).await {
+                let abandoned = db::abandon_unapplied_submitted_inputs(&state.pool, session_id, "terminal lifecycle before submitted input drain").await.unwrap_or(0);
+                let _ = db::append_event(&state.pool, session_id, None, "submitted_input", Some(next.id), "submitted_input.abandoned", Some("abandoned"), json!({"count": abandoned, "reason": error.to_string()})).await;
+                break;
+            }
+            if next.disposition == "active_turn_steering"
+                && next.target_turn_id.is_some()
+                && let Some(model) = state.model_client.clone()
+            {
+                match runtime::continue_pending_steering_after_operation_boundary(
+                    &state.pool,
+                    session_id,
+                    next.target_turn_id.expect("checked target turn"),
+                    model.as_ref(),
+                )
+                .await
+                {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => {
+                        let _ = db::mark_submitted_input_failed(&state.pool, next.id, &error.to_string()).await;
+                        let _ = db::append_event(&state.pool, session_id, None, "submitted_input", Some(next.id), "submitted_input.applyFailed", Some("failed"), json!({"submittedInputId": next.id, "error": error.to_string()})).await;
+                        break;
+                    }
+                }
+            }
+            if let Err(error) = dispatch_one_submitted_input(&state.pool, session_id, next.clone(), state.model_client.clone()).await {
+                let _ = db::mark_submitted_input_failed(&state.pool, next.id, &error.to_string()).await;
+                let _ = db::append_event(&state.pool, session_id, None, "submitted_input", Some(next.id), "submitted_input.applyFailed", Some("failed"), json!({"submittedInputId": next.id, "error": error.to_string()})).await;
+                break;
+            }
+        }
+        state.active_submit_drains.lock().await.remove(&session_id);
+    });
+}
+
+impl ServerState {
+    pub fn reconcile_submitted_inputs(&self) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let sessions = match db::sessions_with_accepted_submitted_inputs(&state.pool).await {
+                Ok(sessions) => sessions,
+                Err(error) => {
+                    eprintln!("[submitted-input-reconcile] failed to list accepted inputs: {error}");
+                    return;
+                }
+            };
+            for session_id in sessions {
+                let should_spawn = {
+                    let mut active = state.active_submit_drains.lock().await;
+                    active.insert(session_id)
+                };
+                if should_spawn {
+                    spawn_submit_worker(state.clone(), session_id);
+                }
+            }
+        });
+    }
+}
+
 async fn send_message(
     State(state): State<ServerState>,
     Path(session_id): Path<Uuid>,
     payload: std::result::Result<Json<SendRequest>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let request = parse_json(payload)?;
-    if request.message.trim().is_empty() {
+    submit_message_to_session(state, session_id, request.message, "gui", "unifiedSubmit").await
+}
+
+async fn send_requirements_reviewer_message(
+    State(state): State<ServerState>,
+    Path(source_session_id): Path<Uuid>,
+    payload: std::result::Result<Json<SendRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let request = parse_json(payload)?;
+    let reviewer_session_id = crate::requirements::active_reviewer_for_source(&state.pool, source_session_id)
+        .await
+        .map_err(ApiError::from_anyhow)?
+        .ok_or_else(|| ApiError::conflict("Requirements Review has no active reviewer session"))?;
+    let reviewer = db::session_record(&state.pool, reviewer_session_id)
+        .await
+        .map_err(ApiError::from_anyhow)?;
+    if reviewer.parent_session_id != Some(source_session_id)
+        || reviewer.session_kind != "requirementsReviewer"
+        || !reviewer.hidden
+    {
+        return Err(ApiError::conflict("Requirements reviewer linkage is invalid"));
+    }
+    submit_message_to_session(
+        state,
+        reviewer_session_id,
+        request.message,
+        "gui",
+        "requirementsReviewDetail",
+    )
+    .await
+}
+
+async fn submit_message_to_session(
+    state: ServerState,
+    session_id: Uuid,
+    message: String,
+    actor: &str,
+    source: &str,
+) -> Result<Json<Value>, ApiError> {
+    if message.trim().is_empty() {
         return Err(ApiError::bad_request("message must not be empty"));
     }
-    {
-        let mut active = state.active_sends.lock().await;
-        if !active.insert(session_id) {
-            return Err(ApiError::conflict("session already has an active send"));
-        }
-    }
-    let pool = state.pool.clone();
-    let active_sends = state.active_sends.clone();
-    let model_client = state.model_client.clone();
-    let message = request.message.clone();
-    let message_for_query = message.clone();
-    let send_task = tokio::spawn(async move {
-        let result = if let Some(model) = model_client {
-            runtime::send_with_model_client(
-                &pool,
-                session_id,
-                &message,
-                model.as_ref(),
-                compaction::CompactionBudget::from_env(),
-            )
-            .await
+    let compaction_active = state.active_compactions.lock().await.contains(&session_id);
+    let already_active = {
+        let mut active = state.active_submit_drains.lock().await;
+        if compaction_active {
+            true
         } else {
-            runtime::send(&pool, session_id, &message).await
-        };
-        active_sends.lock().await.remove(&session_id);
-        result
-    });
-
-    for _ in 0..100 {
-        if let Some(turn_id) = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM turns WHERE session_id=$1 AND input_text=$2 ORDER BY started_at DESC LIMIT 1",
-        )
-        .bind(session_id)
-        .bind(&message_for_query)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(anyhow::Error::from)?
-        {
-            return Ok(Json(json!({"sessionId": session_id, "turnId": turn_id, "status": "running"})));
+            !active.insert(session_id)
         }
-        if send_task.is_finished() {
-            let result = send_task
+    };
+    let submitted = match db::record_accepted_submitted_input_atomic(
+        &state.pool,
+        session_id,
+        compaction_active,
+        already_active,
+        actor,
+        source,
+        "user",
+        &message,
+    )
+    .await
+    {
+        Ok(submitted) => submitted,
+        Err(error) => {
+            if !already_active {
+                state.active_submit_drains.lock().await.remove(&session_id);
+            }
+            let observed = db::session_record(&state.pool, session_id)
                 .await
-                .map_err(|error| ApiError::from_anyhow(anyhow::anyhow!("send worker failed: {error}")))?;
-            return match result {
-                Ok(turn_id) => Ok(Json(json!({"sessionId": session_id, "turnId": turn_id, "status": "completed"}))),
-                Err(error) => {
-                    if let Some(turn_id) = sqlx::query_scalar::<_, Uuid>(
-                        "SELECT id FROM turns WHERE session_id=$1 AND input_text=$2 ORDER BY started_at DESC LIMIT 1",
-                    )
-                    .bind(session_id)
-                    .bind(&message_for_query)
-                    .fetch_optional(&state.pool)
-                    .await
-                    .map_err(anyhow::Error::from)?
-                    {
-                        Ok(Json(json!({"sessionId": session_id, "turnId": turn_id, "status": "failed", "error": error.to_string()})))
-                    } else {
-                        Err(ApiError::from_anyhow(error))
-                    }
-                }
-            };
+                .map(|session| if session.archived_at.is_some() { "archived".to_string() } else { session.status })
+                .unwrap_or_else(|_| "invalid".to_string());
+            if observed != "invalid" {
+                let _ = db::record_rejected_submitted_input(&state.pool, session_id, actor, source, "user", &message, &observed, &error.to_string()).await;
+            }
+            return Err(ApiError::from_anyhow(error));
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    if !already_active {
+        spawn_submit_worker(state.clone(), session_id);
     }
-    Ok(Json(json!({"sessionId": session_id, "turnId": null, "status": "queued"})))
+    let mut response_turn_id = submitted.target_turn_id;
+    if submitted.disposition == "idle_turn_start" {
+        for _ in 0..100 {
+            response_turn_id = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM turns WHERE session_id=$1 AND input_text=$2 ORDER BY started_at DESC LIMIT 1",
+            )
+            .bind(session_id)
+            .bind(&message)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(anyhow::Error::from)
+            .map_err(ApiError::from_anyhow)?;
+            if response_turn_id.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    Ok(Json(json!({
+        "sessionId": session_id,
+        "turnId": response_turn_id,
+        "submittedInputId": submitted.id,
+        "disposition": submitted.disposition,
+        "status": submitted.status,
+        "orderingKey": submitted.ordering_key,
+        "lifecycle": submitted.observed_lifecycle_state
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1329,6 +1494,7 @@ mod tests {
     struct FakeModelClient {
         observed_history: Arc<StdMutex<Vec<Vec<ModelHistoryItem>>>>,
         observed_request_shapes: Arc<StdMutex<Vec<Value>>>,
+        observed_messages: Arc<StdMutex<Vec<String>>>,
         request_error: Option<&'static str>,
         final_error: Option<&'static str>,
         direct_final_text: Option<&'static str>,
@@ -1354,6 +1520,7 @@ mod tests {
     impl ModelClient for FakeModelClient {
         async fn request_tool_call(&self, role: &crate::roles::RoleSnapshot, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], execute_code_contract: &str, request_registry_contract: &str, message: &str) -> anyhow::Result<ModelInitialTurn> {
             self.observed_history.lock().expect("history lock").push(history.to_vec());
+            self.observed_messages.lock().expect("messages lock").push(message.to_string());
             if let Some(message) = self.request_error {
                 anyhow::bail!("{message}");
             }
@@ -1922,18 +2089,24 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_ne!(forked["sessionId"], session_id.to_string());
 
-        state.active_sends.lock().await.insert(session_id);
-        let (status, conflict) = request_json(
+        state.active_submit_drains.lock().await.insert(session_id);
+        let (status, submitted) = request_json(
             router.clone(),
             Method::POST,
             &format!("/sessions/{session_id}/send"),
-            json!({"message":"conflict"}),
+            json!({"message":"steering while active"}),
         )
         .await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_api_error(&conflict, "conflict");
-        assert!(conflict["error"]["message"].as_str().unwrap_or_default().contains("active send"));
-        state.active_sends.lock().await.remove(&session_id);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(submitted["disposition"], "queued_next_turn_after_final_output");
+        assert!(submitted["submittedInputId"].as_str().is_some());
+        let queued_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='accepted'")
+            .bind(session_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("queued submitted input count");
+        assert_eq!(queued_count, 1);
+        state.active_submit_drains.lock().await.remove(&session_id);
 
         let (status, archived) = request_json(
             router.clone(),
@@ -1954,6 +2127,1355 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(closed["status"], "closed");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn unified_submit_accepts_active_steering_and_drains_without_parallel_turns() {
+        let test_db = validation_db().await;
+        let model = Arc::new(FakeModelClient {
+            direct_final_text: Some("done"),
+            request_delay_ms: Some(80),
+            ..Default::default()
+        });
+        let state = ServerState::new_with_model_client(test_db.pool.clone(), "unified-submit-test".to_string(), model);
+        let router = app(state.clone());
+        let (_, created) = request_json(
+            router.clone(),
+            Method::POST,
+            "/sessions",
+            json!({"role":"runtime-no-rg","project":"steering-proof","model":"fake-model","workdir":".","worktreeRoot":".","title":"Steering proof","name":"steering-proof"}),
+        )
+        .await;
+        let session_id: Uuid = serde_json::from_value(created["sessionId"].clone()).expect("session id");
+
+        let (status, first) = request_json(
+            router.clone(),
+            Method::POST,
+            &format!("/sessions/{session_id}/send"),
+            json!({"message":"first message"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(first["disposition"], "idle_turn_start");
+
+        let (status, second) = request_json(
+            router.clone(),
+            Method::POST,
+            &format!("/sessions/{session_id}/send"),
+            json!({"message":"second while active"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_ne!(second["disposition"], "idle_turn_start");
+        assert!(second["submittedInputId"].as_str().is_some());
+        let second_submitted_id: Uuid = serde_json::from_value(second["submittedInputId"].clone()).expect("submitted input id");
+        let second_row = sqlx::query(
+            r#"
+            SELECT session_id, actor, source, role, content, disposition, status,
+                   ordering_key, observed_lifecycle_state, placement_turn_id,
+                   accepted_at, applied_at, failure_metadata
+            FROM submitted_inputs WHERE id=$1
+            "#,
+        )
+        .bind(second_submitted_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("submitted input row");
+        assert_eq!(second_row.get::<Uuid, _>("session_id"), session_id);
+        assert_eq!(second_row.get::<String, _>("actor"), "gui");
+        assert_eq!(second_row.get::<String, _>("source"), "unifiedSubmit");
+        assert_eq!(second_row.get::<String, _>("role"), "user");
+        assert_eq!(second_row.get::<String, _>("content"), "second while active");
+        assert_ne!(second_row.get::<String, _>("disposition"), "idle_turn_start");
+        assert_eq!(second_row.get::<String, _>("status"), "accepted");
+        assert!(second_row.get::<i64, _>("ordering_key") > 0);
+        assert_eq!(second_row.get::<String, _>("observed_lifecycle_state"), "open");
+        assert!(second_row.get::<Option<Uuid>, _>("placement_turn_id").is_none());
+        assert!(second_row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("accepted_at").is_some());
+        assert!(second_row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("applied_at").is_none());
+        assert!(second_row.get::<Value, _>("failure_metadata").as_object().is_some());
+
+        for _ in 0..80 {
+            let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='applied'")
+                .bind(session_id)
+                .fetch_one(&state.pool)
+                .await
+                .expect("applied count");
+            if applied == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='applied'")
+            .bind(session_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("applied final count");
+        assert_eq!(applied, 2);
+        let running: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status='running'")
+            .bind(session_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("running count");
+        assert_eq!(running, 0);
+        let turn_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1")
+            .bind(session_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("turn count");
+        assert_eq!(turn_count, 2);
+        let projection = projection::build_runtime_projection_snapshot(&state.pool, Some(session_id)).await.expect("projection");
+        let selected = projection.selected_session.expect("selected session");
+        assert_eq!(selected.queued_submitted_input_count, 0);
+        assert_eq!(selected.applied_steering_count, 2);
+        assert_eq!(selected.submit_status.as_deref(), Some("applied"));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn simultaneous_unified_submits_are_atomically_ordered_and_do_not_start_parallel_turns() {
+        let test_db = validation_db().await;
+        let model = Arc::new(FakeModelClient {
+            direct_final_text: Some("ordered"),
+            request_delay_ms: Some(100),
+            ..Default::default()
+        });
+        let state = ServerState::new_with_model_client(test_db.pool.clone(), "atomic-submit-order".to_string(), model);
+        let router = app(state.clone());
+        let (_, created) = request_json(
+            router.clone(),
+            Method::POST,
+            "/sessions",
+            json!({"role":"runtime-no-rg","project":"atomic-submit","model":"fake-model","workdir":".","worktreeRoot":".","title":"Atomic submit","name":"atomic-submit"}),
+        )
+        .await;
+        let session_id: Uuid = serde_json::from_value(created["sessionId"].clone()).expect("session id");
+
+        let send_path = format!("/sessions/{session_id}/send");
+        let first = request_json(router.clone(), Method::POST, &send_path, json!({"message":"first simultaneous"}));
+        let second = request_json(router.clone(), Method::POST, &send_path, json!({"message":"second simultaneous"}));
+        let third = request_json(router.clone(), Method::POST, &send_path, json!({"message":"third simultaneous"}));
+        let ((first_status, first_body), (second_status, second_body), (third_status, third_body)) = tokio::join!(first, second, third);
+        for (status, body) in [(first_status, first_body), (second_status, second_body), (third_status, third_body)] {
+            assert_eq!(status, StatusCode::OK, "submit must be accepted: {body}");
+            assert!(body["submittedInputId"].as_str().is_some());
+            assert_ne!(body["disposition"], "rejected_terminal");
+        }
+
+        for _ in 0..120 {
+            let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='applied'")
+                .bind(session_id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("applied count");
+            if applied == 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let rows = sqlx::query("SELECT content, ordering_key, status, placement_turn_id FROM submitted_inputs WHERE session_id=$1 ORDER BY ordering_key ASC")
+            .bind(session_id)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("submitted rows");
+        assert_eq!(rows.len(), 3);
+        let mut previous_ordering = 0_i64;
+        for row in &rows {
+            let ordering = row.get::<i64, _>("ordering_key");
+            assert!(ordering > previous_ordering, "ordering keys must be durable and strictly monotonic");
+            previous_ordering = ordering;
+            assert_eq!(row.get::<String, _>("status"), "applied");
+            assert!(row.get::<Option<Uuid>, _>("placement_turn_id").is_some());
+        }
+        let turn_rows = sqlx::query("SELECT input_text, started_at FROM turns WHERE session_id=$1 ORDER BY started_at ASC, id ASC")
+            .bind(session_id)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("turn rows");
+        assert_eq!(turn_rows.len(), 3);
+        let turn_inputs = turn_rows.iter().map(|row| row.get::<String, _>("input_text")).collect::<Vec<_>>();
+        let ordered_inputs = rows.iter().map(|row| row.get::<String, _>("content")).collect::<Vec<_>>();
+        assert_eq!(turn_inputs, ordered_inputs, "runtime placement must follow durable submitted-input ordering");
+        let running: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status='running'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("running turns");
+        assert_eq!(running, 0);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn unified_submit_rejects_terminal_sessions_before_turn_creation() {
+        let test_db = validation_db().await;
+        let state = ServerState::new(test_db.pool.clone());
+        let router = app(state.clone());
+        let (_, created) = request_json(
+            router.clone(),
+            Method::POST,
+            "/sessions",
+            json!({"role":"runtime-no-rg","project":"terminal-proof","model":"fake-model","workdir":".","worktreeRoot":".","title":"Terminal proof","name":"terminal-proof"}),
+        )
+        .await;
+        let session_id: Uuid = serde_json::from_value(created["sessionId"].clone()).expect("session id");
+        let (status, _) = request_json(router.clone(), Method::POST, &format!("/sessions/{session_id}/archive"), json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, error) = request_json(
+            router.clone(),
+            Method::POST,
+            &format!("/sessions/{session_id}/send"),
+            json!({"message":"must reject"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_api_error(&error, "conflict");
+        let turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1")
+            .bind(session_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("turn count");
+        assert_eq!(turns, 0);
+        let rejected: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='rejected'")
+            .bind(session_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("rejected count");
+        assert_eq!(rejected, 1);
+        let rejected_row = sqlx::query("SELECT disposition, observed_lifecycle_state, failure_metadata FROM submitted_inputs WHERE session_id=$1 AND status='rejected'")
+            .bind(session_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("rejected row");
+        assert_eq!(rejected_row.get::<String, _>("disposition"), "rejected_terminal");
+        assert_eq!(rejected_row.get::<String, _>("observed_lifecycle_state"), "archived");
+        assert!(rejected_row.get::<Value, _>("failure_metadata")["reason"].as_str().unwrap_or_default().contains("archived"));
+
+        let (_, created_closed) = request_json(
+            router.clone(),
+            Method::POST,
+            "/sessions",
+            json!({"role":"runtime-no-rg","project":"terminal-proof","model":"fake-model","workdir":".","worktreeRoot":".","title":"Closed proof","name":"closed-proof"}),
+        )
+        .await;
+        let closed_session_id: Uuid = serde_json::from_value(created_closed["sessionId"].clone()).expect("closed session id");
+        let (status, _) = request_json(router.clone(), Method::POST, &format!("/sessions/{closed_session_id}/close"), json!({"reason":"terminal submit proof"})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = request_json(router, Method::POST, &format!("/sessions/{closed_session_id}/send"), json!({"message":"closed reject"})).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let closed_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1")
+            .bind(closed_session_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("closed turns");
+        assert_eq!(closed_turns, 0);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn accepted_unapplied_submitted_inputs_reconcile_after_server_restart() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("restart steering"), ".", Some("."), None, None).await.expect("session");
+        let session = db::session_record(&test_db.pool, session_id).await.expect("session record");
+        let submitted = db::record_accepted_submitted_input(
+            &test_db.pool,
+            &session,
+            None,
+            "gui",
+            "unifiedSubmit",
+            "user",
+            "survive restart",
+            "idle_turn_start",
+        )
+        .await
+        .expect("accepted input");
+
+        let model = Arc::new(FakeModelClient { direct_final_text: Some("after restart"), ..Default::default() });
+        let state_after_restart = ServerState::new_with_model_client(test_db.pool.clone(), "restart-reconcile".to_string(), model);
+        let _router = app(state_after_restart.clone());
+        for _ in 0..80 {
+            let status: String = sqlx::query_scalar("SELECT status FROM submitted_inputs WHERE id=$1")
+                .bind(submitted.id)
+                .fetch_one(&state_after_restart.pool)
+                .await
+                .expect("submitted status");
+            if status == "applied" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let row = sqlx::query("SELECT status, placement_turn_id FROM submitted_inputs WHERE id=$1")
+            .bind(submitted.id)
+            .fetch_one(&state_after_restart.pool)
+            .await
+            .expect("submitted final");
+        assert_eq!(row.get::<String, _>("status"), "applied");
+        assert!(row.get::<Option<Uuid>, _>("placement_turn_id").is_some());
+        let turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text='survive restart'")
+            .bind(session_id)
+            .fetch_one(&state_after_restart.pool)
+            .await
+            .expect("turn count");
+        assert_eq!(turns, 1);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn terminal_lifecycle_abandons_unapplied_submitted_inputs_and_prevents_later_drain() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("abandon steering"), ".", Some("."), None, None).await.expect("session");
+        let session = db::session_record(&test_db.pool, session_id).await.expect("session record");
+        let first = db::record_accepted_submitted_input(&test_db.pool, &session, None, "gui", "unifiedSubmit", "user", "abandon one", "queued_next_turn_after_final_output").await.expect("accepted one");
+        let second = db::record_accepted_submitted_input(&test_db.pool, &session, None, "gui", "unifiedSubmit", "user", "abandon two", "queued_next_turn_after_final_output").await.expect("accepted two");
+        db::archive_session(&test_db.pool, session_id).await.expect("archive");
+
+        let statuses = sqlx::query("SELECT id, status, failure_metadata FROM submitted_inputs WHERE id = ANY($1) ORDER BY ordering_key")
+            .bind(vec![first.id, second.id])
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("submitted statuses");
+        assert_eq!(statuses.len(), 2);
+        for row in statuses {
+            assert_eq!(row.get::<String, _>("status"), "abandoned");
+            assert_eq!(row.get::<Value, _>("failure_metadata")["reason"], "session archived");
+        }
+
+        let model = Arc::new(FakeModelClient { direct_final_text: Some("must not run"), ..Default::default() });
+        let state_after_archive = ServerState::new_with_model_client(test_db.pool.clone(), "abandoned-reconcile".to_string(), model);
+        let _router = app(state_after_archive.clone());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("turn count");
+        assert_eq!(turns, 0, "archived-session accepted inputs must not start later work");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn submit_races_with_archive_and_close_leave_no_live_queue_or_late_work() {
+        let test_db = validation_db().await;
+        let state = ServerState::new(test_db.pool.clone());
+        let router = app(state.clone());
+        let (_, archived_created) = request_json(
+            router.clone(),
+            Method::POST,
+            "/sessions",
+            json!({"role":"runtime-no-rg","project":"submit-race","model":"fake-model","workdir":".","worktreeRoot":".","title":"Archive race","name":"archive-race"}),
+        ).await;
+        let archive_session_id: Uuid = serde_json::from_value(archived_created["sessionId"].clone()).expect("archive session");
+        state.active_compactions.lock().await.insert(archive_session_id);
+        let archive_send_path = format!("/sessions/{archive_session_id}/send");
+        let archive_path = format!("/sessions/{archive_session_id}/archive");
+        let (send_result, archive_result) = tokio::join!(
+            request_json(router.clone(), Method::POST, &archive_send_path, json!({"message":"archive race steering"})),
+            request_json(router.clone(), Method::POST, &archive_path, json!({})),
+        );
+        assert!(matches!(send_result.0, StatusCode::OK | StatusCode::CONFLICT), "submit result must be typed accept or terminal reject: {:?}", send_result);
+        assert_eq!(archive_result.0, StatusCode::OK);
+        state.active_compactions.lock().await.remove(&archive_session_id);
+        let archive_accepted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='accepted'")
+            .bind(archive_session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("archive accepted");
+        assert_eq!(archive_accepted, 0, "archive race must leave no live accepted queue");
+        let archive_late_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text='archive race steering'")
+            .bind(archive_session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("archive late turns");
+        assert_eq!(archive_late_turns, 0, "archive race must not start late work");
+        let archive_terminal_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status IN ('abandoned','rejected')")
+            .bind(archive_session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("archive terminal rows");
+        assert!(archive_terminal_rows >= 1, "accepted input must be abandoned or terminal submit rejected");
+
+        let (_, closed_created) = request_json(
+            router.clone(),
+            Method::POST,
+            "/sessions",
+            json!({"role":"runtime-no-rg","project":"submit-race","model":"fake-model","workdir":".","worktreeRoot":".","title":"Close race","name":"close-race"}),
+        ).await;
+        let close_session_id: Uuid = serde_json::from_value(closed_created["sessionId"].clone()).expect("close session");
+        state.active_compactions.lock().await.insert(close_session_id);
+        let close_send_path = format!("/sessions/{close_session_id}/send");
+        let close_path = format!("/sessions/{close_session_id}/close");
+        let (send_result, close_result) = tokio::join!(
+            request_json(router.clone(), Method::POST, &close_send_path, json!({"message":"close race steering"})),
+            request_json(router, Method::POST, &close_path, json!({"reason":"race proof"})),
+        );
+        assert!(matches!(send_result.0, StatusCode::OK | StatusCode::CONFLICT), "submit result must be typed accept or terminal reject: {:?}", send_result);
+        assert_eq!(close_result.0, StatusCode::OK);
+        state.active_compactions.lock().await.remove(&close_session_id);
+        let close_accepted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='accepted'")
+            .bind(close_session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("close accepted");
+        assert_eq!(close_accepted, 0, "close race must leave no live accepted queue");
+        let close_late_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text='close race steering'")
+            .bind(close_session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("close late turns");
+        assert_eq!(close_late_turns, 0, "close race must not start late work");
+        let close_terminal_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status IN ('abandoned','rejected')")
+            .bind(close_session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("close terminal rows");
+        assert!(close_terminal_rows >= 1, "accepted input must be abandoned or terminal submit rejected");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn steering_preserves_bounded_artifacts_process_compaction_and_workflow_memory_rows() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("preserve-bounded"), ".", Some("."), None, None).await.expect("session");
+        let completed_turn = Uuid::new_v4();
+        let tool_call_id = Uuid::new_v4();
+        let script_run_id = Uuid::new_v4();
+        let process_id = Uuid::new_v4();
+        let artifact_id = Uuid::new_v4();
+        let checkpoint_id = Uuid::new_v4();
+        let memory_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at, completed_at) VALUES ($1,$2,'user','prior artifact turn','completed',now() - interval '5 minutes',now() - interval '4 minutes')")
+            .bind(completed_turn).bind(session_id).execute(&test_db.pool).await.expect("turn");
+        sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, result, started_at, completed_at) VALUES ($1,$2,$3,'execute_code','preserve-call',$4,'completed',$5,now() - interval '5 minutes',now() - interval '4 minutes')")
+            .bind(tool_call_id).bind(session_id).bind(completed_turn).bind(json!({"source":"output('preserve')"})).bind(json!({"ok":true})).execute(&test_db.pool).await.expect("tool");
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, final_output, stdout, stderr, completed_at) VALUES ($1,$2,'output(\"preserve\")','completed','bounded preview','full stdout preserved','',now() - interval '4 minutes')")
+            .bind(script_run_id).bind(tool_call_id).execute(&test_db.pool).await.expect("script");
+        sqlx::query("INSERT INTO managed_processes (id, handle, session_id, starting_turn_id, binary_name, argv, cwd, status, end_of_turn_behavior, end_of_session_behavior, metadata, start_time, end_time) VALUES ($1,'preserve-process',$2,$3,'sleep','[\"1\"]'::jsonb,'.','completed','terminate','terminate',$4,now() - interval '5 minutes',now() - interval '4 minutes')")
+            .bind(process_id).bind(session_id).bind(completed_turn).bind(json!({"beforeSteering":true})).execute(&test_db.pool).await.expect("process");
+        sqlx::query("INSERT INTO execution_output_artifacts (id, session_id, turn_id, tool_call_id, script_run_id, process_id, source_type, stream, content, byte_count, line_count, metadata) VALUES ($1,$2,$3,$4,$5,$6,'script','stdout',$7,21,2,$8)")
+            .bind(artifact_id).bind(session_id).bind(completed_turn).bind(tool_call_id).bind(script_run_id).bind(process_id).bind("full stdout preserved").bind(json!({"truncated":false,"artifactHandle":"preserve"})).execute(&test_db.pool).await.expect("artifact");
+        sqlx::query("INSERT INTO compaction_checkpoints (id, session_id, status, compacted_through_turn_id, replacement_context, summary, completed_at) VALUES ($1,$2,'completed',$3,'compacted context before steering',$4,now() - interval '3 minutes')")
+            .bind(checkpoint_id).bind(session_id).bind(completed_turn).bind(json!({"summary":"preserve compaction"})).execute(&test_db.pool).await.expect("checkpoint");
+        let vector = format!("[{}]", vec!["0"; workflow_memory::DEFAULT_DIMENSIONS].join(","));
+        sqlx::query(
+            r#"
+            INSERT INTO workflow_memories (
+                id, script_run_id, session_id, scope_type, project_key, title, reason, summary,
+                provider, model, dimensions, source_hash, command_fingerprint, embedding
+            ) VALUES ($1,$2,$3,'project','preserve-bounded','Preserve memory','test','workflow memory before steering','deterministic','test',$4,'preserve-hash','preserve-command',$5::halfvec)
+            "#,
+        )
+        .bind(memory_id).bind(script_run_id).bind(session_id).bind(workflow_memory::DEFAULT_DIMENSIONS as i32).bind(vector).execute(&test_db.pool).await.expect("memory");
+        workflow_memory::insert_memory_event(&test_db.pool, session_id, Some(completed_turn), Some(script_run_id), Some(memory_id), "workflow_memory.promoted", json!({"beforeSteering":true})).await.expect("memory event");
+
+        let before_artifact: (String, i64, i64, Value) = sqlx::query_as("SELECT content, byte_count, line_count, metadata FROM execution_output_artifacts WHERE id=$1")
+            .bind(artifact_id).fetch_one(&test_db.pool).await.expect("before artifact");
+        let before_process: (String, Value) = sqlx::query_as("SELECT status, metadata FROM managed_processes WHERE id=$1")
+            .bind(process_id).fetch_one(&test_db.pool).await.expect("before process");
+        let before_checkpoint: (String, String) = sqlx::query_as("SELECT status, replacement_context FROM compaction_checkpoints WHERE id=$1")
+            .bind(checkpoint_id).fetch_one(&test_db.pool).await.expect("before checkpoint");
+        let before_memory_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_memory_events WHERE memory_id=$1")
+            .bind(memory_id).fetch_one(&test_db.pool).await.expect("before memory events");
+
+        let model = Arc::new(FakeModelClient { direct_final_text: Some("after preservation steering"), ..Default::default() });
+        let state = ServerState::new_with_model_client(test_db.pool.clone(), "preserve-bounded".to_string(), model);
+        let router = app(state.clone());
+        state.active_submit_drains.lock().await.insert(session_id);
+        let (status, submitted) = request_json(router, Method::POST, &format!("/sessions/{session_id}/send"), json!({"message":"preserve bounded surfaces"})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_ne!(submitted["disposition"], "idle_turn_start");
+        state.active_submit_drains.lock().await.remove(&session_id);
+        {
+            let mut active = state.active_submit_drains.lock().await;
+            active.remove(&session_id);
+            active.insert(session_id);
+        }
+        spawn_submit_worker(state.clone(), session_id);
+        for _ in 0..80 {
+            let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='applied'")
+                .bind(session_id).fetch_one(&test_db.pool).await.expect("applied");
+            if applied == 1 { break; }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            before_artifact,
+            sqlx::query_as("SELECT content, byte_count, line_count, metadata FROM execution_output_artifacts WHERE id=$1")
+                .bind(artifact_id).fetch_one(&test_db.pool).await.expect("after artifact"),
+            "steering must not rewrite or truncate existing output artifacts"
+        );
+        assert_eq!(
+            before_process,
+            sqlx::query_as("SELECT status, metadata FROM managed_processes WHERE id=$1")
+                .bind(process_id).fetch_one(&test_db.pool).await.expect("after process"),
+            "steering must not mutate existing managed-process rows"
+        );
+        assert_eq!(
+            before_checkpoint,
+            sqlx::query_as("SELECT status, replacement_context FROM compaction_checkpoints WHERE id=$1")
+                .bind(checkpoint_id).fetch_one(&test_db.pool).await.expect("after checkpoint"),
+            "steering must not rewrite existing compaction checkpoints"
+        );
+        let after_memory_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_memory_events WHERE memory_id=$1")
+            .bind(memory_id).fetch_one(&test_db.pool).await.expect("after memory events");
+        assert_eq!(before_memory_events, after_memory_events, "steering must not fabricate workflow-memory feedback/events");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn steering_during_active_registry_and_god_mode_shell_waits_and_preserves_existing_work() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("active-work-preserve"), ".", Some("."), None, None).await.expect("session");
+        let active_turn = Uuid::new_v4();
+        let tool_call_id = Uuid::new_v4();
+        let script_run_id = Uuid::new_v4();
+        let host_api_id = Uuid::new_v4();
+        let command_run_id = Uuid::new_v4();
+        let grant_id = Uuid::new_v4();
+        let shell_process_id = Uuid::new_v4();
+        let shell_run_id = Uuid::new_v4();
+        let command_stdout_artifact = Uuid::new_v4();
+        let command_stderr_artifact = Uuid::new_v4();
+        let shell_stdout_artifact = Uuid::new_v4();
+        let shell_stderr_artifact = Uuid::new_v4();
+        let large_stdout_sentinel = format!("HIDDEN_STDOUT_SENTINEL_{}", "stdout-body-".repeat(600));
+        let large_stderr_sentinel = format!("HIDDEN_STDERR_SENTINEL_{}", "stderr-body-".repeat(600));
+        let shell_stdout_sentinel = format!("HIDDEN_SHELL_STDOUT_SENTINEL_{}", "shell-out-".repeat(300));
+        let shell_stderr_sentinel = format!("HIDDEN_SHELL_STDERR_SENTINEL_{}", "shell-err-".repeat(300));
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user','active registry and shell work','running',now())")
+            .bind(active_turn).bind(session_id).execute(&test_db.pool).await.expect("active turn");
+        sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, started_at) VALUES ($1,$2,$3,'execute_code','active-work',$4,'running',now())")
+            .bind(tool_call_id).bind(session_id).bind(active_turn).bind(json!({"source":"cmd.run(); shell('sleep 1').async()"})).execute(&test_db.pool).await.expect("tool");
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, stdout, stderr, started_at) VALUES ($1,$2,'active work','running','','',now())")
+            .bind(script_run_id).bind(tool_call_id).execute(&test_db.pool).await.expect("script");
+        sqlx::query("INSERT INTO host_api_calls (id, script_run_id, api_name, input, status, started_at) VALUES ($1,$2,'cmd.run',$3,'running',now())")
+            .bind(host_api_id).bind(script_run_id).bind(json!({"actionId":"cmd.echo"})).execute(&test_db.pool).await.expect("host api");
+        sqlx::query("INSERT INTO command_runs (id, host_api_call_id, binary_name, argv, cwd, stdout, stderr, status, started_at, policy_decision, truncation) VALUES ($1,$2,'echo','[\"registry-output\"]'::jsonb,'.',$3,$4,'running',now(),$5,$6)")
+            .bind(command_run_id).bind(host_api_id).bind(&large_stdout_sentinel).bind(&large_stderr_sentinel).bind(json!({"decision":"allow","source":"test policy"})).bind(json!({"stdoutTruncated":false})).execute(&test_db.pool).await.expect("command run");
+        sqlx::query("INSERT INTO god_mode_grants (id, session_id, granted_by, granted_by_kind, reason, status, metadata) VALUES ($1,$2,'operator','operator','active shell test','active',$3)")
+            .bind(grant_id).bind(session_id).bind(json!({"beforeSteering":true})).execute(&test_db.pool).await.expect("grant");
+        sqlx::query("INSERT INTO managed_processes (id, handle, session_id, starting_turn_id, binary_name, argv, cwd, status, end_of_turn_behavior, end_of_session_behavior, metadata, start_time) VALUES ($1,'god-shell-active',$2,$3,'/bin/zsh','[\"-lc\",\"sleep 1\"]'::jsonb,'.','running','continue','terminate',$4,now())")
+            .bind(shell_process_id).bind(session_id).bind(active_turn).bind(json!({"godModeShell":true})).execute(&test_db.pool).await.expect("shell process");
+        sqlx::query("INSERT INTO shell_runs (id, script_run_id, session_id, turn_id, tool_call_id, god_mode_grant_id, invocation_mode, shell_path, script_hash, script_source, cwd, status, process_id, metadata) VALUES ($1,$2,$3,$4,$5,$6,'async','/bin/zsh','hash','sleep 1','.', 'running',$7,$8)")
+            .bind(shell_run_id).bind(script_run_id).bind(session_id).bind(active_turn).bind(tool_call_id).bind(grant_id).bind(shell_process_id).bind(json!({"beforeSteering":true})).execute(&test_db.pool).await.expect("shell run");
+
+        let model = Arc::new(FakeModelClient { direct_final_text: Some("after active work"), ..Default::default() });
+        let state = ServerState::new_with_model_client(
+            test_db.pool.clone(),
+            "active-registry-shell-preserve".to_string(),
+            model.clone(),
+        );
+        let router = app(state.clone());
+        state.active_submit_drains.lock().await.insert(session_id);
+        let (status, submitted) = request_json(router, Method::POST, &format!("/sessions/{session_id}/send"), json!({"message":"steer after active work"})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(submitted["disposition"], "active_turn_steering");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let premature_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text='steer after active work'")
+            .bind(session_id).fetch_one(&test_db.pool).await.expect("premature turns");
+        assert_eq!(premature_turns, 0, "steering must not inject while registry/shell work is still active");
+        assert_eq!(
+            sqlx::query_as::<_, (String, String, Value)>("SELECT status, stdout, policy_decision FROM command_runs WHERE id=$1")
+                .bind(command_run_id).fetch_one(&test_db.pool).await.expect("command before boundary"),
+            ("running".to_string(), large_stdout_sentinel.clone(), json!({"decision":"allow","source":"test policy"})),
+            "active steering must not rewrite registry command run state before the durable boundary"
+        );
+        assert_eq!(
+            sqlx::query_as::<_, (String, Value)>("SELECT status, metadata FROM god_mode_grants WHERE id=$1")
+                .bind(grant_id).fetch_one(&test_db.pool).await.expect("grant before boundary"),
+            ("active".to_string(), json!({"beforeSteering":true})),
+            "steering must not grant, revoke, or mutate God Mode authority"
+        );
+        assert_eq!(
+            sqlx::query_as::<_, (String, Value)>("SELECT status, metadata FROM shell_runs WHERE id=$1")
+                .bind(shell_run_id).fetch_one(&test_db.pool).await.expect("shell before boundary"),
+            ("running".to_string(), json!({"beforeSteering":true})),
+            "steering must not terminate or rewrite active shell run state"
+        );
+
+        sqlx::query("UPDATE command_runs SET status='completed', completed_at=now(), exit_status=0 WHERE id=$1").bind(command_run_id).execute(&test_db.pool).await.expect("complete command");
+        sqlx::query("UPDATE host_api_calls SET status='completed', output=$2, completed_at=now() WHERE id=$1").bind(host_api_id).bind(json!({"ok":true})).execute(&test_db.pool).await.expect("complete host");
+        sqlx::query("INSERT INTO execution_output_artifacts (id, session_id, turn_id, tool_call_id, script_run_id, command_run_id, source_type, stream, content, byte_count, line_count, metadata) VALUES ($1,$2,$3,$4,$5,$6,'command_run','stdout',$7,$8,1,'{}'::jsonb), ($9,$2,$3,$4,$5,$6,'command_run','stderr',$10,$11,1,'{}'::jsonb)")
+            .bind(command_stdout_artifact).bind(session_id).bind(active_turn).bind(tool_call_id).bind(script_run_id).bind(command_run_id).bind(&large_stdout_sentinel).bind(large_stdout_sentinel.len() as i64).bind(command_stderr_artifact).bind(&large_stderr_sentinel).bind(large_stderr_sentinel.len() as i64)
+            .execute(&test_db.pool).await.expect("command artifacts");
+        sqlx::query("INSERT INTO execution_output_artifacts (id, session_id, turn_id, tool_call_id, script_run_id, process_id, source_type, stream, content, byte_count, line_count, metadata) VALUES ($1,$2,$3,$4,$5,$6,'shell_run','stdout',$7,$8,1,'{}'::jsonb), ($9,$2,$3,$4,$5,$6,'shell_run','stderr',$10,$11,1,'{}'::jsonb)")
+            .bind(shell_stdout_artifact).bind(session_id).bind(active_turn).bind(tool_call_id).bind(script_run_id).bind(shell_process_id).bind(&shell_stdout_sentinel).bind(shell_stdout_sentinel.len() as i64).bind(shell_stderr_artifact).bind(&shell_stderr_sentinel).bind(shell_stderr_sentinel.len() as i64)
+            .execute(&test_db.pool).await.expect("shell artifacts");
+        sqlx::query("UPDATE shell_runs SET status='completed', completed_at=now(), exit_status=0, stdout_artifact_id=$2, stderr_artifact_id=$3 WHERE id=$1").bind(shell_run_id).bind(shell_stdout_artifact).bind(shell_stderr_artifact).execute(&test_db.pool).await.expect("complete shell");
+        sqlx::query("UPDATE managed_processes SET status='completed', end_time=now() WHERE id=$1").bind(shell_process_id).execute(&test_db.pool).await.expect("complete process");
+        sqlx::query("UPDATE script_runs SET status='completed', final_output='active work complete', completed_at=now() WHERE id=$1").bind(script_run_id).execute(&test_db.pool).await.expect("complete script");
+        let explicit_small_value = "EXPLICIT_SMALL_OUTPUT_VALUE_VISIBLE";
+        sqlx::query("UPDATE tool_calls SET status='completed', result=$2, completed_at=now() WHERE id=$1")
+            .bind(tool_call_id)
+            .bind(json!({
+                "ok": true,
+                "status": "completed",
+                "output": {
+                    "stdoutArtifact": {
+                        "artifactId": Uuid::new_v4(),
+                        "stream": "stdout",
+                        "preview": explicit_small_value,
+                        "byteCount": explicit_small_value.len(),
+                        "lineCount": 1,
+                        "truncated": false
+                    },
+                    "stderrArtifact": {
+                        "artifactId": Uuid::new_v4(),
+                        "stream": "stderr",
+                        "preview": "",
+                        "byteCount": 0,
+                        "lineCount": 0,
+                        "truncated": false
+                    }
+                }
+            }))
+            .execute(&test_db.pool).await.expect("complete tool");
+        crate::lifecycle::complete_turn(&test_db.pool, active_turn, crate::lifecycle::TerminalStatus::Completed, chrono::Utc::now()).await.expect("complete active turn");
+        db::append_event(&test_db.pool, session_id, Some(active_turn), "turn", Some(active_turn), "turn.completed", Some("completed"), json!({"activeWorkBoundary":true})).await.expect("boundary event");
+        let continued = crate::runtime::continue_pending_steering_after_operation_boundary(&test_db.pool, session_id, active_turn, state.model_client.as_ref().expect("model").as_ref())
+            .await
+            .expect("continue after active operation boundary");
+        assert!(continued, "pending steering must continue same turn after registry/shell/process boundary");
+        let steering_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text='steer after active work' AND status='completed'")
+            .bind(session_id).fetch_one(&test_db.pool).await.expect("steering turns");
+        assert_eq!(steering_turns, 0, "steering must apply to the active turn instead of creating a second turn after registry/shell work");
+        let transcript_types: Vec<String> = sqlx::query_scalar("SELECT item_type FROM current_turn_transcript_items WHERE turn_id=$1 ORDER BY ordering_key ASC")
+            .bind(active_turn)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("transcript types");
+        for required in ["command_registry_process", "god_mode_shell_process", "managed_async_process", "applied_steering"] {
+            assert!(transcript_types.contains(&required.to_string()), "missing {required}: {transcript_types:?}");
+        }
+        let transcript_contents: String = sqlx::query_scalar("SELECT string_agg(content, E'\\n' ORDER BY ordering_key) FROM current_turn_transcript_items WHERE turn_id=$1")
+            .bind(active_turn)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("transcript content");
+        for hidden in [&large_stdout_sentinel, &large_stderr_sentinel, &shell_stdout_sentinel, &shell_stderr_sentinel] {
+            assert!(!transcript_contents.contains(hidden), "hidden output leaked into transcript content: {hidden}");
+        }
+        assert!(transcript_contents.contains("artifact handles"), "transcript should guide artifact retrieval without embedding output bodies: {transcript_contents}");
+        let histories = model.observed_history.lock().expect("history").clone();
+        let model_request_text = serde_json::to_string(&histories).expect("history json");
+        for hidden in [&large_stdout_sentinel, &large_stderr_sentinel, &shell_stdout_sentinel, &shell_stderr_sentinel] {
+            assert!(!model_request_text.contains(hidden), "hidden output leaked into continuation model request: {hidden}");
+        }
+        assert!(model_request_text.contains(explicit_small_value), "explicit bounded output(...) value must remain visible in same-turn continuation");
+        assert!(model_request_text.contains(&command_stdout_artifact.to_string()));
+        assert!(model_request_text.contains(&command_stderr_artifact.to_string()));
+        let before_rebuild: Vec<(String, String, i64)> = sqlx::query_as("SELECT stable_key, content, ordering_key FROM current_turn_transcript_items WHERE turn_id=$1 ORDER BY ordering_key")
+            .bind(active_turn)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("before transcript rebuild");
+        crate::runtime::persist_tool_boundary_transcript(
+            &test_db.pool,
+            session_id,
+            active_turn,
+            tool_call_id,
+            "active registry and shell work",
+            "operation boundary completed",
+            &json!({
+                "ok": true,
+                "status": "completed",
+                "output": {
+                    "stdoutArtifact": {
+                        "artifactId": Uuid::new_v4(),
+                        "stream": "stdout",
+                        "preview": explicit_small_value,
+                        "byteCount": explicit_small_value.len(),
+                        "lineCount": 1,
+                        "truncated": false
+                    },
+                    "stderrArtifact": {
+                        "artifactId": Uuid::new_v4(),
+                        "stream": "stderr",
+                        "preview": "",
+                        "byteCount": 0,
+                        "lineCount": 0,
+                        "truncated": false
+                    }
+                }
+            }),
+        )
+        .await
+        .expect("idempotent transcript rebuild");
+        let after_rebuild: Vec<(String, String, i64)> = sqlx::query_as("SELECT stable_key, content, ordering_key FROM current_turn_transcript_items WHERE turn_id=$1 ORDER BY ordering_key")
+            .bind(active_turn)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("after transcript rebuild");
+        assert_eq!(before_rebuild, after_rebuild, "rebuilding boundary transcript must preserve row identity, content, and ordering");
+        let grant_after: (String, Value) = sqlx::query_as("SELECT status, metadata FROM god_mode_grants WHERE id=$1")
+            .bind(grant_id).fetch_one(&test_db.pool).await.expect("grant after");
+        assert_eq!(grant_after, ("active".to_string(), json!({"beforeSteering":true})));
+        let command_after: (String, String, Value) = sqlx::query_as("SELECT status, stdout, policy_decision FROM command_runs WHERE id=$1")
+            .bind(command_run_id).fetch_one(&test_db.pool).await.expect("command after");
+        assert_eq!(command_after, ("completed".to_string(), large_stdout_sentinel, json!({"decision":"allow","source":"test policy"})));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn agent_path_registry_command_smoke_preserves_output_when_steered_while_active() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("registry-smoke"), ".", Some("."), None, None).await.expect("session");
+        let root = starlark_host::ExecutionRoot::new(".").expect("root");
+        let mut sh_seed = admin_command_seed("cmd.registry_smoke.sh");
+        sh_seed["binaryName"] = json!("sh");
+        sh_seed["candidatePaths"] = json!(["/bin/sh"]);
+        sh_seed["starlarkObject"] = json!("registry_smoke_sh");
+        sh_seed["argvPrefix"] = json!(["-c"]);
+        let sh_seed: command_registry::CommandSeed = serde_json::from_value(sh_seed).expect("sh seed");
+        apply_registry_seed(&test_db.pool, session_id, sh_seed, command_registry::RegistryScope { scope_type: "global".to_string(), project_key: None }).await;
+
+        let command_source = r#"output(cmd["registry_smoke_sh"].run(args=["printf smoke-registry-output"]).sync())"#;
+        let (command_turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, command_source).await;
+        let packet = starlark_host::execute_code(&test_db.pool, session_id, command_turn_id, tool_call_id, command_source, &root, &role)
+            .await
+            .expect("execute registry smoke command");
+        let packet_value = serde_json::to_value(packet).expect("packet value");
+        assert_eq!(packet_value["status"], "completed", "normal registry command must complete in agent execute_code path: {packet_value}");
+        let before_command_rows: i64 = sqlx::query_scalar("SELECT COUNT(*)
+            FROM command_runs cr
+            JOIN host_api_calls ha ON ha.id = cr.host_api_call_id
+            JOIN script_runs sr ON sr.id = ha.script_run_id
+            JOIN tool_calls tc ON tc.id = sr.tool_call_id
+            WHERE tc.session_id=$1 AND cr.stdout LIKE '%smoke-registry-output%'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("command rows before steering");
+        assert_eq!(before_command_rows, 1, "registry output must be persisted before steering");
+        let active_turn = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user','active work while command output is preserved','running',now())")
+            .bind(active_turn)
+            .bind(session_id)
+            .execute(&test_db.pool)
+            .await
+            .expect("active turn for steering smoke");
+
+        let state = ServerState::new_with_model_client(
+            test_db.pool.clone(),
+            "registry-smoke-steering".to_string(),
+            Arc::new(FakeModelClient { direct_final_text: Some("smoke steering applied"), ..Default::default() }),
+        );
+        let router = app(state.clone());
+        state.active_submit_drains.lock().await.insert(session_id);
+        let (status, submitted) = request_json(router, Method::POST, &format!("/sessions/{session_id}/send"), json!({"message":"apply smoke steering after command"})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(submitted["disposition"], "active_turn_steering");
+        let during_command_rows: i64 = sqlx::query_scalar("SELECT COUNT(*)
+            FROM command_runs cr
+            JOIN host_api_calls ha ON ha.id = cr.host_api_call_id
+            JOIN script_runs sr ON sr.id = ha.script_run_id
+            JOIN tool_calls tc ON tc.id = sr.tool_call_id
+            WHERE tc.session_id=$1 AND cr.stdout LIKE '%smoke-registry-output%'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("command rows during steering");
+        assert_eq!(during_command_rows, 1, "steering must not abort or erase registry output");
+
+        crate::lifecycle::complete_turn(&test_db.pool, active_turn, crate::lifecycle::TerminalStatus::Completed, chrono::Utc::now())
+            .await
+            .expect("complete active smoke turn boundary");
+        {
+            let mut active = state.active_submit_drains.lock().await;
+            active.remove(&session_id);
+            active.insert(session_id);
+        }
+        spawn_submit_worker(state.clone(), session_id);
+        for _ in 0..80 {
+            let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='applied' AND content='apply smoke steering after command'")
+                .bind(session_id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("applied count");
+            if applied == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let after_command_rows: i64 = sqlx::query_scalar("SELECT COUNT(*)
+            FROM command_runs cr
+            JOIN host_api_calls ha ON ha.id = cr.host_api_call_id
+            JOIN script_runs sr ON sr.id = ha.script_run_id
+            JOIN tool_calls tc ON tc.id = sr.tool_call_id
+            WHERE tc.session_id=$1 AND cr.stdout LIKE '%smoke-registry-output%'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("command rows after steering");
+        assert_eq!(after_command_rows, 1, "registry command output must remain preserved after steering applies");
+        let steering_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text='apply smoke steering after command' AND status='completed'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("steering turns");
+        assert_eq!(steering_turns, 1, "steered input must apply without aborting existing command output");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn submitted_input_during_compaction_waits_and_uses_compacted_context() {
+        let test_db = validation_db().await;
+        let model = Arc::new(FakeModelClient { direct_final_text: Some("after compaction"), ..Default::default() });
+        let state = ServerState::new_with_model_client(test_db.pool.clone(), "compaction-handoff".to_string(), model.clone());
+        let router = app(state.clone());
+        let (_, created) = request_json(
+            router.clone(),
+            Method::POST,
+            "/sessions",
+            json!({"role":"runtime-no-rg","project":"compaction-proof","model":"fake-model","workdir":".","worktreeRoot":".","title":"Compaction proof","name":"compaction-proof"}),
+        )
+        .await;
+        let session_id: Uuid = serde_json::from_value(created["sessionId"].clone()).expect("session id");
+        let completed_turn = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at, completed_at) VALUES ($1,$2,'user','old context before compact','completed',now() - interval '2 minutes',now() - interval '2 minutes')")
+            .bind(completed_turn)
+            .bind(session_id)
+            .execute(&test_db.pool)
+            .await
+            .expect("completed turn");
+        sqlx::query("INSERT INTO model_events (id, session_id, turn_id, event_type, payload) VALUES ($1,$2,$3,'final_response',$4)")
+            .bind(Uuid::new_v4())
+            .bind(session_id)
+            .bind(completed_turn)
+            .bind(json!({"summary":"old assistant before compact"}))
+            .execute(&test_db.pool)
+            .await
+            .expect("final model event");
+
+        state.active_compactions.lock().await.insert(session_id);
+        let send_path = format!("/sessions/{session_id}/send");
+        let (status, submitted) = request_json(
+            router.clone(),
+            Method::POST,
+            &send_path,
+            json!({"message":"continue after compact one"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(submitted["disposition"], "queued_continuation_after_compaction");
+        let (status, submitted_two) = request_json(
+            router,
+            Method::POST,
+            &send_path,
+            json!({"message":"continue after compact two"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(submitted_two["disposition"], "queued_continuation_after_compaction");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let premature_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text LIKE 'continue after compact%'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("premature turns");
+        assert_eq!(premature_turns, 0, "queued compaction continuations must not apply before compaction completes");
+
+        compaction::compact_session_through_latest_completed_turn(&test_db.pool, session_id, compaction::CompactionBudget::default()).await.expect("compact");
+        state.active_compactions.lock().await.remove(&session_id);
+        let should_spawn = {
+            let mut active = state.active_submit_drains.lock().await;
+            active.insert(session_id)
+        };
+        assert!(should_spawn);
+        spawn_submit_worker(state.clone(), session_id);
+        for _ in 0..80 {
+            let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='applied'")
+                .bind(session_id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("applied count");
+            if applied == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let history = model.observed_history.lock().expect("observed history").clone();
+        assert!(history.iter().any(|items| items.iter().any(|item| item.source == "compaction_checkpoint")), "model dispatch must use compacted context after handoff: {history:?}");
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='applied'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("applied final");
+        assert_eq!(applied, 2);
+        let submitted_order = sqlx::query("SELECT content, status, placement_turn_id FROM submitted_inputs WHERE session_id=$1 ORDER BY ordering_key ASC")
+            .bind(session_id)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("submitted order");
+        assert_eq!(submitted_order.iter().map(|row| row.get::<String, _>("content")).collect::<Vec<_>>(), vec![
+            "continue after compact one".to_string(),
+            "continue after compact two".to_string(),
+        ]);
+        assert!(submitted_order.iter().all(|row| row.get::<String, _>("status") == "applied" && row.get::<Option<Uuid>, _>("placement_turn_id").is_some()));
+        let turn_order = sqlx::query("SELECT input_text FROM turns WHERE session_id=$1 AND input_text LIKE 'continue after compact%' ORDER BY started_at ASC, id ASC")
+            .bind(session_id)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("turn order");
+        assert_eq!(turn_order.iter().map(|row| row.get::<String, _>("input_text")).collect::<Vec<_>>(), vec![
+            "continue after compact one".to_string(),
+            "continue after compact two".to_string(),
+        ]);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn submit_racing_with_compaction_completion_drains_after_checkpoint_commit() {
+        let test_db = validation_db().await;
+        let model = Arc::new(FakeModelClient { direct_final_text: Some("after compact race"), ..Default::default() });
+        let state = ServerState::new_with_model_client(test_db.pool.clone(), "compaction-completion-race".to_string(), model.clone());
+        let router = app(state.clone());
+        let (_, created) = request_json(
+            router.clone(),
+            Method::POST,
+            "/sessions",
+            json!({"role":"runtime-no-rg","project":"compaction-race","model":"fake-model","workdir":".","worktreeRoot":".","title":"Compaction race","name":"compaction-race"}),
+        )
+        .await;
+        let session_id: Uuid = serde_json::from_value(created["sessionId"].clone()).expect("session id");
+        let completed_turn = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at, completed_at) VALUES ($1,$2,'user','context before compaction completion race','completed',now() - interval '2 minutes',now() - interval '2 minutes')")
+            .bind(completed_turn)
+            .bind(session_id)
+            .execute(&test_db.pool)
+            .await
+            .expect("completed turn");
+        sqlx::query("INSERT INTO model_events (id, session_id, turn_id, event_type, payload) VALUES ($1,$2,$3,'final_response',$4)")
+            .bind(Uuid::new_v4())
+            .bind(session_id)
+            .bind(completed_turn)
+            .bind(json!({"summary":"assistant before race compact"}))
+            .execute(&test_db.pool)
+            .await
+            .expect("final model event");
+
+        state.active_compactions.lock().await.insert(session_id);
+        let send_path = format!("/sessions/{session_id}/send");
+        let compact_path = format!("/sessions/{session_id}/compact");
+        let (submit_status, submitted) = request_json(
+            router.clone(),
+            Method::POST,
+            &send_path,
+            json!({"message":"queued through compaction completion race"}),
+        )
+        .await;
+        assert_eq!(submit_status, StatusCode::OK, "submit must be accepted: {submitted}");
+        assert_eq!(submitted["disposition"], "queued_continuation_after_compaction");
+        let queued_before_compaction: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='accepted'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("queued before compaction completion");
+        assert_eq!(queued_before_compaction, 1, "submit must be durable before compaction completes");
+        let (compact_status, compacted) = request_json(router.clone(), Method::POST, &compact_path, json!({"throughTurn": completed_turn})).await;
+        assert_eq!(compact_status, StatusCode::OK, "compaction must complete: {compacted}");
+
+        for _ in 0..120 {
+            let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='applied' AND content='queued through compaction completion race'")
+                .bind(session_id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("applied count");
+            if applied == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let applied_row = sqlx::query("SELECT status, placement_turn_id FROM submitted_inputs WHERE session_id=$1 AND content='queued through compaction completion race'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("submitted row");
+        assert_eq!(applied_row.get::<String, _>("status"), "applied");
+        assert!(applied_row.get::<Option<Uuid>, _>("placement_turn_id").is_some());
+        let history = model.observed_history.lock().expect("observed history").clone();
+        assert!(
+            history.iter().any(|items| items.iter().any(|item| item.source == "compaction_checkpoint")),
+            "submit racing with compaction completion must dispatch only after compacted context is committed: {history:?}"
+        );
+        let active = state.active_compactions.lock().await.contains(&session_id);
+        assert!(!active, "compaction race must not leave active compaction state behind");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn submitted_input_after_final_response_commit_preserves_current_final_and_starts_next_turn() {
+        let test_db = validation_db().await;
+        let model = Arc::new(FakeModelClient {
+            direct_final_text: Some("stable final response"),
+            request_delay_ms: Some(100),
+            ..Default::default()
+        });
+        let state = ServerState::new_with_model_client(test_db.pool.clone(), "final-output-handoff".to_string(), model);
+        let router = app(state.clone());
+        let (_, created) = request_json(
+            router.clone(),
+            Method::POST,
+            "/sessions",
+            json!({"role":"runtime-no-rg","project":"final-proof","model":"fake-model","workdir":".","worktreeRoot":".","title":"Final proof","name":"final-proof"}),
+        )
+        .await;
+        let session_id: Uuid = serde_json::from_value(created["sessionId"].clone()).expect("session id");
+        let (status, first) = request_json(router.clone(), Method::POST, &format!("/sessions/{session_id}/send"), json!({"message":"first final"})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(first["disposition"], "idle_turn_start");
+        let (status, second) = request_json(router, Method::POST, &format!("/sessions/{session_id}/send"), json!({"message":"second next turn"})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_ne!(second["disposition"], "idle_turn_start");
+        for _ in 0..80 {
+            let completed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status='completed'")
+                .bind(session_id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("completed count");
+            let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='applied'")
+                .bind(session_id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("applied count");
+            if completed == 2 && applied == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let rows = sqlx::query("SELECT id, input_text, status FROM turns WHERE session_id=$1 ORDER BY started_at ASC")
+            .bind(session_id)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("turn rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get::<String, _>("input_text"), "first final");
+        assert_eq!(rows[1].get::<String, _>("input_text"), "second next turn");
+        assert_eq!(rows[0].get::<String, _>("status"), "completed");
+        assert_eq!(rows[1].get::<String, _>("status"), "completed");
+        let first_turn_id = rows[0].get::<Uuid, _>("id");
+        let first_final: String = sqlx::query_scalar("SELECT payload->>'summary' FROM model_events WHERE turn_id=$1 AND event_type='final_response' ORDER BY ordinal DESC LIMIT 1")
+            .bind(first_turn_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("first final");
+        assert_eq!(first_final, "stable final response");
+        let applied_order = sqlx::query("SELECT content, status, placement_turn_id FROM submitted_inputs WHERE session_id=$1 ORDER BY ordering_key ASC")
+            .bind(session_id)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("submitted order");
+        assert_eq!(applied_order.len(), 2);
+        assert_eq!(applied_order[0].get::<String, _>("content"), "first final");
+        assert_eq!(applied_order[1].get::<String, _>("content"), "second next turn");
+        assert!(applied_order.iter().all(|row| row.get::<String, _>("status") == "applied" && row.get::<Option<Uuid>, _>("placement_turn_id").is_some()));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn direct_final_with_pending_steering_continues_same_turn_with_current_transcript() {
+        let test_db = validation_db().await;
+        let model = Arc::new(FakeModelClient {
+            direct_final_text: Some("direct final before steering"),
+            request_delay_ms: Some(1000),
+            ..Default::default()
+        });
+        let state = ServerState::new_with_model_client(test_db.pool.clone(), "direct-final-same-turn".to_string(), model.clone());
+        let router = app(state.clone());
+        let (_, created) = request_json(
+            router.clone(),
+            Method::POST,
+            "/sessions",
+            json!({"role":"runtime-no-rg","project":"direct-final-same-turn","model":"fake-model","workdir":".","worktreeRoot":".","title":"Direct final same turn","name":"direct-final-same-turn"}),
+        )
+        .await;
+        let session_id: Uuid = serde_json::from_value(created["sessionId"].clone()).expect("session id");
+        let send_path = format!("/sessions/{session_id}/send");
+        let first = tokio::spawn({
+            let router = router.clone();
+            let send_path = send_path.clone();
+            async move { request_json(router, Method::POST, &send_path, json!({"message":"initial direct final prompt"})).await }
+        });
+        for _ in 0..80 {
+            let running: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status='running'")
+                .bind(session_id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("running turn count");
+            if running == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let (steer_status, steer_body) = request_json(router, Method::POST, &send_path, json!({"message":"same turn steering text"})).await;
+        assert_eq!(steer_status, StatusCode::OK, "steering submit must be accepted while direct final is in flight: {steer_body}");
+        assert_eq!(steer_body["disposition"], "active_turn_steering");
+        let (first_status, first_body) = first.await.expect("first send join");
+        assert_eq!(first_status, StatusCode::OK, "first send completes: {first_body}");
+        for _ in 0..120 {
+            let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND content='same turn steering text' AND status='applied'")
+                .bind(session_id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("applied steering count");
+            if applied == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        let turns: Vec<(Uuid, String)> = sqlx::query_as("SELECT id, input_text FROM turns WHERE session_id=$1 ORDER BY started_at ASC")
+            .bind(session_id)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("turns");
+        assert_eq!(turns.len(), 1, "pending steering after direct final must continue the same turn, not start a second turn");
+        assert_eq!(turns[0].1, "initial direct final prompt");
+        let submitted = sqlx::query("SELECT target_turn_id, placement_turn_id, status FROM submitted_inputs WHERE session_id=$1 AND content='same turn steering text'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("submitted row");
+        assert_eq!(submitted.get::<String, _>("status"), "applied");
+        assert_eq!(submitted.get::<Option<Uuid>, _>("target_turn_id"), Some(turns[0].0));
+        assert_eq!(submitted.get::<Option<Uuid>, _>("placement_turn_id"), Some(turns[0].0));
+        let messages = model.observed_messages.lock().expect("messages").clone();
+        assert!(messages.contains(&"initial direct final prompt".to_string()));
+        let histories = model.observed_history.lock().expect("history").clone();
+        if histories.len() > 1 {
+            let current = histories[1]
+                .iter()
+                .find(|item| item.source == "current_turn_transcript")
+                .expect("current-turn transcript item");
+            assert_eq!(current.turn_id, turns[0].0.to_string());
+            assert_eq!(current.user, "initial direct final prompt");
+            assert_eq!(current.assistant.as_deref(), Some("direct final before steering"));
+        }
+        let continuation_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='model.direct_final_continuation'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("continuation events");
+        assert_eq!(continuation_events, 1);
+        let transcript_types: Vec<String> = sqlx::query_scalar("SELECT item_type FROM current_turn_transcript_items WHERE turn_id=$1 ORDER BY ordering_key ASC")
+            .bind(turns[0].0)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("direct transcript types");
+        assert!(transcript_types.contains(&"initial_user_input".to_string()));
+        assert!(transcript_types.contains(&"assistant_final_text".to_string()));
+        assert!(transcript_types.contains(&"applied_steering".to_string()));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn tool_boundary_pending_steering_continues_same_turn_with_tool_transcript() {
+        let test_db = validation_db().await;
+        let model = Arc::new(FakeModelClient {
+            request_delay_ms: Some(1000),
+            direct_final_text: None,
+            ..Default::default()
+        });
+        let state = ServerState::new_with_model_client(test_db.pool.clone(), "tool-boundary-same-turn".to_string(), model.clone());
+        let router = app(state.clone());
+        let (_, created) = request_json(
+            router.clone(),
+            Method::POST,
+            "/sessions",
+            json!({"role":"runtime-no-rg","project":"tool-boundary-same-turn","model":"fake-model","workdir":".","worktreeRoot":".","title":"Tool boundary same turn","name":"tool-boundary-same-turn"}),
+        )
+        .await;
+        let session_id: Uuid = serde_json::from_value(created["sessionId"].clone()).expect("session id");
+        let send_path = format!("/sessions/{session_id}/send");
+        let first = tokio::spawn({
+            let router = router.clone();
+            let send_path = send_path.clone();
+            async move { request_json(router, Method::POST, &send_path, json!({"message":"initial tool prompt"})).await }
+        });
+        for _ in 0..80 {
+            let running: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status='running'")
+                .bind(session_id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("running turn count");
+            if running == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let (steer_status, steer_body) = request_json(router, Method::POST, &send_path, json!({"message":"same turn after tool"})).await;
+        assert_eq!(steer_status, StatusCode::OK, "steering submit must be accepted while tool path is in flight: {steer_body}");
+        assert_eq!(steer_body["disposition"], "active_turn_steering");
+        let (first_status, first_body) = first.await.expect("first send join");
+        assert_eq!(first_status, StatusCode::OK, "first send completes: {first_body}");
+        for _ in 0..120 {
+            let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND content='same turn after tool' AND status='applied'")
+                .bind(session_id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("applied steering count");
+            if applied == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let turns: Vec<(Uuid, String)> = sqlx::query_as("SELECT id, input_text FROM turns WHERE session_id=$1 ORDER BY started_at ASC")
+            .bind(session_id)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("turns");
+        assert_eq!(turns.len(), 1, "tool-boundary steering must continue the same turn, not start a second turn");
+        assert_eq!(turns[0].1, "initial tool prompt");
+        let submitted = sqlx::query("SELECT target_turn_id, placement_turn_id, status FROM submitted_inputs WHERE session_id=$1 AND content='same turn after tool'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("submitted row");
+        assert_eq!(submitted.get::<String, _>("status"), "applied");
+        assert_eq!(submitted.get::<Option<Uuid>, _>("target_turn_id"), Some(turns[0].0));
+        assert_eq!(submitted.get::<Option<Uuid>, _>("placement_turn_id"), Some(turns[0].0));
+        let messages = model.observed_messages.lock().expect("messages").clone();
+        assert!(messages.contains(&"initial tool prompt".to_string()));
+        let histories = model.observed_history.lock().expect("history").clone();
+        assert_eq!(histories.len(), 2);
+        let current = histories[1]
+            .iter()
+            .find(|item| item.source == "current_turn_transcript")
+            .expect("current-turn transcript item");
+        assert_eq!(current.turn_id, turns[0].0.to_string());
+        assert_eq!(current.user, "initial tool prompt");
+        assert!(current.assistant.as_deref().unwrap_or_default().contains("tool_result"));
+        let continuation_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='model.same_turn_continuation'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("continuation events");
+        assert_eq!(continuation_events, 1);
+        let transcript_types: Vec<String> = sqlx::query_scalar("SELECT item_type FROM current_turn_transcript_items WHERE turn_id=$1 ORDER BY ordering_key ASC")
+            .bind(turns[0].0)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("tool transcript types");
+        for required in [
+            "initial_user_input",
+            "assistant_intermediate",
+            "tool_call",
+            "tool_result",
+            "applied_steering",
+        ] {
+            assert!(transcript_types.contains(&required.to_string()), "missing transcript type {required}: {transcript_types:?}");
+        }
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn explicit_final_output_commit_queues_submit_until_current_turn_finishes() {
+        let test_db = validation_db().await;
+        let model = Arc::new(FakeModelClient {
+            direct_final_text: Some("next turn response"),
+            ..Default::default()
+        });
+        let state = ServerState::new_with_model_client(test_db.pool.clone(), "explicit-final-commit".to_string(), model);
+        let router = app(state.clone());
+        let (_, created) = request_json(
+            router.clone(),
+            Method::POST,
+            "/sessions",
+            json!({"role":"runtime-no-rg","project":"explicit-final","model":"fake-model","workdir":".","worktreeRoot":".","title":"Explicit final","name":"explicit-final"}),
+        )
+        .await;
+        let session_id: Uuid = serde_json::from_value(created["sessionId"].clone()).expect("session id");
+        let committed_turn_id = Uuid::new_v4();
+        let final_event_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user','first committed final','running',now())")
+            .bind(committed_turn_id)
+            .bind(session_id)
+            .execute(&test_db.pool)
+            .await
+            .expect("running turn");
+        sqlx::query("INSERT INTO model_events (id, session_id, turn_id, event_type, payload) VALUES ($1,$2,$3,'final_response',$4)")
+            .bind(final_event_id)
+            .bind(session_id)
+            .bind(committed_turn_id)
+            .bind(json!({"summary":"committed final text", "finalText":"committed final text"}))
+            .execute(&test_db.pool)
+            .await
+            .expect("committed final event");
+        db::append_event(
+            &test_db.pool,
+            session_id,
+            Some(committed_turn_id),
+            "model",
+            Some(final_event_id),
+            "model.final_output_committed",
+            Some("committed"),
+            json!({"finalText":"committed final text", "test":"explicit final-output handoff"}),
+        ).await.expect("commit event");
+        assert!(state.active_submit_drains.lock().await.insert(session_id));
+
+        let (status, submitted) = request_json(
+            router,
+            Method::POST,
+            &format!("/sessions/{session_id}/send"),
+            json!({"message":"next after committed final"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(submitted["disposition"], "queued_next_turn_after_final_output");
+        assert_eq!(submitted["turnId"], committed_turn_id.to_string());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let premature_next_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text='next after committed final'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("premature next turns");
+        assert_eq!(premature_next_turns, 0, "next turn must not start before committed final turn completes");
+
+        crate::lifecycle::complete_turn(&test_db.pool, committed_turn_id, crate::lifecycle::TerminalStatus::Completed, chrono::Utc::now()).await.expect("complete committed turn");
+        db::append_event(&test_db.pool, session_id, Some(committed_turn_id), "turn", Some(committed_turn_id), "turn.completed", Some("completed"), json!({"finalOutputCommitted": true})).await.expect("turn completed event");
+        state.active_submit_drains.lock().await.remove(&session_id);
+        assert!(state.active_submit_drains.lock().await.insert(session_id));
+        spawn_submit_worker(state.clone(), session_id);
+        for _ in 0..80 {
+            let next_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text='next after committed final' AND status='completed'")
+                .bind(session_id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("next completed turns");
+            if next_turns == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let turns = sqlx::query("SELECT id, input_text, status FROM turns WHERE session_id=$1 ORDER BY started_at ASC, id ASC")
+            .bind(session_id)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("turns");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].get::<Uuid, _>("id"), committed_turn_id);
+        assert_eq!(turns[0].get::<String, _>("input_text"), "first committed final");
+        assert_eq!(turns[0].get::<String, _>("status"), "completed");
+        assert_eq!(turns[1].get::<String, _>("input_text"), "next after committed final");
+        assert_eq!(turns[1].get::<String, _>("status"), "completed");
+        let first_final: String = sqlx::query_scalar("SELECT payload->>'summary' FROM model_events WHERE turn_id=$1 AND event_type='final_response'")
+            .bind(committed_turn_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("first final text");
+        assert_eq!(first_final, "committed final text");
+        let submitted_row = sqlx::query("SELECT content, disposition, status, placement_turn_id FROM submitted_inputs WHERE session_id=$1 ORDER BY ordering_key ASC")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("submitted row");
+        assert_eq!(submitted_row.get::<String, _>("content"), "next after committed final");
+        assert_eq!(submitted_row.get::<String, _>("disposition"), "queued_next_turn_after_final_output");
+        assert_eq!(submitted_row.get::<String, _>("status"), "applied");
+        assert_eq!(submitted_row.get::<Option<Uuid>, _>("placement_turn_id"), Some(turns[1].get::<Uuid, _>("id")));
         test_db.cleanup().await;
     }
 
@@ -3530,7 +5052,7 @@ mod tests {
         for index in 0..120 {
             let packet = GuiTransportRequestPacket {
                 packet_id: format!("live-real-stream-{index}"),
-                intent: GuiTransportRequest::ConsumeStreamOnce,
+                intent: GuiTransportRequest::ReadNextGuiStreamPacket,
             };
             let outputs = match tokio::time::timeout(Duration::from_secs(2), transport.send(packet)).await {
                 Ok(outputs) => outputs,
@@ -4407,7 +5929,7 @@ mod tests {
         for message in [
             "workflow memory is not visible to session: 00000000-0000-0000-0000-000000000000",
             "role not found: runtime-x",
-            "session already has an active send",
+            "session submit worker internal invariant violation",
             "unsupported command registry operation: explode",
             "database provider model embedding connection failed",
         ] {
@@ -4666,7 +6188,7 @@ mod tests {
         let after = starlark_host::execute_code(&test_db.pool, alpha, turn_id, tool_call_id, project_source, &root, &role).await.expect("execute after project command");
         let after_value = serde_json::to_value(after).expect("after packet");
         assert_eq!(after_value["status"], "completed");
-        assert!(after_value["output"]["artifact"]["preview"].as_str().unwrap_or_default().contains("cmd.cache.project") || after_value["output"]["artifact"]["tail"].as_str().unwrap_or_default().contains("cmd.cache.project"));
+        assert!(after_value["output"]["stdoutArtifact"]["preview"].as_str().unwrap_or_default().contains("cmd.cache.project") || after_value["output"]["stdoutArtifact"]["tail"].as_str().unwrap_or_default().contains("cmd.cache.project"));
 
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, beta, project_source).await;
         let non_visible = starlark_host::execute_code(&test_db.pool, beta, turn_id, tool_call_id, project_source, &root, &role).await.expect("non-visible failed packet");
@@ -4681,7 +6203,7 @@ mod tests {
         let global = starlark_host::execute_code(&test_db.pool, beta, turn_id, tool_call_id, global_source, &root, &role).await.expect("execute global command");
         let global_value = serde_json::to_value(global).expect("global packet");
         assert_eq!(global_value["status"], "completed");
-        assert!(global_value["output"]["artifact"]["preview"].as_str().unwrap_or_default().contains("cmd.cache.global") || global_value["output"]["artifact"]["tail"].as_str().unwrap_or_default().contains("cmd.cache.global"));
+        assert!(global_value["output"]["stdoutArtifact"]["preview"].as_str().unwrap_or_default().contains("cmd.cache.global") || global_value["output"]["stdoutArtifact"]["tail"].as_str().unwrap_or_default().contains("cmd.cache.global"));
         test_db.cleanup().await;
     }
 
@@ -4699,8 +6221,8 @@ mod tests {
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, &source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, &source, &root, &role).await.expect("execute large output");
         let value = serde_json::to_value(packet).expect("packet");
-        let artifact_id = Uuid::parse_str(value["output"]["artifact"]["artifactId"].as_str().expect("artifact id")).expect("artifact uuid");
-        assert!(value["output"]["artifact"]["truncated"].as_bool().unwrap_or(false));
+        let artifact_id = Uuid::parse_str(value["output"]["stdoutArtifact"]["artifactId"].as_str().expect("artifact id")).expect("artifact uuid");
+        assert!(value["output"]["stdoutArtifact"]["truncated"].as_bool().unwrap_or(false));
         assert!(!value.to_string().contains(&large));
 
         let row = sqlx::query("SELECT content, byte_count, line_count FROM execution_output_artifacts WHERE id=$1")
@@ -4711,6 +6233,12 @@ mod tests {
         assert_eq!(row.get::<String, _>("content"), large);
         assert_eq!(row.get::<i64, _>("byte_count") as usize, large.len());
         assert_eq!(row.get::<i64, _>("line_count"), 900);
+        let script_combined_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_output_artifacts WHERE turn_id=$1 AND stream='combined'")
+            .bind(turn_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("no script combined artifacts");
+        assert_eq!(script_combined_count, 0);
 
         let retrieval_source = r#"
 artifact = outputs.last()
@@ -4723,7 +6251,7 @@ output(outputs.stats(artifact))
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, retrieval_source).await;
         let retrieval = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, retrieval_source, &root, &role).await.expect("retrieve artifact");
         let retrieval_value = serde_json::to_value(retrieval).expect("retrieval packet");
-        let retrieval_artifact_id = Uuid::parse_str(retrieval_value["output"]["artifact"]["artifactId"].as_str().expect("retrieval artifact")).expect("retrieval uuid");
+        let retrieval_artifact_id = Uuid::parse_str(retrieval_value["output"]["stdoutArtifact"]["artifactId"].as_str().expect("retrieval artifact")).expect("retrieval uuid");
         let retrieved_text: String = sqlx::query_scalar("SELECT content FROM execution_output_artifacts WHERE id=$1")
             .bind(retrieval_artifact_id)
             .fetch_one(&test_db.pool)
@@ -4789,7 +6317,7 @@ output(outputs.stats(artifact))
         let failed_value = serde_json::to_value(failed).expect("failed value");
         assert_eq!(failed_value["ok"], false);
         assert_eq!(failed_value["status"], "failed");
-        assert!(failed_value["output"]["artifact"]["artifactId"].is_string());
+        assert!(failed_value["output"]["stdoutArtifact"]["artifactId"].is_string());
         assert!(failed_value["output"]["stderrArtifact"]["artifactId"].is_string());
         assert!(!failed_value.to_string().contains(&large));
 
@@ -4805,7 +6333,7 @@ output(outputs.stats(artifact))
         let command_packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, command_source, &root, &role).await.expect("command output packet");
         let command_value = serde_json::to_value(command_packet).expect("command value");
         assert_eq!(command_value["status"], "completed", "command packet: {command_value}");
-        let command_result_artifact = Uuid::parse_str(command_value["output"]["artifact"]["artifactId"].as_str().expect("command result artifact")).expect("command result artifact id");
+        let command_result_artifact = Uuid::parse_str(command_value["output"]["stdoutArtifact"]["artifactId"].as_str().expect("command result artifact")).expect("command result artifact id");
         let command_result: String = sqlx::query_scalar("SELECT content FROM execution_output_artifacts WHERE id=$1")
             .bind(command_result_artifact)
             .fetch_one(&test_db.pool)
@@ -4814,19 +6342,68 @@ output(outputs.stats(artifact))
         let command_envelope: Value = serde_json::from_str(command_result.trim()).expect("command envelope json");
         let command_stdout = Uuid::parse_str(command_envelope["stdoutArtifact"]["artifactId"].as_str().expect("stdout artifact id")).expect("stdout uuid");
         let command_stderr = Uuid::parse_str(command_envelope["stderrArtifact"]["artifactId"].as_str().expect("stderr artifact id")).expect("stderr uuid");
-        let command_combined = Uuid::parse_str(command_envelope["artifact"]["artifactId"].as_str().expect("combined artifact id")).expect("combined uuid");
         let streams: Vec<(String, String)> = sqlx::query("SELECT stream, content FROM execution_output_artifacts WHERE id = ANY($1) ORDER BY stream")
-            .bind(&[command_stdout, command_stderr, command_combined])
+            .bind(&[command_stdout, command_stderr])
             .fetch_all(&test_db.pool)
             .await
             .expect("command stream artifacts")
             .into_iter()
             .map(|row| (row.get("stream"), row.get("content")))
             .collect();
-        assert_eq!(streams.len(), 3);
+        assert_eq!(streams.len(), 2);
         assert!(streams.contains(&("stdout".to_string(), "stdout-artifact".to_string())));
         assert!(streams.contains(&("stderr".to_string(), "stderr-artifact".to_string())));
-        assert!(streams.contains(&("combined".to_string(), "stdout-artifactstderr-artifact".to_string())));
+        let combined_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_output_artifacts WHERE turn_id=$1 AND stream='combined'")
+            .bind(turn_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("no command combined artifacts");
+        assert_eq!(combined_count, 0);
+
+        let resume_turn = Uuid::new_v4();
+        let resume_tool = Uuid::new_v4();
+        let resume_script = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user','resume command artifact proof','running',now())")
+            .bind(resume_turn).bind(session_id).execute(&test_db.pool).await.expect("resume turn");
+        sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, started_at) VALUES ($1,$2,$3,'execute_code','resume-command-proof','{}'::jsonb,'running',now())")
+            .bind(resume_tool).bind(session_id).bind(resume_turn).execute(&test_db.pool).await.expect("resume tool");
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, started_at) VALUES ($1,$2,'paused command','running',now())")
+            .bind(resume_script).bind(resume_tool).execute(&test_db.pool).await.expect("resume script");
+        let resumed = starlark_host::execute_resumed_action(
+            &test_db.pool,
+            session_id,
+            Some(resume_turn),
+            resume_script,
+            "cmd.output_artifacts.sh",
+            &json!({
+                "argv": ["printf resumed-stdout; printf resumed-stderr >&2"],
+                "cwd": ".",
+                "executionRoot": "."
+            }),
+            json!({"decision":"allow","reason":"deterministic resumed command artifact proof"}),
+        )
+        .await
+        .expect("resumed command");
+        let resumed_command_id = Uuid::parse_str(resumed["commandRunId"].as_str().expect("resumed command id")).expect("resumed command uuid");
+        let resumed_artifacts: Vec<(String, String, Option<Uuid>, Option<Uuid>, Option<Uuid>, Option<Uuid>, i64, i64)> = sqlx::query(
+            "SELECT stream, content, session_id, turn_id, script_run_id, command_run_id, byte_count, line_count FROM execution_output_artifacts WHERE command_run_id=$1 ORDER BY stream"
+        )
+        .bind(resumed_command_id)
+        .fetch_all(&test_db.pool)
+        .await
+        .expect("resumed command artifacts")
+        .into_iter()
+        .map(|row| (row.get("stream"), row.get("content"), row.get("session_id"), row.get("turn_id"), row.get("script_run_id"), row.get("command_run_id"), row.get("byte_count"), row.get("line_count")))
+        .collect();
+        assert_eq!(resumed_artifacts.len(), 2);
+        assert!(resumed_artifacts.iter().any(|(stream, content, session, turn, script, command, bytes, lines)| stream == "stdout" && content == "resumed-stdout" && *session == Some(session_id) && *turn == Some(resume_turn) && *script == Some(resume_script) && *command == Some(resumed_command_id) && *bytes > 0 && *lines == 1));
+        assert!(resumed_artifacts.iter().any(|(stream, content, session, turn, script, command, bytes, lines)| stream == "stderr" && content == "resumed-stderr" && *session == Some(session_id) && *turn == Some(resume_turn) && *script == Some(resume_script) && *command == Some(resumed_command_id) && *bytes > 0 && *lines == 1));
+        let resumed_combined_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_output_artifacts WHERE command_run_id=$1 AND stream='combined'")
+            .bind(resumed_command_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("no resumed combined artifacts");
+        assert_eq!(resumed_combined_count, 0);
 
         let mut proc_seed = admin_command_seed("cmd.output_artifacts.process");
         proc_seed["binaryName"] = json!("sh");
@@ -4852,7 +6429,7 @@ output(outputs.stats(artifact))
         let process_value = serde_json::to_value(process_packet).expect("process value");
         assert_eq!(process_value["status"], "completed", "process packet: {process_value}");
         assert!(!process_value.to_string().contains(&stdout_large));
-        let process_result_artifact = Uuid::parse_str(process_value["output"]["artifact"]["artifactId"].as_str().expect("process result artifact")).expect("process result uuid");
+        let process_result_artifact = Uuid::parse_str(process_value["output"]["stdoutArtifact"]["artifactId"].as_str().expect("process result artifact")).expect("process result uuid");
         let process_result: String = sqlx::query_scalar("SELECT content FROM execution_output_artifacts WHERE id=$1")
             .bind(process_result_artifact)
             .fetch_one(&test_db.pool)
@@ -4861,22 +6438,25 @@ output(outputs.stats(artifact))
         let process_envelope: Value = serde_json::from_str(process_result.trim()).expect("process envelope json");
         assert_eq!(process_envelope["stdoutArtifact"]["truncated"], true);
         assert_eq!(process_envelope["stderrArtifact"]["truncated"], true);
-        assert_eq!(process_envelope["artifact"]["truncated"], true);
         let process_stdout = Uuid::parse_str(process_envelope["stdoutArtifact"]["artifactId"].as_str().expect("process stdout id")).expect("process stdout uuid");
         let process_stderr = Uuid::parse_str(process_envelope["stderrArtifact"]["artifactId"].as_str().expect("process stderr id")).expect("process stderr uuid");
-        let process_combined = Uuid::parse_str(process_envelope["artifact"]["artifactId"].as_str().expect("process combined id")).expect("process combined uuid");
         let process_streams: Vec<(String, String)> = sqlx::query("SELECT stream, content FROM execution_output_artifacts WHERE id = ANY($1) ORDER BY stream")
-            .bind(&[process_stdout, process_stderr, process_combined])
+            .bind(&[process_stdout, process_stderr])
             .fetch_all(&test_db.pool)
             .await
             .expect("process stream artifacts")
             .into_iter()
             .map(|row| (row.get("stream"), row.get("content")))
             .collect();
-        assert_eq!(process_streams.len(), 3);
+        assert_eq!(process_streams.len(), 2);
         assert!(process_streams.contains(&("stdout".to_string(), stdout_large.clone())));
         assert!(process_streams.contains(&("stderr".to_string(), stderr_large.clone())));
-        assert!(process_streams.contains(&("combined".to_string(), format!("{stdout_large}{stderr_large}"))));
+        let combined_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_output_artifacts WHERE turn_id=$1 AND stream='combined'")
+            .bind(turn_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("no process combined artifacts");
+        assert_eq!(combined_count, 0);
 
         test_db.cleanup().await;
     }
@@ -4893,7 +6473,7 @@ output(outputs.stats(artifact))
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_a, &source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_a, turn_id, tool_call_id, &source, &root, &role).await.expect("execute owner output");
         let value = serde_json::to_value(packet).expect("owner packet");
-        let artifact_id = value["output"]["artifact"]["artifactId"].as_str().expect("artifact id");
+        let artifact_id = value["output"]["stdoutArtifact"]["artifactId"].as_str().expect("artifact id");
         let quoted_artifact_id = serde_json::to_string(artifact_id).expect("quoted artifact id");
 
         let retrieval_sources = [
@@ -5366,6 +6946,66 @@ output(outputs.stats(artifact))
         let (status, body) = request_json(app.clone(), Method::POST, &format!("/sessions/{source}/requirements/clear"), json!({})).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body.pointer("/status").and_then(Value::as_str), Some("inactive"));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn requirements_review_detail_routes_clarification_to_hidden_reviewer_through_unified_submit() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-reviewer-submit"), ".", Some("."), None, None).await.expect("source");
+        requirements::set_active_requirements(&test_db.pool, source, requirements::RequirementSetInput {
+            title: Some("reviewer submit requirements".to_string()),
+            requirements: vec![requirements::RequirementInput { key: "clarification_routed".to_string(), statement: "Clarification reaches the hidden reviewer.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
+        }).await.expect("set");
+        let claim_turn = insert_completed_turn(&test_db.pool, source, "claim", "assistant").await;
+        requirements::record_source_final_response(&test_db.pool, source, claim_turn, r#"{"summary":"done","requirements":{"clarification_routed":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
+        let reviewer = requirements::status(&test_db.pool, source).await.expect("status").reviewer_session_id.expect("reviewer");
+        let model = Arc::new(FakeModelClient { direct_final_text: Some("clarification recorded"), ..Default::default() });
+        let state = ServerState::new_with_model_client(test_db.pool.clone(), "requirements-reviewer-submit".to_string(), model);
+        let app = app(state.clone());
+
+        let (status, body) = request_json(
+            app.clone(),
+            Method::POST,
+            &format!("/sessions/{source}/requirements/reviewer/send"),
+            json!({"message":"Clarification: accept this waiver and continue reviewing."}),
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["sessionId"], reviewer.to_string());
+        assert_eq!(body["disposition"], "idle_turn_start");
+        assert!(body["submittedInputId"].as_str().is_some());
+        for _ in 0..80 {
+            let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='applied'")
+                .bind(reviewer)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("applied reviewer inputs");
+            if applied == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let submitted = sqlx::query("SELECT session_id, source_parent_session_id, source, content, status, placement_turn_id FROM submitted_inputs WHERE session_id=$1")
+            .bind(reviewer)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("reviewer submitted input");
+        assert_eq!(submitted.get::<Uuid, _>("session_id"), reviewer);
+        assert_eq!(submitted.get::<Option<Uuid>, _>("source_parent_session_id"), Some(source));
+        assert_eq!(submitted.get::<String, _>("source"), "requirementsReviewDetail");
+        assert_eq!(submitted.get::<String, _>("content"), "Clarification: accept this waiver and continue reviewing.");
+        assert_eq!(submitted.get::<String, _>("status"), "applied");
+        assert!(submitted.get::<Option<Uuid>, _>("placement_turn_id").is_some());
+        let normal_sessions = db::list_sessions(&test_db.pool, true).await.expect("normal sessions");
+        assert!(!normal_sessions.iter().any(|session| session.id == reviewer), "hidden reviewer must remain out of normal session list");
+        let snapshot = projection::build_runtime_projection_snapshot(&test_db.pool, Some(source)).await.expect("snapshot");
+        assert!(!snapshot.sessions.iter().any(|session| session.id == reviewer.to_string()));
+        assert_eq!(snapshot.selected_session.unwrap().requirements_review.unwrap().reviewer_session_id.as_deref(), Some(reviewer.to_string().as_str()));
+        let invalid_source = db::new_session(&test_db.pool, &role, Some("requirements-reviewer-submit"), ".", Some("."), None, None).await.expect("invalid source");
+        let (status, body) = request_json(app, Method::POST, &format!("/sessions/{invalid_source}/requirements/reviewer/send"), json!({"message":"no reviewer"})).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"]["message"].as_str().unwrap_or_default().contains("no active reviewer"));
         test_db.cleanup().await;
     }
 

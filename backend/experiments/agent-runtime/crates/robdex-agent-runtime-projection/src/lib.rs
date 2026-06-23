@@ -95,6 +95,12 @@ pub struct SelectedSessionDetail {
     pub status: String,
     pub pending_approval_count: u64,
     pub managed_process_count: u64,
+    pub active_turn_id: Option<String>,
+    pub queued_submitted_input_count: u64,
+    pub applied_steering_count: u64,
+    pub submit_disposition: Option<String>,
+    pub submit_status: Option<String>,
+    pub terminal_submission_rejection: Option<Value>,
     pub metadata: Value,
     #[serde(default)]
     pub requirements_review: Option<RequirementsReviewSummary>,
@@ -662,6 +668,7 @@ pub enum GuiOperationName {
     ClearRequirements,
     ShowRequirementsStatus,
     ListRequirementsPackets,
+    SubmitRequirementsReviewerInput,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -716,6 +723,7 @@ pub enum GuiOperationRequest {
     ClearRequirements { session_id: String },
     ShowRequirementsStatus { session_id: String },
     ListRequirementsPackets { session_id: String },
+    SubmitRequirementsReviewerInput { source_session_id: String, message: String },
 }
 
 impl GuiOperationRequest {
@@ -770,6 +778,7 @@ impl GuiOperationRequest {
             Self::ClearRequirements { .. } => GuiOperationName::ClearRequirements,
             Self::ShowRequirementsStatus { .. } => GuiOperationName::ShowRequirementsStatus,
             Self::ListRequirementsPackets { .. } => GuiOperationName::ListRequirementsPackets,
+            Self::SubmitRequirementsReviewerInput { .. } => GuiOperationName::SubmitRequirementsReviewerInput,
         }
     }
 
@@ -805,7 +814,8 @@ impl GuiOperationRequest {
             | Self::ArchiveRole { .. }
             | Self::UnarchiveRole { .. }
             | Self::SetRequirements { .. }
-            | Self::ClearRequirements { .. } => GuiOperationExpectation::WaitForDelta,
+            | Self::ClearRequirements { .. }
+            | Self::SubmitRequirementsReviewerInput { .. } => GuiOperationExpectation::WaitForDelta,
             Self::ListProjects
             | Self::ListCommandRegistry { .. }
             | Self::ShowCommand { .. }
@@ -874,6 +884,7 @@ impl GuiOperationRequest {
             Self::ClearRequirements { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/requirements/clear", "{}", r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ShowRequirementsStatus { .. } => http_mapping(self.name(), "GET", "/sessions/{sessionId}/requirements", "none", "RequirementStatus", GuiOperationExpectation::DirectResult),
             Self::ListRequirementsPackets { .. } => http_mapping(self.name(), "GET", "/sessions/{sessionId}/requirements/packets", "none", "Vec<RequirementPacket>", GuiOperationExpectation::DirectResult),
+            Self::SubmitRequirementsReviewerInput { .. } => http_mapping(self.name(), "POST", "/sessions/{sourceSessionId}/requirements/reviewer/send", r#"{"message"}"#, r#"{"sessionId","submittedInputId","disposition","status"}"#, GuiOperationExpectation::WaitForDelta),
         }
     }
 
@@ -951,6 +962,7 @@ impl GuiOperationRequest {
             Self::ArchiveRole { .. } | Self::UnarchiveRole { .. } => Some(json!({})),
             Self::SetRequirements { title, requirements, .. } => Some(json!({"title": title, "requirements": requirements})),
             Self::ClearRequirements { .. } => Some(json!({})),
+            Self::SubmitRequirementsReviewerInput { message, .. } => Some(json!({"message": message})),
         }
     }
 }
@@ -1173,7 +1185,7 @@ pub const DART_ALLOWED_EPHEMERAL_RESPONSIBILITIES: &[&str] = &[
     "localLayout",
 ];
 
-pub const GUI_OPERATION_VARIANT_COUNT: usize = 49;
+pub const GUI_OPERATION_VARIANT_COUNT: usize = 50;
 
 impl Default for RuntimeProjection {
     fn default() -> Self {
@@ -1656,6 +1668,7 @@ mod tests {
             GuiOperationRequest::ClearRequirements { session_id: "session-1".to_string() },
             GuiOperationRequest::ShowRequirementsStatus { session_id: "session-1".to_string() },
             GuiOperationRequest::ListRequirementsPackets { session_id: "session-1".to_string() },
+            GuiOperationRequest::SubmitRequirementsReviewerInput { source_session_id: "session-1".to_string(), message: "I accept the waiver; continue the review.".to_string() },
         ]
     }
 
@@ -1693,6 +1706,12 @@ mod tests {
             status: "open".to_string(),
             pending_approval_count: 0,
             managed_process_count: 0,
+            active_turn_id: None,
+            queued_submitted_input_count: 0,
+            applied_steering_count: 0,
+            submit_disposition: None,
+            submit_status: None,
+            terminal_submission_rejection: None,
             metadata: Value::Null,
             requirements_review: None,
         });
@@ -1734,6 +1753,12 @@ mod tests {
             status: "open".to_string(),
             pending_approval_count: 0,
             managed_process_count: 0,
+            active_turn_id: None,
+            queued_submitted_input_count: 0,
+            applied_steering_count: 0,
+            submit_disposition: None,
+            submit_status: None,
+            terminal_submission_rejection: None,
             metadata: Value::Null,
             requirements_review: None,
         };
@@ -1756,6 +1781,12 @@ mod tests {
             status: "open".to_string(),
             pending_approval_count: 0,
             managed_process_count: 0,
+            active_turn_id: None,
+            queued_submitted_input_count: 0,
+            applied_steering_count: 0,
+            submit_disposition: None,
+            submit_status: None,
+            terminal_submission_rejection: None,
             metadata: Value::Null,
             requirements_review: None,
         });

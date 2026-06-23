@@ -1,15 +1,412 @@
 use anyhow::Result;
 use chrono::Utc;
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::{approvals, command_registry, compaction, db, model_input, routing};
 use crate::lifecycle::{self, TerminalStatus};
 use crate::model::codex_adapter::{bounded_raw_response, concise_response_summary, CodexBackedModelClient};
-use crate::model::{ModelClient, ModelFinalTurn, ModelInitialTurn, RuntimeInputMessage};
+use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelInitialTurn, RuntimeInputMessage};
 use crate::policy::PolicyEngine;
 use crate::starlark_host::{ExecutionRoot, execute_code};
+
+async fn append_transcript_item(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Uuid,
+    source_table: Option<&str>,
+    source_id: Option<Uuid>,
+    item_type: &str,
+    role: &str,
+    content: &str,
+    payload: Value,
+) -> Result<()> {
+    let stable_key = match (source_table, source_id) {
+        (Some(table), Some(id)) => format!("{table}:{id}:{item_type}"),
+        _ => format!("{item_type}:{role}:{content}"),
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO current_turn_transcript_items (
+            id, session_id, turn_id, source_table, source_id, item_type, role, content, payload, stable_key
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        ON CONFLICT (turn_id, stable_key) WHERE stable_key <> '' DO UPDATE SET
+            content = EXCLUDED.content,
+            payload = EXCLUDED.payload
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(session_id)
+    .bind(turn_id)
+    .bind(source_table)
+    .bind(source_id)
+    .bind(item_type)
+    .bind(role)
+    .bind(content)
+    .bind(payload)
+    .bind(stable_key)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn output_artifact_summaries(pool: &PgPool, source_column: &str, source_id: Uuid) -> Result<Value> {
+    let sql = match source_column {
+        "script_run_id" => "SELECT id, stream, byte_count, line_count FROM execution_output_artifacts WHERE script_run_id=$1 AND stream IN ('stdout','stderr') ORDER BY stream ASC, created_at ASC",
+        "command_run_id" => "SELECT id, stream, byte_count, line_count FROM execution_output_artifacts WHERE command_run_id=$1 AND stream IN ('stdout','stderr') ORDER BY stream ASC, created_at ASC",
+        "process_id" => "SELECT id, stream, byte_count, line_count FROM execution_output_artifacts WHERE process_id=$1 AND stream IN ('stdout','stderr') ORDER BY stream ASC, created_at ASC",
+        _ => anyhow::bail!("unsupported artifact summary source column: {source_column}"),
+    };
+    let rows = sqlx::query(sql).bind(source_id).fetch_all(pool).await?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    for row in rows {
+        let summary = json!({
+            "artifactId": row.get::<Uuid, _>("id"),
+            "byteCount": row.get::<i64, _>("byte_count"),
+            "lineCount": row.get::<i64, _>("line_count"),
+            "retrieval": "Use outputs.head/tail/slice/search/stats with this artifact id inside the owning session.",
+        });
+        match row.get::<String, _>("stream").as_str() {
+            "stdout" => stdout.push(summary),
+            "stderr" => stderr.push(summary),
+            _ => {}
+        }
+    }
+    Ok(json!({"stdout": stdout, "stderr": stderr}))
+}
+
+async fn output_artifact_summaries_by_ids(pool: &PgPool, stdout_id: Option<Uuid>, stderr_id: Option<Uuid>) -> Result<Value> {
+    let ids = [stdout_id, stderr_id].into_iter().flatten().collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Ok(json!({"stdout": [], "stderr": []}));
+    }
+    let rows = sqlx::query("SELECT id, stream, byte_count, line_count FROM execution_output_artifacts WHERE id = ANY($1) AND stream IN ('stdout','stderr') ORDER BY stream ASC, created_at ASC")
+        .bind(&ids)
+        .fetch_all(pool)
+        .await?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    for row in rows {
+        let summary = json!({
+            "artifactId": row.get::<Uuid, _>("id"),
+            "byteCount": row.get::<i64, _>("byte_count"),
+            "lineCount": row.get::<i64, _>("line_count"),
+            "retrieval": "Use outputs.head/tail/slice/search/stats with this artifact id inside the owning session.",
+        });
+        match row.get::<String, _>("stream").as_str() {
+            "stdout" => stdout.push(summary),
+            "stderr" => stderr.push(summary),
+            _ => {}
+        }
+    }
+    Ok(json!({"stdout": stdout, "stderr": stderr}))
+}
+
+fn tool_result_summary(result_json: &Value) -> Value {
+    json!({
+        "ok": result_json.get("ok").and_then(Value::as_bool),
+        "status": result_json.get("status").and_then(Value::as_str),
+        "scriptRunId": result_json.get("scriptRunId"),
+        "output": {
+            "message": result_json.pointer("/output/message").and_then(Value::as_str),
+            "stdoutArtifact": result_json.pointer("/output/stdoutArtifact").cloned(),
+            "stderrArtifact": result_json.pointer("/output/stderrArtifact").cloned(),
+        },
+    })
+}
+
+fn explicit_output_preview(result_json: &Value) -> Option<String> {
+    result_json
+        .pointer("/output/stdoutArtifact/preview")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            result_json
+                .pointer("/output/stdoutArtifact/tail")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+        })
+        .map(|value| {
+            let limit = 2_000;
+            if value.len() > limit {
+                format!("{}…", value.chars().take(limit).collect::<String>())
+            } else {
+                value.to_string()
+            }
+        })
+}
+
+fn artifact_handle_text(artifacts: &Value) -> String {
+    let mut parts = Vec::new();
+    for stream in ["stdout", "stderr"] {
+        if let Some(items) = artifacts.get(stream).and_then(Value::as_array) {
+            for item in items {
+                if let Some(id) = item.get("artifactId").and_then(Value::as_str) {
+                    let bytes = item.get("byteCount").and_then(Value::as_i64).unwrap_or_default();
+                    let lines = item.get("lineCount").and_then(Value::as_i64).unwrap_or_default();
+                    parts.push(format!("{stream} artifact {id} ({bytes} bytes, {lines} lines)"));
+                }
+            }
+        }
+    }
+    if parts.is_empty() {
+        "no stdout/stderr artifacts recorded".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
+pub(crate) async fn persist_tool_boundary_transcript(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Uuid,
+    tool_call_id: Uuid,
+    user_message: &str,
+    assistant_summary: &str,
+    result_json: &Value,
+) -> Result<ModelHistoryItem> {
+    append_transcript_item(pool, session_id, turn_id, Some("turns"), Some(turn_id), "initial_user_input", "user", user_message, json!({})).await?;
+    append_transcript_item(pool, session_id, turn_id, Some("model_events"), None, "assistant_intermediate", "assistant", assistant_summary, json!({})).await?;
+    append_transcript_item(pool, session_id, turn_id, Some("tool_calls"), Some(tool_call_id), "tool_call", "tool", "execute_code", json!({"toolCallId": tool_call_id})).await?;
+    let tool_summary = tool_result_summary(result_json);
+    let tool_result_content = match explicit_output_preview(result_json) {
+        Some(preview) => format!("execute_code completed; explicit bounded output: {preview}"),
+        None => "execute_code completed; bounded explicit output and stdout/stderr artifact metadata are recorded separately.".to_string(),
+    };
+    append_transcript_item(
+        pool,
+        session_id,
+        turn_id,
+        Some("tool_calls"),
+        Some(tool_call_id),
+        "tool_result",
+        "tool",
+        &tool_result_content,
+        json!({"toolCallId": tool_call_id, "summary": tool_summary}),
+    )
+    .await?;
+    let command_rows = sqlx::query(
+        r#"
+        SELECT cr.id, cr.binary_name, cr.argv, cr.cwd, cr.status, cr.exit_status, cr.duration_ms,
+               octet_length(cr.stdout) AS stdout_bytes, octet_length(cr.stderr) AS stderr_bytes
+        FROM command_runs cr
+        JOIN host_api_calls ha ON ha.id = cr.host_api_call_id
+        JOIN script_runs sr ON sr.id = ha.script_run_id
+        WHERE sr.tool_call_id = $1
+        ORDER BY cr.started_at ASC, cr.id ASC
+        "#,
+    )
+    .bind(tool_call_id)
+    .fetch_all(pool)
+    .await?;
+    for row in command_rows {
+        let id: Uuid = row.get("id");
+        let binary: String = row.get("binary_name");
+        let status: String = row.get("status");
+        let artifacts = output_artifact_summaries(pool, "command_run_id", id).await?;
+        append_transcript_item(
+            pool,
+            session_id,
+            turn_id,
+            Some("command_runs"),
+            Some(id),
+            "command_registry_process",
+            "tool",
+            &format!("command {binary} status={status}; stdout/stderr are available only through artifact handles: {}", artifact_handle_text(&artifacts)),
+            json!({
+                "commandRunId": id,
+                "binary": binary,
+                "argv": row.get::<Value, _>("argv"),
+                "cwd": row.get::<String, _>("cwd"),
+                "status": status,
+                "exitStatus": row.get::<Option<i32>, _>("exit_status"),
+                "durationMs": row.get::<Option<i64>, _>("duration_ms"),
+                "byteCounts": {"stdout": row.get::<Option<i32>, _>("stdout_bytes"), "stderr": row.get::<Option<i32>, _>("stderr_bytes")},
+                "artifacts": artifacts,
+            }),
+        )
+        .await?;
+    }
+    let shell_rows = sqlx::query(
+        r#"
+        SELECT id, left(script_source, 120) AS script_preview, cwd, status, process_id, exit_status, duration_ms,
+               stdout_artifact_id, stderr_artifact_id
+        FROM shell_runs
+        WHERE tool_call_id = $1
+        ORDER BY started_at ASC, id ASC
+        "#,
+    )
+    .bind(tool_call_id)
+    .fetch_all(pool)
+    .await?;
+    for row in shell_rows {
+        let id: Uuid = row.get("id");
+        let status: String = row.get("status");
+        let artifacts = output_artifact_summaries_by_ids(
+            pool,
+            row.get::<Option<Uuid>, _>("stdout_artifact_id"),
+            row.get::<Option<Uuid>, _>("stderr_artifact_id"),
+        ).await?;
+        append_transcript_item(
+            pool,
+            session_id,
+            turn_id,
+            Some("shell_runs"),
+            Some(id),
+            "god_mode_shell_process",
+            "tool",
+            &format!("God Mode shell status={status}; stdout/stderr are available only through artifact handles: {}", artifact_handle_text(&artifacts)),
+            json!({
+                "shellRunId": id,
+                "processId": row.get::<Option<Uuid>, _>("process_id"),
+                "cwd": row.get::<String, _>("cwd"),
+                "status": status,
+                "exitStatus": row.get::<Option<i32>, _>("exit_status"),
+                "durationMs": row.get::<Option<i64>, _>("duration_ms"),
+                "scriptPreview": row.get::<String, _>("script_preview"),
+                "artifacts": artifacts,
+            }),
+        )
+        .await?;
+    }
+    let process_rows = sqlx::query(
+        r#"
+        SELECT id, handle, binary_name, status, metadata
+        FROM managed_processes
+        WHERE starting_turn_id = $1
+        ORDER BY start_time ASC, id ASC
+        "#,
+    )
+    .bind(turn_id)
+    .fetch_all(pool)
+    .await?;
+    for row in process_rows {
+        let id: Uuid = row.get("id");
+        let handle: String = row.get("handle");
+        let binary: String = row.get("binary_name");
+        let status: String = row.get("status");
+        let artifacts = output_artifact_summaries(pool, "process_id", id).await?;
+        append_transcript_item(
+            pool,
+            session_id,
+            turn_id,
+            Some("managed_processes"),
+            Some(id),
+            "managed_async_process",
+            "tool",
+            &format!("managed process {handle} {binary} status={status}; stdout/stderr are available only through artifact handles: {}", artifact_handle_text(&artifacts)),
+            json!({"processId": id, "handle": handle, "status": status, "artifacts": artifacts, "metadata": row.get::<Value, _>("metadata")}),
+        )
+        .await?;
+    }
+    let rows = sqlx::query(
+        "SELECT item_type, role, content FROM current_turn_transcript_items WHERE turn_id=$1 ORDER BY ordering_key ASC",
+    )
+    .bind(turn_id)
+    .fetch_all(pool)
+    .await?;
+    let transcript_text = rows
+        .iter()
+        .map(|row| format!("{} [{}]: {}", row.get::<String, _>("role"), row.get::<String, _>("item_type"), row.get::<String, _>("content")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(ModelHistoryItem {
+        session_id: session_id.to_string(),
+        turn_id: turn_id.to_string(),
+        user: user_message.to_string(),
+        assistant: Some(transcript_text),
+        started_at: Utc::now().to_rfc3339(),
+        source: "current_turn_transcript".to_string(),
+        checkpoint_id: None,
+    })
+}
+
+pub(crate) async fn continue_pending_steering_after_operation_boundary(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Uuid,
+    model: &(impl ModelClient + Sync + ?Sized),
+) -> Result<bool> {
+    let Some(pending) = db::next_accepted_submitted_input_for_turn(pool, session_id, turn_id).await? else {
+        return Ok(false);
+    };
+    let transcript_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM current_turn_transcript_items WHERE turn_id=$1")
+        .bind(turn_id)
+        .fetch_one(pool)
+        .await?;
+    if transcript_count == 0 {
+        let user_message: String = sqlx::query_scalar("SELECT input_text FROM turns WHERE id=$1")
+            .bind(turn_id)
+            .fetch_one(pool)
+            .await?;
+        if let Some(tool_call_id) = sqlx::query_scalar::<_, Uuid>("SELECT id FROM tool_calls WHERE turn_id=$1 ORDER BY started_at ASC, id ASC LIMIT 1")
+            .bind(turn_id)
+            .fetch_optional(pool)
+            .await?
+        {
+            let result_json: Value = sqlx::query_scalar("SELECT COALESCE(result, '{}'::jsonb) FROM tool_calls WHERE id=$1")
+                .bind(tool_call_id)
+                .fetch_one(pool)
+                .await?;
+            persist_tool_boundary_transcript(pool, session_id, turn_id, tool_call_id, &user_message, "operation boundary completed", &result_json).await?;
+        } else {
+            append_transcript_item(pool, session_id, turn_id, Some("turns"), Some(turn_id), "initial_user_input", "user", &user_message, json!({})).await?;
+        }
+    }
+    db::mark_submitted_input_applied(pool, pending.id, turn_id).await?;
+    append_transcript_item(pool, session_id, turn_id, Some("submitted_inputs"), Some(pending.id), "applied_steering", "user", &pending.content, json!({"submittedInputId": pending.id})).await?;
+    db::append_event(
+        pool,
+        session_id,
+        Some(turn_id),
+        "submitted_input",
+        Some(pending.id),
+        "submitted_input.applied",
+        Some("applied"),
+        json!({"submittedInputId": pending.id, "placementTurnId": turn_id, "sameTurnContinuation": true, "boundary": "operation_completed"}),
+    )
+    .await?;
+    let role = db::session_role_snapshot(pool, session_id).await?;
+    let rows = sqlx::query("SELECT role, item_type, content FROM current_turn_transcript_items WHERE turn_id=$1 ORDER BY ordering_key ASC")
+        .bind(turn_id)
+        .fetch_all(pool)
+        .await?;
+    let user_message: String = sqlx::query_scalar("SELECT input_text FROM turns WHERE id=$1")
+        .bind(turn_id)
+        .fetch_one(pool)
+        .await?;
+    let transcript = rows
+        .iter()
+        .map(|row| format!("{} [{}]: {}", row.get::<String, _>("role"), row.get::<String, _>("item_type"), row.get::<String, _>("content")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut history = model_input::model_history_from_items(&db::reconstructed_history(pool, session_id).await?);
+    history.push(ModelHistoryItem {
+        session_id: session_id.to_string(),
+        turn_id: turn_id.to_string(),
+        user: user_message,
+        assistant: Some(transcript),
+        started_at: Utc::now().to_rfc3339(),
+        source: "current_turn_transcript".to_string(),
+        checkpoint_id: None,
+    });
+    db::append_event(
+        pool,
+        session_id,
+        Some(turn_id),
+        "model",
+        None,
+        "model.same_turn_continuation",
+        Some("running"),
+        json!({"submittedInputId": pending.id, "boundary": "operation_completed", "history": {"items": history.len(), "source": "completed_history_plus_current_turn_transcript"}}),
+    )
+    .await?;
+    let _ = model.request_tool_call(&role, &history, &[], "", "", &pending.content).await?;
+    Ok(true)
+}
 
 
 async fn latest_command_context_evidence(pool: &PgPool, session_id: Uuid) -> Result<Option<command_registry::CommandContextEvidence>> {
@@ -417,6 +814,179 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
         json!({"result": result_json.clone()}),
     )
     .await?;
+    let mut pending_direct_final = None;
+    for _ in 0..20 {
+        if let Some(pending) = db::next_accepted_submitted_input_for_turn(pool, session_id, turn_id).await? {
+            pending_direct_final = Some(pending);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    if let Some(pending) = pending_direct_final {
+        db::mark_submitted_input_applied(pool, pending.id, turn_id).await?;
+        db::append_event(
+            pool,
+            session_id,
+            Some(turn_id),
+            "submitted_input",
+            Some(pending.id),
+            "submitted_input.applied",
+            Some("applied"),
+            json!({
+                "submittedInputId": pending.id,
+                "placementTurnId": turn_id,
+                "disposition": pending.disposition,
+                "sameTurnContinuation": true,
+                "boundary": "tool_completed",
+            }),
+        )
+        .await?;
+        let mut continuation_history = model_history.clone();
+        continuation_history.push(
+            persist_tool_boundary_transcript(
+                pool,
+                session_id,
+                turn_id,
+                tool_call_id,
+                message,
+                &plan.assistant_summary,
+                &result_json,
+            )
+            .await?,
+        );
+        append_transcript_item(pool, session_id, turn_id, Some("submitted_inputs"), Some(pending.id), "applied_steering", "user", &pending.content, json!({"submittedInputId": pending.id})).await?;
+        db::append_event(
+            pool,
+            session_id,
+            Some(turn_id),
+            "model",
+            Some(model_event_id),
+            "model.same_turn_continuation",
+            Some("running"),
+            json!({
+                "submittedInputId": pending.id,
+                "boundary": "tool_completed",
+                "history": {"items": continuation_history.len(), "source": "completed_history_plus_current_turn_transcript"},
+            }),
+        )
+        .await?;
+        match model
+            .request_tool_call(
+                &model_role_snapshot,
+                &continuation_history,
+                &runtime_messages,
+                &execute_code_contract,
+                &request_registry_contract,
+                &pending.content,
+            )
+            .await?
+        {
+            ModelInitialTurn::FinalResponse(continued) => {
+                let continued_event_id = Uuid::new_v4();
+                sqlx::query(
+                    r#"
+                    INSERT INTO model_events (id, session_id, turn_id, event_type, payload)
+                    VALUES ($1, $2, $3, 'final_response', $4)
+                    "#,
+                )
+                .bind(continued_event_id)
+                .bind(session_id)
+                .bind(turn_id)
+                .bind(json!({
+                    "summary": continued.final_text,
+                    "provider": continued.provider,
+                    "model": continued.model,
+                    "raw": bounded_raw_response(&continued.raw_response),
+                    "sameTurnContinuation": true,
+                    "submittedInputId": pending.id,
+                    "boundary": "tool_completed",
+                }))
+                .execute(pool)
+                .await?;
+                db::append_event(
+                    pool,
+                    session_id,
+                    Some(turn_id),
+                    "model",
+                    Some(continued_event_id),
+                    "model.final_response",
+                    Some("completed"),
+                    json!({
+                        "finalText": continued.final_text,
+                        "sameTurnContinuation": true,
+                        "submittedInputId": pending.id,
+                        "boundary": "tool_completed",
+                        "request": {
+                            "history": {"items": continuation_history.len(), "source": "completed_history_plus_current_turn_transcript"},
+                        },
+                    }),
+                )
+                .await?;
+                lifecycle::complete_turn(pool, turn_id, status, Utc::now()).await?;
+                db::append_event(
+                    pool,
+                    session_id,
+                    Some(turn_id),
+                    "turn",
+                    Some(turn_id),
+                    "turn.completed",
+                    Some(status.as_str()),
+                    json!({"sameTurnContinuation": true}),
+                )
+                .await?;
+                classify_requirements_final_response(pool, session_id, turn_id, &continued.final_text, model, budget).await?;
+                println!("turn {turn_id} {}", status.as_str());
+                return Ok(turn_id);
+            }
+            ModelInitialTurn::ToolCall(next_plan) => {
+                let continued_event_id = Uuid::new_v4();
+                sqlx::query(
+                    r#"
+                    INSERT INTO model_events (id, session_id, turn_id, event_type, payload)
+                    VALUES ($1, $2, $3, 'assistant_message', $4)
+                    "#,
+                )
+                .bind(continued_event_id)
+                .bind(session_id)
+                .bind(turn_id)
+                .bind(json!({
+                    "summary": next_plan.assistant_summary,
+                    "tool": next_plan.tool_call.tool_name,
+                    "sameTurnContinuation": true,
+                    "submittedInputId": pending.id,
+                    "boundary": "tool_completed",
+                    "request": {"history": {"items": continuation_history.len(), "source": "completed_history_plus_current_turn_transcript"}},
+                }))
+                .execute(pool)
+                .await?;
+                db::append_event(
+                    pool,
+                    session_id,
+                    Some(turn_id),
+                    "model",
+                    Some(continued_event_id),
+                    "model.tool_call",
+                    Some("planned"),
+                    json!({"tool": next_plan.tool_call.tool_name, "sameTurnContinuation": true, "submittedInputId": pending.id, "boundary": "tool_completed"}),
+                )
+                .await?;
+                lifecycle::complete_turn(pool, turn_id, status, Utc::now()).await?;
+                db::append_event(
+                    pool,
+                    session_id,
+                    Some(turn_id),
+                    "turn",
+                    Some(turn_id),
+                    "turn.completed",
+                    Some(status.as_str()),
+                    json!({"sameTurnContinuation": true, "continuedToolPlanned": next_plan.tool_call.tool_name}),
+                )
+                .await?;
+                println!("turn {turn_id} {}", status.as_str());
+                return Ok(turn_id);
+            }
+        }
+    }
     let final_response = match model
         .submit_tool_result(
             &model_role_snapshot,
@@ -451,6 +1021,17 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
         "raw": bounded_raw_response(&final_response.raw_response),
     }))
     .execute(pool)
+    .await?;
+    db::append_event(
+        pool,
+        session_id,
+        Some(turn_id),
+        "model",
+        Some(final_model_event_id),
+        "model.final_output_committed",
+        Some("committed"),
+        json!({"finalText": final_response.final_text, "mode": "tool_result_final"}),
+    )
     .await?;
     db::append_event(
         pool,
@@ -531,6 +1112,17 @@ async fn complete_direct_final_response(
         Some(turn_id),
         "model",
         Some(final_model_event_id),
+        "model.final_output_committed",
+        Some("committed"),
+        json!({"finalText": final_response.final_text, "mode": "direct_final"}),
+    )
+    .await?;
+    db::append_event(
+        pool,
+        session_id,
+        Some(turn_id),
+        "model",
+        Some(final_model_event_id),
         "model.final_response",
         Some("completed"),
         json!({
@@ -549,6 +1141,141 @@ async fn complete_direct_final_response(
         }),
     )
     .await?;
+
+    if let Some(pending) = db::next_accepted_submitted_input_for_turn(pool, session_id, turn_id).await? {
+        db::mark_submitted_input_applied(pool, pending.id, turn_id).await?;
+        db::append_event(
+            pool,
+            session_id,
+            Some(turn_id),
+            "submitted_input",
+            Some(pending.id),
+            "submitted_input.applied",
+            Some("applied"),
+            json!({
+                "submittedInputId": pending.id,
+                "placementTurnId": turn_id,
+                "disposition": pending.disposition,
+                "sameTurnContinuation": true,
+            }),
+        )
+        .await?;
+        let mut continuation_history = model_input::model_history_from_items(prior_history);
+        let initial_user: String = sqlx::query_scalar("SELECT input_text FROM turns WHERE id=$1")
+            .bind(turn_id)
+            .fetch_one(pool)
+            .await?;
+        append_transcript_item(pool, session_id, turn_id, Some("turns"), Some(turn_id), "initial_user_input", "user", &initial_user, json!({})).await?;
+        append_transcript_item(pool, session_id, turn_id, Some("model_events"), Some(final_model_event_id), "assistant_final_text", "assistant", &final_response.final_text, json!({"sameTurnContinuation": true})).await?;
+        append_transcript_item(pool, session_id, turn_id, Some("submitted_inputs"), Some(pending.id), "applied_steering", "user", &pending.content, json!({"submittedInputId": pending.id})).await?;
+        continuation_history.push(ModelHistoryItem {
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            user: initial_user,
+            assistant: Some(final_response.final_text.clone()),
+            started_at: Utc::now().to_rfc3339(),
+            source: "current_turn_transcript".to_string(),
+            checkpoint_id: None,
+        });
+        db::append_event(
+            pool,
+            session_id,
+            Some(turn_id),
+            "model",
+            Some(final_model_event_id),
+            "model.direct_final_continuation",
+            Some("running"),
+            json!({
+                "submittedInputId": pending.id,
+                "history": {"items": continuation_history.len(), "source": "completed_history_plus_current_turn_transcript"},
+            }),
+        )
+        .await?;
+        match model
+            .request_tool_call(
+                &db::session_role_snapshot(pool, session_id).await?,
+                &continuation_history,
+                &[],
+                "",
+                "",
+                &pending.content,
+            )
+            .await?
+        {
+            ModelInitialTurn::FinalResponse(continued) => {
+                let continued_event_id = Uuid::new_v4();
+                sqlx::query(
+                    r#"
+                    INSERT INTO model_events (id, session_id, turn_id, event_type, payload)
+                    VALUES ($1, $2, $3, 'final_response', $4)
+                    "#,
+                )
+                .bind(continued_event_id)
+                .bind(session_id)
+                .bind(turn_id)
+                .bind(json!({
+                    "summary": continued.final_text,
+                    "provider": continued.provider,
+                    "model": continued.model,
+                    "raw": bounded_raw_response(&continued.raw_response),
+                    "sameTurnContinuation": true,
+                    "submittedInputId": pending.id,
+                }))
+                .execute(pool)
+                .await?;
+                db::append_event(
+                    pool,
+                    session_id,
+                    Some(turn_id),
+                    "model",
+                    Some(continued_event_id),
+                    "model.final_response",
+                    Some("completed"),
+                    json!({
+                        "finalText": continued.final_text,
+                        "sameTurnContinuation": true,
+                        "submittedInputId": pending.id,
+                        "request": {
+                            "history": {"items": continuation_history.len(), "source": "completed_history_plus_current_turn_transcript"},
+                        },
+                    }),
+                )
+                .await?;
+            }
+            ModelInitialTurn::ToolCall(plan) => {
+                let continued_event_id = Uuid::new_v4();
+                sqlx::query(
+                    r#"
+                    INSERT INTO model_events (id, session_id, turn_id, event_type, payload)
+                    VALUES ($1, $2, $3, 'assistant_message', $4)
+                    "#,
+                )
+                .bind(continued_event_id)
+                .bind(session_id)
+                .bind(turn_id)
+                .bind(json!({
+                    "summary": plan.assistant_summary,
+                    "tool": plan.tool_call.tool_name,
+                    "sameTurnContinuation": true,
+                    "submittedInputId": pending.id,
+                    "request": {"history": {"items": continuation_history.len(), "source": "completed_history_plus_current_turn_transcript"}},
+                }))
+                .execute(pool)
+                .await?;
+                db::append_event(
+                    pool,
+                    session_id,
+                    Some(turn_id),
+                    "model",
+                    Some(continued_event_id),
+                    "model.tool_call",
+                    Some("planned"),
+                    json!({"tool": plan.tool_call.tool_name, "sameTurnContinuation": true, "submittedInputId": pending.id}),
+                )
+                .await?;
+            }
+        }
+    }
 
     lifecycle::complete_turn(pool, turn_id, TerminalStatus::Completed, Utc::now()).await?;
     db::append_event(

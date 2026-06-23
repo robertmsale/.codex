@@ -384,7 +384,6 @@ struct ShellRecord {
     status: String,
     stdout_artifact_id: Option<Uuid>,
     stderr_artifact_id: Option<Uuid>,
-    combined_artifact_id: Option<Uuid>,
     process_id: Option<Uuid>,
     exit_status: Option<i32>,
     failure: Option<String>,
@@ -423,7 +422,6 @@ struct CommandRecord {
     command_version_id: Uuid,
     stdout_artifact_id: Uuid,
     stderr_artifact_id: Uuid,
-    combined_artifact_id: Uuid,
     binary_name: String,
     binary_path: String,
     argv: Vec<String>,
@@ -536,7 +534,6 @@ pub async fn execute_code(
     let full_stderr = stderr;
     let final_artifact_id = Uuid::new_v4();
     let stderr_artifact_id = Uuid::new_v4();
-    let combined_artifact_id = Uuid::new_v4();
     let final_envelope = output_artifacts::store(pool, NewOutputArtifact {
         id: final_artifact_id,
         session_id,
@@ -563,20 +560,6 @@ pub async fn execute_code(
         content: &full_stderr,
         metadata: json!({"role": "scriptError"}),
     }).await?;
-    let combined = if full_stderr.is_empty() { full_final_output.clone() } else { format!("{}{}", full_final_output, full_stderr) };
-    let combined_envelope = output_artifacts::store(pool, NewOutputArtifact {
-        id: combined_artifact_id,
-        session_id,
-        turn_id: Some(turn_id),
-        tool_call_id: Some(tool_call_id),
-        script_run_id: Some(script_run_id),
-        command_run_id: None,
-        process_id: None,
-        source_type: "script_run",
-        stream: "combined",
-        content: &combined,
-        metadata: json!({"role": "combinedScriptOutput"}),
-    }).await?;
     let (final_output, final_truncated) = truncate_text(&full_final_output, OUTPUT_LIMIT_BYTES);
     let (stderr, stderr_truncated) = truncate_text(&full_stderr, OUTPUT_LIMIT_BYTES);
     let script_truncation = json!({
@@ -585,8 +568,7 @@ pub async fn execute_code(
         "limitBytes": OUTPUT_LIMIT_BYTES,
         "artifactIds": {
             "stdout": final_artifact_id,
-            "stderr": stderr_artifact_id,
-            "combined": combined_artifact_id
+            "stderr": stderr_artifact_id
         },
     });
     lifecycle::complete_script_run(
@@ -623,7 +605,6 @@ pub async fn execute_code(
             "artifacts": {
                 "stdout": final_envelope,
                 "stderr": stderr_envelope,
-                "combined": combined_envelope,
             },
             "preview": final_output,
             "stderrPreview": stderr,
@@ -662,10 +643,9 @@ pub async fn execute_code(
         ok: status != TerminalStatus::Failed,
         status: status.as_str().to_string(),
         output: json!({
-            "artifact": combined_envelope,
             "stdoutArtifact": final_envelope,
             "stderrArtifact": stderr_envelope,
-            "message": "Full execute_code output is stored as durable output artifacts. Use outputs.head/tail/slice/search/stats with an artifact id for bounded retrieval.",
+            "message": "Full execute_code stdout and stderr are stored as separate durable output artifacts. Use outputs.head/tail/slice/search/stats with an artifact id for bounded retrieval.",
         }),
         script_run_id,
         host_api_calls: records
@@ -852,7 +832,7 @@ pub async fn input_managed_process(pool: &PgPool, session_id: Uuid, handle: &str
 }
 
 pub async fn flush_managed_process(pool: &PgPool, session_id: Uuid, handle: &str) -> Result<JsonValue> {
-    let (record, stdout_record, stderr_record, combined_record, combined_envelope) = {
+    let (record, stdout_record, stderr_record, stdout_envelope, stderr_envelope) = {
         let mut manager = PROCESS_MANAGER.lock().map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
         let proc = manager
             .get_mut(&session_id)
@@ -860,24 +840,22 @@ pub async fn flush_managed_process(pool: &PgPool, session_id: Uuid, handle: &str
             .ok_or_else(|| anyhow::anyhow!("session process is not attached to this runtime: {handle}"))?;
         let (stdout, stdout_truncated) = proc.take_stdout_since_flush();
         let (stderr, stderr_truncated) = proc.take_stderr_since_flush();
-        let combined = format!("{stdout}{stderr}");
         let stdout_artifact_id = Uuid::new_v4();
         let stderr_artifact_id = Uuid::new_v4();
-        let combined_artifact_id = Uuid::new_v4();
-        let combined_envelope = output_artifacts::envelope_for(combined_artifact_id, "combined", &combined);
+        let stdout_envelope = output_artifacts::envelope_for(stdout_artifact_id, "stdout", &stdout);
+        let stderr_envelope = output_artifacts::envelope_for(stderr_artifact_id, "stderr", &stderr);
         (
             proc.snapshot_record("process.flushed", json!({"handle": handle, "stdoutBytes": stdout.len(), "stderrBytes": stderr.len()})),
             ProcessOutputRecord { artifact_id: stdout_artifact_id, process_id: proc.id, handle: handle.to_string(), stream: "stdout".to_string(), content: stdout, truncated: stdout_truncated },
             ProcessOutputRecord { artifact_id: stderr_artifact_id, process_id: proc.id, handle: handle.to_string(), stream: "stderr".to_string(), content: stderr, truncated: stderr_truncated },
-            ProcessOutputRecord { artifact_id: combined_artifact_id, process_id: proc.id, handle: handle.to_string(), stream: "combined".to_string(), content: combined, truncated: stdout_truncated || stderr_truncated },
-            combined_envelope,
+            stdout_envelope,
+            stderr_envelope,
         )
     };
     persist_process_output_record(pool, session_id, None, &stdout_record).await?;
     persist_process_output_record(pool, session_id, None, &stderr_record).await?;
-    persist_process_output_record(pool, session_id, None, &combined_record).await?;
     persist_managed_process_control_record(pool, session_id, record).await?;
-    Ok(json!({"handle": handle, "status": "flushed", "artifact": combined_envelope}))
+    Ok(json!({"handle": handle, "status": "flushed", "stdoutArtifact": stdout_envelope, "stderrArtifact": stderr_envelope}))
 }
 
 fn spawn_max_runtime_supervisor(
@@ -1309,7 +1287,6 @@ impl HostKernel {
                 status: "rejected".to_string(),
                 stdout_artifact_id: None,
                 stderr_artifact_id: None,
-                combined_artifact_id: None,
                 process_id: None,
                 exit_status: None,
                 failure: Some("God Mode required: shell(...) disabled".to_string()),
@@ -1344,7 +1321,6 @@ impl HostKernel {
             status: status.clone(),
             stdout_artifact_id: None,
             stderr_artifact_id: None,
-            combined_artifact_id: None,
             process_id: None,
             exit_status: output.status.code(),
             failure: if output.status.success() { None } else { Some(format!("zsh exited with status {:?}", output.status.code())) },
@@ -1379,7 +1355,6 @@ impl HostKernel {
                 status: "rejected".to_string(),
                 stdout_artifact_id: None,
                 stderr_artifact_id: None,
-                combined_artifact_id: None,
                 process_id: None,
                 exit_status: None,
                 failure: Some("God Mode required: shell(...) disabled".to_string()),
@@ -1431,7 +1406,6 @@ impl HostKernel {
             status: "running".to_string(),
             stdout_artifact_id: None,
             stderr_artifact_id: None,
-            combined_artifact_id: None,
             process_id: Some(process_id),
             exit_status: None,
             failure: None,
@@ -1629,20 +1603,15 @@ impl HostKernel {
         let (stderr, stderr_truncated) = proc.take_stderr_since_flush();
         let stdout_artifact_id = Uuid::new_v4();
         let stderr_artifact_id = Uuid::new_v4();
-        let combined_artifact_id = Uuid::new_v4();
-        let combined = format!("{stdout}{stderr}");
         let stdout_envelope = output_artifacts::envelope_for(stdout_artifact_id, "stdout", &stdout);
         let stderr_envelope = output_artifacts::envelope_for(stderr_artifact_id, "stderr", &stderr);
-        let combined_envelope = output_artifacts::envelope_for(combined_artifact_id, "combined", &combined);
         self.records.borrow_mut().push(HostRecord::ProcessOutput(ProcessOutputRecord { artifact_id: stdout_artifact_id, process_id: proc.id, handle: handle.to_string(), stream: "stdout".to_string(), content: stdout.clone(), truncated: stdout_truncated }));
         self.records.borrow_mut().push(HostRecord::ProcessOutput(ProcessOutputRecord { artifact_id: stderr_artifact_id, process_id: proc.id, handle: handle.to_string(), stream: "stderr".to_string(), content: stderr.clone(), truncated: stderr_truncated }));
-        self.records.borrow_mut().push(HostRecord::ProcessOutput(ProcessOutputRecord { artifact_id: combined_artifact_id, process_id: proc.id, handle: handle.to_string(), stream: "combined".to_string(), content: combined.clone(), truncated: stdout_truncated || stderr_truncated }));
         self.records.borrow_mut().push(HostRecord::ManagedProcess(proc.snapshot_record("process.flushed", json!({"handle": handle, "stdoutBytes": stdout.len(), "stderrBytes": stderr.len()}))));
         Ok(json!({
-            "artifact": combined_envelope,
             "stdoutArtifact": stdout_envelope,
             "stderrArtifact": stderr_envelope,
-            "message": "Full process output is stored as durable output artifacts. Use outputs.head/tail/slice/search/stats for bounded retrieval."
+            "message": "Full process stdout and stderr are stored as separate durable output artifacts. Use outputs.head/tail/slice/search/stats for bounded retrieval."
         }).to_string())
     }
 
@@ -1813,11 +1782,8 @@ impl HostKernel {
         let full_stderr = stderr;
         let stdout_artifact_id = Uuid::new_v4();
         let stderr_artifact_id = Uuid::new_v4();
-        let combined_artifact_id = Uuid::new_v4();
         let stdout_envelope = output_artifacts::envelope_for(stdout_artifact_id, "stdout", &full_stdout);
         let stderr_envelope = output_artifacts::envelope_for(stderr_artifact_id, "stderr", &full_stderr);
-        let combined = format!("{}{}", full_stdout, full_stderr);
-        let combined_envelope = output_artifacts::envelope_for(combined_artifact_id, "combined", &combined);
         let (stdout, stdout_truncated) = truncate_text(&full_stdout, command_version.output_limit);
         let (stderr, stderr_truncated) = truncate_text(&full_stderr, command_version.output_limit);
         let truncation = json!({
@@ -1826,8 +1792,7 @@ impl HostKernel {
             "limitBytes": command_version.output_limit,
             "artifactIds": {
                 "stdout": stdout_artifact_id,
-                "stderr": stderr_artifact_id,
-                "combined": combined_artifact_id
+                "stderr": stderr_artifact_id
             },
         });
         let policy_decision = json!({
@@ -1850,7 +1815,6 @@ impl HostKernel {
                 "artifacts": {
                     "stdout": stdout_envelope,
                     "stderr": stderr_envelope,
-                    "combined": combined_envelope,
                 }
             }),
             duration_ms: started.elapsed().as_millis() as i64,
@@ -1862,7 +1826,6 @@ impl HostKernel {
             command_version_id: command_version.version_id,
             stdout_artifact_id,
             stderr_artifact_id,
-            combined_artifact_id,
             binary_name: command_version.binary_name.clone(),
             binary_path,
             argv,
@@ -1878,11 +1841,10 @@ impl HostKernel {
         }));
         if status == "completed" {
             Ok(json!({
-                "artifact": combined_envelope,
                 "stdoutArtifact": stdout_envelope,
                 "stderrArtifact": stderr_envelope,
                 "exitStatus": exit_status,
-                "message": "Full command output is stored as durable output artifacts. Use outputs.head/tail/slice/search/stats for bounded retrieval."
+                "message": "Full command stdout and stderr are stored as separate durable output artifacts. Use outputs.head/tail/slice/search/stats for bounded retrieval."
             }).to_string())
         } else if status == "maxRuntimeExceeded" {
             bail!("command exceeded maxRuntimeMs")
@@ -2333,10 +2295,9 @@ async fn execute_resumed_command_with_version(
     let full_stderr = stderr;
     let stdout_artifact_id = Uuid::new_v4();
     let stderr_artifact_id = Uuid::new_v4();
-    let combined_artifact_id = Uuid::new_v4();
     let (stdout, stdout_truncated) = truncate_text(&full_stdout, command_version.output_limit);
     let (stderr, stderr_truncated) = truncate_text(&full_stderr, command_version.output_limit);
-    let truncation = json!({"stdoutTruncated": stdout_truncated, "stderrTruncated": stderr_truncated, "limitBytes": command_version.output_limit, "artifactIds": {"stdout": stdout_artifact_id, "stderr": stderr_artifact_id, "combined": combined_artifact_id}});
+    let truncation = json!({"stdoutTruncated": stdout_truncated, "stderrTruncated": stderr_truncated, "limitBytes": command_version.output_limit, "artifactIds": {"stdout": stdout_artifact_id, "stderr": stderr_artifact_id}});
     let host_api_call_id = Uuid::new_v4();
     sqlx::query("INSERT INTO host_api_calls (id, script_run_id, api_name, input, status, started_at) VALUES ($1, $2, $3, $4, 'running', $5)")
         .bind(host_api_call_id)
@@ -2362,10 +2323,8 @@ async fn execute_resumed_command_with_version(
     lifecycle::complete_command_run(pool, command_id, TerminalStatus::try_from(status)?, &full_stdout, &full_stderr, exit_status, duration_ms, &policy_decision, &truncation, Utc::now()).await?;
     let stdout_artifact = output_artifacts::store(pool, NewOutputArtifact { id: stdout_artifact_id, session_id, turn_id, tool_call_id: None, script_run_id: Some(script_run_id), command_run_id: Some(command_id), process_id: None, source_type: "command_run", stream: "stdout", content: &full_stdout, metadata: json!({"commandVersionId": command_version.version_id, "resumed": true}) }).await?;
     let stderr_artifact = output_artifacts::store(pool, NewOutputArtifact { id: stderr_artifact_id, session_id, turn_id, tool_call_id: None, script_run_id: Some(script_run_id), command_run_id: Some(command_id), process_id: None, source_type: "command_run", stream: "stderr", content: &full_stderr, metadata: json!({"commandVersionId": command_version.version_id, "resumed": true}) }).await?;
-    let combined = format!("{}{}", full_stdout, full_stderr);
-    let combined_artifact = output_artifacts::store(pool, NewOutputArtifact { id: combined_artifact_id, session_id, turn_id, tool_call_id: None, script_run_id: Some(script_run_id), command_run_id: Some(command_id), process_id: None, source_type: "command_run", stream: "combined", content: &combined, metadata: json!({"commandVersionId": command_version.version_id, "resumed": true}) }).await?;
-    db::append_event(pool, session_id, turn_id, "command", Some(command_id), "command.completed", Some(status), json!({"binary":command_version.binary_name,"binaryPath":binary_path.display().to_string(),"commandVersionId":command_version.version_id,"argv":argv,"cwd":resolved_cwd.display().to_string(),"status":status,"stdoutPreview":stdout,"stderrPreview":stderr,"exitStatus":exit_status,"maxRuntimeMs":command_version.max_runtime.map(|d| d.as_millis() as i64),"durationMs":duration_ms,"truncation":truncation,"artifacts":{"stdout":stdout_artifact,"stderr":stderr_artifact,"combined":combined_artifact},"policyDecision":policy_decision})).await?;
-    Ok(json!({"commandRunId": command_id, "hostApiCallId": host_api_call_id, "status": status, "artifacts": {"stdout": stdout_artifact, "stderr": stderr_artifact, "combined": combined_artifact}, "exitStatus": exit_status}))
+    db::append_event(pool, session_id, turn_id, "command", Some(command_id), "command.completed", Some(status), json!({"binary":command_version.binary_name,"binaryPath":binary_path.display().to_string(),"commandVersionId":command_version.version_id,"argv":argv,"cwd":resolved_cwd.display().to_string(),"status":status,"stdoutPreview":stdout,"stderrPreview":stderr,"exitStatus":exit_status,"maxRuntimeMs":command_version.max_runtime.map(|d| d.as_millis() as i64),"durationMs":duration_ms,"truncation":truncation,"artifacts":{"stdout":stdout_artifact,"stderr":stderr_artifact},"policyDecision":policy_decision})).await?;
+    Ok(json!({"commandRunId": command_id, "hostApiCallId": host_api_call_id, "status": status, "artifacts": {"stdout": stdout_artifact, "stderr": stderr_artifact}, "exitStatus": exit_status}))
 }
 
 async fn execute_resumed_async_command_with_version(
@@ -2857,20 +2816,6 @@ async fn persist_record(
                 content: &command.stderr,
                 metadata: json!({"commandVersionId": command.command_version_id}),
             }).await?;
-            let combined = format!("{}{}", command.stdout, command.stderr);
-            let combined_artifact = output_artifacts::store(pool, NewOutputArtifact {
-                id: command.combined_artifact_id,
-                session_id,
-                turn_id: Some(turn_id),
-                tool_call_id: Some(tool_call_id),
-                script_run_id: Some(script_run_id),
-                command_run_id: Some(command.id),
-                process_id: None,
-                source_type: "command_run",
-                stream: "combined",
-                content: &combined,
-                metadata: json!({"commandVersionId": command.command_version_id}),
-            }).await?;
             let (stdout_preview, stdout_preview_truncated) = truncate_text(&command.stdout, OUTPUT_LIMIT_BYTES);
             let (stderr_preview, stderr_preview_truncated) = truncate_text(&command.stderr, OUTPUT_LIMIT_BYTES);
             db::append_event(
@@ -2895,7 +2840,7 @@ async fn persist_record(
                     "durationMs": command.duration_ms,
                     "truncation": command.truncation,
                     "previewTruncation": {"stdout": stdout_preview_truncated, "stderr": stderr_preview_truncated},
-                    "artifacts": {"stdout": stdout_artifact, "stderr": stderr_artifact, "combined": combined_artifact},
+                    "artifacts": {"stdout": stdout_artifact, "stderr": stderr_artifact},
                     "policyDecision": command.policy_decision,
                     "processGroupTermination": {
                         "attempted": command.status == "maxRuntimeExceeded",
@@ -2908,19 +2853,15 @@ async fn persist_record(
         HostRecord::Shell(shell) => {
             let full_stdout = shell.metadata.get("stdout").and_then(JsonValue::as_str).unwrap_or("").to_string();
             let full_stderr = shell.metadata.get("stderr").and_then(JsonValue::as_str).unwrap_or("").to_string();
-            let combined = if full_stderr.is_empty() { full_stdout.clone() } else { format!("{}{}", full_stdout, full_stderr) };
             let mut stdout_artifact_id = shell.stdout_artifact_id;
             let mut stderr_artifact_id = shell.stderr_artifact_id;
-            let mut combined_artifact_id = shell.combined_artifact_id;
             let artifacts = if shell.status == "running" {
                 json!({})
             } else {
                 let stdout_id = stdout_artifact_id.unwrap_or_else(Uuid::new_v4);
                 let stderr_id = stderr_artifact_id.unwrap_or_else(Uuid::new_v4);
-                let combined_id = combined_artifact_id.unwrap_or_else(Uuid::new_v4);
                 stdout_artifact_id = Some(stdout_id);
                 stderr_artifact_id = Some(stderr_id);
-                combined_artifact_id = Some(combined_id);
                 let stdout_artifact = output_artifacts::store(pool, NewOutputArtifact {
                     id: stdout_id,
                     session_id,
@@ -2947,31 +2888,18 @@ async fn persist_record(
                     content: &full_stderr,
                     metadata: json!({"godModeGrantId": shell.god_mode_grant_id, "mode": shell.invocation_mode}),
                 }).await?;
-                let combined_artifact = output_artifacts::store(pool, NewOutputArtifact {
-                    id: combined_id,
-                    session_id,
-                    turn_id: Some(turn_id),
-                    tool_call_id: Some(tool_call_id),
-                    script_run_id: Some(script_run_id),
-                    command_run_id: None,
-                    process_id: shell.process_id,
-                    source_type: "shell_run",
-                    stream: "combined",
-                    content: &combined,
-                    metadata: json!({"godModeGrantId": shell.god_mode_grant_id, "mode": shell.invocation_mode}),
-                }).await?;
-                json!({"stdout": stdout_artifact, "stderr": stderr_artifact, "combined": combined_artifact})
+                json!({"stdout": stdout_artifact, "stderr": stderr_artifact})
             };
             sqlx::query(
                 r#"
                 INSERT INTO shell_runs (
                     id, script_run_id, session_id, turn_id, tool_call_id, god_mode_grant_id,
                     invocation_mode, shell_path, script_hash, script_source, cwd, status,
-                    completed_at, duration_ms, stdout_artifact_id, stderr_artifact_id, combined_artifact_id,
+                    completed_at, duration_ms, stdout_artifact_id, stderr_artifact_id,
                     process_id, exit_status, failure, metadata
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                    CASE WHEN $12 = 'running' THEN NULL ELSE now() END, $13, $14, $15, $16, $17, $18, $19, $20)
+                    CASE WHEN $12 = 'running' THEN NULL ELSE now() END, $13, $14, $15, $16, $17, $18, $19)
                 "#,
             )
             .bind(shell.id)
@@ -2989,7 +2917,6 @@ async fn persist_record(
             .bind(shell.duration_ms)
             .bind(stdout_artifact_id)
             .bind(stderr_artifact_id)
-            .bind(combined_artifact_id)
             .bind(shell.process_id)
             .bind(shell.exit_status)
             .bind(&shell.failure)
@@ -3562,7 +3489,7 @@ output(first + "|second=" + second)
         }).collect::<Vec<_>>();
         assert!(streams.contains(&"stdout"));
         assert!(streams.contains(&"stderr"));
-        assert!(streams.contains(&"combined"));
+        assert!(!streams.contains(&"combined"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3695,7 +3622,8 @@ output(handle + "\n" + flushed + "\n" + terminated)"#,
         assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.command_version_id.is_none() && process.end_of_session_behavior == "terminate")));
         assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.stdin")));
         assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.awaited")));
-        assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ProcessOutput(output) if output.stream == "combined" && output.content.contains("shell-input:typed-stdin"))));
+        assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ProcessOutput(output) if output.stream == "stdout" && output.content.contains("shell-input:typed-stdin"))));
+        assert!(!async_result.records.iter().any(|record| matches!(record, HostRecord::ProcessOutput(output) if output.stream == "combined")));
         assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.terminated")));
         let _ = terminate_session_processes_for_close(session);
     }
@@ -3738,7 +3666,7 @@ output(result)"#;
         let row = sqlx::query(
             r#"
             SELECT god_mode_grant_id, invocation_mode, shell_path, script_hash, script_source, cwd,
-                   status, stdout_artifact_id, stderr_artifact_id, combined_artifact_id,
+                   status, stdout_artifact_id, stderr_artifact_id,
                    process_id, exit_status, failure
             FROM shell_runs
             WHERE session_id = $1
@@ -3762,16 +3690,77 @@ output(result)"#;
         assert!(row.try_get::<Option<String>, _>("failure")?.is_none());
         let stdout_artifact_id: Uuid = row.try_get("stdout_artifact_id")?;
         let stderr_artifact_id: Uuid = row.try_get("stderr_artifact_id")?;
-        let combined_artifact_id: Uuid = row.try_get("combined_artifact_id")?;
 
         let stdout = output_artifacts::retrieve(&pool, session, stdout_artifact_id, "head", Some(10), None, None, None, None).await?;
         let stderr = output_artifacts::retrieve(&pool, session, stderr_artifact_id, "head", Some(10), None, None, None, None).await?;
-        let combined = output_artifacts::retrieve(&pool, session, combined_artifact_id, "head", Some(10), None, None, None, None).await?;
         assert!(stdout.content.contains("out-line"), "{stdout:?}");
         assert!(stderr.content.contains("err-line"), "{stderr:?}");
-        assert!(combined.content.contains("out-line"), "{combined:?}");
-        assert!(combined.content.contains("err-line"), "{combined:?}");
-        assert!(combined.byte_count >= stdout.byte_count + stderr.byte_count);
+        sqlx::query("UPDATE turns SET status='completed', completed_at=now() WHERE id=$1")
+            .bind(turn_id)
+            .execute(&pool)
+            .await?;
+        let async_turn_id = Uuid::new_v4();
+        let async_tool_call_id = Uuid::new_v4();
+        let async_source = r#"handle = shell("read line; printf 'async-out:%s\n' \"$line\"; printf 'async-err\n' 1>&2").async()
+proc[handle].input("typed-stdin\n")
+proc[handle].await_for(mins=1)
+flushed = proc[handle].flush_buffer()
+terminated = proc[handle].terminate()
+output(flushed + "\n" + terminated)"#;
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user',$3,'running',now())")
+            .bind(async_turn_id)
+            .bind(session)
+            .bind(async_source)
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, started_at) VALUES ($1,$2,$3,'execute_code',$4,$5,'running',now())")
+            .bind(async_tool_call_id)
+            .bind(session)
+            .bind(async_turn_id)
+            .bind(format!("call_{async_tool_call_id}"))
+            .bind(json!({"source": async_source}))
+            .execute(&pool)
+            .await?;
+        let async_packet = execute_code(&pool, session, async_turn_id, async_tool_call_id, async_source, &root, &role).await?;
+        assert!(async_packet.ok, "{async_packet:?}");
+        let async_row = sqlx::query(
+            r#"
+            SELECT id, script_run_id, process_id, status
+            FROM shell_runs
+            WHERE session_id = $1 AND turn_id = $2
+            ORDER BY started_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(session)
+        .bind(async_turn_id)
+        .fetch_one(&pool)
+        .await?;
+        let async_script_run_id: Uuid = async_row.try_get("script_run_id")?;
+        let async_process_id: Uuid = async_row.try_get::<Option<Uuid>, _>("process_id")?.expect("async shell process id");
+        let async_artifacts: Vec<(String, String, Option<Uuid>, Option<Uuid>, Option<Uuid>, Option<Uuid>, i64)> = sqlx::query(
+            "SELECT stream, content, session_id, turn_id, tool_call_id, script_run_id, process_id, byte_count FROM execution_output_artifacts WHERE process_id=$1 ORDER BY stream"
+        )
+        .bind(async_process_id)
+        .fetch_all(&pool)
+        .await?
+        .into_iter()
+        .map(|row| (row.get("stream"), row.get("content"), row.get("session_id"), row.get("turn_id"), row.get("tool_call_id"), row.get("script_run_id"), row.get("byte_count")))
+        .collect();
+        assert!(async_artifacts.iter().any(|(stream, content, artifact_session, artifact_turn, artifact_tool, artifact_script, bytes)| stream == "stdout" && content.contains("async-out:typed-stdin") && *artifact_session == Some(session) && *artifact_turn == Some(async_turn_id) && *artifact_tool == Some(async_tool_call_id) && *artifact_script == Some(async_script_run_id) && *bytes > 0));
+        assert!(async_artifacts.iter().any(|(stream, content, artifact_session, artifact_turn, artifact_tool, artifact_script, bytes)| stream == "stderr" && content.contains("async-err") && *artifact_session == Some(session) && *artifact_turn == Some(async_turn_id) && *artifact_tool == Some(async_tool_call_id) && *artifact_script == Some(async_script_run_id) && *bytes > 0));
+        let async_events: Vec<String> = sqlx::query_scalar("SELECT event_type FROM event_stream WHERE entity_id=$1 ORDER BY sequence ASC")
+            .bind(async_process_id)
+            .fetch_all(&pool)
+            .await?;
+        for expected in ["shell.started", "process.stdin", "process.awaited", "process.output", "process.terminated"] {
+            assert!(async_events.iter().any(|event| event == expected), "missing async process event {expected}: {async_events:?}");
+        }
+        let combined_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_output_artifacts WHERE session_id=$1 AND stream='combined'")
+            .bind(session)
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(combined_rows, 0);
         Ok(())
     }
 

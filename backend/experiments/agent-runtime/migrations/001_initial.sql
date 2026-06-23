@@ -259,7 +259,6 @@ CREATE TABLE IF NOT EXISTS shell_runs (
     duration_ms BIGINT,
     stdout_artifact_id UUID,
     stderr_artifact_id UUID,
-    combined_artifact_id UUID,
     process_id UUID REFERENCES managed_processes(id) ON DELETE SET NULL,
     exit_status INTEGER,
     failure TEXT,
@@ -272,6 +271,55 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS parent_session_id UUID REFERENCES 
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'source';
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS sessions_parent_kind_idx ON sessions(parent_session_id, session_kind, hidden);
+
+CREATE TABLE IF NOT EXISTS submitted_inputs (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    target_turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    source_parent_session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    actor TEXT NOT NULL,
+    source TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    disposition TEXT NOT NULL,
+    status TEXT NOT NULL,
+    ordering_key BIGSERIAL NOT NULL,
+    observed_lifecycle_state TEXT NOT NULL,
+    placement_turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    failure_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    accepted_at TIMESTAMPTZ,
+    applied_at TIMESTAMPTZ,
+    abandoned_at TIMESTAMPTZ,
+    rejected_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS submitted_inputs_session_status_order_idx
+    ON submitted_inputs(session_id, status, ordering_key);
+CREATE INDEX IF NOT EXISTS submitted_inputs_session_created_idx
+    ON submitted_inputs(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS current_turn_transcript_items (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id UUID NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+    source_table TEXT,
+    source_id UUID,
+    item_type TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    stable_key TEXT NOT NULL,
+    ordering_key BIGSERIAL NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE current_turn_transcript_items ADD COLUMN IF NOT EXISTS stable_key TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS current_turn_transcript_items_turn_order_idx
+    ON current_turn_transcript_items(turn_id, ordering_key);
+CREATE UNIQUE INDEX IF NOT EXISTS current_turn_transcript_items_turn_stable_key_idx
+    ON current_turn_transcript_items(turn_id, stable_key)
+    WHERE stable_key <> '';
 
 CREATE TABLE IF NOT EXISTS requirement_sets (
     id UUID PRIMARY KEY,

@@ -161,7 +161,7 @@ Every operation uses the API error packet
 | `UpdateProject` | `/projects/{projectKey}` | POST | `{displayName, defaultWorkdir, defaultWorktreeRoot, defaultRoleId, defaultModel}` | `{project}` | `WaitForDelta` |
 | `ArchiveProject` | `/projects/{projectKey}/archive` | POST | `{}` | `{project}` | `WaitForDelta` |
 | `UnarchiveProject` | `/projects/{projectKey}/unarchive` | POST | `{}` | `{project}` | `WaitForDelta` |
-| `SendMessage` | `/sessions/{sessionId}/send` | POST | `{message}` | `{sessionId, turnId, status}` | `WaitForDelta` |
+| `SendMessage` | `/sessions/{sessionId}/send` | POST | `{message}` | `{sessionId, turnId?, submittedInputId, disposition, status, orderingKey, lifecycle}` | `WaitForDelta` |
 | `CloseSession` | `/sessions/{sessionId}/close` | POST | `{reason?}` | `{sessionId, status}` | `WaitForDelta` |
 | `ArchiveSession` | `/sessions/{sessionId}/archive` | POST | `{}` | `{sessionId, tracked}` | `WaitForDelta` |
 | `ForkSession` | `/sessions/{sessionId}/fork` | POST | `{atTurn}` | `{sessionId, forkedFromSessionId, forkedFromTurnId}` | `WaitForDelta` |
@@ -699,8 +699,31 @@ curl -sS -X POST http://127.0.0.1:8765/sessions/<session-id>/send \
   -d '{"message":"Use execute_code with exactly this Starlark source: content = fs.read(\"Cargo.toml\"); output({\"validation\":\"ok\",\"contains_workspace\":\"workspace\" in content})"}'
 ```
 
-The send route enforces one active send per session. A concurrent send for the
-same session returns HTTP `409 Conflict` instead of queueing or racing.
+Message submission is unified through the Rust server. Sending while a live
+session is idle persists a submitted input with `idle_turn_start` disposition
+and starts the next normal turn. Sending while the session already has active
+runtime work persists the input with a steering or queued-continuation
+disposition; the current runtime drains the durable queue serially without
+starting a second concurrent running turn. Closed or archived sessions reject
+before runtime placement with a typed terminal lifecycle error and create no
+turn.
+
+The same composer action is used for idle messages and active steering. The
+GUI does not decide whether a send is a normal turn or steering; it sends the
+typed operation to Rust and renders the accepted queued/steering state from the
+projection. Hidden Requirements Review sessions stay out of normal session
+lists, but the source session's Requirements Review detail can route
+clarification/correction text to the nested reviewer through the same unified
+submit path. If final output is already committed, Rust lets that response
+finish unchanged, completes the current turn, and starts the next turn with the
+submitted input. If compaction is active, Rust waits for compaction completion
+and applies the input after the compacted context is durable.
+
+Direct-final steering is same-turn: when steering is pending before a direct
+assistant final response completes, Rust persists the assistant text as part of
+the turn, marks the submitted input applied to that turn, rebuilds the model
+request from completed history plus the current-turn transcript, and continues
+the same turn. Tool-boundary steering is same-turn as well: after a durable tool boundary, including execute_code results that contain registry command, managed process, or God Mode shell output records, Rust applies pending steering to the same turn, rebuilds model input from completed history plus the current-turn transcript, and continues without starting a parallel turn.
 
 Admin HTTP routes are thin JSON wrappers over the existing runtime/database
 functions. Approval routes list pending requests, show one request, record a
@@ -874,17 +897,19 @@ the final tool output. This keeps tool result packets deterministic and concise.
 ## Output artifacts and bounded retrieval
 
 The experimental runtime follows a store-everything/show-little output contract.
-Full script output, command stdout/stderr, command combined output, and flushed
-managed-process streams are persisted in PostgreSQL as `execution_output_artifacts`
-with artifact ids, stream names, byte counts, line counts, and cheap
-`bytes / 4` estimated-token metadata. Tokenizer-specific accounting such as
-tiktoken is intentionally not part of this design.
+Full script, command, God Mode shell, and managed-process stdout and stderr are
+persisted in PostgreSQL as separate `execution_output_artifacts` rows with
+artifact ids, stream names, byte counts, line counts, traceability fields, and
+cheap `bytes / 4` estimated-token metadata. Fake stdout-plus-stderr combined
+artifacts are not part of the canonical runtime contract. Tokenizer-specific
+accounting such as tiktoken is intentionally not part of this design.
 
-`execute_code`, synchronous `cmd[...]` calls, and managed-process `flush_buffer()`
-return bounded envelopes instead of raw log dumps. Envelopes contain artifact
-handles plus preview/tail excerpts and truncation/omission metadata. Completion
-events and future compaction-visible summaries reference artifact handles and
-bounded excerpts; full output remains in the artifact table.
+`execute_code`, synchronous `cmd[...]` calls, God Mode shell calls, and
+managed-process `flush_buffer()` return bounded envelopes instead of raw log
+dumps. Envelopes contain stdout/stderr artifact handles plus preview/tail
+excerpts and truncation/omission metadata. Completion events and
+compaction-visible summaries reference separate stdout/stderr artifact handles
+and bounded excerpts; full output remains in the artifact table.
 
 Agents retrieve stored output intentionally inside Starlark with bounded helpers:
 
@@ -899,9 +924,12 @@ output(outputs.stats(artifact))
 
 Every retrieval helper enforces hard byte/line caps and reports returned,
 omitted, and truncation metadata. The helpers operate on stored artifact ids and
-do not dump unbounded stdout, stderr, or combined streams into model-visible
-responses. Retrieval is session-scoped: an artifact id alone is not sufficient
-to read output from a different session.
+do not dump unbounded stdout, stderr, or artifact bodies into model-visible
+responses. Same-turn steering transcript reconstruction stores idempotent
+metadata summaries for command, shell, and managed-process boundaries; hidden
+stdout/stderr remains artifact-only unless a Starlark program explicitly emits a
+bounded value through `output(...)`. Retrieval is session-scoped: an artifact id
+alone is not sufficient to read output from a different session.
 
 ## Model input context management
 
@@ -1136,7 +1164,10 @@ use `/bin/zsh` with accepted modes `-lc`, `-l`, and `-c`; explicit `-l` invokes
 zsh as a login shell with `-c` script execution instead of being collapsed into
 plain `-lc`. Shell runs default to the session execution root, run as the Agent
 Runtime service OS user, and persist audit rows,
-events, process handles, and output artifacts. Without an active grant the
+events, process handles, and separate stdout/stderr output artifacts. Hidden
+shell stdout/stderr is durable audit/retrieval data and is not copied into
+same-turn model history unless a bounded value is explicitly emitted through
+`output(...)`. Without an active grant the
 `shell(...)` function fails closed with `God Mode required: shell(...) disabled`
 and does not spawn a process. Closing or archiving a session revokes the active
 grant; async shell processes are session-owned managed processes with
@@ -1420,6 +1451,15 @@ The current experimental CLI executes each `send` as a short-lived runtime proce
 ## Selected chat and history boundary
 
 The connected Agent Runtime shell treats the center panel as product chat, not as an event-stream viewer. Rust shapes selected-session chat entries from user turn input, assistant final responses, and canonical tool rows. Raw runtime events such as `role.imported`, `turn.started`, `policy.decision`, `model.final_response`, approval events, command-registry events, workflow-memory events, and compaction events remain audit history and must render in History or Diagnostics detail surfaces.
+
+Submitted steering inputs are part of selected-session chat ordering. Active
+turn steering appears inside the owning turn after the initial user input and
+before later durable tool or assistant rows. Inputs queued after committed final
+output appear as the next turn's first user input after the prior final
+response. Inputs queued during compaction appear only after the compaction
+handoff has produced a durable placement. The audit row remains in
+`submitted_inputs` and the event stream even when the visible chat entry is
+rendered from turn placement.
 
 The Rust/Rinf view model keeps those concepts separate: typed `AgentRuntimeChatEntry` values feed the shared `ChatTimeline`; history and operations DTO fields feed modal or sheet surfaces. Dart maps each chat entry to `ChatEntry` one-to-one and must not translate raw runtime event names into chat messages.
 

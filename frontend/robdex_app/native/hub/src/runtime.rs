@@ -366,7 +366,7 @@ impl AgentRuntimeStreamSupervisor {
                 let outputs = handle
                     .send(GuiTransportRequestPacket {
                         packet_id: format!("agent-runtime-stream-rust-{serial}"),
-                        intent: GuiTransportRequest::ConsumeStreamOnce,
+                        intent: GuiTransportRequest::ReadNextGuiStreamPacket,
                     })
                     .await;
 

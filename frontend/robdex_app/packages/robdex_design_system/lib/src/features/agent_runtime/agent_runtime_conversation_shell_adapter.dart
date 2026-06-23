@@ -4,6 +4,7 @@ import '../../core/models/conversation_shell_models.dart';
 ConversationShellData agentRuntimeConversationShellData(AgentRuntimeWorkbenchData data) {
   final selected = _selectedSessionId(data);
   final entries = data.selectedConversation;
+  final submissionStatus = _submissionStatus(data);
   return ConversationShellData(
     appTitle: 'Agent Runtime',
     connectionLabel: data.statusLabel,
@@ -30,7 +31,9 @@ ConversationShellData agentRuntimeConversationShellData(AgentRuntimeWorkbenchDat
     timelineTitle: data.selectedSessionLabel == 'none selected' ? 'Select a session' : data.selectedSessionLabel,
     entries: entries,
     composerEnabled: _hasConnectedRuntime(data) && selected != null,
-    isRunning: data.timeline.any((entry) => entry.status.toLowerCase().contains('running')),
+    isRunning: false,
+    composerPlaceholder: submissionStatus == null ? 'Message selected session...' : 'Message or steer selected session...',
+    composerStatusMessage: submissionStatus,
     detailTitle: 'Details',
     detailSections: [
       ConversationDetailSection(
@@ -72,6 +75,16 @@ ConversationShellData agentRuntimeConversationShellData(AgentRuntimeWorkbenchDat
     emptyTitle: data.sessionsEmptyTitle,
     emptyText: data.sessionsEmptyText,
   );
+}
+
+String? _submissionStatus(AgentRuntimeWorkbenchData data) {
+  for (final fact in data.controllerFacts) {
+    if (fact.label == 'Submission') {
+      final value = _displayCopy(fact.value);
+      return value.isEmpty ? null : value;
+    }
+  }
+  return null;
 }
 
 bool _hasConnectedRuntime(AgentRuntimeWorkbenchData data) {
