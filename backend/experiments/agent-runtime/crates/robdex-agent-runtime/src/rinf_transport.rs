@@ -511,10 +511,14 @@ impl AgentRuntimeWorkbenchViewModel {
             .unwrap_or_default();
         actions.sort_by(|left, right| left.kind.cmp(&right.kind).then(left.id.cmp(&right.id)));
         let selected_session_label = selected_session_label(projection, controller_state);
+        let selected_session_id = controller_state
+            .selected_session_id
+            .as_deref()
+            .or_else(|| projection.and_then(|projection| projection.selected_session.as_ref().map(|session| session.id.as_str())));
         let role_admin = role_admin_view(projection, model_options);
         let workflow_memory = workflow_memory_view(
             projection,
-            controller_state.selected_session_id.as_deref(),
+            selected_session_id,
             controller_state.selected_workflow_memory_id.as_deref(),
         );
         let controller_facts = runtime_detail_facts(projection, controller_state);
@@ -603,7 +607,10 @@ impl AgentRuntimeConversationShellViewModel {
             .filter(|session| visible_session_ids.as_ref().is_none_or(|ids| ids.contains(&session.id)))
             .cloned()
             .collect::<Vec<_>>();
-        let selected_session_id = controller_state.selected_session_id.clone();
+        let selected_session_id = controller_state
+            .selected_session_id
+            .clone()
+            .or_else(|| projection.and_then(|projection| projection.selected_session.as_ref().map(|session| session.id.clone())));
         let dynamic_roles = view
             .sessions
             .iter()
@@ -801,7 +808,7 @@ fn operation_surfaces(
         title: "Compaction".to_string(),
         subtitle: "Checkpoint and context budget".to_string(),
         rows: compaction_rows(projection),
-        actions: compaction_actions(controller_state),
+        actions: compaction_actions(controller_state.selected_session_id.as_deref().or_else(|| selected.map(|session| session.id.as_str()))),
     });
     surfaces.push(AgentRuntimeOperationSurface {
         surface_id: "statistics".to_string(),
@@ -816,6 +823,13 @@ fn operation_surfaces(
         subtitle: "Managed process handles".to_string(),
         rows: process_rows(projection, selected),
         actions: process_actions(projection, selected),
+    });
+    surfaces.push(AgentRuntimeOperationSurface {
+        surface_id: "imageArtifacts".to_string(),
+        title: "Image artifacts".to_string(),
+        subtitle: "Selected session evidence".to_string(),
+        rows: image_artifact_rows(selected),
+        actions: Vec::new(),
     });
     surfaces.push(AgentRuntimeOperationSurface {
         surface_id: "settings".to_string(),
@@ -921,6 +935,37 @@ fn fact(label: &str, value: &str) -> AgentRuntimeWorkbenchFact {
     AgentRuntimeWorkbenchFact { label: label.to_string(), value: value.to_string() }
 }
 
+fn image_artifact_rows(selected: Option<&robdex_agent_runtime_projection::SelectedSessionDetail>) -> Vec<AgentRuntimeWorkbenchFact> {
+    let Some(selected) = selected else {
+        return vec![fact("Image evidence", "Select a session to inspect image artifacts")];
+    };
+    if selected.image_artifacts.is_empty() {
+        return vec![fact("Image evidence", "No image artifacts for the selected session")];
+    }
+    let mut rows = vec![fact("Image artifacts", selected.image_artifacts.len().to_string().as_str())];
+    for (index, artifact) in selected.image_artifacts.iter().take(6).enumerate() {
+        let mime = artifact.get("mimeType").and_then(Value::as_str).unwrap_or("image");
+        let bytes = artifact.get("byteCount").and_then(Value::as_i64).map(|value| value.to_string()).unwrap_or_else(|| "unknown size".to_string());
+        let width = artifact.get("width").and_then(Value::as_i64);
+        let height = artifact.get("height").and_then(Value::as_i64);
+        let dimensions = match (width, height) {
+            (Some(width), Some(height)) => format!("{width} × {height}"),
+            _ => "dimensions unavailable".to_string(),
+        };
+        let retrieval = artifact
+            .get("retrieval")
+            .and_then(|value| value.get("available"))
+            .and_then(Value::as_bool)
+            .map(|available| if available { "retrievable" } else { "metadata only" })
+            .unwrap_or("retrievable");
+        rows.push(fact(
+            format!("Evidence image {}", index + 1).as_str(),
+            format!("{mime} · {bytes} bytes · {dimensions} · {retrieval}").as_str(),
+        ));
+    }
+    rows
+}
+
 fn current_turn_label(projection: Option<&RuntimeProjection>) -> &'static str {
     if projection.map(|projection| projection.timeline.iter().any(|item| item.event_type == "turn.started" && item.status.as_deref() == Some("running"))).unwrap_or(false) {
         "Running"
@@ -963,8 +1008,8 @@ fn compaction_rows(projection: Option<&RuntimeProjection>) -> Vec<AgentRuntimeWo
     rows
 }
 
-fn compaction_actions(controller_state: &GuiControllerState) -> Vec<AgentRuntimeWorkbenchActionRow> {
-    let Some(session_id) = controller_state.selected_session_id.as_ref() else {
+fn compaction_actions(selected_session_id: Option<&str>) -> Vec<AgentRuntimeWorkbenchActionRow> {
+    let Some(session_id) = selected_session_id else {
         return vec![AgentRuntimeWorkbenchActionRow {
             id: "compact-session-unavailable".to_string(),
             title: "Compact selected session".to_string(),
@@ -3246,6 +3291,12 @@ fn selected_session_label(projection: Option<&RuntimeProjection>, controller_sta
             })
         })
         .or_else(|| selected_id.map(str::to_string))
+        .or_else(|| projection.and_then(|projection| {
+            projection
+                .selected_session
+                .as_ref()
+                .map(|session| session.title.as_deref().or(session.name.as_deref()).unwrap_or(&session.id).to_string())
+        }))
         .unwrap_or_else(|| "none selected".to_string())
 }
 
@@ -3324,11 +3375,15 @@ fn runtime_detail_facts(projection: Option<&RuntimeProjection>, controller_state
         facts.push(AgentRuntimeWorkbenchFact { label: "Compaction checkpoint".to_string(), value: "No completed checkpoint visible".to_string() });
         facts.push(AgentRuntimeWorkbenchFact { label: "Context estimate".to_string(), value: "Runtime estimate unavailable".to_string() });
     }
-    facts.extend(controller_facts(controller_state));
+    let selected_session_id = controller_state
+        .selected_session_id
+        .clone()
+        .or_else(|| projection.and_then(|projection| projection.selected_session.as_ref().map(|session| session.id.clone())));
+    facts.extend(controller_facts(controller_state, selected_session_id.as_deref()));
     facts
 }
 
-fn controller_facts(controller_state: &GuiControllerState) -> Vec<AgentRuntimeWorkbenchFact> {
+fn controller_facts(controller_state: &GuiControllerState, selected_session_id: Option<&str>) -> Vec<AgentRuntimeWorkbenchFact> {
     vec![
         AgentRuntimeWorkbenchFact {
             label: "Controller".to_string(),
@@ -3336,10 +3391,7 @@ fn controller_facts(controller_state: &GuiControllerState) -> Vec<AgentRuntimeWo
         },
         AgentRuntimeWorkbenchFact {
             label: "Selected session".to_string(),
-            value: controller_state
-                .selected_session_id
-                .clone()
-                .unwrap_or_else(|| "none".to_string()),
+            value: selected_session_id.unwrap_or("none").to_string(),
         },
         AgentRuntimeWorkbenchFact {
             label: "Pending rehydrate".to_string(),
@@ -3489,6 +3541,9 @@ mod tests {
                         contracts: vec![json!({"contractId":"contract-1","status":"active"})],
                         resource_leases: vec![json!({"leaseId":"lease-1","status":"assigned"})],
                         recent_hook_failures: vec![json!({"evaluationId":"eval-1"})],
+                        image_artifacts: vec![json!({"imageArtifactId":"image-1","mimeType":"image/png","byteCount":1024,"width":1366,"height":1024,"retrieval":{"available":true}})],
+                        running_servers: vec![json!({"handle":"server-1","status":"running"})],
+                        tooling_requests: vec![json!({"packetId":"tooling-1","status":"routed"})],
                         requirements_review: Some(robdex_agent_runtime_projection::RequirementsReviewSummary {
                             active: true,
                             active_set_id: Some("requirements-set-1".to_string()),
@@ -4746,6 +4801,9 @@ mod tests {
                 contracts: vec![json!({"contractId":"contract-1","status":"active"})],
                 resource_leases: vec![json!({"leaseId":"lease-1","status":"assigned"})],
                 recent_hook_failures: vec![json!({"evaluationId":"eval-1"})],
+                image_artifacts: vec![json!({"imageArtifactId":"image-1","mimeType":"image/png","byteCount":1024,"width":1366,"height":1024,"retrieval":{"available":true}})],
+                running_servers: vec![json!({"handle":"server-1","status":"running"})],
+                tooling_requests: vec![json!({"packetId":"tooling-1","status":"routed"})],
                 requirements_review: None,
             }),
             timeline: vec![
@@ -5179,6 +5237,7 @@ mod tests {
         assert!(surface_titles.contains(&"Compaction"));
         assert!(surface_titles.contains(&"Statistics"));
         assert!(surface_titles.contains(&"Process Manager"));
+        assert!(surface_titles.contains(&"Image artifacts"));
         assert!(surface_titles.contains(&"Settings"));
         assert!(surface_titles.contains(&"History"));
         assert!(surface_titles.contains(&"Diagnostics"));
@@ -5237,6 +5296,10 @@ mod tests {
         assert!(process_manager.actions.iter().any(|action| action.id == "proc-allow" && action.kind == "processInput" && action.state_text == "ready"));
         assert!(process_manager.actions.iter().any(|action| action.id == "proc-allow" && action.kind == "processTerminate" && action.state_text == "ready"));
         assert!(process_manager.actions.iter().any(|action| action.id == "proc-forbid" && action.kind == "processInput" && action.state_text == "disabled: stdin rejected"));
+        let image_artifacts = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "imageArtifacts").expect("image artifacts surface");
+        assert!(image_artifacts.rows.iter().any(|row| row.label == "Image artifacts" && row.value == "1"));
+        assert!(image_artifacts.rows.iter().any(|row| row.label == "Evidence image 1" && row.value.contains("image/png") && row.value.contains("1366 × 1024") && row.value.contains("retrievable")));
+        assert!(image_artifacts.actions.is_empty(), "image artifact surface must not expose fake controls");
         let diagnostics = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "diagnostics").expect("diagnostics surface");
         for label in ["Base URL", "Connection state", "WebSocket URL", "Last watermark", "Resync state", "Pending request count", "Recent output log", "Last typed error", "Discovery path", "iCloud profile path", "Imported profile path", "Stream packets", "WebSocket events", "Payload bytes", "Delta count", "Full snapshots", "Selected chat entries"] {
             assert!(diagnostics.rows.iter().any(|row| row.label == label), "missing diagnostics row {label}");

@@ -145,12 +145,13 @@ void main() {
       'Compaction',
       'Statistics',
       'Process Manager',
+      'Image artifacts',
       'Settings',
       'History',
       'Approvals',
       'Command Registry',
-      'Role Admin (1)',
-      'Workflow Memory (1)',
+      'Role Admin',
+      'Workflow Memory',
     ]) {
       await expectVisibleText(title);
     }
