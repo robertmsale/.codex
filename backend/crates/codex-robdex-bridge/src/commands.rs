@@ -3303,6 +3303,7 @@ fn requirements_claim_schema_for_requirements<'a>(
             ),
         );
     }
+    let requirement_required = requirement_properties.keys().cloned().collect::<Vec<_>>();
     let mut properties = serde_json::Map::new();
     properties.insert(
         "summary".to_string(),
@@ -3326,7 +3327,7 @@ fn requirements_claim_schema_for_requirements<'a>(
                 {
                     "type": "object",
                     "properties": requirement_properties,
-                    "required": [],
+                    "required": requirement_required,
                     "additionalProperties": false
                 },
                 { "type": "null" }
@@ -3360,11 +3361,16 @@ pub(crate) fn requirements_verdict_schema_for_scope<'a>(
                 "description": "Concise reviewer progress note or final verdict summary. Do not duplicate every per-requirement verdict."
             },
             "requirements": {
-                "type": ["object", "null"],
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                        "additionalProperties": false
+                    },
+                    { "type": "null" }
+                ],
                 "description": "Use null for reviewer commentary/progress. Use the object only for a final Requirements review verdict packet.",
-                "properties": properties,
-                "required": required,
-                "additionalProperties": false
             }
         },
         "required": ["summary", "requirements"],
@@ -7796,12 +7802,17 @@ mod tests {
             item["properties"].get("notFinished").is_some()
                 && item["required"] == json!(["notFinished"])
         }));
-        let sparse = alternatives
+        let claims = alternatives
             .iter()
-            .find(|item| item["required"] == json!([]))
-            .expect("sparse requirements object");
-        assert!(sparse["properties"].get("nativeGuiIsSourceOfTruth").is_some());
-        assert!(sparse["properties"].get("noInventedWebsocketEventShapes").is_some());
+            .find(|item| {
+                item["properties"].get("nativeGuiIsSourceOfTruth").is_some()
+                    && item["properties"].get("noInventedWebsocketEventShapes").is_some()
+            })
+            .expect("requirements claims object");
+        assert_eq!(
+            claims["required"],
+            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
+        );
         assert!(schema["properties"].get("finalDisposition").is_none());
     }
 
@@ -7814,8 +7825,13 @@ mod tests {
             .expect("required array");
         assert_eq!(required, &vec![json!("summary"), json!("requirements")]);
         let requirements_schema = &schema["properties"]["requirements"];
-        assert_eq!(requirements_schema["type"], json!(["object", "null"]));
-        let verdict_required = requirements_schema
+        let requirements_object = requirements_schema["anyOf"]
+            .as_array()
+            .expect("requirements anyOf")
+            .iter()
+            .find(|item| item["type"] == json!("object"))
+            .expect("requirements object");
+        let verdict_required = requirements_object
             .get("required")
             .and_then(Value::as_array)
             .expect("verdict required array");
@@ -7828,7 +7844,12 @@ mod tests {
     #[test]
     fn worker_claim_schema_is_full_before_review_progress_exists() {
         let schema = requirements_worker_claim_schema(&sample_requirement_set());
-        let requirements_schema = &schema["properties"]["requirements"];
+        let requirements_schema = schema["properties"]["requirements"]["anyOf"]
+            .as_array()
+            .expect("requirements anyOf")
+            .iter()
+            .find(|item| item["properties"].get("nativeGuiIsSourceOfTruth").is_some())
+            .expect("requirements claims object");
         assert_eq!(
             requirements_schema["required"],
             json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
@@ -7858,14 +7879,23 @@ mod tests {
             .as_array()
             .expect("worker alternatives")
             .iter()
-            .find(|item| item["required"] == json!([]))
-            .expect("sparse worker requirements object");
-        assert_eq!(worker_requirements["required"], json!([]));
+            .find(|item| item["properties"].get("nativeGuiIsSourceOfTruth").is_some())
+            .expect("worker requirements object");
+        assert_eq!(
+            worker_requirements["required"],
+            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
+        );
         assert!(worker_requirements["properties"].get("nativeGuiIsSourceOfTruth").is_some());
         assert!(worker_requirements["properties"].get("noInventedWebsocketEventShapes").is_some());
 
         let reviewer_schema = requirements_verdict_schema(&set);
-        let reviewer_required = reviewer_schema["properties"]["requirements"]["required"]
+        let reviewer_requirements = reviewer_schema["properties"]["requirements"]["anyOf"]
+            .as_array()
+            .expect("reviewer alternatives")
+            .iter()
+            .find(|item| item["type"] == json!("object"))
+            .expect("reviewer requirements object");
+        let reviewer_required = reviewer_requirements["required"]
             .as_array()
             .expect("reviewer required");
         assert!(reviewer_required.iter().any(|value| value.as_str() == Some("nativeGuiIsSourceOfTruth")));
@@ -7885,13 +7915,16 @@ mod tests {
             .expect("whole packet notFinished shortcut");
         assert_eq!(top_not_finished["additionalProperties"], json!(false));
 
-        let sparse = alternatives
+        let claims = alternatives
             .iter()
-            .find(|item| item["required"] == json!([]))
-            .expect("sparse object variant");
-        assert_eq!(sparse["additionalProperties"], json!(false));
-        assert_eq!(sparse["required"], json!([]));
-        let native = &sparse["properties"]["nativeGuiIsSourceOfTruth"];
+            .find(|item| item["properties"].get("nativeGuiIsSourceOfTruth").is_some())
+            .expect("claims object variant");
+        assert_eq!(claims["additionalProperties"], json!(false));
+        assert_eq!(
+            claims["required"],
+            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
+        );
+        let native = &claims["properties"]["nativeGuiIsSourceOfTruth"];
         let per_key_variants = native["anyOf"].as_array().expect("per-key anyOf");
         assert_eq!(per_key_variants.len(), 4);
         assert!(per_key_variants.iter().any(|item| item["required"] == json!(["notFinished"])));
@@ -7938,12 +7971,18 @@ mod tests {
             ["noInventedWebsocketEventShapes"].iter().copied(),
         );
         let requirements_schema = &schema["properties"]["requirements"];
+        let requirements_object = requirements_schema["anyOf"]
+            .as_array()
+            .expect("requirements anyOf")
+            .iter()
+            .find(|item| item["type"] == json!("object"))
+            .expect("requirements object");
         assert_eq!(
-            requirements_schema["required"],
+            requirements_object["required"],
             json!(["noInventedWebsocketEventShapes", "overallVerdict", "route"])
         );
-        assert!(requirements_schema["properties"].get("nativeGuiIsSourceOfTruth").is_none());
-        assert!(requirements_schema["properties"].get("noInventedWebsocketEventShapes").is_some());
+        assert!(requirements_object["properties"].get("nativeGuiIsSourceOfTruth").is_none());
+        assert!(requirements_object["properties"].get("noInventedWebsocketEventShapes").is_some());
     }
 
     #[test]
@@ -7965,7 +8004,13 @@ mod tests {
         );
 
         let schema = requirements_verdict_schema(&set);
-        let requirements = &schema["properties"]["requirements"]["properties"];
+        let requirements_object = schema["properties"]["requirements"]["anyOf"]
+            .as_array()
+            .expect("requirements anyOf")
+            .iter()
+            .find(|item| item["type"] == json!("object"))
+            .expect("requirements object");
+        let requirements = &requirements_object["properties"];
         let passed_schema = &requirements["nativeGuiIsSourceOfTruth"];
         let failed_schema = &requirements["noInventedWebsocketEventShapes"];
         let any_of = passed_schema["anyOf"].as_array().expect("passed requirement anyOf");
@@ -7990,7 +8035,7 @@ mod tests {
         assert_eq!(failed_any_of.len(), 2);
         assert!(failed_any_of.iter().any(|item| item["properties"]["verdict"]["enum"] == json!(["notYet"])));
 
-        let reviewer_required = schema["properties"]["requirements"]["required"]
+        let reviewer_required = requirements_object["required"]
             .as_array()
             .expect("reviewer required");
         assert!(reviewer_required.iter().any(|value| value.as_str() == Some("nativeGuiIsSourceOfTruth")));
@@ -8033,12 +8078,18 @@ mod tests {
             ["noInventedWebsocketEventShapes"].iter().copied(),
         );
         let requirements_schema = &schema["properties"]["requirements"];
+        let requirements_object = requirements_schema["anyOf"]
+            .as_array()
+            .expect("requirements anyOf")
+            .iter()
+            .find(|item| item["type"] == json!("object"))
+            .expect("requirements object");
         assert_eq!(
-            requirements_schema["required"],
+            requirements_object["required"],
             json!(["noInventedWebsocketEventShapes", "overallVerdict", "route"])
         );
         let drift_schema_description = serde_json::to_string(
-            &requirements_schema["properties"]["noInventedWebsocketEventShapes"],
+            &requirements_object["properties"]["noInventedWebsocketEventShapes"],
         )
         .expect("serialize scoped schema");
         assert!(drift_schema_description.contains("Do not invent websocket or HTTP event shapes."));
@@ -8964,8 +9015,14 @@ requirements:
         );
         let reduced_schema = active_requirements_claim_schema_for_thread(&state, "source-thread")
             .expect("reduced schema");
+        let reduced_requirements = reduced_schema["properties"]["requirements"]["anyOf"]
+            .as_array()
+            .expect("requirements anyOf")
+            .iter()
+            .find(|item| item["properties"].get("noInventedWebsocketEventShapes").is_some())
+            .expect("reduced requirements object");
         assert_eq!(
-            reduced_schema["properties"]["requirements"]["required"],
+            reduced_requirements["required"],
             json!(["noInventedWebsocketEventShapes"])
         );
 
@@ -9010,8 +9067,14 @@ requirements:
         );
         let regressed_schema = active_requirements_claim_schema_for_thread(&state, "source-thread")
             .expect("regressed schema");
+        let regressed_requirements = regressed_schema["properties"]["requirements"]["anyOf"]
+            .as_array()
+            .expect("requirements anyOf")
+            .iter()
+            .find(|item| item["properties"].get("nativeGuiIsSourceOfTruth").is_some())
+            .expect("regressed requirements object");
         assert_eq!(
-            regressed_schema["properties"]["requirements"]["required"],
+            regressed_requirements["required"],
             json!(["nativeGuiIsSourceOfTruth"])
         );
     }
@@ -9428,13 +9491,11 @@ requirements:
                         .get("required")
                         .and_then(Value::as_array)
                         .expect("object schema must define required");
-                    if !required.is_empty() {
-                        for key in properties.keys() {
-                            assert!(
-                                required.iter().any(|item| item.as_str() == Some(key.as_str())),
-                                "strict OpenAI schemas require every property to be required unless the schema is intentionally sparse: {key}"
-                            );
-                        }
+                    for key in properties.keys() {
+                        assert!(
+                            required.iter().any(|item| item.as_str() == Some(key.as_str())),
+                            "strict OpenAI schemas require every property to be required: {key}"
+                        );
                     }
                 }
                 for item in object.values() {
@@ -10894,16 +10955,22 @@ requirements:
             schema["required"],
             json!(["summary", "requirements"])
         );
+        let requirements_object = schema["properties"]["requirements"]["anyOf"]
+            .as_array()
+            .expect("requirements anyOf")
+            .iter()
+            .find(|item| item["properties"].get("permanentRequirement").is_some())
+            .expect("requirements object");
         assert_eq!(
-            schema["properties"]["requirements"]["required"],
+            requirements_object["required"],
             json!(["permanentRequirement", "nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
         );
         assert_eq!(
-            schema["properties"]["requirements"]["properties"]["permanentRequirement"]["description"],
+            requirements_object["properties"]["permanentRequirement"]["description"],
             "Requirement: permanentRequirement statement."
         );
         assert_eq!(
-            schema["properties"]["requirements"]["properties"]["nativeGuiIsSourceOfTruth"]["description"],
+            requirements_object["properties"]["nativeGuiIsSourceOfTruth"]["description"],
             "Requirement: The web GUI must mirror the native Flutter GUI."
         );
         transport.abort();
