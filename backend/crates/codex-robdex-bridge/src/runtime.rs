@@ -3864,7 +3864,13 @@ mod tests {
             .expect("request");
         assert_eq!(request["method"], "turn/start");
         assert_eq!(request["params"]["threadId"], "reviewer-1");
-        let required = request["params"]["outputSchema"]["properties"]["requirements"]["required"]
+        let requirements_object = request["params"]["outputSchema"]["properties"]["requirements"]["anyOf"]
+            .as_array()
+            .expect("requirements anyOf")
+            .iter()
+            .find(|item| item["type"] == json!("object"))
+            .expect("requirements object");
+        let required = requirements_object["required"]
             .as_array()
             .expect("reviewer required");
         assert_eq!(required, &vec![json!("mustProvideClaims"), json!("overallVerdict"), json!("route")]);
