@@ -6,7 +6,7 @@ use robdex_agent_runtime_projection::{
     RuntimeProjection, SelectedSessionDetail, ServerStatusProjection, SessionListItem, TimelineItem,
     WorkflowMemoryEventSummary, WorkflowMemorySummary,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -92,10 +92,10 @@ async fn runtime_statistics(pool: &PgPool, selected_session_id: Option<Uuid>) ->
         }
     }
     Ok(RuntimeStatistics {
-        sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions", "SELECT COUNT(*) FROM sessions WHERE id=$1", selected_session_id).await?,
-        open_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE closed_at IS NULL AND archived_at IS NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND closed_at IS NULL AND archived_at IS NULL", selected_session_id).await?,
-        closed_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE closed_at IS NOT NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND closed_at IS NOT NULL", selected_session_id).await?,
-        archived_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE archived_at IS NOT NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND archived_at IS NOT NULL", selected_session_id).await?,
+        sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false", selected_session_id).await?,
+        open_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false AND closed_at IS NULL AND archived_at IS NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false AND closed_at IS NULL AND archived_at IS NULL", selected_session_id).await?,
+        closed_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false AND closed_at IS NOT NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false AND closed_at IS NOT NULL", selected_session_id).await?,
+        archived_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false AND archived_at IS NOT NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false AND archived_at IS NOT NULL", selected_session_id).await?,
         turns: scoped_count(pool, "SELECT COUNT(*) FROM turns", "SELECT COUNT(*) FROM turns WHERE session_id=$1", selected_session_id).await?,
         running_turns: scoped_count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'running'", "SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status = 'running'", selected_session_id).await?,
         failed_turns: scoped_count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'failed'", "SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status = 'failed'", selected_session_id).await?,
@@ -446,7 +446,8 @@ async fn selected_session_detail(
     };
     let row = sqlx::query(
         r#"
-        SELECT id, status, role_id, role_version, project_key, workdir, worktree_root, title, name, metadata, role_snapshot
+        SELECT id, status, role_id, role_version, project_key, workdir, worktree_root, title, name, metadata, role_snapshot,
+               active_project_runtime_version_id, active_hook_bindings
         FROM sessions
         WHERE id = $1
         "#,
@@ -503,6 +504,54 @@ async fn selected_session_detail(
     let (queued_submitted_input_count, applied_steering_count, submit_disposition, submit_status) =
         crate::db::submitted_input_counts(pool, session_id).await?;
     let terminal_submission_rejection = crate::db::latest_rejected_submitted_input(pool, session_id).await?;
+    let active_project_runtime_version_id: Option<Uuid> = row.get("active_project_runtime_version_id");
+    let active_hook_bindings: Value = row.get("active_hook_bindings");
+    let project_runtime = json!({
+        "activeVersionId": active_project_runtime_version_id,
+        "hookBindingCount": active_hook_bindings.as_object().map(|value| value.len()).unwrap_or_default(),
+    });
+    let hook_overrides = active_hook_bindings.clone();
+    let subagents = crate::lifecycle_hooks::parent_subagent_projection(pool, session_id).await?;
+    let contract_rows = sqlx::query("SELECT id, contract_type, status, active_version FROM generic_contracts WHERE session_id=$1 ORDER BY created_at DESC LIMIT 20")
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+    let contracts = contract_rows
+        .into_iter()
+        .map(|row| json!({
+            "contractId": row.get::<Uuid, _>("id"),
+            "contractType": row.get::<String, _>("contract_type"),
+            "status": row.get::<String, _>("status"),
+            "activeVersion": row.get::<String, _>("active_version"),
+        }))
+        .collect::<Vec<_>>();
+    let lease_rows = sqlx::query("SELECT id, resource_type, resource_id, handle, status FROM resource_leases WHERE owning_session_id=$1 ORDER BY created_at DESC LIMIT 20")
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+    let resource_leases = lease_rows
+        .into_iter()
+        .map(|row| json!({
+            "leaseId": row.get::<Uuid, _>("id"),
+            "resourceType": row.get::<String, _>("resource_type"),
+            "resourceId": row.get::<Option<String>, _>("resource_id"),
+            "handle": row.get::<Option<String>, _>("handle"),
+            "status": row.get::<String, _>("status"),
+        }))
+        .collect::<Vec<_>>();
+    let failure_rows = sqlx::query("SELECT id, lifecycle_event_id, errors, created_at FROM hook_evaluations WHERE session_id=$1 AND validation_status='invalid' ORDER BY created_at DESC LIMIT 10")
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+    let recent_hook_failures = failure_rows
+        .into_iter()
+        .map(|row| json!({
+            "evaluationId": row.get::<Uuid, _>("id"),
+            "lifecycleEventId": row.get::<Uuid, _>("lifecycle_event_id"),
+            "errors": row.get::<Value, _>("errors"),
+            "createdAt": optional_time(Some(row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"))),
+        }))
+        .collect::<Vec<_>>();
     Ok(Some(SelectedSessionDetail {
         id: row.get::<Uuid, _>("id").to_string(),
         role_id: row.get("role_id"),
@@ -522,6 +571,12 @@ async fn selected_session_detail(
         submit_status,
         terminal_submission_rejection,
         metadata,
+        project_runtime,
+        hook_overrides,
+        subagents,
+        contracts,
+        resource_leases,
+        recent_hook_failures,
         requirements_review,
     }))
 }

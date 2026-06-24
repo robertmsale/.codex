@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::db;
-use crate::roles::{LifecycleAuthorityMetadata, ManifestDecision, RoleSnapshot, RoutingMetadata, VisibilityMetadata};
+use crate::{db, lifecycle_hooks};
+use crate::roles::{ImportedRoleVersion, LifecycleAuthorityMetadata, ManifestDecision, ModelDefaults, PromptSource, RoleManifest, RoleSnapshot, RoutingMetadata, VisibilityMetadata};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +78,16 @@ pub enum SourcePacketOutcome {
     Continuation,
     AllNotSatisfied,
     Reviewable,
+}
+
+fn source_outcome_from_packet_kind(kind: &str) -> SourcePacketOutcome {
+    match kind {
+        "claimNull" => SourcePacketOutcome::Null,
+        "claimInvalid" => SourcePacketOutcome::Invalid,
+        "claimContinuation" => SourcePacketOutcome::AllNotSatisfied,
+        "claim" => SourcePacketOutcome::Reviewable,
+        _ => SourcePacketOutcome::Continuation,
+    }
 }
 
 pub fn reviewer_role_snapshot(source: &RoleSnapshot) -> RoleSnapshot {
@@ -241,6 +251,26 @@ pub async fn set_active_requirements(pool: &PgPool, source_session_id: Uuid, inp
             .execute(pool)
             .await?;
     }
+    let _ = lifecycle_hooks::record_runtime_packet(
+        pool,
+        db::session_record(pool, source_session_id).await?.project_key.as_deref(),
+        Some(source_session_id),
+        None,
+        None,
+        "requirements.contract.activated",
+        "active",
+        canonical.clone(),
+        None,
+        json!({"contractType":"requirements","requirementSetId": set_id}),
+        &format!("requirements-contract-{set_id}"),
+    ).await?;
+    let _ = sqlx::query("INSERT INTO generic_contracts (id, session_id, contract_type, canonical_payload, status, active_version, enforcement_enabled) VALUES ($1,$2,'requirements',$3,'active',$4,true) ON CONFLICT DO NOTHING")
+        .bind(set_id)
+        .bind(source_session_id)
+        .bind(&canonical)
+        .bind(set_id.to_string())
+        .execute(pool)
+        .await;
     db::append_event(pool, source_session_id, None, "requirements", Some(set_id), "requirements.set", Some("active"), json!({"requirementSetId": set_id, "count": input.requirements.len()})).await?;
     Ok(set_id)
 }
@@ -257,14 +287,14 @@ pub async fn active_requirement_set(pool: &PgPool, source_session_id: Uuid) -> R
     }))
 }
 
-pub async fn source_output_schema(pool: &PgPool, source_session_id: Uuid) -> Result<Option<Value>> {
+pub async fn hook_defined_source_schema(pool: &PgPool, source_session_id: Uuid) -> Result<Option<Value>> {
     let Some(active) = active_requirement_set(pool, source_session_id).await? else {
         return Ok(None);
     };
     Ok(Some(source_schema_from_active(pool, &active).await?))
 }
 
-pub async fn reviewer_output_schema(pool: &PgPool, reviewer_session_id: Uuid) -> Result<Option<Value>> {
+pub async fn hook_defined_reviewer_schema(pool: &PgPool, reviewer_session_id: Uuid) -> Result<Option<Value>> {
     let row = sqlx::query(
         "SELECT requirement_set_id FROM requirement_review_bindings WHERE reviewer_session_id=$1 ORDER BY updated_at DESC LIMIT 1",
     )
@@ -386,12 +416,12 @@ async fn reviewer_schema_from_active(pool: &PgPool, active: &ActiveRequirementSe
     }))
 }
 
-pub async fn requirements_runtime_message(pool: &PgPool, session_id: Uuid) -> Result<Option<crate::model::RuntimeInputMessage>> {
+pub async fn hook_defined_requirements_runtime_message(pool: &PgPool, session_id: Uuid) -> Result<Option<crate::model::RuntimeInputMessage>> {
     let session = db::session_record(pool, session_id).await?;
     let schema = if session.session_kind == "requirementsReviewer" {
-        reviewer_output_schema(pool, session_id).await?
+        hook_defined_reviewer_schema(pool, session_id).await?
     } else {
-        source_output_schema(pool, session_id).await?
+        hook_defined_source_schema(pool, session_id).await?
     };
     let context = if session.session_kind == "requirementsReviewer" {
         reviewer_reconstruction_context(pool, session_id).await?
@@ -400,16 +430,16 @@ pub async fn requirements_runtime_message(pool: &PgPool, session_id: Uuid) -> Re
     };
     Ok(schema.map(|schema| crate::model::RuntimeInputMessage {
         text: if context.is_null() {
-            format!("<requirements_schema>{}</requirements_schema>", schema)
+            format!("<hook_required_schema>{}</hook_required_schema>", schema)
         } else {
             format!(
-                "<requirements_schema>{}</requirements_schema>\n<requirements_review_context>{}</requirements_review_context>",
+                "<hook_required_schema>{}</hook_required_schema>\n<requirements_review_context>{}</requirements_review_context>",
                 schema,
                 context
             )
         },
         metadata: json!({
-            "source": "requirements_output_schema",
+            "source": "hook_required_output_schema",
             "schemaKind": schema.pointer("/metadata/kind").cloned().unwrap_or(Value::Null),
             "requirementSetId": schema.pointer("/metadata/requirementSetId").cloned().unwrap_or(Value::Null),
             "canonicalRequirementCount": schema.pointer("/metadata/canonicalCount").cloned().unwrap_or(Value::Null),
@@ -469,7 +499,7 @@ pub async fn deactivate(pool: &PgPool, source_session_id: Uuid, outcome: &str) -
     Ok(())
 }
 
-pub async fn ensure_reviewer_session(pool: &PgPool, active: &ActiveRequirementSet) -> Result<Uuid> {
+pub async fn ensure_requirements_reviewer_subagent(pool: &PgPool, active: &ActiveRequirementSet) -> Result<Uuid> {
     if let Some(id) = sqlx::query_scalar::<_, Uuid>(
         "SELECT reviewer_session_id FROM requirement_review_bindings WHERE requirement_set_id=$1 AND source_session_id=$2 AND status IN ('ready','inReview') AND reviewer_session_id IS NOT NULL LIMIT 1",
     )
@@ -479,22 +509,41 @@ pub async fn ensure_reviewer_session(pool: &PgPool, active: &ActiveRequirementSe
     .await? {
         return Ok(id);
     }
-    let source = db::session_record(pool, active.source_session_id).await?;
     let source_role = db::session_role_snapshot(pool, active.source_session_id).await?;
     let reviewer_role = reviewer_role_snapshot(&source_role);
-    let reviewer_id = db::new_session(
+    let manifest = RoleManifest {
+        id: reviewer_role.id.clone(),
+        version: reviewer_role.version.clone(),
+        display_name: reviewer_role.display_name.clone(),
+        prompt: PromptSource { path: "generated://requirements-reviewer".to_string() },
+        model_defaults: ModelDefaults {
+            model: reviewer_role.model_defaults.model.clone(),
+            reasoning_effort: reviewer_role.model_defaults.reasoning_effort.clone(),
+        },
+        capabilities: reviewer_role.capabilities.clone(),
+        policy: reviewer_role.policy.clone(),
+        routing: reviewer_role.routing.clone(),
+        visibility: reviewer_role.visibility.clone(),
+        lifecycle_authority: reviewer_role.lifecycle_authority.clone(),
+    };
+    let manifest_json = serde_json::to_value(&manifest)?;
+    db::import_role_version_with_actor(
         pool,
-        &reviewer_role,
-        source.project_key.as_deref(),
-        &source.workdir,
-        source.worktree_root.as_deref(),
-        Some("Requirements reviewer"),
-        Some("requirements-reviewer"),
-    )
-    .await?;
-    sqlx::query("UPDATE sessions SET parent_session_id=$2, session_kind='requirementsReviewer', hidden=true, tracked=false, metadata = metadata || $3 WHERE id=$1")
+        &ImportedRoleVersion { snapshot: reviewer_role, manifest, manifest_json },
+        "requirements-hook-workflow",
+    ).await?;
+    let reviewer_id = lifecycle_hooks::ensure_subagent(
+        pool,
+        active.source_session_id,
+        "requirements-reviewer",
+        &active.id.to_string(),
+        "requirementsReviewer",
+        "requirements-reviewer",
+        json!({"inherits":"source"}),
+        json!({"requirementSetId": active.id, "workflow":"requirements_review"}),
+    ).await?;
+    sqlx::query("UPDATE sessions SET tracked=false, metadata = metadata || $2 WHERE id=$1")
         .bind(reviewer_id)
-        .bind(active.source_session_id)
         .bind(json!({"requirementsReviewer": true, "sourceSessionId": active.source_session_id, "requirementSetId": active.id}))
         .execute(pool)
         .await?;
@@ -505,14 +554,43 @@ pub async fn ensure_reviewer_session(pool: &PgPool, active: &ActiveRequirementSe
         .bind(reviewer_id)
         .execute(pool)
         .await?;
+    let _ = sqlx::query("INSERT INTO generic_subagents (id, parent_session_id, subagent_session_id, subagent_key, workflow_identity, subagent_kind, role_id, workspace_policy, hidden_projection_behavior, lifecycle_status, audit_metadata) VALUES ($1,$2,$3,'requirements-reviewer',$4,'requirementsReviewer','requirements-reviewer',$5,'parent_summary','open',$6) ON CONFLICT (parent_session_id, subagent_key, workflow_identity) DO UPDATE SET subagent_session_id=$3, lifecycle_status='open'")
+        .bind(Uuid::new_v4())
+        .bind(active.source_session_id)
+        .bind(reviewer_id)
+        .bind(active.id.to_string())
+        .bind(json!({"inherits":"source"}))
+        .bind(json!({"requirementSetId": active.id}))
+        .execute(pool)
+        .await;
     db::append_event(pool, active.source_session_id, None, "requirements", Some(active.id), "requirements.reviewerReady", Some("ready"), json!({"reviewerSessionId": reviewer_id})).await?;
     Ok(reviewer_id)
 }
 
-pub async fn record_source_final_response(pool: &PgPool, source_session_id: Uuid, turn_id: Uuid, final_text: &str) -> Result<Option<SourceClaimRecord>> {
+pub async fn record_requirements_claim_packet(pool: &PgPool, source_session_id: Uuid, turn_id: Uuid, final_text: &str) -> Result<Option<SourceClaimRecord>> {
     let Some(active) = active_requirement_set(pool, source_session_id).await? else {
         return Ok(None);
     };
+    if let Some(row) = sqlx::query("SELECT id, packet_kind FROM requirement_packets WHERE requirement_set_id=$1 AND source_session_id=$2 AND turn_id=$3 AND reviewer_session_id IS NULL ORDER BY created_at ASC LIMIT 1")
+        .bind(active.id)
+        .bind(source_session_id)
+        .bind(turn_id)
+        .fetch_optional(pool)
+        .await? {
+        let packet_id: Uuid = row.get("id");
+        let kind: String = row.get("packet_kind");
+        let reviewer_session_id = sqlx::query_scalar::<_, Uuid>("SELECT reviewer_session_id FROM requirement_review_bindings WHERE requirement_set_id=$1 AND source_session_id=$2 AND reviewer_session_id IS NOT NULL ORDER BY updated_at DESC LIMIT 1")
+            .bind(active.id)
+            .bind(source_session_id)
+            .fetch_optional(pool)
+            .await?;
+        return Ok(Some(SourceClaimRecord {
+            outcome: source_outcome_from_packet_kind(&kind),
+            requirement_set_id: active.id,
+            packet_id,
+            reviewer_session_id,
+        }));
+    }
     let parsed = serde_json::from_str::<Value>(final_text);
     let (kind, status, payload, validation_error, outcome) = match parsed {
         Err(error) => ("claimInvalid", "invalid", json!({"raw": final_text}), Some(error.to_string()), SourcePacketOutcome::Invalid),
@@ -540,11 +618,24 @@ pub async fn record_source_final_response(pool: &PgPool, source_session_id: Uuid
         .bind(kind)
         .bind(status)
         .bind(&payload)
-        .bind(validation_error)
+        .bind(&validation_error)
         .execute(pool)
         .await?;
+    let runtime_packet_id = lifecycle_hooks::record_runtime_packet(
+        pool,
+        db::session_record(pool, source_session_id).await?.project_key.as_deref(),
+        Some(source_session_id),
+        None,
+        Some(turn_id),
+        &format!("requirements.{kind}"),
+        status,
+        payload.clone(),
+        validation_error.as_deref(),
+        json!({"requirementSetId": active.id, "legacyRequirementPacketId": packet_id}),
+        &format!("requirements-source-{packet_id}"),
+    ).await?;
     if outcome == SourcePacketOutcome::Reviewable {
-        let reviewer_id = ensure_reviewer_session(pool, &active).await?;
+        let reviewer_id = ensure_requirements_reviewer_subagent(pool, &active).await?;
         reviewer_session_id = Some(reviewer_id);
         sqlx::query("UPDATE requirement_review_bindings SET reviewer_session_id=$3, status='inReview', latest_claim_packet_id=$4, updated_at=now() WHERE requirement_set_id=$1 AND source_session_id=$2")
             .bind(active.id)
@@ -553,6 +644,16 @@ pub async fn record_source_final_response(pool: &PgPool, source_session_id: Uuid
             .bind(packet_id)
             .execute(pool)
             .await?;
+        let _ = lifecycle_hooks::route_packet_envelope(
+            pool,
+            runtime_packet_id,
+            "requirements_claim_to_reviewer",
+            Some(source_session_id),
+            Some(reviewer_id),
+            Some("requirements-reviewer"),
+            "pending",
+            json!({"workflow":"requirements_review","requirementSetId":active.id,"legacyRequirementPacketId":packet_id}),
+        ).await?;
     }
     match outcome {
         SourcePacketOutcome::Null => {
@@ -570,7 +671,7 @@ pub async fn record_source_final_response(pool: &PgPool, source_session_id: Uuid
     Ok(Some(SourceClaimRecord { outcome, requirement_set_id: active.id, packet_id, reviewer_session_id }))
 }
 
-pub async fn record_reviewer_verdict(pool: &PgPool, reviewer_session_id: Uuid, turn_id: Uuid, final_text: &str) -> Result<bool> {
+pub async fn record_requirements_verdict_packet(pool: &PgPool, reviewer_session_id: Uuid, turn_id: Uuid, final_text: &str) -> Result<bool> {
     let row = sqlx::query(
         "SELECT requirement_set_id, source_session_id FROM requirement_review_bindings WHERE reviewer_session_id=$1 ORDER BY updated_at DESC LIMIT 1",
     )
@@ -580,6 +681,14 @@ pub async fn record_reviewer_verdict(pool: &PgPool, reviewer_session_id: Uuid, t
     let Some(row) = row else { return Ok(false); };
     let set_id: Uuid = row.get("requirement_set_id");
     let source_session_id: Uuid = row.get("source_session_id");
+    if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM requirement_packets WHERE requirement_set_id=$1 AND reviewer_session_id=$2 AND turn_id=$3")
+        .bind(set_id)
+        .bind(reviewer_session_id)
+        .bind(turn_id)
+        .fetch_one(pool)
+        .await? > 0 {
+        return Ok(true);
+    }
     let parsed = serde_json::from_str::<Value>(final_text);
     let (payload, kind, status, validation_error) = match parsed {
         Ok(value) if value.get("requirements").is_some_and(Value::is_null) => (value, "verdictNull", "commentary", None),
@@ -599,11 +708,24 @@ pub async fn record_reviewer_verdict(pool: &PgPool, reviewer_session_id: Uuid, t
         .bind(kind)
         .bind(status)
         .bind(&payload)
-        .bind(validation_error)
+        .bind(&validation_error)
         .execute(pool)
         .await?;
+    let _ = lifecycle_hooks::record_runtime_packet(
+        pool,
+        db::session_record(pool, source_session_id).await?.project_key.as_deref(),
+        Some(source_session_id),
+        Some(reviewer_session_id),
+        Some(turn_id),
+        &format!("requirements.{kind}"),
+        status,
+        payload.clone(),
+        validation_error.as_deref(),
+        json!({"requirementSetId": set_id, "reviewerSessionId": reviewer_session_id, "legacyRequirementPacketId": packet_id}),
+        &format!("requirements-reviewer-{packet_id}"),
+    ).await?;
     if kind == "verdict" {
-        apply_verdict_packet(pool, set_id, source_session_id, &payload).await?;
+        apply_requirements_verdict_progress(pool, set_id, source_session_id, &payload).await?;
         sqlx::query("UPDATE requirement_review_bindings SET latest_verdict_packet_id=$3, status='reviewed', updated_at=now() WHERE requirement_set_id=$1 AND source_session_id=$2")
             .bind(set_id)
             .bind(source_session_id)
@@ -732,7 +854,7 @@ async fn canonical_requirement_keys(pool: &PgPool, set_id: Uuid) -> Result<BTree
         .collect())
 }
 
-async fn apply_verdict_packet(pool: &PgPool, set_id: Uuid, source_session_id: Uuid, payload: &Value) -> Result<()> {
+async fn apply_requirements_verdict_progress(pool: &PgPool, set_id: Uuid, source_session_id: Uuid, payload: &Value) -> Result<()> {
     let previous = sqlx::query("SELECT requirement_key, status FROM requirement_progress WHERE requirement_set_id=$1")
         .bind(set_id)
         .fetch_all(pool)
@@ -745,6 +867,14 @@ async fn apply_verdict_packet(pool: &PgPool, set_id: Uuid, source_session_id: Uu
             let verdict_text = verdict.get("verdict").and_then(Value::as_str).unwrap_or("unknown");
             let status = progress_status_for_verdict(verdict_text, previous.get(key).map(String::as_str));
             sqlx::query("UPDATE requirement_progress SET status=$3, latest_verdict=$4, updated_at=now() WHERE requirement_set_id=$1 AND requirement_key=$2")
+                .bind(set_id)
+                .bind(key)
+                .bind(status)
+                .bind(verdict)
+                .execute(pool)
+                .await?;
+            let _ = sqlx::query("INSERT INTO generic_contract_progress (id, contract_id, progress_key, status, payload) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (contract_id, progress_key) DO UPDATE SET status=$4, payload=$5, updated_at=now()")
+                .bind(Uuid::new_v4())
                 .bind(set_id)
                 .bind(key)
                 .bind(status)
@@ -835,6 +965,70 @@ pub async fn active_reviewer_for_source(pool: &PgPool, source_session_id: Uuid) 
     .fetch_optional(pool)
     .await?;
     Ok(reviewer)
+}
+
+pub async fn migrate_active_requirements_to_generic_workflow(pool: &PgPool) -> Result<Value> {
+    let sets = sqlx::query("SELECT id, source_session_id, canonical_set FROM requirement_sets WHERE status='active'")
+        .fetch_all(pool)
+        .await?;
+    let mut contracts = 0u64;
+    let mut packets = 0u64;
+    let mut subagents = 0u64;
+    for set in sets {
+        let set_id: Uuid = set.get("id");
+        let source_session_id: Uuid = set.get("source_session_id");
+        let canonical: Value = set.get("canonical_set");
+        let inserted = sqlx::query("INSERT INTO generic_contracts (id, session_id, contract_type, canonical_payload, status, active_version, enforcement_enabled) VALUES ($1,$2,'requirements',$3,'active',$4,true) ON CONFLICT DO NOTHING")
+            .bind(set_id)
+            .bind(source_session_id)
+            .bind(&canonical)
+            .bind(set_id.to_string())
+            .execute(pool)
+            .await?
+            .rows_affected();
+        contracts += inserted;
+        let packet_rows = sqlx::query("SELECT id, reviewer_session_id, turn_id, packet_kind, status, payload, validation_error FROM requirement_packets WHERE requirement_set_id=$1 ORDER BY created_at ASC")
+            .bind(set_id)
+            .fetch_all(pool)
+            .await?;
+        for packet in packet_rows {
+            let packet_id: Uuid = packet.get("id");
+            let runtime_packet = lifecycle_hooks::record_runtime_packet(
+                pool,
+                db::session_record(pool, source_session_id).await?.project_key.as_deref(),
+                Some(source_session_id),
+                packet.get("reviewer_session_id"),
+                packet.get("turn_id"),
+                &format!("requirements.{}", packet.get::<String, _>("packet_kind")),
+                &packet.get::<String, _>("status"),
+                packet.get("payload"),
+                packet.get::<Option<String>, _>("validation_error").as_deref(),
+                json!({"requirementSetId": set_id, "migratedRequirementPacketId": packet_id}),
+                &format!("requirements-migration-{packet_id}"),
+            ).await?;
+            if runtime_packet != Uuid::nil() {
+                packets += 1;
+            }
+        }
+        if let Some(binding) = sqlx::query("SELECT reviewer_session_id FROM requirement_review_bindings WHERE requirement_set_id=$1 AND source_session_id=$2 AND reviewer_session_id IS NOT NULL LIMIT 1")
+            .bind(set_id)
+            .bind(source_session_id)
+            .fetch_optional(pool)
+            .await? {
+            let reviewer_id: Uuid = binding.get("reviewer_session_id");
+            subagents += sqlx::query("INSERT INTO generic_subagents (id, parent_session_id, subagent_session_id, subagent_key, workflow_identity, subagent_kind, role_id, workspace_policy, hidden_projection_behavior, lifecycle_status, audit_metadata) VALUES ($1,$2,$3,'requirements-reviewer',$4,'requirementsReviewer','requirements-reviewer',$5,'parent_summary','open',$6) ON CONFLICT (parent_session_id, subagent_key, workflow_identity) DO UPDATE SET subagent_session_id=$3, lifecycle_status='open'")
+                .bind(Uuid::new_v4())
+                .bind(source_session_id)
+                .bind(reviewer_id)
+                .bind(set_id.to_string())
+                .bind(json!({"inherits":"source"}))
+                .bind(json!({"requirementSetId": set_id, "source":"migration"}))
+                .execute(pool)
+                .await?
+                .rows_affected();
+        }
+    }
+    Ok(json!({"contracts":contracts,"packets":packets,"subagents":subagents}))
 }
 
 async fn progress_rows(pool: &PgPool, set_id: Uuid) -> Result<Vec<Value>> {

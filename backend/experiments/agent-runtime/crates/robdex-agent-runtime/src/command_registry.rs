@@ -330,6 +330,23 @@ fn validate_scope(scope: &RegistryScope) -> Result<()> {
                 return Err(RuntimeDomainError::validation_failed("project command scope requires non-empty projectKey").into());
             }
         }
+        "role" => {
+            let Some(role_key) = scope.project_key.as_deref() else {
+                return Err(RuntimeDomainError::validation_failed("role command scope requires role id in projectKey").into());
+            };
+            if role_key.trim().is_empty() || role_key.contains(':') {
+                return Err(RuntimeDomainError::validation_failed("role command scope requires non-empty role id").into());
+            }
+        }
+        "projectRole" => {
+            let Some(project_role_key) = scope.project_key.as_deref() else {
+                return Err(RuntimeDomainError::validation_failed("projectRole command scope requires projectKey formatted as project:role").into());
+            };
+            let parts = project_role_key.split(':').collect::<Vec<_>>();
+            if parts.len() != 2 || parts.iter().any(|part| part.trim().is_empty()) {
+                return Err(RuntimeDomainError::validation_failed("projectRole command scope requires projectKey formatted as project:role").into());
+            }
+        }
         other => return Err(RuntimeDomainError::validation_failed(format!("unsupported command scope: {other}")).into()),
     }
     Ok(())
@@ -349,18 +366,27 @@ fn validate_identifier(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn live_visible_commands(pool: &PgPool, _snapshot: &RoleSnapshot, project_key: Option<&str>) -> Result<Vec<CommandVersion>> {
+pub async fn live_visible_commands(pool: &PgPool, snapshot: &RoleSnapshot, project_key: Option<&str>) -> Result<Vec<CommandVersion>> {
+    let role_key = snapshot.id.as_str();
+    let project_role_key = project_key.map(|project| format!("{project}:{role_key}"));
     let rows = sqlx::query(
         r#"
         SELECT cd.id AS definition_id, cd.scope_type, cd.project_key, cv.id AS version_id, cv.action_id, cv.binary_name, cv.starlark_object, cv.starlark_method, cv.config, cv.model_description
         FROM command_definitions cd
         JOIN command_versions cv ON cv.id = cd.current_version_id
         WHERE cd.enabled = true
-          AND (cd.scope_type='global' OR (cd.scope_type='project' AND cd.project_key=$1))
+          AND (
+            cd.scope_type='global'
+            OR (cd.scope_type='project' AND cd.project_key=$1)
+            OR (cd.scope_type='role' AND cd.project_key=$2)
+            OR (cd.scope_type='projectRole' AND cd.project_key=$3)
+          )
         ORDER BY cv.starlark_object, cv.starlark_method
         "#,
     )
     .bind(project_key)
+    .bind(role_key)
+    .bind(project_role_key.as_deref())
     .fetch_all(pool)
     .await?;
     let mut commands = Vec::new();
@@ -1387,5 +1413,16 @@ mod cache_stable_discovery_tests {
             assert!(text.contains("stdin"));
             assert!(text.contains("model description"));
         }
+    }
+
+    #[test]
+    fn role_level_scopes_validate_without_weakening_global_project_scopes() {
+        assert!(validate_scope(&RegistryScope { scope_type: "global".to_string(), project_key: None }).is_ok());
+        assert!(validate_scope(&RegistryScope { scope_type: "project".to_string(), project_key: Some("alpha".to_string()) }).is_ok());
+        assert!(validate_scope(&RegistryScope { scope_type: "role".to_string(), project_key: Some("worker".to_string()) }).is_ok());
+        assert!(validate_scope(&RegistryScope { scope_type: "projectRole".to_string(), project_key: Some("alpha:worker".to_string()) }).is_ok());
+        assert!(validate_scope(&RegistryScope { scope_type: "role".to_string(), project_key: None }).is_err());
+        assert!(validate_scope(&RegistryScope { scope_type: "projectRole".to_string(), project_key: Some("alpha".to_string()) }).is_err());
+        assert!(validate_scope(&RegistryScope { scope_type: "global".to_string(), project_key: Some("alpha".to_string()) }).is_err());
     }
 }

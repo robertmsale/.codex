@@ -103,6 +103,18 @@ pub struct SelectedSessionDetail {
     pub terminal_submission_rejection: Option<Value>,
     pub metadata: Value,
     #[serde(default)]
+    pub project_runtime: Value,
+    #[serde(default)]
+    pub hook_overrides: Value,
+    #[serde(default)]
+    pub subagents: Value,
+    #[serde(default)]
+    pub contracts: Vec<Value>,
+    #[serde(default)]
+    pub resource_leases: Vec<Value>,
+    #[serde(default)]
+    pub recent_hook_failures: Vec<Value>,
+    #[serde(default)]
     pub requirements_review: Option<RequirementsReviewSummary>,
 }
 
@@ -631,6 +643,12 @@ pub enum GuiOperationName {
     UpdateProject,
     ArchiveProject,
     UnarchiveProject,
+    ValidateProjectRuntimeConfig,
+    ImportProjectRuntimeConfig,
+    ActivateProjectRuntimeConfig,
+    ArchiveProjectRuntimeConfig,
+    ExportProjectRuntimeConfig,
+    InspectProjectRuntimeHookEvaluations,
     UpdateRuntimeSettings,
     UpdateSessionSettings,
     SendMessage,
@@ -686,6 +704,12 @@ pub enum GuiOperationRequest {
     UpdateProject { project_key: String, display_name: String, default_workdir: String, default_worktree_root: String, default_role_id: Option<String>, default_model: String },
     ArchiveProject { project_key: String },
     UnarchiveProject { project_key: String },
+    ValidateProjectRuntimeConfig { project_key: String, source_text: String },
+    ImportProjectRuntimeConfig { project_key: String, source_text: String, author: String },
+    ActivateProjectRuntimeConfig { project_key: String, version_id: String },
+    ArchiveProjectRuntimeConfig { project_key: String, version_id: String },
+    ExportProjectRuntimeConfig { project_key: String, version_id: String },
+    InspectProjectRuntimeHookEvaluations { project_key: String, version_id: String },
     UpdateRuntimeSettings { base_url: String, selected_project_id: Option<String> },
     UpdateSessionSettings { session_id: String, project: String, role: String, model: String, workdir: String, worktree_root: String, title: String, name: String, tracked: bool },
     SendMessage { session_id: String, message: String },
@@ -741,6 +765,12 @@ impl GuiOperationRequest {
             Self::UpdateProject { .. } => GuiOperationName::UpdateProject,
             Self::ArchiveProject { .. } => GuiOperationName::ArchiveProject,
             Self::UnarchiveProject { .. } => GuiOperationName::UnarchiveProject,
+            Self::ValidateProjectRuntimeConfig { .. } => GuiOperationName::ValidateProjectRuntimeConfig,
+            Self::ImportProjectRuntimeConfig { .. } => GuiOperationName::ImportProjectRuntimeConfig,
+            Self::ActivateProjectRuntimeConfig { .. } => GuiOperationName::ActivateProjectRuntimeConfig,
+            Self::ArchiveProjectRuntimeConfig { .. } => GuiOperationName::ArchiveProjectRuntimeConfig,
+            Self::ExportProjectRuntimeConfig { .. } => GuiOperationName::ExportProjectRuntimeConfig,
+            Self::InspectProjectRuntimeHookEvaluations { .. } => GuiOperationName::InspectProjectRuntimeHookEvaluations,
             Self::UpdateRuntimeSettings { .. } => GuiOperationName::UpdateRuntimeSettings,
             Self::UpdateSessionSettings { .. } => GuiOperationName::UpdateSessionSettings,
             Self::SendMessage { .. } => GuiOperationName::SendMessage,
@@ -792,6 +822,9 @@ impl GuiOperationRequest {
             | Self::UpdateProject { .. }
             | Self::ArchiveProject { .. }
             | Self::UnarchiveProject { .. }
+            | Self::ImportProjectRuntimeConfig { .. }
+            | Self::ActivateProjectRuntimeConfig { .. }
+            | Self::ArchiveProjectRuntimeConfig { .. }
             | Self::UpdateSessionSettings { .. }
             | Self::SendMessage { .. }
             | Self::TerminateProcess { .. }
@@ -818,6 +851,9 @@ impl GuiOperationRequest {
             | Self::SubmitRequirementsReviewerInput { .. } => GuiOperationExpectation::WaitForDelta,
             Self::ListProjects
             | Self::ListCommandRegistry { .. }
+            | Self::ValidateProjectRuntimeConfig { .. }
+            | Self::ExportProjectRuntimeConfig { .. }
+            | Self::InspectProjectRuntimeHookEvaluations { .. }
             | Self::ShowCommand { .. }
             | Self::ListCommandRegistryRequests
             | Self::ShowCommandRegistryRequest { .. }
@@ -847,6 +883,12 @@ impl GuiOperationRequest {
             Self::UpdateProject { .. } => http_mapping(self.name(), "POST", "/projects/{projectKey}", r#"{"displayName","defaultWorkdir","defaultWorktreeRoot","defaultRoleId","defaultModel"}"#, r#"{"project"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ArchiveProject { .. } => http_mapping(self.name(), "POST", "/projects/{projectKey}/archive", "{}", r#"{"project"}"#, GuiOperationExpectation::WaitForDelta),
             Self::UnarchiveProject { .. } => http_mapping(self.name(), "POST", "/projects/{projectKey}/unarchive", "{}", r#"{"project"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ValidateProjectRuntimeConfig { .. } => http_mapping(self.name(), "POST", "/projects/{projectKey}/runtime-config/validate", r#"{"sourceText"}"#, r#"{"valid","manifest","errors"}"#, GuiOperationExpectation::DirectResult),
+            Self::ImportProjectRuntimeConfig { .. } => http_mapping(self.name(), "POST", "/projects/{projectKey}/runtime-config", r#"{"sourceText","author"}"#, r#"{"versionId","sourceHash","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ActivateProjectRuntimeConfig { .. } => http_mapping(self.name(), "POST", "/projects/{projectKey}/runtime-config/versions/{versionId}/activate", "{}", r#"{"projectKey","versionId","active"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ArchiveProjectRuntimeConfig { .. } => http_mapping(self.name(), "POST", "/projects/{projectKey}/runtime-config/versions/{versionId}/archive", "{}", r#"{"projectKey","versionId","archived"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::ExportProjectRuntimeConfig { .. } => http_mapping(self.name(), "GET", "/projects/{projectKey}/runtime-config/versions/{versionId}/export", "none", r#"{"sourceText","sourceHash","manifest"}"#, GuiOperationExpectation::DirectResult),
+            Self::InspectProjectRuntimeHookEvaluations { .. } => http_mapping(self.name(), "GET", "/projects/{projectKey}/runtime-config/versions/{versionId}/evaluations", "none", "Vec<HookEvaluation>", GuiOperationExpectation::DirectResult),
             Self::UpdateRuntimeSettings { .. } => local_mapping(self.name(), "validate runtime GUI settings and update Rust-owned controller settings", GuiOperationExpectation::UpdateLocalState),
             Self::UpdateSessionSettings { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/settings", r#"{"project","role","model","workdir","worktreeRoot","title","name","tracked"}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::SendMessage { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/send", r#"{"message"}"#, r#"{"sessionId","turnId","status"}"#, GuiOperationExpectation::WaitForDelta),
@@ -899,6 +941,8 @@ impl GuiOperationRequest {
             | Self::UpdateRuntimeSettings { .. }
             | Self::ListProjects
             | Self::ListCommandRegistry { .. }
+            | Self::ExportProjectRuntimeConfig { .. }
+            | Self::InspectProjectRuntimeHookEvaluations { .. }
             | Self::ShowCommand { .. }
             | Self::ListCommandRegistryRequests
             | Self::ShowCommandRegistryRequest { .. }
@@ -934,6 +978,9 @@ impl GuiOperationRequest {
                 "defaultModel": default_model,
             })),
             Self::ArchiveProject { .. } | Self::UnarchiveProject { .. } => Some(json!({})),
+            Self::ValidateProjectRuntimeConfig { source_text, .. } => Some(json!({"sourceText": source_text})),
+            Self::ImportProjectRuntimeConfig { source_text, author, .. } => Some(json!({"sourceText": source_text, "author": author})),
+            Self::ActivateProjectRuntimeConfig { .. } | Self::ArchiveProjectRuntimeConfig { .. } => Some(json!({})),
             Self::UpdateSessionSettings { project, role, model, workdir, worktree_root, title, name, tracked, .. } => Some(json!({
                 "project": project,
                 "role": role,
@@ -1713,6 +1760,12 @@ mod tests {
             submit_status: None,
             terminal_submission_rejection: None,
             metadata: Value::Null,
+            project_runtime: json!({}),
+            hook_overrides: json!({}),
+            subagents: json!({}),
+            contracts: Vec::new(),
+            resource_leases: Vec::new(),
+            recent_hook_failures: Vec::new(),
             requirements_review: None,
         });
         projection.apply_delta(delta(1, RuntimeDeltaKind::SessionUpsert { session: session("session-1") }));
@@ -1760,6 +1813,12 @@ mod tests {
             submit_status: None,
             terminal_submission_rejection: None,
             metadata: Value::Null,
+            project_runtime: json!({}),
+            hook_overrides: json!({}),
+            subagents: json!({}),
+            contracts: Vec::new(),
+            resource_leases: Vec::new(),
+            recent_hook_failures: Vec::new(),
             requirements_review: None,
         };
         projection.apply_delta(delta(1, RuntimeDeltaKind::SelectedSessionReplace { session: Some(detail.clone()) }));
@@ -1788,6 +1847,12 @@ mod tests {
             submit_status: None,
             terminal_submission_rejection: None,
             metadata: Value::Null,
+            project_runtime: json!({}),
+            hook_overrides: json!({}),
+            subagents: json!({}),
+            contracts: Vec::new(),
+            resource_leases: Vec::new(),
+            recent_hook_failures: Vec::new(),
             requirements_review: None,
         });
         let summary = RequirementsReviewSummary {

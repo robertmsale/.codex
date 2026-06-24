@@ -195,10 +195,18 @@ impl CodexBackedModelClient {
             metadata: json!({"source": "runtime_tool_policy"}),
         });
         let cache_key = prompt_cache_key_for_runtime(role, &runtime_messages);
-        let requirements_schema = runtime_messages
+        let structured_schema = runtime_messages
             .iter()
-            .find(|message| message.metadata.get("source").and_then(Value::as_str) == Some("requirements_output_schema"))
-            .and_then(|message| tagged_json_block(&message.text, "requirements_schema"));
+            .find(|message| {
+                matches!(
+                    message.metadata.get("source").and_then(Value::as_str),
+                    Some("hook_required_output_schema")
+                )
+            })
+            .and_then(|message| {
+                tagged_json_block(&message.text, "hook_required_schema")
+                    .or_else(|| tagged_json_block(&message.text, "hook_required_schema"))
+            });
         let mut body = json!({
             "model": model,
             "input": model_input::responses_input(role, history, &runtime_messages, Some(message)),
@@ -209,9 +217,14 @@ impl CodexBackedModelClient {
             "stream": true,
             "prompt_cache_key": cache_key,
         });
-        if let Some(schema) = requirements_schema {
+        if let Some(schema) = structured_schema {
             body["text"] = json!({"format": {"type": "json_schema", "name": schema["name"], "schema": schema["schema"], "strict": true}});
-            body["requirements_schema_evidence"] = schema["metadata"].clone();
+            let evidence_key = if schema.pointer("/metadata/source").and_then(Value::as_str) == Some("hook_required_output_schema") {
+                "hook_schema_evidence"
+            } else {
+                "hook_schema_evidence"
+            };
+            body[evidence_key] = schema["metadata"].clone();
         }
         body
     }
@@ -503,10 +516,18 @@ impl ModelClient for CodexBackedModelClient {
             "output": result_text
         }));
         let cache_key = prompt_cache_key_for_runtime(role, &runtime_messages);
-        let requirements_schema = runtime_messages
+        let structured_schema = runtime_messages
             .iter()
-            .find(|message| message.metadata.get("source").and_then(Value::as_str) == Some("requirements_output_schema"))
-            .and_then(|message| tagged_json_block(&message.text, "requirements_schema"));
+            .find(|message| {
+                matches!(
+                    message.metadata.get("source").and_then(Value::as_str),
+                    Some("hook_required_output_schema")
+                )
+            })
+            .and_then(|message| {
+                tagged_json_block(&message.text, "hook_required_schema")
+                    .or_else(|| tagged_json_block(&message.text, "hook_required_schema"))
+            });
         let mut body = json!({
             "model": self.model,
             "input": input,
@@ -514,9 +535,14 @@ impl ModelClient for CodexBackedModelClient {
             "stream": true,
             "prompt_cache_key": cache_key,
         });
-        if let Some(schema) = requirements_schema {
+        if let Some(schema) = structured_schema {
             body["text"] = json!({"format": {"type": "json_schema", "name": schema["name"], "schema": schema["schema"], "strict": true}});
-            body["requirements_schema_evidence"] = schema["metadata"].clone();
+            let evidence_key = if schema.pointer("/metadata/source").and_then(Value::as_str) == Some("hook_required_output_schema") {
+                "hook_schema_evidence"
+            } else {
+                "hook_schema_evidence"
+            };
+            body[evidence_key] = schema["metadata"].clone();
         }
         let raw_response = self.post_responses(&body).await?;
         Ok(ModelFinalTurn {

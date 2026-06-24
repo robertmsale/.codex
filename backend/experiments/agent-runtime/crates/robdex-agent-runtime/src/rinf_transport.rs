@@ -6,8 +6,8 @@
 
 use robdex_agent_runtime_projection::{
     ApiErrorPacket, CommandRegistryRequestSummary, GuiConnectionState, GuiControllerState,
-    GuiOperationRequest, GuiOperationResult, PendingApprovalSummary, RoleSummary, RuntimeProjection,
-    SelectedSessionDetail, SessionListItem, TimelineItem, WorkflowMemorySummary,
+    GuiOperationRequest, GuiOperationResult, PendingApprovalSummary, RoleSummary, RuntimeProjection, SelectedSessionDetail, SessionListItem,
+    TimelineItem, WorkflowMemorySummary,
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -58,6 +58,31 @@ pub enum GuiTransportRequest {
     },
     SelectProject {
         project_id: String,
+    },
+    ValidateProjectRuntimeConfig {
+        project_key: String,
+        source_text: String,
+    },
+    ImportProjectRuntimeConfig {
+        project_key: String,
+        source_text: String,
+        author: String,
+    },
+    ActivateProjectRuntimeConfig {
+        project_key: String,
+        version_id: String,
+    },
+    ArchiveProjectRuntimeConfig {
+        project_key: String,
+        version_id: String,
+    },
+    ExportProjectRuntimeConfig {
+        project_key: String,
+        version_id: String,
+    },
+    InspectProjectRuntimeHookEvaluations {
+        project_key: String,
+        version_id: String,
     },
     Hydrate {
         selected_session_id: Option<String>,
@@ -2450,6 +2475,42 @@ impl GuiTransportRunner {
                 self.selected_project_id = project_id;
                 Ok(vec![])
             }
+            GuiTransportRequest::ValidateProjectRuntimeConfig { project_key, source_text } => {
+                let operation = GuiOperationRequest::ValidateProjectRuntimeConfig { project_key, source_text };
+                self.validate_operation_against_selected_project(&operation)?;
+                let result = self.controller.dispatch(operation).await;
+                Ok(self.operation_outputs(result))
+            }
+            GuiTransportRequest::ImportProjectRuntimeConfig { project_key, source_text, author } => {
+                let operation = GuiOperationRequest::ImportProjectRuntimeConfig { project_key, source_text, author };
+                self.validate_operation_against_selected_project(&operation)?;
+                let result = self.controller.dispatch(operation).await;
+                Ok(self.operation_outputs(result))
+            }
+            GuiTransportRequest::ActivateProjectRuntimeConfig { project_key, version_id } => {
+                let operation = GuiOperationRequest::ActivateProjectRuntimeConfig { project_key, version_id };
+                self.validate_operation_against_selected_project(&operation)?;
+                let result = self.controller.dispatch(operation).await;
+                Ok(self.operation_outputs(result))
+            }
+            GuiTransportRequest::ArchiveProjectRuntimeConfig { project_key, version_id } => {
+                let operation = GuiOperationRequest::ArchiveProjectRuntimeConfig { project_key, version_id };
+                self.validate_operation_against_selected_project(&operation)?;
+                let result = self.controller.dispatch(operation).await;
+                Ok(self.operation_outputs(result))
+            }
+            GuiTransportRequest::ExportProjectRuntimeConfig { project_key, version_id } => {
+                let operation = GuiOperationRequest::ExportProjectRuntimeConfig { project_key, version_id };
+                self.validate_operation_against_selected_project(&operation)?;
+                let result = self.controller.dispatch(operation).await;
+                Ok(self.operation_outputs(result))
+            }
+            GuiTransportRequest::InspectProjectRuntimeHookEvaluations { project_key, version_id } => {
+                let operation = GuiOperationRequest::InspectProjectRuntimeHookEvaluations { project_key, version_id };
+                self.validate_operation_against_selected_project(&operation)?;
+                let result = self.controller.dispatch(operation).await;
+                Ok(self.operation_outputs(result))
+            }
             GuiTransportRequest::Rehydrate { selected_session_id } => {
                 self.refresh_model_options(false).await;
                 let result = self
@@ -2562,10 +2623,34 @@ impl GuiTransportRunner {
     }
 
     fn validate_operation_against_selected_project(&self, operation: &GuiOperationRequest) -> Result<(), ApiErrorPacket> {
-        let GuiOperationRequest::SelectSession { session_id: Some(session_id) } = operation else {
+        let Some(selected_project_id) = self.selected_project_id.as_deref().filter(|value| !value.trim().is_empty()) else {
             return Ok(());
         };
-        let Some(selected_project_id) = self.selected_project_id.as_deref().filter(|value| !value.trim().is_empty()) else {
+        let operation_project = match operation {
+            GuiOperationRequest::ValidateProjectRuntimeConfig { project_key, .. }
+            | GuiOperationRequest::ImportProjectRuntimeConfig { project_key, .. }
+            | GuiOperationRequest::ActivateProjectRuntimeConfig { project_key, .. }
+            | GuiOperationRequest::ArchiveProjectRuntimeConfig { project_key, .. }
+            | GuiOperationRequest::ExportProjectRuntimeConfig { project_key, .. }
+            | GuiOperationRequest::InspectProjectRuntimeHookEvaluations { project_key, .. } => Some(project_key.as_str()),
+            _ => None,
+        };
+        if let Some(project_key) = operation_project {
+            if selected_project_id != project_key {
+                return Err(ApiErrorPacket::new(
+                    "project_filter_mismatch",
+                    "project runtime config operation is outside the active project filter",
+                    json!({
+                        "operation": format!("{:?}", operation.name()),
+                        "selectedProjectId": selected_project_id,
+                        "operationProjectKey": project_key,
+                        "recovery": "Choose the project before changing its runtime config."
+                    }),
+                ));
+            }
+            return Ok(());
+        }
+        let GuiOperationRequest::SelectSession { session_id: Some(session_id) } = operation else {
             return Ok(());
         };
         let Some(projection) = self.controller.projection() else {
@@ -3221,6 +3306,12 @@ fn runtime_detail_facts(projection: Option<&RuntimeProjection>, controller_state
             facts.push(AgentRuntimeWorkbenchFact { label: "Session workdir".to_string(), value: session.workdir.clone() });
             facts.push(AgentRuntimeWorkbenchFact { label: "Managed processes".to_string(), value: session.managed_process_count.to_string() });
             facts.push(AgentRuntimeWorkbenchFact { label: "Pending approvals".to_string(), value: session.pending_approval_count.to_string() });
+            facts.push(AgentRuntimeWorkbenchFact { label: "Runtime version".to_string(), value: session.project_runtime.get("activeVersionId").and_then(Value::as_str).unwrap_or("none").to_string() });
+            facts.push(AgentRuntimeWorkbenchFact { label: "Hook overrides".to_string(), value: session.project_runtime.get("hookBindingCount").and_then(Value::as_u64).unwrap_or_default().to_string() });
+            facts.push(AgentRuntimeWorkbenchFact { label: "Active subagents".to_string(), value: session.subagents.get("activeSubagents").and_then(Value::as_u64).unwrap_or_default().to_string() });
+            facts.push(AgentRuntimeWorkbenchFact { label: "Active contracts".to_string(), value: session.contracts.len().to_string() });
+            facts.push(AgentRuntimeWorkbenchFact { label: "Resource leases".to_string(), value: session.resource_leases.len().to_string() });
+            facts.push(AgentRuntimeWorkbenchFact { label: "Recent hook failures".to_string(), value: session.recent_hook_failures.len().to_string() });
         }
         let current_turn = if projection.timeline.iter().any(|item| item.event_type == "turn.started" && item.status.as_deref() == Some("running")) { "Running" } else { "Idle" };
         facts.push(AgentRuntimeWorkbenchFact { label: "Current turn".to_string(), value: current_turn.to_string() });
@@ -3392,7 +3483,35 @@ mod tests {
                         submit_status: None,
                         terminal_submission_rejection: None,
                         metadata: json!({"model":"gpt-5.4-mini"}),
-                        requirements_review: None,
+                        project_runtime: json!({"activeVersionId":"runtime-version-1","hookBindingCount":1}),
+                        hook_overrides: json!({"onModelRequest":"binding-1"}),
+                        subagents: json!({"activeSubagents":1}),
+                        contracts: vec![json!({"contractId":"contract-1","status":"active"})],
+                        resource_leases: vec![json!({"leaseId":"lease-1","status":"assigned"})],
+                        recent_hook_failures: vec![json!({"evaluationId":"eval-1"})],
+                        requirements_review: Some(robdex_agent_runtime_projection::RequirementsReviewSummary {
+                            active: true,
+                            active_set_id: Some("requirements-set-1".to_string()),
+                            total: 1,
+                            unresolved: 1,
+                            passed: 0,
+                            blocked: 0,
+                            waived: 0,
+                            reviewer_session_id: Some("requirements-reviewer-session-1".to_string()),
+                            review_status: Some("inReview".to_string()),
+                            latest_claim_packet_id: Some("requirements-claim-1".to_string()),
+                            latest_verdict_packet_id: None,
+                            packets: vec![robdex_agent_runtime_projection::RequirementsPacketSummary {
+                                id: "requirements-claim-1".to_string(),
+                                requirement_set_id: "requirements-set-1".to_string(),
+                                packet_kind: "claim".to_string(),
+                                status: "reviewable".to_string(),
+                                reviewer_session_id: Some("requirements-reviewer-session-1".to_string()),
+                                turn_id: Some("requirements-turn-1".to_string()),
+                            }],
+                            progress: vec![json!({"requirementKey":"packet_history","status":"unresolved"})],
+                            owner_action: None,
+                        }),
                     }),
                     timeline: vec![
                         TimelineItem {
@@ -3539,6 +3658,16 @@ mod tests {
             .route("/roles/gui-role/activate", post(Json(json!({"roleId":"gui-role","versionId":"role-version-1","status":"active"}))))
             .route("/roles/gui-role/archive", post(Json(json!({"roleId":"gui-role","status":"archived"}))))
             .route("/roles/gui-role/unarchive", post(Json(json!({"roleId":"gui-role","status":"active"}))))
+            .route("/projects/transport-project/runtime-config/validate", post(Json(json!({"valid":true,"manifest":{"projectKey":"transport-project"},"errors":[]}))))
+            .route("/projects/transport-project/runtime-config", post(Json(json!({"projectKey":"transport-project","versionId":"runtime-version-2","status":"imported"}))))
+            .route("/projects/transport-project/runtime-config/versions/runtime-version-2/activate", post(Json(json!({"projectKey":"transport-project","versionId":"runtime-version-2","active":true}))))
+            .route("/projects/transport-project/runtime-config/versions/runtime-version-2/archive", post(Json(json!({"projectKey":"transport-project","versionId":"runtime-version-2","archived":true}))))
+            .route("/projects/transport-project/runtime-config/versions/runtime-version-2/export", get(Json(json!({"sourceText":"role_definition(id='designer')","sourceHash":"hash-runtime-2","manifest":{"projectKey":"transport-project"}}))))
+            .route("/projects/transport-project/runtime-config/versions/runtime-version-2/evaluations", get(Json(json!([{"evaluationId":"eval-runtime-2","hookName":"on_model_request","status":"completed"}]))))
+            .route("/sessions/session-1/requirements", get(Json(json!({"requirements":{"active":true,"activeSetId":"requirements-set-1","reviewerSessionId":"requirements-reviewer-session-1","progress":[{"requirementKey":"packet_history","status":"unresolved"}]}}))).post(Json(json!({"requirementSetId":"requirements-set-2","status":{"active":true}}))))
+            .route("/sessions/session-1/requirements/packets", get(Json(json!({"packets":[{"id":"requirements-claim-1","requirementSetId":"requirements-set-1","packetKind":"claim","status":"reviewable","reviewerSessionId":"requirements-reviewer-session-1","turnId":"requirements-turn-1"}]}))))
+            .route("/sessions/session-1/requirements/clear", post(Json(json!({"sessionId":"session-1","status":"inactive"}))))
+            .route("/sessions/session-1/requirements/reviewer/send", post(Json(json!({"sessionId":"requirements-reviewer-session-1","submittedInputId":"submitted-requirements-1","disposition":"active_turn_steering","status":"accepted"}))))
             .route("/workflow-memories/memory-1/feedback", post(Json(json!({"memoryId":"memory-1","feedback":"attempted","status":"recorded"}))))
             .route("/approvals/approval-1/decide", post(Json(json!({"approvalId":"approval-1","decision":"approved","status":"approved"}))))
             .route("/approvals/approval-1/resume", post(Json(json!({"approvalId":"approval-1","status":"resumed","resumableActionStatus":"completed"}))))
@@ -3972,13 +4101,13 @@ mod tests {
         let requests = vec![
             GuiTransportRequest::Connect {
                 base_url: "http://127.0.0.1:8765".to_string(),
-                selected_session_id: Some("session-1".to_string()),
+                selected_session_id: None,
             },
             GuiTransportRequest::SelectProject {
                 project_id: "project-1".to_string(),
             },
             GuiTransportRequest::Hydrate {
-                selected_session_id: Some("session-1".to_string()),
+                selected_session_id: None,
             },
             GuiTransportRequest::DispatchOperation {
                 operation: GuiOperationRequest::SelectSession {
@@ -4611,6 +4740,12 @@ mod tests {
                 submit_status: Some("accepted".to_string()),
                 terminal_submission_rejection: None,
                 metadata: json!({"createdAt":"2026-06-18T00:00:00Z","model":"gpt-5.4-mini"}),
+                project_runtime: json!({"activeVersionId":"runtime-version-1","hookBindingCount":1}),
+                hook_overrides: json!({"onModelRequest":"binding-1"}),
+                subagents: json!({"activeSubagents":1}),
+                contracts: vec![json!({"contractId":"contract-1","status":"active"})],
+                resource_leases: vec![json!({"leaseId":"lease-1","status":"assigned"})],
+                recent_hook_failures: vec![json!({"evaluationId":"eval-1"})],
                 requirements_review: None,
             }),
             timeline: vec![
@@ -4931,7 +5066,7 @@ mod tests {
         };
         let controller = GuiControllerState {
             connection_state: GuiConnectionState::Streaming,
-            selected_session_id: Some("session-1".to_string()),
+            selected_session_id: None,
             pending_rehydrate: false,
             pending_reconnect: false,
             ..GuiControllerState::default()
@@ -4993,6 +5128,12 @@ mod tests {
         assert_eq!(view.workflow_memory.selected_detail.as_ref().and_then(|detail| detail.feedback_session_id.as_deref()), Some("session-1"));
         assert!(view.workflow_memory.feedback_actions.iter().any(|row| row.id.ends_with(":attempted")));
         assert!(view.workflow_memory.recent_events.iter().any(|row| row.title == "workflow_memory.helpful"));
+        assert!(view.controller_facts.iter().any(|fact| fact.label == "Runtime version" && fact.value == "runtime-version-1"));
+        assert!(view.controller_facts.iter().any(|fact| fact.label == "Hook overrides" && fact.value == "1"));
+        assert!(view.controller_facts.iter().any(|fact| fact.label == "Active subagents" && fact.value == "1"));
+        assert!(view.controller_facts.iter().any(|fact| fact.label == "Active contracts" && fact.value == "1"));
+        assert!(view.controller_facts.iter().any(|fact| fact.label == "Resource leases" && fact.value == "1"));
+        assert!(view.controller_facts.iter().any(|fact| fact.label == "Recent hook failures" && fact.value == "1"));
         assert!(view.controller_facts.iter().any(|fact| fact.label == "Selected session" && fact.value == "session-1"));
         assert_eq!(view.pending_request_count, 2);
 
@@ -5227,7 +5368,7 @@ mod tests {
             ..RuntimeProjection::default()
         };
         let mut controller = GuiControllerState {
-            selected_session_id: Some("session-1".to_string()),
+            selected_session_id: None,
             ..GuiControllerState::default()
         };
 
@@ -6033,6 +6174,211 @@ mod tests {
                     ..
                 }
             } if value["instructionText"] == "inline"
+        )));
+    }
+
+    #[tokio::test]
+    async fn transport_dispatches_project_runtime_config_operations_as_typed_rinf_intents() {
+        let base_url = start_transport_test_server().await;
+        let transport = GuiTransportHandle::spawn();
+        let _ = transport
+            .send(packet(
+                "connect-runtime-config",
+                GuiTransportRequest::Connect {
+                    base_url,
+                    selected_session_id: None,
+                },
+            ))
+            .await;
+        let _ = transport
+            .send(packet(
+                "select-runtime-project",
+                GuiTransportRequest::SelectProject {
+                    project_id: "transport-project".to_string(),
+                },
+            ))
+            .await;
+
+        let validate = transport
+            .send(packet(
+                "runtime-config-validate",
+                GuiTransportRequest::ValidateProjectRuntimeConfig {
+                    project_key: "transport-project".to_string(),
+                    source_text: "role_definition(id='designer')".to_string(),
+                },
+            ))
+            .await;
+        assert!(validate.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult {
+                result: GuiOperationResult {
+                    operation: robdex_agent_runtime_projection::GuiOperationName::ValidateProjectRuntimeConfig,
+                    outcome: GuiOperationOutcome::DirectValue { value },
+                    ..
+                },
+            } if value["valid"] == true
+        )));
+
+        for (packet_id, intent) in [
+            (
+                "runtime-config-import",
+                GuiTransportRequest::ImportProjectRuntimeConfig {
+                    project_key: "transport-project".to_string(),
+                    source_text: "role_definition(id='designer')".to_string(),
+                    author: "gui".to_string(),
+                },
+            ),
+            (
+                "runtime-config-activate",
+                GuiTransportRequest::ActivateProjectRuntimeConfig {
+                    project_key: "transport-project".to_string(),
+                    version_id: "runtime-version-2".to_string(),
+                },
+            ),
+            (
+                "runtime-config-archive",
+                GuiTransportRequest::ArchiveProjectRuntimeConfig {
+                    project_key: "transport-project".to_string(),
+                    version_id: "runtime-version-2".to_string(),
+                },
+            ),
+        ] {
+            let outputs = transport.send(packet(packet_id, intent)).await;
+            assert!(outputs.iter().any(|packet| matches!(
+                &packet.output,
+                GuiTransportOutput::OperationResult {
+                    result: GuiOperationResult {
+                        outcome: GuiOperationOutcome::ProjectionUpdated { .. },
+                        ..
+                    },
+                }
+            )));
+        }
+
+        let export = transport
+            .send(packet(
+                "runtime-config-export",
+                GuiTransportRequest::ExportProjectRuntimeConfig {
+                    project_key: "transport-project".to_string(),
+                    version_id: "runtime-version-2".to_string(),
+                },
+            ))
+            .await;
+        assert!(export.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult {
+                result: GuiOperationResult {
+                    operation: robdex_agent_runtime_projection::GuiOperationName::ExportProjectRuntimeConfig,
+                    outcome: GuiOperationOutcome::DirectValue { value },
+                    ..
+                },
+            } if value["sourceHash"] == "hash-runtime-2"
+        )));
+
+        let evaluations = transport
+            .send(packet(
+                "runtime-config-evaluations",
+                GuiTransportRequest::InspectProjectRuntimeHookEvaluations {
+                    project_key: "transport-project".to_string(),
+                    version_id: "runtime-version-2".to_string(),
+                },
+            ))
+            .await;
+        assert!(evaluations.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult {
+                result: GuiOperationResult {
+                    operation: robdex_agent_runtime_projection::GuiOperationName::InspectProjectRuntimeHookEvaluations,
+                    outcome: GuiOperationOutcome::DirectValue { value },
+                    ..
+                },
+            } if value.as_array().is_some_and(|rows| rows.iter().any(|row| row["evaluationId"] == "eval-runtime-2"))
+        )));
+    }
+
+    #[tokio::test]
+    async fn transport_preserves_requirements_review_status_packets_and_unified_reviewer_steer() {
+        let base_url = start_transport_test_server().await;
+        let transport = GuiTransportHandle::spawn();
+        let connected = transport
+            .send(packet(
+                "connect-requirements",
+                GuiTransportRequest::Connect {
+                    base_url,
+                    selected_session_id: None,
+                },
+            ))
+            .await;
+        assert!(connected.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::WorkbenchView { view_model }
+                if view_model.shell.operation_surfaces.iter().any(|surface| {
+                    surface.surface_id == "requirementsReview"
+                        && surface.rows.iter().any(|row| row.label == "Review status" && row.value == "In review")
+                        && surface.actions.iter().any(|action| action.kind == "requirementsPackets")
+                        && surface.actions.iter().any(|action| action.kind == "requirementsReviewerInput")
+                })
+        )));
+
+        let status = transport
+            .send(packet(
+                "requirements-status",
+                GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::ShowRequirementsStatus {
+                        session_id: "session-1".to_string(),
+                    },
+                },
+            ))
+            .await;
+        assert!(status.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult {
+                result: GuiOperationResult {
+                    outcome: GuiOperationOutcome::DirectValue { value },
+                    ..
+                },
+            } if value.pointer("/requirements/active").and_then(Value::as_bool) == Some(true)
+        )));
+
+        let packets = transport
+            .send(packet(
+                "requirements-packets",
+                GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::ListRequirementsPackets {
+                        session_id: "session-1".to_string(),
+                    },
+                },
+            ))
+            .await;
+        assert!(packets.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult {
+                result: GuiOperationResult {
+                    outcome: GuiOperationOutcome::DirectValue { value },
+                    ..
+                },
+            } if value.pointer("/packets/0/packetKind").and_then(Value::as_str) == Some("claim")
+        )));
+
+        let reviewer_input = transport
+            .send(packet(
+                "requirements-reviewer-steer",
+                GuiTransportRequest::DispatchOperation {
+                    operation: GuiOperationRequest::SubmitRequirementsReviewerInput {
+                        source_session_id: "session-1".to_string(),
+                        message: "route this clarification through the unified send-or-steer path".to_string(),
+                    },
+                },
+            ))
+            .await;
+        assert!(reviewer_input.iter().any(|packet| matches!(
+            &packet.output,
+            GuiTransportOutput::OperationResult {
+                result: GuiOperationResult {
+                    outcome: GuiOperationOutcome::ProjectionUpdated { .. },
+                    ..
+                },
+            }
         )));
     }
 

@@ -13,6 +13,7 @@ pub const ACTIVE_ACTIONS: &[&str] = &[
     "command_registry.request",
     "command_registry.decide",
     "command_registry.apply",
+    "project_runtime.request_change",
 ];
 pub const RESERVED_ACTIONS: &[&str] = &[
     "agent.spawn.<role>",

@@ -9,6 +9,7 @@ pub mod gui_backend;
 pub mod gui_sync;
 pub mod god_mode;
 pub mod lifecycle;
+pub mod lifecycle_hooks;
 pub mod model;
 pub mod model_input;
 pub mod operations;

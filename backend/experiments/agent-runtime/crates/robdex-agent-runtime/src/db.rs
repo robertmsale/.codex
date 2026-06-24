@@ -584,10 +584,32 @@ pub async fn export_role(pool: &PgPool, role_id: &str) -> Result<Value> {
 pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot, project_key: Option<&str>, workdir: &str, worktree_root: Option<&str>, title: Option<&str>, name: Option<&str>) -> Result<Uuid> {
     let id = Uuid::new_v4();
     let snapshot_value = snapshot_to_value(role_snapshot)?;
+    let active_runtime = if let Some(project_key) = project_key {
+        sqlx::query(
+            r#"
+            SELECT v.id,
+                   COALESCE(jsonb_object_agg(h.lifecycle_hook, h.id) FILTER (WHERE h.id IS NOT NULL), '{}'::jsonb) AS bindings
+            FROM project_runtime_config_versions v
+            LEFT JOIN project_runtime_hook_bindings h ON h.config_version_id=v.id AND h.status='active'
+            WHERE v.project_key=$1 AND v.activation_status='active'
+            GROUP BY v.id, v.activated_at, v.created_at
+            ORDER BY v.activated_at DESC NULLS LAST, v.created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(project_key)
+        .fetch_optional(pool)
+        .await?
+        .map(|row| (row.get::<Uuid, _>("id"), row.get::<Value, _>("bindings")))
+    } else {
+        None
+    };
+    let active_runtime_version_id = active_runtime.as_ref().map(|(id, _)| *id);
+    let active_hook_bindings = active_runtime.as_ref().map(|(_, bindings)| bindings.clone()).unwrap_or_else(|| json!({}));
     sqlx::query(
         r#"
-        INSERT INTO sessions (id, status, role_id, role_version, role_snapshot, project_key, workdir, worktree_root, title, name, tracked, root_session_id, fork_depth)
-        VALUES ($1, 'open', $2, $3, $4, $5, $6, $7, $8, $9, true, $1, 0)
+        INSERT INTO sessions (id, status, role_id, role_version, role_snapshot, project_key, workdir, worktree_root, title, name, tracked, root_session_id, fork_depth, active_project_runtime_version_id, active_hook_bindings)
+        VALUES ($1, 'open', $2, $3, $4, $5, $6, $7, $8, $9, true, $1, 0, $10, $11)
         "#,
     )
         .bind(id)
@@ -599,6 +621,8 @@ pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot, project_ke
         .bind(worktree_root)
         .bind(title)
         .bind(name)
+        .bind(active_runtime_version_id)
+        .bind(&active_hook_bindings)
         .execute(pool)
         .await?;
     append_event(
@@ -620,6 +644,8 @@ pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot, project_ke
             "worktreeRoot": worktree_root,
             "title": title,
             "name": name,
+            "activeProjectRuntimeVersionId": active_runtime_version_id,
+            "activeHookBindings": active_hook_bindings,
         }),
     )
     .await?;
@@ -1171,10 +1197,24 @@ pub async fn show_session(pool: &PgPool, session_id: Uuid) -> Result<Value> {
         .bind(session_id).fetch_one(pool).await?.get("count");
     let turns: i64 = sqlx::query("SELECT COUNT(*) AS count FROM turns WHERE session_id = $1")
         .bind(session_id).fetch_one(pool).await?.get("count");
+    let runtime_attribution: (Option<Uuid>, Value) = sqlx::query_as("SELECT active_project_runtime_version_id, active_hook_bindings FROM sessions WHERE id=$1")
+        .bind(session_id)
+        .fetch_one(pool)
+        .await?;
+    let active_contracts: i64 = sqlx::query("SELECT COUNT(*) AS count FROM generic_contracts WHERE session_id=$1 AND status='active'")
+        .bind(session_id).fetch_one(pool).await?.get("count");
+    let resource_leases: i64 = sqlx::query("SELECT COUNT(*) AS count FROM resource_leases WHERE owning_session_id=$1 AND status IN ('reserved','assigned')")
+        .bind(session_id).fetch_one(pool).await?.get("count");
+    let recent_hook_failures: i64 = sqlx::query("SELECT COUNT(*) AS count FROM hook_evaluations WHERE session_id=$1 AND validation_status='invalid' AND created_at > now() - interval '1 day'")
+        .bind(session_id).fetch_one(pool).await?.get("count");
+    let subagent_projection = crate::lifecycle_hooks::parent_subagent_projection(pool, session_id).await?;
     Ok(json!({
         "session": session,
         "role": {"id": role.id, "version": role.version, "displayName": role.display_name},
         "lifecycle": {"status": session.status, "tracked": session.tracked, "closedAt": session.closed_at, "archivedAt": session.archived_at},
+        "projectRuntime": {"activeVersionId": runtime_attribution.0, "activeHookBindings": runtime_attribution.1},
+        "workflow": {"activeContracts": active_contracts, "activeResourceLeases": resource_leases, "recentHookFailures": recent_hook_failures},
+        "subagents": subagent_projection,
         "pendingApprovals": pending_approvals,
         "pausedActions": paused_actions,
         "managedProcesses": managed_processes,
@@ -1200,9 +1240,10 @@ pub async fn archive_session(pool: &PgPool, session_id: Uuid) -> Result<()> {
     .await?
     .rows_affected();
     tx.commit().await?;
+    let lifecycle_cleanup = crate::lifecycle_hooks::cleanup_session_lifecycle_resources(pool, session_id, "session archived").await?;
     crate::god_mode::revoke_active(pool, session_id, "runtime", "session archived").await?;
     crate::requirements::close_nested_reviewers(pool, session_id).await?;
-    append_event(pool, session_id, None, "session", Some(session_id), "session.archived", Some("archived"), json!({"tracked": false})).await?;
+    append_event(pool, session_id, None, "session", Some(session_id), "session.archived", Some("archived"), json!({"tracked": false, "lifecycleCleanup": lifecycle_cleanup})).await?;
     if abandoned > 0 {
         append_event(pool, session_id, None, "submitted_input", None, "submitted_input.abandoned", Some("abandoned"), json!({"count": abandoned, "reason": "session archived"})).await?;
     }
@@ -1281,9 +1322,10 @@ pub async fn close_session(pool: &PgPool, session_id: Uuid, reason: &str, live_t
     .await?
     .rows_affected();
     tx.commit().await?;
+    let lifecycle_cleanup = crate::lifecycle_hooks::cleanup_session_lifecycle_resources(pool, session_id, reason).await?;
     crate::god_mode::revoke_active(pool, session_id, "runtime", "session closed").await?;
     crate::requirements::close_nested_reviewers(pool, session_id).await?;
-    append_event(pool, session_id, None, "session", Some(session_id), "session.closed", Some("closed"), json!({"reason": reason, "liveProcessesTerminated": live_terminated, "processRowsMarked": db_processes})).await?;
+    append_event(pool, session_id, None, "session", Some(session_id), "session.closed", Some("closed"), json!({"reason": reason, "liveProcessesTerminated": live_terminated, "processRowsMarked": db_processes, "lifecycleCleanup": lifecycle_cleanup})).await?;
     if abandoned > 0 {
         append_event(pool, session_id, None, "submitted_input", None, "submitted_input.abandoned", Some("abandoned"), json!({"count": abandoned, "reason": "session closed"})).await?;
     }
