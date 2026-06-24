@@ -3280,31 +3280,18 @@ fn planner_turn_output_schema() -> Value {
 }
 
 pub(crate) fn requirements_worker_claim_schema(set: &RequirementSetState) -> Value {
-    requirements_claim_schema_for_requirements(
-        set.requirements
-            .iter()
-            .filter(|requirement| requirement_is_unresolved(set, requirement.key.as_str())),
-    )
-}
-
-fn requirement_is_unresolved(set: &RequirementSetState, key: &str) -> bool {
-    !matches!(
-        set.review_progress.get(key).map(|progress| progress.status.as_str()),
-        Some("passed") | Some("blocked") | Some("waived")
-    )
+    requirements_claim_schema_for_requirements(set.requirements.iter())
 }
 
 fn requirements_claim_schema_for_requirements<'a>(
     requirements: impl Iterator<Item = &'a RequirementState>,
 ) -> Value {
     let mut requirement_properties = serde_json::Map::new();
-    let mut requirement_required = Vec::new();
     for requirement in requirements {
         let key = requirement.key.trim();
         if key.is_empty() {
             continue;
         }
-        requirement_required.push(key.to_string());
         let default_description = format!("Requirement: {}", requirement.statement);
         requirement_properties.insert(
             key.to_string(),
@@ -3327,11 +3314,24 @@ fn requirements_claim_schema_for_requirements<'a>(
     properties.insert(
         "requirements".to_string(),
         json!({
-            "type": ["object", "null"],
+            "anyOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "notFinished": { "type": "boolean", "const": true }
+                    },
+                    "required": ["notFinished"],
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "properties": requirement_properties,
+                    "required": [],
+                    "additionalProperties": false
+                },
+                { "type": "null" }
+            ],
             "description": "Use null for mid-turn commentary. Use the object only for an end-of-turn Requirements claim packet.",
-            "properties": requirement_properties,
-            "required": requirement_required,
-            "additionalProperties": false
         }),
     );
     json!({
@@ -3342,8 +3342,16 @@ fn requirements_claim_schema_for_requirements<'a>(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn requirements_verdict_schema(set: &RequirementSetState) -> Value {
-    let (properties, required) = requirements_verdict_properties(set);
+    requirements_verdict_schema_for_scope(set, set.requirements.iter().map(|requirement| requirement.key.as_str()))
+}
+
+pub(crate) fn requirements_verdict_schema_for_scope<'a>(
+    set: &RequirementSetState,
+    scope_keys: impl IntoIterator<Item = &'a str>,
+) -> Value {
+    let (properties, required) = requirements_verdict_properties(set, scope_keys);
     json!({
         "type": "object",
         "properties": {
@@ -3364,12 +3372,20 @@ pub(crate) fn requirements_verdict_schema(set: &RequirementSetState) -> Value {
     })
 }
 
-fn requirements_verdict_properties(set: &RequirementSetState) -> (serde_json::Map<String, Value>, Vec<String>) {
+fn requirements_verdict_properties<'a>(
+    set: &RequirementSetState,
+    scope_keys: impl IntoIterator<Item = &'a str>,
+) -> (serde_json::Map<String, Value>, Vec<String>) {
     let mut properties = serde_json::Map::new();
     let mut required = Vec::new();
+    let scope = scope_keys
+        .into_iter()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .collect::<std::collections::BTreeSet<_>>();
     for requirement in &set.requirements {
         let key = requirement.key.trim();
-        if key.is_empty() {
+        if key.is_empty() || !scope.contains(key) {
             continue;
         }
         required.push(key.to_string());
@@ -3396,7 +3412,7 @@ fn requirements_verdict_properties(set: &RequirementSetState) -> (serde_json::Ma
         "overallVerdict".to_string(),
         json!({
             "type": "string",
-            "enum": ["pass", "fail", "acceptedBlocked", "rejectedBlocked", "needsHumanWaiver", "waiverAccepted"],
+            "enum": ["notYet", "pass", "fail", "acceptedBlocked", "rejectedBlocked", "needsHumanWaiver", "waiverAccepted"],
             "description": "Overall gate verdict. Blocked is not success; only acceptedBlocked can leave the source agent, and only when evidence proves a true external dependency. Use waiverAccepted only after an explicit human/owner waiver has been accepted."
         }),
     );
@@ -3432,26 +3448,82 @@ fn canonical_requirement_schema_description(requirement: &RequirementState) -> S
 }
 
 fn claim_property_schema(description: &str) -> Value {
-    json!({
+    let typed_evidence = json!({
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": ["changedFiles", "testsRun", "sourceInspection", "artifact", "screenshot", "commandOutput", "migration", "searchProof"]
+            },
+            "value": { "type": "string" }
+        },
+        "required": ["type", "value"],
+        "additionalProperties": false
+    });
+    let evidence_array = json!({
+        "type": "array",
+        "items": typed_evidence,
+        "minItems": 1
+    });
+    let satisfied_claim = json!({
         "type": "object",
         "description": description,
         "properties": {
-            "claim": {
+            "kind": {
                 "type": "string",
-                "enum": ["satisfied", "notSatisfied", "blocked", "notApplicable"]
+                "enum": ["satisfied"]
             },
-            "justification": { "type": "string" },
-            "evidence": {
-                "type": "array",
-                "items": { "type": "string" }
-            },
-            "risk": {
-                "type": "string",
-                "enum": ["none", "low", "medium", "high", "unknown"]
-            }
+            "summary": { "type": "string" },
+            "evidence": evidence_array.clone()
         },
-        "required": ["claim", "justification", "evidence", "risk"],
+        "required": ["kind", "summary", "evidence"],
         "additionalProperties": false
+    });
+    let blocked_claim = json!({
+        "type": "object",
+        "description": description,
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["blocked"]
+            },
+            "summary": { "type": "string" },
+            "blocker": { "type": "string" },
+            "ownerDecisionNeeded": { "type": "string" },
+            "evidence": evidence_array.clone()
+        },
+        "required": ["kind", "summary", "blocker", "ownerDecisionNeeded", "evidence"],
+        "additionalProperties": false
+    });
+    let not_applicable_claim = json!({
+        "type": "object",
+        "description": description,
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["notApplicable"]
+            },
+            "summary": { "type": "string" },
+            "evidence": evidence_array
+        },
+        "required": ["kind", "summary", "evidence"],
+        "additionalProperties": false
+    });
+    json!({
+        "description": description,
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "notFinished": { "type": "boolean", "const": true }
+                },
+                "required": ["notFinished"],
+                "additionalProperties": false
+            },
+            satisfied_claim,
+            blocked_claim,
+            not_applicable_claim
+        ]
     })
 }
 
@@ -3466,18 +3538,37 @@ fn verdict_property_schema(description: &str, allow_still_passing: bool) -> Valu
             },
             "reason": { "type": "string" },
             "evidenceAssessment": { "type": "string" },
-            "requiredCorrection": { "type": "string" }
+            "requiredCorrection": { "type": "string" },
+            "risk": {
+                "type": "string",
+                "enum": ["none", "low", "medium", "high", "unknown"]
+            }
         },
-        "required": ["verdict", "reason", "evidenceAssessment", "requiredCorrection"],
+        "required": ["verdict", "reason", "evidenceAssessment", "requiredCorrection", "risk"],
         "additionalProperties": false
     });
+    let not_yet = json!({
+                "type": "object",
+                "properties": {
+                    "verdict": {
+                        "type": "string",
+                        "enum": ["notYet"]
+                    }
+                },
+                "required": ["verdict"],
+                "additionalProperties": false
+    });
     if !allow_still_passing {
-        return full_verdict;
+        return json!({
+            "description": description,
+            "anyOf": [full_verdict, not_yet]
+        });
     }
     json!({
         "description": format!("{description} Previously passed requirements may use {{\"verdict\":\"stillPassing\"}} only after rechecking that the same pass remains valid."),
         "anyOf": [
             full_verdict,
+            not_yet,
             {
                 "type": "object",
                 "properties": {
@@ -5669,14 +5760,13 @@ pub async fn orchestrator_requirements_status(
             Vec::new()
         };
         let review = agent.requirement_review.clone();
-        let latest_verdict_packet = review
-            .as_ref()
-            .and_then(|binding| binding.latest_verdict_packet.clone());
         let mut passed_count = 0_u32;
         let mut failed_count = 0_u32;
         let mut blocked_count = 0_u32;
         let mut waiver_required_count = 0_u32;
         let mut waiver_accepted_count = 0_u32;
+        let mut pending_count = 0_u32;
+        let mut not_yet_count = 0_u32;
         let mut unknown_count = 0_u32;
         let verdicts = if active_requirements.is_empty() {
             Vec::new()
@@ -5684,38 +5774,44 @@ pub async fn orchestrator_requirements_status(
             active_requirements
                     .iter()
                     .map(|requirement| {
-                        let verdict = latest_verdict_packet
+                        let progress_status = requirements
                             .as_ref()
+                            .and_then(|set| set.review_progress.get(requirement.key.as_str()))
+                            .map(|progress| progress.status.as_str());
+                        match progress_status {
+                            Some("passed") => passed_count += 1,
+                            Some("failed") => failed_count += 1,
+                            Some("blocked") => blocked_count += 1,
+                            Some("waiverRequired") => waiver_required_count += 1,
+                            Some("waived") => waiver_accepted_count += 1,
+                            Some("notYet") => not_yet_count += 1,
+                            None => pending_count += 1,
+                            _ => unknown_count += 1,
+                        }
+                        let latest_verdict_packet = review
+                            .as_ref()
+                            .and_then(|binding| binding.latest_verdict_packet.as_ref());
+                        let verdict = latest_verdict_packet
                             .and_then(|packet| packet.get(&requirement.key))
                             .and_then(|item| item.get("verdict"))
                             .and_then(Value::as_str)
                             .map(str::to_string);
-                        match verdict.as_deref() {
-                            Some("pass") => passed_count += 1,
-                            Some("fail") | Some("rejectedBlocked") => failed_count += 1,
-                            Some("acceptedBlocked") => blocked_count += 1,
-                            Some("waiverRequired") => waiver_required_count += 1,
-                            Some("waiverAccepted") => waiver_accepted_count += 1,
-                            _ => unknown_count += 1,
-                        }
                         json!({
                             "key": requirement.key,
                             "statement": requirement.statement,
                             "severity": requirement.severity,
                             "verificationMethod": requirement.verification_method,
                             "verdict": verdict,
+                            "progressStatus": progress_status,
                             "reason": latest_verdict_packet
-                                .as_ref()
                                 .and_then(|packet| packet.get(&requirement.key))
                                 .and_then(|item| item.get("reason"))
                                 .and_then(Value::as_str),
                             "evidenceAssessment": latest_verdict_packet
-                                .as_ref()
                                 .and_then(|packet| packet.get(&requirement.key))
                                 .and_then(|item| item.get("evidenceAssessment"))
                                 .and_then(Value::as_str),
                             "requiredCorrection": latest_verdict_packet
-                                .as_ref()
                                 .and_then(|packet| packet.get(&requirement.key))
                                 .and_then(|item| item.get("requiredCorrection"))
                                 .and_then(Value::as_str),
@@ -5745,6 +5841,8 @@ pub async fn orchestrator_requirements_status(
                 "blockedCount": blocked_count,
                 "waiverRequiredCount": waiver_required_count,
                 "waiverAcceptedCount": waiver_accepted_count,
+                "pendingCount": pending_count,
+                "notYetCount": not_yet_count,
                 "unknownCount": unknown_count,
                 "requirements": stored_requirements,
                 "verdicts": verdicts,
@@ -6368,13 +6466,14 @@ pub(crate) fn requirements_review_prompt(
     _source_thread_id: &str,
     _turn_id: &str,
     claim_text: &str,
+    review_scope: &[String],
 ) -> String {
     let mut prompt = format!("Review subject: {source_label}\n\n");
     prompt.push_str("Latest source claim packet:\n");
     prompt.push_str(&compact_source_claim_packet(claim_text));
-    prompt.push_str("\n\nRequirement state:\n");
-    prompt.push_str(&compact_requirement_review_state(set));
-    prompt.push_str("\n\nReview all canonical requirements from the active structured output schema. Use `stillPassing` only where the schema allows it and the requirement still passes.");
+    prompt.push_str("\n\nReview scope:\n");
+    prompt.push_str(&compact_requirement_review_scope(set, review_scope));
+    prompt.push_str("\n\nReview only the scoped requirement keys in the active structured output schema. If a scoped key was previously passed and the schema offers `stillPassing`, use that shortcut only after confirming the pass still holds.");
     prompt
 }
 
@@ -6389,51 +6488,33 @@ fn compact_source_claim_packet(claim_text: &str) -> String {
         .unwrap_or_else(|| trimmed.to_string())
 }
 
-fn compact_requirement_review_state(set: &RequirementSetState) -> String {
-    let all_keys = set
-        .requirements
+fn compact_requirement_review_scope(set: &RequirementSetState, review_scope: &[String]) -> String {
+    let scope = review_scope
         .iter()
-        .map(|requirement| requirement.key.as_str())
-        .filter(|key| !key.trim().is_empty())
-        .collect::<Vec<_>>();
-    let previously_passed = all_keys
-        .iter()
-        .copied()
-        .filter(|key| {
-            set.review_progress
-                .get(*key)
-                .map(|progress| progress.status == "passed")
-                .unwrap_or(false)
-        })
-        .collect::<Vec<_>>();
-    let currently_unresolved = all_keys
-        .iter()
-        .copied()
-        .filter(|key| {
-            !set.review_progress
-                .get(*key)
-                .map(|progress| progress.status == "passed")
-                .unwrap_or(false)
-        })
-        .collect::<Vec<_>>();
-    let relevant_progress = set
-        .review_progress
-        .iter()
-        .filter(|(_, progress)| progress.status != "passed")
-        .map(|(key, progress)| {
-            if let Some(updated_at) = progress.updated_at {
-                format!("{key}:{}@{updated_at}", progress.status)
-            } else {
-                format!("{key}:{}", progress.status)
-            }
-        })
-        .collect::<Vec<_>>();
-    format!(
-        "* previouslyPassed: [{}]\n* currentlyUnresolved: [{}]\n* previousFailuresBlockersWaivers: [{}]",
-        previously_passed.join(", "),
-        currently_unresolved.join(", "),
-        relevant_progress.join(", ")
-    )
+        .map(|key| key.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut lines = Vec::new();
+    for requirement in &set.requirements {
+        if !scope.contains(requirement.key.as_str()) {
+            continue;
+        }
+        let prior = set
+            .review_progress
+            .get(requirement.key.as_str())
+            .map(|progress| progress.status.as_str())
+            .unwrap_or("pending");
+        lines.push(format!(
+            "* `{}` priorStatus={} — {}",
+            requirement.key,
+            prior,
+            requirement.statement.trim()
+        ));
+    }
+    if lines.is_empty() {
+        "(no reviewable requirement claims in source packet)".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 pub(crate) async fn record_requirement_packet(
@@ -6528,19 +6609,23 @@ pub(crate) async fn mark_requirements_review_verdict(
         if let Some(requirements) = source.requirements.as_mut() {
             update_requirement_review_progress(requirements, &verdict_payload);
         }
-        let is_terminal = matches!(status.as_str(), "passed" | "waiverAccepted");
+        let is_terminal = source
+            .requirements
+            .as_ref()
+            .map(requirement_set_all_passed_or_waived)
+            .unwrap_or(matches!(status.as_str(), "passed" | "waiverAccepted"));
         if is_terminal
             && let Some(requirements) = source.requirements.as_mut()
         {
             requirements.active = false;
         }
-        if status == "passed" {
+        if status == "passed" && is_terminal {
             source.requirement_review = None;
             if let Some(reviewer) = project.agents.get_mut(reviewer_thread_id) {
                 reviewer.parent_thread_id = None;
                 reviewer.hidden_from_peer_list = true;
             }
-        } else if status == "waiverAccepted" {
+        } else if status == "waiverAccepted" && is_terminal {
             let latest_claim_packet = source
                 .requirement_review
                 .as_ref()
@@ -6604,8 +6689,10 @@ fn update_requirement_review_progress(set: &mut RequirementSetState, verdict_pay
             "pass" => "passed",
             "stillPassing" if requirement_review_previously_passed(set, requirement.key.as_str()) => "passed",
             "stillPassing" => "failed",
+            "notYet" => "notYet",
             "fail" | "rejectedBlocked" => "failed",
-            "acceptedBlocked" | "waiverRequired" => "blocked",
+            "acceptedBlocked" => "blocked",
+            "waiverRequired" => "waiverRequired",
             "waiverAccepted" => "waived",
             _ => "unresolved",
         };
@@ -6617,6 +6704,18 @@ fn update_requirement_review_progress(set: &mut RequirementSetState, verdict_pay
             },
         );
     }
+}
+
+fn requirement_set_all_passed_or_waived(set: &RequirementSetState) -> bool {
+    !set.requirements.is_empty()
+        && set.requirements.iter().all(|requirement| {
+            matches!(
+                set.review_progress
+                    .get(requirement.key.as_str())
+                    .map(|progress| progress.status.as_str()),
+                Some("passed" | "waived")
+            )
+        })
 }
 
 fn verdict_has_invalid_still_passing(set: &RequirementSetState, verdict_payload: &Value) -> bool {
@@ -6635,6 +6734,7 @@ fn verdict_has_invalid_still_passing(set: &RequirementSetState, verdict_payload:
 
 fn requirement_status_from_verdict(verdict_payload: &Value) -> String {
     match verdict_payload.get("overallVerdict").and_then(Value::as_str) {
+        Some("notYet") => "notYet",
         Some("pass") => "passed",
         Some("fail") => "failed",
         Some("acceptedBlocked") => "blocked",
@@ -6850,9 +6950,31 @@ pub async fn orchestrator_warm_handoff(
             new_agent_state.pull_request_number = recipient_state.pull_request_number;
             new_agent_state.blocked_reason = recipient_state.blocked_reason.clone();
             new_agent_state.unblock_when = recipient_state.unblock_when.clone();
+            new_agent_state.requirements = recipient_state.requirements.clone();
+            new_agent_state.requirement_packets = recipient_state.requirement_packets.clone();
+            new_agent_state.requirement_review = recipient_state.requirement_review.clone().map(|mut review| {
+                review.source_thread_id = replacement.id.clone();
+                review.updated_at = unix_now();
+                review
+            });
             for (key, value) in &recipient_state.extras {
                 new_agent_state.extras.insert(key.clone(), value.clone());
             }
+        }
+        if let Some(review) = recipient_state.requirement_review.as_ref()
+            && let Some(reviewer) = project.agents.get_mut(&review.reviewer_thread_id)
+        {
+            reviewer.parent_thread_id = Some(replacement.id.clone());
+            reviewer.hidden_from_peer_list = true;
+        }
+        if recipient_state
+            .requirement_review
+            .as_ref()
+            .is_some_and(|review| review.status != "passed" && review.status != "waiverAccepted")
+            && let Some(old_agent_state) = project.agents.get_mut(&recipient.thread_id)
+        {
+            old_agent_state.requirement_review = None;
+            old_agent_state.requirements = None;
         }
         old_was_project_orchestrator =
             project.orchestrator_thread_id.as_deref() == Some(recipient.thread_id.as_str());
@@ -7669,13 +7791,17 @@ mod tests {
             &vec![json!("summary"), json!("requirements")]
         );
         let requirements_schema = &schema["properties"]["requirements"];
-        assert_eq!(requirements_schema["type"], json!(["object", "null"]));
-        assert_eq!(
-            requirements_schema["required"],
-            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
-        );
-        assert!(requirements_schema["properties"].get("nativeGuiIsSourceOfTruth").is_some());
-        assert!(requirements_schema["properties"].get("noInventedWebsocketEventShapes").is_some());
+        let alternatives = requirements_schema["anyOf"].as_array().expect("requirements anyOf");
+        assert!(alternatives.iter().any(|item| {
+            item["properties"].get("notFinished").is_some()
+                && item["required"] == json!(["notFinished"])
+        }));
+        let sparse = alternatives
+            .iter()
+            .find(|item| item["required"] == json!([]))
+            .expect("sparse requirements object");
+        assert!(sparse["properties"].get("nativeGuiIsSourceOfTruth").is_some());
+        assert!(sparse["properties"].get("noInventedWebsocketEventShapes").is_some());
         assert!(schema["properties"].get("finalDisposition").is_none());
     }
 
@@ -7728,9 +7854,14 @@ mod tests {
         );
 
         let worker_schema = requirements_worker_claim_schema(&set);
-        let worker_requirements = &worker_schema["properties"]["requirements"];
-        assert_eq!(worker_requirements["required"], json!(["noInventedWebsocketEventShapes"]));
-        assert!(worker_requirements["properties"].get("nativeGuiIsSourceOfTruth").is_none());
+        let worker_requirements = worker_schema["properties"]["requirements"]["anyOf"]
+            .as_array()
+            .expect("worker alternatives")
+            .iter()
+            .find(|item| item["required"] == json!([]))
+            .expect("sparse worker requirements object");
+        assert_eq!(worker_requirements["required"], json!([]));
+        assert!(worker_requirements["properties"].get("nativeGuiIsSourceOfTruth").is_some());
         assert!(worker_requirements["properties"].get("noInventedWebsocketEventShapes").is_some());
 
         let reviewer_schema = requirements_verdict_schema(&set);
@@ -7739,6 +7870,80 @@ mod tests {
             .expect("reviewer required");
         assert!(reviewer_required.iter().any(|value| value.as_str() == Some("nativeGuiIsSourceOfTruth")));
         assert!(reviewer_required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
+    }
+
+    #[test]
+    fn worker_claim_schema_accepts_sparse_claims_and_cheap_not_finished_shortcuts() {
+        let schema = requirements_worker_claim_schema(&sample_requirement_set());
+        let alternatives = schema["properties"]["requirements"]
+            .get("anyOf")
+            .and_then(Value::as_array)
+            .expect("requirements anyOf");
+        let top_not_finished = alternatives
+            .iter()
+            .find(|item| item["required"] == json!(["notFinished"]))
+            .expect("whole packet notFinished shortcut");
+        assert_eq!(top_not_finished["additionalProperties"], json!(false));
+
+        let sparse = alternatives
+            .iter()
+            .find(|item| item["required"] == json!([]))
+            .expect("sparse object variant");
+        assert_eq!(sparse["additionalProperties"], json!(false));
+        assert_eq!(sparse["required"], json!([]));
+        let native = &sparse["properties"]["nativeGuiIsSourceOfTruth"];
+        let per_key_variants = native["anyOf"].as_array().expect("per-key anyOf");
+        assert_eq!(per_key_variants.len(), 4);
+        assert!(per_key_variants.iter().any(|item| item["required"] == json!(["notFinished"])));
+        let satisfied = per_key_variants
+            .iter()
+            .find(|item| item["required"] == json!(["kind", "summary", "evidence"]))
+            .expect("satisfied/notApplicable shape");
+        assert_eq!(
+            satisfied["properties"]["kind"]["enum"],
+            json!(["satisfied"])
+        );
+        assert_eq!(satisfied["properties"]["evidence"]["minItems"], json!(1));
+        assert_eq!(
+            satisfied["properties"]["evidence"]["items"]["properties"]["type"]["enum"],
+            json!(["changedFiles", "testsRun", "sourceInspection", "artifact", "screenshot", "commandOutput", "migration", "searchProof"])
+        );
+        assert_eq!(
+            satisfied["properties"]["evidence"]["items"]["required"],
+            json!(["type", "value"])
+        );
+        let blocked = per_key_variants
+            .iter()
+            .find(|item| item["required"] == json!(["kind", "summary", "blocker", "ownerDecisionNeeded", "evidence"]))
+            .expect("blocked variant");
+        assert_eq!(blocked["properties"]["kind"]["enum"], json!(["blocked"]));
+        assert!(per_key_variants.iter().any(|item| {
+            item["required"] == json!(["kind", "summary", "evidence"])
+                && item["properties"]["kind"]["enum"] == json!(["notApplicable"])
+        }));
+    }
+
+    #[test]
+    fn scoped_reviewer_schema_requires_only_current_review_scope() {
+        let mut set = sample_requirement_set();
+        set.review_progress.insert(
+            "nativeGuiIsSourceOfTruth".to_string(),
+            RequirementReviewProgressState {
+                status: "passed".to_string(),
+                updated_at: Some(100),
+            },
+        );
+        let schema = requirements_verdict_schema_for_scope(
+            &set,
+            ["noInventedWebsocketEventShapes"].iter().copied(),
+        );
+        let requirements_schema = &schema["properties"]["requirements"];
+        assert_eq!(
+            requirements_schema["required"],
+            json!(["noInventedWebsocketEventShapes", "overallVerdict", "route"])
+        );
+        assert!(requirements_schema["properties"].get("nativeGuiIsSourceOfTruth").is_none());
+        assert!(requirements_schema["properties"].get("noInventedWebsocketEventShapes").is_some());
     }
 
     #[test]
@@ -7764,15 +7969,26 @@ mod tests {
         let passed_schema = &requirements["nativeGuiIsSourceOfTruth"];
         let failed_schema = &requirements["noInventedWebsocketEventShapes"];
         let any_of = passed_schema["anyOf"].as_array().expect("passed requirement anyOf");
-        assert_eq!(any_of.len(), 2);
-        assert_eq!(any_of[0]["required"], json!(["verdict", "reason", "evidenceAssessment", "requiredCorrection"]));
-        assert_eq!(any_of[1]["properties"]["verdict"]["enum"], json!(["stillPassing"]));
-        assert_eq!(any_of[1]["required"], json!(["verdict"]));
-        assert!(failed_schema.get("anyOf").is_none());
-        assert_eq!(
-            failed_schema["required"],
-            json!(["verdict", "reason", "evidenceAssessment", "requiredCorrection"])
-        );
+        assert_eq!(any_of.len(), 3);
+        assert!(any_of.iter().any(|item| {
+            item["required"] == json!(["verdict", "reason", "evidenceAssessment", "requiredCorrection", "risk"])
+                && item["properties"]["risk"]["enum"] == json!(["none", "low", "medium", "high", "unknown"])
+        }));
+        let still_passing = any_of
+            .iter()
+            .find(|item| item["properties"]["verdict"]["enum"] == json!(["stillPassing"]))
+            .expect("stillPassing shortcut");
+        assert_eq!(still_passing["required"], json!(["verdict"]));
+        assert_eq!(still_passing.as_object().expect("object").len(), 4);
+        let not_yet = any_of
+            .iter()
+            .find(|item| item["properties"]["verdict"]["enum"] == json!(["notYet"]))
+            .expect("notYet shortcut");
+        assert_eq!(not_yet["required"], json!(["verdict"]));
+        assert_eq!(not_yet.as_object().expect("object").len(), 4);
+        let failed_any_of = failed_schema["anyOf"].as_array().expect("failed requirement anyOf");
+        assert_eq!(failed_any_of.len(), 2);
+        assert!(failed_any_of.iter().any(|item| item["properties"]["verdict"]["enum"] == json!(["notYet"])));
 
         let reviewer_required = schema["properties"]["requirements"]["required"]
             .as_array()
@@ -7797,32 +8013,199 @@ mod tests {
             "Worker",
             "worker-1",
             "turn-1",
-            r#"{"summary":"fixed one item","requirements":{"noInventedWebsocketEventShapes":{"claim":"satisfied","evidence":["test"],"justification":"fixed","risk":"low"}}}"#,
+            r#"{"summary":"fixed one item","requirements":{"noInventedWebsocketEventShapes":{"kind":"satisfied","summary":"fixed","evidence":[{"type":"testsRun","value":"cargo test -p codex-robdex-bridge requirements_"}]}}}"#,
+            &["noInventedWebsocketEventShapes".to_string()],
         );
         assert!(prompt.contains("Review subject: Worker"));
         assert!(prompt.contains("Latest source claim packet:"));
-        assert!(prompt.contains("Requirement state:"));
-        assert!(prompt.contains("* previouslyPassed: [nativeGuiIsSourceOfTruth]"));
-        assert!(prompt.contains("* currentlyUnresolved: [noInventedWebsocketEventShapes]"));
-        assert!(prompt.contains("Review all canonical requirements from the active structured output schema."));
+        assert!(prompt.contains("Review scope:"));
+        assert!(prompt.contains("`noInventedWebsocketEventShapes` priorStatus=pending"));
+        assert!(!prompt.contains("previouslyPassed"));
+        assert!(!prompt.contains("currentlyUnresolved"));
+        assert!(prompt.contains("Review only the scoped requirement keys"));
         assert!(!prompt.contains("Requirements:\n"));
         assert!(!prompt.contains("Perform an adversarial Requirements Review."));
         assert!(!prompt.contains("Compare every canonical requirement"));
         assert!(!prompt.contains("The web GUI must mirror the native Flutter GUI."));
 
-        let schema = requirements_verdict_schema(&set);
+        let schema = requirements_verdict_schema_for_scope(
+            &set,
+            ["noInventedWebsocketEventShapes"].iter().copied(),
+        );
         let requirements_schema = &schema["properties"]["requirements"];
         assert_eq!(
             requirements_schema["required"],
-            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes", "overallVerdict", "route"])
+            json!(["noInventedWebsocketEventShapes", "overallVerdict", "route"])
         );
-        let native_schema_description = serde_json::to_string(
-            &requirements_schema["properties"]["nativeGuiIsSourceOfTruth"],
+        let drift_schema_description = serde_json::to_string(
+            &requirements_schema["properties"]["noInventedWebsocketEventShapes"],
         )
-        .expect("serialize native schema");
-        assert!(native_schema_description.contains("The web GUI must mirror the native Flutter GUI."));
-        assert!(native_schema_description.contains("Severity: blocker"));
-        assert!(native_schema_description.contains("verification: diffReview"));
+        .expect("serialize scoped schema");
+        assert!(drift_schema_description.contains("Do not invent websocket or HTTP event shapes."));
+        assert!(drift_schema_description.contains("Severity: blocker"));
+        assert!(drift_schema_description.contains("verification: sourceInspection"));
+    }
+
+    #[tokio::test]
+    async fn requirements_status_counts_are_derived_from_persisted_progress_not_sparse_packets() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut requirements = sample_requirement_set();
+        requirements.review_progress.insert(
+            "nativeGuiIsSourceOfTruth".to_string(),
+            RequirementReviewProgressState {
+                status: "passed".to_string(),
+                updated_at: Some(10),
+            },
+        );
+        requirements.review_progress.insert(
+            "noInventedWebsocketEventShapes".to_string(),
+            RequirementReviewProgressState {
+                status: "blocked".to_string(),
+                updated_at: Some(11),
+            },
+        );
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "orch-1": {"displayName": "Orch", "role": "orchestrator", "projectRoot": temp.path().display().to_string()},
+                            "worker-1": {
+                                "displayName": "Worker",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "requirements": requirements,
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "web-gui-contract",
+                                    "status": "blocked",
+                                    "latestClaimPacket": {"summary": "sparse", "requirements": {"noInventedWebsocketEventShapes": {"kind": "blocked", "summary": "blocked", "blocker": "owner decision", "ownerDecisionNeeded": "approve scope", "evidence": [{"type":"sourceInspection","value":"review binding state"}]}}},
+                                    "latestVerdictPacket": {"overallVerdict": "acceptedBlocked", "noInventedWebsocketEventShapes": {"verdict": "acceptedBlocked"}},
+                                    "updatedAt": 12
+                                }
+                            },
+                            "reviewer-1": {"displayName": "Reviewer", "role": "requirements-reviewer", "projectRoot": temp.path().display().to_string(), "parentThreadId": "worker-1", "hiddenFromPeerList": true}
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let status = orchestrator_requirements_status(
+            &runtime,
+            "orch-1",
+            Some("worker-1"),
+            None,
+            None,
+        )
+        .await
+        .expect("requirements status");
+        assert_eq!(status["summary"]["passedCount"], json!(1));
+        assert_eq!(status["summary"]["blockedCount"], json!(1));
+        assert_eq!(status["summary"]["unknownCount"], json!(0));
+        assert_eq!(
+            status["summary"]["verdicts"][0]["progressStatus"],
+            json!("passed")
+        );
+    }
+
+    #[tokio::test]
+    async fn requirements_status_counts_pending_failed_blocked_waived_passed_waiver_required_and_not_yet() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let keys = [
+            ("pendingRequirement", None),
+            ("failedRequirement", Some("failed")),
+            ("blockedRequirement", Some("blocked")),
+            ("waiverRequiredRequirement", Some("waiverRequired")),
+            ("waivedRequirement", Some("waived")),
+            ("passedRequirement", Some("passed")),
+            ("notYetRequirement", Some("notYet")),
+        ];
+        let mut requirements = RequirementSetState {
+            id: Some("requirements-status-matrix".to_string()),
+            active: true,
+            requirements: keys
+                .iter()
+                .map(|(key, _)| RequirementState {
+                    key: (*key).to_string(),
+                    statement: format!("{key} statement."),
+                    severity: "blocker".to_string(),
+                    claim_schema_description: None,
+                    verdict_schema_description: None,
+                    verification_method: "sourceInspection".to_string(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        for (key, status) in keys {
+            if let Some(status) = status {
+                requirements.review_progress.insert(
+                    key.to_string(),
+                    RequirementReviewProgressState {
+                        status: status.to_string(),
+                        updated_at: Some(10),
+                    },
+                );
+            }
+        }
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "orch-1": {"displayName": "Orch", "role": "orchestrator", "projectRoot": temp.path().display().to_string()},
+                            "worker-1": {
+                                "displayName": "Worker",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "requirements": requirements,
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "requirements-status-matrix",
+                                    "status": "inReview",
+                                    "latestClaimPacket": {"summary": "cheap", "requirements": {"notFinished": true}},
+                                    "latestVerdictPacket": {"overallVerdict": "notYet", "notYetRequirement": {"verdict": "notYet"}},
+                                    "updatedAt": 12
+                                }
+                            },
+                            "reviewer-1": {"displayName": "Reviewer", "role": "requirements-reviewer", "projectRoot": temp.path().display().to_string(), "parentThreadId": "worker-1", "hiddenFromPeerList": true}
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let status = orchestrator_requirements_status(
+            &runtime,
+            "orch-1",
+            Some("worker-1"),
+            None,
+            None,
+        )
+        .await
+        .expect("requirements status");
+        assert_eq!(status["summary"]["pendingCount"], json!(1));
+        assert_eq!(status["summary"]["failedCount"], json!(1));
+        assert_eq!(status["summary"]["blockedCount"], json!(1));
+        assert_eq!(status["summary"]["waiverRequiredCount"], json!(1));
+        assert_eq!(status["summary"]["waiverAcceptedCount"], json!(1));
+        assert_eq!(status["summary"]["passedCount"], json!(1));
+        assert_eq!(status["summary"]["notYetCount"], json!(1));
+        assert_eq!(status["summary"]["unknownCount"], json!(0));
     }
 
     #[tokio::test]
@@ -8732,6 +9115,170 @@ requirements:
     }
 
     #[tokio::test]
+    async fn reviewer_verdict_terminal_truth_table_updates_progress_and_active_state() {
+        let cases = [
+            ("notYet", "notYet", "notYet", true, false),
+            ("pass", "pass", "passed", false, false),
+            ("stillPassing", "pass", "passed", false, true),
+            ("fail", "fail", "failed", true, false),
+            ("acceptedBlocked", "acceptedBlocked", "blocked", true, false),
+            ("rejectedBlocked", "rejectedBlocked", "failed", true, false),
+            ("waiverRequired", "needsHumanWaiver", "waiverRequired", true, false),
+            ("waiverAccepted", "waiverAccepted", "waived", false, false),
+        ];
+        for (per_requirement_verdict, overall, expected_status, expected_active, seed_passed) in cases {
+            let temp = TempDir::new().expect("tempdir");
+            let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+                .await
+                .expect("runtime");
+            let mut requirements = RequirementSetState {
+                id: Some("requirements-single".to_string()),
+                active: true,
+                requirements: vec![RequirementState {
+                    key: "singleRequirement".to_string(),
+                    statement: "Single requirement.".to_string(),
+                    severity: "blocker".to_string(),
+                    claim_schema_description: None,
+                    verdict_schema_description: None,
+                    verification_method: "sourceInspection".to_string(),
+                }],
+                ..Default::default()
+            };
+            if seed_passed {
+                requirements.review_progress.insert(
+                    "singleRequirement".to_string(),
+                    RequirementReviewProgressState {
+                        status: "passed".to_string(),
+                        updated_at: Some(1),
+                    },
+                );
+            }
+            let mut state = PersistedState::default();
+            let mut project = PersistedProjectState {
+                project_root: Some(temp.path().display().to_string()),
+                cwd: Some(temp.path().display().to_string()),
+                ..Default::default()
+            };
+            project.agents.insert(
+                "source-thread".to_string(),
+                PersistedAgentState {
+                    display_name: Some("Source".to_string()),
+                    role: Some("worker".to_string()),
+                    requirements: Some(requirements),
+                    requirement_review: Some(RequirementReviewBindingState {
+                        source_thread_id: "source-thread".to_string(),
+                        reviewer_thread_id: "reviewer-thread".to_string(),
+                        requirement_set_id: Some("requirements-single".to_string()),
+                        status: "inReview".to_string(),
+                        latest_claim_packet: Some(json!({"summary": "claimed"})),
+                        latest_verdict_packet: None,
+                        updated_at: 1,
+                    }),
+                    ..Default::default()
+                },
+            );
+            project.agents.insert(
+                "reviewer-thread".to_string(),
+                PersistedAgentState {
+                    display_name: Some("Reviewer".to_string()),
+                    role: Some("requirements-reviewer".to_string()),
+                    parent_thread_id: Some("source-thread".to_string()),
+                    hidden_from_peer_list: true,
+                    ..Default::default()
+                },
+            );
+            state.projects.insert("project".to_string(), project);
+            persist_state(&runtime, &state).await.expect("persist state");
+
+            mark_requirements_review_verdict(
+                &runtime,
+                "source-thread",
+                "reviewer-thread",
+                json!({
+                    "overallVerdict": overall,
+                    "singleRequirement": {
+                        "verdict": per_requirement_verdict,
+                        "reason": "reason",
+                        "evidenceAssessment": "assessment",
+                        "requiredCorrection": "",
+                        "risk": "low"
+                    },
+                    "route": {"destination": "sourceAgent", "message": "route"}
+                }),
+            )
+            .await
+            .expect("mark verdict");
+
+            let state = parse_state(&runtime.state_document_value().await);
+            let source = agent_state_for_thread(&state, "source-thread").expect("source");
+            let requirements = source.requirements.as_ref().expect("requirements");
+            assert_eq!(
+                requirements.review_progress["singleRequirement"].status,
+                expected_status,
+                "{per_requirement_verdict}"
+            );
+            assert_eq!(requirements.active, expected_active, "{per_requirement_verdict}");
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_still_passing_keeps_requirements_active_and_marks_failed() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut state = PersistedState::default();
+        let mut project = PersistedProjectState {
+            project_root: Some(temp.path().display().to_string()),
+            cwd: Some(temp.path().display().to_string()),
+            ..Default::default()
+        };
+        project.agents.insert(
+            "source-thread".to_string(),
+            PersistedAgentState {
+                role: Some("worker".to_string()),
+                requirements: Some(RequirementSetState {
+                    id: Some("requirements-single".to_string()),
+                    active: true,
+                    requirements: vec![RequirementState {
+                        key: "singleRequirement".to_string(),
+                        statement: "Single requirement.".to_string(),
+                        severity: "blocker".to_string(),
+                        claim_schema_description: None,
+                        verdict_schema_description: None,
+                        verification_method: "sourceInspection".to_string(),
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        state.projects.insert("project".to_string(), project);
+        persist_state(&runtime, &state).await.expect("persist state");
+        mark_requirements_review_verdict(
+            &runtime,
+            "source-thread",
+            "reviewer-thread",
+            json!({
+                "overallVerdict": "pass",
+                "singleRequirement": {"verdict": "stillPassing"},
+                "route": {"destination": "sourceAgent", "message": "invalid"}
+            }),
+        )
+        .await
+        .expect("mark verdict");
+        let state = parse_state(&runtime.state_document_value().await);
+        let source = agent_state_for_thread(&state, "source-thread").expect("source");
+        let requirements = source.requirements.as_ref().expect("requirements");
+        assert_eq!(requirements.review_progress["singleRequirement"].status, "failed");
+        assert!(requirements.active);
+        assert_eq!(
+            source.requirement_review.as_ref().map(|review| review.status.as_str()),
+            Some("failed")
+        );
+    }
+
+    #[tokio::test]
     async fn accepted_waiver_is_terminal_and_deactivates_requirement_set() {
         let temp = TempDir::new().expect("tempdir");
         let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
@@ -8831,13 +9378,13 @@ requirements:
                 "summary": "Rendered reviewer verdict card.",
                 "requirements": {
                     "nativeGuiIsSourceOfTruth": {
-                        "claim": "satisfied",
-                        "evidence": ["/tmp/reviewer-verdict-card.png"],
-                        "justification": "Screenshot shows formatted card.",
-                        "risk": "low"
+                        "kind": "satisfied",
+                        "summary": "Screenshot shows formatted card.",
+                        "evidence": [{"type":"screenshot","value":"/tmp/reviewer-verdict-card.png"}]
                     }
                 }
             }"#,
+            &["nativeGuiIsSourceOfTruth".to_string()],
         );
         assert!(prompt.contains("Review subject: Config Operator"));
         assert!(prompt.contains("Latest source claim packet:"));
@@ -8849,7 +9396,8 @@ requirements:
         assert!(!prompt.contains("Source turn ID"));
         assert!(!prompt.contains("thread-secret"));
         assert!(!prompt.contains("turn-secret"));
-        assert!(!prompt.contains("The web GUI must mirror the native Flutter GUI."));
+        assert!(prompt.contains("`nativeGuiIsSourceOfTruth` priorStatus=pending"));
+        assert!(prompt.contains("The web GUI must mirror the native Flutter GUI."));
         assert!(!prompt.contains("Do not invent websocket or HTTP event shapes."));
     }
 
@@ -8880,11 +9428,13 @@ requirements:
                         .get("required")
                         .and_then(Value::as_array)
                         .expect("object schema must define required");
-                    for key in properties.keys() {
-                        assert!(
-                            required.iter().any(|item| item.as_str() == Some(key.as_str())),
-                            "strict OpenAI schemas require every property to be required: {key}"
-                        );
+                    if !required.is_empty() {
+                        for key in properties.keys() {
+                            assert!(
+                                required.iter().any(|item| item.as_str() == Some(key.as_str())),
+                                "strict OpenAI schemas require every property to be required unless the schema is intentionally sparse: {key}"
+                            );
+                        }
                     }
                 }
                 for item in object.values() {
@@ -11929,9 +12479,6 @@ requirements:
                     ))
                     .await
                     .expect("send response");
-                    if request.method == "thread/archive" {
-                        break;
-                    }
                 }
             })
         })
@@ -11966,7 +12513,45 @@ requirements:
                                 "sandboxMode": "danger-full-access",
                                 "networkAccess": true,
                                 "modelID": "gpt-5.4",
-                                "developerInstructions": "designer guidance"
+                                "developerInstructions": "designer guidance",
+                                "requirements": {
+                                    "id": "requirements-design",
+                                    "active": true,
+                                    "reviewerThreadId": "thread-reviewer-1",
+                                    "requirements": [{
+                                        "key": "visualProof",
+                                        "statement": "Provide visual proof.",
+                                        "severity": "blocker",
+                                        "verificationMethod": "screenshot"
+                                    }],
+                                    "reviewProgress": {
+                                        "visualProof": {"status": "failed", "updatedAt": 100}
+                                    }
+                                },
+                                "requirementReview": {
+                                    "sourceThreadId": "thread-designer-1",
+                                    "reviewerThreadId": "thread-reviewer-1",
+                                    "requirementSetId": "requirements-design",
+                                    "status": "failed",
+                                    "latestClaimPacket": {"summary": "claimed", "requirements": {"visualProof": {"kind": "satisfied", "summary": "captured", "evidence": [{"type":"screenshot","value":"screenshot artifact"}]}}},
+                                    "latestVerdictPacket": {"overallVerdict": "fail", "visualProof": {"verdict": "fail", "requiredCorrection": "capture"}},
+                                    "updatedAt": 101
+                                },
+                                "requirementPackets": [{
+                                    "packetType": "claim",
+                                    "sourceThreadId": "thread-designer-1",
+                                    "turnId": "turn-1",
+                                    "targetThreadId": "thread-reviewer-1",
+                                    "payload": {"summary": "claimed"},
+                                    "createdAt": 101
+                                }]
+                            },
+                            "thread-reviewer-1": {
+                                "displayName": "Requirements Reviewer: Ezra Designer",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "thread-designer-1",
+                                "hiddenFromPeerList": true
                             }
                         }
                     }
@@ -12003,6 +12588,25 @@ requirements:
                 .and_then(|agent| agent.role.as_deref()),
             Some("designer")
         );
+        let replacement = project.agents.get("thread-designer-2").expect("replacement");
+        assert_eq!(
+            replacement
+                .requirements
+                .as_ref()
+                .and_then(|set| set.id.as_deref()),
+            Some("requirements-design")
+        );
+        assert_eq!(
+            replacement
+                .requirement_review
+                .as_ref()
+                .map(|review| (review.source_thread_id.as_str(), review.reviewer_thread_id.as_str())),
+            Some(("thread-designer-2", "thread-reviewer-1"))
+        );
+        assert_eq!(replacement.requirement_packets.len(), 1);
+        let reviewer = project.agents.get("thread-reviewer-1").expect("reviewer moved");
+        assert_eq!(reviewer.parent_thread_id.as_deref(), Some("thread-designer-2"));
+        assert!(reviewer.hidden_from_peer_list);
 
         transport.abort();
     }

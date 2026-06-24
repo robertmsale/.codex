@@ -646,6 +646,7 @@ for name in [
 packet = {
     "Label": label,
     "ProgramArguments": [script_path, "start"],
+    "AbandonProcessGroup": True,
     "RunAtLoad": True,
     "WorkingDirectory": os.getcwd(),
     "EnvironmentVariables": env,
