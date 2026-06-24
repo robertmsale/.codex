@@ -114,7 +114,8 @@ Robdex records notable claim/verdict packets for inspection:
 
 - `claim`: reviewable worker claim packet routed to reviewer.
 - `claimNull`: worker used `requirements: null` when a final claim was expected.
-- `claimContinuation`: worker claimed every currently required requirement as `notSatisfied`, so Robdex skipped review and told the worker to continue.
+- `claimContinuation`: worker sent a cheap `notFinished` continuation packet, so Robdex kept Requirements active without reviewer dispatch.
+- `claimCorrection`: worker sent a malformed or low-quality sparse claim packet, so Robdex routed correction without reviewer dispatch.
 - `verdict`: final reviewer verdict packet.
 - `verdictNull`: reviewer commentary/progress packet with `requirements: null`.
 
@@ -161,12 +162,14 @@ or, for a final claim:
   "summary": "Implemented the assigned behavior and validated it.",
   "requirements": {
     "requirementKey": {
-      "claim": "satisfied",
-      "justification": "Why the requirement is satisfied.",
+      "kind": "satisfied",
+      "summary": "Why the requirement is satisfied.",
       "evidence": [
-        "Exact command, file, screenshot, or manual proof."
-      ],
-      "risk": "low"
+        {
+          "type": "testsRun",
+          "value": "Exact command, file, screenshot, or manual proof."
+        }
+      ]
     }
   }
 }
@@ -174,17 +177,26 @@ or, for a final claim:
 
 The top-level `summary` is always required.
 
-The top-level `requirements` field is always required and is either:
+The top-level `requirements` field is always required and is one of:
 
 - `null` for mid-turn commentary/progress, or
-- an object for an end-of-turn claim packet.
+- `{ "notFinished": true }` for a cheap continue packet, or
+- a sparse object for an end-of-turn claim packet.
 
-Each currently required claim object requires:
+Sparse claim objects may omit every canonical requirement that is unchanged for that turn. Omitted requirement keys mean unchanged and unclaimed; previously passed requirements remain binding in persisted bridge state. A per-key `{ "notFinished": true }` entry is also a cheap continue marker and is stripped before reviewer dispatch.
 
-- `claim`: one of `satisfied`, `notSatisfied`, `blocked`, `notApplicable`.
-- `justification`: concise explanation.
-- `evidence`: array of exact proof strings.
-- `risk`: one of `none`, `low`, `medium`, `high`, `unknown`.
+Each completed claim object requires:
+
+- `kind`: one of `satisfied`, `blocked`, `notApplicable`.
+- `summary`: concise per-requirement result.
+- `evidence`: non-empty array of typed evidence objects shaped exactly as `{ "type": "<evidence-type>", "value": "<concrete proof>" }`.
+
+Allowed evidence types are exactly `changedFiles`, `testsRun`, `sourceInspection`, `artifact`, `screenshot`, `commandOutput`, `migration`, and `searchProof`.
+
+`kind: "blocked"` also requires:
+
+- `blocker`: the concrete external dependency.
+- `ownerDecisionNeeded`: the exact owner/orchestrator decision required.
 
 The worker schema uses `additionalProperties: false`. The agent cannot add random properties to avoid the intended format.
 
@@ -201,38 +213,23 @@ Example commentary:
 }
 ```
 
-If the worker appears to end a turn under active Requirements with `requirements: null`, Robdex sends a follow-up telling the source agent that active Requirements are still attached and it must provide a final claim packet with the currently required claims.
+If the worker appears to end a turn under active Requirements with `requirements: null`, Robdex sends a follow-up telling the source agent that active Requirements are still attached and it must provide a final claim packet.
 
-### All `notSatisfied` Is Not Reviewable
+`{ "requirements": { "notFinished": true } }` and sparse packets containing only omitted keys plus per-key `{ "notFinished": true }` are cheap continue packets. Robdex records minimal packet metadata for traceability, keeps the active RequirementSet attached, mutates no progress, and dispatches no reviewer.
 
-If every currently required claim is `notSatisfied`, Robdex does not route to a reviewer.
+Robdex rejects or routes correction for source claim packets whose typed evidence is empty, placeholder text, circular restatement, generic proof, or lacks concrete file, test, artifact, source-inspection, migration, screenshot, command-output, or search-proof details.
 
-That is deliberate. Otherwise the worker and reviewer can loop pointlessly:
+## Sparse Worker Claims
 
-1. Worker: """Nothing is satisfied."""
-2. Reviewer: """Correct, nothing is satisfied."""
-3. Worker: """Nothing is satisfied."""
-4. Reviewer: """Correct, nothing is satisfied."""
+The active worker schema exposes all canonical requirement keys as optional sparse properties. The worker claims only requirements with new evidence, a true blocker, or a not-applicable decision.
 
-Instead, the bridge sends an explicit continuation message:
-
-```text
-This is the owner. Your final claim packet marked every currently required claim as `notSatisfied`, so Robdex did not request Requirements Review. Continue working until at least one currently required requirement can be claimed `satisfied`, `blocked`, or `notApplicable`, then provide an updated final Requirements claim packet. An all-`notSatisfied` packet is absolutely unacceptable. If you are blocked, use the `blocked` claim on the specific blocked requirement and provide concrete blocker evidence. If you submit another final message with all claims as `notSatisfied` then you will be terminated.
-```
-
-If the agent is truly blocked, it must use the `blocked` claim on the specific blocked requirement with evidence.
-
-## Progressive Worker Schema Reduction
-
-The first active Requirements pass usually requires the worker to claim every requirement.
-
-After review progress exists, worker schemas are reduced to only currently unresolved requirements. A requirement is considered resolved for the worker claim schema when review progress marks it:
+Review progress is persisted separately from the sparse claim packet. A requirement remains terminal only when review progress marks it:
 
 - `passed`
 - `blocked`
 - `waived`
 
-Resolved requirements are omitted from the next worker claim schema to reduce output tokens.
+Resolved requirements do not need to be re-claimed by the worker. The canonical RequirementSet still contains every key, and `requirements-status` derives pass/fail/blocked/waived/pending counts from persisted progress instead of assuming the latest sparse packet contains all keys.
 
 Example:
 
@@ -243,7 +240,7 @@ Canonical set:
 - `frontendControlWired`
 - `testsPass`
 
-First claim schema includes all four.
+The worker claims the two requirements it has evidence for and omits the rest.
 
 Reviewer verdict:
 
@@ -252,17 +249,17 @@ Reviewer verdict:
 - `frontendControlWired`: fail
 - `testsPass`: fail
 
-Next worker claim schema includes only:
+The next worker turn claims only:
 
 - `frontendControlWired`
 - `testsPass`
 
-However, the canonical RequirementSet still contains all four. The worker remains bound by all four. If the fix for `frontendControlWired` reintroduces legacy behavior, the reviewer can re-fail `noLegacyLeftBehind` even though the worker did not have to re-claim it in the reduced schema.
+However, the canonical RequirementSet still contains all four. The worker remains bound by all four. If the fix for `frontendControlWired` reintroduces legacy behavior, a later scoped review can re-fail `noLegacyLeftBehind` when that key is in review scope.
 
 This is the token optimization:
 
-- Workers stop repeatedly producing evidence for already-passed requirements.
-- Reviewers still protect against regressions.
+- Workers stop repeatedly producing unchanged evidence.
+- Reviewers receive only the keys claimed in the current source packet.
 
 ## Reviewer Verdict Schema
 
@@ -285,7 +282,8 @@ or a final verdict:
       "verdict": "fail",
       "reason": "The implementation does not prove the required behavior.",
       "evidenceAssessment": "The cited test only covers a helper, not the real route.",
-      "requiredCorrection": "Add route-level proof and rerun the relevant test."
+      "requiredCorrection": "Add route-level proof and rerun the relevant test.",
+      "risk": "medium"
     },
     "overallVerdict": "fail",
     "route": {
@@ -302,6 +300,7 @@ Each requirement verdict normally requires:
 - `reason`: why the verdict was assigned.
 - `evidenceAssessment`: what evidence supports or fails to support the claim.
 - `requiredCorrection`: exact correction when needed, or empty string when not needed.
+- `risk`: one of `none`, `low`, `medium`, `high`, `unknown`.
 
 The final verdict object also requires:
 
@@ -311,6 +310,7 @@ The final verdict object also requires:
 `overallVerdict` can be:
 
 - `pass`
+- `notYet`
 - `fail`
 - `acceptedBlocked`
 - `rejectedBlocked`
@@ -324,7 +324,7 @@ The `route` object contains:
 
 ## Reviewer `stillPassing` Shorthand
 
-Reviewer output can be expensive because the reviewer must check the full canonical RequirementSet every time.
+Reviewer output can be expensive when every canonical RequirementSet key is required every time.
 
 To reduce output cost, Robdex modifies the reviewer schema for requirements that have previously passed. For those keys only, the verdict property becomes an `anyOf`:
 
@@ -347,25 +347,37 @@ The reviewer prompt instructs:
 
 The bridge also defends this in lifecycle handling. If a reviewer somehow emits `stillPassing` for a requirement that was not previously passed, that is treated as invalid/failing rather than as success.
 
-## Canonical Versus Reduced Schemas
+## Reviewer `notYet` Shorthand
+
+Every scoped requirement may use the exact shortcut:
+
+```json
+{
+  "verdict": "notYet"
+}
+```
+
+This object has no reason, evidence assessment, correction, risk, or other fields. It keeps the requirement unresolved, keeps active Requirements attached, and routes the compact correction path back to the source when the overall verdict is `notYet`.
+
+## Canonical Versus Scoped Schemas
 
 There are two different schema strategies:
 
 ### Worker
 
-The worker claim schema is reduced after progress exists. It includes only currently unresolved claims.
+The worker claim schema is sparse. All canonical requirement keys are optional; omitted keys are unchanged for that turn. Whole-packet and per-key `notFinished` shortcuts are accepted as cheap continue signals.
 
 Purpose: reduce worker output tokens.
 
 ### Reviewer
 
-The reviewer verdict schema always covers every canonical requirement. Some previously passed requirement values may allow the short `stillPassing` alternative.
+The reviewer verdict schema is scoped to the current source packet's reviewable keys. The prompt includes the latest source claim packet, canonical requirement text for those scope keys, and prior persisted status for those scope keys. It does not dump global `previouslyPassed`, `currentlyUnresolved`, or `previousFailuresBlockersWaivers` lists.
 
-Purpose: keep regression protection while reducing reviewer output tokens.
+Purpose: keep review focused and deterministic while reducing reviewer output tokens.
 
-This asymmetry is intentional.
+The full canonical RequirementSet and all progress history remain in Rust-owned persisted bridge state for audit, `requirements-status`, routing, and warm handoff.
 
-Workers should not repeatedly claim what already passed. Reviewers must still guard the whole contract.
+Workers should not repeatedly claim unchanged work. Reviewers must verdict only the scoped keys that were claimed as `satisfied`, `blocked`, or `notApplicable`.
 
 ## Review Routing Lifecycle
 
@@ -382,10 +394,11 @@ For non-reviewer source agents:
 5. It classifies the payload:
    - valid final claim;
    - `requirements: null` commentary;
+   - `notFinished` cheap continuation;
    - invalid payload;
-   - all `notSatisfied`.
-6. Commentary and invalid payloads trigger corrective prompts rather than review.
-7. All-`notSatisfied` packets trigger continuation rather than review.
+   - low-quality evidence.
+6. Commentary, invalid payloads, and low-quality evidence trigger corrective prompts rather than review.
+7. Cheap continuation packets are recorded without reviewer dispatch.
 8. A valid reviewable claim is recorded.
 9. Robdex ensures a reviewer exists and is bound to the source.
 10. Robdex starts a reviewer turn with the Requirements review prompt and verdict schema.
@@ -432,7 +445,7 @@ Routing by overall verdict:
 - `acceptedBlocked`: route to orchestrator when available, otherwise source.
 - `waiverAccepted`: route to orchestrator when available, otherwise source.
 
-On `pass`, the active RequirementSet is deactivated and the reviewer is archived or detached/hidden.
+On `pass`, the bridge updates only the scoped verdict keys. The active RequirementSet is deactivated only when every canonical requirement is passed or waived; otherwise the set stays active and the reviewer binding remains available.
 
 On `waiverAccepted`, the RequirementSet is also deactivated, but the review binding records the waiver outcome.
 
@@ -635,10 +648,6 @@ If a source agent finishes with `requirements: null` while active Requirements r
 ### Invalid JSON Or Invalid Shape
 
 Structured output should make invalid shape rare. If it happens, Robdex sends a corrective prompt asking for a valid claim packet.
-
-### All Claims `notSatisfied`
-
-Robdex skips review and tells the worker to continue. All-`notSatisfied` is never terminal.
 
 ### True Blocker
 

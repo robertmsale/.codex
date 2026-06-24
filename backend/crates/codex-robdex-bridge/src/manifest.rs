@@ -1195,7 +1195,7 @@ mod tests {
                 status: review_status.to_string(),
                 reviewer_thread_id: "reviewer-1".to_string(),
                 requirement_set_id: Some("plan-phase-1".to_string()),
-                latest_claim_packet: Some(json!({"requirements":{"phaseOneDone":{"claim":"satisfied"}}})),
+                latest_claim_packet: Some(json!({"requirements":{"phaseOneDone":{"kind":"satisfied","summary":"phase done","evidence":[{"type":"sourceInspection","value":"manifest phase state"}]}}})),
                 latest_verdict_packet: Some(json!({"requirements":{"phaseOneDone":{"verdict":"pass"}}})),
                 updated_at: 1,
             }),
