@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 use robdex_agent_runtime_projection::{
     RoleEditorDraft, RoleEditorLifecycleAuthorityMetadata, RoleEditorModelDefaults,
@@ -15,6 +16,189 @@ use robdex_agent_runtime_projection::{
 use crate::actions;
 
 pub const DEFAULT_ROLE_ID: &str = "runtime-allow";
+
+pub fn default_tool_bundle_for_role(role_id: &str) -> Vec<&'static str> {
+    match role_id {
+        "worker" | "runtime-allow" => vec![
+            "file.head", "file.tail", "file.read_lines", "file.line_count", "file.search",
+            "tree.list", "tree.find", "file.replace_exact", "fs.write", "patch.apply",
+            "git.status", "git.diff", "git.restore", "git.add", "git.commit",
+            "tooling.request", "outputs.head", "outputs.tail", "outputs.search",
+        ],
+        "designer" => vec![
+            "file.head", "file.tail", "file.read_lines", "file.line_count", "file.search",
+            "tree.list", "tree.find", "image.capture_from_file", "image.describe",
+            "tooling.request",
+        ],
+        "qa" => vec![
+            "file.head", "file.tail", "file.read_lines", "file.line_count", "file.search",
+            "tree.list", "tree.find", "server.status", "server.logs",
+            "image.capture_from_file", "image.describe", "tooling.request",
+        ],
+        "orchestrator" => vec![
+            "agent.spawn.<role>", "requirements.set.other", "git.status", "git.diff",
+            "git.inspect_worker_branch", "git.rebase_worker_branch", "git.fast_forward_local_main",
+            "git.cleanup_integrated_worktree", "packet.routing.inspect", "tooling.request",
+            "project_runtime.request_change",
+        ],
+        "project-progenitor" => vec![
+            "project_runtime.request_change", "tooling.request", "file.head", "tree.list",
+            "tree.find",
+        ],
+        "simulator-steward" => vec![
+            "simulator.inventory", "simulator.lease.assign", "simulator.lease.release",
+            "simulator.boot.targeted", "simulator.shutdown.targeted", "image.capture_from_file",
+        ],
+        "operator-admin" => vec![
+            "project_runtime.request_change", "command_registry.decide", "command_registry.apply",
+            "server.start", "server.stop", "server.status", "server.logs", "tooling.request",
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn tools_json_to_set(value: Value) -> BTreeSet<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect()
+}
+
+pub async fn visible_tool_bundle_for_role(pool: &PgPool, role_id: &str, project_key: Option<&str>) -> Result<Vec<String>> {
+    let mut visible: BTreeSet<String> = default_tool_bundle_for_role(role_id)
+        .into_iter()
+        .map(ToString::to_string)
+        .collect();
+    let role_rows = sqlx::query(
+        r#"
+        SELECT tb.tools
+        FROM starter_role_tool_bundle_bindings rb
+        JOIN starter_tool_bundle_versions tb ON tb.id=rb.bundle_version_id
+        WHERE rb.active=true AND tb.active=true AND rb.role_id=$1 AND rb.project_key IS NULL
+        ORDER BY rb.created_at ASC
+        "#,
+    )
+    .bind(role_id)
+    .fetch_all(pool)
+    .await?;
+    if !role_rows.is_empty() {
+        visible.clear();
+        for row in role_rows {
+            visible.extend(tools_json_to_set(row.get("tools")));
+        }
+    }
+    if let Some(project_key) = project_key {
+        let project_rows = sqlx::query(
+            r#"
+            SELECT tb.tools
+            FROM starter_role_tool_bundle_bindings rb
+            JOIN starter_tool_bundle_versions tb ON tb.id=rb.bundle_version_id
+            WHERE rb.active=true AND tb.active=true AND rb.role_id=$1 AND rb.project_key=$2
+            ORDER BY rb.created_at ASC
+            "#,
+        )
+        .bind(role_id)
+        .bind(project_key)
+        .fetch_all(pool)
+        .await?;
+        if !project_rows.is_empty() {
+            let mut project_visible = BTreeSet::new();
+            for row in project_rows {
+                project_visible.extend(tools_json_to_set(row.get("tools")));
+            }
+            visible = visible.intersection(&project_visible).cloned().collect();
+        }
+    }
+    Ok(visible.into_iter().collect())
+}
+
+pub async fn activate_tool_bundle_binding(
+    pool: &PgPool,
+    audit_session_id: Option<Uuid>,
+    role_id: &str,
+    project_key: Option<&str>,
+    bundle_id: &str,
+    version: &str,
+    tools: Vec<String>,
+    source_metadata: Value,
+    audit_metadata: Value,
+) -> Result<(Uuid, Uuid)> {
+    if bundle_id.trim().is_empty() || version.trim().is_empty() || role_id.trim().is_empty() {
+        bail!("tool bundle activation requires non-empty bundle id, version, and role id");
+    }
+    if tools.is_empty() {
+        bail!("tool bundle activation requires at least one tool");
+    }
+    for tool in &tools {
+        if !actions::is_known_action(tool) && !tool.starts_with("agent.spawn.") && !tool.starts_with("simulator.") && !tool.starts_with("packet.") {
+            bail!("tool bundle contains unknown tool: {tool}");
+        }
+    }
+    let mut tx = pool.begin().await?;
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM starter_tool_bundle_versions WHERE bundle_id=$1 AND version=$2 AND COALESCE(project_key,'')=COALESCE($3,'') LIMIT 1",
+    )
+    .bind(bundle_id)
+    .bind(version)
+    .bind(project_key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let bundle_version_id = if let Some(id) = existing {
+        sqlx::query("UPDATE starter_tool_bundle_versions SET tools=$2, source_metadata=$3, active=true WHERE id=$1")
+            .bind(id)
+            .bind(json!(tools))
+            .bind(&source_metadata)
+            .execute(&mut *tx)
+            .await?;
+        id
+    } else {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO starter_tool_bundle_versions (id, bundle_id, version, role_id, project_key, tools, source_metadata, active) VALUES ($1,$2,$3,$4,$5,$6,$7,true)")
+            .bind(id)
+            .bind(bundle_id)
+            .bind(version)
+            .bind(role_id)
+            .bind(project_key)
+            .bind(json!(tools))
+            .bind(&source_metadata)
+            .execute(&mut *tx)
+            .await?;
+        id
+    };
+    sqlx::query("UPDATE starter_role_tool_bundle_bindings SET active=false WHERE role_id=$1 AND COALESCE(project_key,'')=COALESCE($2,'') AND active=true")
+        .bind(role_id)
+        .bind(project_key)
+        .execute(&mut *tx)
+        .await?;
+    let binding_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO starter_role_tool_bundle_bindings (id, role_id, project_key, bundle_version_id, active, audit_metadata) VALUES ($1,$2,$3,$4,true,$5)")
+        .bind(binding_id)
+        .bind(role_id)
+        .bind(project_key)
+        .bind(bundle_version_id)
+        .bind(&audit_metadata)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO event_stream (session_id, entity_type, entity_id, event_type, status, payload) VALUES ($1,'tool_bundle_binding',$2,'tool_bundle.binding_activated','active',$3)")
+        .bind(audit_session_id)
+        .bind(binding_id)
+        .bind(json!({
+            "roleId": role_id,
+            "projectKey": project_key,
+            "bundleId": bundle_id,
+            "version": version,
+            "bundleVersionId": bundle_version_id,
+            "sourceMetadata": source_metadata,
+            "auditMetadata": audit_metadata,
+        }))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok((bundle_version_id, binding_id))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -549,7 +733,7 @@ mod tests {
 
     use super::{
         LifecycleAuthorityMetadata, ManifestDecision, ModelDefaults, PromptSource, RoleManifest,
-        RoleRegistry, RoutingMetadata, VisibilityMetadata,
+        RoleRegistry, RoutingMetadata, VisibilityMetadata, default_tool_bundle_for_role,
     };
 
     fn temp_role_dir(name: &str) -> PathBuf {
@@ -613,5 +797,65 @@ mod tests {
         let error = registry.validate_manifest(&manifest, &dir).unwrap_err().to_string();
         assert!(error.contains("capabilities must exactly match policy keys"));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn starter_default_tool_bundles_expose_intended_role_tools_only() {
+        let worker = default_tool_bundle_for_role("worker");
+        assert!(worker.contains(&"file.head"));
+        assert!(worker.contains(&"git.commit"));
+        assert!(!worker.contains(&"simulator.shutdown.targeted"));
+        for prohibited in ["git.branch", "git.checkout", "git.reset", "git.cherry_pick", "git.reflog", "git.merge", "git.remote", "git.push", "git.pull", "git.fetch"] {
+            assert!(!worker.contains(&prohibited), "worker-like bundles must not expose arbitrary git affordance {prohibited}");
+        }
+
+        let designer = default_tool_bundle_for_role("designer");
+        assert!(designer.contains(&"image.capture_from_file"));
+        assert!(designer.contains(&"tooling.request"));
+        assert!(!designer.contains(&"git.commit"));
+
+        let qa = default_tool_bundle_for_role("qa");
+        assert!(qa.contains(&"server.logs"));
+        assert!(!qa.contains(&"fs.write"));
+
+        let orchestrator = default_tool_bundle_for_role("orchestrator");
+        assert!(orchestrator.contains(&"agent.spawn.<role>"));
+        assert!(orchestrator.contains(&"project_runtime.request_change"));
+        assert!(!orchestrator.contains(&"file.replace_exact"));
+
+        let progenitor = default_tool_bundle_for_role("project-progenitor");
+        assert!(progenitor.contains(&"project_runtime.request_change"));
+        assert!(!progenitor.contains(&"command_registry.apply"));
+
+        let steward = default_tool_bundle_for_role("simulator-steward");
+        assert!(steward.contains(&"simulator.lease.assign"));
+        assert!(!steward.contains(&"simulator.global.restart"));
+
+        let admin = default_tool_bundle_for_role("operator-admin");
+        assert!(admin.contains(&"command_registry.apply"));
+        assert!(admin.contains(&"server.stop"));
+    }
+
+    #[test]
+    fn project_progenitor_manifest_is_project_local_and_owner_routed() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../roles");
+        let manifest_text = fs::read_to_string(root.join("project-progenitor.json")).expect("project progenitor manifest");
+        let manifest: RoleManifest = serde_json::from_str(&manifest_text).expect("parse project progenitor manifest");
+        let registry = RoleRegistry::from_root(root.clone());
+        registry.validate_manifest(&manifest, &root).expect("valid project progenitor manifest");
+        assert_eq!(manifest.id, "project-progenitor");
+        assert!(manifest.visibility.owner_visible);
+        assert!(manifest.capabilities.contains(&"project_runtime.request_change".to_string()));
+        assert!(manifest.capabilities.contains(&"tooling.request".to_string()));
+        assert!(!manifest.capabilities.contains(&"command_registry.apply".to_string()));
+        assert_eq!(manifest.routing.default_recipient.as_deref(), Some("owner"));
+        assert!(manifest.routing.allowed_recipients.contains(&"operator".to_string()));
+        assert!(!manifest.lifecycle_authority.can_spawn_agents);
+        assert!(!manifest.lifecycle_authority.can_archive_agents);
+        let prompt = fs::read_to_string(root.join("prompts/project-progenitor.md")).expect("project progenitor prompt");
+        assert!(prompt.contains("project-local"));
+        assert!(prompt.contains("Do not edit global skills"));
+        assert!(default_tool_bundle_for_role("project-progenitor").contains(&"project_runtime.request_change"));
+        assert!(!default_tool_bundle_for_role("project-progenitor").contains(&"command_registry.apply"));
     }
 }

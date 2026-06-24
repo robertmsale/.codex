@@ -606,10 +606,17 @@ pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot, project_ke
     };
     let active_runtime_version_id = active_runtime.as_ref().map(|(id, _)| *id);
     let active_hook_bindings = active_runtime.as_ref().map(|(_, bindings)| bindings.clone()).unwrap_or_else(|| json!({}));
+    let visible_tools = crate::roles::visible_tool_bundle_for_role(pool, &role_snapshot.id, project_key).await?;
+    let active_tool_bundle_version_ids = json!({
+        "roleId": role_snapshot.id,
+        "bundleVersion": "starter-kit-1",
+        "projectKey": project_key,
+        "tools": visible_tools,
+    });
     sqlx::query(
         r#"
-        INSERT INTO sessions (id, status, role_id, role_version, role_snapshot, project_key, workdir, worktree_root, title, name, tracked, root_session_id, fork_depth, active_project_runtime_version_id, active_hook_bindings)
-        VALUES ($1, 'open', $2, $3, $4, $5, $6, $7, $8, $9, true, $1, 0, $10, $11)
+        INSERT INTO sessions (id, status, role_id, role_version, role_snapshot, project_key, workdir, worktree_root, title, name, tracked, root_session_id, fork_depth, active_project_runtime_version_id, active_hook_bindings, active_tool_bundle_version_ids)
+        VALUES ($1, 'open', $2, $3, $4, $5, $6, $7, $8, $9, true, $1, 0, $10, $11, $12)
         "#,
     )
         .bind(id)
@@ -623,6 +630,7 @@ pub async fn new_session(pool: &PgPool, role_snapshot: &RoleSnapshot, project_ke
         .bind(name)
         .bind(active_runtime_version_id)
         .bind(&active_hook_bindings)
+        .bind(&active_tool_bundle_version_ids)
         .execute(pool)
         .await?;
     append_event(
@@ -1239,11 +1247,25 @@ pub async fn archive_session(pool: &PgPool, session_id: Uuid) -> Result<()> {
     .execute(&mut *tx)
     .await?
     .rows_affected();
+    let starter_servers = sqlx::query(
+        "UPDATE starter_managed_servers SET status='archived', updated_at=now() WHERE session_id=$1 AND status='running'",
+    )
+    .bind(session_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    let starter_ports = sqlx::query(
+        "UPDATE starter_port_leases SET status='released', released_at=COALESCE(released_at, now()), release_reason='session.archive' WHERE session_id=$1 AND status='active'",
+    )
+    .bind(session_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     tx.commit().await?;
     let lifecycle_cleanup = crate::lifecycle_hooks::cleanup_session_lifecycle_resources(pool, session_id, "session archived").await?;
     crate::god_mode::revoke_active(pool, session_id, "runtime", "session archived").await?;
     crate::requirements::close_nested_reviewers(pool, session_id).await?;
-    append_event(pool, session_id, None, "session", Some(session_id), "session.archived", Some("archived"), json!({"tracked": false, "lifecycleCleanup": lifecycle_cleanup})).await?;
+    append_event(pool, session_id, None, "session", Some(session_id), "session.archived", Some("archived"), json!({"tracked": false, "lifecycleCleanup": lifecycle_cleanup, "starterServersReleased": starter_servers, "starterPortLeasesReleased": starter_ports})).await?;
     if abandoned > 0 {
         append_event(pool, session_id, None, "submitted_input", None, "submitted_input.abandoned", Some("abandoned"), json!({"count": abandoned, "reason": "session archived"})).await?;
     }
@@ -1305,6 +1327,20 @@ pub async fn close_session(pool: &PgPool, session_id: Uuid, reason: &str, live_t
     .execute(&mut *tx)
     .await?
     .rows_affected();
+    let starter_servers = sqlx::query(
+        "UPDATE starter_managed_servers SET status='sessionClosed', updated_at=now() WHERE session_id=$1 AND status='running'",
+    )
+    .bind(session_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    let starter_ports = sqlx::query(
+        "UPDATE starter_port_leases SET status='released', released_at=COALESCE(released_at, now()), release_reason='session.close' WHERE session_id=$1 AND status='active'",
+    )
+    .bind(session_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     let result = sqlx::query(
         "UPDATE sessions SET status = 'closed', closed_at = COALESCE(closed_at, now()), close_reason = $2, updated_at = now() WHERE id = $1 AND status = 'open'",
     )
@@ -1325,7 +1361,7 @@ pub async fn close_session(pool: &PgPool, session_id: Uuid, reason: &str, live_t
     let lifecycle_cleanup = crate::lifecycle_hooks::cleanup_session_lifecycle_resources(pool, session_id, reason).await?;
     crate::god_mode::revoke_active(pool, session_id, "runtime", "session closed").await?;
     crate::requirements::close_nested_reviewers(pool, session_id).await?;
-    append_event(pool, session_id, None, "session", Some(session_id), "session.closed", Some("closed"), json!({"reason": reason, "liveProcessesTerminated": live_terminated, "processRowsMarked": db_processes, "lifecycleCleanup": lifecycle_cleanup})).await?;
+    append_event(pool, session_id, None, "session", Some(session_id), "session.closed", Some("closed"), json!({"reason": reason, "liveProcessesTerminated": live_terminated, "processRowsMarked": db_processes, "lifecycleCleanup": lifecycle_cleanup, "starterServersReleased": starter_servers, "starterPortLeasesReleased": starter_ports})).await?;
     if abandoned > 0 {
         append_event(pool, session_id, None, "submitted_input", None, "submitted_input.abandoned", Some("abandoned"), json!({"count": abandoned, "reason": "session closed"})).await?;
     }

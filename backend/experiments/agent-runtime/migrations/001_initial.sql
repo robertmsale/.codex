@@ -412,6 +412,126 @@ CREATE INDEX IF NOT EXISTS execution_output_artifacts_command_idx
 CREATE INDEX IF NOT EXISTS execution_output_artifacts_process_idx
     ON execution_output_artifacts(process_id, stream, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS starter_file_audit_rows (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    tool_call_id UUID REFERENCES tool_calls(id) ON DELETE SET NULL,
+    script_run_id UUID REFERENCES script_runs(id) ON DELETE SET NULL,
+    operation TEXT NOT NULL,
+    requested_path TEXT NOT NULL,
+    resolved_path TEXT,
+    status TEXT NOT NULL,
+    byte_count BIGINT NOT NULL DEFAULT 0,
+    line_count BIGINT NOT NULL DEFAULT 0,
+    mutation_description TEXT,
+    truncation JSONB NOT NULL DEFAULT '{}'::jsonb,
+    error TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS starter_file_audit_session_idx ON starter_file_audit_rows(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS starter_image_artifacts (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    tool_call_id UUID REFERENCES tool_calls(id) ON DELETE SET NULL,
+    script_run_id UUID REFERENCES script_runs(id) ON DELETE SET NULL,
+    process_id UUID REFERENCES managed_processes(id) ON DELETE SET NULL,
+    source_type TEXT NOT NULL,
+    source_path TEXT,
+    mime_type TEXT NOT NULL,
+    byte_count BIGINT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    perceptual_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    retrieval_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    binary_content BYTEA NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS starter_image_artifacts_session_idx ON starter_image_artifacts(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS starter_tooling_requests (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    role_id TEXT NOT NULL,
+    project_key TEXT,
+    turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    script_run_id UUID REFERENCES script_runs(id) ON DELETE SET NULL,
+    tool_call_id UUID REFERENCES tool_calls(id) ON DELETE SET NULL,
+    command_context_id UUID,
+    visible_command_summary_hash TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    need TEXT NOT NULL,
+    attempted JSONB NOT NULL DEFAULT '[]'::jsonb,
+    proposed JSONB,
+    urgency TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'routed',
+    route JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS starter_tooling_requests_session_idx ON starter_tooling_requests(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS starter_port_leases (
+    id UUID PRIMARY KEY,
+    project_key TEXT,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    process_id UUID REFERENCES managed_processes(id) ON DELETE SET NULL,
+    allocated_port INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    lease_reason TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    released_at TIMESTAMPTZ,
+    release_reason TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS starter_port_leases_active_port_idx ON starter_port_leases(allocated_port) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS starter_port_leases_session_idx ON starter_port_leases(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS starter_managed_servers (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    tool_call_id UUID REFERENCES tool_calls(id) ON DELETE SET NULL,
+    script_run_id UUID REFERENCES script_runs(id) ON DELETE SET NULL,
+    process_id UUID REFERENCES managed_processes(id) ON DELETE SET NULL,
+    command_version_id UUID,
+    handle TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    env_overlay_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    port INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    readiness_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status TEXT NOT NULL,
+    output_artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(session_id, handle)
+);
+
+CREATE TABLE IF NOT EXISTS starter_tool_bundle_versions (
+    id UUID PRIMARY KEY,
+    bundle_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    role_id TEXT,
+    project_key TEXT,
+    tools JSONB NOT NULL,
+    source_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS starter_tool_bundle_versions_identity_idx
+    ON starter_tool_bundle_versions(bundle_id, version, COALESCE(project_key, ''));
+CREATE TABLE IF NOT EXISTS starter_role_tool_bundle_bindings (
+    id UUID PRIMARY KEY,
+    role_id TEXT NOT NULL,
+    project_key TEXT,
+    bundle_version_id UUID NOT NULL REFERENCES starter_tool_bundle_versions(id) ON DELETE CASCADE,
+    active BOOLEAN NOT NULL DEFAULT true,
+    audit_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS compaction_checkpoints (
     id UUID PRIMARY KEY,
     session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -502,6 +622,7 @@ CREATE INDEX IF NOT EXISTS project_runtime_hook_bindings_active_idx
 
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_project_runtime_version_id UUID;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_hook_bindings JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_tool_bundle_version_ids JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS lifecycle_events (
     id UUID PRIMARY KEY,
@@ -628,6 +749,9 @@ CREATE TABLE IF NOT EXISTS resource_leases (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS starter_port_leases_active_port_unique
+    ON starter_port_leases(allocated_port)
+    WHERE status='active';
 CREATE UNIQUE INDEX IF NOT EXISTS resource_leases_active_resource_idx
     ON resource_leases(resource_type, COALESCE(resource_id, handle, ''))
     WHERE status IN ('reserved', 'assigned');
@@ -819,6 +943,7 @@ CREATE TABLE IF NOT EXISTS file_mutations (
     duration_ms BIGINT,
     policy_decision JSONB NOT NULL DEFAULT '{}'::jsonb,
     approval_request_id UUID REFERENCES approval_requests(id) ON DELETE SET NULL,
+    mutation_description TEXT,
     truncation JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 CREATE INDEX IF NOT EXISTS file_mutations_script_idx ON file_mutations(script_run_id);
@@ -837,9 +962,13 @@ CREATE TABLE IF NOT EXISTS patch_runs (
     duration_ms BIGINT,
     policy_decision JSONB NOT NULL DEFAULT '{}'::jsonb,
     approval_request_id UUID REFERENCES approval_requests(id) ON DELETE SET NULL,
+    mutation_description TEXT,
     truncation JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 CREATE INDEX IF NOT EXISTS patch_runs_script_idx ON patch_runs(script_run_id);
+ALTER TABLE starter_file_audit_rows ADD COLUMN IF NOT EXISTS mutation_description TEXT;
+ALTER TABLE file_mutations ADD COLUMN IF NOT EXISTS mutation_description TEXT;
+ALTER TABLE patch_runs ADD COLUMN IF NOT EXISTS mutation_description TEXT;
 
 CREATE TABLE IF NOT EXISTS workflow_memory_script_embeddings (
     id UUID PRIMARY KEY,

@@ -447,7 +447,7 @@ async fn selected_session_detail(
     let row = sqlx::query(
         r#"
         SELECT id, status, role_id, role_version, project_key, workdir, worktree_root, title, name, metadata, role_snapshot,
-               active_project_runtime_version_id, active_hook_bindings
+               active_project_runtime_version_id, active_hook_bindings, active_tool_bundle_version_ids
         FROM sessions
         WHERE id = $1
         "#,
@@ -506,9 +506,11 @@ async fn selected_session_detail(
     let terminal_submission_rejection = crate::db::latest_rejected_submitted_input(pool, session_id).await?;
     let active_project_runtime_version_id: Option<Uuid> = row.get("active_project_runtime_version_id");
     let active_hook_bindings: Value = row.get("active_hook_bindings");
+    let active_tool_bundle_version_ids: Value = row.get("active_tool_bundle_version_ids");
     let project_runtime = json!({
         "activeVersionId": active_project_runtime_version_id,
         "hookBindingCount": active_hook_bindings.as_object().map(|value| value.len()).unwrap_or_default(),
+        "activeToolBundleVersionIds": active_tool_bundle_version_ids,
     });
     let hook_overrides = active_hook_bindings.clone();
     let subagents = crate::lifecycle_hooks::parent_subagent_projection(pool, session_id).await?;
@@ -552,6 +554,50 @@ async fn selected_session_detail(
             "createdAt": optional_time(Some(row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"))),
         }))
         .collect::<Vec<_>>();
+    let image_rows = sqlx::query("SELECT id, mime_type, byte_count, width, height, retrieval_metadata FROM starter_image_artifacts WHERE session_id=$1 ORDER BY created_at DESC LIMIT 20")
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+    let image_artifacts = image_rows
+        .into_iter()
+        .map(|row| json!({
+            "imageArtifactId": row.get::<Uuid, _>("id"),
+            "mimeType": row.get::<String, _>("mime_type"),
+            "byteCount": row.get::<i64, _>("byte_count"),
+            "width": row.get::<Option<i32>, _>("width"),
+            "height": row.get::<Option<i32>, _>("height"),
+            "retrieval": row.get::<Value, _>("retrieval_metadata"),
+        }))
+        .collect::<Vec<_>>();
+    let server_rows = sqlx::query("SELECT handle, status, url, port, readiness_config FROM starter_managed_servers WHERE session_id=$1 ORDER BY created_at DESC LIMIT 20")
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+    let running_servers = server_rows
+        .into_iter()
+        .map(|row| json!({
+            "handle": row.get::<String, _>("handle"),
+            "status": row.get::<String, _>("status"),
+            "url": row.get::<String, _>("url"),
+            "port": row.get::<i32, _>("port"),
+            "readiness": row.get::<Value, _>("readiness_config"),
+            "actions": ["status", "logs", "stop"],
+        }))
+        .collect::<Vec<_>>();
+    let tooling_rows = sqlx::query("SELECT id, title, urgency, status, route FROM starter_tooling_requests WHERE session_id=$1 ORDER BY created_at DESC LIMIT 20")
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+    let tooling_requests = tooling_rows
+        .into_iter()
+        .map(|row| json!({
+            "packetId": row.get::<Uuid, _>("id"),
+            "title": row.get::<String, _>("title"),
+            "urgency": row.get::<String, _>("urgency"),
+            "status": row.get::<String, _>("status"),
+            "route": row.get::<Value, _>("route"),
+        }))
+        .collect::<Vec<_>>();
     Ok(Some(SelectedSessionDetail {
         id: row.get::<Uuid, _>("id").to_string(),
         role_id: row.get("role_id"),
@@ -577,6 +623,9 @@ async fn selected_session_detail(
         contracts,
         resource_leases,
         recent_hook_failures,
+        image_artifacts,
+        running_servers,
+        tooling_requests,
         requirements_review,
     }))
 }

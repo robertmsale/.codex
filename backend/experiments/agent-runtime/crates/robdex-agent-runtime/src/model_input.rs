@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::command_registry::CommandContextEvidence;
 use crate::db::{HistoryItem, SessionSummary};
 use crate::model::{ModelHistoryItem, RuntimeInputMessage};
-use crate::roles::RoleSnapshot;
+use crate::roles::{RoleSnapshot, visible_tool_bundle_for_role};
 
 #[derive(Debug, Clone)]
 pub struct ContextSnapshotRecord {
@@ -55,12 +55,13 @@ pub fn runtime_context_block(snapshot: &ContextSnapshotRecord) -> String {
     let model = s.get("model").and_then(Value::as_str).unwrap_or("unknown");
     let command_context_id = s.pointer("/tools/commandContextId").and_then(Value::as_str).unwrap_or("unknown");
     let visible_commands = s.pointer("/tools/visibleCommandCount").and_then(Value::as_i64).unwrap_or_default();
+    let native_affordance_count = s.pointer("/tools/nativeAffordanceCount").and_then(Value::as_i64).unwrap_or_default();
     let sandbox_policy = s.pointer("/sandbox/policy").and_then(Value::as_str).unwrap_or("unknown");
     let approval_policy = s.pointer("/sandbox/approval").and_then(Value::as_str).unwrap_or("unknown");
     let policy_summary = s.pointer("/policy/summary").and_then(Value::as_str).unwrap_or("unknown");
     let generated_at = s.get("generatedAt").and_then(Value::as_str).unwrap_or("unknown");
     format!(
-        "<runtime_context epoch=\"{}\">\n  <session_id>{}</session_id>\n  <project key=\"{}\">{}</project>\n  <cwd state=\"{}\" source=\"{}\">{}</cwd>\n  <role epoch=\"{}\" key=\"{}\" version=\"{}\" />\n  <model>{}</model>\n  <sandbox policy=\"{}\" approval=\"{}\">{}</sandbox>\n  <tools command_context_id=\"{}\" visible_command_count=\"{}\" />\n  <context_event_watermark>{}</context_event_watermark>\n  <sequence>{}</sequence>\n  <generated_at>{}</generated_at>\n</runtime_context>",
+        "<runtime_context epoch=\"{}\">\n  <session_id>{}</session_id>\n  <project key=\"{}\">{}</project>\n  <cwd state=\"{}\" source=\"{}\">{}</cwd>\n  <role epoch=\"{}\" key=\"{}\" version=\"{}\" />\n  <model>{}</model>\n  <sandbox policy=\"{}\" approval=\"{}\">{}</sandbox>\n  <tools command_context_id=\"{}\" visible_command_count=\"{}\" native_affordance_count=\"{}\" />\n  <context_event_watermark>{}</context_event_watermark>\n  <sequence>{}</sequence>\n  <generated_at>{}</generated_at>\n</runtime_context>",
         snapshot.context_epoch,
         xml_escape(session_id),
         xml_escape(project_key),
@@ -77,6 +78,7 @@ pub fn runtime_context_block(snapshot: &ContextSnapshotRecord) -> String {
         xml_escape(policy_summary),
         xml_escape(command_context_id),
         visible_commands,
+        native_affordance_count,
         snapshot.context_event_watermark,
         snapshot.event_sequence,
         xml_escape(generated_at)
@@ -210,6 +212,7 @@ pub async fn persist_context_snapshot(
     let (project_key, project_display) = project_label(pool, session.project_key.as_deref()).await?;
     let cwd_trimmed = session.workdir.trim();
     let cwd_known = !cwd_trimmed.is_empty();
+    let native_affordances = visible_tool_bundle_for_role(pool, &role.id, session.project_key.as_deref()).await?;
     let snapshot = json!({
         "sessionId": session.id,
         "project": {"key": project_key, "displayName": project_display, "assignment": if session.project_key.is_some() {"assigned"} else {"unassigned"}},
@@ -219,7 +222,7 @@ pub async fn persist_context_snapshot(
         "model": role.model_defaults.model,
         "sandbox": {"policy": "role.policy", "approval": "role.policy"},
         "policy": {"summary": "role snapshot policy and runtime command policy are authoritative"},
-        "tools": {"commandContextId": command_context.id, "visibleCommandCount": command_context.visible_count},
+        "tools": {"commandContextId": command_context.id, "visibleCommandCount": command_context.visible_count, "nativeAffordances": native_affordances, "nativeAffordanceCount": native_affordances.len()},
         "generatedAt": Utc::now().to_rfc3339(),
     });
     let event_kind = match previous.as_ref() {
@@ -323,9 +326,21 @@ pub fn responses_input(
         "metadata": {"source": "role_instructions", "roleEpoch": role_epoch(role)}
     })];
     for runtime_message in runtime_messages {
+        let mut content = vec![json!({"type": "input_text", "text": runtime_message.text})];
+        if let Some(attachments) = runtime_message.metadata.get("imageArtifactAttachments").and_then(Value::as_array) {
+            for attachment in attachments {
+                content.push(json!({
+                    "type": "input_image",
+                    "artifact_id": attachment.get("imageArtifactId").cloned().unwrap_or(Value::Null),
+                    "mime_type": attachment.get("mimeType").cloned().unwrap_or(Value::Null),
+                    "detail": attachment.get("detail").cloned().unwrap_or_else(|| json!("auto")),
+                    "source": attachment.get("source").cloned().unwrap_or_else(|| json!("artifact_store")),
+                }));
+            }
+        }
         input.push(json!({
             "role": "developer",
-            "content": [{"type": "input_text", "text": runtime_message.text}],
+            "content": content,
             "metadata": runtime_message.metadata,
         }));
     }
@@ -432,7 +447,7 @@ mod tests {
                 "model": "gpt-test",
                 "sandbox": {"policy": "role.policy", "approval": "role.policy"},
                 "policy": {"summary": "role snapshot policy"},
-                "tools": {"commandContextId":"cmdctx-empty","visibleCommandCount":0},
+                "tools": {"commandContextId":"cmdctx-empty","visibleCommandCount":0,"nativeAffordanceCount":3},
                 "generatedAt": "2026-06-19T00:00:00Z"
             }),
             previous_snapshot: None,
@@ -440,6 +455,7 @@ mod tests {
         let block = runtime_context_block(&snapshot);
         assert!(block.contains("state=\"unavailable\""));
         assert!(block.contains(">unavailable</cwd>"));
+        assert!(block.contains("native_affordance_count=\"3\""));
     }
 
     #[test]

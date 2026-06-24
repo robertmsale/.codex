@@ -712,6 +712,16 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
       ],
     ),
     AgentRuntimeOperationSurface(
+      surfaceId: 'imageArtifacts',
+      title: 'Image artifacts',
+      subtitle: 'Selected session evidence',
+      rows: [
+        AgentRuntimeFact(label: 'Image artifacts', value: '1'),
+        AgentRuntimeFact(label: 'Evidence image 1', value: 'image/png · 1024 bytes · 1366 × 1024 · retrievable'),
+      ],
+      actions: [],
+    ),
+    AgentRuntimeOperationSurface(
       surfaceId: 'settings',
       title: 'Settings',
       subtitle: 'Runtime connection defaults',

@@ -115,6 +115,12 @@ pub struct SelectedSessionDetail {
     #[serde(default)]
     pub recent_hook_failures: Vec<Value>,
     #[serde(default)]
+    pub image_artifacts: Vec<Value>,
+    #[serde(default)]
+    pub running_servers: Vec<Value>,
+    #[serde(default)]
+    pub tooling_requests: Vec<Value>,
+    #[serde(default)]
     pub requirements_review: Option<RequirementsReviewSummary>,
 }
 
@@ -1766,6 +1772,9 @@ mod tests {
             contracts: Vec::new(),
             resource_leases: Vec::new(),
             recent_hook_failures: Vec::new(),
+            image_artifacts: Vec::new(),
+            running_servers: Vec::new(),
+            tooling_requests: Vec::new(),
             requirements_review: None,
         });
         projection.apply_delta(delta(1, RuntimeDeltaKind::SessionUpsert { session: session("session-1") }));
@@ -1819,6 +1828,9 @@ mod tests {
             contracts: Vec::new(),
             resource_leases: Vec::new(),
             recent_hook_failures: Vec::new(),
+            image_artifacts: Vec::new(),
+            running_servers: Vec::new(),
+            tooling_requests: Vec::new(),
             requirements_review: None,
         };
         projection.apply_delta(delta(1, RuntimeDeltaKind::SelectedSessionReplace { session: Some(detail.clone()) }));
@@ -1853,6 +1865,9 @@ mod tests {
             contracts: Vec::new(),
             resource_leases: Vec::new(),
             recent_hook_failures: Vec::new(),
+            image_artifacts: Vec::new(),
+            running_servers: Vec::new(),
+            tooling_requests: Vec::new(),
             requirements_review: None,
         });
         let summary = RequirementsReviewSummary {

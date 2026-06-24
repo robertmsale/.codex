@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::process::ExitStatusExt;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
@@ -41,6 +42,9 @@ use crate::workflow_memory::RememberCandidate;
 use crate::lifecycle_hooks;
 
 const OUTPUT_LIMIT_BYTES: usize = 12_000;
+const STARTER_FILE_LINE_LIMIT: usize = 400;
+const STARTER_TREE_RESULT_LIMIT: usize = 250;
+const STARTER_MAX_MUTATION_DESCRIPTION: usize = 220;
 
 static PROCESS_MANAGER: Lazy<Mutex<BTreeMap<Uuid, BTreeMap<String, ManagedProcess>>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
@@ -82,6 +86,48 @@ pub fn terminate_all_runtime_processes(reason: &str) -> usize {
     }
     manager.clear();
     terminated
+}
+
+pub async fn reconcile_starter_server_leases(pool: &PgPool) -> Result<usize> {
+    let rows: Vec<(Uuid, String, i32)> = sqlx::query_as(
+        "SELECT session_id, handle, port FROM starter_managed_servers WHERE status='running'",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut lost = Vec::new();
+    {
+        let mut manager = PROCESS_MANAGER
+            .lock()
+            .map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?;
+        for (session_id, handle, port) in rows {
+            let attached_running = manager
+                .get_mut(&session_id)
+                .and_then(|processes| processes.get_mut(&handle))
+                .map(|process| process.refresh_status().unwrap_or(false))
+                .unwrap_or(false);
+            if !attached_running {
+                lost.push((session_id, handle, port));
+            }
+        }
+    }
+    let mut released = 0usize;
+    for (session_id, handle, port) in lost {
+        let updated = sqlx::query("UPDATE starter_managed_servers SET status='lost', updated_at=now() WHERE session_id=$1 AND handle=$2 AND status='running'")
+            .bind(session_id)
+            .bind(&handle)
+            .execute(pool)
+            .await?
+            .rows_affected();
+        if updated > 0 {
+            sqlx::query("UPDATE starter_port_leases SET status='released', released_at=COALESCE(released_at, now()), release_reason='runtime.reconcile' WHERE session_id=$1 AND allocated_port=$2 AND status='active'")
+                .bind(session_id)
+                .bind(port)
+                .execute(pool)
+                .await?;
+            released += 1;
+        }
+    }
+    Ok(released)
 }
 
 #[cfg(test)]
@@ -197,33 +243,11 @@ impl ExecutionRoot {
     }
 
     fn resolve_read_path(&self, path: &str) -> Result<PathBuf> {
-        if path.trim().is_empty() {
-            bail!("fs.read path must not be empty");
-        }
-        let resolved = std::fs::canonicalize(self.root.join(path))
-            .with_context(|| format!("fs.read path is not accessible: {path}"))?;
-        if !resolved.starts_with(&self.root) {
-            bail!("fs.read path escapes execution root: {path}");
-        }
-        Ok(resolved)
+        self.resolve_agent_path(path, "fs.read", true)
     }
 
     fn resolve_write_path(&self, path: &str) -> Result<PathBuf> {
-        if path.trim().is_empty() {
-            bail!("fs.write path must not be empty");
-        }
-        let joined = self.root.join(path);
-        let parent = joined
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("fs.write path has no parent: {path}"))?;
-        let parent = std::fs::canonicalize(parent)
-            .with_context(|| format!("fs.write parent is not accessible: {path}"))?;
-        if !parent.starts_with(&self.root) {
-            bail!("fs.write path escapes execution root: {path}");
-        }
-        let resolved = parent.join(joined.file_name().ok_or_else(|| anyhow::anyhow!("fs.write path has no file name: {path}"))?);
-        reject_git_internal(&resolved, &self.root, "fs.write")?;
-        Ok(resolved)
+        self.resolve_agent_path(path, "fs.write", false)
     }
 
     fn validate_patch_path(&self, path: &str) -> Result<PathBuf> {
@@ -231,29 +255,140 @@ impl ExecutionRoot {
             bail!("patch path must not be empty or /dev/null in this phase");
         }
         let relative = path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")).unwrap_or(path);
-        let joined = self.root.join(relative);
-        let parent = joined.parent().ok_or_else(|| anyhow::anyhow!("patch path has no parent: {path}"))?;
-        let parent = std::fs::canonicalize(parent)
-            .with_context(|| format!("patch parent is not accessible: {path}"))?;
-        if !parent.starts_with(&self.root) {
-            bail!("patch path escapes execution root: {path}");
-        }
-        let resolved = parent.join(joined.file_name().ok_or_else(|| anyhow::anyhow!("patch path has no file name: {path}"))?);
-        reject_git_internal(&resolved, &self.root, "patch.apply")?;
-        Ok(resolved)
+        self.resolve_agent_path(relative, "patch.apply", false)
     }
 
     pub fn as_path(&self) -> &Path {
         &self.root
+    }
+
+    fn resolve_agent_path(&self, path: &str, action: &str, must_exist: bool) -> Result<PathBuf> {
+        let raw = path.trim();
+        if raw.is_empty() {
+            bail!("{action} path error: rejectedPath={path:?}; resolutionRoot={}; reason=emptyPath", self.root.display());
+        }
+        let requested = Path::new(raw);
+        let mut normalized = PathBuf::new();
+        for component in requested.components() {
+            match component {
+                Component::Prefix(_) => bail!("{action} path error: rejectedPath={path}; resolutionRoot={}; reason=unsupportedPathPrefix", self.root.display()),
+                Component::RootDir => {
+                    if !requested.is_absolute() {
+                        bail!("{action} path error: rejectedPath={path}; resolutionRoot={}; reason=invalidRootComponent", self.root.display());
+                    }
+                }
+                Component::CurDir => {}
+                Component::ParentDir => bail!("{action} path error: rejectedPath={path}; resolutionRoot={}; reason=parentTraversalRejected", self.root.display()),
+                Component::Normal(part) => normalized.push(part),
+            }
+        }
+        let candidate = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            self.root.join(normalized)
+        };
+        let resolved = if must_exist {
+            std::fs::canonicalize(&candidate)
+                .with_context(|| format!("{action} path error: rejectedPath={path}; resolutionRoot={}; reason=notAccessible", self.root.display()))?
+        } else {
+            let parent = candidate
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("{action} path error: rejectedPath={path}; resolutionRoot={}; reason=noParent", self.root.display()))?;
+            let parent = std::fs::canonicalize(parent)
+                .with_context(|| format!("{action} path error: rejectedPath={path}; resolutionRoot={}; reason=parentNotAccessible", self.root.display()))?;
+            parent.join(candidate.file_name().ok_or_else(|| anyhow::anyhow!("{action} path error: rejectedPath={path}; resolutionRoot={}; reason=noFileName", self.root.display()))?)
+        };
+        if !resolved.starts_with(&self.root) {
+            bail!("{action} path error: rejectedPath={path}; resolutionRoot={}; reason=escapesExecutionRoot", self.root.display());
+        }
+        reject_git_internal(&resolved, &self.root, action)?;
+        Ok(resolved)
     }
 }
 
 fn reject_git_internal(path: &Path, root: &Path, action: &str) -> Result<()> {
     let rel = path.strip_prefix(root).unwrap_or(path);
     if rel.components().any(|component| component.as_os_str() == ".git") {
-        bail!("{action} must not touch .git or git internals: {}", rel.display());
+        bail!("{action} path error: rejectedPath={}; resolutionRoot={}; reason=gitInternalsRejected", rel.display(), root.display());
     }
     Ok(())
+}
+
+fn require_mutation_description(action: &str, description: &str) -> Result<()> {
+    let trimmed = description.trim();
+    if trimmed.is_empty() {
+        bail!("{action} description must be a short non-empty description of the intended mutation");
+    }
+    if trimmed.len() > STARTER_MAX_MUTATION_DESCRIPTION {
+        bail!("{action} description is too long; maximum is {STARTER_MAX_MUTATION_DESCRIPTION} bytes");
+    }
+    let generic = ["change file", "update", "fix", "edit", "misc", "stuff"];
+    if generic.iter().any(|value| value.eq_ignore_ascii_case(trimmed)) {
+        bail!("{action} description is too generic; describe the concrete intended mutation");
+    }
+    Ok(())
+}
+
+fn text_file_content(action: &str, path: &Path) -> Result<String> {
+    let bytes = std::fs::read(path).with_context(|| format!("{action} failed to read {}", path.display()))?;
+    if bytes.iter().take(8192).any(|b| *b == 0) {
+        bail!("{action} rejected binary content by default: {}", path.display());
+    }
+    String::from_utf8(bytes).with_context(|| format!("{action} rejected non-UTF-8 binary content by default: {}", path.display()))
+}
+
+fn line_count(text: &str) -> usize {
+    if text.is_empty() { 0 } else { text.lines().count().max(1) }
+}
+
+fn bounded_lines(text: &str, start: usize, end: usize) -> (String, bool, usize) {
+    let lines: Vec<&str> = text.lines().collect();
+    let total = lines.len();
+    let safe_start = start.max(1);
+    let safe_end = end.min(total).max(safe_start.saturating_sub(1));
+    let mut selected = Vec::new();
+    for (idx, line) in lines.iter().enumerate().take(safe_end).skip(safe_start - 1) {
+        selected.push(format!("{}: {}", idx + 1, line));
+        if selected.len() >= STARTER_FILE_LINE_LIMIT {
+            return (selected.join("\n"), true, total);
+        }
+    }
+    let result = selected.join("\n");
+    let truncated = result.len() > OUTPUT_LIMIT_BYTES;
+    let (result, byte_truncated) = truncate_text(&result, OUTPUT_LIMIT_BYTES);
+    (result, truncated || byte_truncated || safe_end < total, total)
+}
+
+fn artifact_id_from_envelope(envelope: &output_artifacts::OutputArtifactEnvelope) -> String {
+    envelope.artifact_id.to_string()
+}
+
+fn simple_glob_match(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some((prefix, suffix)) = pattern.split_once('*') {
+        return value.starts_with(prefix) && value.ends_with(suffix);
+    }
+    pattern == value
+}
+
+fn image_mime_and_dimensions(bytes: &[u8], path: &str) -> (String, Option<i32>, Option<i32>) {
+    if bytes.len() >= 24 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let width = i32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let height = i32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        return ("image/png".to_string(), Some(width), Some(height));
+    }
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        return ("image/jpeg".to_string(), None, None);
+    }
+    let mime = match Path::new(path).extension().and_then(|ext| ext.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    };
+    (mime.to_string(), None, None)
 }
 
 fn file_state(path: &Path) -> JsonValue {
@@ -530,6 +665,18 @@ pub async fn execute_code(
     for record in &records {
         persist_record(pool, session_id, turn_id, tool_call_id, script_run_id, record, role_snapshot).await?;
     }
+    for record in &records {
+        if let HostRecord::ManagedProcess(process) = record {
+            if process.event == "server.started" {
+                sqlx::query("UPDATE starter_managed_servers SET process_id=$3 WHERE session_id=$1 AND handle=$2")
+                    .bind(session_id)
+                    .bind(&process.handle)
+                    .bind(process.id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+    }
 
     let full_final_output = final_output;
     let full_stderr = stderr;
@@ -734,6 +881,12 @@ def shell(script, mode="-lc", cwd="."):
 
 fn add_host_builtins(builder: &mut GlobalsBuilder) {
     builder.namespace("fs", fs_builtins);
+    builder.namespace("file", file_builtins);
+    builder.namespace("tree", tree_builtins);
+    builder.namespace("git", git_builtins);
+    builder.namespace("server", server_builtins);
+    builder.namespace("image", image_builtins);
+    builder.namespace("tooling", tooling_builtins);
     builder.namespace("patch", patch_builtins);
     builder.namespace_no_docs("__cmd", cmd_dynamic_builtins);
     builder.namespace_no_docs("__proc", proc_dynamic_builtins);
@@ -949,15 +1102,124 @@ fn fs_builtins(builder: &mut GlobalsBuilder) {
         host_kernel(eval).run_fs_read(path)
     }
 
-    fn write<'v>(path: &'v str, content: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
-        host_kernel(eval).run_fs_write(path, content)
+    fn write<'v>(path: &'v str, content: &'v str, description: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).run_fs_write(path, content, description)
+    }
+}
+
+#[starlark_module]
+fn file_builtins(builder: &mut GlobalsBuilder) {
+    fn head<'v>(path: &'v str, #[starlark(default = 40)] lines: i32, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).file_head(path, lines)
+    }
+    fn tail<'v>(path: &'v str, #[starlark(default = 40)] lines: i32, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).file_tail(path, lines)
+    }
+    fn read_lines<'v>(path: &'v str, start: i32, end: i32, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).file_read_lines(path, start, end)
+    }
+    fn line_count<'v>(path: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).file_line_count(path)
+    }
+    fn search<'v>(path: &'v str, pattern: &'v str, #[starlark(default = 2)] context: i32, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).file_search(path, pattern, context)
+    }
+    fn replace_exact<'v>(path: &'v str, old: &'v str, new: &'v str, description: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).file_replace_exact(path, old, new, description)
+    }
+}
+
+#[starlark_module]
+fn tree_builtins(builder: &mut GlobalsBuilder) {
+    fn list<'v>(#[starlark(default = ".")] path: &'v str, #[starlark(default = 2)] depth: i32, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).tree_list(path, depth)
+    }
+    fn find<'v>(#[starlark(default = ".")] path: &'v str, #[starlark(default = "")] name_glob: &'v str, #[starlark(default = "")] r#type: &'v str, #[starlark(default = 50)] max_results: i32, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).tree_find(path, name_glob, r#type, max_results)
+    }
+}
+
+#[starlark_module]
+fn git_builtins(builder: &mut GlobalsBuilder) {
+    fn status<'v>(eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).git_status()
+    }
+    fn diff<'v>(paths: UnpackList<Value<'v>>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).git_diff(starlark_string_list(paths)?)
+    }
+    fn add<'v>(paths: UnpackList<Value<'v>>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).git_add(starlark_string_list(paths)?)
+    }
+    fn restore<'v>(paths: UnpackList<Value<'v>>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).git_restore(starlark_string_list(paths)?)
+    }
+    fn commit<'v>(message: &'v str, paths: UnpackList<Value<'v>>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).git_commit(message, starlark_string_list(paths)?)
+    }
+    fn inspect_worker_branch<'v>(worker_branch: &'v str, #[starlark(default = "main")] local_main: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).git_inspect_worker_branch(worker_branch, local_main)
+    }
+    fn rebase_worker_branch<'v>(worker_branch: &'v str, #[starlark(default = "main")] local_main: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).git_rebase_worker_branch(worker_branch, local_main)
+    }
+    fn fast_forward_local_main<'v>(worker_branch: &'v str, #[starlark(default = "main")] local_main: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).git_fast_forward_local_main(worker_branch, local_main)
+    }
+    fn cleanup_integrated_worktree<'v>(path: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).git_cleanup_integrated_worktree(path)
+    }
+}
+
+#[starlark_module]
+fn server_builtins(builder: &mut GlobalsBuilder) {
+    fn start<'v>(action: &'v str, args: UnpackList<Value<'v>>, #[starlark(default = "")] name: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).server_start(action, starlark_string_list(args)?, name)
+    }
+    fn status<'v>(handle: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).server_status(handle)
+    }
+    fn url<'v>(handle: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).server_url(handle)
+    }
+    fn logs<'v>(handle: &'v str, #[starlark(default = "stdout")] stream: &'v str, #[starlark(default = 100)] lines: i32, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).server_logs(handle, stream, lines)
+    }
+    fn wait_ready<'v>(handle: &'v str, #[starlark(default = 1000)] timeout_ms: i32, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).server_wait_ready(handle, timeout_ms)
+    }
+    fn stop<'v>(handle: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).server_stop(handle)
+    }
+}
+
+#[starlark_module]
+fn image_builtins(builder: &mut GlobalsBuilder) {
+    fn capture_from_file<'v>(path: &'v str, description: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).image_capture_from_file(path, description)
+    }
+    fn describe<'v>(id: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).image_describe(id)
+    }
+}
+
+#[starlark_module]
+fn tooling_builtins(builder: &mut GlobalsBuilder) {
+    fn request<'v>(
+        title: &'v str,
+        need: &'v str,
+        attempted: UnpackList<Value<'v>>,
+        #[starlark(default = "")] proposed: &'v str,
+        #[starlark(default = "normal")] urgency: &'v str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<String> {
+        host_kernel(eval).tooling_request(title, need, starlark_string_list(attempted)?, proposed, urgency)
     }
 }
 
 #[starlark_module]
 fn patch_builtins(builder: &mut GlobalsBuilder) {
-    fn apply<'v>(unified_diff: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
-        host_kernel(eval).run_patch_apply(unified_diff)
+    fn apply<'v>(unified_diff: &'v str, description: &'v str, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<String> {
+        host_kernel(eval).run_patch_apply(unified_diff, description)
     }
 }
 
@@ -1124,6 +1386,208 @@ fn block_on_host_future<F: std::future::Future>(future: F) -> F::Output {
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
 }
 
+pub async fn image_artifact_metadata(pool: &PgPool, session_id: Uuid, image_id: Uuid) -> Result<JsonValue> {
+    let row: Option<(String, i64, Option<i32>, Option<i32>, JsonValue)> = sqlx::query_as(
+        "SELECT mime_type, byte_count, width, height, retrieval_metadata FROM starter_image_artifacts WHERE id=$1 AND session_id=$2"
+    )
+    .bind(image_id)
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((mime, bytes, width, height, retrieval)) = row else {
+        bail!("image artifact not found for current session: {image_id}");
+    };
+    Ok(json!({
+        "imageArtifactId": image_id,
+        "mimeType": mime,
+        "byteCount": bytes,
+        "width": width,
+        "height": height,
+        "retrieval": retrieval,
+    }))
+}
+
+pub async fn image_artifact_thumbnail(pool: &PgPool, session_id: Uuid, image_id: Uuid) -> Result<Vec<u8>> {
+    let bytes: Option<Vec<u8>> = sqlx::query_scalar("SELECT binary_content FROM starter_image_artifacts WHERE id=$1 AND session_id=$2")
+        .bind(image_id)
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?;
+    let bytes = bytes.ok_or_else(|| anyhow::anyhow!("image artifact not found for current session: {image_id}"))?;
+    Ok(bytes.into_iter().take(256 * 1024).collect())
+}
+
+pub async fn image_artifact_full(pool: &PgPool, session_id: Uuid, image_id: Uuid) -> Result<Vec<u8>> {
+    let bytes: Option<Vec<u8>> = sqlx::query_scalar("SELECT binary_content FROM starter_image_artifacts WHERE id=$1 AND session_id=$2")
+        .bind(image_id)
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?;
+    bytes.ok_or_else(|| anyhow::anyhow!("image artifact not found for current session: {image_id}"))
+}
+
+pub async fn image_artifact_model_attachment(pool: &PgPool, session_id: Uuid, image_id: Uuid) -> Result<JsonValue> {
+    let metadata = image_artifact_metadata(pool, session_id, image_id).await?;
+    Ok(json!({
+        "type": "input_image",
+        "source": {"kind": "agentRuntimeImageArtifact", "imageArtifactId": image_id},
+        "metadata": metadata,
+        "binaryInTranscript": false,
+    }))
+}
+
+pub fn screenshot_capture_contracts() -> JsonValue {
+    json!({
+        "storageModel": {
+            "table": "starter_image_artifacts",
+            "binaryOutsideTranscript": true,
+            "handleField": "imageArtifactId",
+            "retrieval": ["metadata", "thumbnail", "full"],
+        },
+        "tools": [
+            {
+                "tool": "simulator.screenshot.capture",
+                "producer": "future simulator steward",
+                "input": {"leaseId": "uuid", "target": "owned simulator lease"},
+                "output": {"imageArtifactId": "uuid", "mimeType": "image/png", "sourceType": "simulatorScreenshot"},
+                "authorization": "owning session or simulator steward lease",
+            },
+            {
+                "tool": "browser.screenshot.capture",
+                "producer": "future browser tool",
+                "input": {"sessionUrl": "managed server URL", "viewport": {"width": "u32", "height": "u32"}},
+                "output": {"imageArtifactId": "uuid", "mimeType": "image/png", "sourceType": "browserScreenshot"},
+                "authorization": "owning session managed server boundary",
+            },
+            {
+                "tool": "design_lab.capture",
+                "producer": "future Design Lab capture",
+                "input": {"surface": "shared design-system component", "viewport": {"width": "u32", "height": "u32"}},
+                "output": {"imageArtifactId": "uuid", "mimeType": "image/png", "sourceType": "designLabScreenshot"},
+                "authorization": "Requirements-native design evidence request",
+            }
+        ],
+        "reviewContract": {
+            "requirementsEvidenceMustReference": ["imageArtifactId", "captureMethod", "viewport", "reviewedFlow"],
+            "modelAttachment": "input_image from image artifact metadata; never local path-only evidence",
+        }
+    })
+}
+
+async fn record_tooling_follow_on_request(
+    pool: &PgPool,
+    project_key: Option<&str>,
+    session_id: Uuid,
+    turn_id: Option<Uuid>,
+    starter_tooling_request_id: Uuid,
+    proposed: Option<&JsonValue>,
+) -> Result<Option<Uuid>> {
+    let Some(proposed) = proposed else {
+        return Ok(None);
+    };
+    let kind = proposed
+        .get("kind")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    match kind {
+        "command_registry" | "commandRegistry" => {
+            let packet_id = lifecycle_hooks::record_runtime_packet(
+                pool,
+                project_key,
+                Some(session_id),
+                None,
+                turn_id,
+                "command_registry.follow_on_request",
+                "pending_approval",
+                json!({
+                    "starterToolingRequestId": starter_tooling_request_id,
+                    "proposal": proposed,
+                }),
+                None,
+                json!({
+                    "source": "tooling.request",
+                    "requiresApproval": true,
+                    "authority": ["owner", "operator"],
+                    "approvalPath": "command_registry.request",
+                }),
+                &format!("tooling-follow-on-command-registry-{starter_tooling_request_id}"),
+            ).await?;
+            lifecycle_hooks::route_packet_envelope(
+                pool,
+                packet_id,
+                "approval_request",
+                Some(session_id),
+                None,
+                None,
+                "pending",
+                json!({
+                    "source": "tooling.request",
+                    "authority": ["owner", "operator"],
+                    "starterToolingRequestId": starter_tooling_request_id,
+                }),
+            ).await?;
+            Ok(Some(packet_id))
+        }
+        "project_runtime_config" | "projectRuntimeConfig" => {
+            let project = proposed
+                .get("projectKey")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| anyhow::anyhow!("project runtime follow-on requires projectKey"))?;
+            if project_key != Some(project) {
+                bail!("project runtime follow-on is scoped to the current project");
+            }
+            let source_text = proposed
+                .get("sourceText")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| anyhow::anyhow!("project runtime follow-on requires sourceText"))?;
+            let manifest = proposed
+                .get("manifest")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("project runtime follow-on requires manifest"))?;
+            let rationale = proposed
+                .get("rationale")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("tooling.request follow-on project runtime proposal");
+            let packet_id = lifecycle_hooks::request_project_runtime_config_change(
+                pool,
+                project,
+                session_id,
+                source_text,
+                manifest,
+                rationale,
+            ).await?;
+            lifecycle_hooks::route_packet_envelope(
+                pool,
+                packet_id,
+                "approval_request",
+                Some(session_id),
+                None,
+                None,
+                "pending",
+                json!({
+                    "source": "tooling.request",
+                    "authority": ["owner", "operator"],
+                    "starterToolingRequestId": starter_tooling_request_id,
+                }),
+            ).await?;
+            Ok(Some(packet_id))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn starlark_string_list<'v>(list: UnpackList<Value<'v>>) -> anyhow::Result<Vec<String>> {
+    list.items
+        .iter()
+        .map(|value| {
+            value
+                .unpack_str()
+                .map(ToString::to_string)
+                .ok_or_else(|| anyhow::anyhow!("list values must be strings"))
+        })
+        .collect()
+}
+
 impl HostKernel {
     fn outputs_last(&self) -> anyhow::Result<String> {
         let id = block_on_host_future(output_artifacts::last_artifact_id(&self.pool, self.session_id))?
@@ -1154,6 +1618,1119 @@ impl HostKernel {
             context.map(|value| value.max(0) as usize),
         ))?;
         Ok(output_artifacts::retrieval_json(packet))
+    }
+
+    fn starter_context(&self) -> anyhow::Result<(Option<Uuid>, Option<Uuid>, Option<String>)> {
+        block_on_host_future(async {
+            let row = sqlx::query(
+                r#"
+                SELECT tc.id AS tool_call_id, t.id AS turn_id, s.project_key AS project_key
+                FROM script_runs sr
+                JOIN tool_calls tc ON tc.id = sr.tool_call_id
+                LEFT JOIN turns t ON t.id = tc.turn_id
+                LEFT JOIN sessions s ON s.id = tc.session_id
+                WHERE sr.id = $1
+                "#,
+            )
+            .bind(self.script_run_id)
+            .fetch_optional(&self.pool)
+            .await?;
+            if let Some(row) = row {
+                use sqlx::Row;
+                Ok((row.try_get("turn_id").ok(), row.try_get("tool_call_id").ok(), row.try_get("project_key").ok()))
+            } else {
+                Ok((None, None, None))
+            }
+        })
+    }
+
+    fn record_file_audit(&self, operation: &str, requested_path: &str, resolved_path: Option<&Path>, status: &str, byte_count: usize, line_count: usize, truncation: JsonValue, error: Option<String>, metadata: JsonValue) -> anyhow::Result<()> {
+        let (turn_id, tool_call_id, _) = self.starter_context()?;
+        let resolved = resolved_path.map(|path| path.display().to_string());
+        let mutation_description = metadata
+            .get("description")
+            .or_else(|| truncation.get("description"))
+            .and_then(JsonValue::as_str)
+            .map(str::to_string);
+        block_on_host_future(async {
+            sqlx::query(
+                r#"
+                INSERT INTO starter_file_audit_rows (
+                    id, session_id, turn_id, tool_call_id, script_run_id, operation, requested_path,
+                    resolved_path, status, byte_count, line_count, mutation_description, truncation, error, metadata
+                )
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                "#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(self.session_id)
+            .bind(turn_id)
+            .bind(tool_call_id)
+            .bind(self.script_run_id)
+            .bind(operation)
+            .bind(requested_path)
+            .bind(resolved)
+            .bind(status)
+            .bind(byte_count as i64)
+            .bind(line_count as i64)
+            .bind(mutation_description)
+            .bind(truncation)
+            .bind(error)
+            .bind(metadata)
+            .execute(&self.pool)
+            .await?;
+            Ok::<(), anyhow::Error>(())
+        })
+    }
+
+    fn file_head(&self, path: &str, lines: i32) -> anyhow::Result<String> {
+        let input = json!({"path": path, "lines": lines});
+        let policy = self.decide("file.head", input);
+        if !policy.decision.can_execute() {
+            bail!("file.head blocked by policy: {}", policy.decision.as_str());
+        }
+        let resolved = self.root.resolve_agent_path(path, "file.head", true)?;
+        let text = text_file_content("file.head", &resolved)?;
+        let count = lines.clamp(1, STARTER_FILE_LINE_LIMIT as i32) as usize;
+        let (content, truncated, total) = bounded_lines(&text, 1, count);
+        let artifact_id = self.store_starter_read_artifact("file.head", path, &content, truncated)?;
+        self.record_file_audit("file.head", path, Some(&resolved), "completed", text.len(), total, json!({"truncated": truncated, "limitLines": count, "artifactId": artifact_id}), None, json!({}))?;
+        Ok(serde_json::to_string(&json!({"path": path, "lineCount": total, "content": content, "truncated": truncated, "artifactId": artifact_id}))?)
+    }
+
+    fn file_tail(&self, path: &str, lines: i32) -> anyhow::Result<String> {
+        let input = json!({"path": path, "lines": lines});
+        let policy = self.decide("file.tail", input);
+        if !policy.decision.can_execute() {
+            bail!("file.tail blocked by policy: {}", policy.decision.as_str());
+        }
+        let resolved = self.root.resolve_agent_path(path, "file.tail", true)?;
+        let text = text_file_content("file.tail", &resolved)?;
+        let total = line_count(&text);
+        let count = lines.clamp(1, STARTER_FILE_LINE_LIMIT as i32) as usize;
+        let start = total.saturating_sub(count).saturating_add(1);
+        let (content, truncated, total) = bounded_lines(&text, start, total);
+        let artifact_id = self.store_starter_read_artifact("file.tail", path, &content, truncated)?;
+        self.record_file_audit("file.tail", path, Some(&resolved), "completed", text.len(), total, json!({"truncated": truncated, "limitLines": count, "artifactId": artifact_id}), None, json!({}))?;
+        Ok(serde_json::to_string(&json!({"path": path, "lineCount": total, "content": content, "truncated": truncated, "artifactId": artifact_id}))?)
+    }
+
+    fn file_read_lines(&self, path: &str, start: i32, end: i32) -> anyhow::Result<String> {
+        if start < 1 || end < start {
+            bail!("file.read_lines invalid 1-based inclusive line range");
+        }
+        let input = json!({"path": path, "start": start, "end": end});
+        let policy = self.decide("file.read_lines", input);
+        if !policy.decision.can_execute() {
+            bail!("file.read_lines blocked by policy: {}", policy.decision.as_str());
+        }
+        let resolved = self.root.resolve_agent_path(path, "file.read_lines", true)?;
+        let text = text_file_content("file.read_lines", &resolved)?;
+        let total = line_count(&text);
+        if start as usize > total + 1 {
+            bail!("file.read_lines start is beyond file line count");
+        }
+        let (content, truncated, total) = bounded_lines(&text, start as usize, end as usize);
+        let artifact_id = self.store_starter_read_artifact("file.read_lines", path, &content, truncated)?;
+        self.record_file_audit("file.read_lines", path, Some(&resolved), "completed", text.len(), total, json!({"truncated": truncated, "start": start, "end": end, "artifactId": artifact_id}), None, json!({}))?;
+        Ok(serde_json::to_string(&json!({"path": path, "start": start, "end": end, "lineCount": total, "content": content, "truncated": truncated, "artifactId": artifact_id}))?)
+    }
+
+    fn file_line_count(&self, path: &str) -> anyhow::Result<String> {
+        let policy = self.decide("file.line_count", json!({"path": path}));
+        if !policy.decision.can_execute() {
+            bail!("file.line_count blocked by policy: {}", policy.decision.as_str());
+        }
+        let resolved = self.root.resolve_agent_path(path, "file.line_count", true)?;
+        let text = text_file_content("file.line_count", &resolved)?;
+        let lines = line_count(&text);
+        self.record_file_audit("file.line_count", path, Some(&resolved), "completed", text.len(), lines, json!({"contentReturned": false}), None, json!({}))?;
+        Ok(serde_json::to_string(&json!({"path": path, "byteCount": text.len(), "lineCount": lines, "fileKind": "text", "truncated": false}))?)
+    }
+
+    fn file_search(&self, path: &str, pattern: &str, context: i32) -> anyhow::Result<String> {
+        if pattern.is_empty() {
+            bail!("file.search pattern must not be empty");
+        }
+        let policy = self.decide("file.search", json!({"path": path, "pattern": pattern, "context": context}));
+        if !policy.decision.can_execute() {
+            bail!("file.search blocked by policy: {}", policy.decision.as_str());
+        }
+        let resolved = self.root.resolve_agent_path(path, "file.search", true)?;
+        let text = text_file_content("file.search", &resolved)?;
+        let lines: Vec<&str> = text.lines().collect();
+        let ctx = context.clamp(0, 20) as usize;
+        let mut matches = Vec::new();
+        for (idx, line) in lines.iter().enumerate() {
+            if line.contains(pattern) {
+                let start = idx.saturating_sub(ctx);
+                let end = (idx + ctx + 1).min(lines.len());
+                let snippet = (start..end).map(|line_idx| format!("{}: {}", line_idx + 1, lines[line_idx])).collect::<Vec<_>>().join("\n");
+                matches.push(json!({"line": idx + 1, "context": snippet}));
+                if matches.len() >= 50 {
+                    break;
+                }
+            }
+        }
+        let truncated = matches.len() == 50;
+        let serialized_matches = serde_json::to_string(&matches)?;
+        let artifact_id = self.store_starter_read_artifact("file.search", path, &serialized_matches, truncated)?;
+        self.record_file_audit("file.search", path, Some(&resolved), "completed", text.len(), lines.len(), json!({"matchCount": matches.len(), "truncated": truncated, "artifactId": artifact_id}), None, json!({"patternHash": format!("{:x}", Sha256::digest(pattern.as_bytes()))}))?;
+        Ok(serde_json::to_string(&json!({"path": path, "matches": matches, "truncated": truncated, "artifactId": artifact_id}))?)
+    }
+
+    fn file_replace_exact(&self, path: &str, old: &str, new: &str, description: &str) -> anyhow::Result<String> {
+        require_mutation_description("file.replace_exact", description)?;
+        let policy = self.decide("file.replace_exact", json!({"path": path, "old": old, "new": new, "description": description, "oldBytes": old.len(), "newBytes": new.len(), "executionRoot": self.root.as_path().display().to_string()}));
+        if !policy.decision.can_execute() {
+            bail!("file.replace_exact blocked by policy: {}", policy.decision.as_str());
+        }
+        if old.is_empty() {
+            bail!("file.replace_exact old text must not be empty");
+        }
+        let resolved = self.root.resolve_agent_path(path, "file.replace_exact", true)?;
+        let text = text_file_content("file.replace_exact", &resolved)?;
+        let count = text.matches(old).count();
+        if count == 0 {
+            bail!("file.replace_exact old text is absent");
+        }
+        if count > 1 {
+            bail!("file.replace_exact old text is ambiguous; found {count} matches");
+        }
+        let before = file_state(&resolved);
+        let updated = text.replacen(old, new, 1);
+        std::fs::write(&resolved, updated.as_bytes())?;
+        let after = file_state(&resolved);
+        self.records.borrow_mut().push(HostRecord::FileMutation(FileMutationRecord {
+            id: Uuid::new_v4(),
+            action: "file.replace_exact",
+            path: resolved.display().to_string(),
+            before_state: before,
+            after_state: after,
+            status: "completed".to_string(),
+            error: None,
+            duration_ms: 0,
+            policy_decision: json!({"action": "file.replace_exact", "decision": "allow", "role": self.role_snapshot.id}),
+            truncation: json!({"description": description, "oldBytes": old.len(), "newBytes": new.len()}),
+        }));
+        self.record_file_audit("file.replace_exact", path, Some(&resolved), "completed", updated.len(), line_count(&updated), json!({"description": description}), None, json!({}))?;
+        Ok(serde_json::to_string(&json!({"path": path, "status": "completed", "description": description}))?)
+    }
+
+    fn tree_list(&self, path: &str, depth: i32) -> anyhow::Result<String> {
+        let depth = depth.clamp(0, 8) as usize;
+        let policy = self.decide("tree.list", json!({"path": path, "depth": depth}));
+        if !policy.decision.can_execute() {
+            bail!("tree.list blocked by policy: {}", policy.decision.as_str());
+        }
+        let resolved = self.root.resolve_agent_path(path, "tree.list", true)?;
+        if !resolved.is_dir() {
+            bail!("tree.list path is not a directory");
+        }
+        let mut entries = Vec::new();
+        let mut omitted = 0usize;
+        self.walk_tree(&resolved, depth, &mut |entry_path, metadata| {
+            if entries.len() >= STARTER_TREE_RESULT_LIMIT {
+                omitted += 1;
+                return;
+            }
+            let rel = entry_path.strip_prefix(self.root.as_path()).unwrap_or(entry_path);
+            if rel.components().any(|component| component.as_os_str() == ".git") {
+                return;
+            }
+            let kind = if metadata.is_dir() { "directory" } else if metadata.is_file() { "file" } else { "other" };
+            entries.push(json!({"path": rel.display().to_string(), "type": kind, "size": metadata.len()}));
+        })?;
+        let serialized_entries = serde_json::to_string(&entries)?;
+        let artifact_id = self.store_starter_read_artifact("tree.list", path, &serialized_entries, omitted > 0)?;
+        self.record_file_audit("tree.list", path, Some(&resolved), "completed", 0, entries.len(), json!({"omitted": omitted, "maxResults": STARTER_TREE_RESULT_LIMIT, "artifactId": artifact_id}), None, json!({"depth": depth}))?;
+        Ok(serde_json::to_string(&json!({"path": path, "entries": entries, "omitted": omitted, "depth": depth, "artifactId": artifact_id}))?)
+    }
+
+    fn tree_find(&self, path: &str, name_glob: &str, kind: &str, max_results: i32) -> anyhow::Result<String> {
+        let max = max_results.clamp(1, STARTER_TREE_RESULT_LIMIT as i32) as usize;
+        if path == "." && name_glob.is_empty() && kind.is_empty() {
+            bail!("tree.find rejects unbounded broad scans; provide name_glob or type");
+        }
+        let policy = self.decide("tree.find", json!({"path": path, "nameGlob": name_glob, "type": kind, "maxResults": max}));
+        if !policy.decision.can_execute() {
+            bail!("tree.find blocked by policy: {}", policy.decision.as_str());
+        }
+        let resolved = self.root.resolve_agent_path(path, "tree.find", true)?;
+        let mut matches = Vec::new();
+        let mut omitted = 0usize;
+        self.walk_tree(&resolved, 16, &mut |entry_path, metadata| {
+            let rel = entry_path.strip_prefix(self.root.as_path()).unwrap_or(entry_path);
+            if rel.components().any(|component| component.as_os_str() == ".git") {
+                return;
+            }
+            let actual_kind = if metadata.is_dir() { "directory" } else if metadata.is_file() { "file" } else { "other" };
+            if !kind.is_empty() && kind != actual_kind {
+                return;
+            }
+            let name = entry_path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+            if !name_glob.is_empty() && !simple_glob_match(name_glob, name) {
+                return;
+            }
+            if matches.len() >= max {
+                omitted += 1;
+                return;
+            }
+            matches.push(json!({"path": rel.display().to_string(), "type": actual_kind, "size": metadata.len()}));
+        })?;
+        let serialized_matches = serde_json::to_string(&matches)?;
+        let artifact_id = self.store_starter_read_artifact("tree.find", path, &serialized_matches, omitted > 0)?;
+        self.record_file_audit("tree.find", path, Some(&resolved), "completed", 0, matches.len(), json!({"omitted": omitted, "maxResults": max, "artifactId": artifact_id}), None, json!({"nameGlob": name_glob, "type": kind}))?;
+        Ok(serde_json::to_string(&json!({"path": path, "matches": matches, "omitted": omitted, "artifactId": artifact_id}))?)
+    }
+
+    fn store_starter_read_artifact(&self, operation: &str, path: &str, content: &str, truncated: bool) -> anyhow::Result<Option<String>> {
+        if !truncated && content.len() <= OUTPUT_LIMIT_BYTES {
+            return Ok(None);
+        }
+        let (turn_id, tool_call_id, _) = self.starter_context()?;
+        let envelope = block_on_host_future(output_artifacts::store(&self.pool, NewOutputArtifact {
+            id: Uuid::new_v4(),
+            session_id: self.session_id,
+            turn_id,
+            tool_call_id,
+            script_run_id: Some(self.script_run_id),
+            command_run_id: None,
+            process_id: None,
+            source_type: "starter_file_tree_read",
+            stream: operation,
+            content,
+            metadata: json!({"operation": operation, "path": path, "truncated": truncated}),
+        }))?;
+        Ok(Some(artifact_id_from_envelope(&envelope)))
+    }
+
+    fn walk_tree<F>(&self, root: &Path, depth: usize, visit: &mut F) -> anyhow::Result<()>
+    where
+        F: FnMut(&Path, std::fs::Metadata),
+    {
+        fn walk<F>(path: &Path, remaining: usize, visit: &mut F) -> anyhow::Result<()>
+        where
+            F: FnMut(&Path, std::fs::Metadata),
+        {
+            for entry in std::fs::read_dir(path)? {
+                let entry = entry?;
+                let p = entry.path();
+                let metadata = entry.metadata()?;
+                visit(&p, metadata.clone());
+                if metadata.is_dir() && remaining > 0 {
+                    walk(&p, remaining - 1, visit)?;
+                }
+            }
+            Ok(())
+        }
+        walk(root, depth, visit)
+    }
+
+    fn git_status(&self) -> anyhow::Result<String> {
+        self.git_policy("git.status", json!({}))?;
+        self.run_git(&["status", "--short"], Vec::new(), "git.status", None)
+    }
+
+    fn git_diff(&self, paths: Vec<String>) -> anyhow::Result<String> {
+        let resolved = self.validate_git_paths("git.diff", &paths, false)?;
+        let mut args = vec!["diff".to_string(), "--".to_string()];
+        args.extend(paths);
+        self.run_git(&args.iter().map(String::as_str).collect::<Vec<_>>(), resolved, "git.diff", None)
+    }
+
+    fn git_add(&self, paths: Vec<String>) -> anyhow::Result<String> {
+        let resolved = self.validate_git_paths("git.add", &paths, true)?;
+        let mut args = vec!["add".to_string(), "--".to_string()];
+        args.extend(paths.clone());
+        self.run_git(&args.iter().map(String::as_str).collect::<Vec<_>>(), resolved, "git.add", Some(json!({"stagedPaths": paths})))
+    }
+
+    fn git_restore(&self, paths: Vec<String>) -> anyhow::Result<String> {
+        let resolved = self.validate_git_paths("git.restore", &paths, true)?;
+        let mut args = vec!["restore".to_string(), "--".to_string()];
+        args.extend(paths.clone());
+        self.run_git(&args.iter().map(String::as_str).collect::<Vec<_>>(), resolved, "git.restore", Some(json!({"restoredPaths": paths})))
+    }
+
+    fn git_commit(&self, message: &str, paths: Vec<String>) -> anyhow::Result<String> {
+        let msg = message.trim();
+        if msg.is_empty() || msg.len() > 160 {
+            bail!("git.commit requires an explicit concise message");
+        }
+        let resolved = if paths.is_empty() { Vec::new() } else { self.validate_git_paths("git.commit", &paths, false)? };
+        let before = self.run_plain_git(&["rev-parse", "HEAD"]).unwrap_or_else(|_| "NO_HEAD".to_string());
+        let mut args = vec!["commit".to_string(), "-m".to_string(), msg.to_string()];
+        if !paths.is_empty() {
+            args.push("--".to_string());
+            args.extend(paths.clone());
+        }
+        let result = self.run_git(&args.iter().map(String::as_str).collect::<Vec<_>>(), resolved, "git.commit", Some(json!({"message": msg, "paths": paths, "parentHash": before.trim()})))?;
+        if result.contains("nothing to commit") || result.contains("no changes added") {
+            bail!("git.commit refused empty commit");
+        }
+        let commit_hash = self.run_plain_git(&["rev-parse", "HEAD"]).unwrap_or_default();
+        let changed_paths = self.run_plain_git(&["show", "--name-only", "--format=", "HEAD"])
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.trim().to_string())
+            .collect::<Vec<_>>();
+        self.record_file_audit(
+            "git.commit.summary",
+            "",
+            None,
+            "completed",
+            result.len(),
+            changed_paths.len(),
+            json!({"commitHash": commit_hash.trim(), "parentHash": before.trim(), "changedPaths": changed_paths, "message": msg, "paths": paths}),
+            None,
+            json!({"linkage": {"sessionId": self.session_id, "scriptRunId": self.script_run_id}}),
+        )?;
+        let mut value: JsonValue = serde_json::from_str(&result)?;
+        value["commitHash"] = json!(commit_hash.trim());
+        value["parentHash"] = json!(before.trim());
+        value["changedPaths"] = json!(changed_paths);
+        Ok(serde_json::to_string(&value)?)
+    }
+
+    fn require_orchestrator_git_integration(&self, action: &str) -> anyhow::Result<()> {
+        if self.role_snapshot.id != "orchestrator" {
+            bail!("{action} is only visible to orchestrator roles");
+        }
+        self.git_policy(action, json!({"roleId": self.role_snapshot.id}))
+    }
+
+    fn validate_git_branch_name(&self, action: &str, branch: &str) -> anyhow::Result<String> {
+        let branch = branch.trim();
+        if branch.is_empty()
+            || branch.starts_with('-')
+            || branch.contains("..")
+            || branch.contains(' ')
+            || branch.contains('\\')
+            || branch.contains(':')
+            || branch.contains('~')
+            || branch.contains('^')
+            || branch.contains('?')
+            || branch.contains('*')
+            || branch.contains('[')
+        {
+            bail!("{action} rejects unsafe branch name");
+        }
+        Ok(branch.to_string())
+    }
+
+    fn git_inspect_worker_branch(&self, worker_branch: &str, local_main: &str) -> anyhow::Result<String> {
+        self.require_orchestrator_git_integration("git.inspect_worker_branch")?;
+        let worker = self.validate_git_branch_name("git.inspect_worker_branch", worker_branch)?;
+        let main = self.validate_git_branch_name("git.inspect_worker_branch", local_main)?;
+        let worker_hash = self.run_plain_git(&["rev-parse", &worker])?;
+        let main_hash = self.run_plain_git(&["rev-parse", &main])?;
+        let merge_base = self.run_plain_git(&["merge-base", &main, &worker])?;
+        let changed = self.run_plain_git(&["diff", "--name-only", &format!("{main}...{worker}")])?
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.trim().to_string())
+            .collect::<Vec<_>>();
+        Ok(serde_json::to_string(&json!({
+            "workerBranch": worker,
+            "localMain": main,
+            "workerHead": worker_hash.trim(),
+            "localMainHead": main_hash.trim(),
+            "mergeBase": merge_base.trim(),
+            "changedPaths": changed,
+        }))?)
+    }
+
+    fn git_rebase_worker_branch(&self, worker_branch: &str, local_main: &str) -> anyhow::Result<String> {
+        self.require_orchestrator_git_integration("git.rebase_worker_branch")?;
+        let worker = self.validate_git_branch_name("git.rebase_worker_branch", worker_branch)?;
+        let main = self.validate_git_branch_name("git.rebase_worker_branch", local_main)?;
+        let before = self.run_plain_git(&["rev-parse", &worker])?;
+        let output = Command::new("git")
+            .args(["rebase", &main, &worker])
+            .current_dir(self.root.as_path())
+            .output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if !output.status.success() {
+            bail!("git.rebase_worker_branch failed: {stderr}");
+        }
+        let after = self.run_plain_git(&["rev-parse", &worker])?;
+        Ok(serde_json::to_string(&json!({"workerBranch": worker, "localMain": main, "before": before.trim(), "after": after.trim(), "stdout": stdout.lines().take(20).collect::<Vec<_>>() }))?)
+    }
+
+    fn git_fast_forward_local_main(&self, worker_branch: &str, local_main: &str) -> anyhow::Result<String> {
+        self.require_orchestrator_git_integration("git.fast_forward_local_main")?;
+        let worker = self.validate_git_branch_name("git.fast_forward_local_main", worker_branch)?;
+        let main = self.validate_git_branch_name("git.fast_forward_local_main", local_main)?;
+        let before = self.run_plain_git(&["rev-parse", &main])?;
+        let checkout = Command::new("git")
+            .args(["checkout", &main])
+            .current_dir(self.root.as_path())
+            .output()?;
+        if !checkout.status.success() {
+            bail!("git.fast_forward_local_main failed to checkout local main: {}", String::from_utf8_lossy(&checkout.stderr));
+        }
+        let output = Command::new("git")
+            .args(["merge", "--ff-only", &worker])
+            .current_dir(self.root.as_path())
+            .output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if !output.status.success() {
+            bail!("git.fast_forward_local_main failed: {stderr}");
+        }
+        let after = self.run_plain_git(&["rev-parse", &main])?;
+        Ok(serde_json::to_string(&json!({"localMain": main, "workerBranch": worker, "before": before.trim(), "after": after.trim(), "stdout": stdout.lines().take(20).collect::<Vec<_>>() }))?)
+    }
+
+    fn git_cleanup_integrated_worktree(&self, path: &str) -> anyhow::Result<String> {
+        self.require_orchestrator_git_integration("git.cleanup_integrated_worktree")?;
+        let resolved = self.root.resolve_agent_path(path, "git.cleanup_integrated_worktree", true)?;
+        if resolved == self.root.as_path() {
+            bail!("git.cleanup_integrated_worktree rejects repository root cleanup");
+        }
+        let output = Command::new("git")
+            .args(["worktree", "remove", "--force", resolved.to_str().unwrap_or_default()])
+            .current_dir(self.root.as_path())
+            .output()?;
+        if !output.status.success() {
+            bail!("git.cleanup_integrated_worktree failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        Ok(serde_json::to_string(&json!({"path": path, "status": "removed"}))?)
+    }
+
+    fn git_policy(&self, action: &str, input: JsonValue) -> anyhow::Result<()> {
+        let policy = self.decide(action, input);
+        if !policy.decision.can_execute() {
+            bail!("{action} blocked by policy: {}", policy.decision.as_str());
+        }
+        Ok(())
+    }
+
+    fn validate_git_paths(&self, action: &str, paths: &[String], require_non_empty: bool) -> anyhow::Result<Vec<PathBuf>> {
+        if require_non_empty && paths.is_empty() {
+            bail!("{action} requires explicit path arguments");
+        }
+        if paths.iter().any(|path| path == "." || path == "/" || path.is_empty()) {
+            bail!("{action} rejects broad repository path arguments");
+        }
+        let mut resolved = Vec::new();
+        for path in paths {
+            resolved.push(self.root.resolve_agent_path(path, action, action != "git.add")?);
+        }
+        self.git_policy(action, json!({"paths": paths}))?;
+        Ok(resolved)
+    }
+
+    fn run_plain_git(&self, args: &[&str]) -> anyhow::Result<String> {
+        let output = Command::new("git").args(args).current_dir(self.root.as_path()).output()?;
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    fn run_git(&self, args: &[&str], resolved_paths: Vec<PathBuf>, action: &str, metadata: Option<JsonValue>) -> anyhow::Result<String> {
+        let output = Command::new("git").args(args).current_dir(self.root.as_path()).output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let status = if output.status.success() { "completed" } else { "failed" };
+        self.record_file_audit(action, "", None, status, stdout.len() + stderr.len(), line_count(&stdout) + line_count(&stderr), json!({"stdoutBytes": stdout.len(), "stderrBytes": stderr.len()}), if output.status.success() { None } else { Some(stderr.clone()) }, json!({"argv": args, "paths": resolved_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(), "summary": metadata}))?;
+        if !output.status.success() {
+            bail!("{action} failed: {}", stderr.trim());
+        }
+        Ok(serde_json::to_string(&json!({"status": status, "stdout": stdout, "stderr": stderr, "argv": args}))?)
+    }
+
+    fn allocate_port(&self, reason: &str) -> anyhow::Result<(Uuid, i32)> {
+        let (_, _, project_key) = self.starter_context()?;
+        for _ in 0..20 {
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let port = listener.local_addr()?.port() as i32;
+            drop(listener);
+            let lease_id = Uuid::new_v4();
+            let inserted = block_on_host_future(async {
+                let active: Option<i64> = sqlx::query_scalar("SELECT 1 FROM starter_port_leases WHERE allocated_port=$1 AND status='active' LIMIT 1")
+                    .bind(port)
+                    .fetch_optional(&self.pool)
+                    .await?;
+                if active.is_some() {
+                    return Ok::<bool, anyhow::Error>(false);
+                }
+                sqlx::query(
+                    "INSERT INTO starter_port_leases (id, project_key, session_id, allocated_port, status, lease_reason) VALUES ($1,$2,$3,$4,'active',$5)"
+                )
+                .bind(lease_id)
+                .bind(project_key.as_deref())
+                .bind(self.session_id)
+                .bind(port)
+                .bind(reason)
+                .execute(&self.pool)
+                .await?;
+                Ok::<bool, anyhow::Error>(true)
+            })?;
+            if inserted {
+                return Ok((lease_id, port));
+            }
+        }
+        bail!("server.start could not allocate a unique runtime-owned port");
+    }
+
+    fn server_start(&self, action: &str, args: Vec<String>, name: &str) -> anyhow::Result<String> {
+        if args.iter().any(|arg| {
+            let lowered = arg.to_ascii_lowercase();
+            arg == "PORT"
+                || arg.starts_with("PORT=")
+                || matches!(lowered.as_str(), "--port" | "-p" | "--listen" | "--host" | "port")
+                || lowered.starts_with("--port=")
+                || lowered.starts_with("-p=")
+                || lowered.starts_with("port=")
+                || lowered.starts_with("--listen=")
+                || lowered.starts_with("--host=")
+        }) {
+            bail!("server.start rejects user-specified ports; runtime owns PORT allocation");
+        }
+        let policy = self.decide("server.start", json!({"action": action, "args": args, "name": name}));
+        if !policy.decision.can_execute() {
+            bail!("server.start blocked by policy: {}", policy.decision.as_str());
+        }
+        let command_version = self
+            .commands
+            .get(action)
+            .ok_or_else(|| anyhow::anyhow!("server.start requires a visible registry command invocation: {action}"))?;
+        if !command_version.async_allowed {
+            bail!("server.start requires a registry command that allows managed async execution");
+        }
+        let (turn_id, tool_call_id, _) = self.starter_context()?;
+        let handle = if name.trim().is_empty() { format!("server_{}", Uuid::new_v4().simple()) } else { name.to_string() };
+        let active_handle_exists: bool = block_on_host_future(async {
+            let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM starter_managed_servers WHERE session_id=$1 AND handle=$2 AND status='running'")
+                .bind(self.session_id)
+                .bind(&handle)
+                .fetch_optional(&self.pool)
+                .await?;
+            Ok::<bool, anyhow::Error>(exists.is_some())
+        })?;
+        if active_handle_exists {
+            bail!("server.start rejects reuse of active managed server handle: {handle}");
+        }
+        let (lease_id, port) = self.allocate_port("server.start")?;
+        let (mut command, binary_path, argv, resolved_cwd, policy, input) =
+            match self.prepare_registry_command(action, args, &command_version.default_cwd, "server.start") {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let _ = block_on_host_future(async {
+                        sqlx::query("UPDATE starter_port_leases SET status='released', released_at=now(), release_reason='startupFailure' WHERE id=$1 AND status='active'")
+                            .bind(lease_id)
+                            .execute(&self.pool)
+                            .await
+                    });
+                    return Err(error);
+                }
+            };
+        let url = format!("http://127.0.0.1:{port}");
+        command.env("PORT", port.to_string());
+        command.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
+        command.process_group(0);
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = block_on_host_future(async {
+                    sqlx::query("UPDATE starter_port_leases SET status='released', released_at=now(), release_reason='startupFailure' WHERE session_id=$1 AND allocated_port=$2 AND status='active'")
+                        .bind(self.session_id)
+                        .bind(port)
+                        .execute(&self.pool)
+                        .await
+                });
+                return Err(error).with_context(|| format!("server.start failed to spawn registry command: {action}"));
+            }
+        };
+        let child_pid = child.id();
+        let stdout_buf = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = Arc::new(Mutex::new(String::new()));
+        spawn_reader(child.stdout.take(), Arc::clone(&stdout_buf));
+        spawn_reader(child.stderr.take(), Arc::clone(&stderr_buf));
+        thread::sleep(Duration::from_millis(command_version.min_await_ms.clamp(0, 25) as u64));
+        if let Some(status) = child.try_wait()? {
+            let _ = block_on_host_future(async {
+                sqlx::query("UPDATE starter_port_leases SET status='released', released_at=now(), release_reason='startupFailure' WHERE id=$1 AND status='active'")
+                    .bind(lease_id)
+                    .execute(&self.pool)
+                    .await
+            });
+            bail!("server.start registry command exited before readiness management began: {status}");
+        }
+        let process_id = Uuid::new_v4();
+        let started_at = Utc::now();
+        self.records.borrow_mut().push(HostRecord::ManagedProcess(ManagedProcessRecord {
+            id: process_id,
+            handle: handle.clone(),
+            command_version_id: Some(command_version.version_id),
+            binary_name: command_version.binary_name.clone(),
+            binary_path: binary_path.display().to_string(),
+            argv: argv.clone(),
+            cwd: resolved_cwd.display().to_string(),
+            os_pid: Some(child_pid as i64),
+            os_pgid: Some(child_pid as i64),
+            status: "running".to_string(),
+            end_of_turn_behavior: "continue".to_string(),
+            end_of_session_behavior: "terminate".to_string(),
+            max_runtime_ms: command_version.max_runtime.map(|d| d.as_millis() as i64),
+            termination_reason: None,
+            event: "server.started".to_string(),
+            payload: json!({"handle": handle, "url": url, "port": port, "commandVersionId": command_version.version_id, "policyDecision": policy.to_event_payload(), "input": input}),
+        }));
+        PROCESS_MANAGER
+            .lock()
+            .map_err(|_| anyhow::anyhow!("process manager lock poisoned"))?
+            .entry(self.session_id)
+            .or_default()
+            .insert(handle.clone(), ManagedProcess {
+                id: process_id,
+                handle: handle.clone(),
+                command_version_id: Some(command_version.version_id),
+                binary_name: command_version.binary_name.clone(),
+                binary_path: binary_path.display().to_string(),
+                argv,
+                cwd: resolved_cwd.display().to_string(),
+                child,
+                stdout: stdout_buf,
+                stderr: stderr_buf,
+                stdout_flush_cursor: 0,
+                stderr_flush_cursor: 0,
+                started: Instant::now(),
+                started_at,
+                status: "running".to_string(),
+                end_of_turn_behavior: "continue".to_string(),
+                end_of_session_behavior: "terminate".to_string(),
+                max_runtime: command_version.max_runtime,
+                min_await_ms: command_version.min_await_ms,
+                max_await_ms: command_version.max_await_ms,
+                terminate_grace_ms: command_version.terminate_grace_ms,
+                output_limit: command_version.output_buffer_bytes,
+                stdin_policy: "forbid".to_string(),
+                termination_reason: None,
+            });
+        block_on_host_future(async {
+            sqlx::query(
+                r#"
+                INSERT INTO starter_managed_servers (
+                    id, session_id, turn_id, tool_call_id, script_run_id, process_id, command_version_id,
+                    handle, cwd, env_overlay_metadata, port, url, readiness_config, status
+                )
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'running')
+                "#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(self.session_id)
+            .bind(turn_id)
+            .bind(tool_call_id)
+            .bind(self.script_run_id)
+            .bind(Option::<Uuid>::None)
+            .bind(command_version.version_id)
+            .bind(&handle)
+            .bind(resolved_cwd.display().to_string())
+            .bind(json!({"PORT": {"injected": true, "secret": false}}))
+            .bind(port)
+            .bind(&url)
+            .bind(json!({"mode": "processAlive", "httpGetSupported": true, "logPatternSupported": true, "timeoutMs": 0}))
+            .execute(&self.pool)
+            .await?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+        Ok(serde_json::to_string(&json!({"handle": handle, "processId": process_id, "port": port, "url": url, "status": "running", "portEnv": {"PORT": port}}))?)
+    }
+
+    fn server_status(&self, handle: &str) -> anyhow::Result<String> {
+        self.decide("server.status", json!({"handle": handle}));
+        let process_terminal_status = PROCESS_MANAGER.lock().ok()
+            .and_then(|mut manager| manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)).map(|proc| {
+                let _ = proc.refresh_status();
+                proc.status.clone()
+            }))
+            .filter(|status| status != "running");
+        if let Some(status) = process_terminal_status {
+            let _ = block_on_host_future(async {
+                let row: Option<(i32,)> = sqlx::query_as("UPDATE starter_managed_servers SET status=$3, updated_at=now() WHERE session_id=$1 AND handle=$2 AND status='running' RETURNING port")
+                    .bind(self.session_id)
+                    .bind(handle)
+                    .bind(&status)
+                    .fetch_optional(&self.pool)
+                    .await?;
+                if let Some((port,)) = row {
+                    sqlx::query("UPDATE starter_port_leases SET status='released', released_at=COALESCE(released_at, now()), release_reason='process.exit' WHERE session_id=$1 AND allocated_port=$2 AND status='active'")
+                        .bind(self.session_id)
+                        .bind(port)
+                        .execute(&self.pool)
+                        .await?;
+                }
+                Ok::<(), anyhow::Error>(())
+            });
+        }
+        block_on_host_future(async {
+            let row: Option<(String, i32, String, String)> = sqlx::query_as("SELECT status, port, url, handle FROM starter_managed_servers WHERE session_id=$1 AND handle=$2")
+                .bind(self.session_id)
+                .bind(handle)
+                .fetch_optional(&self.pool)
+                .await?;
+            Ok::<String, anyhow::Error>(serde_json::to_string(&row.map(|(status, port, url, handle)| json!({"handle": handle, "status": status, "port": port, "url": url})).unwrap_or_else(|| json!({"handle": handle, "status": "notFound"})))?)
+        })
+    }
+
+    fn server_url(&self, handle: &str) -> anyhow::Result<String> {
+        let status: JsonValue = serde_json::from_str(&self.server_status(handle)?)?;
+        Ok(status.get("url").and_then(JsonValue::as_str).unwrap_or("").to_string())
+    }
+
+    fn server_logs(&self, handle: &str, stream: &str, lines: i32) -> anyhow::Result<String> {
+        if stream != "stdout" && stream != "stderr" {
+            bail!("server.logs stream must be stdout or stderr");
+        }
+        let line_limit = lines.clamp(0, 500) as usize;
+        let content = PROCESS_MANAGER.lock().ok()
+            .and_then(|manager| manager.get(&self.session_id).and_then(|processes| processes.get(handle)).map(|proc| {
+                if stream == "stdout" {
+                    proc.stdout.lock().map(|value| value.clone()).unwrap_or_default()
+                } else {
+                    proc.stderr.lock().map(|value| value.clone()).unwrap_or_default()
+                }
+            }))
+            .unwrap_or_default();
+        let visible = content.lines().rev().take(line_limit).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+        let (turn_id, tool_call_id, _) = self.starter_context()?;
+        let envelope = block_on_host_future(output_artifacts::store(&self.pool, NewOutputArtifact {
+            id: Uuid::new_v4(),
+            session_id: self.session_id,
+            turn_id,
+            tool_call_id,
+            script_run_id: Some(self.script_run_id),
+            command_run_id: None,
+            process_id: None,
+            source_type: "starter_server_logs",
+            stream,
+            content: &content,
+            metadata: json!({"handle": handle, "requestedLines": line_limit}),
+        }))?;
+        let artifact_id = artifact_id_from_envelope(&envelope);
+        let _ = block_on_host_future(async {
+            sqlx::query("UPDATE starter_managed_servers SET output_artifacts = jsonb_set(COALESCE(output_artifacts, '{}'::jsonb), $3, to_jsonb($4::text), true), updated_at=now() WHERE session_id=$1 AND handle=$2")
+                .bind(self.session_id)
+                .bind(handle)
+                .bind(vec![format!("{stream}LogArtifactId")])
+                .bind(&artifact_id)
+                .execute(&self.pool)
+                .await?;
+            Ok::<(), anyhow::Error>(())
+        });
+        Ok(serde_json::to_string(&json!({"handle": handle, "stream": stream, "lines": line_limit, "content": visible, "truncated": content.lines().count() > line_limit, "artifactId": artifact_id}))?)
+    }
+
+    fn server_wait_ready(&self, handle: &str, timeout_ms: i32) -> anyhow::Result<String> {
+        let timeout = Duration::from_millis(timeout_ms.clamp(1, 30_000) as u64);
+        let started = Instant::now();
+        let readiness: JsonValue = block_on_host_future(async {
+            let row: Option<(JsonValue,)> = sqlx::query_as("SELECT readiness_config FROM starter_managed_servers WHERE session_id=$1 AND handle=$2")
+                .bind(self.session_id)
+                .bind(handle)
+                .fetch_optional(&self.pool)
+                .await?;
+            Ok::<JsonValue, anyhow::Error>(row.map(|(value,)| value).unwrap_or_else(|| json!({"mode":"processAlive"})))
+        })?;
+        let mode = readiness.get("mode").and_then(JsonValue::as_str).unwrap_or("processAlive").to_string();
+        loop {
+            let running = PROCESS_MANAGER.lock().ok()
+                .and_then(|mut manager| manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)).map(|proc| proc.refresh_status().unwrap_or(false)))
+                .unwrap_or(false);
+            let ready = match mode.as_str() {
+                "processAlive" => running,
+                "logPattern" => {
+                    let pattern = readiness.get("pattern").and_then(JsonValue::as_str).unwrap_or("");
+                    !pattern.is_empty() && PROCESS_MANAGER.lock().ok()
+                        .and_then(|manager| manager.get(&self.session_id).and_then(|processes| processes.get(handle)).map(|proc| {
+                            let stdout = proc.stdout.lock().map(|value| value.clone()).unwrap_or_default();
+                            let stderr = proc.stderr.lock().map(|value| value.clone()).unwrap_or_default();
+                            stdout.contains(pattern) || stderr.contains(pattern)
+                        }))
+                        .unwrap_or(false)
+                }
+                "httpGet" => {
+                    let path = readiness.get("path").and_then(JsonValue::as_str).unwrap_or("/");
+                    let port = block_on_host_future(async {
+                        let row: Option<(i32,)> = sqlx::query_as("SELECT port FROM starter_managed_servers WHERE session_id=$1 AND handle=$2")
+                            .bind(self.session_id)
+                            .bind(handle)
+                            .fetch_optional(&self.pool)
+                            .await?;
+                        Ok::<Option<i32>, anyhow::Error>(row.map(|(port,)| port))
+                    })?;
+                    if let Some(port) = port {
+                        let address = format!("127.0.0.1:{port}");
+                        TcpStream::connect(address)
+                            .and_then(|mut stream| {
+                                stream.set_read_timeout(Some(Duration::from_millis(200)))?;
+                                stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes())?;
+                                let mut response = String::new();
+                                let _ = stream.read_to_string(&mut response)?;
+                                Ok(response.starts_with("HTTP/1.1 2") || response.starts_with("HTTP/1.0 2"))
+                            })
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+            if ready {
+                return Ok(serde_json::to_string(&json!({"handle": handle, "ready": true, "mode": mode, "elapsedMs": started.elapsed().as_millis()}))?);
+            }
+            if started.elapsed() >= timeout {
+                if let Ok(mut manager) = PROCESS_MANAGER.lock() {
+                    if let Some(proc) = manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)) {
+                        let _ = proc.terminate("readiness.timeout", true);
+                    }
+                }
+                let _ = block_on_host_future(async {
+                    let row: Option<(i32,)> = sqlx::query_as("UPDATE starter_managed_servers SET status='readiness_timeout', updated_at=now() WHERE session_id=$1 AND handle=$2 AND status='running' RETURNING port")
+                        .bind(self.session_id)
+                        .bind(handle)
+                        .fetch_optional(&self.pool)
+                        .await?;
+                    if let Some((port,)) = row {
+                        sqlx::query("UPDATE starter_port_leases SET status='released', released_at=now(), release_reason='readiness.timeout' WHERE session_id=$1 AND allocated_port=$2 AND status='active'")
+                            .bind(self.session_id)
+                            .bind(port)
+                            .execute(&self.pool)
+                            .await?;
+                    }
+                    Ok::<(), anyhow::Error>(())
+                });
+                return Ok(serde_json::to_string(&json!({"handle": handle, "ready": false, "mode": mode, "failure": {"kind": "timeout", "timeoutMs": timeout.as_millis(), "readiness": readiness}}))?);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn server_stop(&self, handle: &str) -> anyhow::Result<String> {
+        if let Ok(mut manager) = PROCESS_MANAGER.lock() {
+            if let Some(proc) = manager.get_mut(&self.session_id).and_then(|processes| processes.get_mut(handle)) {
+                let _ = proc.terminate("server.stop", true);
+            }
+        }
+        let (port, found): (Option<i32>, bool) = block_on_host_future(async {
+            let row: Option<(i32,)> = sqlx::query_as("UPDATE starter_managed_servers SET status='stopped', updated_at=now() WHERE session_id=$1 AND handle=$2 RETURNING port")
+                .bind(self.session_id)
+                .bind(handle)
+                .fetch_optional(&self.pool)
+                .await?;
+            if let Some((port,)) = row {
+                sqlx::query("UPDATE starter_port_leases SET status='released', released_at=now(), release_reason='server.stop' WHERE session_id=$1 AND allocated_port=$2 AND status='active'")
+                    .bind(self.session_id)
+                    .bind(port)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, anyhow::Error>((Some(port), true))
+            } else {
+                Ok((None, false))
+            }
+        })?;
+        Ok(serde_json::to_string(&json!({"handle": handle, "status": if found {"stopped"} else {"notFound"}, "port": port}))?)
+    }
+
+    fn image_capture_from_file(&self, path: &str, description: &str) -> anyhow::Result<String> {
+        require_mutation_description("image.capture_from_file", description)?;
+        let policy = self.decide("image.capture_from_file", json!({"path": path, "description": description}));
+        if !policy.decision.can_execute() {
+            bail!("image.capture_from_file blocked by policy: {}", policy.decision.as_str());
+        }
+        let resolved = self.root.resolve_agent_path(path, "image.capture_from_file", true)?;
+        let bytes = std::fs::read(&resolved)?;
+        if bytes.len() > 25_000_000 {
+            bail!("image.capture_from_file rejects images over 25MB");
+        }
+        let (mime, width, height) = image_mime_and_dimensions(&bytes, path);
+        if !mime.starts_with("image/") {
+            bail!("image.capture_from_file requires an image MIME type");
+        }
+        let (turn_id, tool_call_id, _) = self.starter_context()?;
+        let id = Uuid::new_v4();
+        block_on_host_future(async {
+            sqlx::query(
+                r#"
+                INSERT INTO starter_image_artifacts (
+                    id, session_id, turn_id, tool_call_id, script_run_id, source_type, source_path,
+                    mime_type, byte_count, width, height, perceptual_metadata, retrieval_metadata, binary_content
+                )
+                VALUES ($1,$2,$3,$4,$5,'file',$6,$7,$8,$9,$10,$11,$12,$13)
+                "#,
+            )
+            .bind(id)
+            .bind(self.session_id)
+            .bind(turn_id)
+            .bind(tool_call_id)
+            .bind(self.script_run_id)
+            .bind(resolved.display().to_string())
+            .bind(&mime)
+            .bind(bytes.len() as i64)
+            .bind(width)
+            .bind(height)
+            .bind(json!({"description": description, "sha256": format!("{:x}", Sha256::digest(&bytes))}))
+            .bind(json!({"thumbnailAvailable": true, "fullRequiresSession": true, "modelAttachable": true}))
+            .bind(bytes)
+            .execute(&self.pool)
+            .await?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+        Ok(serde_json::to_string(&json!({"imageArtifactId": id, "mimeType": mime, "byteCount": std::fs::metadata(&resolved)?.len(), "width": width, "height": height, "description": description, "modelAttachment": {"kind": "imageArtifact", "id": id}}))?)
+    }
+
+    fn image_describe(&self, id: &str) -> anyhow::Result<String> {
+        let image_id = Uuid::parse_str(id).with_context(|| format!("invalid image artifact id: {id}"))?;
+        block_on_host_future(async {
+            let row: Option<(String, i64, Option<i32>, Option<i32>, JsonValue)> = sqlx::query_as(
+                "SELECT mime_type, byte_count, width, height, retrieval_metadata FROM starter_image_artifacts WHERE id=$1 AND session_id=$2"
+            )
+            .bind(image_id)
+            .bind(self.session_id)
+            .fetch_optional(&self.pool)
+            .await?;
+            Ok::<String, anyhow::Error>(serde_json::to_string(&row.map(|(mime, bytes, width, height, retrieval)| json!({"imageArtifactId": image_id, "mimeType": mime, "byteCount": bytes, "width": width, "height": height, "retrieval": retrieval})).unwrap_or_else(|| json!({"error": "image artifact not found for current session"})))?)
+        })
+    }
+
+    fn tooling_request(&self, title: &str, need: &str, attempted: Vec<String>, proposed: &str, urgency: &str) -> anyhow::Result<String> {
+        let title = title.trim();
+        let need = need.trim();
+        if title.is_empty() || title.len() > 80 {
+            bail!("tooling.request title must be concise and non-empty");
+        }
+        if need.len() < 12 || need.len() > 1000 {
+            bail!("tooling.request need must be concrete and bounded");
+        }
+        if !["low", "normal", "high", "blocking"].contains(&urgency) {
+            bail!("tooling.request urgency must be low, normal, high, or blocking");
+        }
+        let policy = self.decide("tooling.request", json!({"title": title, "need": need, "attemptedCount": attempted.len(), "urgency": urgency}));
+        if !policy.decision.can_execute() {
+            bail!("tooling.request blocked by policy: {}", policy.decision.as_str());
+        }
+        let (turn_id, tool_call_id, project_key) = self.starter_context()?;
+        let packet_id = Uuid::new_v4();
+        let attempted = attempted.into_iter().take(12).collect::<Vec<_>>();
+        let proposed_text = proposed.trim().to_string();
+        let proposed_json = if proposed_text.is_empty() {
+            None
+        } else {
+            serde_json::from_str::<JsonValue>(&proposed_text).ok()
+        };
+        let proposed_value = if proposed_text.is_empty() {
+            JsonValue::Null
+        } else {
+            proposed_json.clone().unwrap_or_else(|| json!({"text": proposed_text}))
+        };
+        let project_key_for_insert = project_key.clone();
+        let project_key_for_packets = project_key.clone();
+        let role_id = self.role_snapshot.id.clone();
+        let session_id = self.session_id;
+        let script_run_id = self.script_run_id;
+        let pool = self.pool.clone();
+        block_on_host_future(async {
+            sqlx::query(
+                r#"
+                INSERT INTO starter_tooling_requests (
+                    id, session_id, role_id, project_key, turn_id, script_run_id, tool_call_id,
+                    visible_command_summary_hash, title, need, attempted, proposed, urgency, status, route
+                )
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'routed',$14)
+                "#,
+            )
+            .bind(packet_id)
+            .bind(session_id)
+            .bind(&role_id)
+            .bind(project_key_for_insert)
+            .bind(turn_id)
+            .bind(script_run_id)
+            .bind(tool_call_id)
+            .bind(format!("{:x}", Sha256::digest(role_id.as_bytes())))
+            .bind(title)
+            .bind(need)
+            .bind(json!(attempted.clone()))
+            .bind(proposed_value.clone())
+            .bind(urgency)
+            .bind(json!({"preferred": ["project_progenitor", "orchestrator", "operator", "owner"]}))
+            .execute(&self.pool)
+            .await?;
+            let routing_metadata = json!({
+                "source": "tooling.request",
+                "preferredDestinations": ["project-progenitor", "orchestrator", "operator", "owner"],
+                "roleId": role_id,
+                "toolCallId": tool_call_id,
+                "scriptRunId": script_run_id,
+            });
+            let runtime_packet_id = lifecycle_hooks::record_runtime_packet(
+                &pool,
+                project_key_for_packets.as_deref(),
+                Some(session_id),
+                None,
+                turn_id,
+                "tooling.request",
+                "routed",
+                json!({
+                    "starterToolingRequestId": packet_id,
+                    "title": title,
+                    "need": need,
+                    "attempted": attempted,
+                    "proposed": proposed_value,
+                    "urgency": urgency,
+                }),
+                None,
+                routing_metadata.clone(),
+                &format!("tooling-request-{packet_id}"),
+            ).await?;
+            let target_role_id: Option<String> = sqlx::query_scalar(
+                "SELECT r.id FROM roles r JOIN role_versions rv ON rv.id=r.current_version_id WHERE r.id='project-progenitor' LIMIT 1",
+            )
+            .fetch_optional(&pool)
+            .await?;
+            let envelope_id = lifecycle_hooks::route_packet_envelope(
+                &pool,
+                runtime_packet_id,
+                "tooling_request",
+                Some(session_id),
+                None,
+                target_role_id.as_deref(),
+                "pending",
+                json!({
+                    "source": "tooling.request",
+                    "preferredDestinations": ["project-progenitor", "orchestrator", "operator", "owner"],
+                    "starterToolingRequestId": packet_id,
+                }),
+            ).await?;
+            let mut route = json!({
+                "preferred": ["project_progenitor", "orchestrator", "operator", "owner"],
+                "runtimePacketId": runtime_packet_id,
+                "envelopeId": envelope_id,
+            });
+            if let Some(target) = target_role_id {
+                route["targetRoleId"] = JsonValue::String(target);
+            }
+            let follow_on_packet_id = record_tooling_follow_on_request(
+                &pool,
+                project_key_for_packets.as_deref(),
+                session_id,
+                turn_id,
+                packet_id,
+                proposed_json.as_ref(),
+            ).await?;
+            if let Some(follow_on_id) = follow_on_packet_id {
+                route["followOnPacketId"] = JsonValue::String(follow_on_id.to_string());
+            }
+            sqlx::query("UPDATE starter_tooling_requests SET route=$2 WHERE id=$1")
+                .bind(packet_id)
+                .bind(route)
+                .execute(&pool)
+                .await?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+        Ok(serde_json::to_string(&json!({"packetId": packet_id, "routingStatus": "routed", "title": title, "urgency": urgency}))?)
     }
 
     fn decide(&self, action: &str, input: JsonValue) -> crate::policy::PolicyResult {
@@ -1247,6 +2824,10 @@ impl HostKernel {
     }
 
     fn request_project_runtime_config_change(&self, project: &str, source: &str, manifest_json: &str, rationale: &str) -> anyhow::Result<String> {
+        let (_, _, current_project_key) = self.starter_context()?;
+        if current_project_key.as_deref() != Some(project) {
+            bail!("project_runtime.request_config_change is scoped to the current project; requested={project} current={}", current_project_key.unwrap_or_else(|| "unassigned".to_string()));
+        }
         let manifest: JsonValue = serde_json::from_str(manifest_json)
             .context("project_runtime.request_config_change manifest_json must be valid JSON")?;
         let input = json!({
@@ -1901,9 +3482,10 @@ impl HostKernel {
         }
     }
 
-    fn run_fs_write(&self, path: &str, content: &str) -> anyhow::Result<String> {
+    fn run_fs_write(&self, path: &str, content: &str, description: &str) -> anyhow::Result<String> {
+        require_mutation_description("fs.write", description)?;
         let started = Instant::now();
-        let input = json!({"path": path, "content": content, "executionRoot": self.root.as_path().display().to_string()});
+        let input = json!({"path": path, "content": content, "description": description, "executionRoot": self.root.as_path().display().to_string()});
         let policy = self.decide("fs.write", input.clone());
         if !policy.decision.can_execute() {
             bail!("fs.write blocked by policy: {}", policy.decision.as_str());
@@ -1927,7 +3509,7 @@ impl HostKernel {
             error: error.clone(),
             duration_ms: started.elapsed().as_millis() as i64,
             policy_decision,
-            truncation: json!({"contentBytes": content.len()}),
+            truncation: json!({"contentBytes": content.len(), "description": description}),
         }));
         if let Some(error) = error {
             bail!(error);
@@ -1935,14 +3517,15 @@ impl HostKernel {
         Ok(json!({"path": path, "status": status}).to_string())
     }
 
-    fn run_patch_apply(&self, unified_diff: &str) -> anyhow::Result<String> {
+    fn run_patch_apply(&self, unified_diff: &str, description: &str) -> anyhow::Result<String> {
+        require_mutation_description("patch.apply", description)?;
         let started = Instant::now();
         let affected = affected_paths(unified_diff)?;
         let mut resolved = Vec::new();
         for path in &affected {
             resolved.push(self.root.validate_patch_path(path)?);
         }
-        let input = json!({"unifiedDiff": unified_diff, "affectedPaths": affected, "executionRoot": self.root.as_path().display().to_string()});
+        let input = json!({"unifiedDiff": unified_diff, "description": description, "affectedPaths": affected, "executionRoot": self.root.as_path().display().to_string()});
         let policy = self.decide("patch.apply", input.clone());
         if !policy.decision.can_execute() {
             bail!("patch.apply blocked by policy: {}", policy.decision.as_str());
@@ -1965,7 +3548,7 @@ impl HostKernel {
             error: error.clone(),
             duration_ms: started.elapsed().as_millis() as i64,
             policy_decision,
-            truncation: json!({"diffBytes": unified_diff.len()}),
+            truncation: json!({"diffBytes": unified_diff.len(), "description": description}),
         }));
         if let Some(error) = error {
             bail!(error);
@@ -1982,6 +3565,7 @@ impl HostKernel {
         };
         let mut remove_handles = Vec::new();
         for (handle, process) in processes.iter_mut() {
+            let _ = process.refresh_status();
             if process.status == "running" && process.end_of_turn_behavior == "terminate" {
                 let _ = process.terminate("endOfTurnCleanup", true);
                 self.records.borrow_mut().push(HostRecord::ManagedProcess(process.snapshot_record("process.endOfTurnCleanup", json!({"handle": process.handle}))));
@@ -1989,6 +3573,24 @@ impl HostKernel {
             } else if process.status == "running" {
                 self.records.borrow_mut().push(HostRecord::ManagedProcess(process.snapshot_record("process.continued", json!({"handle": process.handle, "note": "session-only process remains attached only while this runtime instance owns it"}))));
             } else {
+                let status = process.status.clone();
+                let handle_for_release = handle.clone();
+                let _ = block_on_host_future(async {
+                    let row: Option<(i32,)> = sqlx::query_as("UPDATE starter_managed_servers SET status=$3, updated_at=now() WHERE session_id=$1 AND handle=$2 AND status='running' RETURNING port")
+                        .bind(self.session_id)
+                        .bind(&handle_for_release)
+                        .bind(&status)
+                        .fetch_optional(&self.pool)
+                        .await?;
+                    if let Some((port,)) = row {
+                        sqlx::query("UPDATE starter_port_leases SET status='released', released_at=COALESCE(released_at, now()), release_reason='process.exit' WHERE session_id=$1 AND allocated_port=$2 AND status='active'")
+                            .bind(self.session_id)
+                            .bind(port)
+                            .execute(&self.pool)
+                            .await?;
+                    }
+                    Ok::<(), anyhow::Error>(())
+                });
                 remove_handles.push(handle.clone());
             }
         }
@@ -2135,6 +3737,7 @@ pub async fn execute_resumed_action(
         }
         "fs.write" => execute_resumed_fs_write(pool, session_id, turn_id, script_run_id, input, policy_decision).await,
         "patch.apply" => execute_resumed_patch_apply(pool, session_id, turn_id, script_run_id, input, policy_decision).await,
+        "file.replace_exact" => execute_resumed_file_replace_exact(pool, session_id, turn_id, script_run_id, input, policy_decision).await,
         other => bail!("unsupported resumed action: {other}"),
     }
 }
@@ -2149,6 +3752,8 @@ async fn execute_resumed_fs_write(
 ) -> Result<JsonValue> {
     let path = input.get("path").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused fs.write missing path"))?;
     let content = input.get("content").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused fs.write missing content"))?;
+    let description = input.get("description").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused fs.write missing description"))?;
+    require_mutation_description("fs.write", description)?;
     let execution_root = input.get("executionRoot").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused fs.write missing executionRoot"))?;
     let root = ExecutionRoot::new(execution_root)?;
     let resolved = root.resolve_write_path(path)?;
@@ -2160,8 +3765,8 @@ async fn execute_resumed_fs_write(
     let id = Uuid::new_v4();
     sqlx::query(
         r#"
-        INSERT INTO file_mutations (id, script_run_id, action_name, path, before_state, after_state, status, started_at, completed_at, duration_ms, policy_decision, truncation)
-        VALUES ($1, $2, 'fs.write', $3, $4, $5, 'completed', $6, $6, $7, $8, $9)
+        INSERT INTO file_mutations (id, script_run_id, action_name, path, before_state, after_state, status, started_at, completed_at, duration_ms, policy_decision, mutation_description, truncation)
+        VALUES ($1, $2, 'fs.write', $3, $4, $5, 'completed', $6, $6, $7, $8, $9, $10)
         "#,
     )
     .bind(id)
@@ -2172,10 +3777,11 @@ async fn execute_resumed_fs_write(
     .bind(Utc::now())
     .bind(duration_ms)
     .bind(&policy_decision)
-    .bind(json!({"contentBytes": content.len()}))
+    .bind(description)
+    .bind(json!({"contentBytes": content.len(), "description": description}))
     .execute(pool)
     .await?;
-    db::append_event(pool, session_id, turn_id, "file_mutation", Some(id), "file_mutation.completed", Some("completed"), json!({"action":"fs.write","path":resolved.display().to_string(),"before":before,"after":after,"durationMs":duration_ms,"policyDecision":policy_decision})).await?;
+    db::append_event(pool, session_id, turn_id, "file_mutation", Some(id), "file_mutation.completed", Some("completed"), json!({"action":"fs.write","description":description,"path":resolved.display().to_string(),"before":before,"after":after,"durationMs":duration_ms,"policyDecision":policy_decision})).await?;
     Ok(json!({"fileMutationId": id, "status": "completed", "path": resolved.display().to_string()}))
 }
 
@@ -2188,6 +3794,8 @@ async fn execute_resumed_patch_apply(
     policy_decision: JsonValue,
 ) -> Result<JsonValue> {
     let diff = input.get("unifiedDiff").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused patch.apply missing unifiedDiff"))?;
+    let description = input.get("description").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused patch.apply missing description"))?;
+    require_mutation_description("patch.apply", description)?;
     let execution_root = input.get("executionRoot").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused patch.apply missing executionRoot"))?;
     let root = ExecutionRoot::new(execution_root)?;
     let paths = affected_paths(diff).unwrap_or_else(|_| Vec::new());
@@ -2209,8 +3817,8 @@ async fn execute_resumed_patch_apply(
     };
     sqlx::query(
         r#"
-        INSERT INTO patch_runs (id, script_run_id, action_name, affected_paths, before_state, after_state, status, error, started_at, completed_at, duration_ms, policy_decision, truncation)
-        VALUES ($1, $2, 'patch.apply', $3, $4, $5, $6, $7, $8, $8, $9, $10, $11)
+        INSERT INTO patch_runs (id, script_run_id, action_name, affected_paths, before_state, after_state, status, error, started_at, completed_at, duration_ms, policy_decision, mutation_description, truncation)
+        VALUES ($1, $2, 'patch.apply', $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, $12)
         "#,
     )
     .bind(id)
@@ -2223,14 +3831,71 @@ async fn execute_resumed_patch_apply(
     .bind(Utc::now())
     .bind(duration_ms)
     .bind(&policy_decision)
-    .bind(json!({"diffBytes": diff.len()}))
+    .bind(description)
+    .bind(json!({"diffBytes": diff.len(), "description": description}))
     .execute(pool)
     .await?;
-    db::append_event(pool, session_id, turn_id, "patch", Some(id), "patch.completed", Some(status), json!({"action":"patch.apply","affectedPaths":paths,"before":before,"after":after,"status":status,"error":error,"durationMs":duration_ms,"policyDecision":policy_decision})).await?;
+    db::append_event(pool, session_id, turn_id, "patch", Some(id), "patch.completed", Some(status), json!({"action":"patch.apply","description":description,"affectedPaths":paths,"before":before,"after":after,"status":status,"error":error,"durationMs":duration_ms,"policyDecision":policy_decision})).await?;
     if let Some(error) = error {
         bail!(error);
     }
     Ok(json!({"patchRunId": id, "status": status}))
+}
+
+async fn execute_resumed_file_replace_exact(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Option<Uuid>,
+    script_run_id: Uuid,
+    input: &JsonValue,
+    policy_decision: JsonValue,
+) -> Result<JsonValue> {
+    let path = input.get("path").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused file.replace_exact missing path"))?;
+    let old = input.get("old").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused file.replace_exact missing old"))?;
+    let new = input.get("new").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused file.replace_exact missing new"))?;
+    let description = input.get("description").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused file.replace_exact missing description"))?;
+    require_mutation_description("file.replace_exact", description)?;
+    if old.is_empty() {
+        bail!("file.replace_exact old text must not be empty");
+    }
+    let execution_root = input.get("executionRoot").and_then(JsonValue::as_str).ok_or_else(|| anyhow::anyhow!("paused file.replace_exact missing executionRoot"))?;
+    let root = ExecutionRoot::new(execution_root)?;
+    let resolved = root.resolve_agent_path(path, "file.replace_exact", true)?;
+    let text = text_file_content("file.replace_exact", &resolved)?;
+    let count = text.matches(old).count();
+    if count == 0 {
+        bail!("file.replace_exact old text is absent");
+    }
+    if count > 1 {
+        bail!("file.replace_exact old text is ambiguous; found {count} matches");
+    }
+    let before = file_state(&resolved);
+    let started = Instant::now();
+    let updated = text.replacen(old, new, 1);
+    std::fs::write(&resolved, updated.as_bytes())?;
+    let after = file_state(&resolved);
+    let duration_ms = started.elapsed().as_millis() as i64;
+    let id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO file_mutations (id, script_run_id, action_name, path, before_state, after_state, status, started_at, completed_at, duration_ms, policy_decision, mutation_description, truncation)
+        VALUES ($1, $2, 'file.replace_exact', $3, $4, $5, 'completed', $6, $6, $7, $8, $9, $10)
+        "#,
+    )
+    .bind(id)
+    .bind(script_run_id)
+    .bind(resolved.display().to_string())
+    .bind(&before)
+    .bind(&after)
+    .bind(Utc::now())
+    .bind(duration_ms)
+    .bind(&policy_decision)
+    .bind(description)
+    .bind(json!({"description": description, "oldBytes": old.len(), "newBytes": new.len()}))
+    .execute(pool)
+    .await?;
+    db::append_event(pool, session_id, turn_id, "file_mutation", Some(id), "file_mutation.completed", Some("completed"), json!({"action":"file.replace_exact","description":description,"path":resolved.display().to_string(),"before":before,"after":after,"durationMs":duration_ms,"policyDecision":policy_decision})).await?;
+    Ok(json!({"fileMutationId": id, "status": "completed", "path": resolved.display().to_string()}))
 }
 
 async fn execute_resumed_command(
@@ -2749,7 +4414,7 @@ async fn persist_record(
                 let policy_result = policy_result_from_event_payload(&policy.payload, role_snapshot)?;
                 let approval_id = approvals::request_approval(pool, session_id, Some(turn_id), &policy_result, role_snapshot).await?;
                 if command_registry::is_registry_command_action(&policy_result.action)
-                    || matches!(policy_result.action.as_str(), "fs.write" | "patch.apply")
+                    || matches!(policy_result.action.as_str(), "fs.write" | "patch.apply" | "file.replace_exact")
                 {
                     approvals::create_paused_action(
                         pool,
@@ -3146,13 +4811,18 @@ async fn persist_record(
             .await?;
         }
         HostRecord::FileMutation(mutation) => {
+            let mutation_description = mutation
+                .truncation
+                .get("description")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string);
             sqlx::query(
                 r#"
                 INSERT INTO file_mutations (
                     id, script_run_id, action_name, path, before_state, after_state, status,
-                    error, started_at, completed_at, duration_ms, policy_decision, truncation
+                    error, started_at, completed_at, duration_ms, policy_decision, mutation_description, truncation
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, $12)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, $12, $13)
                 "#,
             )
             .bind(mutation.id)
@@ -3166,6 +4836,7 @@ async fn persist_record(
             .bind(Utc::now())
             .bind(mutation.duration_ms)
             .bind(&mutation.policy_decision)
+            .bind(mutation_description.clone())
             .bind(&mutation.truncation)
             .execute(pool)
             .await?;
@@ -3185,6 +4856,7 @@ async fn persist_record(
                     "status": mutation.status,
                     "error": mutation.error,
                     "durationMs": mutation.duration_ms,
+                    "description": mutation_description,
                     "truncation": mutation.truncation,
                     "policyDecision": mutation.policy_decision,
                 }),
@@ -3192,13 +4864,18 @@ async fn persist_record(
             .await?;
         }
         HostRecord::PatchRun(patch) => {
+            let mutation_description = patch
+                .truncation
+                .get("description")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string);
             sqlx::query(
                 r#"
                 INSERT INTO patch_runs (
                     id, script_run_id, action_name, affected_paths, before_state, after_state,
-                    status, error, started_at, completed_at, duration_ms, policy_decision, truncation
+                    status, error, started_at, completed_at, duration_ms, policy_decision, mutation_description, truncation
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, $12)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, $12, $13)
                 "#,
             )
             .bind(patch.id)
@@ -3212,6 +4889,7 @@ async fn persist_record(
             .bind(Utc::now())
             .bind(patch.duration_ms)
             .bind(&patch.policy_decision)
+            .bind(mutation_description.clone())
             .bind(&patch.truncation)
             .execute(pool)
             .await?;
@@ -3231,6 +4909,7 @@ async fn persist_record(
                     "status": patch.status,
                     "error": patch.error,
                     "durationMs": patch.duration_ms,
+                    "description": mutation_description,
                     "truncation": patch.truncation,
                     "policyDecision": patch.policy_decision,
                 }),
@@ -3851,7 +5530,7 @@ output(flushed + "\n" + terminated)"#;
             Ok(serde_json::to_value(packet)?)
         }
 
-        let promote_source = r#"fs.write("memory-target.txt", "needle workflow memory success")
+        let promote_source = r#"fs.write("memory-target.txt", "needle workflow memory success", "write workflow memory promotion target")
 text = fs.read("memory-target.txt")
 workflow_memory.remember_when(text == "needle workflow memory success", "Write memory target", "Use fs.write then fs.read to verify exact content after missing-file failures")
 output("promoted")"#;

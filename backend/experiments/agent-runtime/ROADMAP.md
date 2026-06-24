@@ -298,3 +298,7 @@ scripts/validate-lmstudio-embeddings.sh
 - Command/runtime context must remain cache-stable at the model schema layer.
 - Validation scripts must track intentionally removed fields such as full
   `requestShape` persistence.
+
+## Starter-kit slice
+
+Agent Runtime now includes the starter-kit foundation: CWD-relative path semantics, bounded file/tree helpers, required mutation descriptions, safe role-scoped git helpers, runtime-owned port/server records, typed tooling request packets, Project Progenitor role seed, first-class image artifact storage with selected-session projection handles, and default role tool bundle definitions. The implementation remains Rust/PostgreSQL/Rinf-owned; no Dart-owned business logic or parallel state is introduced.

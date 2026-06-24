@@ -324,7 +324,7 @@ pub async fn resume(pool: &PgPool, approval_id: Uuid) -> Result<()> {
         .map_err(|error| RuntimeDomainError::conflict(format!("{error}: {paused_id} status={paused_status}")))?;
     let action_name: String = paused.get("action_name");
     if !crate::command_registry::is_registry_command_action(&action_name)
-        && !matches!(action_name.as_str(), "fs.write" | "patch.apply")
+        && !matches!(action_name.as_str(), "fs.write" | "patch.apply" | "file.replace_exact")
     {
         return Err(RuntimeDomainError::conflict(format!("resume does not support action in this phase: {action_name}")).into());
     }

@@ -153,6 +153,9 @@ class RobdexDesignLabHome extends StatelessWidget {
     if (surface == 'agentRuntimeSelectedSessionTranscript') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);
     }
+    if (surface == 'agentRuntimeStarterKitImageEvidence') {
+      return _AgentRuntimeScenario(data: _starterKitImageEvidenceData(), focusSurfaceId: 'imageArtifacts');
+    }
     if (surface == 'agentRuntimeCreateSessionModal') {
       return Scaffold(
         backgroundColor: const Color(0xFF0E141B),
@@ -765,6 +768,119 @@ bool _hasConnectedRuntime(AgentRuntimeWorkbenchData data) {
   return data.connectionState != 'disconnected' && data.connectionState != 'connecting' && data.connectionState != 'failed';
 }
 
+AgentRuntimeWorkbenchData _starterKitImageEvidenceData() {
+  const previewPng =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+  return mockAgentRuntimeConnected.copyWith(
+    selectedSessionLabel: 'Starter kit evidence',
+    timelineTitle: 'Starter kit evidence',
+    timelineSubtitle: 'Image artifact, managed server, and Requirements evidence projected from runtime state',
+    detailTitle: 'Image artifacts',
+    detailSubtitle: 'Runtime-owned evidence handles',
+    sessions: const [
+      AgentRuntimeSessionItem(
+        id: 'starter-session',
+        title: 'Starter kit evidence',
+        status: 'open',
+        subtitle: 'Worker tools · Project workspace',
+        groupLabel: 'Open',
+        tone: 'success',
+      ),
+      AgentRuntimeSessionItem(
+        id: 'review-session',
+        title: 'Requirements review',
+        status: 'open',
+        subtitle: 'Evidence ready for reviewer',
+        groupLabel: 'Attention',
+        tone: 'warning',
+      ),
+    ],
+    timeline: const [
+      AgentRuntimeTimelineItem(
+        id: 'starter-file',
+        title: 'File tools',
+        subtitle: 'CWD-relative read and described patch completed',
+        status: 'completed',
+        tone: 'success',
+      ),
+      AgentRuntimeTimelineItem(
+        id: 'starter-server',
+        title: 'Managed server',
+        subtitle: 'Runtime allocated PORT and projected the running URL',
+        status: 'stopped',
+        tone: 'info',
+      ),
+      AgentRuntimeTimelineItem(
+        id: 'starter-image',
+        title: 'Image artifact',
+        subtitle: 'Screenshot evidence · PNG · attached to Requirements evidence',
+        status: 'available',
+        tone: 'success',
+      ),
+      AgentRuntimeTimelineItem(
+        id: 'starter-requirements',
+        title: 'Requirements evidence',
+        subtitle: 'Reviewer receives artifact handle and thumbnail metadata, not a local path',
+        status: 'ready',
+        tone: 'warning',
+      ),
+    ],
+    selectedConversation: const [
+      ChatEntry(
+        id: 'starter-user',
+        author: 'User',
+        displayLabel: 'Owner',
+        timestamp: null,
+        body: 'Capture starter-kit evidence.',
+        status: 'sent',
+      ),
+      ChatEntry(
+        id: 'starter-tool-image',
+        author: 'Tool',
+        displayLabel: 'Tool',
+        timestamp: null,
+        body: 'Image artifact captured',
+        subtitle: 'Screenshot evidence · image/png · 1 KB',
+        kind: 'image.capture_from_file',
+        status: 'completed',
+        output: 'Artifact handle stored; binary content stays outside transcript text.',
+        imagePreviewBase64: previewPng,
+        imagePreviewContentType: 'image/png',
+        isTool: true,
+      ),
+      ChatEntry(
+        id: 'starter-assistant',
+        author: 'Assistant',
+        displayLabel: 'Assistant',
+        timestamp: null,
+        body: 'Screenshot evidence is ready with reviewed viewport metadata.',
+        status: 'completed',
+      ),
+    ],
+    operationSurfaces: [
+      ...mockAgentRuntimeConnected.operationSurfaces.where((surface) => surface.surfaceId != 'imageArtifacts'),
+      const AgentRuntimeOperationSurface(
+        surfaceId: 'imageArtifacts',
+        title: 'Image artifacts',
+        subtitle: 'Selected session evidence',
+        rows: [
+          AgentRuntimeFact(label: 'Artifact', value: 'Screenshot evidence image'),
+          AgentRuntimeFact(label: 'Capture method', value: 'Design Lab Bun WebView'),
+          AgentRuntimeFact(label: 'Viewport', value: '1366 × 1024'),
+          AgentRuntimeFact(label: 'Reviewed flow', value: 'Selected session timeline and Requirements evidence'),
+          AgentRuntimeFact(label: 'Reviewer delivery', value: 'Image artifact attachment'),
+          AgentRuntimeFact(label: 'Transcript boundary', value: 'Binary bytes are not copied into chat text'),
+        ],
+        actions: [],
+      ),
+    ],
+    controllerFacts: const [
+      AgentRuntimeFact(label: 'Selected session', value: 'Starter kit evidence'),
+      AgentRuntimeFact(label: 'Image artifacts', value: '1 available'),
+      AgentRuntimeFact(label: 'Requirements evidence', value: 'Artifact attached'),
+    ],
+  );
+}
 
 class _BrushedMetalShaderSpecimen extends StatefulWidget {
   const _BrushedMetalShaderSpecimen();

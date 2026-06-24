@@ -1,0 +1,57 @@
+{
+  "id": "project-progenitor",
+  "version": "1.0.0",
+  "displayName": "Project Progenitor",
+  "prompt": {
+    "path": "prompts/project-progenitor.md"
+  },
+  "modelDefaults": {
+    "model": "gpt-5.5",
+    "reasoningEffort": "medium"
+  },
+  "capabilities": [
+    "tool.execute_code",
+    "tooling.request",
+    "project_runtime.request_change",
+    "file.head",
+    "file.tail",
+    "file.read_lines",
+    "file.line_count",
+    "file.search",
+    "tree.list",
+    "tree.find",
+    "image.describe"
+  ],
+  "policy": {
+    "tool.execute_code": "allow",
+    "tooling.request": "allow",
+    "project_runtime.request_change": "allow",
+    "file.head": "allow",
+    "file.tail": "allow",
+    "file.read_lines": "allow",
+    "file.line_count": "allow",
+    "file.search": "allow",
+    "tree.list": "allow",
+    "tree.find": "allow",
+    "image.describe": "allow"
+  },
+  "routing": {
+    "mode": "direct",
+    "defaultRecipient": "owner",
+    "allowedRecipients": [
+      "owner",
+      "operator",
+      "orchestrator"
+    ],
+    "reservedActions": []
+  },
+  "visibility": {
+    "listed": true,
+    "ownerVisible": true
+  },
+  "lifecycleAuthority": {
+    "canSpawnAgents": false,
+    "canArchiveAgents": false,
+    "reservedActions": []
+  }
+}

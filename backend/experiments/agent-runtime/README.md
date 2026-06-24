@@ -1569,3 +1569,21 @@ The Rust/Rinf view model keeps those concepts separate: typed `AgentRuntimeChatE
 ## Robdex streaming transport notes
 
 Workbench hydrate, thread selection, resync, and recovery may use full snapshots. Streaming hot paths should prefer bounded selected-chat deltas and coalesced native emissions so token bursts do not repeatedly decode full `WorkbenchViewData` snapshots in Dart. Local diagnostics should be used to confirm snapshot decode counts, selected-chat delta applies, emitted native signals, and coalesced/dropped stream updates while developing streaming changes.
+
+## Agent Runtime starter kit
+
+The starter kit exposes Rust-owned native Starlark helpers through `execute_code` without granting arbitrary shell or host access. All new file, tree, image, git, server, and tooling request helpers resolve CWD-relative paths against the session execution root, reject parent traversal, symlink escapes, absolute paths outside the root, and `.git` internals, and record bounded audit metadata in PostgreSQL.
+
+Native file and tree helpers are `file.head`, `file.tail`, `file.read_lines`, `file.line_count`, `file.search`, `file.replace_exact`, `tree.list`, and `tree.find`. File reads are bounded and line-numbered; binary files are rejected by default. Mutations require concise non-generic descriptions before side effects. Existing `fs.write` and `patch.apply` now require mutation descriptions and use the same path policy.
+
+Worker-safe git helpers are limited to `git.status`, `git.diff`, `git.restore`, `git.add`, and `git.commit`. They validate explicit paths, reject broad restores and `.git` internals, and never expose branch surgery, reset, cherry-pick, reflog, merge, pull, fetch, or push affordances.
+
+Runtime-owned server helpers are `server.start`, `server.status`, `server.url`, `server.wait_ready`, `server.logs`, and `server.stop`. `server.start` accepts a visible registry command action, allocates a runtime-owned port, injects `PORT`, spawns the command through managed-process machinery, records the process/server metadata, and rejects user-specified ports. Server state is projected into selected-session state with handle, status, URL, port, readiness, and actions.
+
+Image artifact helpers are `image.capture_from_file` and `image.describe`. Captured images are stored as first-class PostgreSQL artifacts with MIME type, byte count, dimensions when determinable, retrieval metadata, and binary content outside model-visible transcript text. Selected-session projection exposes artifact handles and bounded metadata so Requirements or design-evidence workflows can route actual image artifacts rather than path-only claims.
+
+Screenshot capture contracts use the same image artifact storage model. Future simulator, browser, and Design Lab capture tools must create `starter_image_artifacts` rows, return `imageArtifactId` handles, expose metadata/thumbnail/full retrieval through the Rust API, and attach reviewer/model evidence as image artifacts rather than local paths. Requirements-native design claims must include the image artifact id, capture method, viewport or device, and reviewed screen/component/flow.
+
+Missing or insufficient tooling must use `tooling.request(title, need, attempted, proposed="", urgency="normal")`. The runtime stores a typed request packet with source session, role, project, turn, script/tool linkage, bounded attempted evidence, routing metadata, and reviewable status. Project Progenitor is shipped as a project-local role for proposing roles, bundles, hooks, server profiles, tool bundles, workflow memory seeds, and documentation through typed approval paths; it has no authority to edit global skills, unrelated projects, or owner secrets.
+
+Default starter-kit bundles are defined for worker, designer, QA, orchestrator, Project Progenitor, simulator steward, and operator/admin roles. Worker-like roles receive bounded file/tree reads, safe mutations according to policy, safe git helpers, output artifact helpers, and `tooling.request`; designers and QA receive screenshot/image and observation helpers without simulator-global repair tools; orchestrators receive lifecycle/requirements/integration and packet triage affordances without ordinary implementation mutation helpers; operator/admin bundles retain repair affordances with audit boundaries.
