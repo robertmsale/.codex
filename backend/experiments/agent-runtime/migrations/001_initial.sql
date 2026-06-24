@@ -137,7 +137,7 @@ ALTER TABLE command_runs ADD COLUMN IF NOT EXISTS max_runtime_ms BIGINT;
 CREATE TABLE IF NOT EXISTS command_definitions (
     id UUID PRIMARY KEY,
     action_id TEXT NOT NULL,
-    scope_type TEXT NOT NULL DEFAULT 'global' CHECK (scope_type IN ('global', 'project')),
+    scope_type TEXT NOT NULL DEFAULT 'global' CHECK (scope_type IN ('global', 'project', 'role', 'projectRole')),
     project_key TEXT,
     enabled BOOLEAN NOT NULL DEFAULT true,
     current_version_id UUID,
@@ -147,8 +147,10 @@ CREATE TABLE IF NOT EXISTS command_definitions (
 );
 
 ALTER TABLE command_definitions DROP CONSTRAINT IF EXISTS command_definitions_action_id_key;
+ALTER TABLE command_definitions DROP CONSTRAINT IF EXISTS command_definitions_scope_type_check;
 ALTER TABLE command_definitions ADD COLUMN IF NOT EXISTS scope_type TEXT NOT NULL DEFAULT 'global';
 ALTER TABLE command_definitions ADD COLUMN IF NOT EXISTS project_key TEXT;
+ALTER TABLE command_definitions ADD CONSTRAINT command_definitions_scope_type_check CHECK (scope_type IN ('global', 'project', 'role', 'projectRole'));
 CREATE UNIQUE INDEX IF NOT EXISTS command_definitions_scope_unique_idx
     ON command_definitions(action_id, scope_type, COALESCE(project_key, ''));
 
@@ -462,6 +464,201 @@ ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS final_scope JSONB
 ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS final_execution_policy JSONB;
 ALTER TABLE command_registry_requests ADD COLUMN IF NOT EXISTS final_command JSONB;
 CREATE INDEX IF NOT EXISTS command_registry_requests_status_idx ON command_registry_requests(approval_status, application_status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS project_runtime_config_versions (
+    id UUID PRIMARY KEY,
+    project_key TEXT NOT NULL,
+    source_text TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    compiled_manifest JSONB NOT NULL DEFAULT '{}'::jsonb,
+    scope TEXT NOT NULL DEFAULT 'project',
+    activation_status TEXT NOT NULL DEFAULT 'draft',
+    author TEXT NOT NULL,
+    validation_packet JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    activated_at TIMESTAMPTZ,
+    archived_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS project_runtime_config_versions_hash_idx
+    ON project_runtime_config_versions(project_key, source_hash);
+CREATE INDEX IF NOT EXISTS project_runtime_config_versions_active_idx
+    ON project_runtime_config_versions(project_key, activation_status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS project_runtime_hook_bindings (
+    id UUID PRIMARY KEY,
+    project_key TEXT NOT NULL,
+    config_version_id UUID NOT NULL REFERENCES project_runtime_config_versions(id) ON DELETE CASCADE,
+    lifecycle_hook TEXT NOT NULL,
+    hook_source TEXT NOT NULL,
+    hook_source_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    activated_at TIMESTAMPTZ,
+    archived_at TIMESTAMPTZ,
+    UNIQUE(project_key, config_version_id, lifecycle_hook)
+);
+CREATE INDEX IF NOT EXISTS project_runtime_hook_bindings_active_idx
+    ON project_runtime_hook_bindings(project_key, lifecycle_hook, status);
+
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_project_runtime_version_id UUID;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_hook_bindings JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE TABLE IF NOT EXISTS lifecycle_events (
+    id UUID PRIMARY KEY,
+    project_key TEXT,
+    session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    lifecycle_hook TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS lifecycle_events_session_created_idx
+    ON lifecycle_events(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS hook_evaluations (
+    id UUID PRIMARY KEY,
+    hook_binding_id UUID REFERENCES project_runtime_hook_bindings(id) ON DELETE SET NULL,
+    hook_version_id UUID REFERENCES project_runtime_config_versions(id) ON DELETE SET NULL,
+    lifecycle_event_id UUID NOT NULL REFERENCES lifecycle_events(id) ON DELETE CASCADE,
+    session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    input_context_hash TEXT NOT NULL,
+    returned_intents JSONB NOT NULL DEFAULT '[]'::jsonb,
+    validation_status TEXT NOT NULL,
+    applied_intent_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    errors JSONB NOT NULL DEFAULT '[]'::jsonb,
+    timing_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS hook_evaluations_event_idx
+    ON hook_evaluations(lifecycle_event_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS runtime_packets (
+    id UUID PRIMARY KEY,
+    project_key TEXT,
+    source_session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    parent_session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    turn_id UUID REFERENCES turns(id) ON DELETE SET NULL,
+    packet_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    validation_error TEXT,
+    routing_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    idempotency_key TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(project_key, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS runtime_packets_source_created_idx
+    ON runtime_packets(source_session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS runtime_envelopes (
+    id UUID PRIMARY KEY,
+    packet_id UUID REFERENCES runtime_packets(id) ON DELETE CASCADE,
+    envelope_type TEXT NOT NULL,
+    source_session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    target_session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    target_role_id TEXT,
+    status TEXT NOT NULL,
+    delivery_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    delivered_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS runtime_envelopes_target_status_idx
+    ON runtime_envelopes(target_session_id, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS generic_subagents (
+    id UUID PRIMARY KEY,
+    parent_session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    subagent_session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    subagent_key TEXT NOT NULL,
+    workflow_identity TEXT NOT NULL,
+    subagent_kind TEXT NOT NULL,
+    role_id TEXT NOT NULL,
+    workspace_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+    hidden_projection_behavior TEXT NOT NULL DEFAULT 'parent_summary',
+    lifecycle_status TEXT NOT NULL DEFAULT 'open',
+    audit_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    closed_at TIMESTAMPTZ,
+    UNIQUE(parent_session_id, subagent_key, workflow_identity)
+);
+CREATE INDEX IF NOT EXISTS generic_subagents_parent_status_idx
+    ON generic_subagents(parent_session_id, lifecycle_status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS generic_contracts (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    contract_type TEXT NOT NULL,
+    canonical_payload JSONB NOT NULL,
+    status TEXT NOT NULL,
+    owner_action_state JSONB NOT NULL DEFAULT '{}'::jsonb,
+    active_version TEXT NOT NULL,
+    enforcement_enabled BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deactivation_outcome TEXT
+);
+CREATE INDEX IF NOT EXISTS generic_contracts_session_status_idx
+    ON generic_contracts(session_id, contract_type, status);
+
+CREATE TABLE IF NOT EXISTS generic_contract_progress (
+    id UUID PRIMARY KEY,
+    contract_id UUID NOT NULL REFERENCES generic_contracts(id) ON DELETE CASCADE,
+    progress_key TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(contract_id, progress_key)
+);
+
+CREATE TABLE IF NOT EXISTS resource_leases (
+    id UUID PRIMARY KEY,
+    resource_type TEXT NOT NULL,
+    resource_id TEXT,
+    handle TEXT,
+    owning_session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    steward_session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    steward_role_id TEXT,
+    status TEXT NOT NULL,
+    lease_purpose TEXT NOT NULL,
+    expiry_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+    lifecycle_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+    audit_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    release_reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS resource_leases_active_resource_idx
+    ON resource_leases(resource_type, COALESCE(resource_id, handle, ''))
+    WHERE status IN ('reserved', 'assigned');
+CREATE INDEX IF NOT EXISTS resource_leases_owner_status_idx
+    ON resource_leases(owning_session_id, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS turn_obligations (
+    id UUID PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id UUID REFERENCES turns(id) ON DELETE CASCADE,
+    obligation_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    idempotency_key TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ,
+    UNIQUE(session_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS structured_output_schema_evidence (
+    id UUID PRIMARY KEY,
+    hook_version_id UUID REFERENCES project_runtime_config_versions(id) ON DELETE SET NULL,
+    contract_id UUID REFERENCES generic_contracts(id) ON DELETE SET NULL,
+    packet_type TEXT NOT NULL,
+    schema_name TEXT NOT NULL,
+    schema_hash TEXT NOT NULL,
+    schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+    lifecycle_boundary TEXT NOT NULL,
+    model_request_id UUID,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_id TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS role_version TEXT;

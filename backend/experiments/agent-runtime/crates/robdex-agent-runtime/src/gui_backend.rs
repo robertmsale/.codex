@@ -226,6 +226,12 @@ impl GuiBackendController {
             | GuiOperationRequest::UpdateProject { .. }
             | GuiOperationRequest::ArchiveProject { .. }
             | GuiOperationRequest::UnarchiveProject { .. }
+            | GuiOperationRequest::ValidateProjectRuntimeConfig { .. }
+            | GuiOperationRequest::ImportProjectRuntimeConfig { .. }
+            | GuiOperationRequest::ActivateProjectRuntimeConfig { .. }
+            | GuiOperationRequest::ArchiveProjectRuntimeConfig { .. }
+            | GuiOperationRequest::ExportProjectRuntimeConfig { .. }
+            | GuiOperationRequest::InspectProjectRuntimeHookEvaluations { .. }
             | GuiOperationRequest::UpdateSessionSettings { .. }
             | GuiOperationRequest::SendMessage { .. }
             | GuiOperationRequest::TerminateProcess { .. }
@@ -357,6 +363,9 @@ impl GuiBackendController {
             | GuiOperationRequest::ListRoleVersions { .. }
             | GuiOperationRequest::ShowRoleVersion { .. }
             | GuiOperationRequest::ExportRole { .. }
+            | GuiOperationRequest::ValidateProjectRuntimeConfig { .. }
+            | GuiOperationRequest::ExportProjectRuntimeConfig { .. }
+            | GuiOperationRequest::InspectProjectRuntimeHookEvaluations { .. }
             | GuiOperationRequest::ShowRequirementsStatus { .. }
             | GuiOperationRequest::ListRequirementsPackets { .. } => Ok(GuiOperationOutcome::DirectValue { value }),
             GuiOperationRequest::CreateSession { .. } => {
@@ -439,6 +448,9 @@ impl GuiBackendController {
             | GuiOperationRequest::ActivateRoleVersion { .. }
             | GuiOperationRequest::ArchiveRole { .. }
             | GuiOperationRequest::UnarchiveRole { .. }
+            | GuiOperationRequest::ImportProjectRuntimeConfig { .. }
+            | GuiOperationRequest::ActivateProjectRuntimeConfig { .. }
+            | GuiOperationRequest::ArchiveProjectRuntimeConfig { .. }
             | GuiOperationRequest::SetRequirements { .. }
             | GuiOperationRequest::ClearRequirements { .. }
             | GuiOperationRequest::SubmitRequirementsReviewerInput { .. } => self.hydrate_current().await,
@@ -480,6 +492,20 @@ impl GuiBackendController {
             GuiOperationRequest::UpdateProject { project_key, .. } => format!("/projects/{project_key}"),
             GuiOperationRequest::ArchiveProject { project_key } => format!("/projects/{project_key}/archive"),
             GuiOperationRequest::UnarchiveProject { project_key } => format!("/projects/{project_key}/unarchive"),
+            GuiOperationRequest::ValidateProjectRuntimeConfig { project_key, .. } => format!("/projects/{project_key}/runtime-config/validate"),
+            GuiOperationRequest::ImportProjectRuntimeConfig { project_key, .. } => format!("/projects/{project_key}/runtime-config"),
+            GuiOperationRequest::ActivateProjectRuntimeConfig { project_key, version_id } => {
+                format!("/projects/{project_key}/runtime-config/versions/{version_id}/activate")
+            }
+            GuiOperationRequest::ArchiveProjectRuntimeConfig { project_key, version_id } => {
+                format!("/projects/{project_key}/runtime-config/versions/{version_id}/archive")
+            }
+            GuiOperationRequest::ExportProjectRuntimeConfig { project_key, version_id } => {
+                format!("/projects/{project_key}/runtime-config/versions/{version_id}/export")
+            }
+            GuiOperationRequest::InspectProjectRuntimeHookEvaluations { project_key, version_id } => {
+                format!("/projects/{project_key}/runtime-config/versions/{version_id}/evaluations")
+            }
             GuiOperationRequest::UpdateSessionSettings { session_id, .. } => format!("/sessions/{session_id}/settings"),
             GuiOperationRequest::SendMessage { session_id, .. } => format!("/sessions/{session_id}/send"),
             GuiOperationRequest::TerminateProcess { session_id, handle } => format!("/sessions/{session_id}/processes/{handle}/terminate"),

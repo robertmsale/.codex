@@ -101,7 +101,11 @@ Operation vocabulary is typed by `GuiOperationRequest`, `GuiOperationResult`,
 `GuiOperationOutcome`, `GuiOperationExpectation`, and `ApiErrorPacket`.
 Operations cover connect, hydrate, rehydrate, disconnect, select session,
 create/send/close/archive/fork session, decide/resume approval, command
-registry list/show/request preview/decide/apply, and workflow-memory feedback.
+registry list/show/request preview/decide/apply, project runtime config
+validate/import/activate/archive/export/evaluation-inspection, and
+workflow-memory feedback. Project runtime config changes are typed Rust/Rinf
+operations; Dart must not edit global skills, send opaque config blobs outside
+`GuiOperationRequest`, or own activation business logic.
 Each request reports its expected projection effect:
 
 - `Rehydrate` for initial hydrate and explicit rehydrate;
@@ -1100,6 +1104,105 @@ kind, RequirementSet id, canonical requirement count, unresolved requirement
 count, and source/reviewer mode at the model boundary. Source schemas contain
 only unresolved claims; reviewer schemas carry the full canonical contract so a
 reviewer can re-fail prior passes.
+
+## Starlark lifecycle orchestration
+
+Agent Runtime now has generic lifecycle-orchestration primitives under Rust and
+PostgreSQL ownership. Project runtime Starlark is deterministic config/decision
+code: Rust validates source syntax, activation manifests, hook names, intent
+types, routing targets, resource types, and schema metadata before activation;
+Starlark never mutates PostgreSQL, sends raw messages, spawns OS processes,
+executes shell, reads or writes arbitrary files, accesses the network, or calls
+unregistered host capabilities. Runtime side effects happen only when Rust
+applies validated typed intents.
+
+The lifecycle boundary list is:
+`on_project_runtime_activate`, `on_session_create_request`,
+`on_session_created`, `on_turn_submitted`, `on_turn_start`,
+`on_model_request`, `on_model_final`, `on_tool_start`, `on_tool_complete`,
+`on_packet_recorded`, `on_resource_reserved`, `on_resource_released`,
+`on_turn_complete`, `on_session_close`, `on_session_archive`, and
+`on_compaction_complete`.
+
+Hook context is an immutable bounded summary containing project/session
+identity, session kind, parent id, hidden state, role snapshot summary, workdir,
+worktree root, turn summary, triggering lifecycle event, active contracts,
+recent packet summaries, subagent summaries, resource lease summaries, visible
+command summaries, tool metadata, and routing state. Full hidden stdout, full
+hidden stderr, full shell output, secrets, auth material, and unbounded chat
+history are excluded.
+
+Validated hooks return typed intents only: `require_output_schema`,
+`record_packet`, `route_packet`, `notify_session`, `ensure_subagent`,
+`close_subagent`, `reserve_resource`, `release_resource`,
+`add_turn_obligation`, `update_contract_progress`,
+`request_owner_approval`, and `block_with_reason`. Each lifecycle boundary has
+a Rust-owned allowlist. Every accepted intent receives a stable idempotency key
+derived from the hook source hash, lifecycle event id, session id, and
+intent-specific key fields.
+
+Generic runtime records support the orchestration model:
+
+- project runtime config versions and hook bindings store source text, source
+  hash, compiled manifest, activation status, author, validation packet, and
+  activation/audit timestamps;
+- lifecycle events and hook evaluations record context hashes, returned
+  intents, validation status, applied intent ids, errors, and timing metadata;
+- runtime packets and envelopes are first-class records separate from ordinary
+  human messages;
+- generic hidden subagents record parent session, subagent key, workflow
+  identity, kind, role id, workspace policy, hidden projection behavior,
+  lifecycle status, and audit metadata;
+- generic contracts, contract progress, resource leases, turn obligations, and
+  structured-output schema evidence provide workflow state without bespoke
+  per-workflow transport.
+
+The shipped seed examples live in `project-runtime-seeds/`:
+`requirements_review.star` declares the Requirements Review contract workflow
+using schema, packet, subagent, route, and progress intents, and
+`simulator_stewardship.star` declares iOS simulator stewardship with role-level
+tools, resource leases, steward routing, and turn-completion notices.
+
+Requirements Review is shipped as a hook-defined contract workflow on these
+generic primitives. Source-session schemas come from hook-emitted
+`require_output_schema` intents; source claims become typed runtime packets;
+reviewer sessions are hidden generic subagents created through
+`ensure_subagent`; claim and verdict packets route through runtime envelopes;
+verdict packets update generic contract progress; pass clears the active
+contract, fail routes correction back to the source, and waiver-required
+verdicts route owner action. The user-facing Requirements API/CLI/GUI names
+remain product surfaces, but bespoke runtime routing, schema injection,
+reviewer dispatch, and verdict-progress logic are not the source of truth.
+
+Project runtime config has Rust-owned CLI surfaces for validation, import,
+inspection, version listing, activation, archival, export, and review request:
+
+```bash
+robdex-agent-runtime runtime-config validate project-runtime-seeds/requirements_review.star
+robdex-agent-runtime runtime-config import --project my-project --author operator runtime.star manifest.json
+robdex-agent-runtime runtime-config show --project my-project
+robdex-agent-runtime runtime-config versions --project my-project
+robdex-agent-runtime runtime-config activate --project my-project <version-uuid>
+robdex-agent-runtime runtime-config archive --project my-project <version-uuid>
+robdex-agent-runtime runtime-config export --project my-project <version-uuid>
+robdex-agent-runtime runtime-config request-review --project my-project <version-uuid>
+```
+
+The server exposes the same Rust-owned operations:
+
+```text
+POST /projects/{projectKey}/runtime-config/validate
+GET  /projects/{projectKey}/runtime-config
+POST /projects/{projectKey}/runtime-config
+GET  /projects/{projectKey}/runtime-config/versions
+POST /projects/{projectKey}/runtime-config/versions/{versionId}/activate
+POST /projects/{projectKey}/runtime-config/versions/{versionId}/archive
+GET  /projects/{projectKey}/runtime-config/versions/{versionId}/export
+GET  /projects/{projectKey}/runtime-config/versions/{versionId}/evaluations
+```
+
+The Rust/Rinf GUI transport exposes the same operations as typed
+`GuiTransportRequest` variants and typed `GuiOperationRequest` variants.
 
 The `worktree_root`, `title`, and `name` fields are explicit session metadata:
 `worktree_root` records the optional owning worktree/root for audit and tooling,

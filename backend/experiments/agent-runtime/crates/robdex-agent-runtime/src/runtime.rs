@@ -533,7 +533,7 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
     let runtime_command_context = command_registry::runtime_command_context_message(&live_commands, previous_command_context.as_ref());
     let context_snapshot = model_input::persist_context_snapshot(pool, &session, &model_role_snapshot, &runtime_command_context.evidence, None).await?;
     let mut runtime_messages = model_input::runtime_developer_messages(&context_snapshot, &runtime_command_context);
-    if let Some(requirements_message) = crate::requirements::requirements_runtime_message(pool, session_id).await? {
+    if let Some(requirements_message) = crate::requirements::hook_defined_requirements_runtime_message(pool, session_id).await? {
         runtime_messages.push(requirements_message);
     }
     let god_mode_shell_active = crate::god_mode::active_grant(pool, session_id).await?.is_some();
@@ -1303,9 +1303,9 @@ async fn classify_requirements_final_response(
 ) -> Result<()> {
     let session = db::session_record(pool, session_id).await?;
     if session.session_kind == "requirementsReviewer" {
-        let _ = crate::requirements::record_reviewer_verdict(pool, session_id, turn_id, final_text).await?;
+        let _ = crate::requirements::record_requirements_verdict_packet(pool, session_id, turn_id, final_text).await?;
     } else {
-        if let Some(record) = crate::requirements::record_source_final_response(pool, session_id, turn_id, final_text).await?
+        if let Some(record) = crate::requirements::record_requirements_claim_packet(pool, session_id, turn_id, final_text).await?
             && record.outcome == crate::requirements::SourcePacketOutcome::Reviewable
             && let Some(reviewer_session_id) = record.reviewer_session_id
         {

@@ -89,6 +89,11 @@ struct ReplacementContextData {
     active_task_goal: String,
     important_decisions: Vec<String>,
     touched_surfaces: Vec<String>,
+    active_contracts: Vec<Value>,
+    pending_packets: Vec<Value>,
+    active_subagents: Vec<Value>,
+    hook_obligations: Vec<Value>,
+    resource_leases: Vec<Value>,
 }
 
 pub fn estimate_context_value(value: &Value, budget: CompactionBudget) -> ContextEstimate {
@@ -222,6 +227,11 @@ pub async fn compact_session_through_turn(pool: &PgPool, session_id: Uuid, throu
         "outputArtifacts": artifact_refs,
         "pendingApprovals": pending_approvals,
         "pendingProcesses": pending_processes,
+        "activeContracts": context_data.active_contracts,
+        "pendingPackets": context_data.pending_packets,
+        "activeSubagents": context_data.active_subagents,
+        "hookObligations": context_data.hook_obligations,
+        "resourceLeases": context_data.resource_leases,
         "latestActionableState": turns.last().map(|turn| turn.assistant.clone().unwrap_or_else(|| turn.input_text.clone())).unwrap_or_default(),
         "notes": [
             "Original audit rows are preserved.",
@@ -530,10 +540,83 @@ async fn replacement_context_data(pool: &PgPool, session_id: Uuid, turns: &[Comp
     touched_surfaces.sort();
     touched_surfaces.dedup();
     touched_surfaces.truncate(20);
+    let active_contracts = sqlx::query(
+        "SELECT id, contract_type, status FROM generic_contracts WHERE session_id=$1 AND status IN ('active','pending') ORDER BY created_at ASC LIMIT 20",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|row| json!({
+        "contractId": row.get::<Uuid, _>("id"),
+        "contractType": row.get::<String, _>("contract_type"),
+        "status": row.get::<String, _>("status"),
+    }))
+    .collect::<Vec<_>>();
+    let pending_packets = sqlx::query(
+        "SELECT id, packet_type, status FROM runtime_packets WHERE source_session_id=$1 AND status IN ('pending','pending_steward_review','invalid','recorded','valid') ORDER BY created_at DESC LIMIT 20",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|row| json!({
+        "packetId": row.get::<Uuid, _>("id"),
+        "packetType": row.get::<String, _>("packet_type"),
+        "status": row.get::<String, _>("status"),
+    }))
+    .collect::<Vec<_>>();
+    let active_subagents = sqlx::query(
+        "SELECT subagent_session_id, subagent_key, subagent_kind, lifecycle_status FROM generic_subagents WHERE parent_session_id=$1 AND lifecycle_status='open' ORDER BY created_at ASC LIMIT 20",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|row| json!({
+        "sessionId": row.get::<Uuid, _>("subagent_session_id"),
+        "subagentKey": row.get::<String, _>("subagent_key"),
+        "subagentKind": row.get::<String, _>("subagent_kind"),
+        "status": row.get::<String, _>("lifecycle_status"),
+    }))
+    .collect::<Vec<_>>();
+    let hook_obligations = sqlx::query(
+        "SELECT id, obligation_type, status FROM turn_obligations WHERE session_id=$1 AND status='pending' ORDER BY created_at ASC LIMIT 20",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|row| json!({
+        "obligationId": row.get::<Uuid, _>("id"),
+        "obligationType": row.get::<String, _>("obligation_type"),
+        "status": row.get::<String, _>("status"),
+    }))
+    .collect::<Vec<_>>();
+    let resource_leases = sqlx::query(
+        "SELECT id, resource_type, resource_id, handle, status FROM resource_leases WHERE owning_session_id=$1 AND status IN ('reserved','assigned','idle') ORDER BY created_at ASC LIMIT 20",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|row| json!({
+        "leaseId": row.get::<Uuid, _>("id"),
+        "resourceType": row.get::<String, _>("resource_type"),
+        "resourceId": row.get::<Option<String>, _>("resource_id"),
+        "handle": row.get::<Option<String>, _>("handle"),
+        "status": row.get::<String, _>("status"),
+    }))
+    .collect::<Vec<_>>();
     Ok(ReplacementContextData {
         active_task_goal,
         important_decisions,
         touched_surfaces,
+        active_contracts,
+        pending_packets,
+        active_subagents,
+        hook_obligations,
+        resource_leases,
     })
 }
 
@@ -591,6 +674,58 @@ fn bounded_replacement_context(turns: &[CompletedTurn], artifact_refs: &[Value],
                 process.get("endOfSessionBehavior").and_then(Value::as_str).unwrap_or("<unknown>"),
             ));
         }
+    }
+    lines.push("Active hook workflow state by durable ids:".to_string());
+    if context_data.active_contracts.is_empty()
+        && context_data.pending_packets.is_empty()
+        && context_data.active_subagents.is_empty()
+        && context_data.hook_obligations.is_empty()
+        && context_data.resource_leases.is_empty()
+    {
+        lines.push("- none".to_string());
+    }
+    for contract in &context_data.active_contracts {
+        lines.push(format!(
+            "- contract={} type={} status={}",
+            contract.get("contractId").and_then(Value::as_str).unwrap_or("<unknown>"),
+            contract.get("contractType").and_then(Value::as_str).unwrap_or("<unknown>"),
+            contract.get("status").and_then(Value::as_str).unwrap_or("<unknown>"),
+        ));
+    }
+    for packet in &context_data.pending_packets {
+        lines.push(format!(
+            "- packet={} type={} status={}",
+            packet.get("packetId").and_then(Value::as_str).unwrap_or("<unknown>"),
+            packet.get("packetType").and_then(Value::as_str).unwrap_or("<unknown>"),
+            packet.get("status").and_then(Value::as_str).unwrap_or("<unknown>"),
+        ));
+    }
+    for subagent in &context_data.active_subagents {
+        lines.push(format!(
+            "- subagent={} key={} kind={} status={}",
+            subagent.get("sessionId").and_then(Value::as_str).unwrap_or("<unknown>"),
+            subagent.get("subagentKey").and_then(Value::as_str).unwrap_or("<unknown>"),
+            subagent.get("subagentKind").and_then(Value::as_str).unwrap_or("<unknown>"),
+            subagent.get("status").and_then(Value::as_str).unwrap_or("<unknown>"),
+        ));
+    }
+    for obligation in &context_data.hook_obligations {
+        lines.push(format!(
+            "- obligation={} type={} status={}",
+            obligation.get("obligationId").and_then(Value::as_str).unwrap_or("<unknown>"),
+            obligation.get("obligationType").and_then(Value::as_str).unwrap_or("<unknown>"),
+            obligation.get("status").and_then(Value::as_str).unwrap_or("<unknown>"),
+        ));
+    }
+    for lease in &context_data.resource_leases {
+        lines.push(format!(
+            "- lease={} resourceType={} resourceId={} handle={} status={}",
+            lease.get("leaseId").and_then(Value::as_str).unwrap_or("<unknown>"),
+            lease.get("resourceType").and_then(Value::as_str).unwrap_or("<unknown>"),
+            lease.get("resourceId").and_then(Value::as_str).unwrap_or("<none>"),
+            lease.get("handle").and_then(Value::as_str).unwrap_or("<none>"),
+            lease.get("status").and_then(Value::as_str).unwrap_or("<unknown>"),
+        ));
     }
     if !artifact_refs.is_empty() {
         lines.push("Output artifacts referenced by handle only:".to_string());

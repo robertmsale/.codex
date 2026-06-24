@@ -14,14 +14,14 @@ use futures_util::{SinkExt, StreamExt};
 use robdex_agent_runtime_projection::{RoleEditorDraft, RuntimeDelta, RuntimeDeltaKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use tokio::sync::{Mutex, watch};
 use tokio::time::{Duration, interval};
 use uuid::Uuid;
 
 use crate::errors::{RuntimeDomainError, RuntimeErrorKind};
 use crate::model::ModelClient;
-use crate::{approvals, command_registry, compaction, db, projection, requirements, routing, runtime, starlark_host, workflow_memory};
+use crate::{approvals, command_registry, compaction, db, lifecycle_hooks, projection, requirements, routing, runtime, starlark_host, workflow_memory};
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -198,6 +198,13 @@ pub fn app(state: ServerState) -> Router {
         .route("/projects/{project_key}", post(update_project))
         .route("/projects/{project_key}/archive", post(archive_project))
         .route("/projects/{project_key}/unarchive", post(unarchive_project))
+        .route("/projects/{project_key}/runtime-config/validate", post(validate_project_runtime_config))
+        .route("/projects/{project_key}/runtime-config", get(show_project_runtime_config).post(import_project_runtime_config))
+        .route("/projects/{project_key}/runtime-config/versions", get(list_project_runtime_config_versions))
+        .route("/projects/{project_key}/runtime-config/versions/{version_id}/activate", post(activate_project_runtime_config))
+        .route("/projects/{project_key}/runtime-config/versions/{version_id}/archive", post(archive_project_runtime_config))
+        .route("/projects/{project_key}/runtime-config/versions/{version_id}/export", get(export_project_runtime_config))
+        .route("/projects/{project_key}/runtime-config/versions/{version_id}/evaluations", get(inspect_project_runtime_hook_evaluations))
         .route("/sessions", get(list_sessions).post(create_session))
         .route("/sessions/{session_id}", get(show_session))
         .route("/sessions/{session_id}/history", get(session_history))
@@ -529,6 +536,156 @@ async fn unarchive_project(State(state): State<ServerState>, Path(project_key): 
         .await
         .map_err(|error| map_missing_entity(error, "project", project_key.trim()))?;
     Ok(Json(json!({"project": project_json(project)})))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeConfigValidateRequest {
+    source_text: String,
+    #[serde(default)]
+    manifest: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeConfigImportRequest {
+    source_text: String,
+    manifest: Value,
+    author: String,
+}
+
+async fn validate_project_runtime_config(
+    Path(_project_key): Path<String>,
+    payload: std::result::Result<Json<RuntimeConfigValidateRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let request = parse_json(payload)?;
+    let compiled_manifest = if let Some(manifest) = request.manifest.as_ref() {
+        lifecycle_hooks::validate_hook_source(&request.source_text)?;
+        lifecycle_hooks::validate_runtime_manifest(manifest)?;
+        manifest.clone()
+    } else {
+        lifecycle_hooks::compile_project_runtime_source(&request.source_text)?
+    };
+    Ok(Json(json!({
+        "valid": true,
+        "sourceHash": lifecycle_hooks::source_hash(&request.source_text),
+        "manifest": compiled_manifest,
+        "limits": {
+            "maxHookSourceBytes": lifecycle_hooks::MAX_HOOK_SOURCE_BYTES,
+            "maxContextBytes": lifecycle_hooks::MAX_CONTEXT_BYTES,
+            "maxReturnedIntents": lifecycle_hooks::MAX_RETURNED_INTENTS,
+            "evaluationTimeoutMs": lifecycle_hooks::EVALUATION_TIMEOUT_MS,
+            "evaluationFuelSteps": lifecycle_hooks::EVALUATION_FUEL_STEPS
+        }
+    })))
+}
+
+async fn import_project_runtime_config(
+    State(state): State<ServerState>,
+    Path(project_key): Path<String>,
+    payload: std::result::Result<Json<RuntimeConfigImportRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let request = parse_json(payload)?;
+    let version_id = lifecycle_hooks::persist_project_runtime_config(
+        &state.pool,
+        project_key.trim(),
+        &request.source_text,
+        request.manifest,
+        request.author.trim(),
+    ).await?;
+    Ok(Json(json!({"projectKey": project_key, "versionId": version_id, "status":"draft"})))
+}
+
+async fn show_project_runtime_config(State(state): State<ServerState>, Path(project_key): Path<String>) -> Result<Json<Value>, ApiError> {
+    let row = sqlx::query("SELECT id, project_key, source_hash, compiled_manifest, activation_status, author, validation_packet, created_at, activated_at, archived_at FROM project_runtime_config_versions WHERE project_key=$1 AND activation_status='active' ORDER BY activated_at DESC NULLS LAST, created_at DESC LIMIT 1")
+        .bind(project_key.trim())
+        .fetch_optional(&state.pool)
+        .await.map_err(anyhow::Error::from)?;
+    Ok(Json(row.map(runtime_config_row_json).unwrap_or_else(|| json!({"projectKey": project_key, "active": null}))))
+}
+
+async fn list_project_runtime_config_versions(State(state): State<ServerState>, Path(project_key): Path<String>) -> Result<Json<Value>, ApiError> {
+    let rows = sqlx::query("SELECT id, project_key, source_hash, compiled_manifest, activation_status, author, validation_packet, created_at, activated_at, archived_at FROM project_runtime_config_versions WHERE project_key=$1 ORDER BY created_at DESC")
+        .bind(project_key.trim())
+        .fetch_all(&state.pool)
+        .await.map_err(anyhow::Error::from)?;
+    Ok(Json(json!({"versions": rows.into_iter().map(runtime_config_row_json).collect::<Vec<_>>() })))
+}
+
+async fn activate_project_runtime_config(State(state): State<ServerState>, Path((project_key, version_id)): Path<(String, Uuid)>) -> Result<Json<Value>, ApiError> {
+    lifecycle_hooks::activate_project_runtime_config(&state.pool, project_key.trim(), version_id).await?;
+    Ok(Json(json!({"projectKey": project_key, "versionId": version_id, "status":"active"})))
+}
+
+async fn archive_project_runtime_config(State(state): State<ServerState>, Path((project_key, version_id)): Path<(String, Uuid)>) -> Result<Json<Value>, ApiError> {
+    sqlx::query("UPDATE project_runtime_config_versions SET activation_status='archived', archived_at=now() WHERE project_key=$1 AND id=$2")
+        .bind(project_key.trim())
+        .bind(version_id)
+        .execute(&state.pool)
+        .await.map_err(anyhow::Error::from)?;
+    Ok(Json(json!({"projectKey": project_key, "versionId": version_id, "status":"archived"})))
+}
+
+async fn export_project_runtime_config(State(state): State<ServerState>, Path((project_key, version_id)): Path<(String, Uuid)>) -> Result<Json<Value>, ApiError> {
+    let row = sqlx::query("SELECT id, project_key, source_text, source_hash, compiled_manifest, activation_status, author, validation_packet, created_at, activated_at, archived_at FROM project_runtime_config_versions WHERE project_key=$1 AND id=$2")
+        .bind(project_key.trim())
+        .bind(version_id)
+        .fetch_one(&state.pool)
+        .await.map_err(anyhow::Error::from)?;
+    let source_text = row.get::<String, _>("source_text");
+    let mut value = runtime_config_row_json(row);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("sourceText".to_string(), source_text.into());
+    }
+    Ok(Json(value))
+}
+
+async fn inspect_project_runtime_hook_evaluations(State(state): State<ServerState>, Path((project_key, version_id)): Path<(String, Uuid)>) -> Result<Json<Value>, ApiError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT he.id, he.lifecycle_event_id, he.session_id, he.turn_id, he.input_context_hash,
+               he.returned_intents, he.validation_status, he.applied_intent_ids, he.errors,
+               he.timing_metadata, he.created_at
+        FROM hook_evaluations he
+        JOIN project_runtime_config_versions v ON v.id = he.hook_version_id
+        WHERE v.project_key=$1 AND he.hook_version_id=$2
+        ORDER BY he.created_at DESC
+        LIMIT 100
+        "#,
+    )
+    .bind(project_key.trim())
+    .bind(version_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(anyhow::Error::from)?;
+    Ok(Json(json!({"evaluations": rows.into_iter().map(|row| json!({
+        "id": row.get::<Uuid, _>("id"),
+        "lifecycleEventId": row.get::<Uuid, _>("lifecycle_event_id"),
+        "sessionId": row.get::<Option<Uuid>, _>("session_id"),
+        "turnId": row.get::<Option<Uuid>, _>("turn_id"),
+        "inputContextHash": row.get::<String, _>("input_context_hash"),
+        "returnedIntents": row.get::<Value, _>("returned_intents"),
+        "validationStatus": row.get::<String, _>("validation_status"),
+        "appliedIntentIds": row.get::<Value, _>("applied_intent_ids"),
+        "errors": row.get::<Value, _>("errors"),
+        "timingMetadata": row.get::<Value, _>("timing_metadata"),
+        "createdAt": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
+    })).collect::<Vec<_>>() })))
+}
+
+fn runtime_config_row_json(row: sqlx::postgres::PgRow) -> Value {
+    json!({
+        "id": row.get::<Uuid, _>("id"),
+        "projectKey": row.get::<String, _>("project_key"),
+        "sourceHash": row.get::<String, _>("source_hash"),
+        "manifest": row.get::<Value, _>("compiled_manifest"),
+        "status": row.get::<String, _>("activation_status"),
+        "author": row.get::<String, _>("author"),
+        "validationPacket": row.get::<Value, _>("validation_packet"),
+        "createdAt": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
+        "activatedAt": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("activated_at"),
+        "archivedAt": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("archived_at"),
+    })
 }
 
 async fn project_from_intent(pool: &PgPool, project_intent: &str) -> Result<Option<String>, ApiError> {
@@ -1473,6 +1630,7 @@ mod tests {
     use super::*;
     use crate::compaction;
     use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelInitialTurn, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
+    use crate::roles::RoleSnapshot;
     use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{Method, Request};
@@ -1580,6 +1738,7 @@ mod tests {
         pool: PgPool,
         admin: PgPool,
         name: String,
+        url: String,
     }
 
     impl TestDb {
@@ -1610,7 +1769,7 @@ mod tests {
             let imported = registry.load_for_import(&path).expect("load role");
             db::import_role_version(&pool, &imported).await.expect("import role");
         }
-        TestDb { pool, admin, name }
+        TestDb { pool, admin, name, url }
     }
 
     async fn request_json(app: Router, method: Method, path: &str, body: Value) -> (StatusCode, Value) {
@@ -6683,7 +6842,7 @@ output(outputs.stats(artifact))
                 }
             }
         }).to_string();
-        let outcome = requirements::record_source_final_response(&test_db.pool, source, turn_id, &claim).await.expect("claim outcome").expect("claim record");
+        let outcome = requirements::record_requirements_claim_packet(&test_db.pool, source, turn_id, &claim).await.expect("claim outcome").expect("claim record");
         assert_eq!(outcome.outcome, requirements::SourcePacketOutcome::Reviewable);
         let status = requirements::status(&test_db.pool, source).await.expect("status");
         assert_eq!(status.active_set_id, Some(set_id));
@@ -6725,7 +6884,7 @@ output(outputs.stats(artifact))
             "first_requirement":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"},
             "second_requirement":{"claim":"blocked","evidence":["waiver request"],"justification":"needs waiver review","risk":"medium"}
         }}).to_string();
-        requirements::record_source_final_response(&test_db.pool, source, claim_turn, &claim).await.expect("claim");
+        requirements::record_requirements_claim_packet(&test_db.pool, source, claim_turn, &claim).await.expect("claim");
         let reviewer_id = requirements::status(&test_db.pool, source).await.expect("status").reviewer_session_id.expect("reviewer");
         let verdict_turn = Uuid::new_v4();
         sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'assistant','verdict','completed',now())")
@@ -6743,7 +6902,7 @@ output(outputs.stats(artifact))
             "overallVerdict": "pass",
             "route": "source"
         }).to_string();
-        assert!(requirements::record_reviewer_verdict(&test_db.pool, reviewer_id, verdict_turn, &verdict).await.expect("verdict"));
+        assert!(requirements::record_requirements_verdict_packet(&test_db.pool, reviewer_id, verdict_turn, &verdict).await.expect("verdict"));
         let inactive = requirements::status(&test_db.pool, source).await.expect("inactive");
         assert!(!inactive.active);
         let packets = requirements::packet_history(&test_db.pool, source).await.expect("packets");
@@ -6772,12 +6931,12 @@ output(outputs.stats(artifact))
         runtime::send_with_model_client(&test_db.pool, inactive_session, "inactive", &fake, compaction::CompactionBudget::from_env()).await.expect("inactive send");
         let shapes = observed.lock().expect("shapes");
         assert_eq!(shapes.len(), 2);
-        assert_eq!(shapes[0].pointer("/requirements_schema_evidence/kind").and_then(Value::as_str), Some("sourceClaim"));
+        assert_eq!(shapes[0].pointer("/hook_schema_evidence/kind").and_then(Value::as_str), Some("sourceClaim"));
         assert_eq!(shapes[0].pointer("/text/format/type").and_then(Value::as_str), Some("json_schema"));
-        assert_eq!(shapes[0].pointer("/requirements_schema_evidence/canonicalCount").and_then(Value::as_u64), Some(1));
+        assert_eq!(shapes[0].pointer("/hook_schema_evidence/canonicalCount").and_then(Value::as_u64), Some(1));
         println!("SOURCE_REQUIREMENTS_SCHEMA_EXAMPLE={}", serde_json::to_string_pretty(&shapes[0]["text"]["format"]).expect("source schema evidence"));
-        println!("SOURCE_REQUIREMENTS_SCHEMA_EVIDENCE={}", serde_json::to_string_pretty(&shapes[0]["requirements_schema_evidence"]).expect("source schema metadata"));
-        assert!(shapes[1].get("requirements_schema_evidence").is_none());
+        println!("SOURCE_HOOK_SCHEMA_EVIDENCE={}", serde_json::to_string_pretty(&shapes[0]["hook_schema_evidence"]).expect("source schema metadata"));
+        assert!(shapes[1].get("hook_schema_evidence").is_none());
         assert!(shapes[1].pointer("/text/format").is_none());
         test_db.cleanup().await;
     }
@@ -6816,10 +6975,10 @@ output(outputs.stats(artifact))
             .expect("reviewer turns");
         assert_eq!(reviewer_turns, 1);
         let shapes = observed.lock().expect("observed shapes");
-        assert!(shapes.iter().any(|shape| shape.pointer("/requirements_schema_evidence/kind").and_then(Value::as_str) == Some("reviewerVerdict")));
-        if let Some(reviewer_shape) = shapes.iter().find(|shape| shape.pointer("/requirements_schema_evidence/kind").and_then(Value::as_str) == Some("reviewerVerdict")) {
+        assert!(shapes.iter().any(|shape| shape.pointer("/hook_schema_evidence/kind").and_then(Value::as_str) == Some("reviewerVerdict")));
+        if let Some(reviewer_shape) = shapes.iter().find(|shape| shape.pointer("/hook_schema_evidence/kind").and_then(Value::as_str) == Some("reviewerVerdict")) {
             println!("REVIEWER_REQUIREMENTS_SCHEMA_EXAMPLE={}", serde_json::to_string_pretty(&reviewer_shape["text"]["format"]).expect("reviewer schema evidence"));
-            println!("REVIEWER_REQUIREMENTS_SCHEMA_EVIDENCE={}", serde_json::to_string_pretty(&reviewer_shape["requirements_schema_evidence"]).expect("reviewer schema metadata"));
+            println!("REVIEWER_HOOK_SCHEMA_EVIDENCE={}", serde_json::to_string_pretty(&reviewer_shape["hook_schema_evidence"]).expect("reviewer schema metadata"));
         }
         let inactive = requirements::status(&test_db.pool, source).await.expect("status");
         assert!(!inactive.active, "pass verdict deactivates the active RequirementSet");
@@ -6855,7 +7014,7 @@ output(outputs.stats(artifact))
                 .execute(&test_db.pool)
                 .await
                 .expect("turn");
-            requirements::record_source_final_response(&test_db.pool, source, turn_id, body).await.expect("packet");
+            requirements::record_requirements_claim_packet(&test_db.pool, source, turn_id, body).await.expect("packet");
         }
         let reviewers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE parent_session_id=$1 AND session_kind='requirementsReviewer'")
             .bind(source)
@@ -6888,7 +7047,7 @@ output(outputs.stats(artifact))
             .execute(&test_db.pool)
             .await
             .expect("turn");
-        requirements::record_source_final_response(&test_db.pool, source, turn_id, r#"{"summary":"done","requirements":{"lifecycle_checked":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
+        requirements::record_requirements_claim_packet(&test_db.pool, source, turn_id, r#"{"summary":"done","requirements":{"lifecycle_checked":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
         let reviewer = requirements::status(&test_db.pool, source).await.expect("status").reviewer_session_id.expect("reviewer");
         let fork_turn = insert_completed_turn(&test_db.pool, source, "before fork", "assistant").await;
         let fork = db::fork_session(&test_db.pool, source, fork_turn).await.expect("fork");
@@ -6933,7 +7092,7 @@ output(outputs.stats(artifact))
             .execute(&test_db.pool)
             .await
             .expect("turn");
-        requirements::record_source_final_response(&test_db.pool, source, claim_turn, r#"{"summary":"done","requirements":{"api_visible":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
+        requirements::record_requirements_claim_packet(&test_db.pool, source, claim_turn, r#"{"summary":"done","requirements":{"api_visible":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
         let reviewer = requirements::status(&test_db.pool, source).await.expect("status").reviewer_session_id.expect("reviewer");
         let (status, body) = request_json(app.clone(), Method::GET, &format!("/sessions/{source}/requirements/packets"), Value::Null).await;
         assert_eq!(status, StatusCode::OK);
@@ -6959,7 +7118,7 @@ output(outputs.stats(artifact))
             requirements: vec![requirements::RequirementInput { key: "clarification_routed".to_string(), statement: "Clarification reaches the hidden reviewer.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
         }).await.expect("set");
         let claim_turn = insert_completed_turn(&test_db.pool, source, "claim", "assistant").await;
-        requirements::record_source_final_response(&test_db.pool, source, claim_turn, r#"{"summary":"done","requirements":{"clarification_routed":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
+        requirements::record_requirements_claim_packet(&test_db.pool, source, claim_turn, r#"{"summary":"done","requirements":{"clarification_routed":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
         let reviewer = requirements::status(&test_db.pool, source).await.expect("status").reviewer_session_id.expect("reviewer");
         let model = Arc::new(FakeModelClient { direct_final_text: Some("clarification recorded"), ..Default::default() });
         let state = ServerState::new_with_model_client(test_db.pool.clone(), "requirements-reviewer-submit".to_string(), model);
@@ -7019,7 +7178,7 @@ output(outputs.stats(artifact))
             requirements: vec![requirements::RequirementInput { key: "compact_preserves".to_string(), statement: "Compaction preserves requirements state.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
         }).await.expect("set");
         let turn = insert_completed_turn(&test_db.pool, source, "claim", r#"{"summary":"commentary","requirements":null}"#).await;
-        requirements::record_source_final_response(&test_db.pool, source, turn, r#"{"summary":"commentary","requirements":null}"#).await.expect("packet");
+        requirements::record_requirements_claim_packet(&test_db.pool, source, turn, r#"{"summary":"commentary","requirements":null}"#).await.expect("packet");
         compaction::compact_session_through_turn(&test_db.pool, source, turn, compaction::CompactionBudget::default()).await.expect("compact");
         let status = requirements::status(&test_db.pool, source).await.expect("status");
         assert!(status.active);
@@ -7040,7 +7199,7 @@ output(outputs.stats(artifact))
         }).await.expect("set");
         let turn = insert_completed_turn(&test_db.pool, source, "claim", "assistant").await;
         let invalid = r#"{"summary":"done","requirements":{"schema_checked":{"claim":"satisfied","evidence":["e"],"justification":"missing risk"}}}"#;
-        let record = requirements::record_source_final_response(&test_db.pool, source, turn, invalid).await.expect("record").expect("active");
+        let record = requirements::record_requirements_claim_packet(&test_db.pool, source, turn, invalid).await.expect("record").expect("active");
         assert_eq!(record.outcome, requirements::SourcePacketOutcome::Invalid);
         let reviewer_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE parent_session_id=$1 AND session_kind='requirementsReviewer'")
             .bind(source)
@@ -7060,6 +7219,1032 @@ output(outputs.stats(artifact))
     }
 
     #[tokio::test]
+    async fn requirements_review_mirrors_to_generic_contract_packets_and_subagent_records() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-generic-mirror"), ".", Some("."), None, None).await.expect("source");
+        let set_id = requirements::set_active_requirements(&test_db.pool, source, requirements::RequirementSetInput {
+            title: Some("generic mirror requirements".to_string()),
+            requirements: vec![requirements::RequirementInput { key: "generic_mirror".to_string(), statement: "Requirements Review mirrors through generic workflow records.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
+        }).await.expect("set");
+        let generic_contracts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM generic_contracts WHERE id=$1 AND session_id=$2 AND contract_type='requirements' AND status='active'")
+            .bind(set_id)
+            .bind(source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("generic contract");
+        assert_eq!(generic_contracts, 1);
+        let turn = insert_completed_turn(&test_db.pool, source, "claim", "assistant").await;
+        let record = requirements::record_requirements_claim_packet(&test_db.pool, source, turn, r#"{"summary":"done","requirements":{"generic_mirror":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#)
+            .await
+            .expect("claim")
+            .expect("record");
+        assert_eq!(record.outcome, requirements::SourcePacketOutcome::Reviewable);
+        let reviewer = record.reviewer_session_id.expect("reviewer");
+        let packet_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_packets WHERE source_session_id=$1 AND packet_type='requirements.claim'")
+            .bind(source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("runtime packet");
+        assert_eq!(packet_count, 1);
+        let subagent_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM generic_subagents WHERE parent_session_id=$1 AND subagent_session_id=$2 AND subagent_kind='requirementsReviewer' AND lifecycle_status='open'")
+            .bind(source)
+            .bind(reviewer)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("generic subagent");
+        assert_eq!(subagent_count, 1);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn hook_defined_requirements_review_runs_end_to_end_through_generic_workflow() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+
+        async fn run_case(
+            pool: &PgPool,
+            role: &RoleSnapshot,
+            project: &str,
+            key: &str,
+            verdict: &str,
+            overall: &str,
+            route: &str,
+        ) -> (Uuid, Uuid, Uuid) {
+            let source = db::new_session(pool, role, Some(project), ".", Some("."), None, None).await.expect("source");
+            let set_id = requirements::set_active_requirements(pool, source, requirements::RequirementSetInput {
+                title: Some(format!("{key} requirements")),
+                requirements: vec![requirements::RequirementInput { key: key.to_string(), statement: format!("{key} is verified."), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
+            }).await.expect("set");
+            let source_schema = requirements::hook_defined_requirements_runtime_message(pool, source).await.expect("source schema").expect("source schema");
+            assert_eq!(source_schema.metadata["source"], "hook_required_output_schema");
+            assert!(source_schema.text.contains("requirements_source_claim"));
+            let claim_turn = insert_completed_turn(pool, source, "claim", "assistant").await;
+            let claim = format!(r#"{{"summary":"done","requirements":{{"{key}":{{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}}}}"#);
+            let record = requirements::record_requirements_claim_packet(pool, source, claim_turn, &claim).await.expect("claim").expect("record");
+            assert_eq!(record.outcome, requirements::SourcePacketOutcome::Reviewable);
+            let reviewer = record.reviewer_session_id.expect("reviewer");
+            let reviewer_schema = requirements::hook_defined_requirements_runtime_message(pool, reviewer).await.expect("reviewer schema").expect("reviewer schema");
+            assert!(reviewer_schema.text.contains("requirements_reviewer_verdict"));
+            assert!(reviewer_schema.text.contains("<requirements_review_context>"));
+            let runtime_claims: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_packets WHERE source_session_id=$1 AND packet_type='requirements.claim'")
+                .bind(source)
+                .fetch_one(pool)
+                .await
+                .expect("claim packet");
+            assert_eq!(runtime_claims, 1);
+            let routed_claims: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_envelopes e JOIN runtime_packets p ON p.id=e.packet_id WHERE p.source_session_id=$1 AND e.target_session_id=$2 AND e.envelope_type='requirements_claim_to_reviewer'")
+                .bind(source)
+                .bind(reviewer)
+                .fetch_one(pool)
+                .await
+                .expect("route packet");
+            assert_eq!(routed_claims, 1);
+            let verdict_turn = insert_completed_turn(pool, reviewer, "verdict", "assistant").await;
+            let verdict_packet = format!(r#"{{"summary":"reviewed","requirements":{{"{key}":{{"verdict":"{verdict}","evidence":["e"],"justification":"j","risk":"low"}}}},"overallVerdict":"{overall}","route":"{route}"}}"#);
+            assert!(requirements::record_requirements_verdict_packet(pool, reviewer, verdict_turn, &verdict_packet).await.expect("verdict"));
+            let generic_progress: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM generic_contract_progress WHERE contract_id=$1 AND progress_key=$2")
+                .bind(set_id)
+                .bind(key)
+                .fetch_one(pool)
+                .await
+                .expect("generic progress");
+            assert_eq!(generic_progress, 1);
+            (source, set_id, reviewer)
+        }
+
+        let (pass_source, _, pass_reviewer) = run_case(&test_db.pool, &role, "requirements-e2e-pass", "pass_req", "pass", "pass", "source").await;
+        let pass_status = requirements::status(&test_db.pool, pass_source).await.expect("pass status");
+        assert!(!pass_status.active, "pass verdict clears active Requirements");
+
+        let (fail_source, _, _) = run_case(&test_db.pool, &role, "requirements-e2e-fail", "fail_req", "fail", "fail", "source").await;
+        let fail_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='requirements.correction' AND status='failed'")
+            .bind(fail_source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("fail route");
+        assert_eq!(fail_events, 1, "fail verdict routes correction to source");
+
+        let (waiver_source, _, _) = run_case(&test_db.pool, &role, "requirements-e2e-waiver", "waiver_req", "waiverRequired", "needsHumanWaiver", "owner").await;
+        let owner_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='requirements.ownerAction' AND status='blocked'")
+            .bind(waiver_source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("owner route");
+        assert_eq!(owner_events, 1, "waiver verdict routes owner action");
+
+        let normal_sessions = db::list_sessions(&test_db.pool, true).await.expect("sessions");
+        assert!(!normal_sessions.iter().any(|session| session.id == pass_reviewer), "reviewer subagent is hidden from normal list");
+        assert_eq!(db::session_record(&test_db.pool, pass_reviewer).await.expect("direct reviewer").id, pass_reviewer);
+        let generic_subagent_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM generic_subagents WHERE parent_session_id=$1 AND subagent_session_id=$2")
+            .bind(pass_source)
+            .bind(pass_reviewer)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("generic subagent row");
+        assert_eq!(generic_subagent_count, 1);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn hook_defined_requirements_review_replay_does_not_double_apply_legacy_paths() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-replay"), ".", Some("."), None, None).await.expect("source");
+        requirements::set_active_requirements(&test_db.pool, source, requirements::RequirementSetInput {
+            title: Some("replay requirements".to_string()),
+            requirements: vec![requirements::RequirementInput { key: "replay_safe".to_string(), statement: "Replay does not duplicate workflow records.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
+        }).await.expect("set");
+        let claim_turn = insert_completed_turn(&test_db.pool, source, "claim", "assistant").await;
+        let claim = r#"{"summary":"done","requirements":{"replay_safe":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#;
+        let first = requirements::record_requirements_claim_packet(&test_db.pool, source, claim_turn, claim).await.expect("first").expect("first");
+        let second = requirements::record_requirements_claim_packet(&test_db.pool, source, claim_turn, claim).await.expect("second").expect("second");
+        assert_eq!(first.packet_id, second.packet_id);
+        let reviewer = first.reviewer_session_id.expect("reviewer");
+        let reviewer_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM generic_subagents WHERE parent_session_id=$1 AND subagent_kind='requirementsReviewer'")
+            .bind(source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("reviewer rows");
+        assert_eq!(reviewer_rows, 1, "hook-defined reviewer creation must be idempotent");
+        let claim_packets: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_packets WHERE source_session_id=$1 AND packet_type='requirements.claim'")
+            .bind(source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("runtime claim packets");
+        assert_eq!(claim_packets, 1, "replay must not double-record claim packets");
+        let claim_routes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_envelopes e JOIN runtime_packets p ON p.id=e.packet_id WHERE p.source_session_id=$1 AND e.envelope_type='requirements_claim_to_reviewer'")
+            .bind(source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("claim routes");
+        assert_eq!(claim_routes, 1, "replay must not double-dispatch reviewer envelopes");
+
+        let verdict_turn = insert_completed_turn(&test_db.pool, reviewer, "verdict", "assistant").await;
+        let verdict = r#"{"summary":"reviewed","requirements":{"replay_safe":{"verdict":"fail","evidence":["e"],"justification":"j","risk":"low"}},"overallVerdict":"fail","route":"source"}"#;
+        assert!(requirements::record_requirements_verdict_packet(&test_db.pool, reviewer, verdict_turn, verdict).await.expect("verdict first"));
+        assert!(requirements::record_requirements_verdict_packet(&test_db.pool, reviewer, verdict_turn, verdict).await.expect("verdict second"));
+        let verdict_packets: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_packets WHERE source_session_id=$1 AND parent_session_id=$2 AND packet_type='requirements.verdict'")
+            .bind(source)
+            .bind(reviewer)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("runtime verdict packets");
+        assert_eq!(verdict_packets, 1, "replay must not double-record verdict packets");
+        let progress_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM generic_contract_progress WHERE contract_id=(SELECT id FROM requirement_sets WHERE source_session_id=$1 LIMIT 1) AND progress_key='replay_safe'")
+            .bind(source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("progress rows");
+        assert_eq!(progress_rows, 1, "replay must not double-apply generic progress");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn bare_project_runtime_smoke_runs_requirements_and_resource_lease_without_global_skills() {
+        let test_db = validation_db().await;
+        db::create_project(&test_db.pool, "bare-runtime-smoke", "Bare Runtime Smoke", ".", ".", None, "gpt-5.4-mini").await.expect("project");
+        let source = include_str!("../../../project-runtime-seeds/requirements_review.star").to_string();
+        let manifest = json!({
+            "roles": [{"id":"requirements-reviewer"}],
+            "channels": [{"id":"requirements","packetTypes":["requirements.claim","requirements.verdict"]}],
+            "hooks": [{"name":"on_model_request","source":"def hook(ctx):\n    return [require_output_schema(key='source', schema_name='requirements_source_claim', packet_type='requirements.claim', schema={'type':'object'})]\n", "intentTypes":["require_output_schema"]}],
+            "resources": [{"type":"iosSimulator"}],
+            "routes": [{"id":"requirements-review","source":"requirements.claim","target":"subagent:requirements-reviewer"}],
+        });
+        let version_id = crate::lifecycle_hooks::persist_project_runtime_config(&test_db.pool, "bare-runtime-smoke", &source, manifest, "smoke").await.expect("persist");
+        crate::lifecycle_hooks::activate_project_runtime_config(&test_db.pool, "bare-runtime-smoke", version_id).await.expect("activate");
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source_session = db::new_session(&test_db.pool, &role, Some("bare-runtime-smoke"), ".", Some("."), None, None).await.expect("session");
+        requirements::set_active_requirements(&test_db.pool, source_session, requirements::RequirementSetInput {
+            title: Some("smoke requirements".to_string()),
+            requirements: vec![requirements::RequirementInput { key: "smoke_req".to_string(), statement: "Smoke requirement passes through hook workflow.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
+        }).await.expect("requirements");
+        let claim_turn = insert_completed_turn(&test_db.pool, source_session, "claim", "assistant").await;
+        requirements::record_requirements_claim_packet(&test_db.pool, source_session, claim_turn, r#"{"summary":"done","requirements":{"smoke_req":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
+        let reviewer = requirements::status(&test_db.pool, source_session).await.expect("status").reviewer_session_id.expect("reviewer");
+        assert_eq!(db::session_record(&test_db.pool, reviewer).await.expect("reviewer exact").parent_session_id, Some(source_session));
+        let (lease_packet, lease_envelope) = crate::lifecycle_hooks::request_resource_lease(
+            &test_db.pool,
+            "bare-runtime-smoke",
+            source_session,
+            "iosSimulator",
+            "runtime-no-rg",
+            json!({"purpose":"smoke"}),
+            "bare-smoke-lease",
+        ).await.expect("lease request");
+        assert_ne!(lease_packet, Uuid::nil());
+        assert_ne!(lease_envelope, Uuid::nil());
+        let global_skill_edits: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE payload::text LIKE '%global skills%' OR payload::text LIKE '%skills edit%'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("global skill audit");
+        assert_eq!(global_skill_edits, 0);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn active_requirements_data_migrates_to_generic_contract_packets_and_subagent_without_loss() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let source = db::new_session(&test_db.pool, &role, Some("requirements-migration"), ".", Some("."), None, None).await.expect("source");
+        let reviewer = db::new_session(&test_db.pool, &role, Some("requirements-migration"), ".", Some("."), None, None).await.expect("reviewer");
+        sqlx::query("UPDATE sessions SET parent_session_id=$2, session_kind='requirementsReviewer', hidden=true, tracked=false WHERE id=$1")
+            .bind(reviewer)
+            .bind(source)
+            .execute(&test_db.pool)
+            .await
+            .expect("reviewer session");
+        let set_id = Uuid::new_v4();
+        let canonical = json!({"title":"migration","schemaVersion":1,"requirements":[{"key":"migrate_req","statement":"Migrate active data.","severity":"must","verificationMethod":{"method":"test"},"sortOrder":0}]});
+        sqlx::query("INSERT INTO requirement_sets (id, source_session_id, title, canonical_set, status, enforce_on_turns) VALUES ($1,$2,'migration',$3,'active',true)")
+            .bind(set_id)
+            .bind(source)
+            .bind(&canonical)
+            .execute(&test_db.pool)
+            .await
+            .expect("legacy set");
+        sqlx::query("INSERT INTO requirement_items (id, requirement_set_id, requirement_key, statement, severity, verification_method, sort_order) VALUES ($1,$2,'migrate_req','Migrate active data.','must',$3,0)")
+            .bind(Uuid::new_v4())
+            .bind(set_id)
+            .bind(json!({"method":"test"}))
+            .execute(&test_db.pool)
+            .await
+            .expect("item");
+        sqlx::query("INSERT INTO requirement_progress (requirement_set_id, requirement_key, status) VALUES ($1,'migrate_req','blocked')")
+            .bind(set_id)
+            .execute(&test_db.pool)
+            .await
+            .expect("progress");
+        let packet_id = Uuid::new_v4();
+        let turn = insert_completed_turn(&test_db.pool, source, "claim", "assistant").await;
+        sqlx::query("INSERT INTO requirement_packets (id, requirement_set_id, source_session_id, reviewer_session_id, turn_id, packet_kind, status, payload) VALUES ($1,$2,$3,$4,$5,'claim','reviewable',$6)")
+            .bind(packet_id)
+            .bind(set_id)
+            .bind(source)
+            .bind(reviewer)
+            .bind(turn)
+            .bind(json!({"summary":"legacy","requirements":{"migrate_req":{"claim":"blocked","evidence":["e"],"justification":"j","risk":"medium"}}}))
+            .execute(&test_db.pool)
+            .await
+            .expect("packet");
+        sqlx::query("INSERT INTO requirement_review_bindings (id, requirement_set_id, source_session_id, reviewer_session_id, latest_claim_packet_id, status) VALUES ($1,$2,$3,$4,$5,'inReview')")
+            .bind(Uuid::new_v4())
+            .bind(set_id)
+            .bind(source)
+            .bind(reviewer)
+            .bind(packet_id)
+            .execute(&test_db.pool)
+            .await
+            .expect("binding");
+        let summary = requirements::migrate_active_requirements_to_generic_workflow(&test_db.pool).await.expect("migrate");
+        assert_eq!(summary["contracts"], 1);
+        assert_eq!(summary["subagents"], 1);
+        let contract_payload: Value = sqlx::query_scalar("SELECT canonical_payload FROM generic_contracts WHERE id=$1 AND session_id=$2")
+            .bind(set_id)
+            .bind(source)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("contract");
+        assert_eq!(contract_payload, canonical);
+        let runtime_packet_payload: Value = sqlx::query_scalar("SELECT payload FROM runtime_packets WHERE source_session_id=$1 AND packet_type='requirements.claim' AND routing_metadata->>'migratedRequirementPacketId'=$2")
+            .bind(source)
+            .bind(packet_id.to_string())
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("runtime packet");
+        assert_eq!(runtime_packet_payload.pointer("/requirements/migrate_req/claim").and_then(Value::as_str), Some("blocked"));
+        let progress: String = sqlx::query_scalar("SELECT status FROM requirement_progress WHERE requirement_set_id=$1 AND requirement_key='migrate_req'")
+            .bind(set_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("progress");
+        assert_eq!(progress, "blocked");
+        let subagent: Uuid = sqlx::query_scalar("SELECT subagent_session_id FROM generic_subagents WHERE parent_session_id=$1 AND workflow_identity=$2")
+            .bind(source)
+            .bind(set_id.to_string())
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("subagent");
+        assert_eq!(subagent, reviewer);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn starlark_lifecycle_config_activation_and_hook_audit_are_postgres_backed() {
+        let test_db = validation_db().await;
+        db::create_project(&test_db.pool, "hook-audit-project", "Hook Audit", ".", ".", None, "gpt-5.4-mini")
+            .await
+            .expect("project");
+        let app = app(ServerState::new(test_db.pool.clone()));
+        let (status, validate_body) = request_json(
+            app,
+            Method::POST,
+            "/projects/hook-audit-project/runtime-config/validate",
+            json!({"sourceText":"x = 1","manifest":{"hooks":[{"name":"on_model_request","source":"x = 1"}]}}),
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(validate_body["valid"], true);
+        let hook_source = r#"
+def hook(ctx):
+    return [require_output_schema(key = "requirements", schema_name = "requirements_source_claim", packet_type = "requirements.claim", schema = {"type": "object"})]
+"#;
+        let manifest = json!({
+            "roles": [{"id":"requirements-reviewer"}],
+            "resourceTypes": [{"id":"iosSimulator"}],
+            "hooks": [{"name":"on_model_request","source":hook_source}]
+        });
+        let version_id = crate::lifecycle_hooks::persist_project_runtime_config(
+            &test_db.pool,
+            "hook-audit-project",
+            hook_source,
+            manifest,
+            "test",
+        ).await.expect("persist runtime config");
+        crate::lifecycle_hooks::activate_project_runtime_config(&test_db.pool, "hook-audit-project", version_id)
+            .await
+            .expect("activate runtime config");
+        let active_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM project_runtime_config_versions WHERE id=$1 AND activation_status='active'")
+            .bind(version_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("active config");
+        assert_eq!(active_count, 1);
+        let binding_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM project_runtime_hook_bindings WHERE config_version_id=$1 AND lifecycle_hook='on_model_request' AND status='active'")
+            .bind(version_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("active hook binding");
+        assert_eq!(binding_count, 1);
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session = db::new_session(&test_db.pool, &role, Some("hook-audit-project"), ".", Some("."), None, None).await.expect("session");
+        let session_binding: (Option<Uuid>, Value) = sqlx::query_as("SELECT active_project_runtime_version_id, active_hook_bindings FROM sessions WHERE id=$1")
+            .bind(session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("session active hook attribution");
+        assert_eq!(session_binding.0, Some(version_id));
+        assert!(session_binding.1.get("on_model_request").is_some());
+        let context = crate::lifecycle_hooks::hook_context_from_session_summary(
+            session,
+            Some("hook-audit-project".to_string()),
+            "source".to_string(),
+            None,
+            false,
+            &role,
+            ".".to_string(),
+            Some(".".to_string()),
+            crate::lifecycle_hooks::LifecycleHook::OnModelRequest,
+        );
+        let results = crate::lifecycle_hooks::evaluate_active_lifecycle_hooks(
+            &test_db.pool,
+            "hook-audit-project",
+            Some(session),
+            None,
+            crate::lifecycle_hooks::LifecycleHook::OnModelRequest,
+            &context,
+        ).await.expect("active lifecycle hook evaluation");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].validation_status, "valid", "{:?}", results[0].errors);
+        let eval_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM hook_evaluations WHERE hook_version_id=$1 AND session_id=$2 AND validation_status='valid'")
+            .bind(version_id)
+            .bind(session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("hook eval row");
+        assert_eq!(eval_count, 1);
+        let schema_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM structured_output_schema_evidence WHERE hook_version_id=$1 AND packet_type='requirements.claim' AND schema_name='requirements_source_claim'")
+            .bind(version_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("schema evidence");
+        assert_eq!(schema_count, 1);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn hook_intent_application_records_packets_envelopes_schema_leases_obligations_and_subagent_lifecycle() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session = db::new_session(&test_db.pool, &role, Some("hook-intents"), ".", Some("."), None, None).await.expect("session");
+        let turn = insert_completed_turn(&test_db.pool, session, "input", "assistant").await;
+        let contract_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO generic_contracts (id, session_id, contract_type, canonical_payload, status, active_version) VALUES ($1,$2,'hook-contract',$3,'active','v1')")
+            .bind(contract_id)
+            .bind(session)
+            .bind(json!({"requirements":["bounded"]}))
+            .execute(&test_db.pool)
+            .await
+            .expect("active generic contract");
+        let context = crate::lifecycle_hooks::hook_context_from_session_summary(
+            session,
+            Some("hook-intents".to_string()),
+            "source".to_string(),
+            None,
+            false,
+            &role,
+            ".".to_string(),
+            Some(".".to_string()),
+            crate::lifecycle_hooks::LifecycleHook::OnToolComplete,
+        );
+        let result = crate::lifecycle_hooks::evaluate_and_apply_lifecycle_intents(
+            &test_db.pool,
+            Some("hook-intents"),
+            Some(session),
+            Some(turn),
+            crate::lifecycle_hooks::LifecycleHook::OnToolComplete,
+            &context,
+            None,
+            "hook-hash",
+            vec![
+                crate::lifecycle_hooks::HookIntent { intent_type: "record_packet".to_string(), key: Some("packet".to_string()), payload: json!({"packetType":"resource.request","status":"valid","payload":{"resourceType":"iosSimulator"}}), idempotency_key: None },
+                crate::lifecycle_hooks::HookIntent { intent_type: "reserve_resource".to_string(), key: Some("lease".to_string()), payload: json!({"resourceType":"iosSimulator","resourceId":"sim-1","status":"assigned","leasePurpose":"test"}), idempotency_key: None },
+                crate::lifecycle_hooks::HookIntent { intent_type: "add_turn_obligation".to_string(), key: Some("obligation".to_string()), payload: json!({"obligationType":"leaseIdleNotice","message":"check lease"}), idempotency_key: None },
+            ],
+        ).await.expect("evaluate and apply");
+        assert_eq!(result.validation_status, "valid");
+        let packets: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_packets WHERE source_session_id=$1 AND packet_type='resource.request'")
+            .bind(session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("packet count");
+        assert_eq!(packets, 1);
+        let lease: (Uuid,) = sqlx::query_as("SELECT id FROM resource_leases WHERE owning_session_id=$1 AND resource_type='iosSimulator' AND status='assigned'")
+            .bind(session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("lease");
+        let obligations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turn_obligations WHERE session_id=$1 AND obligation_type='leaseIdleNotice' AND status='pending'")
+            .bind(session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("obligation");
+        assert_eq!(obligations, 1);
+
+        let packet_id: Uuid = sqlx::query_scalar("SELECT id FROM runtime_packets WHERE source_session_id=$1 AND packet_type='resource.request' LIMIT 1")
+            .bind(session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("packet id");
+        crate::lifecycle_hooks::apply_hook_intents(
+            &test_db.pool,
+            Some("hook-intents"),
+            Some(session),
+            Some(turn),
+            crate::lifecycle_hooks::LifecycleHook::OnPacketRecorded,
+            &[crate::lifecycle_hooks::HookIntent { intent_type: "route_packet".to_string(), key: Some("route".to_string()), payload: json!({"packetId": packet_id.to_string(), "targetSessionId": session.to_string()}), idempotency_key: Some("route-key".to_string()) }],
+        ).await.expect("route packet");
+        let envelopes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_envelopes WHERE packet_id=$1 AND target_session_id=$2")
+            .bind(packet_id)
+            .bind(session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("envelope count");
+        assert_eq!(envelopes, 1);
+        let other_project_session = db::new_session(&test_db.pool, &role, Some("other-hook-project"), ".", Some("."), None, None).await.expect("other project session");
+        let cross_project_route = crate::lifecycle_hooks::route_packet_envelope(
+            &test_db.pool,
+            packet_id,
+            "hookRoute",
+            Some(session),
+            Some(other_project_session),
+            None,
+            "pending",
+            json!({}),
+        ).await;
+        assert!(cross_project_route.is_err());
+        let unknown_role_route = crate::lifecycle_hooks::route_packet_envelope(
+            &test_db.pool,
+            packet_id,
+            "hookRoute",
+            Some(session),
+            None,
+            Some("missing-steward-role"),
+            "pending",
+            json!({}),
+        ).await;
+        assert!(unknown_role_route.is_err());
+        let (lease_request_packet, lease_request_envelope) = crate::lifecycle_hooks::request_resource_lease(
+            &test_db.pool,
+            "hook-intents",
+            session,
+            "iosSimulator",
+            "runtime-no-rg",
+            json!({"purpose":"designer-preview"}),
+            "lease-request-affordance",
+        ).await.expect("lease request routed to steward");
+        let routed: (String, String, String) = sqlx::query_as("SELECT p.packet_type, e.envelope_type, e.target_role_id FROM runtime_packets p JOIN runtime_envelopes e ON e.packet_id=p.id WHERE p.id=$1 AND e.id=$2")
+            .bind(lease_request_packet)
+            .bind(lease_request_envelope)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("lease request envelope");
+        assert_eq!(routed.0, "resource.request");
+        assert_eq!(routed.1, "resource_request");
+        assert_eq!(routed.2, "runtime-no-rg");
+        let mut steward_role = role.clone();
+        steward_role.id = "runtime-no-rg".to_string();
+        let mut designer_role = role.clone();
+        designer_role.id = "designer-worker".to_string();
+        for (action_id, object) in [
+            ("cmd.simulator.list", "simulator_list"),
+            ("cmd.simulator.boot", "simulator_boot"),
+            ("cmd.simulator.assign", "simulator_assign"),
+            ("cmd.simulator.release", "simulator_release"),
+            ("cmd.simulator.repair", "simulator_repair"),
+        ] {
+            apply_registry_seed(
+                &test_db.pool,
+                session,
+                scoped_command_seed(action_id, object),
+                command_registry::RegistryScope { scope_type: "role".to_string(), project_key: Some("runtime-no-rg".to_string()) },
+            ).await;
+        }
+        apply_registry_seed(
+            &test_db.pool,
+            session,
+            scoped_command_seed("cmd.simulator.request_lease", "simulator_request_lease"),
+            command_registry::RegistryScope { scope_type: "role".to_string(), project_key: Some("designer-worker".to_string()) },
+        ).await;
+        let steward_tools = command_registry::live_visible_commands(&test_db.pool, &steward_role, Some("hook-intents")).await.expect("steward visible tools");
+        let steward_actions = steward_tools.iter().map(|command| command.action_id.as_str()).collect::<Vec<_>>();
+        for required in ["cmd.simulator.list", "cmd.simulator.boot", "cmd.simulator.assign", "cmd.simulator.release", "cmd.simulator.repair"] {
+            assert!(steward_actions.contains(&required), "steward missing simulator management tool {required}");
+        }
+        let designer_tools = command_registry::live_visible_commands(&test_db.pool, &designer_role, Some("hook-intents")).await.expect("designer visible tools");
+        let designer_actions = designer_tools.iter().map(|command| command.action_id.as_str()).collect::<Vec<_>>();
+        assert!(designer_actions.contains(&"cmd.simulator.request_lease"), "designer sees lease-request affordance");
+        for forbidden in ["cmd.simulator.list", "cmd.simulator.boot", "cmd.simulator.assign", "cmd.simulator.release", "cmd.simulator.repair"] {
+            assert!(!designer_actions.contains(&forbidden), "designer/worker must not see global simulator management tool {forbidden}");
+        }
+        let delivered = crate::lifecycle_hooks::deliver_resource_lease_handle(
+            &test_db.pool,
+            "hook-intents",
+            lease.0,
+            "deliver-resource-handle",
+        ).await.expect("deliver lease handle");
+        let handle_delivery: (String, String, Uuid) = sqlx::query_as("SELECT p.packet_type, e.envelope_type, e.target_session_id FROM runtime_packets p JOIN runtime_envelopes e ON e.packet_id=p.id WHERE p.id=$1 AND e.id=$2")
+            .bind(delivered.0)
+            .bind(delivered.1)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("handle delivery");
+        assert_eq!(handle_delivery.0, "resource.lease_handle");
+        assert_eq!(handle_delivery.1, "resource_lease_handle");
+        assert_eq!(handle_delivery.2, session);
+
+        let model_request_id = Uuid::new_v4();
+        crate::lifecycle_hooks::apply_hook_intents(
+            &test_db.pool,
+            Some("hook-intents"),
+            Some(session),
+            Some(turn),
+            crate::lifecycle_hooks::LifecycleHook::OnModelRequest,
+            &[crate::lifecycle_hooks::HookIntent { intent_type: "require_output_schema".to_string(), key: Some("schema".to_string()), payload: json!({"schemaName":"resource_request","packetType":"resource.request","schema":{"type":"object"},"modelRequestId": model_request_id.to_string()}), idempotency_key: Some("schema-key".to_string()) }],
+        ).await.expect("schema evidence");
+        let schema_evidence: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM structured_output_schema_evidence WHERE packet_type='resource.request' AND lifecycle_boundary='on_model_request' AND model_request_id=$1")
+            .bind(model_request_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("schema evidence count");
+        assert_eq!(schema_evidence, 1);
+        let hook_schema = crate::lifecycle_hooks::hook_required_schema_for_model_request(&test_db.pool, model_request_id).await.expect("hook schema").expect("schema evidence");
+        assert_eq!(hook_schema.pointer("/metadata/packetType").and_then(Value::as_str), Some("resource.request"));
+        let mut responses_body = json!({"model":"test","input":[]});
+        crate::lifecycle_hooks::apply_hook_required_schema_to_responses_body(&mut responses_body, &hook_schema).expect("apply schema");
+        assert_eq!(responses_body.pointer("/text/format/type").and_then(Value::as_str), Some("json_schema"));
+        let expected_model_request_id = model_request_id.to_string();
+        assert_eq!(responses_body.pointer("/hook_schema_evidence/modelRequestId").and_then(Value::as_str), Some(expected_model_request_id.as_str()));
+        let runtime_schema_message = crate::model::RuntimeInputMessage {
+            text: format!("<hook_required_schema>{}</hook_required_schema>", serde_json::to_string(&hook_schema).expect("schema json")),
+            metadata: json!({"source":"hook_required_output_schema"}),
+        };
+        let request_shape = crate::model::codex_adapter::CodexBackedModelClient::request_tool_call_request_shape(
+            "test-model",
+            &role,
+            &[],
+            &[runtime_schema_message],
+            "execute code contract",
+            "registry contract",
+            "produce packet",
+        );
+        assert_eq!(request_shape.pointer("/text/format/name").and_then(Value::as_str), Some("resource_request"));
+        assert_eq!(request_shape.pointer("/hook_schema_evidence/packetType").and_then(Value::as_str), Some("resource.request"));
+        let parsed_packet = crate::lifecycle_hooks::parse_structured_final_output_into_packet(
+            &test_db.pool,
+            Some("hook-intents"),
+            Some(session),
+            Some(turn),
+            model_request_id,
+            r#"{"resourceType":"iosSimulator","decision":"queued"}"#,
+            "parsed-structured-output",
+        ).await.expect("parsed packet");
+        let parsed: (String, Value) = sqlx::query_as("SELECT packet_type, payload FROM runtime_packets WHERE id=$1")
+            .bind(parsed_packet)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("parsed packet row");
+        assert_eq!(parsed.0, "resource.request");
+        assert_eq!(parsed.1["decision"], "queued");
+        let envelope_packet = crate::lifecycle_hooks::record_runtime_packet(
+            &test_db.pool,
+            Some("hook-intents"),
+            Some(session),
+            None,
+            Some(turn),
+            "workflow.matrix",
+            "recorded",
+            json!({"matrix":"typed-envelope"}),
+            None,
+            json!({"source":"typed-envelope-matrix"}),
+            "typed-envelope-matrix-packet",
+        ).await.expect("matrix packet");
+        for (envelope_type, target_session, target_role) in [
+            ("owner_notice", Some(session), None),
+            ("source_delivery", Some(session), None),
+            ("subagent_delivery", Some(session), None),
+            ("orchestrator_delivery", None, Some("runtime-no-rg")),
+            ("steward_delivery", None, Some("runtime-no-rg")),
+            ("system_notice", Some(session), None),
+        ] {
+            crate::lifecycle_hooks::route_packet_envelope(
+                &test_db.pool,
+                envelope_packet,
+                envelope_type,
+                Some(session),
+                target_session,
+                target_role,
+                "pending",
+                json!({"matrix":envelope_type}),
+            ).await.expect("typed envelope route");
+        }
+        let matrix_types: Vec<String> = sqlx::query_scalar("SELECT envelope_type FROM runtime_envelopes WHERE packet_id=$1 ORDER BY envelope_type")
+            .bind(envelope_packet)
+            .fetch_all(&test_db.pool)
+            .await
+            .expect("matrix envelope types");
+        for expected in ["orchestrator_delivery", "owner_notice", "source_delivery", "steward_delivery", "subagent_delivery", "system_notice"] {
+            assert!(matrix_types.iter().any(|value| value == expected), "missing typed envelope {expected}");
+        }
+        let raw_messages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE content LIKE '%typed-envelope-matrix%'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("ordinary messages");
+        assert_eq!(raw_messages, 0, "typed workflow packets/envelopes must not be represented as ordinary user messages");
+
+        let subagent = crate::lifecycle_hooks::ensure_subagent(&test_db.pool, session, "reviewer", "wf-1", "genericReviewer", "runtime-no-rg", json!({}), json!({})).await.expect("ensure subagent");
+        let subagent_again = crate::lifecycle_hooks::ensure_subagent(&test_db.pool, session, "reviewer", "wf-1", "genericReviewer", "runtime-no-rg", json!({}), json!({})).await.expect("ensure subagent again");
+        assert_eq!(subagent, subagent_again);
+        let normal_list = db::list_sessions(&test_db.pool, false).await.expect("normal list");
+        assert!(!normal_list.iter().any(|entry| entry.id == subagent));
+        let all_list = db::list_sessions(&test_db.pool, true).await.expect("all list");
+        assert!(!all_list.iter().any(|entry| entry.id == subagent), "hidden generic subagents stay out of ordinary list UX even when include_all is true");
+        let global_projection = projection::build_runtime_projection_snapshot(&test_db.pool, None).await.expect("global projection");
+        assert!(!global_projection.sessions.iter().any(|entry| entry.id == subagent.to_string()), "hidden generic subagent must stay out of project rail/session list projection");
+        let visible_session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE hidden=false")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("visible session count");
+        assert_eq!(global_projection.statistics.sessions, visible_session_count as u64, "ordinary session-count UX excludes hidden generic subagents");
+        let hidden_projection = projection::build_runtime_projection_snapshot(&test_db.pool, Some(subagent)).await.expect("hidden selected projection");
+        assert_eq!(hidden_projection.statistics.sessions, 0, "selected hidden subagent does not inflate ordinary selected session counts");
+        let parent_projection = crate::lifecycle_hooks::parent_subagent_projection(&test_db.pool, session).await.expect("parent projection");
+        assert_eq!(parent_projection["activeSubagents"], 1);
+        assert_eq!(parent_projection["subagents"][0]["sessionId"], subagent.to_string());
+        let show = db::show_session(&test_db.pool, session).await.expect("show session");
+        assert_eq!(show["subagents"]["activeSubagents"], 1);
+        let selected_projection = projection::build_runtime_projection_snapshot(&test_db.pool, Some(session)).await.expect("selected workflow projection");
+        let selected = selected_projection.selected_session.as_ref().expect("selected session detail");
+        assert_eq!(selected.subagents["activeSubagents"], 1);
+        assert!(selected.contracts.iter().any(|contract| contract["contractId"] == contract_id.to_string()));
+        assert!(selected.resource_leases.iter().any(|lease_row| lease_row["leaseId"] == lease.0.to_string()));
+        assert!(selected.project_runtime.get("hookBindingCount").is_some(), "selected projection includes active runtime binding metadata");
+        assert_eq!(db::session_record(&test_db.pool, subagent).await.expect("exact subagent").id, subagent);
+        let checkpoint = compaction::compact_session_through_turn(&test_db.pool, session, turn, compaction::CompactionBudget::default()).await.expect("compact with workflow state");
+        assert!(checkpoint.replacement_context.contains("Active hook workflow state by durable ids"));
+        assert!(checkpoint.replacement_context.contains(&format!("contract={contract_id}")));
+        assert!(checkpoint.replacement_context.contains("type=resource.request"));
+        assert!(checkpoint.replacement_context.contains("subagent="));
+        assert!(checkpoint.replacement_context.contains("obligation="));
+        assert!(checkpoint.replacement_context.contains("resourceType=iosSimulator"));
+        assert!(!checkpoint.replacement_context.contains("payload\":{\""), "compaction must summarize workflow state by ids and metadata, not hidden packet bodies");
+        assert_eq!(crate::lifecycle_hooks::close_subagent(&test_db.pool, session, "reviewer", "wf-1").await.expect("close"), Some(subagent));
+        let closed = db::session_record(&test_db.pool, subagent).await.expect("closed subagent");
+        assert_eq!(closed.status, "closed");
+
+        crate::lifecycle_hooks::release_resource(&test_db.pool, Some(session), json!({"resourceType":"iosSimulator","leaseId": lease.0.to_string(), "releaseReason":"test complete"})).await.expect("release");
+        let released: String = sqlx::query_scalar("SELECT status FROM resource_leases WHERE id=$1")
+            .bind(lease.0)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("released status");
+        assert_eq!(released, "released");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn restart_preserves_active_hook_workflow_state_and_idempotency() {
+        let test_db = validation_db().await;
+        let source = r#"
+hook_binding(name = "on_model_request", source = """
+def hook(ctx):
+    return [require_output_schema(schema_name = "restart_schema", packet_type = "restart.packet", schema = {"type":"object"}, key = "restart-schema")]
+""", intent_types = ["require_output_schema"])
+"#;
+        let manifest = crate::lifecycle_hooks::compile_project_runtime_source(source).expect("manifest");
+        let version_id = crate::lifecycle_hooks::persist_project_runtime_config(&test_db.pool, "restart-project", source, manifest, "restart-test").await.expect("persist runtime config");
+        crate::lifecycle_hooks::activate_project_runtime_config(&test_db.pool, "restart-project", version_id).await.expect("activate runtime config");
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session = db::new_session(&test_db.pool, &role, Some("restart-project"), ".", Some("."), None, None).await.expect("session");
+        let turn = insert_completed_turn(&test_db.pool, session, "restart input", "restart assistant").await;
+        let contract_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO generic_contracts (id, session_id, contract_type, canonical_payload, status, active_version) VALUES ($1,$2,'restart-contract',$3,'active','v1')")
+            .bind(contract_id)
+            .bind(session)
+            .bind(json!({"canonical":"requirements"}))
+            .execute(&test_db.pool)
+            .await
+            .expect("contract");
+        let packet_id = crate::lifecycle_hooks::record_runtime_packet(&test_db.pool, Some("restart-project"), Some(session), None, Some(turn), "restart.packet", "pending", json!({"restart":true}), None, json!({}), "restart-packet").await.expect("packet");
+        let envelope_id = crate::lifecycle_hooks::route_packet_envelope(&test_db.pool, packet_id, "system_notice", Some(session), Some(session), None, "pending", json!({})).await.expect("envelope");
+        let subagent = crate::lifecycle_hooks::ensure_subagent(&test_db.pool, session, "restart-reviewer", "restart-workflow", "genericReviewer", "runtime-no-rg", json!({}), json!({})).await.expect("subagent");
+        let lease = crate::lifecycle_hooks::reserve_resource(&test_db.pool, Some(session), json!({"resourceType":"iosSimulator","resourceId":"restart-sim","status":"assigned"}), "restart-lease").await.expect("lease");
+        crate::lifecycle_hooks::apply_hook_intents(&test_db.pool, Some("restart-project"), Some(session), Some(turn), crate::lifecycle_hooks::LifecycleHook::OnTurnComplete, &[crate::lifecycle_hooks::HookIntent { intent_type: "add_turn_obligation".to_string(), key: Some("restart-obligation".to_string()), payload: json!({"obligationType":"restartNotify"}), idempotency_key: Some("restart-obligation".to_string()) }]).await.expect("obligation");
+        let context = crate::lifecycle_hooks::hook_context_from_session_summary(
+            session,
+            Some("restart-project".to_string()),
+            "source".to_string(),
+            None,
+            false,
+            &role,
+            ".".to_string(),
+            Some(".".to_string()),
+            crate::lifecycle_hooks::LifecycleHook::OnModelRequest,
+        );
+        let before = crate::lifecycle_hooks::evaluate_active_lifecycle_hooks(&test_db.pool, "restart-project", Some(session), Some(turn), crate::lifecycle_hooks::LifecycleHook::OnModelRequest, &context).await.expect("before restart eval");
+        assert_eq!(before[0].validation_status, "valid");
+        let url = test_db.url.clone();
+        let restarted = db::connect(&url).await.expect("reconnect runtime db");
+        let persisted: (i64, i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+            r#"
+            SELECT
+              (SELECT COUNT(*) FROM project_runtime_config_versions WHERE id=$1 AND activation_status='active'),
+              (SELECT COUNT(*) FROM project_runtime_hook_bindings WHERE config_version_id=$1 AND status='active'),
+              (SELECT COUNT(*) FROM generic_contracts WHERE id=$2 AND status='active'),
+              (SELECT COUNT(*) FROM runtime_packets WHERE id=$3),
+              (SELECT COUNT(*) FROM runtime_envelopes WHERE id=$4),
+              (SELECT COUNT(*) FROM generic_subagents WHERE subagent_session_id=$5 AND lifecycle_status='open'),
+              (SELECT COUNT(*) FROM resource_leases WHERE id=$6 AND status='assigned'),
+              (SELECT COUNT(*) FROM turn_obligations WHERE session_id=$7 AND idempotency_key='restart-obligation')
+            "#,
+        )
+        .bind(version_id)
+        .bind(contract_id)
+        .bind(packet_id)
+        .bind(envelope_id)
+        .bind(subagent)
+        .bind(lease)
+        .bind(session)
+        .fetch_one(&restarted)
+        .await
+        .expect("persisted state");
+        assert_eq!(persisted, (1, 1, 1, 1, 1, 1, 1, 1));
+        let subagent_after_restart = crate::lifecycle_hooks::ensure_subagent(&restarted, session, "restart-reviewer", "restart-workflow", "genericReviewer", "runtime-no-rg", json!({}), json!({})).await.expect("ensure after restart");
+        assert_eq!(subagent_after_restart, subagent, "ensure_subagent must reuse persisted generic subagent after restart/replay");
+        let ensure_intent = crate::lifecycle_hooks::HookIntent {
+            intent_type: "ensure_subagent".to_string(),
+            key: Some("retry-subagent".to_string()),
+            payload: json!({"subagentKey":"retry-reviewer","workflowIdentity":"retry-workflow","subagentKind":"genericReviewer","roleId":"runtime-no-rg"}),
+            idempotency_key: Some("retry-subagent-key".to_string()),
+        };
+        crate::lifecycle_hooks::apply_hook_intents(&restarted, Some("restart-project"), Some(session), Some(turn), crate::lifecycle_hooks::LifecycleHook::OnPacketRecorded, &[ensure_intent.clone()]).await.expect("ensure retry first");
+        crate::lifecycle_hooks::apply_hook_intents(&restarted, Some("restart-project"), Some(session), Some(turn), crate::lifecycle_hooks::LifecycleHook::OnPacketRecorded, &[ensure_intent]).await.expect("ensure retry replay");
+        let retry_subagents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM generic_subagents WHERE parent_session_id=$1 AND subagent_key='retry-reviewer' AND workflow_identity='retry-workflow'")
+            .bind(session)
+            .fetch_one(&restarted)
+            .await
+            .expect("retry subagent count");
+        assert_eq!(retry_subagents, 1, "hook retry and repeated packet projection must not double-create subagents");
+        crate::lifecycle_hooks::apply_hook_intents(&restarted, Some("restart-project"), Some(session), Some(turn), crate::lifecycle_hooks::LifecycleHook::OnTurnComplete, &[crate::lifecycle_hooks::HookIntent { intent_type: "add_turn_obligation".to_string(), key: Some("restart-obligation".to_string()), payload: json!({"obligationType":"restartNotify","replayed":true}), idempotency_key: Some("restart-obligation".to_string()) }]).await.expect("replayed obligation");
+        let obligations_after_replay: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turn_obligations WHERE session_id=$1 AND idempotency_key='restart-obligation'")
+            .bind(session)
+            .fetch_one(&restarted)
+            .await
+            .expect("obligation count after replay");
+        assert_eq!(obligations_after_replay, 1, "replayed hook obligations preserve idempotency identity");
+        let after = crate::lifecycle_hooks::evaluate_active_lifecycle_hooks(&restarted, "restart-project", Some(session), Some(turn), crate::lifecycle_hooks::LifecycleHook::OnModelRequest, &context).await.expect("after restart eval");
+        assert_eq!(after[0].context_hash, before[0].context_hash);
+        assert_eq!(after[0].returned_intents[0].intent_type, before[0].returned_intents[0].intent_type);
+        assert_eq!(after[0].returned_intents[0].key, before[0].returned_intents[0].key);
+        assert_eq!(after[0].returned_intents[0].payload, before[0].returned_intents[0].payload);
+        let completed_obligations = crate::lifecycle_hooks::process_turn_completion_obligations(&restarted, session, Some(turn)).await.expect("process obligations after restart");
+        assert_eq!(completed_obligations, 1, "restart replay keeps obligations effective after reconnect");
+        let completed_obligation_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turn_obligations WHERE session_id=$1 AND idempotency_key='restart-obligation' AND status='completed'")
+            .bind(session)
+            .fetch_one(&restarted)
+            .await
+            .expect("completed obligation rows");
+        assert_eq!(completed_obligation_rows, 1);
+        restarted.close().await;
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn session_close_and_archive_cleanup_lifecycle_resources_and_project_subagent_projection() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session = db::new_session(&test_db.pool, &role, Some("cleanup-project"), ".", Some("."), None, None).await.expect("session");
+        let subagent = crate::lifecycle_hooks::ensure_subagent(&test_db.pool, session, "cleanup-reviewer", "cleanup-wf", "genericReviewer", "runtime-no-rg", json!({}), json!({})).await.expect("ensure subagent");
+        let lease = crate::lifecycle_hooks::reserve_resource(&test_db.pool, Some(session), json!({"resourceType":"iosSimulator","resourceId":"cleanup-sim","status":"assigned","leasePurpose":"cleanup"}), "cleanup-lease").await.expect("lease");
+        sqlx::query("INSERT INTO managed_processes (id, handle, session_id, binary_name, argv, cwd, status, end_of_turn_behavior, end_of_session_behavior) VALUES ($1,'cleanup-proc',$2,'python',$3,'.','running','continue','terminate')")
+            .bind(Uuid::new_v4())
+            .bind(session)
+            .bind(json!(["-c","print(1)"]))
+            .execute(&test_db.pool)
+            .await
+            .expect("managed process");
+        db::close_session(&test_db.pool, session, "cleanup test", 1).await.expect("close session");
+        let lease_status: String = sqlx::query_scalar("SELECT status FROM resource_leases WHERE id=$1")
+            .bind(lease)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("lease status");
+        assert_eq!(lease_status, "released");
+        let subagent_record = db::session_record(&test_db.pool, subagent).await.expect("subagent closed by lifecycle");
+        assert_eq!(subagent_record.status, "closed");
+        let process_status: String = sqlx::query_scalar("SELECT status FROM managed_processes WHERE session_id=$1 AND handle='cleanup-proc'")
+            .bind(session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("process status");
+        assert_eq!(process_status, "sessionClosed");
+        let cleanup_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='lifecycle.cleanup'")
+            .bind(session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("cleanup event");
+        assert_eq!(cleanup_events, 1);
+
+        let archive_session = db::new_session(&test_db.pool, &role, Some("cleanup-project"), ".", Some("."), None, None).await.expect("archive session");
+        let archive_lease = crate::lifecycle_hooks::reserve_resource(&test_db.pool, Some(archive_session), json!({"resourceType":"iosSimulator","resourceId":"archive-sim","status":"reserved","leasePurpose":"archive"}), "archive-lease").await.expect("archive lease");
+        db::archive_session(&test_db.pool, archive_session).await.expect("archive session cleanup");
+        let archive_lease_status: String = sqlx::query_scalar("SELECT status FROM resource_leases WHERE id=$1")
+            .bind(archive_lease)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("archive lease status");
+        assert_eq!(archive_lease_status, "released");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn resource_lease_intents_reject_theft_between_sessions() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let owner = db::new_session(&test_db.pool, &role, Some("lease-theft"), ".", Some("."), None, None).await.expect("owner");
+        let thief = db::new_session(&test_db.pool, &role, Some("lease-theft"), ".", Some("."), None, None).await.expect("thief");
+        let lease = crate::lifecycle_hooks::reserve_resource(
+            &test_db.pool,
+            Some(owner),
+            json!({"resourceType":"iosSimulator","resourceId":"sim-theft","status":"assigned","leasePurpose":"owner"}),
+            "owner-lease",
+        ).await.expect("owner lease");
+        let stolen = crate::lifecycle_hooks::reserve_resource(
+            &test_db.pool,
+            Some(thief),
+            json!({"resourceType":"iosSimulator","resourceId":"sim-theft","status":"assigned","leasePurpose":"thief"}),
+            "thief-lease",
+        ).await;
+        assert!(stolen.is_err());
+        let still_owner: Uuid = sqlx::query_scalar("SELECT owning_session_id FROM resource_leases WHERE id=$1")
+            .bind(lease)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("lease owner");
+        assert_eq!(still_owner, owner);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn runtime_config_change_request_session_overrides_invalid_output_and_turn_obligations_are_durable() {
+        let test_db = validation_db().await;
+        db::create_project(&test_db.pool, "runtime-change", "Runtime Change", ".", ".", None, "gpt-5.4-mini").await.expect("project");
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session = db::new_session(&test_db.pool, &role, Some("runtime-change"), ".", Some("."), None, None).await.expect("session");
+        let packet = crate::lifecycle_hooks::request_project_runtime_config_change(
+            &test_db.pool,
+            "runtime-change",
+            session,
+            "x = 1",
+            json!({"hooks":[{"name":"on_model_request","source":"x = 1"}]}),
+            "Need project hook review",
+        ).await.expect("request config change");
+        let packet_status: String = sqlx::query_scalar("SELECT status FROM runtime_packets WHERE id=$1 AND packet_type='project_runtime.config_change_request'")
+            .bind(packet)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("config change packet");
+        assert_eq!(packet_status, "reviewable");
+
+        let overrides = crate::lifecycle_hooks::set_session_hook_overrides(&test_db.pool, session, json!({"on_model_request":"session-hook"})).await.expect("override");
+        assert_eq!(overrides["on_model_request"], "session-hook");
+
+        let turn = insert_completed_turn(&test_db.pool, session, "input", "assistant").await;
+        let invalid = crate::lifecycle_hooks::record_invalid_structured_output(
+            &test_db.pool,
+            Some("runtime-change"),
+            Some(session),
+            Some(turn),
+            "requirements.claim",
+            "{not json",
+            "expected object",
+            "invalid-output-once",
+        ).await.expect("invalid packet");
+        let invalid_status: (String, Option<String>) = sqlx::query_as("SELECT status, validation_error FROM runtime_packets WHERE id=$1")
+            .bind(invalid)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("invalid packet row");
+        assert_eq!(invalid_status.0, "invalid");
+        assert_eq!(invalid_status.1.as_deref(), Some("expected object"));
+        let corrections: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='structuredOutput.invalid'")
+            .bind(session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("invalid event");
+        assert_eq!(corrections, 1);
+
+        let lease = crate::lifecycle_hooks::reserve_resource(&test_db.pool, Some(session), json!({"resourceType":"iosSimulator","resourceId":"sim-obligation","status":"assigned","leasePurpose":"obligation"}), "lease-obligation").await.expect("lease");
+        crate::lifecycle_hooks::apply_hook_intents(
+            &test_db.pool,
+            Some("runtime-change"),
+            Some(session),
+            Some(turn),
+            crate::lifecycle_hooks::LifecycleHook::OnTurnComplete,
+            &[
+                crate::lifecycle_hooks::HookIntent { intent_type: "add_turn_obligation".to_string(), key: Some("notice".to_string()), payload: json!({"obligationType":"leaseIdleNotice","message":"lease idle"}), idempotency_key: Some("notice-key".to_string()) },
+                crate::lifecycle_hooks::HookIntent { intent_type: "add_turn_obligation".to_string(), key: Some("release".to_string()), payload: json!({"obligationType":"releaseResource","resourceType":"iosSimulator","leaseId": lease.to_string()}), idempotency_key: Some("release-key".to_string()) },
+            ],
+        ).await.expect("obligations");
+        let processed = crate::lifecycle_hooks::process_turn_completion_obligations(&test_db.pool, session, Some(turn)).await.expect("process obligations");
+        assert_eq!(processed, 2);
+        let lease_status: String = sqlx::query_scalar("SELECT status FROM resource_leases WHERE id=$1")
+            .bind(lease)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("lease released");
+        assert_eq!(lease_status, "released");
+        let completed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turn_obligations WHERE session_id=$1 AND status='completed'")
+            .bind(session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("completed obligations");
+        assert_eq!(completed, 2);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_code_project_runtime_config_change_affordance_records_reviewable_packet() {
+        let test_db = validation_db().await;
+        db::create_project(&test_db.pool, "execute-affordance", "Execute Affordance", ".", ".", None, "gpt-5.4-mini").await.expect("project");
+        let mut role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        role.policy.insert("project_runtime.request_change".to_string(), crate::roles::ManifestDecision::Allow);
+        let session = db::new_session(&test_db.pool, &role, Some("execute-affordance"), ".", Some("."), None, None).await.expect("session");
+        let turn = Uuid::new_v4();
+        let tool_call = Uuid::new_v4();
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, completed_at) VALUES ($1,$2,'user','request runtime config','completed',now())")
+            .bind(turn)
+            .bind(session)
+            .execute(&test_db.pool)
+            .await
+            .expect("turn");
+        sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, started_at) VALUES ($1,$2,$3,'execute_code','runtime-config-change',$4,'running',now())")
+            .bind(tool_call)
+            .bind(session)
+            .bind(turn)
+            .bind(json!({}))
+            .execute(&test_db.pool)
+            .await
+            .expect("tool call");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = crate::starlark_host::ExecutionRoot::new(temp.path()).expect("root");
+        let script = r#"result = project_runtime.request_config_change("execute-affordance", "x = 1", "{\"hooks\":[{\"name\":\"on_model_request\",\"source\":\"x = 1\"}]}", "operator-requested runtime hook")
+output(result)"#;
+        let packet = crate::starlark_host::execute_code(&test_db.pool, session, turn, tool_call, script, &root, &role)
+            .await
+            .expect("execute_code");
+        let packet_json = serde_json::to_value(&packet).expect("packet json");
+        assert_eq!(packet_json["status"], "completed", "{packet_json}");
+        let request_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_packets WHERE source_session_id=$1 AND packet_type='project_runtime.config_change_request' AND status='reviewable'")
+            .bind(session)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("reviewable request");
+        assert_eq!(request_count, 1);
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
     async fn requirements_invalid_reviewer_packet_does_not_mutate_progress() {
         let test_db = validation_db().await;
         let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
@@ -7069,11 +8254,11 @@ output(outputs.stats(artifact))
             requirements: vec![requirements::RequirementInput { key: "verdict_checked".to_string(), statement: "Reviewer verdict schema is checked.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
         }).await.expect("set");
         let claim_turn = insert_completed_turn(&test_db.pool, source, "claim", "assistant").await;
-        requirements::record_source_final_response(&test_db.pool, source, claim_turn, r#"{"summary":"done","requirements":{"verdict_checked":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
+        requirements::record_requirements_claim_packet(&test_db.pool, source, claim_turn, r#"{"summary":"done","requirements":{"verdict_checked":{"claim":"satisfied","evidence":["e"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
         let reviewer = requirements::status(&test_db.pool, source).await.expect("status").reviewer_session_id.expect("reviewer");
         let verdict_turn = insert_completed_turn(&test_db.pool, reviewer, "verdict", "assistant").await;
         let invalid = r#"{"summary":"bad","requirements":{"verdict_checked":{"verdict":"pass","evidence":["e"],"justification":"j","risk":"low"}},"route":"source"}"#;
-        assert!(requirements::record_reviewer_verdict(&test_db.pool, reviewer, verdict_turn, invalid).await.expect("verdict processed"));
+        assert!(requirements::record_requirements_verdict_packet(&test_db.pool, reviewer, verdict_turn, invalid).await.expect("verdict processed"));
         let status = requirements::status(&test_db.pool, source).await.expect("status");
         assert!(status.active);
         assert_eq!(status.unresolved, 1);
@@ -7094,10 +8279,10 @@ output(outputs.stats(artifact))
             requirements: vec![requirements::RequirementInput { key: "reconstructs_claim".to_string(), statement: "Reviewer reconstruction includes source claim context.".to_string(), severity: "must".to_string(), verification_method: json!({"method":"test"}) }],
         }).await.expect("set");
         let turn = insert_completed_turn(&test_db.pool, source, "claim", "assistant").await;
-        requirements::record_source_final_response(&test_db.pool, source, turn, r#"{"summary":"done","requirements":{"reconstructs_claim":{"claim":"satisfied","evidence":["claim evidence"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
+        requirements::record_requirements_claim_packet(&test_db.pool, source, turn, r#"{"summary":"done","requirements":{"reconstructs_claim":{"claim":"satisfied","evidence":["claim evidence"],"justification":"j","risk":"low"}}}"#).await.expect("claim");
         let reviewer = requirements::status(&test_db.pool, source).await.expect("status").reviewer_session_id.expect("reviewer");
         compaction::compact_session_through_turn(&test_db.pool, source, turn, compaction::CompactionBudget::default()).await.expect("compact source");
-        let runtime_message = requirements::requirements_runtime_message(&test_db.pool, reviewer).await.expect("runtime message").expect("reviewer schema");
+        let runtime_message = requirements::hook_defined_requirements_runtime_message(&test_db.pool, reviewer).await.expect("runtime message").expect("reviewer schema");
         assert!(runtime_message.text.contains("<requirements_review_context>"));
         assert!(runtime_message.text.contains("canonicalSet"));
         assert!(runtime_message.text.contains("latestClaimPacket"));

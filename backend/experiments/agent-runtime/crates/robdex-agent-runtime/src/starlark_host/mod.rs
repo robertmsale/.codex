@@ -38,6 +38,7 @@ use crate::output_artifacts::{self, NewOutputArtifact};
 use crate::policy::{PolicyEngine, RuntimeDecision};
 use crate::roles::RoleSnapshot;
 use crate::workflow_memory::RememberCandidate;
+use crate::lifecycle_hooks;
 
 const OUTPUT_LIMIT_BYTES: usize = 12_000;
 
@@ -738,9 +739,23 @@ fn add_host_builtins(builder: &mut GlobalsBuilder) {
     builder.namespace_no_docs("__proc", proc_dynamic_builtins);
     builder.namespace_no_docs("__shell", shell_dynamic_builtins);
     builder.namespace("workflow_memory", workflow_memory_builtins);
+    builder.namespace("project_runtime", project_runtime_builtins);
     builder.namespace("outputs", output_artifact_builtins);
     struct_builtins(builder);
     output_builtins(builder);
+}
+
+#[starlark_module]
+fn project_runtime_builtins(builder: &mut GlobalsBuilder) {
+    fn request_config_change<'v>(
+        project: &'v str,
+        source: &'v str,
+        manifest_json: &'v str,
+        rationale: &'v str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<String> {
+        host_kernel(eval).request_project_runtime_config_change(project, source, manifest_json, rationale)
+    }
 }
 
 #[starlark_module]
@@ -1229,6 +1244,39 @@ impl HostKernel {
             payload: input,
         }));
         Ok(format!("{event_type} recorded for {memory_id}"))
+    }
+
+    fn request_project_runtime_config_change(&self, project: &str, source: &str, manifest_json: &str, rationale: &str) -> anyhow::Result<String> {
+        let manifest: JsonValue = serde_json::from_str(manifest_json)
+            .context("project_runtime.request_config_change manifest_json must be valid JSON")?;
+        let input = json!({
+            "projectKey": project,
+            "sourceHash": lifecycle_hooks::source_hash(source),
+            "manifest": manifest,
+            "rationale": rationale,
+        });
+        let policy = self.decide("project_runtime.request_change", input.clone());
+        if !policy.decision.can_execute() {
+            bail!("project_runtime.request_config_change blocked by policy: {}", policy.decision.as_str());
+        }
+        let packet_id = block_on_host_future(lifecycle_hooks::request_project_runtime_config_change(
+            &self.pool,
+            project,
+            self.session_id,
+            source,
+            input["manifest"].clone(),
+            rationale,
+        ))?;
+        self.records.borrow_mut().push(HostRecord::HostApi(HostApiRecord {
+            id: Uuid::new_v4(),
+            action: "project_runtime.request_config_change".to_string(),
+            status: "completed".to_string(),
+            input,
+            output: json!({"packetId": packet_id, "status": "reviewable"}),
+            duration_ms: 0,
+            truncation: json!({}),
+        }));
+        Ok(serde_json::to_string(&json!({"packetId": packet_id, "status": "reviewable"}))?)
     }
 
     fn run_fs_read(&self, path: &str) -> anyhow::Result<String> {

@@ -3,8 +3,9 @@ use clap::{Parser, Subcommand};
 use uuid::Uuid;
 use std::collections::BTreeSet;
 
-use robdex_agent_runtime::{approvals, command_registry, compaction, db, requirements, routing, runtime};
+use robdex_agent_runtime::{approvals, command_registry, compaction, db, lifecycle_hooks, requirements, routing, runtime};
 use robdex_agent_runtime::roles::{DEFAULT_ROLE_ID, RoleRegistry};
+use sqlx::Row;
 
 const DEFAULT_DATABASE_URL: &str =
     "postgres://postgres:postgres@127.0.0.1:5432/robdex_agent_runtime";
@@ -51,6 +52,10 @@ enum Command {
     Requirements {
         #[command(subcommand)]
         command: RequirementsCommand,
+    },
+    RuntimeConfig {
+        #[command(subcommand)]
+        command: RuntimeConfigCommand,
     },
     Compact {
         #[arg(long)]
@@ -107,6 +112,49 @@ enum RequirementsCommand {
     },
     Clear {
         session: Uuid,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RuntimeConfigCommand {
+    Validate {
+        file: std::path::PathBuf,
+    },
+    Import {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        author: String,
+        file: std::path::PathBuf,
+        manifest: std::path::PathBuf,
+    },
+    Show {
+        #[arg(long)]
+        project: String,
+    },
+    Versions {
+        #[arg(long)]
+        project: String,
+    },
+    Activate {
+        #[arg(long)]
+        project: String,
+        version: Uuid,
+    },
+    Archive {
+        #[arg(long)]
+        project: String,
+        version: Uuid,
+    },
+    Export {
+        #[arg(long)]
+        project: String,
+        version: Uuid,
+    },
+    RequestReview {
+        #[arg(long)]
+        project: String,
+        version: Uuid,
     },
 }
 
@@ -327,6 +375,99 @@ async fn main() -> Result<()> {
             };
             println!("{}", serde_json::to_string_pretty(&checkpoint)?);
         }
+        Command::RuntimeConfig { command } => match command {
+            RuntimeConfigCommand::Validate { file } => {
+                let source = std::fs::read_to_string(&file)?;
+                let manifest = lifecycle_hooks::compile_project_runtime_source(&source)?;
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "valid": true,
+                    "sourceHash": lifecycle_hooks::source_hash(&source),
+                    "manifest": manifest,
+                    "limits": {
+                        "maxHookSourceBytes": lifecycle_hooks::MAX_HOOK_SOURCE_BYTES,
+                        "maxContextBytes": lifecycle_hooks::MAX_CONTEXT_BYTES,
+                        "maxReturnedIntents": lifecycle_hooks::MAX_RETURNED_INTENTS,
+                        "evaluationTimeoutMs": lifecycle_hooks::EVALUATION_TIMEOUT_MS,
+                        "evaluationFuelSteps": lifecycle_hooks::EVALUATION_FUEL_STEPS
+                    }
+                }))?);
+            }
+            RuntimeConfigCommand::Import { project, author, file, manifest } => {
+                let source = std::fs::read_to_string(&file)?;
+                let manifest_text = std::fs::read_to_string(&manifest)?;
+                let manifest: serde_json::Value = serde_json::from_str(&manifest_text)?;
+                let version_id = lifecycle_hooks::persist_project_runtime_config(&pool, &project, &source, manifest, &author).await?;
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({"projectKey": project, "versionId": version_id, "status":"draft"}))?);
+            }
+            RuntimeConfigCommand::Show { project } => {
+                let row = sqlx::query("SELECT id, project_key, source_hash, compiled_manifest, activation_status, author, validation_packet, created_at, activated_at, archived_at FROM project_runtime_config_versions WHERE project_key=$1 AND activation_status='active' ORDER BY activated_at DESC NULLS LAST, created_at DESC LIMIT 1")
+                    .bind(&project)
+                    .fetch_optional(&pool)
+                    .await?;
+                println!("{}", serde_json::to_string_pretty(&row.map(|row| serde_json::json!({
+                    "id": row.get::<Uuid, _>("id"),
+                    "projectKey": row.get::<String, _>("project_key"),
+                    "sourceHash": row.get::<String, _>("source_hash"),
+                    "manifest": row.get::<serde_json::Value, _>("compiled_manifest"),
+                    "status": row.get::<String, _>("activation_status"),
+                    "author": row.get::<String, _>("author"),
+                    "validationPacket": row.get::<serde_json::Value, _>("validation_packet"),
+                    "createdAt": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
+                    "activatedAt": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("activated_at"),
+                    "archivedAt": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("archived_at"),
+                })).unwrap_or_else(|| serde_json::json!({"projectKey": project, "active": null})))?);
+            }
+            RuntimeConfigCommand::Versions { project } => {
+                let rows = sqlx::query("SELECT id, project_key, source_hash, activation_status, author, created_at, activated_at, archived_at FROM project_runtime_config_versions WHERE project_key=$1 ORDER BY created_at DESC")
+                    .bind(&project)
+                    .fetch_all(&pool)
+                    .await?;
+                let versions = rows.into_iter().map(|row| serde_json::json!({
+                    "id": row.get::<Uuid, _>("id"),
+                    "projectKey": row.get::<String, _>("project_key"),
+                    "sourceHash": row.get::<String, _>("source_hash"),
+                    "status": row.get::<String, _>("activation_status"),
+                    "author": row.get::<String, _>("author"),
+                    "createdAt": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
+                    "activatedAt": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("activated_at"),
+                    "archivedAt": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("archived_at"),
+                })).collect::<Vec<_>>();
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({"versions": versions}))?);
+            }
+            RuntimeConfigCommand::Activate { project, version } => {
+                lifecycle_hooks::activate_project_runtime_config(&pool, &project, version).await?;
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({"projectKey": project, "versionId": version, "status":"active"}))?);
+            }
+            RuntimeConfigCommand::Archive { project, version } => {
+                sqlx::query("UPDATE project_runtime_config_versions SET activation_status='archived', archived_at=now() WHERE project_key=$1 AND id=$2")
+                    .bind(&project)
+                    .bind(version)
+                    .execute(&pool)
+                    .await?;
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({"projectKey": project, "versionId": version, "status":"archived"}))?);
+            }
+            RuntimeConfigCommand::Export { project, version } => {
+                let row = sqlx::query("SELECT id, project_key, source_text, source_hash, compiled_manifest, activation_status, author, validation_packet FROM project_runtime_config_versions WHERE project_key=$1 AND id=$2")
+                    .bind(&project)
+                    .bind(version)
+                    .fetch_one(&pool)
+                    .await?;
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "id": row.get::<Uuid, _>("id"),
+                    "projectKey": row.get::<String, _>("project_key"),
+                    "sourceText": row.get::<String, _>("source_text"),
+                    "sourceHash": row.get::<String, _>("source_hash"),
+                    "manifest": row.get::<serde_json::Value, _>("compiled_manifest"),
+                    "status": row.get::<String, _>("activation_status"),
+                    "author": row.get::<String, _>("author"),
+                    "validationPacket": row.get::<serde_json::Value, _>("validation_packet"),
+                }))?);
+            }
+            RuntimeConfigCommand::RequestReview { project, version } => {
+                db::append_admin_event(&pool, "project_runtime", Some(version), "projectRuntime.reviewRequested", Some("requested"), serde_json::json!({"projectKey": project, "versionId": version})).await?;
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({"projectKey": project, "versionId": version, "review":"requested"}))?);
+            }
+        },
         Command::Requirements { command } => match command {
             RequirementsCommand::SetJson { session, file } => {
                 let input = requirements::load_requirement_set_file(&file)?;
@@ -379,11 +520,11 @@ async fn main() -> Result<()> {
             }
             RequirementsCommand::RecordClaim { session, turn, file } => {
                 let raw = std::fs::read_to_string(file)?;
-                println!("{}", serde_json::to_string_pretty(&requirements::record_source_final_response(&pool, session, turn, &raw).await?)?);
+                println!("{}", serde_json::to_string_pretty(&requirements::record_requirements_claim_packet(&pool, session, turn, &raw).await?)?);
             }
             RequirementsCommand::RecordVerdict { reviewer, turn, file } => {
                 let raw = std::fs::read_to_string(file)?;
-                let processed = requirements::record_reviewer_verdict(&pool, reviewer, turn, &raw).await?;
+                let processed = requirements::record_requirements_verdict_packet(&pool, reviewer, turn, &raw).await?;
                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({"reviewerSessionId": reviewer, "processed": processed}))?);
             }
             RequirementsCommand::Clear { session } => {
