@@ -865,25 +865,17 @@ ChatSemanticCard _requirementsClaimCard(Map<String, dynamic> payload) {
         return _asObject(entry.value) != null;
       }).map((entry) {
         final value = _asObject(entry.value)!;
-        final claim = value['claim'] as String? ?? 'unknown';
-        final risk = value['risk'] as String? ?? 'unknown';
-        final justification = value['justification'] as String? ?? '';
-        final bullets =
-            (value['evidence'] as List<dynamic>?)
-                ?.whereType<String>()
-                .take(4)
-                .toList() ??
-                <String>[];
+        final claim = _requirementClaimKind(value);
 
         return ChatSemanticRow(
           key: entry.key,
           title: entry.key,
-          summary: justification,
-          detail: null,
-          trailingLabel: '${_titleCaseClaim(claim)} · risk $risk',
+          summary: _requirementClaimSummary(value),
+          detail: _requirementClaimDetail(value),
+          trailingLabel: _requirementClaimTrailingLabel(claim, value),
           tone: _claimTone(claim),
           icon: _claimIcon(claim),
-          bullets: bullets,
+          bullets: _requirementClaimBullets(value),
         );
       }).toList(growable: false);
   final isCommentary =
@@ -1046,6 +1038,7 @@ String _claimIcon(String value) {
     'notSatisfied' => 'cancel',
     'blocked' => 'warning',
     'notApplicable' => 'remove',
+    'notFinished' => 'dot',
     _ => 'dot',
   };
 }
@@ -1067,8 +1060,89 @@ String _titleCaseClaim(String value) {
     'notSatisfied' => 'Not satisfied',
     'blocked' => 'Blocked',
     'notApplicable' => 'Not applicable',
+    'notFinished' => 'Not finished',
     _ => 'Unknown',
   };
+}
+
+String _requirementClaimKind(Map<String, dynamic> value) {
+  final kind = value['kind'] as String?;
+  if (kind != null && kind.trim().isNotEmpty) {
+    return kind.trim();
+  }
+  final claim = value['claim'] as String?;
+  if (claim != null && claim.trim().isNotEmpty) {
+    return claim.trim();
+  }
+  if (value['notFinished'] == true) {
+    return 'notFinished';
+  }
+  return 'unknown';
+}
+
+String _requirementClaimSummary(Map<String, dynamic> value) {
+  for (final key in ['summary', 'justification', 'blocker', 'reason']) {
+    final text = value[key] as String?;
+    if (text != null && text.trim().isNotEmpty) {
+      return text.trim();
+    }
+  }
+  return '';
+}
+
+String? _requirementClaimDetail(Map<String, dynamic> value) {
+  final details = <String>[];
+  final ownerDecision = value['ownerDecisionNeeded'] as String?;
+  if (ownerDecision != null && ownerDecision.trim().isNotEmpty) {
+    details.add('Owner decision: ${ownerDecision.trim()}');
+  }
+  final blocker = value['blocker'] as String?;
+  final summary = value['summary'] as String?;
+  if (blocker != null &&
+      blocker.trim().isNotEmpty &&
+      blocker.trim() != summary?.trim()) {
+    details.add('Blocker: ${blocker.trim()}');
+  }
+  return details.isEmpty ? null : details.join('\n');
+}
+
+String _requirementClaimTrailingLabel(
+  String claim,
+  Map<String, dynamic> value,
+) {
+  final risk = value['risk'] as String?;
+  final label = _titleCaseClaim(claim);
+  if (risk != null && risk.trim().isNotEmpty) {
+    return '$label · risk ${risk.trim()}';
+  }
+  return label;
+}
+
+List<String> _requirementClaimBullets(Map<String, dynamic> value) {
+  final evidence = value['evidence'];
+  if (evidence is! List<dynamic>) {
+    return const <String>[];
+  }
+  return evidence
+      .map((item) {
+        if (item is String) {
+          return item.trim();
+        }
+        if (item is Map<String, dynamic>) {
+          final type = item['type'] as String?;
+          final evidenceValue = item['value'] as String?;
+          final pieces = <String>[
+            if (type != null && type.trim().isNotEmpty) type.trim(),
+            if (evidenceValue != null && evidenceValue.trim().isNotEmpty)
+              evidenceValue.trim(),
+          ];
+          return pieces.join(': ');
+        }
+        return '';
+      })
+      .where((item) => item.isNotEmpty)
+      .take(4)
+      .toList(growable: false);
 }
 
 class ChatSemanticCard {

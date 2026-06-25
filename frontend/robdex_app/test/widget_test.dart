@@ -2078,6 +2078,56 @@ void main() {
     expect(find.textContaining('"requirements"'), findsNothing);
   });
 
+  testWidgets('current structured requirements claims render kind summary and typed evidence', (
+    WidgetTester tester,
+  ) async {
+    const claimJson = '''
+{"summary":"Blocked only on owner-authenticated proof.","requirements":{"backendOauthRegressionTests":{"kind":"satisfied","summary":"Backend OAuth regression tests cover the callback path.","evidence":[{"type":"testsRun","value":"cargo test -p ezra qbo_oauth_callback"}]},"localStackOauthCallbackReachable":{"kind":"blocked","summary":"Waiting for owner-authenticated sandbox consent.","blocker":"Owner must authorize the Intuit sandbox login.","ownerDecisionNeeded":"Complete sandbox consent in browser.","evidence":[{"type":"commandOutput","value":"callback forward is ready"}]},"requirementsNativeScreenshotProof":{"kind":"notApplicable","summary":"No visual UI changed in this backend-only package.","evidence":[{"type":"sourceInspection","value":"No Flutter source changed."}]}}}
+''';
+    final entry = ChatEntry.fromJson({
+      'id': 'claim-current-schema',
+      'author': 'Assistant',
+      'displayLabel': 'Assistant',
+      'body': claimJson,
+      'isStreaming': false,
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: Scaffold(
+          body: ChatTimeline(
+            threadId: 'worker',
+            entries: [entry],
+            title: 'Worker',
+            contextWindowRemainingPercent: 92,
+            onSend: (_) {},
+            onInterrupt: () {},
+            composerEnabled: false,
+            isRunning: false,
+            showComposer: false,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Requirements Claim'), findsOneWidget);
+    expect(find.text('3 claims'), findsOneWidget);
+    expect(find.text('backendOauthRegressionTests'), findsOneWidget);
+    expect(find.text('localStackOauthCallbackReachable'), findsOneWidget);
+    expect(find.text('requirementsNativeScreenshotProof'), findsOneWidget);
+    expect(find.text('Satisfied'), findsOneWidget);
+    expect(find.text('Blocked'), findsOneWidget);
+    expect(find.text('Not applicable'), findsOneWidget);
+    expect(find.textContaining('risk unknown'), findsNothing);
+    expect(find.textContaining('Unknown'), findsNothing);
+    expect(find.textContaining('Backend OAuth regression tests cover the callback path.'), findsOneWidget);
+    expect(find.textContaining('testsRun: cargo test -p ezra qbo_oauth_callback'), findsOneWidget);
+    expect(find.textContaining('Owner decision: Complete sandbox consent in browser.'), findsOneWidget);
+    expect(find.textContaining('"requirements"'), findsNothing);
+  });
+
   test('thread stats model parses bridge DTO payload', () {
     final stats = ThreadStatsData.fromJson({
       'threadId': 'thread-a',
