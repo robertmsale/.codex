@@ -2131,11 +2131,11 @@ void main() {
     final actions = <String>[];
     Map<String, Object?>? saved;
 
-    Future<void> pumpDialog() async {
+    Future<void> pumpDialog({AgentRuntimeWorkbenchData data = mockAgentRuntimeConnected}) async {
       await tester.pumpWidget(
         MaterialApp(
           home: AgentRuntimeSessionControlPlane(
-            data: mockAgentRuntimeConnected,
+            data: data,
             onClose: () {},
             onSave: ({
               required sessionId,
@@ -2164,8 +2164,8 @@ void main() {
             onArchiveSession: (id) => actions.add('archive:$id'),
             onForkSession: (id) => actions.add('fork:$id'),
             onCompact: (id) => actions.add('compact:$id'),
-            onGrantGodMode: (_) {},
-            onRevokeGodMode: (_) {},
+            onGrantGodMode: (id) => actions.add('grantGodMode:$id'),
+            onRevokeGodMode: (id) => actions.add('revokeGodMode:$id'),
             onTerminateProcess: (handle) => actions.add('terminate:$handle'),
             onFlushProcess: (handle) => actions.add('flush:$handle'),
             onInputProcess: (handle, text) => actions.add('input:$handle:$text'),
@@ -2173,9 +2173,9 @@ void main() {
             onDeny: (id, reason) => actions.add('deny:$id:$reason'),
             onResumeApproval: (id) => actions.add('resume:$id'),
             onPreviewCommandRequest: (id) => actions.add('preview:$id'),
-            onApproveCommandRequest: (_) {},
-            onDenyCommandRequest: (_) {},
-            onApplyCommandRequest: (_) {},
+            onApproveCommandRequest: (id) => actions.add('cmdApprove:$id'),
+            onDenyCommandRequest: (id) => actions.add('cmdDeny:$id'),
+            onApplyCommandRequest: (id) => actions.add('cmdApply:$id'),
             onShowCommand: (id) => actions.add('showCommand:$id'),
             onShowCommandRequest: (id) => actions.add('showRequest:$id'),
             onSetRequirements: (id, {required title, required key, required statement}) => actions.add('requirements:$id:$title:$key:$statement'),
@@ -2194,6 +2194,8 @@ void main() {
     expect(find.text('Session Settings'), findsOneWidget);
     expect(find.text('Processes (2)'), findsOneWidget);
     expect(find.text('Approve command execution'), findsOneWidget);
+    expect(find.text('Duplicate Settings Unavailable'), findsOneWidget);
+    expect(find.text('No typed duplicate operation exists'), findsOneWidget);
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionControl.title')), 'Updated Session');
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionControl.workdir')), '/work/session');
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionControl.worktreeroot')), '/work/session/root');
@@ -2212,11 +2214,32 @@ void main() {
     await tapVisible(find.text('Flush output'));
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionControl.approvalReason')), 'Approved for test');
     await tapVisible(find.widgetWithText(OutlinedButton, 'Approve').first);
+    await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionControl.approvalReason')), 'Denied for test');
+    await tapVisible(find.widgetWithText(OutlinedButton, 'Deny').first);
     await tapVisible(find.widgetWithText(OutlinedButton, 'Resume').last);
     await tapVisible(find.widgetWithText(OutlinedButton, 'Preview'));
+    await tapVisible(find.widgetWithText(OutlinedButton, 'Approve').last);
+    await tapVisible(find.widgetWithText(OutlinedButton, 'Deny').last);
+    await tapVisible(find.widgetWithText(OutlinedButton, 'Apply'));
     await tapVisible(find.widgetWithText(OutlinedButton, 'Show Command'));
     await tapVisible(find.widgetWithText(OutlinedButton, 'View Details').last);
-    expect(actions, containsAll(['input:dev-server:ping', 'flush:dev-server', 'approve:approval-1:Approved for test', 'resume:approval-2', 'preview:registry-request-1', 'showCommand:cmd.registry.audit', 'showRequest:registry-request-1']));
+    await tapVisible(find.text('Compact…'));
+    await tapVisible(find.text('Grant God Mode…'));
+    expect(actions, containsAll(['input:dev-server:ping', 'flush:dev-server', 'approve:approval-1:Approved for test', 'deny:approval-1:Denied for test', 'resume:approval-2', 'preview:registry-request-1', 'cmdApprove:registry-request-1', 'cmdDeny:registry-request-1', 'cmdApply:registry-request-1', 'showCommand:cmd.registry.audit', 'showRequest:registry-request-1', 'compact:session-a', 'grantGodMode:session-a']));
+
+    final activeGodMode = mockAgentRuntimeConnected.copyWith(
+      selectedSessionControlPlane: mockAgentRuntimeConnected.selectedSessionControlPlane!.copyWith(
+        godMode: const AgentRuntimeGodModeState(
+          active: true,
+          reason: 'Owner enabled break-glass shell for this session',
+          grantedBy: 'Owner',
+          grantedAt: '09:30',
+        ),
+      ),
+    );
+    await pumpDialog(data: activeGodMode);
+    await tapVisible(find.text('Revoke God Mode…'));
+    expect(actions, contains('revokeGodMode:session-a'));
 
     for (final key in ['closesession', 'archivesession', 'forksession']) {
       await pumpDialog();

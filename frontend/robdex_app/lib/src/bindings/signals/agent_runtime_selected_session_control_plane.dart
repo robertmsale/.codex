@@ -16,6 +16,7 @@ class AgentRuntimeSelectedSessionControlPlane {
     required this.worktreeRoot,
     required this.tracked,
     required this.modelOptions,
+    required this.projectOptions,
     required this.godMode,
     required this.managedProcesses,
     required this.approvals,
@@ -40,6 +41,7 @@ class AgentRuntimeSelectedSessionControlPlane {
       worktreeRoot: deserializer.deserializeString(),
       tracked: deserializer.deserializeBool(),
       modelOptions: TraitHelpers.deserializeVectorAgentRuntimeModelOption(deserializer),
+      projectOptions: TraitHelpers.deserializeVectorAgentRuntimeShellProjectRow(deserializer),
       godMode: AgentRuntimeGodModeState.deserialize(deserializer),
       managedProcesses: TraitHelpers.deserializeVectorAgentRuntimeManagedProcessRow(deserializer),
       approvals: TraitHelpers.deserializeVectorAgentRuntimeApprovalCard(deserializer),
@@ -73,6 +75,7 @@ class AgentRuntimeSelectedSessionControlPlane {
   final String worktreeRoot;
   final bool tracked;
   final List<AgentRuntimeModelOption> modelOptions;
+  final List<AgentRuntimeShellProjectRow> projectOptions;
   final AgentRuntimeGodModeState godMode;
   final List<AgentRuntimeManagedProcessRow> managedProcesses;
   final List<AgentRuntimeApprovalCard> approvals;
@@ -94,6 +97,7 @@ class AgentRuntimeSelectedSessionControlPlane {
     String? worktreeRoot,
     bool? tracked,
     List<AgentRuntimeModelOption>? modelOptions,
+    List<AgentRuntimeShellProjectRow>? projectOptions,
     AgentRuntimeGodModeState? godMode,
     List<AgentRuntimeManagedProcessRow>? managedProcesses,
     List<AgentRuntimeApprovalCard>? approvals,
@@ -115,6 +119,7 @@ class AgentRuntimeSelectedSessionControlPlane {
       worktreeRoot: worktreeRoot ?? this.worktreeRoot,
       tracked: tracked ?? this.tracked,
       modelOptions: modelOptions ?? this.modelOptions,
+      projectOptions: projectOptions ?? this.projectOptions,
       godMode: godMode ?? this.godMode,
       managedProcesses: managedProcesses ?? this.managedProcesses,
       approvals: approvals ?? this.approvals,
@@ -139,6 +144,7 @@ class AgentRuntimeSelectedSessionControlPlane {
     serializer.serializeString(worktreeRoot);
     serializer.serializeBool(tracked);
     TraitHelpers.serializeVectorAgentRuntimeModelOption(modelOptions, serializer);
+    TraitHelpers.serializeVectorAgentRuntimeShellProjectRow(projectOptions, serializer);
     godMode.serialize(serializer);
     TraitHelpers.serializeVectorAgentRuntimeManagedProcessRow(managedProcesses, serializer);
     TraitHelpers.serializeVectorAgentRuntimeApprovalCard(approvals, serializer);
@@ -173,6 +179,7 @@ class AgentRuntimeSelectedSessionControlPlane {
       && worktreeRoot == other.worktreeRoot
       && tracked == other.tracked
       && listEquals(modelOptions, other.modelOptions)
+      && listEquals(projectOptions, other.projectOptions)
       && godMode == other.godMode
       && listEquals(managedProcesses, other.managedProcesses)
       && listEquals(approvals, other.approvals)
@@ -196,6 +203,7 @@ class AgentRuntimeSelectedSessionControlPlane {
         worktreeRoot,
         tracked,
         modelOptions,
+        projectOptions,
         godMode,
         managedProcesses,
         approvals,
@@ -223,6 +231,7 @@ class AgentRuntimeSelectedSessionControlPlane {
         'worktreeRoot: $worktreeRoot, '
         'tracked: $tracked, '
         'modelOptions: $modelOptions, '
+        'projectOptions: $projectOptions, '
         'godMode: $godMode, '
         'managedProcesses: $managedProcesses, '
         'approvals: $approvals, '

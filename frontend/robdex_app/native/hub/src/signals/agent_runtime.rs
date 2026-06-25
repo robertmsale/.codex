@@ -357,6 +357,7 @@ pub struct AgentRuntimeSelectedSessionControlPlane {
     pub worktree_root: String,
     pub tracked: bool,
     pub model_options: Vec<AgentRuntimeModelOption>,
+    pub project_options: Vec<AgentRuntimeShellProjectRow>,
     pub god_mode: AgentRuntimeGodModeState,
     pub managed_processes: Vec<AgentRuntimeManagedProcessRow>,
     pub approvals: Vec<AgentRuntimeApprovalCard>,

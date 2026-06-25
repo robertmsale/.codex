@@ -167,7 +167,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
         _field('Title', _title),
         _select('Role', _role, _roleOptions(control), (value) => setState(() => _role = value)),
         _select('Model', _model, control.modelOptions.map((model) => model.id).where((id) => id.isNotEmpty).toList(growable: false), (value) => setState(() => _model = value)),
-        _select('Project', _project, _projectOptions(), (value) => setState(() => _project = value)),
+        _select('Project', _project, _projectOptions(control), (value) => setState(() => _project = value)),
         _field('Workdir', _workdir),
         _field('Worktree Root', _worktreeRoot),
         _field('Name', _name),
@@ -194,7 +194,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
           _actionTile(Icons.close_rounded, 'Close Session', 'Gracefully close and terminate', Colors.redAccent, () => widget.onCloseSession(control.sessionId)),
           _actionTile(Icons.archive_outlined, 'Archive Session', 'Hide from active sessions', Colors.orange, () => widget.onArchiveSession(control.sessionId)),
           _actionTile(Icons.call_split_rounded, 'Fork Session', 'Create a new session from a turn', Colors.purpleAccent, () => widget.onForkSession(control.sessionId)),
-          _actionTile(Icons.copy_all_rounded, 'Duplicate Settings', 'Use current values for a new session', Colors.blueAccent, null),
+          _actionTile(Icons.copy_all_rounded, 'Duplicate Settings Unavailable', 'No typed duplicate operation exists', Colors.blueGrey, null),
         ]),
       ]),
       const SizedBox(height: 14),
@@ -324,7 +324,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
   }
 
   List<String> _roleOptions(AgentRuntimeSelectedSessionControlPlane control) => {control.roleId, ...widget.data.roleAdmin.rows.map((role) => role.id)}.where((value) => value.isNotEmpty).toList(growable: false);
-  List<String> _projectOptions() => widget.data.operationSurfaces.expand((surface) => surface.rows).where((fact) => fact.label == 'Project').map((fact) => fact.value).where((value) => value.isNotEmpty).toSet().toList(growable: false);
+  List<String> _projectOptions(AgentRuntimeSelectedSessionControlPlane control) => {control.projectKey, ...control.projectOptions.map((project) => project.id)}.where((value) => value.isNotEmpty).toList(growable: false);
 
   void _showDanger(AgentRuntimeSelectedSessionControlPlane control) {
     showModalBottomSheet<void>(

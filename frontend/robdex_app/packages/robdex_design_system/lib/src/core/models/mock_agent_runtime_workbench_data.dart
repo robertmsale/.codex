@@ -1,4 +1,5 @@
 import 'agent_runtime_workbench_models.dart';
+import 'conversation_shell_models.dart';
 import 'workbench_models.dart';
 
 const mockAgentRuntimeRoleEditorOptions = AgentRuntimeRoleEditorOptions(
@@ -814,6 +815,9 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
       AgentRuntimeModelOption(id: 'codex-live-model', displayLabel: 'Codex live model', source: 'runtime', isDefault: true),
       AgentRuntimeModelOption(id: 'gpt-5.4-mini', displayLabel: 'GPT-5.4 Mini', source: 'runtime', isDefault: false),
     ],
+    projectOptions: [
+      ConversationProject(id: 'project-a', title: 'Runtime', subtitle: 'Runtime project', defaultWorkdir: '/Users/robertsale/.codex', defaultWorktreeRoot: '/Users/robertsale/.codex', defaultRoleId: 'runtime-allow', defaultModel: 'codex-live-model'),
+    ],
     godMode: AgentRuntimeGodModeState(active: false, reason: '', grantedBy: '', grantedAt: ''),
     managedProcesses: [
       AgentRuntimeManagedProcessRow(
@@ -888,7 +892,7 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
         applyStatus: 'Not applied',
         canPreview: true,
         canDecide: true,
-        canApply: false,
+        canApply: true,
         commandSummary: 'rg --files frontend/robdex_app',
       ),
     ],
