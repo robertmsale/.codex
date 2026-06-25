@@ -1174,6 +1174,21 @@ fn current_turn_label(projection: Option<&RuntimeProjection>) -> &'static str {
     }
 }
 
+fn event_product_label(event_type: &str) -> &'static str {
+    match event_type {
+        "compaction.completed" => "Compaction checkpoint completed",
+        "compaction.failed" => "Compaction checkpoint failed",
+        "workflow_memory.helpful" => "Memory marked helpful",
+        "workflow_memory.mark_attempted" | "workflow_memory.attempted" => "Memory marked attempted",
+        "workflow_memory.mark_not_helpful" | "workflow_memory.not_helpful" => "Memory marked not helpful",
+        "workflow_memory.help" => "Memory suggestions shown",
+        "workflow_memory.remember_candidate" => "Memory candidate saved",
+        "workflow_memory.remember_skipped" => "Memory skipped",
+        "workflow_memory.provider_failure" => "Memory provider unavailable",
+        _ => "Runtime activity",
+    }
+}
+
 fn compaction_rows(projection: Option<&RuntimeProjection>) -> Vec<AgentRuntimeWorkbenchFact> {
     let Some(projection) = projection else { return Vec::new(); };
     let mut rows = Vec::new();
@@ -1183,7 +1198,7 @@ fn compaction_rows(projection: Option<&RuntimeProjection>) -> Vec<AgentRuntimeWo
         let model_available = item.payload.get("providerModel").or_else(|| item.payload.get("modelProviderMetadata")).is_some();
         let issue = item.payload.get("reason").or_else(|| item.payload.get("failureInfo")).map(compact_json_summary_value);
         rows.push(fact(
-            item.event_type.as_str(),
+            event_product_label(item.event_type.as_str()),
             format!(
                 "{} compaction checkpoint recorded at {}. Boundary information is {}. Replacement estimate is {}. Model metadata is {}.{}",
                 state,
@@ -1412,7 +1427,7 @@ fn workflow_memory_surface_rows(view: &AgentRuntimeWorkflowMemoryView) -> Vec<Ag
         ).as_str()));
     }
     rows.extend(view.recent_events.iter().map(|event| {
-        fact("Recent memory event", format!("{} at {}. {}", event.title, event.created_at.as_deref().unwrap_or("unknown time"), event.subtitle).as_str())
+        fact("Recent memory event", format!("{} at {}. {}", event_product_label(event.title.as_str()), event.created_at.as_deref().unwrap_or("unknown time"), event.subtitle).as_str())
     }));
     rows
 }
@@ -5460,8 +5475,8 @@ mod tests {
             );
         }
         let compaction = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "compaction").expect("compaction surface");
-        assert!(compaction.rows.iter().any(|row| row.label == "compaction.completed" && row.value.contains("completed compaction checkpoint") && row.value.contains("Boundary information is available") && row.value.contains("Replacement estimate is available") && row.value.contains("Model metadata is available") && !row.value.contains("checkpoint=") && !row.value.contains("boundaryTurn=") && !row.value.contains("providerModel=") && !row.value.contains("payloadSummary=")));
-        assert!(compaction.rows.iter().any(|row| row.label == "compaction.failed" && row.value.contains("failed compaction checkpoint") && row.value.contains("Note:") && !row.value.contains("checkpoint=") && !row.value.contains("failure=")));
+        assert!(compaction.rows.iter().any(|row| row.label == "Compaction checkpoint completed" && row.value.contains("completed compaction checkpoint") && row.value.contains("Boundary information is available") && row.value.contains("Replacement estimate is available") && row.value.contains("Model metadata is available") && !row.value.contains("checkpoint=") && !row.value.contains("boundaryTurn=") && !row.value.contains("providerModel=") && !row.value.contains("payloadSummary=")));
+        assert!(compaction.rows.iter().any(|row| row.label == "Compaction checkpoint failed" && row.value.contains("failed compaction checkpoint") && row.value.contains("Note:") && !row.value.contains("checkpoint=") && !row.value.contains("failure=")));
         assert!(compaction.actions.iter().any(|action| action.kind == "compactionManual" && action.title == "Compact selected session"));
         let role_admin = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "roleAdmin").expect("role admin surface");
         assert!(role_admin.rows.iter().any(|row| row.label == "Selected role detail" && row.value.contains("Runtime Allow") && row.value.contains("1 capability") && row.value.contains("1 approval policy") && row.value.contains("Instructions are present") && !row.value.contains("role-version") && !row.value.contains("capabilities=") && !row.value.contains("policies=") && !row.value.contains("instructionBytes=")));
@@ -5474,7 +5489,7 @@ mod tests {
         assert!(role_admin.actions.iter().any(|action| action.title == "Export current role"));
         let workflow_memory = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "workflowMemory").expect("workflow memory surface");
         assert!(workflow_memory.rows.iter().any(|row| row.label == "Selected memory detail" && row.value.contains("applies to") && row.value.contains("Preview:") && !row.value.contains("origin=") && !row.value.contains("provider=") && !row.value.contains("model=") && !row.value.contains("dimensions=") && !row.value.contains("storage=") && !row.value.contains("sourceHash") && !row.value.contains("commandFingerprint") && !row.value.contains("memoryId")));
-        assert!(workflow_memory.rows.iter().any(|row| row.label == "Recent memory event" && row.value.contains("workflow_memory.helpful") && !row.value.contains("type=") && !row.value.contains("created=") && !row.value.contains("summary=") && !row.value.contains("id=")));
+        assert!(workflow_memory.rows.iter().any(|row| row.label == "Recent memory event" && row.value.contains("Memory marked helpful") && !row.value.contains("workflow_memory.") && !row.value.contains("type=") && !row.value.contains("created=") && !row.value.contains("summary=") && !row.value.contains("id=")));
         assert!(workflow_memory.actions.iter().any(|action| action.id.ends_with(":attempted")));
         assert!(workflow_memory.actions.iter().any(|action| action.id.ends_with(":helpful")));
         assert!(workflow_memory.actions.iter().any(|action| action.id.ends_with(":notHelpful")));
