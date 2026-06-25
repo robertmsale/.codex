@@ -1428,37 +1428,53 @@ class _RoleManagerRoleTile extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(4),
       child: Container(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFF0B1628) : Colors.transparent,
-          border: Border.all(color: selected ? const Color(0xFF2E69FF) : Colors.transparent),
+          color: Colors.transparent,
           borderRadius: BorderRadius.circular(4),
         ),
-        child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(child: Text(row.id, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w700))),
-              Icon(Icons.circle, size: 7, color: _toneColor(row.tone)),
-              const SizedBox(width: 6),
-              Text(_roleManagerHumanLabel(row.status), style: theme.textTheme.labelSmall?.copyWith(color: _toneColor(row.tone), fontWeight: FontWeight.w700)),
-            ],
-          ),
-          const SizedBox(height: 5),
-          Text(row.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFC6D3E4))),
-          if (subtitle.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 6,
-              runSpacing: 4,
-              children: [
-                for (final item in subtitle) _MiniPill(_roleManagerHumanLabel(item)),
-                if (selected && row.currentVersionId != null) const _MiniPill('Current'),
-              ],
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              width: 3,
+              height: 48,
+              margin: const EdgeInsets.only(right: 9, top: 1),
+              decoration: BoxDecoration(
+                color: selected ? const Color(0xFF2E69FF) : Colors.transparent,
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(child: Text(row.id, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w700))),
+                      Icon(Icons.circle, size: 7, color: _toneColor(row.tone)),
+                      const SizedBox(width: 6),
+                      Text(_roleManagerHumanLabel(row.status), style: theme.textTheme.labelSmall?.copyWith(color: _toneColor(row.tone), fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                  const SizedBox(height: 5),
+                  Text(row.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFFC6D3E4))),
+                  if (subtitle.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        for (final item in subtitle) _MiniPill(_roleManagerHumanLabel(item)),
+                        if (selected && row.currentVersionId != null) const _MiniPill('Current'),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
             ),
           ],
-        ],
         ),
       ),
     );
@@ -1985,7 +2001,7 @@ class _RoleManagerRightColumn extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
-        _RoleSurface(
+        _RoleEditorSection(
           title: 'Validation',
           child: data.validationErrors.isEmpty
               ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -2003,8 +2019,8 @@ class _RoleManagerRightColumn extends StatelessWidget {
                   ],
                 ),
         ),
-        const SizedBox(height: 10),
-        _RoleSurface(
+        const _RoleEditorDivider(),
+        _RoleEditorSection(
           title: 'Version History',
           child: Column(
             children: [
@@ -2018,8 +2034,8 @@ class _RoleManagerRightColumn extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(height: 10),
-        _RoleSurface(
+        const _RoleEditorDivider(),
+        _RoleEditorSection(
           title: 'Role Actions',
           child: Wrap(
             spacing: 8,
@@ -2033,50 +2049,6 @@ class _RoleManagerRightColumn extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _RoleSurface extends StatelessWidget {
-  const _RoleSurface({required this.title, required this.child, this.subtitle, this.trailing});
-
-  final String title;
-  final String? subtitle;
-  final Widget? trailing;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFF0A1119),
-        border: Border.all(color: const Color(0xFF1B2A3A)),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Flexible(child: Text(title, overflow: TextOverflow.ellipsis, style: theme.textTheme.labelMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.w800))),
-                if (subtitle != null) ...[
-                  const SizedBox(width: 6),
-                  Flexible(child: Text(subtitle!, overflow: TextOverflow.ellipsis, style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF8FA1B8)))),
-                ],
-                if (trailing != null) ...[
-                  const Spacer(),
-                  trailing!,
-                ],
-              ],
-            ),
-            const SizedBox(height: 8),
-            child,
-          ],
-        ),
-      ),
     );
   }
 }
