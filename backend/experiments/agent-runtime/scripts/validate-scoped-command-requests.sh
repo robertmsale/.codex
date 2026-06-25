@@ -86,7 +86,7 @@ printf 'scoped_missing_final=%s\n' "$MISSING_FINAL" | rg 'requires final scope'
 approve "$GLOBAL_REQ" global '' allow /tmp/scoped-global-seed.json
 run cargo run --quiet --bin robdex-agent-runtime -- command-registry requests apply --session "$ADMIN" "$GLOBAL_REQ"
 GLOBAL_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow --project beta)
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$GLOBAL_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_global_visible"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); output(files)'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$GLOBAL_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_global_visible"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); print(files)'
 printf 'global_visible_runs='; sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.global_visible'"
 [[ "$(sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.global_visible'")" -gt 0 ]]
 
@@ -96,7 +96,7 @@ GLOBAL_DENY_REQ=$(create_internal_request /tmp/scoped-global-deny-request.json)
 approve "$GLOBAL_DENY_REQ" global '' deny /tmp/scoped-global-deny-seed.json
 run cargo run --quiet --bin robdex-agent-runtime -- command-registry requests apply --session "$ADMIN" "$GLOBAL_DENY_REQ"
 GLOBAL_DENY_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow --project beta)
-GLOBAL_DENY_OUT=$(cargo run --quiet --bin robdex-agent-runtime -- send --session "$GLOBAL_DENY_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_global_denied"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); output(files)' 2>&1 || true)
+GLOBAL_DENY_OUT=$(cargo run --quiet --bin robdex-agent-runtime -- send --session "$GLOBAL_DENY_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_global_denied"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); print(files)' 2>&1 || true)
 printf 'global_deny_attempt=%s\n' "$GLOBAL_DENY_OUT"
 printf 'global_deny_visible_context='; sql "select count(*) from event_stream where session_id='$GLOBAL_DENY_SESSION' and event_type='model.tool_call' and payload->'request'->'commandContext'->'summaries' @> '[{\"actionId\":\"cmd.rg.global_denied\",\"starlarkObject\":\"rg_global_denied\"}]'::jsonb"
 [[ "$(sql "select count(*) from event_stream where session_id='$GLOBAL_DENY_SESSION' and event_type='model.tool_call' and payload->'request'->'commandContext'->'summaries' @> '[{\"actionId\":\"cmd.rg.global_denied\",\"starlarkObject\":\"rg_global_denied\"}]'::jsonb")" -gt 0 ]]
@@ -113,7 +113,7 @@ GLOBAL_ORCH_REQ=$(create_internal_request /tmp/scoped-global-orch-request.json)
 approve "$GLOBAL_ORCH_REQ" global '' orchestratorApproval /tmp/scoped-global-orch-seed.json
 run cargo run --quiet --bin robdex-agent-runtime -- command-registry requests apply --session "$ADMIN" "$GLOBAL_ORCH_REQ"
 GLOBAL_ORCH_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow --project beta)
-GLOBAL_ORCH_OUT=$(cargo run --quiet --bin robdex-agent-runtime -- send --session "$GLOBAL_ORCH_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_global_orch_approval"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); output(files)' 2>&1 || true)
+GLOBAL_ORCH_OUT=$(cargo run --quiet --bin robdex-agent-runtime -- send --session "$GLOBAL_ORCH_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_global_orch_approval"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); print(files)' 2>&1 || true)
 printf 'global_orch_approval_attempt=%s\n' "$GLOBAL_ORCH_OUT"
 printf 'global_orch_approval_requests='; sql "select count(*) from approval_requests where session_id='$GLOBAL_ORCH_SESSION' and action_name='cmd.rg.global_orch_approval' and required_approver_kind='orchestrator'"
 [[ "$(sql "select count(*) from approval_requests where session_id='$GLOBAL_ORCH_SESSION' and action_name='cmd.rg.global_orch_approval' and required_approver_kind='orchestrator'")" -gt 0 ]]
@@ -127,8 +127,8 @@ approve "$PROJECT_REQ" project alpha allow /tmp/scoped-project-seed.json
 run cargo run --quiet --bin robdex-agent-runtime -- command-registry requests apply --session "$ADMIN" "$PROJECT_REQ"
 ALPHA_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow --project alpha)
 BETA_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow --project beta)
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$ALPHA_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_project_visible"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); output(files)'
-BETA_OUT=$(cargo run --quiet --bin robdex-agent-runtime -- send --session "$BETA_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_project_visible"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); output(files)' 2>&1 || true)
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$ALPHA_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_project_visible"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); print(files)'
+BETA_OUT=$(cargo run --quiet --bin robdex-agent-runtime -- send --session "$BETA_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_project_visible"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); print(files)' 2>&1 || true)
 printf 'beta_project_attempt=%s\n' "$BETA_OUT"
 printf 'project_alpha_runs='; sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.project_visible' and cr.id in (select entity_id from event_stream where session_id='$ALPHA_SESSION' and event_type='command.completed')"
 [[ "$(sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.project_visible' and cr.id in (select entity_id from event_stream where session_id='$ALPHA_SESSION' and event_type='command.completed')")" -gt 0 ]]
@@ -141,7 +141,7 @@ PROJECT_OWNER_REQ=$(create_internal_request /tmp/scoped-project-owner-request.js
 approve "$PROJECT_OWNER_REQ" project alpha ownerApproval /tmp/scoped-project-owner-seed.json
 run cargo run --quiet --bin robdex-agent-runtime -- command-registry requests apply --session "$ADMIN" "$PROJECT_OWNER_REQ"
 PROJECT_OWNER_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow --project alpha)
-PROJECT_OWNER_OUT=$(cargo run --quiet --bin robdex-agent-runtime -- send --session "$PROJECT_OWNER_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_project_owner_approval"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); output(files)' 2>&1 || true)
+PROJECT_OWNER_OUT=$(cargo run --quiet --bin robdex-agent-runtime -- send --session "$PROJECT_OWNER_SESSION" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_project_owner_approval"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); print(files)' 2>&1 || true)
 printf 'project_owner_approval_attempt=%s\n' "$PROJECT_OWNER_OUT"
 printf 'project_owner_approval_requests='; sql "select count(*) from approval_requests where session_id='$PROJECT_OWNER_SESSION' and action_name='cmd.rg.project_owner_approval' and required_approver_kind='owner'"
 [[ "$(sql "select count(*) from approval_requests where session_id='$PROJECT_OWNER_SESSION' and action_name='cmd.rg.project_owner_approval' and required_approver_kind='owner'")" -gt 0 ]]

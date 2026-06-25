@@ -302,7 +302,7 @@ async fn seed_workflow_memory(pool: &PgPool, session_id: Uuid) -> Result<Uuid> {
         .execute(pool)
         .await?;
     let script_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status) VALUES ($1,$2,'output(\"server validation memory\")','completed')")
+    sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status) VALUES ($1,$2,'print(\"server validation memory\")','completed')")
         .bind(script_id)
         .bind(tool_id)
         .execute(pool)

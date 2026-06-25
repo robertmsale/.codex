@@ -40,7 +40,7 @@ assert_eq session_metadata "$ROOT|Lifecycle Validation Session|lifecycle-validat
 run cargo run --quiet --bin robdex-agent-runtime -- sessions list
 run cargo run --quiet --bin robdex-agent-runtime -- sessions show "$SESSION"
 
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("stored-workdir.txt", "stored workdir used"); output("created stored workdir file")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("stored-workdir.txt", "stored workdir used"); print("created stored workdir file")'
 test -f "$ROOT/stored-workdir.txt"
 printf 'stored_workdir_file=%s\n' "$(cat "$ROOT/stored-workdir.txt")"
 TURN=$(sql "select id from turns where session_id='$SESSION' and status='completed' order by started_at desc limit 1")
@@ -75,14 +75,14 @@ assert_eq fork_parent "$SESSION" "$FORK_PARENT"
 FORK_HISTORY_BEFORE=$(cargo run --quiet --bin robdex-agent-runtime -- sessions history "$FORK")
 printf '%s\n' "$FORK_HISTORY_BEFORE" | rg 'stored-workdir'
 
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("source-after-fork.txt", "source only"); output("source later")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("source-after-fork.txt", "source only"); print("source later")'
 FORK_HISTORY_AFTER_SOURCE=$(cargo run --quiet --bin robdex-agent-runtime -- sessions history "$FORK")
 if printf '%s\n' "$FORK_HISTORY_AFTER_SOURCE" | rg 'source-after-fork'; then
   printf 'fork history included source turn after fork boundary\n' >&2
   exit 1
 fi
 
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$FORK" --message 'Use execute_code with exactly this Starlark source: fs.write("fork-own.txt", "fork own"); output("fork own turn")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$FORK" --message 'Use execute_code with exactly this Starlark source: fs.write("fork-own.txt", "fork own"); print("fork own turn")'
 FORK_HISTORY_AFTER=$(cargo run --quiet --bin robdex-agent-runtime -- sessions history "$FORK")
 printf '%s\n' "$FORK_HISTORY_AFTER" | rg 'fork-own'
 
@@ -140,7 +140,7 @@ DETACHED_CLOSED_EVENTS=$(sql "select count(*) from event_stream where session_id
 assert_eq detached_terminable_no_closed_event 0 "$DETACHED_CLOSED_EVENTS"
 
 APPROVAL_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-approval-rg --project lifecycle --workdir "$ROOT")
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("approval-paused.txt", "paused"); output("paused")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("approval-paused.txt", "paused"); print("paused")'
 APPROVALS=$(sql "select count(*) from approval_requests where session_id='$APPROVAL_SESSION' and status='pending'")
 PAUSED=$(sql "select count(*) from paused_actions where session_id='$APPROVAL_SESSION' and status='pendingApproval'")
 printf 'pending_approvals=%s paused_actions=%s\n' "$APPROVALS" "$PAUSED"

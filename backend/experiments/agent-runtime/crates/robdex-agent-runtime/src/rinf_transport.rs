@@ -5112,7 +5112,7 @@ mod tests {
                     kind: "execute_code".to_string(),
                     status: "completed".to_string(),
                     process_id: Some("process-1".to_string()),
-                    command: "output('ok')".to_string(),
+                    command: "print('ok')".to_string(),
                     output: "ok".to_string(),
                     image_preview_base64: None,
                     image_preview_content_type: None,
@@ -5247,8 +5247,8 @@ mod tests {
                     summary: "Use generated packet ids before editing Dart bindings.".to_string(),
                     helpful_score: 0.5,
                     promoted_at: Some("2026-06-16T10:15:00Z".to_string()),
-                    source_preview: "output(cmd.describe())".to_string(),
-                    source_starlark: Some("output(cmd.describe())".to_string()),
+                    source_preview: "print(cmd.describe())".to_string(),
+                    source_starlark: Some("print(cmd.describe())".to_string()),
                     provider: Some("deterministic".to_string()),
                     model: Some("workflow-test".to_string()),
                     dimensions: Some(2560),
@@ -5273,8 +5273,8 @@ mod tests {
                     summary: "Use bounded artifact retrieval before inspecting process output.".to_string(),
                     helpful_score: 0.1,
                     promoted_at: Some("2026-06-16T10:10:00Z".to_string()),
-                    source_preview: "output(outputs.last().tail(lines=20))".to_string(),
-                    source_starlark: Some("output(outputs.last().tail(lines=20))".to_string()),
+                    source_preview: "print(outputs.last().tail(lines=20))".to_string(),
+                    source_starlark: Some("print(outputs.last().tail(lines=20))".to_string()),
                     provider: Some("deterministic".to_string()),
                     model: Some("workflow-test".to_string()),
                     dimensions: Some(2560),
@@ -5374,7 +5374,7 @@ mod tests {
         assert_eq!(view.workflow_memory.title, "Workflow Memory (2)");
         assert_eq!(view.workflow_memory.rows[0].id, "memory-1");
         assert!(view.workflow_memory.rows[0].selected);
-        assert_eq!(view.workflow_memory.selected_detail.as_ref().map(|detail| detail.source_starlark.as_str()), Some("output(cmd.describe())"));
+        assert_eq!(view.workflow_memory.selected_detail.as_ref().map(|detail| detail.source_starlark.as_str()), Some("print(cmd.describe())"));
         assert_eq!(view.workflow_memory.selected_detail.as_ref().and_then(|detail| detail.feedback_session_id.as_deref()), Some("session-1"));
         assert!(view.workflow_memory.feedback_actions.iter().any(|row| row.id.ends_with(":attempted")));
         assert!(view.workflow_memory.recent_events.iter().any(|row| row.title == "workflow_memory.helpful"));
@@ -5669,8 +5669,8 @@ mod tests {
                     summary: "first summary".to_string(),
                     helpful_score: 0.0,
                     promoted_at: Some("2026-06-16T10:20:00Z".to_string()),
-                    source_preview: "output(\"first\")".to_string(),
-                    source_starlark: Some("output(\"first\")".to_string()),
+                    source_preview: "print(\"first\")".to_string(),
+                    source_starlark: Some("print(\"first\")".to_string()),
                     provider: None,
                     model: None,
                     dimensions: None,
@@ -5695,8 +5695,8 @@ mod tests {
                     summary: "second summary".to_string(),
                     helpful_score: 0.0,
                     promoted_at: Some("2026-06-16T10:10:00Z".to_string()),
-                    source_preview: "output(\"second\")".to_string(),
-                    source_starlark: Some("output(\"second\")".to_string()),
+                    source_preview: "print(\"second\")".to_string(),
+                    source_starlark: Some("print(\"second\")".to_string()),
                     provider: None,
                     model: None,
                     dimensions: None,

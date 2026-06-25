@@ -1812,10 +1812,10 @@ mod tests {
                 tool_call: ToolCallRequest {
                     call_identity: "fake-call".to_string(),
                     tool_name: self.tool_name.unwrap_or("execute_code").to_string(),
-                    arguments: self.tool_arguments.clone().unwrap_or_else(|| json!({"source": "output(\"fake-ok\")"})),
+                    arguments: self.tool_arguments.clone().unwrap_or_else(|| json!({"source": "print(\"fake-ok\")"})),
                 },
                 request_shape,
-                raw_response: json!({"output":[{"type":"function_call","name":"execute_code","call_id":"fake-call","arguments":"{\"source\":\"output(\\\"fake-ok\\\")\"}"}]}),
+                raw_response: json!({"output":[{"type":"function_call","name":"execute_code","call_id":"fake-call","arguments":"{\"source\":\"print(\\\"fake-ok\\\")\"}"}]}),
             }))
         }
 
@@ -2325,7 +2325,7 @@ mod tests {
             .bind(turn_id).bind(session_id).execute(&test_db.pool).await.expect("turn");
         sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, started_at) VALUES ($1,$2,$3,'execute_code','stale-tool','{}'::jsonb,'running',now() - interval '10 minutes')")
             .bind(tool_id).bind(session_id).bind(turn_id).execute(&test_db.pool).await.expect("tool");
-        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, started_at) VALUES ($1,$2,'output(1)','running',now() - interval '10 minutes')")
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, started_at) VALUES ($1,$2,'print(1)','running',now() - interval '10 minutes')")
             .bind(script_id).bind(tool_id).execute(&test_db.pool).await.expect("script");
         sqlx::query("INSERT INTO host_api_calls (id, script_run_id, api_name, input, status, started_at) VALUES ($1,$2,'fs.read','{}'::jsonb,'running',now() - interval '10 minutes')")
             .bind(host_id).bind(script_id).execute(&test_db.pool).await.expect("host");
@@ -2961,8 +2961,8 @@ mod tests {
         sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at, completed_at) VALUES ($1,$2,'user','prior artifact turn','completed',now() - interval '5 minutes',now() - interval '4 minutes')")
             .bind(completed_turn).bind(session_id).execute(&test_db.pool).await.expect("turn");
         sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, result, started_at, completed_at) VALUES ($1,$2,$3,'execute_code','preserve-call',$4,'completed',$5,now() - interval '5 minutes',now() - interval '4 minutes')")
-            .bind(tool_call_id).bind(session_id).bind(completed_turn).bind(json!({"source":"output('preserve')"})).bind(json!({"ok":true})).execute(&test_db.pool).await.expect("tool");
-        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, final_output, stdout, stderr, completed_at) VALUES ($1,$2,'output(\"preserve\")','completed','bounded preview','full stdout preserved','',now() - interval '4 minutes')")
+            .bind(tool_call_id).bind(session_id).bind(completed_turn).bind(json!({"source":"print('preserve')"})).bind(json!({"ok":true})).execute(&test_db.pool).await.expect("tool");
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, final_output, stdout, stderr, completed_at) VALUES ($1,$2,'print(\"preserve\")','completed','bounded preview','full stdout preserved','',now() - interval '4 minutes')")
             .bind(script_run_id).bind(tool_call_id).execute(&test_db.pool).await.expect("script");
         sqlx::query("INSERT INTO managed_processes (id, handle, session_id, starting_turn_id, binary_name, argv, cwd, status, end_of_turn_behavior, end_of_session_behavior, metadata, start_time, end_time) VALUES ($1,'preserve-process',$2,$3,'sleep','[\"1\"]'::jsonb,'.','completed','terminate','terminate',$4,now() - interval '5 minutes',now() - interval '4 minutes')")
             .bind(process_id).bind(session_id).bind(completed_turn).bind(json!({"beforeSteering":true})).execute(&test_db.pool).await.expect("process");
@@ -3175,7 +3175,7 @@ mod tests {
         for hidden in [&large_stdout_sentinel, &large_stderr_sentinel, &shell_stdout_sentinel, &shell_stderr_sentinel] {
             assert!(!model_request_text.contains(hidden), "hidden output leaked into continuation model request: {hidden}");
         }
-        assert!(model_request_text.contains(explicit_small_value), "explicit bounded output(...) value must remain visible in same-turn continuation");
+        assert!(model_request_text.contains(explicit_small_value), "explicit bounded print(...) value must remain visible in same-turn continuation");
         assert!(model_request_text.contains(&command_stdout_artifact.to_string()));
         assert!(model_request_text.contains(&command_stderr_artifact.to_string()));
         let before_rebuild: Vec<(String, String, i64)> = sqlx::query_as("SELECT stable_key, content, ordering_key FROM current_turn_transcript_items WHERE turn_id=$1 ORDER BY ordering_key")
@@ -3244,7 +3244,7 @@ mod tests {
         let sh_seed: command_registry::CommandSeed = serde_json::from_value(sh_seed).expect("sh seed");
         apply_registry_seed(&test_db.pool, session_id, sh_seed, command_registry::RegistryScope { scope_type: "global".to_string(), project_key: None }).await;
 
-        let command_source = r#"output(cmd["registry_smoke_sh"].run(args=["printf smoke-registry-output"]).sync())"#;
+        let command_source = r#"print(cmd["registry_smoke_sh"].run(args=["printf smoke-registry-output"]).sync())"#;
         let (command_turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, command_source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, command_turn_id, tool_call_id, command_source, &root, &role)
             .await
@@ -5477,7 +5477,7 @@ mod tests {
                 intent: GuiTransportRequest::DispatchOperation {
                     operation: GuiOperationRequest::SendMessage {
                         session_id: session_id.clone(),
-                        message: "Use execute_code with exactly this harmless read-only Starlark: output({\"validation\":\"ok\",\"source\":\"live-real-gui-e2e\"})".to_string(),
+                        message: "Use execute_code with exactly this harmless read-only Starlark: print({\"validation\":\"ok\",\"source\":\"live-real-gui-e2e\"})".to_string(),
                     },
                 },
             })
@@ -6386,7 +6386,7 @@ mod tests {
             .await
             .expect("memory tool");
         let script_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status) VALUES ($1,$2,'output(\"memory\")','completed')")
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status) VALUES ($1,$2,'print(\"memory\")','completed')")
             .bind(script_id)
             .bind(tool_id)
             .execute(&test_db.pool)
@@ -6589,7 +6589,7 @@ mod tests {
             .await
             .expect("memory tool");
         let script_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status) VALUES ($1,$2,'output(\"memory\")','completed')")
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status) VALUES ($1,$2,'print(\"memory\")','completed')")
             .bind(script_id)
             .bind(tool_id)
             .execute(&test_db.pool)
@@ -6721,14 +6721,14 @@ mod tests {
         std::fs::write(temp.path().join("shot.png"), png).expect("write png");
         let root = starlark_host::ExecutionRoot::new(temp.path()).expect("root");
         let source = r#"
-output(file.head("notes.txt", lines=2))
-output(file.search("notes.txt", "needle", context=1))
-output(tree.list(".", depth=2))
-output(tree.find(".", name_glob="*.rs", type="file", max_results=5))
+print(file.head("notes.txt", lines=2))
+print(file.search("notes.txt", "needle", context=1))
+print(tree.list(".", depth=2))
+print(tree.find(".", name_glob="*.rs", type="file", max_results=5))
 img = image.capture_from_file("shot.png", "capture starter-kit smoke screenshot artifact")
-output(img)
-output(image.describe(img.split('"imageArtifactId":"')[1].split('"')[0]))
-output(tooling.request("Need starter kit helper", "Need a project-local helper to complete starter-kit validation without editing global skills.", attempted=["checked existing commands"], proposed="Add a project-local command bundle.", urgency="normal"))
+print(img)
+print(image.describe(img.split('"imageArtifactId":"')[1].split('"')[0]))
+print(tooling.request("Need starter kit helper", "Need a project-local helper to complete starter-kit validation without editing global skills.", attempted=["checked existing commands"], proposed="Add a project-local command bundle.", urgency="normal"))
 "#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, source, &root, &role).await.expect("execute starter file image tooling");
@@ -6859,18 +6859,18 @@ output(tooling.request("Need starter kit helper", "Need a project-local helper t
         apply_registry_seed(&test_db.pool, session_id, seed, command_registry::RegistryScope { scope_type: "project".to_string(), project_key: Some("full-starter-smoke".to_string()) }).await;
         let root = starlark_host::ExecutionRoot::new(temp.path()).expect("root");
         let source = r#"
-output(file.head("notes.txt", lines=2))
-output(file.search("notes.txt", "needle", context=1))
-output(tree.list(".", depth=1))
-output(patch.apply("--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-original\n+patched\n", "apply described starter smoke patch"))
-output(git.restore(paths=["tracked.txt"]))
+print(file.head("notes.txt", lines=2))
+print(file.search("notes.txt", "needle", context=1))
+print(tree.list(".", depth=1))
+print(patch.apply("--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-original\n+patched\n", "apply described starter smoke patch"))
+print(git.restore(paths=["tracked.txt"]))
 img = image.capture_from_file("shot.png", "import screenshot artifact for full starter smoke")
-output(image.describe(img.split('"imageArtifactId":"')[1].split('"')[0]))
-output(tooling.request("Need smoke helper", "Need a project-local follow-on helper routed as a typed packet.", attempted=["ran file tree git server image tools"], proposed='{"kind":"command_registry","operation":"add","summary":"Add smoke helper"}', urgency="normal"))
-output(server.start("cmd.starter.fullserver", [], name="fullsmoke"))
-output(server.wait_ready("fullsmoke", timeout_ms=500))
-output(server.logs("fullsmoke", stream="stdout", lines=5))
-output(server.stop("fullsmoke"))
+print(image.describe(img.split('"imageArtifactId":"')[1].split('"')[0]))
+print(tooling.request("Need smoke helper", "Need a project-local follow-on helper routed as a typed packet.", attempted=["ran file tree git server image tools"], proposed='{"kind":"command_registry","operation":"add","summary":"Add smoke helper"}', urgency="normal"))
+print(server.start("cmd.starter.fullserver", [], name="fullsmoke"))
+print(server.wait_ready("fullsmoke", timeout_ms=500))
+print(server.logs("fullsmoke", stream="stdout", lines=5))
+print(server.stop("fullsmoke"))
 "#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, source, &root, &role).await.expect("full starter smoke");
@@ -6951,17 +6951,17 @@ output(server.stop("fullsmoke"))
         apply_registry_seed(&test_db.pool, session_id, seed, command_registry::RegistryScope { scope_type: "global".to_string(), project_key: None }).await;
         let root = starlark_host::ExecutionRoot::new(temp.path()).expect("root");
         let source = r#"
-output(git.status())
-output(git.restore(paths=["tracked.txt"]))
-output(file.replace_exact("tracked.txt", "one", "two", "change tracked text for starter-kit git proof"))
-output(git.add(paths=["tracked.txt"]))
-output(git.commit("starter kit git commit", paths=["tracked.txt"]))
+print(git.status())
+print(git.restore(paths=["tracked.txt"]))
+print(file.replace_exact("tracked.txt", "one", "two", "change tracked text for starter-kit git proof"))
+print(git.add(paths=["tracked.txt"]))
+print(git.commit("starter kit git commit", paths=["tracked.txt"]))
 srv = server.start("cmd.starter.server", [], name="starter")
-output(srv)
-output(server.wait_ready("starter", timeout_ms=500))
-output(server.logs("starter", stream="stdout", lines=5))
-output(server.status("starter"))
-output(server.stop("starter"))
+print(srv)
+print(server.wait_ready("starter", timeout_ms=500))
+print(server.logs("starter", stream="stdout", lines=5))
+print(server.status("starter"))
+print(server.stop("starter"))
 "#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, source, &root, &role).await.expect("execute git/server");
@@ -7006,40 +7006,40 @@ output(server.stop("starter"))
             .await
             .expect("starter server output artifacts");
         assert!(output_artifacts["stdoutLogArtifactId"].as_str().unwrap_or_default().len() >= 7, "server logs must persist output artifact references: {output_artifacts}");
-        let unsafe_source = r#"output(file.head("../outside.txt", lines=1))"#;
+        let unsafe_source = r#"print(file.head("../outside.txt", lines=1))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, unsafe_source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, unsafe_source, &root, &role).await.expect("unsafe path packet");
         let packet_value = serde_json::to_value(&packet).expect("packet value");
         assert_eq!(packet_value["ok"], false, "{packet_value}");
-        let port_source = r#"output(server.start("cmd.starter.server", ["--port", "9999"], name="bad"))"#;
+        let port_source = r#"print(server.start("cmd.starter.server", ["--port", "9999"], name="bad"))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, port_source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, port_source, &root, &role).await.expect("port override packet");
         let packet_value = serde_json::to_value(&packet).expect("packet value");
         assert_eq!(packet_value["ok"], false, "{packet_value}");
         for override_source in [
-            r#"output(server.start("cmd.starter.server", ["--port=9999"], name="bad_eq"))"#,
-            r#"output(server.start("cmd.starter.server", ["PORT=9999"], name="bad_env"))"#,
-            r#"output(server.start("cmd.starter.server", ["-p", "9999"], name="bad_short"))"#,
-            r#"output(server.start("cmd.starter.server", ["port=9999"], name="bad_plain"))"#,
-            r#"output(server.start("cmd.starter.server", ["--host=127.0.0.1"], name="bad_host"))"#,
+            r#"print(server.start("cmd.starter.server", ["--port=9999"], name="bad_eq"))"#,
+            r#"print(server.start("cmd.starter.server", ["PORT=9999"], name="bad_env"))"#,
+            r#"print(server.start("cmd.starter.server", ["-p", "9999"], name="bad_short"))"#,
+            r#"print(server.start("cmd.starter.server", ["port=9999"], name="bad_plain"))"#,
+            r#"print(server.start("cmd.starter.server", ["--host=127.0.0.1"], name="bad_host"))"#,
         ] {
             let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, override_source).await;
             let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, override_source, &root, &role).await.expect("port override packet");
             let packet_value = serde_json::to_value(&packet).expect("port override value");
             assert_eq!(packet_value["ok"], false, "port override unexpectedly passed: {override_source}\n{packet_value}");
         }
-        let arbitrary_action = r#"output(server.start("cmd.not.registered", [], name="bad_action"))"#;
+        let arbitrary_action = r#"print(server.start("cmd.not.registered", [], name="bad_action"))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, arbitrary_action).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, arbitrary_action, &root, &role).await.expect("arbitrary action packet");
         let packet_value = serde_json::to_value(&packet).expect("arbitrary action value");
         assert_eq!(packet_value["ok"], false, "{packet_value}");
         insert_starter_server_fixture(&test_db.pool, session_id, "external", 39109).await;
-        let adopt_source = r#"output(server.start("cmd.starter.server", [], name="external"))"#;
+        let adopt_source = r#"print(server.start("cmd.starter.server", [], name="external"))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, adopt_source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, adopt_source, &root, &role).await.expect("adoption rejection packet");
         let packet_value = serde_json::to_value(&packet).expect("adoption value");
         assert_eq!(packet_value["ok"], false, "{packet_value}");
-        let startup_fail = r#"output(server.start("cmd.starter.server", ["unexpected-arg"], name="badspawn"))"#;
+        let startup_fail = r#"print(server.start("cmd.starter.server", ["unexpected-arg"], name="badspawn"))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, startup_fail).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, startup_fail, &root, &role).await.expect("startup failure packet");
         let packet_value = serde_json::to_value(&packet).expect("startup failure value");
@@ -7051,23 +7051,23 @@ output(server.stop("starter"))
             .expect("startup failure release");
         assert_eq!(startup_released, 1);
         let duplicate_source = r#"
-output(server.start("cmd.starter.server", [], name="duper"))
-output(server.start("cmd.starter.server", [], name="duper"))
+print(server.start("cmd.starter.server", [], name="duper"))
+print(server.start("cmd.starter.server", [], name="duper"))
 "#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, duplicate_source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, duplicate_source, &root, &role).await.expect("duplicate handle packet");
         let packet_value = serde_json::to_value(&packet).expect("duplicate handle value");
         assert_eq!(packet_value["ok"], false, "{packet_value}");
-        let stop_duper = r#"output(server.stop("duper"))"#;
+        let stop_duper = r#"print(server.stop("duper"))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, stop_duper).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, stop_duper, &root, &role).await.expect("stop duper");
         let packet_value = serde_json::to_value(&packet).expect("stop duper value");
         assert_eq!(packet_value["ok"], true, "{packet_value}");
         for bad_git in [
-            r#"output(git.restore(paths=[]))"#,
-            r#"output(git.restore(paths=["."]))"#,
-            r#"output(git.add(paths=[".git/config"]))"#,
-            r#"output(git.commit("empty starter commit", paths=["tracked.txt"]))"#,
+            r#"print(git.restore(paths=[]))"#,
+            r#"print(git.restore(paths=["."]))"#,
+            r#"print(git.add(paths=[".git/config"]))"#,
+            r#"print(git.commit("empty starter commit", paths=["tracked.txt"]))"#,
         ] {
             let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, bad_git).await;
             let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, bad_git, &root, &role).await.expect("bad git packet");
@@ -7108,10 +7108,10 @@ output(server.start("cmd.starter.server", [], name="duper"))
         assert!(worktree_output.status.success(), "worktree add failed: {}", String::from_utf8_lossy(&worktree_output.stderr));
         let root = starlark_host::ExecutionRoot::new(temp.path()).expect("root");
         let source = r#"
-output(git.inspect_worker_branch("worker", local_main="main"))
-output(git.rebase_worker_branch("worker", local_main="main"))
-output(git.fast_forward_local_main("worker", local_main="main"))
-output(git.cleanup_integrated_worktree("integrated-worktree"))
+print(git.inspect_worker_branch("worker", local_main="main"))
+print(git.rebase_worker_branch("worker", local_main="main"))
+print(git.fast_forward_local_main("worker", local_main="main"))
+print(git.cleanup_integrated_worktree("integrated-worktree"))
 "#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, source, &root, &orchestrator).await.expect("orchestrator git helpers");
@@ -7124,7 +7124,7 @@ output(git.cleanup_integrated_worktree("integrated-worktree"))
 
         let worker_role = db::current_role_snapshot(&test_db.pool, "runtime-allow").await.expect("worker role");
         let worker_session = db::new_session(&test_db.pool, &worker_role, Some("orchestrator-git"), ".", Some("."), None, None).await.expect("worker session");
-        let denied = r#"output(git.inspect_worker_branch("worker", local_main="main"))"#;
+        let denied = r#"print(git.inspect_worker_branch("worker", local_main="main"))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, worker_session, denied).await;
         let packet = starlark_host::execute_code(&test_db.pool, worker_session, turn_id, tool_call_id, denied, &root, &worker_role).await.expect("worker denied");
         let packet_value = serde_json::to_value(&packet).expect("denied packet");
@@ -7184,7 +7184,7 @@ output(git.cleanup_integrated_worktree("integrated-worktree"))
             .execute(&test_db.pool)
             .await
             .expect("insert http readiness fixture");
-        let http_source = r#"output(server.wait_ready("http-fixture", timeout_ms=1000))"#;
+        let http_source = r#"print(server.wait_ready("http-fixture", timeout_ms=1000))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, http_source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, http_source, &root, &role).await.expect("http wait");
         let packet_value = serde_json::to_value(&packet).expect("packet");
@@ -7201,7 +7201,7 @@ output(git.cleanup_integrated_worktree("integrated-worktree"))
         seed_value["endOfTurnBehavior"] = json!("continue");
         let seed: command_registry::CommandSeed = serde_json::from_value(seed_value).expect("seed");
         apply_registry_seed(&test_db.pool, session_id, seed, command_registry::RegistryScope { scope_type: "global".to_string(), project_key: None }).await;
-        let start_source = r#"output(server.start("cmd.starter.logready", [], name="logready"))"#;
+        let start_source = r#"print(server.start("cmd.starter.logready", [], name="logready"))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, start_source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, start_source, &root, &role).await.expect("start logready");
         let packet_value = serde_json::to_value(&packet).expect("packet");
@@ -7213,7 +7213,7 @@ output(git.cleanup_integrated_worktree("integrated-worktree"))
             .execute(&test_db.pool)
             .await
             .expect("update log readiness");
-        let log_source = r#"output(server.wait_ready("logready", timeout_ms=1000))"#;
+        let log_source = r#"print(server.wait_ready("logready", timeout_ms=1000))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, log_source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, log_source, &root, &role).await.expect("log wait");
         let packet_value = serde_json::to_value(&packet).expect("packet");
@@ -7226,7 +7226,7 @@ output(git.cleanup_integrated_worktree("integrated-worktree"))
             .execute(&test_db.pool)
             .await
             .expect("insert timeout readiness fixture");
-        let timeout_source = r#"output(server.wait_ready("timeout-fixture", timeout_ms=20))"#;
+        let timeout_source = r#"print(server.wait_ready("timeout-fixture", timeout_ms=20))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, timeout_source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, timeout_source, &root, &role).await.expect("timeout wait");
         let packet_value = serde_json::to_value(&packet).expect("packet");
@@ -7249,7 +7249,7 @@ output(git.cleanup_integrated_worktree("integrated-worktree"))
         timeout_seed_value["endOfTurnBehavior"] = json!("continue");
         let timeout_seed: command_registry::CommandSeed = serde_json::from_value(timeout_seed_value).expect("timeout seed");
         apply_registry_seed(&test_db.pool, session_id, timeout_seed, command_registry::RegistryScope { scope_type: "global".to_string(), project_key: None }).await;
-        let timeout_start = r#"output(server.start("cmd.starter.timeoutrelease", [], name="timeout-release"))"#;
+        let timeout_start = r#"print(server.start("cmd.starter.timeoutrelease", [], name="timeout-release"))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, timeout_start).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, timeout_start, &root, &role).await.expect("start timeout release");
         let packet_value = serde_json::to_value(&packet).expect("timeout start packet");
@@ -7261,7 +7261,7 @@ output(git.cleanup_integrated_worktree("integrated-worktree"))
             .execute(&test_db.pool)
             .await
             .expect("update timeout readiness");
-        let timeout_release_source = r#"output(server.wait_ready("timeout-release", timeout_ms=20))"#;
+        let timeout_release_source = r#"print(server.wait_ready("timeout-release", timeout_ms=20))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, timeout_release_source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, timeout_release_source, &root, &role).await.expect("wait timeout release");
         let packet_value = serde_json::to_value(&packet).expect("timeout release packet");
@@ -7272,7 +7272,7 @@ output(git.cleanup_integrated_worktree("integrated-worktree"))
             .await
             .expect("readiness release");
         assert_eq!(readiness_released, 1);
-        let stop_source = r#"output(server.stop("logready"))"#;
+        let stop_source = r#"print(server.stop("logready"))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, stop_source).await;
         starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, stop_source, &root, &role).await.expect("stop logready");
 
@@ -7338,13 +7338,13 @@ output(git.cleanup_integrated_worktree("integrated-worktree"))
         seed_value["endOfTurnBehavior"] = json!("continue");
         let seed: command_registry::CommandSeed = serde_json::from_value(seed_value).expect("exit seed");
         apply_registry_seed(&test_db.pool, session_id, seed, command_registry::RegistryScope { scope_type: "global".to_string(), project_key: None }).await;
-        let start_source = r#"output(server.start("cmd.starter.exits", [], name="exits"))"#;
+        let start_source = r#"print(server.start("cmd.starter.exits", [], name="exits"))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, start_source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, start_source, &root, &role).await.expect("start short server");
         let packet_value = serde_json::to_value(&packet).expect("start packet");
         assert_eq!(packet_value["ok"], true, "{packet_value}");
         std::thread::sleep(std::time::Duration::from_millis(1250));
-        let status_source = r#"output(server.status("exits"))"#;
+        let status_source = r#"print(server.status("exits"))"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, status_source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, status_source, &root, &role).await.expect("status short server");
         let packet_value = serde_json::to_value(&packet).expect("status packet");
@@ -7399,13 +7399,13 @@ output(git.cleanup_integrated_worktree("integrated-worktree"))
         let root = starlark_host::ExecutionRoot::new(temp.path()).expect("root");
         let absolute = temp.path().join("text.txt").display().to_string();
         let source = format!(r#"
-output(file.head("text.txt", lines=3))
-output(file.tail({absolute:?}, lines=3))
-output(file.read_lines("text.txt", 10, 12))
-output(file.line_count("text.txt"))
-output(file.search("text.txt", "line-77", context=1))
-output(tree.list(".", depth=1))
-output(tree.find(".", name_glob="*.txt", type="file", max_results=10))
+print(file.head("text.txt", lines=3))
+print(file.tail({absolute:?}, lines=3))
+print(file.read_lines("text.txt", 10, 12))
+print(file.line_count("text.txt"))
+print(file.search("text.txt", "line-77", context=1))
+print(tree.list(".", depth=1))
+print(tree.find(".", name_glob="*.txt", type="file", max_results=10))
 "#);
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, &source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, &source, &root, &role).await.expect("path success");
@@ -7424,12 +7424,12 @@ output(tree.find(".", name_glob="*.txt", type="file", max_results=10))
             .expect("starter read artifact count");
         assert!(read_artifacts >= 1, "truncated/bounded file-tree reads must spill to durable output artifacts");
         for bad in [
-            r#"output(file.head("../outside", lines=1))"#,
-            r#"output(file.head(".git/config", lines=1))"#,
-            r#"output(file.head("bin.dat", lines=1))"#,
-            r#"output(file.read_lines("text.txt", 9000, 9001))"#,
-            r#"output(tree.find(".", max_results=10))"#,
-            r#"output(file.head("escape-link", lines=1))"#,
+            r#"print(file.head("../outside", lines=1))"#,
+            r#"print(file.head(".git/config", lines=1))"#,
+            r#"print(file.head("bin.dat", lines=1))"#,
+            r#"print(file.read_lines("text.txt", 9000, 9001))"#,
+            r#"print(tree.find(".", max_results=10))"#,
+            r#"print(file.head("escape-link", lines=1))"#,
         ] {
             let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, bad).await;
             let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, bad, &root, &role).await.expect("bad packet");
@@ -7464,7 +7464,7 @@ output(tree.find(".", name_glob="*.txt", type="file", max_results=10))
         let alpha = db::new_session(&test_db.pool, &role, Some("cache-alpha"), ".", Some("."), None, None).await.expect("alpha session");
         let beta = db::new_session(&test_db.pool, &role, Some("cache-beta"), ".", Some("."), None, None).await.expect("beta session");
         let root = starlark_host::ExecutionRoot::new(".").expect("root");
-        let project_source = "output(cmd[\"project_cache\"].run.describe())";
+        let project_source = "print(cmd[\"project_cache\"].run.describe())";
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, alpha, project_source).await;
         let before = starlark_host::execute_code(&test_db.pool, alpha, turn_id, tool_call_id, project_source, &root, &role).await.expect("failed packet before project command");
         let before_value = serde_json::to_value(before).expect("before packet");
@@ -7485,7 +7485,7 @@ output(tree.find(".", name_glob="*.txt", type="file", max_results=10))
         assert_eq!(non_visible_value["status"], "failed");
         assert!(non_visible_value["output"]["stderrArtifact"]["preview"].as_str().unwrap_or_default().contains("project_cache") || non_visible_value["output"]["stderrArtifact"]["tail"].as_str().unwrap_or_default().contains("project_cache"));
 
-        let global_source = "output(cmd[\"global_cache\"].run.describe())";
+        let global_source = "print(cmd[\"global_cache\"].run.describe())";
         let global_seed = scoped_command_seed("cmd.cache.global", "global_cache");
         apply_registry_seed(&test_db.pool, alpha, global_seed, command_registry::RegistryScope { scope_type: "global".to_string(), project_key: None }).await;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, beta, global_source).await;
@@ -7506,7 +7506,7 @@ output(tree.find(".", name_glob="*.txt", type="file", max_results=10))
             .map(|i| format!("line-{i:04}-{}", if i == 777 { "needle-output-artifact" } else { "payload" }))
             .collect::<Vec<_>>()
             .join("\n");
-        let source = format!("output({})", serde_json::to_string(&large).expect("source string"));
+        let source = format!("print({})", serde_json::to_string(&large).expect("source string"));
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, &source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, &source, &root, &role).await.expect("execute large output");
         let value = serde_json::to_value(packet).expect("packet");
@@ -7531,11 +7531,11 @@ output(tree.find(".", name_glob="*.txt", type="file", max_results=10))
 
         let retrieval_source = r#"
 artifact = outputs.last()
-output(outputs.head(artifact, lines=3))
-output(outputs.tail(artifact, lines=4))
-output(outputs.slice(artifact, start_line=500, end_line=650))
-output(outputs.search(artifact, "needle-output-artifact", context=2))
-output(outputs.stats(artifact))
+print(outputs.head(artifact, lines=3))
+print(outputs.tail(artifact, lines=4))
+print(outputs.slice(artifact, start_line=500, end_line=650))
+print(outputs.search(artifact, "needle-output-artifact", context=2))
+print(outputs.stats(artifact))
 "#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, retrieval_source).await;
         let retrieval = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, retrieval_source, &root, &role).await.expect("retrieve artifact");
@@ -7600,7 +7600,7 @@ output(outputs.stats(artifact))
         assert_eq!(packets[4]["content"], "");
         assert!(!retrieval_value.to_string().contains(&large));
 
-        let fail_source = format!("output({})\nmissing_symbol", serde_json::to_string(&large).expect("failure source"));
+        let fail_source = format!("print({})\nmissing_symbol", serde_json::to_string(&large).expect("failure source"));
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, &fail_source).await;
         let failed = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, &fail_source, &root, &role).await.expect("failed execute packet");
         let failed_value = serde_json::to_value(failed).expect("failed value");
@@ -7617,7 +7617,7 @@ output(outputs.stats(artifact))
         sh_seed["argvPrefix"] = json!(["-c"]);
         let sh_seed: command_registry::CommandSeed = serde_json::from_value(sh_seed).expect("sh seed");
         apply_registry_seed(&test_db.pool, session_id, sh_seed, command_registry::RegistryScope { scope_type: "global".to_string(), project_key: None }).await;
-        let command_source = r#"output(cmd["output_sh"].run(args=["printf stdout-artifact; printf stderr-artifact >&2"]).sync())"#;
+        let command_source = r#"print(cmd["output_sh"].run(args=["printf stdout-artifact; printf stderr-artifact >&2"]).sync())"#;
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, command_source).await;
         let command_packet = starlark_host::execute_code(&test_db.pool, session_id, turn_id, tool_call_id, command_source, &root, &role).await.expect("command output packet");
         let command_value = serde_json::to_value(command_packet).expect("command value");
@@ -7710,7 +7710,7 @@ output(outputs.stats(artifact))
         let stderr_large = (0..1400).map(|i| format!("perr-{i:04}")).collect::<Vec<_>>().join("\n") + "\n";
         let process_shell = "i=0; while [ $i -lt 1500 ]; do printf 'pout-%04d\\n' \"$i\"; i=$((i+1)); done; i=0; while [ $i -lt 1400 ]; do printf 'perr-%04d\\n' \"$i\" >&2; i=$((i+1)); done";
         let process_source = format!(
-            "h = cmd[\"process_sh\"].run(args=[{}]).start()\nproc[h].await_for(mins=0)\noutput(proc[h].flush_buffer())",
+            "h = cmd[\"process_sh\"].run(args=[{}]).start()\nproc[h].await_for(mins=0)\nprint(proc[h].flush_buffer())",
             serde_json::to_string(process_shell).expect("process shell")
         );
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, &process_source).await;
@@ -7758,7 +7758,7 @@ output(outputs.stats(artifact))
         let session_b = db::new_session(&test_db.pool, &role, Some("output-intruder"), ".", Some("."), None, None).await.expect("session b");
         let root = starlark_host::ExecutionRoot::new(".").expect("root");
         let secret = "session-a-secret-output-line";
-        let source = format!("output({})", serde_json::to_string(secret).expect("source string"));
+        let source = format!("print({})", serde_json::to_string(secret).expect("source string"));
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_a, &source).await;
         let packet = starlark_host::execute_code(&test_db.pool, session_a, turn_id, tool_call_id, &source, &root, &role).await.expect("execute owner output");
         let value = serde_json::to_value(packet).expect("owner packet");
@@ -7766,11 +7766,11 @@ output(outputs.stats(artifact))
         let quoted_artifact_id = serde_json::to_string(artifact_id).expect("quoted artifact id");
 
         let retrieval_sources = [
-            format!("output(outputs.head({quoted_artifact_id}, lines=1))"),
-            format!("output(outputs.tail({quoted_artifact_id}, lines=1))"),
-            format!("output(outputs.slice({quoted_artifact_id}, start_line=1, end_line=1))"),
-            format!("output(outputs.search({quoted_artifact_id}, \"secret\", context=1))"),
-            format!("output(outputs.stats({quoted_artifact_id}))"),
+            format!("print(outputs.head({quoted_artifact_id}, lines=1))"),
+            format!("print(outputs.tail({quoted_artifact_id}, lines=1))"),
+            format!("print(outputs.slice({quoted_artifact_id}, start_line=1, end_line=1))"),
+            format!("print(outputs.search({quoted_artifact_id}, \"secret\", context=1))"),
+            format!("print(outputs.stats({quoted_artifact_id}))"),
         ];
 
         for retrieval_source in retrieval_sources {
@@ -9359,7 +9359,7 @@ def hook(ctx):
         let temp = tempfile::tempdir().expect("tempdir");
         let root = crate::starlark_host::ExecutionRoot::new(temp.path()).expect("root");
         let script = r#"result = project_runtime.request_config_change("execute-affordance", "x = 1", "{\"hooks\":[{\"name\":\"on_model_request\",\"source\":\"x = 1\"}]}", "operator-requested runtime hook")
-output(result)"#;
+print(result)"#;
         let packet = crate::starlark_host::execute_code(&test_db.pool, session, turn, tool_call, script, &root, &role)
             .await
             .expect("execute_code");
@@ -9388,8 +9388,8 @@ output(result)"#;
         let temp = tempfile::tempdir().expect("tempdir");
         let root = crate::starlark_host::ExecutionRoot::new(temp.path()).expect("root");
         let script = r#"
-output(tooling.request("Need project helper", "Need a project-local helper for this project runtime only.", attempted=["checked project commands"], proposed="Add a project-local command bundle.", urgency="normal"))
-output(project_runtime.request_config_change("progenitor-project", "x = 1", "{\"hooks\":[{\"name\":\"on_model_request\",\"source\":\"x = 1\"}]}", "project-local progenitor runtime hook"))
+print(tooling.request("Need project helper", "Need a project-local helper for this project runtime only.", attempted=["checked project commands"], proposed="Add a project-local command bundle.", urgency="normal"))
+print(project_runtime.request_config_change("progenitor-project", "x = 1", "{\"hooks\":[{\"name\":\"on_model_request\",\"source\":\"x = 1\"}]}", "project-local progenitor runtime hook"))
 "#;
         let (turn, tool_call) = insert_turn_and_tool(&test_db.pool, session, script).await;
         let packet = crate::starlark_host::execute_code(&test_db.pool, session, turn, tool_call, script, &root, &role).await.expect("progenitor script");
@@ -9407,7 +9407,7 @@ output(project_runtime.request_config_change("progenitor-project", "x = 1", "{\"
             .await
             .expect("runtime request count");
         assert_eq!(runtime_request_count, 1);
-        let wrong_project = r#"output(project_runtime.request_config_change("other-project", "x = 1", "{\"hooks\":[{\"name\":\"on_model_request\",\"source\":\"x = 1\"}]}", "should be rejected"))"#;
+        let wrong_project = r#"print(project_runtime.request_config_change("other-project", "x = 1", "{\"hooks\":[{\"name\":\"on_model_request\",\"source\":\"x = 1\"}]}", "should be rejected"))"#;
         let (turn, tool_call) = insert_turn_and_tool(&test_db.pool, session, wrong_project).await;
         let packet = crate::starlark_host::execute_code(&test_db.pool, session, turn, tool_call, wrong_project, &root, &role).await.expect("wrong project packet");
         let packet_json = serde_json::to_value(&packet).expect("wrong project json");
@@ -9428,8 +9428,8 @@ output(project_runtime.request_config_change("progenitor-project", "x = 1", "{\"
         let temp = tempfile::tempdir().expect("tempdir");
         let root = crate::starlark_host::ExecutionRoot::new(temp.path()).expect("root");
         let source = r#"
-output(tooling.request("Need command affordance", "Need a project-local command-registry affordance for this project only.", attempted=["checked visible commands"], proposed='{"kind":"command_registry","operation":"add","summary":"Add a project-local validation command"}', urgency="high"))
-output(tooling.request("Need runtime config", "Need a project-local runtime hook proposal routed for owner review.", attempted=["validated seed"], proposed='{"kind":"project_runtime_config","projectKey":"tooling-followon","sourceText":"x = 1","manifest":{"hooks":[{"name":"on_model_request","source":"x = 1"}]},"rationale":"project-local follow-on runtime proposal"}', urgency="normal"))
+print(tooling.request("Need command affordance", "Need a project-local command-registry affordance for this project only.", attempted=["checked visible commands"], proposed='{"kind":"command_registry","operation":"add","summary":"Add a project-local validation command"}', urgency="high"))
+print(tooling.request("Need runtime config", "Need a project-local runtime hook proposal routed for owner review.", attempted=["validated seed"], proposed='{"kind":"project_runtime_config","projectKey":"tooling-followon","sourceText":"x = 1","manifest":{"hooks":[{"name":"on_model_request","source":"x = 1"}]},"rationale":"project-local follow-on runtime proposal"}', urgency="normal"))
 "#;
         let (turn, tool_call) = insert_turn_and_tool(&test_db.pool, session, source).await;
         let packet = crate::starlark_host::execute_code(&test_db.pool, session, turn, tool_call, source, &root, &role).await.expect("tooling follow-on script");
@@ -9476,7 +9476,7 @@ output(tooling.request("Need runtime config", "Need a project-local runtime hook
             .expect("starter routes");
         assert_eq!(route_with_runtime_packets, 2);
 
-        let cross_project = r#"output(tooling.request("Need wrong project", "Need a follow-on that should be rejected by project scoping.", attempted=["checked project"], proposed='{"kind":"project_runtime_config","projectKey":"other-project","sourceText":"x = 1","manifest":{"hooks":[{"name":"on_model_request","source":"x = 1"}]},"rationale":"wrong project"}', urgency="normal"))"#;
+        let cross_project = r#"print(tooling.request("Need wrong project", "Need a follow-on that should be rejected by project scoping.", attempted=["checked project"], proposed='{"kind":"project_runtime_config","projectKey":"other-project","sourceText":"x = 1","manifest":{"hooks":[{"name":"on_model_request","source":"x = 1"}]},"rationale":"wrong project"}', urgency="normal"))"#;
         let (turn, tool_call) = insert_turn_and_tool(&test_db.pool, session, cross_project).await;
         let packet = crate::starlark_host::execute_code(&test_db.pool, session, turn, tool_call, cross_project, &root, &role).await.expect("cross-project script");
         let packet_json = serde_json::to_value(&packet).expect("cross-project json");
@@ -9688,7 +9688,7 @@ output(tooling.request("Need runtime config", "Need a project-local runtime hook
         sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status) VALUES ($1,$2,$3,'execute_code','call','{}'::jsonb,'completed')")
             .bind(tool_id).bind(session_id).bind(turn_id).execute(&test_db.pool).await.expect("tool");
         let script_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status) VALUES ($1,$2,'output(\"ok\")','completed')")
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status) VALUES ($1,$2,'print(\"ok\")','completed')")
             .bind(script_id).bind(tool_id).execute(&test_db.pool).await.expect("script");
         let memory_id = Uuid::new_v4();
         let vector = format!("[{}]", vec!["0"; workflow_memory::DEFAULT_DIMENSIONS].join(","));
@@ -9707,7 +9707,7 @@ output(tooling.request("Need runtime config", "Need a project-local runtime hook
         assert_eq!(projected.workflow_memories.len(), 1);
         assert_eq!(projected.workflow_memories[0].id, memory_id.to_string());
         assert_eq!(projected.workflow_memories[0].source_script_run_id.as_deref(), Some(script_id.to_string().as_str()));
-        assert_eq!(projected.workflow_memories[0].source_starlark.as_deref(), Some("output(\"ok\")"));
+        assert_eq!(projected.workflow_memories[0].source_starlark.as_deref(), Some("print(\"ok\")"));
         assert_eq!(projected.workflow_memories[0].provider.as_deref(), Some("deterministic"));
         assert_eq!(projected.workflow_memories[0].recent_events[0].event_type, "workflow_memory.promoted");
         let invisible_projected = projection::build_runtime_projection_snapshot(&test_db.pool, Some(other_session_id)).await.expect("other projection");
@@ -9719,7 +9719,7 @@ output(tooling.request("Need runtime config", "Need a project-local runtime hook
         let list: Value = serde_json::from_slice(&bytes).expect("list json");
         assert_eq!(list[0]["id"], memory_id.to_string());
         assert_eq!(list[0]["sourceScriptRunId"], script_id.to_string());
-        assert_eq!(list[0]["sourcePreview"], "output(\"ok\")");
+        assert_eq!(list[0]["sourcePreview"], "print(\"ok\")");
         assert_eq!(list[0]["provider"], "deterministic");
         assert_eq!(list[0]["dimensions"], workflow_memory::DEFAULT_DIMENSIONS as i64);
         assert_eq!(list[0]["sourceHash"], "hash");
@@ -9727,7 +9727,7 @@ output(tooling.request("Need runtime config", "Need a project-local runtime hook
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("show body");
         let show: Value = serde_json::from_slice(&bytes).expect("show json");
-        assert_eq!(show["sourceStarlark"], "output(\"ok\")");
+        assert_eq!(show["sourceStarlark"], "print(\"ok\")");
         assert_eq!(show["commandFingerprint"], "plain");
         for (feedback, expected_event) in [
             ("attempted", "workflow_memory.mark_attempted"),

@@ -45,6 +45,8 @@ const OUTPUT_LIMIT_BYTES: usize = 12_000;
 const STARTER_FILE_LINE_LIMIT: usize = 400;
 const STARTER_TREE_RESULT_LIMIT: usize = 250;
 const STARTER_MAX_MUTATION_DESCRIPTION: usize = 220;
+const FAILED_EXECUTE_CODE_RECOVERY_HINT: &str =
+    "Hint: run print(workflow_memory.help()) to search prior successful patterns for the last failed script.";
 
 static PROCESS_MANAGER: Lazy<Mutex<BTreeMap<Uuid, BTreeMap<String, ManagedProcess>>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
@@ -679,7 +681,13 @@ pub async fn execute_code(
     }
 
     let full_final_output = final_output;
-    let full_stderr = stderr;
+    let full_stderr = if status == TerminalStatus::Failed && stderr.trim().is_empty() {
+        FAILED_EXECUTE_CODE_RECOVERY_HINT.to_string()
+    } else if status == TerminalStatus::Failed {
+        format!("{stderr}\n{FAILED_EXECUTE_CODE_RECOVERY_HINT}")
+    } else {
+        stderr
+    };
     let final_artifact_id = Uuid::new_v4();
     let stderr_artifact_id = Uuid::new_v4();
     let final_envelope = output_artifacts::store(pool, NewOutputArtifact {
@@ -787,20 +795,29 @@ pub async fn execute_code(
         }
     }
 
+    let output = execute_code_result_output(json!(final_envelope), json!(stderr_envelope), status == TerminalStatus::Failed);
     Ok(ExecuteCodePacket {
         ok: status != TerminalStatus::Failed,
         status: status.as_str().to_string(),
-        output: json!({
-            "stdoutArtifact": final_envelope,
-            "stderrArtifact": stderr_envelope,
-            "message": "Full execute_code stdout and stderr are stored as separate durable output artifacts. Use outputs.head/tail/slice/search/stats with an artifact id for bounded retrieval.",
-        }),
+        output,
         script_run_id,
         host_api_calls: records
             .iter()
             .filter(|record| matches!(record, HostRecord::HostApi(_)))
             .count(),
     })
+}
+
+fn execute_code_result_output(stdout_artifact: JsonValue, stderr_artifact: JsonValue, failed: bool) -> JsonValue {
+    let mut output = json!({
+        "stdoutArtifact": stdout_artifact,
+        "stderrArtifact": stderr_artifact,
+        "message": "Full execute_code stdout and stderr are stored as separate durable output artifacts. Use outputs.head/tail/slice/search/stats with an artifact id for bounded retrieval.",
+    });
+    if failed {
+        output["hint"] = JsonValue::String(FAILED_EXECUTE_CODE_RECOVERY_HINT.to_string());
+    }
+    output
 }
 
 struct EvalResult {
@@ -895,7 +912,7 @@ fn add_host_builtins(builder: &mut GlobalsBuilder) {
     builder.namespace("project_runtime", project_runtime_builtins);
     builder.namespace("outputs", output_artifact_builtins);
     struct_builtins(builder);
-    output_builtins(builder);
+    print_builtins(builder);
 }
 
 #[starlark_module]
@@ -1321,8 +1338,8 @@ fn workflow_memory_builtins(builder: &mut GlobalsBuilder) {
 }
 
 #[starlark_module]
-fn output_builtins(builder: &mut GlobalsBuilder) {
-    fn output<'v>(value: Value<'v>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<NoneType> {
+fn print_builtins(builder: &mut GlobalsBuilder) {
+    fn print<'v>(value: Value<'v>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<NoneType> {
         let text = value.unpack_str().map(ToString::to_string).unwrap_or_else(|| value.to_string());
         host_kernel(eval).output.borrow_mut().push(text);
         Ok(NoneType)
@@ -2743,7 +2760,7 @@ impl HostKernel {
     }
 
     fn workflow_memory_help(&self) -> anyhow::Result<String> {
-        let input = json!({"mode": "latestPriorRelevantScript", "limit": 5});
+        let input = json!({"mode": "latestPriorFailedNonMemoryScript", "limit": 5});
         let policy = self.decide("workflow_memory.search", input.clone());
         if !policy.decision.can_execute() {
             bail!("workflow_memory.help blocked by policy: {}", policy.decision.as_str());
@@ -5124,7 +5141,7 @@ mod tests {
             test_pool(),
             session,
             Uuid::new_v4(),
-            "output(cmd.describe())\noutput(cmd[\"echo_tool\"].describe())\noutput(cmd[\"echo_tool\"].run.describe())",
+            "print(cmd.describe())\nprint(cmd[\"echo_tool\"].describe())\nprint(cmd[\"echo_tool\"].run.describe())",
             root,
             test_role(),
             None,
@@ -5139,10 +5156,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn print_is_visible_output_and_legacy_output_is_unavailable() {
+        let root = ExecutionRoot::new(".").expect("root");
+        let session = Uuid::new_v4();
+        let printed = evaluate_starlark(
+            test_pool(),
+            session,
+            Uuid::new_v4(),
+            r#"print(cmd.describe())"#,
+            root.clone(),
+            test_role(),
+            None,
+            vec![test_command("echo", &["/bin/echo"], "cmd.describe.echo", "echo_tool", "forbid", "terminate", None)],
+            vec![],
+        );
+        assert!(printed.error.is_none(), "{:?}", printed.error);
+        assert!(printed.output.contains("cmd.describe.echo"));
+
+        let legacy = evaluate_starlark(
+            test_pool(),
+            session,
+            Uuid::new_v4(),
+            r#"output(cmd.describe())"#,
+            root,
+            test_role(),
+            None,
+            vec![test_command("echo", &["/bin/echo"], "cmd.describe.echo", "echo_tool", "forbid", "terminate", None)],
+            vec![],
+        );
+        let error = legacy.error.unwrap_or_default();
+        assert!(error.contains("Variable `output` not found") || error.contains("not found: output"), "{error}");
+        assert!(!error.contains("blocked by policy"), "{error}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn project_progenitor_can_call_workflow_memory_help_without_policy_denial() {
+        let root = ExecutionRoot::new(".").expect("root");
+        let mut role = test_role();
+        role.id = "project-progenitor".to_string();
+        role.policy.clear();
+        role.policy.insert("tool.execute_code".to_string(), ManifestDecision::Allow);
+        role.policy.insert("workflow_memory.search".to_string(), ManifestDecision::Allow);
+        let result = evaluate_starlark(
+            test_pool(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            r#"print(workflow_memory.help())"#,
+            root,
+            role,
+            None,
+            vec![],
+            vec![],
+        );
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert!(!result.output.contains("blocked by policy"), "{}", result.output);
+    }
+
+    #[test]
+    fn execute_code_failure_hint_is_failure_only_and_names_print_help() {
+        let failed = execute_code_result_output(json!({"id": "stdout"}), json!({"id": "stderr"}), true);
+        let hint = failed.get("hint").and_then(JsonValue::as_str).unwrap_or_default();
+        assert_eq!(hint, FAILED_EXECUTE_CODE_RECOVERY_HINT);
+        assert!(hint.contains("print(workflow_memory.help())"));
+        assert!(!hint.contains("output("));
+
+        let succeeded = execute_code_result_output(json!({"id": "stdout"}), json!({"id": "stderr"}), false);
+        assert!(succeeded.get("hint").is_none(), "{succeeded}");
+        assert!(!succeeded.to_string().contains(FAILED_EXECUTE_CODE_RECOVERY_HINT));
+    }
+
+    #[tokio::test]
     async fn command_discovery_updates_on_next_execute_code_boundary_and_non_visible_fails() {
         let root = ExecutionRoot::new(".").expect("root");
         let session = Uuid::new_v4();
-        let source = "output(cmd[\"echo_tool\"].run.describe())";
+        let source = "print(cmd[\"echo_tool\"].run.describe())";
         let missing = evaluate_starlark(
             test_pool(),
             session,
@@ -5177,18 +5264,18 @@ mod tests {
         let other_session = Uuid::new_v4();
         let root = ExecutionRoot::new(".").unwrap();
         let cmd = test_command("yes", &["/usr/bin/yes"], "cmd.yes.run", "yes", "forbid", "continue", Some(Duration::from_millis(500)));
-        let first = evaluate_starlark(test_pool(), session, Uuid::new_v4(), "h = cmd[\"yes\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), None, vec![cmd.clone()], vec![]);
+        let first = evaluate_starlark(test_pool(), session, Uuid::new_v4(), "h = cmd[\"yes\"].run(args=[], cwd=\".\").start(); print(h)", root.clone(), test_role(), None, vec![cmd.clone()], vec![]);
         assert!(first.error.is_none(), "{:?}", first.error);
         let handle = first.output.trim().trim_matches('"').to_string();
         assert!(handle.starts_with("proc_"));
         assert!(first.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.continued")));
 
-        let second = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("proc[{handle:?}].await_for(mins=0); out = proc[{handle:?}].flush_buffer(); proc[{handle:?}].terminate(); output(out)"), root.clone(), test_role(), None, vec![cmd.clone()], vec![handle.clone()]);
+        let second = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("proc[{handle:?}].await_for(mins=0); out = proc[{handle:?}].flush_buffer(); proc[{handle:?}].terminate(); print(out)"), root.clone(), test_role(), None, vec![cmd.clone()], vec![handle.clone()]);
         assert!(second.error.is_none(), "{:?}", second.error);
         assert!(second.output.contains('y'));
         assert!(second.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.terminated")));
 
-        let isolated = evaluate_starlark(test_pool(), other_session, Uuid::new_v4(), &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), None, vec![cmd], vec![handle]);
+        let isolated = evaluate_starlark(test_pool(), other_session, Uuid::new_v4(), &format!("proc[{handle:?}].is_running(); print(\"bad\")"), root, test_role(), None, vec![cmd], vec![handle]);
         assert!(isolated.error.unwrap_or_default().contains("session-only process no longer attached"));
     }
 
@@ -5204,7 +5291,7 @@ proc[h].input("hello-process\n")
 proc[h].await_for(mins=0)
 first = proc[h].flush_buffer()
 second = proc[h].flush_buffer()
-output(first + "|second=" + second)
+print(first + "|second=" + second)
 "#;
         let result = evaluate_starlark(test_pool(), session, Uuid::new_v4(), script, root, test_role(), None, vec![cmd], vec![]);
         assert!(result.error.is_none(), "{:?}", result.error);
@@ -5224,16 +5311,16 @@ output(first + "|second=" + second)
         let session = Uuid::new_v4();
         let root = ExecutionRoot::new(".").unwrap();
         let cmd = test_command("yes", &["/usr/bin/yes"], "cmd.yes.max.run", "yes_max", "forbid", "continue", Some(Duration::from_millis(100)));
-        let first = evaluate_starlark(test_pool(), session, Uuid::new_v4(), "h = cmd[\"yes_max\"].run(args=[], cwd=\".\").start(); output(h)", root.clone(), test_role(), None, vec![cmd.clone()], vec![]);
+        let first = evaluate_starlark(test_pool(), session, Uuid::new_v4(), "h = cmd[\"yes_max\"].run(args=[], cwd=\".\").start(); print(h)", root.clone(), test_role(), None, vec![cmd.clone()], vec![]);
         assert!(first.error.is_none(), "{:?}", first.error);
         let handle = first.output.trim().trim_matches('"').to_string();
         thread::sleep(Duration::from_millis(250));
-        let second = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("running = proc[{handle:?}].is_running(); output(str(running))"), root.clone(), test_role(), None, vec![cmd.clone()], vec![handle.clone()]);
+        let second = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("running = proc[{handle:?}].is_running(); print(str(running))"), root.clone(), test_role(), None, vec![cmd.clone()], vec![handle.clone()]);
         assert!(second.error.is_none(), "{:?}", second.error);
         assert!(second.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.status == "maxRuntimeExceeded" || process.event == "process.continued")));
 
         PROCESS_MANAGER.lock().unwrap().remove(&session);
-        let detached = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("proc[{handle:?}].is_running(); output(\"bad\")"), root, test_role(), None, vec![cmd], vec![handle]);
+        let detached = evaluate_starlark(test_pool(), session, Uuid::new_v4(), &format!("proc[{handle:?}].is_running(); print(\"bad\")"), root, test_role(), None, vec![cmd], vec![handle]);
         assert!(detached.error.unwrap_or_default().contains("session-only process no longer attached"));
     }
 
@@ -5275,9 +5362,9 @@ output(first + "|second=" + second)
             test_pool(),
             Uuid::new_v4(),
             Uuid::new_v4(),
-            r#"output(cmd["echo_tool"].run(args=["registry-ok"], cwd=".").sync())
+            r#"print(cmd["echo_tool"].run(args=["registry-ok"], cwd=".").sync())
 shell("echo should-not-run").sync()
-output("unreachable")"#,
+print("unreachable")"#,
             ExecutionRoot::new(".").unwrap(),
             test_role(),
             None,
@@ -5299,9 +5386,9 @@ output("unreachable")"#,
             test_pool(),
             session,
             Uuid::new_v4(),
-            r#"output(shell("printf sync-ok", mode="-lc").sync())
-output(shell("printf c-ok", mode="-c").sync())
-output(shell("printf login-ok", mode="-l").sync())"#,
+            r#"print(shell("printf sync-ok", mode="-lc").sync())
+print(shell("printf c-ok", mode="-c").sync())
+print(shell("printf login-ok", mode="-l").sync())"#,
             root.clone(),
             test_role(),
             Some(Uuid::nil()),
@@ -5335,7 +5422,7 @@ proc[handle].input("typed-stdin\n")
 proc[handle].await_for(mins=1)
 flushed = proc[handle].flush_buffer()
 terminated = proc[handle].terminate()
-output(handle + "\n" + flushed + "\n" + terminated)"#,
+print(handle + "\n" + flushed + "\n" + terminated)"#,
             root.clone(),
             test_role(),
             Some(Uuid::nil()),
@@ -5371,7 +5458,7 @@ output(handle + "\n" + flushed + "\n" + terminated)"#,
         let turn_id = Uuid::new_v4();
         let tool_call_id = Uuid::new_v4();
         let source = r#"result = shell("printf 'out-line\n'; printf 'err-line\n' 1>&2").sync()
-output(result)"#;
+print(result)"#;
         sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user',$3,'running',now())")
             .bind(turn_id)
             .bind(session)
@@ -5433,7 +5520,7 @@ proc[handle].input("typed-stdin\n")
 proc[handle].await_for(mins=1)
 flushed = proc[handle].flush_buffer()
 terminated = proc[handle].terminate()
-output(flushed + "\n" + terminated)"#;
+print(flushed + "\n" + terminated)"#;
         sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user',$3,'running',now())")
             .bind(async_turn_id)
             .bind(session)
@@ -5527,13 +5614,19 @@ output(flushed + "\n" + terminated)"#;
                 .execute(pool)
                 .await?;
             let packet = execute_code(pool, session, turn_id, tool_call_id, source, root, role).await?;
+            let turn_status = if packet.ok { "completed" } else { "failed" };
+            sqlx::query("UPDATE turns SET status=$2, completed_at=now() WHERE id=$1")
+                .bind(turn_id)
+                .bind(turn_status)
+                .execute(pool)
+                .await?;
             Ok(serde_json::to_value(packet)?)
         }
 
         let promote_source = r#"fs.write("memory-target.txt", "needle workflow memory success", "write workflow memory promotion target")
 text = fs.read("memory-target.txt")
 workflow_memory.remember_when(text == "needle workflow memory success", "Write memory target", "Use fs.write then fs.read to verify exact content after missing-file failures")
-output("promoted")"#;
+print("promoted")"#;
         run_script(&pool, seed_session, &root, &role, promote_source).await.unwrap();
         let memory_id: Uuid = sqlx::query_scalar("SELECT id FROM workflow_memories WHERE session_id=$1 LIMIT 1").bind(seed_session).fetch_one(&pool).await.unwrap();
         run_script(&pool, seed_session, &root, &role, promote_source).await.unwrap();
@@ -5543,46 +5636,48 @@ output("promoted")"#;
         assert!(duplicate_events > 0);
 
         let failed = run_script(&pool, fail_session, &root, &role, r#"fs.read("missing-workflow-memory-file.txt")
-output("unreachable")"#).await;
-        assert!(failed.is_err());
+print("unreachable")"#).await;
+        assert_eq!(failed.unwrap()["ok"], false);
         let failed_embeddings: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memory_script_embeddings WHERE session_id=$1").bind(fail_session).fetch_one(&pool).await.unwrap();
         assert!(failed_embeddings > 0);
         let failed_promotions: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memories WHERE session_id=$1").bind(fail_session).fetch_one(&pool).await.unwrap();
         assert_eq!(failed_promotions, 0);
 
         run_script(&pool, fail_session, &root, &role, r#"tips = workflow_memory.help()
-output(tips)"#).await.unwrap();
+print(tips)"#).await.unwrap();
         let help_results: i64 = sqlx::query_scalar("SELECT (payload->>'resultCount')::bigint FROM workflow_memory_events WHERE session_id=$1 AND event_type='workflow_memory.help' ORDER BY created_at DESC LIMIT 1").bind(fail_session).fetch_one(&pool).await.unwrap();
         assert!(help_results > 0);
 
         run_script(&pool, fail_session, &root, &role, &format!(r#"workflow_memory.mark_attempted("{memory_id}", variant=True)
 workflow_memory.mark_not_helpful("{memory_id}", "not enough context")
-output("feedback")"#)).await.unwrap();
+print("feedback")"#)).await.unwrap();
         let feedback_events: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memory_events WHERE memory_id=$1 AND event_type IN ('workflow_memory.mark_attempted','workflow_memory.mark_not_helpful')").bind(memory_id).fetch_one(&pool).await.unwrap();
         assert_eq!(feedback_events, 2);
 
         let denied = run_script(&pool, deny_session, &root, &deny_role, r#"workflow_memory.remember_when(True, "Denied memory", "restrictive role should block")
-output("denied")"#).await;
-        assert!(denied.is_err());
+print("denied")"#).await;
+        assert_eq!(denied.unwrap()["ok"], false);
         let denied_memories: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memories WHERE session_id=$1").bind(deny_session).fetch_one(&pool).await.unwrap();
         assert_eq!(denied_memories, 0);
 
         let invisible_feedback = run_script(&pool, beta_session, &root, &role, &format!(r#"workflow_memory.mark_attempted("{memory_id}", variant=True)
-output("bad")"#)).await;
-        assert!(invisible_feedback.unwrap_err().to_string().contains("not visible"));
+print("bad")"#)).await;
+        assert_eq!(invisible_feedback.unwrap()["ok"], false);
+        let invisible_error: String = sqlx::query_scalar("SELECT stderr FROM script_runs sr JOIN tool_calls tc ON tc.id=sr.tool_call_id WHERE tc.session_id=$1 ORDER BY sr.started_at DESC LIMIT 1").bind(beta_session).fetch_one(&pool).await.unwrap();
+        assert!(invisible_error.contains("not visible"));
 
         let beta_failed = run_script(&pool, beta_session, &root, &role, r#"fs.read("missing-workflow-memory-file.txt")
-output("unreachable")"#).await;
-        assert!(beta_failed.is_err());
+print("unreachable")"#).await;
+        assert_eq!(beta_failed.unwrap()["ok"], false);
         run_script(&pool, beta_session, &root, &role, r#"tips = workflow_memory.help()
-output(tips)"#).await.unwrap();
+print(tips)"#).await.unwrap();
         let beta_help_results: i64 = sqlx::query_scalar("SELECT (payload->>'resultCount')::bigint FROM workflow_memory_events WHERE session_id=$1 AND event_type='workflow_memory.help' ORDER BY created_at DESC LIMIT 1").bind(beta_session).fetch_one(&pool).await.unwrap();
         assert_eq!(beta_help_results, 0);
         let beta_help_mentions_alpha: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memory_events WHERE session_id=$1 AND event_type='workflow_memory.help' AND payload::text LIKE $2").bind(beta_session).bind(format!("%{memory_id}%")).fetch_one(&pool).await.unwrap();
         assert_eq!(beta_help_mentions_alpha, 0);
 
         let ordinary_before: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memory_events WHERE session_id=$1 AND event_type='workflow_memory.help'").bind(seed_session).fetch_one(&pool).await.unwrap();
-        run_script(&pool, seed_session, &root, &role, r#"output("ordinary no help")"#).await.unwrap();
+        run_script(&pool, seed_session, &root, &role, r#"print("ordinary no help")"#).await.unwrap();
         let ordinary_after: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_memory_events WHERE session_id=$1 AND event_type='workflow_memory.help'").bind(seed_session).fetch_one(&pool).await.unwrap();
         assert_eq!(ordinary_before, ordinary_after);
     }

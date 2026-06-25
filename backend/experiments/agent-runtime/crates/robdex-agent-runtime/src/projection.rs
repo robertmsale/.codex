@@ -1898,7 +1898,7 @@ mod tests {
             .bind(tool_id)
             .bind(session_id)
             .bind(turn_id)
-            .bind(json!({"source":"output('canonical tool output')"}))
+            .bind(json!({"source":"print('canonical tool output')"}))
             .bind(json!({"ok":true}))
             .execute(pool)
             .await
@@ -1906,7 +1906,7 @@ mod tests {
         sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, final_output, stdout, stderr, completed_at) VALUES ($1,$2,$3,'completed',$4,$5,'',now())")
             .bind(script_id)
             .bind(tool_id)
-            .bind("output('canonical tool output')")
+            .bind("print('canonical tool output')")
             .bind("canonical final output")
             .bind("canonical stdout preview")
             .execute(pool)
@@ -2121,7 +2121,7 @@ mod tests {
         assert_eq!(tool.status, "completed");
         let expected_process_id = process_id.to_string();
         assert_eq!(tool.process_id.as_deref(), Some(expected_process_id.as_str()));
-        assert!(tool.command.contains("output('canonical tool output')"));
+        assert!(tool.command.contains("print('canonical tool output')"));
         assert!(!tool.output.contains("artifact bounded output preview hidden-full-body-sentinel"));
         assert!(tool.output.contains(&artifact_id.to_string()));
         assert!(tool.output.contains("stdout artifact"));
@@ -2311,7 +2311,7 @@ mod tests {
             .bind(model_event_id).bind(session_id).bind(turn_id).bind(json!({"finalText":"stats final"})).execute(&pool).await.expect("model");
         sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, completed_at) VALUES ($1,$2,$3,'execute_code','stats-call','{}'::jsonb,'lost',now())")
             .bind(tool_id).bind(session_id).bind(turn_id).execute(&pool).await.expect("tool");
-        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, stdout, stderr, completed_at) VALUES ($1,$2,'output(1)','running','','',NULL)")
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, stdout, stderr, completed_at) VALUES ($1,$2,'print(1)','running','','',NULL)")
             .bind(script_id).bind(tool_id).execute(&pool).await.expect("script");
         sqlx::query("INSERT INTO host_api_calls (id, script_run_id, api_name, input, status) VALUES ($1,$2,'fs.read','{}'::jsonb,'completed')")
             .bind(host_id).bind(script_id).execute(&pool).await.expect("host");

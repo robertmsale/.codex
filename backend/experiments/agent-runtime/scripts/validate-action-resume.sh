@@ -80,7 +80,7 @@ PENDING_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new -
 DENIED_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow)
 printf '\n[sessions]\nAPPROVE_SESSION=%s\nPENDING_SESSION=%s\nDENIED_SESSION=%s\n' "$APPROVE_SESSION" "$PENDING_SESSION" "$DENIED_SESSION"
 
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$APPROVE_SESSION" --message 'Use execute_code with exactly this Starlark source: text = fs.read("Cargo.toml"); matches = cmd["rg_resume_approval"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").sync(); output("approval should pause")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$APPROVE_SESSION" --message 'Use execute_code with exactly this Starlark source: text = fs.read("Cargo.toml"); matches = cmd["rg_resume_approval"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").sync(); print("approval should pause")'
 APPROVAL_ID=$(sql "select id from approval_requests where session_id='$APPROVE_SESSION' and action_name='cmd.rg.resume_approval' order by created_at desc limit 1")
 PAUSED_ID=$(sql "select id from paused_actions where approval_request_id='$APPROVAL_ID'")
 printf '\n[created approval and paused action]\nAPPROVAL_ID=%s\nPAUSED_ID=%s\n' "$APPROVAL_ID" "$PAUSED_ID"
@@ -101,7 +101,7 @@ printf 'second_resume_status=%s\n' "$SECOND_STATUS"
 printf '%s\n' "$SECOND" | rg 'paused action is not resume-ready'
 
 ASYNC_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow)
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$ASYNC_SESSION" --message 'Use execute_code with exactly this Starlark source: h = cmd["rg_resume_approval"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").start(); output("async approval should pause")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$ASYNC_SESSION" --message 'Use execute_code with exactly this Starlark source: h = cmd["rg_resume_approval"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").start(); print("async approval should pause")'
 ASYNC_APPROVAL=$(sql "select id from approval_requests where session_id='$ASYNC_SESSION' and action_name='cmd.rg.resume_approval' order by created_at desc limit 1")
 ASYNC_PAUSED=$(sql "select id from paused_actions where approval_request_id='$ASYNC_APPROVAL'")
 printf 'async_paused_mode='; sql "select action_input->>'executionMode' from paused_actions where id='$ASYNC_PAUSED'"
@@ -110,7 +110,7 @@ run cargo run --quiet --bin robdex-agent-runtime -- approvals resume "$ASYNC_APP
 printf 'async_resume_processes='; sql "select count(*) from managed_processes where session_id='$ASYNC_SESSION' and metadata->>'resumed'='true'"
 printf 'async_resume_no_command_run='; sql "select case when count(*) filter (where event_type='command.completed')=0 then 1 else 0 end from event_stream where session_id='$ASYNC_SESSION'"
 
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$PENDING_SESSION" --message 'Use execute_code with exactly this Starlark source: matches = cmd["rg_resume_approval"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").sync(); output("pending should pause")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$PENDING_SESSION" --message 'Use execute_code with exactly this Starlark source: matches = cmd["rg_resume_approval"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").sync(); print("pending should pause")'
 PENDING_APPROVAL=$(sql "select id from approval_requests where session_id='$PENDING_SESSION' order by created_at desc limit 1")
 set +e
 PENDING_OUT=$(cargo run --quiet --bin robdex-agent-runtime -- approvals resume "$PENDING_APPROVAL" 2>&1)
@@ -119,7 +119,7 @@ set -e
 printf 'pending_resume_status=%s\n' "$PENDING_STATUS"
 printf '%s\n' "$PENDING_OUT" | rg 'approval request is not approved'
 
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$DENIED_SESSION" --message 'Use execute_code with exactly this Starlark source: matches = cmd["rg_resume_approval"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").sync(); output("denied should pause")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$DENIED_SESSION" --message 'Use execute_code with exactly this Starlark source: matches = cmd["rg_resume_approval"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").sync(); print("denied should pause")'
 DENIED_APPROVAL=$(sql "select id from approval_requests where session_id='$DENIED_SESSION' order by created_at desc limit 1")
 run cargo run --quiet --bin robdex-agent-runtime -- approvals decide "$DENIED_APPROVAL" --decision denied --reason 'validation denial'
 set +e

@@ -98,7 +98,7 @@ sql "select action_id || ':' || (current_version_id is not null) from command_de
 printf 'seed_version_trace_columns='; sql "select count(*) from command_versions where action_id in ('cmd.rg.run','cmd.git.status','cmd.git.diff','cmd.cargo.check')"
 ALLOW=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow)
 printf 'allow_session=%s\n' "$ALLOW"
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$ALLOW" --message 'Use execute_code with exactly this Starlark source: matches = cmd["rg"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").sync(); output(matches)'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$ALLOW" --message 'Use execute_code with exactly this Starlark source: matches = cmd["rg"].run(args=["--files", "-g", "Cargo.toml"], cwd=".").sync(); print(matches)'
 printf 'command_version_id_count='; sql "select count(*) from command_runs where command_version_id is not null"
 [[ "$(sql "select count(*) from command_runs where command_version_id is not null")" -gt 0 ]]
 printf 'command_event_versions='; sql "select count(*) from event_stream where session_id='$ALLOW' and event_type='command.completed' and payload ? 'commandVersionId'"
@@ -246,10 +246,10 @@ printf 'mutation_class_stored='; sql "select cv.config->>'mutationClass' from co
 [[ "$(sql "select cv.config->>'mutationClass' from command_definitions cd join command_versions cv on cv.id=cd.current_version_id where cd.action_id='cmd.rg.metadata'")" == "metadataOnlyProbe" ]]
 
 LIVE=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow)
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$LIVE" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_files"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); output(files)'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$LIVE" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_files"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); print(files)'
 printf 'live_new_command_runs='; sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.files'"
 [[ "$(sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.files'")" -gt 0 ]]
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$LIVE" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_metadata"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); output(files)'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$LIVE" --message 'Use execute_code with exactly this Starlark source: files = cmd["rg_metadata"].run(args=["-g", "Cargo.toml"], cwd=".").sync(); print(files)'
 printf 'metadata_class_command_runs='; sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.metadata'"
 [[ "$(sql "select count(*) from command_runs cr join command_versions cv on cv.id=cr.command_version_id where cv.action_id='cmd.rg.metadata'")" -gt 0 ]]
 
