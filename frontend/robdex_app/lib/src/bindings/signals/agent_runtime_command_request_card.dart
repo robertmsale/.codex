@@ -6,6 +6,7 @@ part of 'signals.dart';
 class AgentRuntimeCommandRequestCard {
   const AgentRuntimeCommandRequestCard({
     required this.id,
+    required this.actionId,
     required this.title,
     required this.operation,
     required this.status,
@@ -23,6 +24,7 @@ class AgentRuntimeCommandRequestCard {
     deserializer.increaseContainerDepth();
     final instance = AgentRuntimeCommandRequestCard(
       id: deserializer.deserializeString(),
+      actionId: deserializer.deserializeString(),
       title: deserializer.deserializeString(),
       operation: deserializer.deserializeString(),
       status: deserializer.deserializeString(),
@@ -49,6 +51,7 @@ class AgentRuntimeCommandRequestCard {
   }
 
   final String id;
+  final String actionId;
   final String title;
   final String operation;
   final String status;
@@ -63,6 +66,7 @@ class AgentRuntimeCommandRequestCard {
 
   AgentRuntimeCommandRequestCard copyWith({
     String? id,
+    String? actionId,
     String? title,
     String? operation,
     String? status,
@@ -77,6 +81,7 @@ class AgentRuntimeCommandRequestCard {
   }) {
     return AgentRuntimeCommandRequestCard(
       id: id ?? this.id,
+      actionId: actionId ?? this.actionId,
       title: title ?? this.title,
       operation: operation ?? this.operation,
       status: status ?? this.status,
@@ -94,6 +99,7 @@ class AgentRuntimeCommandRequestCard {
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeString(id);
+    serializer.serializeString(actionId);
     serializer.serializeString(title);
     serializer.serializeString(operation);
     serializer.serializeString(status);
@@ -121,6 +127,7 @@ class AgentRuntimeCommandRequestCard {
 
     return other is AgentRuntimeCommandRequestCard
       && id == other.id
+      && actionId == other.actionId
       && title == other.title
       && operation == other.operation
       && status == other.status
@@ -137,6 +144,7 @@ class AgentRuntimeCommandRequestCard {
   @override
   int get hashCode => Object.hash(
         id,
+        actionId,
         title,
         operation,
         status,
@@ -157,6 +165,7 @@ class AgentRuntimeCommandRequestCard {
     assert(() {
       fullString = '$runtimeType('
         'id: $id, '
+        'actionId: $actionId, '
         'title: $title, '
         'operation: $operation, '
         'status: $status, '

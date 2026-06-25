@@ -7,7 +7,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'agent_runtime_workbench_controller.dart';
 
 class AgentRuntimeWorkbenchHost extends StatefulWidget {
-  const AgentRuntimeWorkbenchHost({super.key});
+  const AgentRuntimeWorkbenchHost({super.key, this.controller});
+
+  final AgentRuntimeWorkbenchController? controller;
 
   @override
   State<AgentRuntimeWorkbenchHost> createState() => _AgentRuntimeWorkbenchHostState();
@@ -22,7 +24,7 @@ class _AgentRuntimeWorkbenchHostState extends State<AgentRuntimeWorkbenchHost> {
   @override
   void initState() {
     super.initState();
-    _controller = AgentRuntimeWorkbenchController();
+    _controller = widget.controller ?? AgentRuntimeWorkbenchController();
     _baseUrlController = TextEditingController(text: 'http://127.0.0.1:8765');
     _controller.addListener(_syncBaseUrl);
     unawaited(_restoreLeftRailWidth());
@@ -31,7 +33,9 @@ class _AgentRuntimeWorkbenchHostState extends State<AgentRuntimeWorkbenchHost> {
   @override
   void dispose() {
     _controller.removeListener(_syncBaseUrl);
-    _controller.dispose();
+    if (widget.controller == null) {
+      _controller.dispose();
+    }
     _baseUrlController.dispose();
     super.dispose();
   }
@@ -331,7 +335,9 @@ class _AgentRuntimeWorkbenchHostState extends State<AgentRuntimeWorkbenchHost> {
             onApproveCommandRequest: (requestId) => _controller.approveCommandRegistryRequestById(requestId, sessionId),
             onDenyCommandRequest: (requestId) => _controller.denyCommandRegistryRequestById(requestId, sessionId),
             onApplyCommandRequest: (requestId) => _controller.applyCommandRegistryRequestById(requestId, sessionId),
-            onSetRequirements: _controller.setRequirementsForSession,
+            onShowCommand: (actionId) => _controller.showCommandById(actionId, sessionId, control?.projectKey ?? ''),
+            onShowCommandRequest: _controller.showCommandRegistryRequestById,
+            onSetRequirements: (sessionId, {required title, required key, required statement}) => _controller.setRequirementsForSession(sessionId, title: title, key: key, statement: statement),
           );
         },
       ),

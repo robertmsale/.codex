@@ -539,6 +539,14 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     _dispatchOperation('registry-review', bindings.AgentRuntimeGuiOperationShowCommandRegistryRequest(requestId: action.id));
   }
 
+  void showCommandById(String actionId, String sessionId, String projectKey) {
+    showCommand(AgentRuntimeActionItem(id: actionId, title: '', subtitle: '', kind: 'commandRegistryShow', stateText: '', tone: ''), sessionId, projectKey);
+  }
+
+  void showCommandRegistryRequestById(String requestId) {
+    showCommandRegistryRequest(AgentRuntimeActionItem(id: requestId, title: '', subtitle: '', kind: 'commandRegistryReview', stateText: '', tone: ''));
+  }
+
   void compactSession(AgentRuntimeActionItem action) {
     _dispatchOperation('session-compact', bindings.AgentRuntimeGuiOperationCompactSession(sessionId: action.id, throughTurn: ''));
   }
@@ -595,8 +603,14 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     applyCommandRegistryRequest(AgentRuntimeActionItem(id: requestId, title: '', subtitle: '', kind: 'commandRegistryRequest', stateText: '', tone: ''), sessionId);
   }
 
-  void setRequirementsForSession(String sessionId) {
-    _dispatchOperation('requirements-set', bindings.AgentRuntimeGuiOperationSetRequirements(sessionId: sessionId, title: 'Session Requirements', requirements: const []));
+  void setRequirementsForSession(String sessionId, {String title = 'Session Requirements', String key = 'owner_requirement', String statement = 'Owner requirement.'}) {
+    final requirement = bindings.AgentRuntimeRequirementInput(
+      key: key.trim().isEmpty ? 'owner_requirement' : key.trim(),
+      statement: statement.trim().isEmpty ? 'Owner requirement.' : statement.trim(),
+      severity: 'must',
+      verificationMethod: 'manualEvidence',
+    );
+    _dispatchOperation('requirements-set', bindings.AgentRuntimeGuiOperationSetRequirements(sessionId: sessionId, title: title.trim().isEmpty ? 'Session Requirements' : title.trim(), requirements: [requirement]));
   }
 
   void validateRoleDraft(AgentRuntimeRoleEditorDraft draft) {
@@ -1087,7 +1101,7 @@ AgentRuntimeSelectedSessionControlPlane _selectedControlPlane(bindings.AgentRunt
       godMode: AgentRuntimeGodModeState(active: value.godMode.active, reason: value.godMode.reason, grantedBy: value.godMode.grantedBy, grantedAt: value.godMode.grantedAt),
       managedProcesses: value.managedProcesses.map((process) => AgentRuntimeManagedProcessRow(id: process.id, handle: process.handle, command: process.command, status: process.status, startedAt: process.startedAt, endedAt: process.endedAt, cwd: process.cwd, pid: process.pid, stdinPolicy: process.stdinPolicy, endOfTurnBehavior: process.endOfTurnBehavior, endOfSessionBehavior: process.endOfSessionBehavior, latestOutputSummary: process.latestOutputSummary, canTerminate: process.canTerminate, canFlush: process.canFlush, canInput: process.canInput)).toList(growable: false),
       approvals: value.approvals.map((approval) => AgentRuntimeApprovalCard(id: approval.id, title: approval.title, status: approval.status, requiredApprover: approval.requiredApprover, requestedAt: approval.requestedAt, contextSummary: approval.contextSummary, canDecide: approval.canDecide, canResume: approval.canResume, decisionSummary: approval.decisionSummary)).toList(growable: false),
-      commandRequests: value.commandRequests.map((request) => AgentRuntimeCommandRequestCard(id: request.id, title: request.title, operation: request.operation, status: request.status, scopeSummary: request.scopeSummary, policySummary: request.policySummary, previewStatus: request.previewStatus, applyStatus: request.applyStatus, canPreview: request.canPreview, canDecide: request.canDecide, canApply: request.canApply, commandSummary: request.commandSummary)).toList(growable: false),
+      commandRequests: value.commandRequests.map((request) => AgentRuntimeCommandRequestCard(id: request.id, actionId: request.actionId, title: request.title, operation: request.operation, status: request.status, scopeSummary: request.scopeSummary, policySummary: request.policySummary, previewStatus: request.previewStatus, applyStatus: request.applyStatus, canPreview: request.canPreview, canDecide: request.canDecide, canApply: request.canApply, commandSummary: request.commandSummary)).toList(growable: false),
       requirementsReview: AgentRuntimeRequirementsReviewPanel(active: value.requirementsReview.active, status: value.requirementsReview.status, progressSummary: value.requirementsReview.progressSummary, reviewerStatus: value.requirementsReview.reviewerStatus, ownerActionStatus: value.requirementsReview.ownerActionStatus, latestPacketStatus: value.requirementsReview.latestPacketStatus),
       runningServers: value.runningServers.map(_fact).toList(growable: false),
       imageArtifacts: value.imageArtifacts.map(_fact).toList(growable: false),

@@ -409,6 +409,7 @@ pub struct AgentRuntimeApprovalCard {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeCommandRequestCard {
     pub id: String,
+    pub action_id: String,
     pub title: String,
     pub operation: String,
     pub status: String,

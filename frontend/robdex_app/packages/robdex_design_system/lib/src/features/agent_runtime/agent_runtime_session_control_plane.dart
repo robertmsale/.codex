@@ -24,6 +24,8 @@ class AgentRuntimeSessionControlPlane extends StatefulWidget {
     required this.onApproveCommandRequest,
     required this.onDenyCommandRequest,
     required this.onApplyCommandRequest,
+    required this.onShowCommand,
+    required this.onShowCommandRequest,
     required this.onSetRequirements,
   });
 
@@ -46,7 +48,9 @@ class AgentRuntimeSessionControlPlane extends StatefulWidget {
   final ValueChanged<String> onApproveCommandRequest;
   final ValueChanged<String> onDenyCommandRequest;
   final ValueChanged<String> onApplyCommandRequest;
-  final ValueChanged<String> onSetRequirements;
+  final void Function(String actionId) onShowCommand;
+  final ValueChanged<String> onShowCommandRequest;
+  final void Function(String sessionId, {required String title, required String key, required String statement}) onSetRequirements;
 
   @override
   State<AgentRuntimeSessionControlPlane> createState() => _AgentRuntimeSessionControlPlaneState();
@@ -58,6 +62,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
   late final TextEditingController _workdir;
   late final TextEditingController _worktreeRoot;
   late final TextEditingController _reason;
+  late final TextEditingController _stdin;
   String _role = '';
   String _project = '';
   String _model = '';
@@ -72,6 +77,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
     _workdir = TextEditingController(text: control?.workdir ?? '');
     _worktreeRoot = TextEditingController(text: control?.worktreeRoot ?? '');
     _reason = TextEditingController(text: 'Reviewed by owner');
+    _stdin = TextEditingController(text: 'status');
     _role = control?.roleId ?? '';
     _project = control?.projectKey ?? '';
     _model = control?.activeModel ?? '';
@@ -85,6 +91,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
     _workdir.dispose();
     _worktreeRoot.dispose();
     _reason.dispose();
+    _stdin.dispose();
     super.dispose();
   }
 
@@ -219,16 +226,26 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
         _factRow('CWD', first.cwd),
         _factRow('Policy', 'End of turn: ${first.endOfTurnBehavior} · End of session: ${first.endOfSessionBehavior}'),
         _factRow('Output', first.latestOutputSummary),
+        Row(children: [
+          Expanded(child: TextField(key: const ValueKey('agentRuntime.sessionControl.processInput'), controller: _stdin, style: const TextStyle(color: Colors.white), decoration: _input().copyWith(hintText: 'stdin input'))),
+          const SizedBox(width: 10),
+          _smallButton('Send input', Colors.blueAccent, first.canInput ? () => widget.onInputProcess(first.handle, _stdin.text.trim().isEmpty ? '\n' : _stdin.text) : null),
+          const SizedBox(width: 8),
+          _smallButton('Flush output', Colors.orange, first.canFlush ? () => widget.onFlushProcess(first.handle) : null),
+        ]),
       ]),
     ]);
   }
 
   Widget _approvalSection(AgentRuntimeSelectedSessionControlPlane control) => _section('Approvals (${control.approvals.length} pending)', [
+        TextField(key: const ValueKey('agentRuntime.sessionControl.approvalReason'), controller: _reason, style: const TextStyle(color: Colors.white), decoration: _input().copyWith(labelText: 'Decision reason')),
+        const SizedBox(height: 12),
         for (final approval in control.approvals)
           _decisionCard(approval.title, approval.contextSummary, approval.status, [
             _smallButton('Approve', Colors.green, approval.canDecide ? () => widget.onApprove(approval.id, _reason.text) : null),
             _smallButton('Deny', Colors.redAccent, approval.canDecide ? () => widget.onDeny(approval.id, _reason.text) : null),
             _smallButton('Resume', Colors.blueAccent, approval.canResume ? () => widget.onResumeApproval(approval.id) : null),
+            _smallButton('View Details', Colors.white70, () => _showDetails('Approval details', [approval.contextSummary, approval.decisionSummary])),
           ]),
       ]);
 
@@ -239,6 +256,8 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
             _smallButton('Approve', Colors.green, request.canDecide ? () => widget.onApproveCommandRequest(request.id) : null),
             _smallButton('Deny', Colors.redAccent, request.canDecide ? () => widget.onDenyCommandRequest(request.id) : null),
             _smallButton('Apply', Colors.orange, request.canApply ? () => widget.onApplyCommandRequest(request.id) : null),
+            _smallButton('Show Command', Colors.white70, request.actionId.isNotEmpty ? () => widget.onShowCommand(request.actionId) : null),
+            _smallButton('View Details', Colors.white70, () => widget.onShowCommandRequest(request.id)),
           ]),
       ]);
 
@@ -250,8 +269,8 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
         const Text('Quick Actions', style: TextStyle(color: Color(0xFFB8C4D3), fontWeight: FontWeight.w600)),
         _quick('Compact…', Colors.orange, () => widget.onCompact(control.sessionId)),
         _quick(control.godMode.active ? 'Revoke God Mode…' : 'Grant God Mode…', Colors.orange, () => control.godMode.active ? widget.onRevokeGodMode(control.sessionId) : widget.onGrantGodMode(control.sessionId)),
-        _quick('Set Requirements…', Colors.blueAccent, () => widget.onSetRequirements(control.sessionId)),
-        _quick('Export Bundle…', Colors.blueGrey, null),
+        _quick('Set Requirements…', Colors.blueAccent, () => _showRequirementsAuthoring(control)),
+        _quick('Export Bundle unavailable: no typed export', Colors.blueGrey, null),
         _quick('Danger Zone', Colors.redAccent, () => _showDanger(control)),
       ]),
     );
@@ -318,6 +337,52 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
             const SizedBox(height: 12),
             OutlinedButton(onPressed: () { Navigator.of(context).pop(); widget.onCloseSession(control.sessionId); }, child: const Text('Close session')),
             OutlinedButton(onPressed: () { Navigator.of(context).pop(); widget.onArchiveSession(control.sessionId); }, child: const Text('Archive session')),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  void _showDetails(String title, List<String> rows) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 12),
+            for (final row in rows.where((row) => row.trim().isNotEmpty)) Text(row),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  void _showRequirementsAuthoring(AgentRuntimeSelectedSessionControlPlane control) {
+    final title = TextEditingController(text: 'Session Requirements');
+    final key = TextEditingController(text: 'owner_requirement');
+    final statement = TextEditingController();
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: EdgeInsets.only(left: 18, right: 18, top: 18, bottom: 18 + MediaQuery.viewInsetsOf(context).bottom),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            const Text('Set Requirements', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 12),
+            TextField(controller: title, decoration: const InputDecoration(labelText: 'Title')),
+            TextField(controller: key, decoration: const InputDecoration(labelText: 'Requirement key')),
+            TextField(controller: statement, decoration: const InputDecoration(labelText: 'Requirement statement')),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: () {
+                widget.onSetRequirements(control.sessionId, title: title.text, key: key.text, statement: statement.text);
+                Navigator.of(context).pop();
+              },
+              child: const Text('Set Requirements'),
+            ),
           ]),
         ),
       ),
