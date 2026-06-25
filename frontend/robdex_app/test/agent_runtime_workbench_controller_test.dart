@@ -2781,6 +2781,151 @@ void main() {
     expect(activate.versionId, 'role-version-1');
   });
 
+  test('role draft controller operations preserve edited structured fields', () {
+    final sentRequests = <bindings.AgentRuntimeRequest>[];
+    final controller = AgentRuntimeWorkbenchController(
+      requestSink: (requestId, request) {
+        sentRequests.add(request);
+      },
+    );
+    addTearDown(controller.dispose);
+
+    const edited = AgentRuntimeRoleEditorDraft(
+      roleId: 'runtime-allow',
+      version: '4.0.0',
+      displayName: 'Runtime Allow Edited',
+      model: 'gpt-5.4-mini',
+      reasoningEffort: 'high',
+      instructionText: 'Edited instructions',
+      capabilities: ['tool.execute_code', 'fs.write'],
+      policy: [
+        AgentRuntimeRolePolicyRow(action: 'tool.execute_code', decision: 'allow'),
+        AgentRuntimeRolePolicyRow(action: 'fs.write', decision: 'deny'),
+      ],
+      routingMode: 'direct',
+      routingReservedActions: ['message.send'],
+      defaultRecipient: 'owner',
+      allowedRecipients: ['owner'],
+      listed: false,
+      ownerVisible: true,
+      canSpawnAgents: true,
+      canArchiveAgents: false,
+      lifecycleReservedActions: ['agent.archive'],
+    );
+
+    controller.validateRoleDraft(edited);
+    controller.updateRoleFromDraft(edited);
+
+    final validate = (sentRequests[0] as bindings.AgentRuntimeRequestDispatchOperation).operation as bindings.AgentRuntimeGuiOperationValidateRoleDraft;
+    final update = (sentRequests[1] as bindings.AgentRuntimeRequestDispatchOperation).operation as bindings.AgentRuntimeGuiOperationUpdateRoleFromDraft;
+    for (final draft in [validate.draft, update.draft]) {
+      expect(draft.id, 'runtime-allow');
+      expect(draft.version, '4.0.0');
+      expect(draft.modelDefaults.model, 'gpt-5.4-mini');
+      expect(draft.modelDefaults.reasoningEffort, 'high');
+      expect(draft.instructionText, 'Edited instructions');
+      expect(draft.capabilities, ['tool.execute_code', 'fs.write']);
+      expect(draft.policyEntries.map((entry) => '${entry.key}=${entry.value}'), ['tool.execute_code=allow', 'fs.write=deny']);
+      expect(draft.routing.defaultRecipient, 'owner');
+      expect(draft.routing.allowedRecipients, ['owner']);
+      expect(draft.routing.reservedActions, ['message.send']);
+      expect(draft.visibility.listed, false);
+      expect(draft.visibility.ownerVisible, true);
+      expect(draft.lifecycleAuthority.canSpawnAgents, true);
+      expect(draft.lifecycleAuthority.reservedActions, ['agent.archive']);
+    }
+    expect(update.roleId, 'runtime-allow');
+  });
+
+  testWidgets('role manager edits structured draft and dispatches visible values', (tester) async {
+    AgentRuntimeRoleEditorDraft? validated;
+    AgentRuntimeRoleEditorDraft? saved;
+    tester.view.physicalSize = const Size(1600, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 1600,
+          height: 1600,
+          child: AgentRuntimeRoleManagerPage(
+            data: mockAgentRuntimeRoleAdminSelected,
+            onValidate: (draft) => validated = draft,
+            onUpdate: (draft) => saved = draft,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Role Snapshot'), findsNothing);
+    expect(find.textContaining('Route evaluation'), findsNothing);
+    expect(find.text('Audit Events'), findsNothing);
+    expect(find.text('Capabilities', skipOffstage: false), findsWidgets);
+    expect(find.text('Policy decisions', skipOffstage: false), findsOneWidget);
+    expect(find.text('Allowed recipients', skipOffstage: false), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('roleEditor.model')));
+    await tester.pump();
+    await tester.tap(find.text('gpt-5.4-mini').last);
+    await tester.pump();
+
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.capability.command_registry.apply')));
+    await tester.tap(find.byKey(const ValueKey('roleEditor.capability.command_registry.apply')));
+    await tester.pump();
+
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.policy.fs.write')));
+    await tester.tap(find.byKey(const ValueKey('roleEditor.policy.fs.write')));
+    await tester.pump();
+    await tester.tap(find.text('Deny').last);
+    await tester.pump();
+
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.recipient.runtime-safe-builder')));
+    await tester.tap(find.byKey(const ValueKey('roleEditor.recipient.runtime-safe-builder')));
+    await tester.pump();
+
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.routingReserved.command_registry.apply')));
+    await tester.tap(find.byKey(const ValueKey('roleEditor.routingReserved.command_registry.apply')));
+    await tester.pump();
+
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.lifecycleReserved.workflow_memory.feedback')));
+    await tester.tap(find.byKey(const ValueKey('roleEditor.lifecycleReserved.workflow_memory.feedback')));
+    await tester.pump();
+
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.canSpawnAgents')));
+    await tester.tap(find.descendant(of: find.byKey(const ValueKey('roleEditor.canSpawnAgents')), matching: find.byType(Switch)));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.ownerVisible')));
+    await tester.tap(find.descendant(of: find.byKey(const ValueKey('roleEditor.ownerVisible')), matching: find.byType(Switch)));
+    await tester.pump();
+
+    (tester.widget(find.byKey(const ValueKey('roleEditor.instructions'))) as dynamic).controller.text = 'Updated runtime instructions.';
+    await tester.pump();
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Validate Draft'));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Save Version'));
+    await tester.pump();
+
+    for (final draft in [validated, saved]) {
+      expect(draft, isNotNull);
+      expect(draft!.model, 'gpt-5.4-mini');
+      expect(draft.instructionText, 'Updated runtime instructions.');
+      expect(draft.capabilities, isNot(contains('command_registry.apply')));
+      expect(draft.policy.any((row) => row.action == 'fs.write' && row.decision == 'deny'), isTrue);
+      expect(draft.allowedRecipients, contains('owner'));
+      expect(draft.allowedRecipients, isNot(contains('runtime-safe-builder')));
+      expect(draft.routingReservedActions, contains('command_registry.apply'));
+      expect(draft.lifecycleReservedActions, contains('workflow_memory.feedback'));
+      expect(draft.canSpawnAgents, isTrue);
+      expect(draft.ownerVisible, isFalse);
+    }
+  });
+
   test('approval and command-registry request actions use generated typed operation intents', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
     final controller = AgentRuntimeWorkbenchController(

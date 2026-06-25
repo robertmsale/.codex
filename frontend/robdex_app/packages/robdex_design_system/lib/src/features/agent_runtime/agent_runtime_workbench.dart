@@ -1325,12 +1325,10 @@ class _RoleManagerTopBar extends StatelessWidget {
                       child: Row(
                         children: [
                           IconButton(onPressed: onClose, tooltip: 'Back', icon: const Icon(Icons.arrow_back_rounded)),
-                          Expanded(child: Text('Role Command Center', overflow: TextOverflow.ellipsis, style: theme.textTheme.titleSmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w800))),
+                          Expanded(child: Text('Role Manager', overflow: TextOverflow.ellipsis, style: theme.textTheme.titleSmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w800))),
                           _Chip(label: status.isEmpty ? 'Draft' : _roleManagerHumanLabel(status), tone: status == 'active' ? 'success' : 'warning'),
                           const SizedBox(width: 6),
                           _Chip(label: 'v$version', tone: 'info'),
-                          const SizedBox(width: 6),
-                          const _Chip(label: 'Snapshot Safe', tone: 'success'),
                         ],
                       ),
                     ),
@@ -1349,17 +1347,13 @@ class _RoleManagerTopBar extends StatelessWidget {
                   children: [
                     IconButton(onPressed: onClose, tooltip: 'Back', icon: const Icon(Icons.arrow_back_rounded)),
                     const SizedBox(width: 4),
-                    Text('Role Command Center', style: theme.textTheme.titleSmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w800)),
+                    Text('Role Manager', style: theme.textTheme.titleSmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w800)),
                     const SizedBox(width: 14),
                     Flexible(child: Text('Agent Runtime / Roles / $title', overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF93A5BC)))),
                     const SizedBox(width: 12),
                     _Chip(label: status.isEmpty ? 'Draft' : _roleManagerHumanLabel(status), tone: status == 'active' ? 'success' : 'warning'),
                     const SizedBox(width: 8),
                     _Chip(label: 'v$version', tone: 'info'),
-                    const SizedBox(width: 8),
-                    const _Chip(label: 'Snapshot Safe', tone: 'success'),
-                    const SizedBox(width: 8),
-                    const _Chip(label: 'Source Verified', tone: 'success'),
                     const Spacer(),
                     for (final action in actions) ...[
                       action,
@@ -1544,8 +1538,6 @@ class _RoleManagerMainColumn extends StatelessWidget {
               label: data.validationErrors.isEmpty ? 'No validation errors' : '${data.validationErrors.length} validation issue${data.validationErrors.length == 1 ? '' : 's'}',
               tone: data.validationErrors.isEmpty ? 'success' : 'danger',
             ),
-            const _InlineStatus(label: 'Policy synced', tone: 'success'),
-            const _InlineStatus(label: 'Session snapshots unchanged', tone: 'success'),
           ],
         ),
         const SizedBox(height: 14),
@@ -1561,17 +1553,17 @@ class _RoleManagerMainColumn extends StatelessWidget {
                 SizedBox(width: 300, child: _RoleManagerLabeledField(label: 'Display Name', child: _EditorTextField(label: '', controller: displayNameController))),
               ],
             );
-            final modelDefaults = Row(
-              mainAxisSize: MainAxisSize.min,
+            final modelDefaults = Wrap(
+              spacing: 12,
+              runSpacing: 10,
               children: [
                 _RoleManagerLabeledField(
                   label: 'Model',
-                  child: _EnumSelect(label: '', value: modelController.text, values: _withCurrentOptions(data.editorOptions.models, modelController.text), onChanged: (value) => modelController.text = value),
+                  child: _EnumSelect(key: const ValueKey('roleEditor.model'), label: '', value: modelController.text, values: _withCurrentOptions(data.editorOptions.models, modelController.text), onChanged: (value) => modelController.text = value),
                 ),
-                const SizedBox(width: 12),
                 _RoleManagerLabeledField(
                   label: 'Reasoning Effort',
-                  child: _EnumSelect(label: '', value: reasoningController.text, values: _withCurrentOptions(data.editorOptions.reasoningEfforts, reasoningController.text), onChanged: (value) => reasoningController.text = value),
+                  child: _EnumSelect(key: const ValueKey('roleEditor.reasoning'), label: '', value: reasoningController.text, values: _withCurrentOptions(data.editorOptions.reasoningEfforts, reasoningController.text), onChanged: (value) => reasoningController.text = value),
                 ),
               ],
             );
@@ -1580,7 +1572,7 @@ class _RoleManagerMainColumn extends StatelessWidget {
               children: [
                 const Icon(Icons.lock_outline_rounded, size: 14, color: Color(0xFF93A5BC)),
                 const SizedBox(width: 5),
-                Text('Creates immutable role snapshot on save', style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFFB7C4D8))),
+                Flexible(child: Text('Saves a new role version', overflow: TextOverflow.ellipsis, style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFFB7C4D8)))),
               ],
             );
             if (narrowFields) {
@@ -1620,52 +1612,37 @@ class _RoleManagerMainColumn extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 14),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(
-              flex: 3,
-              child: _RoleSnapshotPreview(draft: draft),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              flex: 8,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _RoleSurface(
-                    title: 'Action Policy Matrix',
-                    subtitle: 'capabilities are the execution surface',
-                    trailing: const Text('Policy rules must match capabilities', style: TextStyle(color: Color(0xFF93A5BC), fontSize: 10)),
-                    child: _PolicyTable(policy: policy.isEmpty ? draft.policy : policy),
-                  ),
-                  const SizedBox(height: 12),
-                  if (!data.editorOptions.isCompleteForPrimaryAuthoring)
-                    const _InlineNotice(
-                      message: 'Role editor options are unavailable. Refresh Runtime Operations before editing policies, routing, capabilities, or lifecycle authority.',
-                      tone: 'warning',
-                    )
-                  else
-                    _RoleManagerStructuredControls(
-                      capabilitiesController: capabilitiesController,
-                      policyController: policyController,
-                      routingModeController: routingModeController,
-                      defaultRecipientController: defaultRecipientController,
-                      allowedRecipientsController: allowedRecipientsController,
-                      routingReservedController: routingReservedController,
-                      lifecycleReservedController: lifecycleReservedController,
-                      options: data.editorOptions,
-                      listed: listed,
-                      ownerVisible: ownerVisible,
-                      canSpawnAgents: canSpawnAgents,
-                      canArchiveAgents: canArchiveAgents,
-                      onListedChanged: onListedChanged,
-                      onOwnerVisibleChanged: onOwnerVisibleChanged,
-                      onCanSpawnAgentsChanged: onCanSpawnAgentsChanged,
-                      onCanArchiveAgentsChanged: onCanArchiveAgentsChanged,
-                    ),
-                ],
+            if (!data.editorOptions.isCompleteForPrimaryAuthoring)
+              const _InlineNotice(
+                message: 'Role editor options are unavailable. Refresh before editing policies, routing, capabilities, or lifecycle authority.',
+                tone: 'warning',
+              )
+            else
+              _RoleManagerStructuredControls(
+                capabilitiesController: capabilitiesController,
+                policyController: policyController,
+                routingModeController: routingModeController,
+                defaultRecipientController: defaultRecipientController,
+                allowedRecipientsController: allowedRecipientsController,
+                routingReservedController: routingReservedController,
+                lifecycleReservedController: lifecycleReservedController,
+                options: data.editorOptions,
+                listed: listed,
+                ownerVisible: ownerVisible,
+                canSpawnAgents: canSpawnAgents,
+                canArchiveAgents: canArchiveAgents,
+                onListedChanged: onListedChanged,
+                onOwnerVisibleChanged: onOwnerVisibleChanged,
+                onCanSpawnAgentsChanged: onCanSpawnAgentsChanged,
+                onCanArchiveAgentsChanged: onCanArchiveAgentsChanged,
               ),
+            const SizedBox(height: 12),
+            _RoleSurface(
+              title: 'Policy preview',
+              child: _PolicyTable(policy: policy.isEmpty ? draft.policy : policy),
             ),
           ],
         ),
@@ -1716,9 +1693,64 @@ class _RoleManagerStructuredControls extends StatelessWidget {
     final allowedRecipients = _lineList(allowedRecipientsController.text);
     final routingReserved = _lineList(routingReservedController.text);
     final lifecycleReserved = _lineList(lifecycleReservedController.text);
+    final capabilities = _lineList(capabilitiesController.text);
+    final policyRows = _rolePolicyRows(policyController.text);
     return LayoutBuilder(
       builder: (context, constraints) {
         final narrow = constraints.maxWidth < 560;
+        final capabilitiesEditor = _RoleSurface(
+          title: 'Capabilities',
+          child: _OptionChecklist(
+            keyPrefix: 'capability',
+            values: options.capabilities,
+            selected: capabilities,
+            onChanged: (next) {
+              _setLineList(capabilitiesController, next);
+              final currentPolicy = {for (final row in _rolePolicyRows(policyController.text)) row.action: row.decision};
+              final decision = options.policyDecisions.contains('allow') ? 'allow' : options.policyDecisions.first;
+              final synced = [
+                for (final action in next)
+                  AgentRuntimeRolePolicyRow(action: action, decision: currentPolicy[action] ?? decision),
+              ];
+              _setPolicyRows(policyController, synced);
+            },
+          ),
+        );
+        final policyEditor = _RoleSurface(
+          title: 'Policy decisions',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final row in policyRows)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      SizedBox(width: 240, child: Text(_roleManagerCompactPolicyAction(row.action), overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFFD6E2F2)))),
+                      _EnumSelect(
+                        key: ValueKey('roleEditor.policy.${row.action}'),
+                        label: 'Decision',
+                        value: row.decision,
+                        values: _withCurrentOptions(options.policyDecisions, row.decision),
+                        onChanged: (value) {
+                          _setPolicyRows(policyController, [
+                            for (final current in _rolePolicyRows(policyController.text))
+                              AgentRuntimeRolePolicyRow(action: current.action, decision: current.action == row.action ? value : current.decision),
+                          ]);
+                        },
+                        displayLabel: _roleManagerHumanLabel,
+                      ),
+                    ],
+                  ),
+                ),
+              if (policyRows.isEmpty)
+                Text('Select capabilities to add policy rows.', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFF93A5BC))),
+            ],
+          ),
+        );
         final left = _RoleSurface(
           title: 'Routing',
           child: Column(
@@ -1728,17 +1760,33 @@ class _RoleManagerStructuredControls extends StatelessWidget {
                 spacing: 10,
                 runSpacing: 10,
                 children: [
-                  _EnumSelect(label: 'Routing mode', value: routingModeController.text, values: _withCurrentOptions(options.routingModes, routingModeController.text), onChanged: (value) => routingModeController.text = value, displayLabel: _roleManagerHumanLabel),
-                  _EnumSelect(label: 'Default recipient', value: defaultRecipientController.text, values: _withCurrentOptions(options.recipients, defaultRecipientController.text), onChanged: (value) => defaultRecipientController.text = value, displayLabel: _roleManagerHumanLabel),
+                  _EnumSelect(key: const ValueKey('roleEditor.routing.mode'), label: 'Routing mode', value: routingModeController.text, values: _withCurrentOptions(options.routingModes, routingModeController.text), onChanged: (value) => routingModeController.text = value, displayLabel: _roleManagerHumanLabel),
+                  _EnumSelect(key: const ValueKey('roleEditor.routing.defaultRecipient'), label: 'Default recipient', value: defaultRecipientController.text, values: _withCurrentOptions(options.recipients, defaultRecipientController.text), onChanged: (value) => defaultRecipientController.text = value, displayLabel: _roleManagerHumanLabel),
                 ],
               ),
               const SizedBox(height: 8),
-              _CompactKeyValue(label: 'Default recipient', value: _roleManagerHumanLabel(defaultRecipientController.text)),
-              _CompactKeyValue(label: 'Allowed recipients', value: allowedRecipients.map(_roleManagerHumanLabel).join(', ')),
-              _CompactKeyValue(label: 'Reserved actions', value: routingReserved.map(_roleManagerHumanLabel).join(', ')),
-              const SizedBox(height: 8),
-              _RouteBox(
-                'Route evaluation: ${_roleManagerHumanLabel(routingModeController.text)} → ${_roleManagerHumanLabel(defaultRecipientController.text)}',
+              Text('Allowed recipients', style: Theme.of(context).textTheme.labelSmall?.copyWith(color: const Color(0xFF93A5BC))),
+              const SizedBox(height: 6),
+              _OptionChecklist(
+                keyPrefix: 'recipient',
+                values: options.recipients,
+                selected: allowedRecipients,
+                onChanged: (next) {
+                  final defaultRecipient = defaultRecipientController.text.trim();
+                  if (defaultRecipient.isNotEmpty && !next.contains(defaultRecipient)) {
+                    defaultRecipientController.text = next.isEmpty ? '' : next.first;
+                  }
+                  _setLineList(allowedRecipientsController, next);
+                },
+                labelBuilder: _roleManagerHumanLabel,
+              ),
+              const SizedBox(height: 10),
+              _OptionChips(
+                title: 'Reserved routing actions',
+                values: options.reservedActions,
+                selected: routingReserved,
+                keyPrefix: 'routingReserved',
+                onChanged: (next) => _setLineList(routingReservedController, next),
               ),
             ],
           ),
@@ -1748,12 +1796,16 @@ class _RoleManagerStructuredControls extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _EditorSwitch(label: 'Can spawn agents', value: canSpawnAgents, onChanged: onCanSpawnAgentsChanged),
-              _EditorSwitch(label: 'Can archive agents', value: canArchiveAgents, onChanged: onCanArchiveAgentsChanged),
+              _EditorSwitch(key: const ValueKey('roleEditor.canSpawnAgents'), label: 'Can spawn agents', value: canSpawnAgents, onChanged: onCanSpawnAgentsChanged),
+              _EditorSwitch(key: const ValueKey('roleEditor.canArchiveAgents'), label: 'Can archive agents', value: canArchiveAgents, onChanged: onCanArchiveAgentsChanged),
               const SizedBox(height: 8),
-              _CompactKeyValue(label: 'Reserved actions', value: lifecycleReserved.map(_roleManagerHumanLabel).join(', ')),
-              const SizedBox(height: 8),
-              Text('Lifecycle controls are enforced when enabled.', style: Theme.of(context).textTheme.labelSmall?.copyWith(color: const Color(0xFF93A5BC))),
+              _OptionChips(
+                title: 'Reserved lifecycle actions',
+                values: options.reservedActions,
+                selected: lifecycleReserved,
+                keyPrefix: 'lifecycleReserved',
+                onChanged: (next) => _setLineList(lifecycleReservedController, next),
+              ),
             ],
           ),
         );
@@ -1762,11 +1814,8 @@ class _RoleManagerStructuredControls extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _EditorSwitch(label: 'Listed', value: listed, onChanged: onListedChanged),
-              _EditorSwitch(label: 'Owner visible', value: ownerVisible, onChanged: onOwnerVisibleChanged),
-              const _CompactKeyValue(label: 'Archived', value: 'false'),
-              const SizedBox(height: 8),
-              Text('Visible in Role Admin and Create Session role picker.', style: Theme.of(context).textTheme.labelSmall?.copyWith(color: const Color(0xFF93A5BC))),
+              _EditorSwitch(key: const ValueKey('roleEditor.listed'), label: 'Listed', value: listed, onChanged: onListedChanged),
+              _EditorSwitch(key: const ValueKey('roleEditor.ownerVisible'), label: 'Owner visible', value: ownerVisible, onChanged: onOwnerVisibleChanged),
             ],
           ),
         );
@@ -1774,12 +1823,104 @@ class _RoleManagerStructuredControls extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (narrow)
+              Column(children: [capabilitiesEditor, const SizedBox(height: 10), policyEditor, const SizedBox(height: 10)])
+            else
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: capabilitiesEditor), const SizedBox(width: 10), Expanded(child: policyEditor)]),
+            const SizedBox(height: 10),
+            if (narrow)
               Column(children: [left, const SizedBox(height: 10), middle, const SizedBox(height: 10), right])
             else
               Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: left), const SizedBox(width: 10), Expanded(child: middle), const SizedBox(width: 10), Expanded(child: right)]),
           ],
         );
       },
+    );
+  }
+}
+
+void _setLineList(TextEditingController controller, List<String> values) {
+  controller.text = _dedupeRoleManagerOptions(values).join('\n');
+}
+
+void _setPolicyRows(TextEditingController controller, List<AgentRuntimeRolePolicyRow> rows) {
+  controller.text = rows.map((row) => '${row.action}=${row.decision}').join('\n');
+}
+
+class _OptionChecklist extends StatelessWidget {
+  const _OptionChecklist({
+    required this.values,
+    required this.selected,
+    required this.onChanged,
+    this.labelBuilder,
+    this.keyPrefix = 'option',
+  });
+
+  final List<String> values;
+  final List<String> selected;
+  final ValueChanged<List<String>> onChanged;
+  final String Function(String value)? labelBuilder;
+  final String keyPrefix;
+
+  @override
+  Widget build(BuildContext context) {
+    final options = _dedupeRoleManagerOptions(values);
+    if (options.isEmpty) {
+      return Text('No options available.', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFF93A5BC)));
+    }
+    return Wrap(
+      spacing: 8,
+      runSpacing: 6,
+      children: [
+        for (final option in options)
+          FilterChip(
+            key: ValueKey('roleEditor.$keyPrefix.$option'),
+            label: Text((labelBuilder ?? _roleManagerHumanLabel)(option)),
+            labelStyle: TextStyle(
+              color: selected.contains(option) ? Colors.white : const Color(0xFFD6E2F2),
+              fontWeight: selected.contains(option) ? FontWeight.w700 : FontWeight.w500,
+            ),
+            selectedColor: const Color(0xFF245B82),
+            checkmarkColor: Colors.white,
+            selected: selected.contains(option),
+            onSelected: (checked) {
+              final next = [...selected];
+              if (checked) {
+                if (!next.contains(option)) next.add(option);
+              } else {
+                next.remove(option);
+              }
+              onChanged(next);
+            },
+          ),
+      ],
+    );
+  }
+}
+
+class _OptionChips extends StatelessWidget {
+  const _OptionChips({
+    required this.title,
+    required this.values,
+    required this.selected,
+    required this.onChanged,
+    this.keyPrefix = 'option',
+  });
+
+  final String title;
+  final List<String> values;
+  final List<String> selected;
+  final ValueChanged<List<String>> onChanged;
+  final String keyPrefix;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: const Color(0xFF93A5BC))),
+        const SizedBox(height: 6),
+        _OptionChecklist(keyPrefix: keyPrefix, values: values, selected: selected, onChanged: onChanged),
+      ],
     );
   }
 }
@@ -1847,48 +1988,6 @@ class _RoleManagerRightColumn extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         _RoleSurface(
-          title: 'Session Snapshot Behavior',
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              _RouteBox('Current role version to new session snapshot'),
-              SizedBox(height: 8),
-              _RouteBox('Existing sessions remain unchanged'),
-              SizedBox(height: 8),
-              _InlineStatus(label: 'Switch-session role migration is explicit.', tone: 'warning'),
-            ],
-          ),
-        ),
-        const SizedBox(height: 10),
-        _RoleSurface(
-          title: 'Runtime Model Surface',
-          child: Column(
-            children: [
-              _FactRow(AgentRuntimeFact(label: 'Model', value: draft.model)),
-              _FactRow(AgentRuntimeFact(label: 'Instructions source', value: 'role snapshot')),
-              _FactRow(AgentRuntimeFact(label: 'Command context', value: 'live visible commands')),
-              _FactRow(AgentRuntimeFact(label: 'Compaction', value: 'enabled')),
-              _FactRow(AgentRuntimeFact(label: 'Reasoning effort', value: draft.reasoningEffort)),
-            ],
-          ),
-        ),
-        const SizedBox(height: 10),
-        _RoleSurface(
-          title: 'Audit Events',
-          subtitle: 'View all',
-          child: Column(
-            children: const [
-              _AuditEventRow(time: '12s ago', event: 'role.validated', actor: 'robdex', tone: 'success'),
-              _AuditEventRow(time: '13s ago', event: 'role.version.created', actor: 'robdex', tone: 'success'),
-              _AuditEventRow(time: '14s ago', event: 'role.activated', actor: 'robdex', tone: 'success'),
-              _AuditEventRow(time: '2m ago', event: 'session.created', actor: 'runtime-allow', tone: 'danger'),
-              _AuditEventRow(time: '2m ago', event: 'policy.decision', actor: 'runtime-allow', tone: 'danger'),
-              _AuditEventRow(time: '2m ago', event: 'route.decision', actor: 'direct → owner', tone: 'success'),
-            ],
-          ),
-        ),
-        const SizedBox(height: 10),
-        _RoleSurface(
           title: 'Role Actions',
           child: Wrap(
             spacing: 8,
@@ -1944,88 +2043,6 @@ class _RoleSurface extends StatelessWidget {
             const SizedBox(height: 8),
             child,
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _RoleSnapshotPreview extends StatelessWidget {
-  const _RoleSnapshotPreview({required this.draft});
-
-  final AgentRuntimeRoleEditorDraft draft;
-
-  @override
-  Widget build(BuildContext context) {
-    final lines = [
-      ('Role', _roleManagerHumanLabel(draft.roleId)),
-      ('Version', draft.version),
-      ('Display name', draft.displayName),
-      ('Default model', draft.model),
-      ('Reasoning effort', _roleManagerHumanLabel(draft.reasoningEffort)),
-      ('Capabilities', '${draft.capabilities.length} items'),
-      ('Policy rules', '${draft.policy.length} rules'),
-      ('Routing', _roleManagerHumanLabel(draft.routingMode)),
-      ('Listed', draft.listed ? 'Yes' : 'No'),
-      ('Owner visible', draft.ownerVisible ? 'Yes' : 'No'),
-      ('Can spawn agents', draft.canSpawnAgents ? 'Yes' : 'No'),
-      ('Can archive agents', draft.canArchiveAgents ? 'Yes' : 'No'),
-      ('Snapshot behavior', 'New sessions'),
-      ('Existing sessions', 'Unchanged'),
-      ('Save result', 'Immutable snapshot'),
-    ];
-    final theme = Theme.of(context);
-    return _RoleSurface(
-      title: 'Role Snapshot',
-      subtitle: 'read-only',
-      child: Container(
-        height: 532,
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        decoration: BoxDecoration(
-          color: const Color(0xFF07101A),
-          border: Border.all(color: const Color(0xFF1B2A3A)),
-          borderRadius: BorderRadius.circular(3),
-        ),
-        child: ListView.builder(
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: lines.length,
-          itemBuilder: (context, index) {
-            final line = lines[index];
-            return Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(width: 24, child: Text('${index + 1}', textAlign: TextAlign.right, style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF718399)))),
-                  const SizedBox(width: 10),
-                  SizedBox(
-                    width: 88,
-                    child: Text(
-                      line.$1,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: const Color(0xFF93A5BC),
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      line.$2,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: const Color(0xFF7CCBFF),
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
         ),
       ),
     );
@@ -2090,7 +2107,7 @@ class _RoleInstructionsEditorChrome extends StatelessWidget {
                   child: Semantics(
                     label: 'Role instructions code editor',
                     textField: true,
-                    child: AgentRuntimeCodeEditor(controller: controller),
+                    child: AgentRuntimeCodeEditor(key: const ValueKey('roleEditor.instructions'), controller: controller),
                   ),
                 ),
                 Container(
@@ -2275,51 +2292,6 @@ class _InlineStatus extends StatelessWidget {
           Icon(Icons.check_circle, size: 13, color: _toneColor(tone)),
           const SizedBox(width: 6),
           Flexible(child: Text(label, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: tone == 'warning' ? const Color(0xFFE6B450) : const Color(0xFFC6D3E4), fontWeight: tone == 'success' ? FontWeight.w700 : FontWeight.w400))),
-        ],
-      ),
-    );
-  }
-}
-
-class _RouteBox extends StatelessWidget {
-  const _RouteBox(this.label);
-  final String label;
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0B1628),
-        border: Border.all(color: const Color(0xFF295A84)),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(label, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white)),
-    );
-  }
-}
-
-class _AuditEventRow extends StatelessWidget {
-  const _AuditEventRow({required this.time, required this.event, required this.actor, required this.tone});
-
-  final String time;
-  final String event;
-  final String actor;
-  final String tone;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        children: [
-          Icon(Icons.circle, size: 6, color: _toneColor(tone)),
-          const SizedBox(width: 8),
-          SizedBox(width: 48, child: Text(time, overflow: TextOverflow.ellipsis, style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFFB7C4D8)))),
-          Expanded(child: Text(event, overflow: TextOverflow.ellipsis, style: theme.textTheme.labelSmall?.copyWith(color: Colors.white))),
-          const SizedBox(width: 8),
-          SizedBox(width: 72, child: Text(actor, overflow: TextOverflow.ellipsis, textAlign: TextAlign.right, style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF93A5BC)))),
         ],
       ),
     );
@@ -3023,6 +2995,7 @@ class _SizedTextField extends StatelessWidget {
 
 class _EnumSelect extends StatelessWidget {
   const _EnumSelect({
+    super.key,
     required this.label,
     required this.value,
     required this.values,
@@ -3754,7 +3727,7 @@ class _EditorTextField extends StatelessWidget {
 }
 
 class _EditorSwitch extends StatelessWidget {
-  const _EditorSwitch({required this.label, required this.value, required this.onChanged});
+  const _EditorSwitch({super.key, required this.label, required this.value, required this.onChanged});
 
   final String label;
   final bool value;

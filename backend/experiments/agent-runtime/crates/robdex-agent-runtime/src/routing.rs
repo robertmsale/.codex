@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::db;
 use crate::roles::{RoleManifest, RoleSnapshot, RoutingMetadata};
 
-pub const RESERVED_PRINCIPALS: &[&str] = &["owner", "orchestrator"];
+pub const OWNER_RECIPIENT: &str = "owner";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,7 +90,7 @@ pub async fn decide_route(pool: &PgPool, session_id: Uuid, turn_id: Option<Uuid>
 }
 
 async fn validate_recipient(recipient: &str, pool: Option<&PgPool>, import_context_roles: &BTreeSet<String>) -> Result<()> {
-    if RESERVED_PRINCIPALS.contains(&recipient) || import_context_roles.contains(recipient) {
+    if recipient == OWNER_RECIPIENT || import_context_roles.contains(recipient) {
         return Ok(());
     }
     if let Some(pool) = pool {
@@ -103,6 +103,29 @@ async fn validate_recipient(recipient: &str, pool: Option<&PgPool>, import_conte
         }
     }
     bail!("invalid routing recipient: {recipient}")
+}
+
+pub fn recipient_options_from_active_role_ids<I>(active_role_ids: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut recipients = vec![OWNER_RECIPIENT.to_string()];
+    for role_id in active_role_ids {
+        if !recipients.iter().any(|recipient| recipient == &role_id) {
+            recipients.push(role_id);
+        }
+    }
+    recipients.sort();
+    recipients
+}
+
+pub async fn recipient_options(pool: &PgPool) -> Result<Vec<String>> {
+    let rows = sqlx::query("SELECT id FROM roles WHERE status = 'active' ORDER BY id ASC")
+        .fetch_all(pool)
+        .await?;
+    Ok(recipient_options_from_active_role_ids(
+        rows.into_iter().map(|row| row.get::<String, _>("id")),
+    ))
 }
 
 #[cfg(test)]
@@ -134,5 +157,32 @@ mod tests {
         };
         let err = validate_routing(&routing, None, &BTreeSet::new()).await.unwrap_err().to_string();
         assert!(err.contains("invalid routing recipient: missing-role"));
+    }
+
+    #[tokio::test]
+    async fn routing_validation_rejects_magic_operator_and_orchestrator_without_role_context() {
+        for recipient in ["operator", "orchestrator", "runtime"] {
+            let routing = RoutingMetadata {
+                mode: "direct".to_string(),
+                default_recipient: Some(recipient.to_string()),
+                allowed_recipients: vec![recipient.to_string()],
+                reserved_actions: vec![],
+            };
+            let err = validate_routing(&routing, None, &BTreeSet::new()).await.unwrap_err().to_string();
+            assert!(err.contains(&format!("invalid routing recipient: {recipient}")));
+        }
+    }
+
+    #[test]
+    fn recipient_options_are_owner_plus_active_role_ids() {
+        let options = super::recipient_options_from_active_role_ids([
+            "runtime-allow".to_string(),
+            "owner".to_string(),
+            "runtime-allow".to_string(),
+        ]);
+        assert_eq!(options, vec!["owner".to_string(), "runtime-allow".to_string()]);
+        assert!(!options.contains(&"operator".to_string()));
+        assert!(!options.contains(&"orchestrator".to_string()));
+        assert!(!options.contains(&"runtime".to_string()));
     }
 }

@@ -39,9 +39,7 @@
     "mode": "direct",
     "defaultRecipient": "owner",
     "allowedRecipients": [
-      "owner",
-      "operator",
-      "orchestrator"
+      "owner"
     ],
     "reservedActions": []
   },
