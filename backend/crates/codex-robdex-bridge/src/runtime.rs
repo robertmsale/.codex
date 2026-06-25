@@ -1316,6 +1316,17 @@ impl BridgeRuntime {
             }
         };
         if requirements_packet_is_sparse_not_finished_only(&set, &reviewable_claim_payload) {
+            let text = requirements_not_finished_continue_prompt();
+            let _ = send_thread_input(
+                self,
+                &parsed_state,
+                thread_id,
+                Some(&text),
+                &[],
+                None,
+                None,
+            )
+            .await;
             let _ = record_requirement_packet(
                 self,
                 thread_id,
@@ -3202,6 +3213,10 @@ fn requirements_low_quality_evidence_claim_prompt() -> String {
     "[Requirements] Robdex rejected the source claim packet before review because one or more claimed requirements lacked concrete typed evidence. Provide sparse claims using `kind`, `summary`, and non-empty evidence objects shaped as `{ \"type\": \"changedFiles|testsRun|sourceInspection|artifact|screenshot|commandOutput|migration|searchProof\", \"value\": \"<concrete proof>\" }`. Evidence must name concrete files, commands, artifacts, inspections, migrations, screenshots, or search proof; placeholders and restated requirement text are not reviewable.".to_string()
 }
 
+fn requirements_not_finished_continue_prompt() -> String {
+    "[Requirements] Robdex received an all-notFinished Requirements packet. Continue the assigned work and send reviewable evidence-backed Requirements claims only when requirements are satisfied, blocked, or not applicable.".to_string()
+}
+
 fn compose_auto_routed_approval_request(
     approval: &PendingApproval,
     sender_label: &str,
@@ -3785,14 +3800,27 @@ mod tests {
             }
 
             assert!(runtime.maybe_route_requirements_review("worker-1", turn_id).await);
+            let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+                .await
+                .expect("source continuation request timeout")
+                .expect("source continuation request");
+            assert_eq!(request["method"], "turn/start");
+            assert_eq!(request["params"]["threadId"], "worker-1");
+            assert!(
+                request["params"]["input"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("all-notFinished Requirements packet")
+            );
             match tokio::time::timeout(std::time::Duration::from_millis(100), requests.recv()).await {
-                Ok(Some(extra)) => panic!("unexpected reviewer/source request: {extra}"),
+                Ok(Some(extra)) => panic!("unexpected reviewer request: {extra}"),
                 Ok(None) | Err(_) => {}
             }
             let state = runtime.state_document_value().await;
             let source = &state["projects"]["alpha"]["agents"]["worker-1"];
             assert_eq!(source["requirements"]["active"], json!(true));
             assert!(source["requirements"]["reviewProgress"].as_object().is_none_or(|value| value.is_empty()));
+            assert!(source.get("requirementReview").is_none_or(Value::is_null));
             assert_eq!(source["requirementPackets"][0]["packetType"], json!("claimContinuation"));
             transport.abort();
             server.abort();
