@@ -7405,6 +7405,7 @@ print(file.read_lines("text.txt", 10, 12))
 print(file.line_count("text.txt"))
 print(file.search("text.txt", "line-77", context=1))
 print(tree.list(".", depth=1))
+print("tree:", tree.list(".", depth=2))
 print(tree.find(".", name_glob="*.txt", type="file", max_results=10))
 "#);
         let (turn_id, tool_call_id) = insert_turn_and_tool(&test_db.pool, session_id, &source).await;
@@ -7416,7 +7417,7 @@ print(tree.find(".", name_glob="*.txt", type="file", max_results=10))
             .fetch_one(&test_db.pool)
             .await
             .expect("audit count");
-        assert!(audit_count >= 7);
+        assert!(audit_count >= 8);
         let read_artifacts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_output_artifacts WHERE session_id=$1 AND source_type='starter_file_tree_read'")
             .bind(session_id)
             .fetch_one(&test_db.pool)
