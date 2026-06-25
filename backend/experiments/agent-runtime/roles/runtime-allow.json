@@ -83,8 +83,7 @@
     "mode": "direct",
     "defaultRecipient": "owner",
     "allowedRecipients": [
-      "owner",
-      "orchestrator"
+      "owner"
     ],
     "reservedActions": [
       "message.send",

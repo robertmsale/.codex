@@ -1340,16 +1340,16 @@ async fn finalize_failed_started_turn(
     sqlx::query(
         r#"
         INSERT INTO model_events (id, session_id, turn_id, event_type, payload)
-        VALUES ($1, $2, $3, 'final_response', $4)
+        VALUES ($1, $2, $3, 'runtime_error', $4)
         "#,
     )
     .bind(model_event_id)
     .bind(session_id)
     .bind(turn_id)
     .bind(json!({
-        "summary": format!("Model request failed at {boundary}: {error}"),
+        "summary": runtime_failure_message(boundary),
         "provider": "runtime",
-        "model": "real-model-adapter",
+        "model": "runtime-validation",
         "raw": {"error": error, "boundary": boundary},
     }))
     .execute(pool)
@@ -1360,12 +1360,12 @@ async fn finalize_failed_started_turn(
         Some(turn_id),
         "model",
         Some(model_event_id),
-        "model.final_response",
+        "runtime.validation_failed",
         Some("failed"),
         json!({
-            "finalText": format!("Model request failed at {boundary}: {error}"),
+            "finalText": runtime_failure_message(boundary),
             "provider": "runtime",
-            "model": "real-model-adapter",
+            "model": "runtime-validation",
             "boundary": boundary,
         }),
     )
@@ -1383,6 +1383,13 @@ async fn finalize_failed_started_turn(
     )
     .await?;
     Ok(())
+}
+
+fn runtime_failure_message(boundary: &str) -> String {
+    match boundary {
+        "routing" => "Runtime could not route this message. Check the role recipient settings and try again.".to_string(),
+        _ => "Runtime could not start the model request. Check the role settings and try again.".to_string(),
+    }
 }
 
 #[cfg(test)]

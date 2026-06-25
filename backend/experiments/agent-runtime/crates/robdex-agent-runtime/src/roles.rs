@@ -599,7 +599,7 @@ pub fn db_display_row(snapshot: &RoleSnapshot) -> Value {
     })
 }
 
-pub fn editor_options() -> RoleEditorOptions {
+pub fn editor_options(recipients: Vec<String>) -> RoleEditorOptions {
     RoleEditorOptions {
         policy_decisions: vec![
             "allow".to_string(),
@@ -608,7 +608,7 @@ pub fn editor_options() -> RoleEditorOptions {
             "orchestratorApproval".to_string(),
         ],
         routing_modes: vec!["direct".to_string()],
-        default_recipients: vec!["owner".to_string(), "orchestrator".to_string()],
+        default_recipients: recipients,
         known_actions: actions::ACTIVE_ACTIONS
             .iter()
             .chain(actions::RESERVED_ACTIONS.iter())
@@ -849,7 +849,7 @@ mod tests {
         assert!(manifest.capabilities.contains(&"tooling.request".to_string()));
         assert!(!manifest.capabilities.contains(&"command_registry.apply".to_string()));
         assert_eq!(manifest.routing.default_recipient.as_deref(), Some("owner"));
-        assert!(manifest.routing.allowed_recipients.contains(&"operator".to_string()));
+        assert_eq!(manifest.routing.allowed_recipients, vec!["owner".to_string()]);
         assert!(!manifest.lifecycle_authority.can_spawn_agents);
         assert!(!manifest.lifecycle_authority.can_archive_agents);
         let prompt = fs::read_to_string(root.join("prompts/project-progenitor.md")).expect("project progenitor prompt");

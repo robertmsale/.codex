@@ -2984,12 +2984,12 @@ fn role_editor_options_view(roles: &[RoleSummary], model_options: &[AgentRuntime
     for capability in &capabilities {
         push_unique(&mut policy_actions, capability);
     }
-    let mut recipients = roles
-        .iter()
-        .filter_map(|role| role.routing.get("defaultRecipient").and_then(Value::as_str).map(str::to_string))
-        .collect::<Vec<_>>();
-    push_unique(&mut recipients, "owner");
-    push_unique(&mut recipients, "runtime");
+    let recipients = crate::routing::recipient_options_from_active_role_ids(
+        roles
+            .iter()
+            .filter(|role| role.status == "active")
+            .map(|role| role.id.clone()),
+    );
     let mut reserved_actions = roles
         .iter()
         .flat_map(|role| {
@@ -3010,7 +3010,6 @@ fn role_editor_options_view(roles: &[RoleSummary], model_options: &[AgentRuntime
     models.sort();
     capabilities.sort();
     policy_actions.sort();
-    recipients.sort();
     reserved_actions.sort();
     AgentRuntimeRoleEditorOptionsView {
         models,
