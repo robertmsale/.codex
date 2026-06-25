@@ -37,6 +37,7 @@ use crate::approvals;
 use crate::command_registry::{self, CommandVersion};
 use crate::lifecycle::{self, TerminalStatus};
 use crate::output_artifacts::{self, NewOutputArtifact};
+use crate::output_renderers;
 use crate::policy::{PolicyEngine, RuntimeDecision};
 use crate::roles::RoleSnapshot;
 use crate::workflow_memory::RememberCandidate;
@@ -1850,24 +1851,27 @@ impl HostKernel {
         if !resolved.is_dir() {
             bail!("tree.list path is not a directory");
         }
-        let mut entries = Vec::new();
-        let mut omitted = 0usize;
-        self.walk_tree(&resolved, depth, &mut |entry_path, metadata| {
-            if entries.len() >= STARTER_TREE_RESULT_LIMIT {
-                omitted += 1;
-                return;
-            }
-            let rel = entry_path.strip_prefix(self.root.as_path()).unwrap_or(entry_path);
-            if rel.components().any(|component| component.as_os_str() == ".git") {
-                return;
-            }
-            let kind = if metadata.is_dir() { "directory" } else if metadata.is_file() { "file" } else { "other" };
-            entries.push(json!({"path": rel.display().to_string(), "type": kind, "size": metadata.len()}));
-        })?;
-        let serialized_entries = serde_json::to_string(&entries)?;
-        let artifact_id = self.store_starter_read_artifact("tree.list", path, &serialized_entries, omitted > 0)?;
-        self.record_file_audit("tree.list", path, Some(&resolved), "completed", 0, entries.len(), json!({"omitted": omitted, "maxResults": STARTER_TREE_RESULT_LIMIT, "artifactId": artifact_id}), None, json!({"depth": depth}))?;
-        Ok(serde_json::to_string(&json!({"path": path, "entries": entries, "omitted": omitted, "depth": depth, "artifactId": artifact_id}))?)
+        let (tree_text, shown_entries, omitted) = render_tree_plaintext(&resolved, path, depth, STARTER_TREE_RESULT_LIMIT)?;
+        let artifact_id = self.store_starter_read_artifact("tree.list", path, &tree_text, omitted > 0)?;
+        let rendered = output_renderers::render_tree_list(&tree_text, omitted, "completed");
+        self.record_file_audit(
+            "tree.list",
+            path,
+            Some(&resolved),
+            "completed",
+            rendered.metadata.raw_byte_count,
+            rendered.metadata.raw_line_count,
+            json!({
+                "omitted": omitted,
+                "maxResults": STARTER_TREE_RESULT_LIMIT,
+                "artifactId": artifact_id,
+                "renderer": rendered.metadata,
+            }),
+            None,
+            json!({"depth": depth}),
+        )?;
+        let _ = shown_entries;
+        Ok(rendered.visible_output)
     }
 
     fn tree_find(&self, path: &str, name_glob: &str, kind: &str, max_results: i32) -> anyhow::Result<String> {
@@ -1908,7 +1912,7 @@ impl HostKernel {
     }
 
     fn store_starter_read_artifact(&self, operation: &str, path: &str, content: &str, truncated: bool) -> anyhow::Result<Option<String>> {
-        if !truncated && content.len() <= OUTPUT_LIMIT_BYTES {
+        if operation != "tree.list" && !truncated && content.len() <= OUTPUT_LIMIT_BYTES {
             return Ok(None);
         }
         let (turn_id, tool_call_id, _) = self.starter_context()?;
@@ -1926,6 +1930,63 @@ impl HostKernel {
             metadata: json!({"operation": operation, "path": path, "truncated": truncated}),
         }))?;
         Ok(Some(artifact_id_from_envelope(&envelope)))
+    }
+
+    fn is_tree_noise_entry(path: &Path) -> bool {
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            return false;
+        };
+        matches!(
+            name,
+            "node_modules"
+                | ".git"
+                | "target"
+                | "__pycache__"
+                | ".next"
+                | "dist"
+                | "build"
+                | ".cache"
+                | ".turbo"
+                | ".vercel"
+                | ".pytest_cache"
+                | ".mypy_cache"
+                | ".tox"
+                | ".venv"
+                | "venv"
+                | "env"
+                | "coverage"
+                | ".nyc_output"
+                | ".DS_Store"
+                | "Thumbs.db"
+                | ".idea"
+                | ".vscode"
+                | ".vs"
+                | ".eggs"
+        ) || name.ends_with(".egg-info")
+    }
+
+    fn sorted_tree_children(path: &Path) -> anyhow::Result<Vec<PathBuf>> {
+        let mut children = Vec::new();
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let child = entry.path();
+            if Self::is_tree_noise_entry(&child) {
+                continue;
+            }
+            children.push(child);
+        }
+        children.sort_by(|left, right| {
+            let left_dir = left.is_dir();
+            let right_dir = right.is_dir();
+            right_dir
+                .cmp(&left_dir)
+                .then_with(|| {
+                    let left_name = left.file_name().and_then(|value| value.to_str()).unwrap_or("");
+                    let right_name = right.file_name().and_then(|value| value.to_str()).unwrap_or("");
+                    left_name.cmp(right_name)
+                })
+        });
+        Ok(children)
     }
 
     fn walk_tree<F>(&self, root: &Path, depth: usize, visit: &mut F) -> anyhow::Result<()>
@@ -4955,6 +5016,47 @@ async fn persist_record(
     Ok(())
 }
 
+fn render_tree_plaintext(root: &Path, requested_path: &str, depth: usize, max_entries: usize) -> anyhow::Result<(String, usize, usize)> {
+    let root_label = if requested_path.trim().is_empty() { "." } else { requested_path };
+    let mut lines = vec![root_label.to_string()];
+    let mut shown = 0usize;
+    let mut omitted = 0usize;
+
+    fn walk(path: &Path, prefix: &str, remaining_depth: usize, max_entries: usize, lines: &mut Vec<String>, shown: &mut usize, omitted: &mut usize) -> anyhow::Result<()> {
+        if remaining_depth == 0 {
+            return Ok(());
+        }
+        let children = HostKernel::sorted_tree_children(path)?;
+        let visible_children = children
+            .into_iter()
+            .filter(|child| !HostKernel::is_tree_noise_entry(child))
+            .collect::<Vec<_>>();
+        let last_index = visible_children.len().saturating_sub(1);
+        for (index, child) in visible_children.iter().enumerate() {
+            if *shown >= max_entries {
+                *omitted += 1;
+                continue;
+            }
+            let is_last = index == last_index;
+            let connector = if is_last { "└── " } else { "├── " };
+            let name = child.file_name().and_then(|value| value.to_str()).unwrap_or("");
+            lines.push(format!("{prefix}{connector}{name}"));
+            *shown += 1;
+            if child.is_dir() {
+                let next_prefix = format!("{prefix}{}", if is_last { "    " } else { "│   " });
+                walk(child, &next_prefix, remaining_depth.saturating_sub(1), max_entries, lines, shown, omitted)?;
+            }
+        }
+        Ok(())
+    }
+
+    walk(root, "", depth, max_entries, &mut lines, &mut shown, &mut omitted)?;
+    if omitted > 0 {
+        lines.push(format!("... {omitted} entries omitted"));
+    }
+    Ok((lines.join("\n"), shown, omitted))
+}
+
 async fn persist_managed_process_control_record(pool: &PgPool, session_id: Uuid, process: ManagedProcessRecord) -> Result<()> {
     sqlx::query(
         r#"
@@ -5256,6 +5358,38 @@ print("tree:", tree.list(".", depth=2))"#,
         assert!(result.error.is_none(), "{:?}", result.error);
         assert!(result.output.starts_with("tree: "), "{}", result.output);
         assert!(result.output.contains("visible.txt"), "{}", result.output);
+    }
+
+    #[test]
+    fn tree_list_depth_2_returns_native_tree_plaintext_without_json_envelope() {
+        let root_dir = std::env::temp_dir().join(format!("agent-runtime-tree-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(root_dir.join("src/nested")).unwrap();
+        std::fs::create_dir_all(root_dir.join("node_modules/pkg")).unwrap();
+        std::fs::create_dir_all(root_dir.join(".git/objects")).unwrap();
+        std::fs::write(root_dir.join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
+        std::fs::write(root_dir.join("Cargo.toml"), "[package]\n").unwrap();
+        let (output, _, _) = render_tree_plaintext(&root_dir, ".", 2, STARTER_TREE_RESULT_LIMIT).unwrap();
+        let _ = std::fs::remove_dir_all(root_dir);
+        assert!(output.starts_with(".\n"), "{}", output);
+        assert!(output.contains("├── src") || output.contains("└── src"), "{}", output);
+        assert!(output.contains("│   └── lib.rs") || output.contains("    └── lib.rs"), "{}", output);
+        for forbidden in ["\"path\"", "\"size\"", "{", "[", "node_modules", ".git"] {
+            assert!(!output.contains(forbidden), "forbidden {forbidden} in {}", output);
+        }
+    }
+
+    #[test]
+    fn large_tree_plaintext_is_bounded_with_omission_line() {
+        let root_dir = std::env::temp_dir().join(format!("agent-runtime-large-tree-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root_dir).unwrap();
+        for idx in 0..300 {
+            std::fs::write(root_dir.join(format!("file-{idx:03}.txt")), "x").unwrap();
+        }
+        let (tree, shown, omitted) = render_tree_plaintext(&root_dir, ".", 1, 25).unwrap();
+        let _ = std::fs::remove_dir_all(root_dir);
+        assert_eq!(shown, 25);
+        assert!(omitted > 0);
+        assert!(tree.contains("entries omitted"), "{tree}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

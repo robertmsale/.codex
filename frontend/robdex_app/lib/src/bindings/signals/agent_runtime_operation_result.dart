@@ -102,7 +102,9 @@ class AgentRuntimeOperationResult {
       fullString = '$runtimeType('
         'operation: $operation, '
         'outcome: $outcome, '
-        'message: $message'
+        'message: $message, '
+        'valueJson: $valueJson, '
+        'hasValueJson: $hasValueJson'
         ')';
       return true;
     }());

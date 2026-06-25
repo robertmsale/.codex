@@ -837,6 +837,10 @@ async fn selected_chat_entries(
             kind: "message".to_string(),
             status: status.clone(),
             process_id: None,
+                tool_call_id: None,
+                script_run_id: None,
+                stdout_artifact_id: None,
+                stderr_artifact_id: None,
             command: String::new(),
             output: String::new(),
             image_preview_base64: None,
@@ -920,6 +924,10 @@ async fn image_artifact_chat_entries(pool: &PgPool, session_id: Uuid) -> Result<
                 kind: "imageView".to_string(),
                 status: "stored".to_string(),
                 process_id: None,
+                tool_call_id: None,
+                script_run_id: None,
+                stdout_artifact_id: None,
+                stderr_artifact_id: None,
                 command: source,
                 output: format!("agent-runtime-image://{session_id}/{id}"),
                 image_preview_base64: Some(BASE64_STANDARD.encode(bytes)),
@@ -976,6 +984,10 @@ async fn submitted_input_chat_entries_for_turn(pool: &PgPool, turn_id: Uuid) -> 
                 kind: "message".to_string(),
                 status: subtitle,
                 process_id: None,
+                tool_call_id: None,
+                script_run_id: None,
+                stdout_artifact_id: None,
+                stderr_artifact_id: None,
                 command: String::new(),
                 output: String::new(),
                 image_preview_base64: None,
@@ -1018,6 +1030,10 @@ async fn turn_chat_entry(pool: &PgPool, turn_id: Uuid) -> Result<Option<AgentRun
             kind: "message".to_string(),
             status: status.clone(),
             process_id: None,
+                tool_call_id: None,
+                script_run_id: None,
+                stdout_artifact_id: None,
+                stderr_artifact_id: None,
             command: String::new(),
             output: String::new(),
             image_preview_base64: None,
@@ -1067,6 +1083,10 @@ async fn runtime_error_chat_entry(
             kind: "system_error".to_string(),
             status: "failed".to_string(),
             process_id: None,
+                tool_call_id: None,
+                script_run_id: None,
+                stdout_artifact_id: None,
+                stderr_artifact_id: None,
             command: String::new(),
             output: String::new(),
             image_preview_base64: None,
@@ -1116,6 +1136,10 @@ async fn assistant_chat_entry(
             kind: "message".to_string(),
             status: "completed".to_string(),
             process_id: None,
+                tool_call_id: None,
+                script_run_id: None,
+                stdout_artifact_id: None,
+                stderr_artifact_id: None,
             command: String::new(),
             output: String::new(),
             image_preview_base64: None,
@@ -1137,7 +1161,8 @@ async fn tool_chat_entries(
         r#"
         SELECT tc.id AS tool_id, tc.tool_name, tc.status AS tool_status, tc.result, tc.started_at,
                sr.id AS script_id, sr.source, sr.status AS script_status, sr.final_output,
-               COALESCE(sr.final_output, '') AS script_output,
+               COALESCE(sr.final_output, '') AS script_output, COALESCE(sr.stderr, '') AS script_stderr,
+               stdout_artifact.id AS stdout_artifact_id, stderr_artifact.id AS stderr_artifact_id,
                mp.id AS process_id, mp.handle AS process_handle, mp.binary_name, mp.argv, mp.status AS process_status,
                (
                    SELECT string_agg(
@@ -1152,6 +1177,16 @@ async fn tool_chat_entries(
         FROM tool_calls tc
         LEFT JOIN script_runs sr ON sr.tool_call_id = tc.id
         LEFT JOIN managed_processes mp ON mp.starting_turn_id = tc.turn_id
+        LEFT JOIN LATERAL (
+            SELECT id FROM execution_output_artifacts
+            WHERE (tool_call_id = tc.id OR script_run_id = sr.id) AND stream = 'stdout'
+            ORDER BY created_at DESC LIMIT 1
+        ) stdout_artifact ON true
+        LEFT JOIN LATERAL (
+            SELECT id FROM execution_output_artifacts
+            WHERE (tool_call_id = tc.id OR script_run_id = sr.id) AND stream = 'stderr'
+            ORDER BY created_at DESC LIMIT 1
+        ) stderr_artifact ON true
         WHERE tc.session_id = $1 AND tc.turn_id = $2
         ORDER BY tc.started_at ASC
         "#,
@@ -1173,6 +1208,9 @@ async fn tool_chat_entries(
             let argv: Option<Value> = row.get("argv");
             let artifact_output: Option<String> = row.get("artifact_output");
             let script_output: Option<String> = row.get("script_output");
+            let script_stderr: Option<String> = row.get("script_stderr");
+            let stdout_artifact_id: Option<Uuid> = row.get("stdout_artifact_id");
+            let stderr_artifact_id: Option<Uuid> = row.get("stderr_artifact_id");
             let status = row
                 .get::<Option<String>, _>("script_status")
                 .or_else(|| row.get::<Option<String>, _>("process_status"))
@@ -1191,11 +1229,19 @@ async fn tool_chat_entries(
                     })
                 })
                 .unwrap_or_else(|| tool_name.clone());
-            let output = match (script_output.filter(|value| !value.is_empty()), artifact_output.filter(|value| !value.is_empty())) {
-                (Some(explicit), Some(artifacts)) => format!("{explicit}\n{artifacts}"),
-                (Some(explicit), None) => explicit,
-                (None, Some(artifacts)) => artifacts,
-                (None, None) => String::new(),
+            let output = match (
+                script_output.filter(|value| !value.is_empty()),
+                script_stderr.filter(|value| !value.is_empty()),
+                artifact_output.filter(|value| !value.is_empty()),
+            ) {
+                (Some(explicit), Some(stderr), Some(artifacts)) => format!("{explicit}\nstderr:\n{stderr}\n{artifacts}"),
+                (Some(explicit), Some(stderr), None) => format!("{explicit}\nstderr:\n{stderr}"),
+                (Some(explicit), None, Some(artifacts)) => format!("{explicit}\n{artifacts}"),
+                (Some(explicit), None, None) => explicit,
+                (None, Some(stderr), Some(artifacts)) => format!("stderr:\n{stderr}\n{artifacts}"),
+                (None, Some(stderr), None) => format!("stderr:\n{stderr}"),
+                (None, None, Some(artifacts)) => artifacts,
+                (None, None, None) => String::new(),
             };
             let process = process_id.map(|id| id.to_string());
             AgentRuntimeChatEntry {
@@ -1208,6 +1254,10 @@ async fn tool_chat_entries(
                 kind: tool_name,
                 status: status.clone(),
                 process_id: process,
+                tool_call_id: Some(tool_id.to_string()),
+                script_run_id: script_id.map(|id| id.to_string()),
+                stdout_artifact_id: stdout_artifact_id.map(|id| id.to_string()),
+                stderr_artifact_id: stderr_artifact_id.map(|id| id.to_string()),
                 command,
                 output,
                 image_preview_base64: None,
@@ -1947,7 +1997,7 @@ mod tests {
     #[tokio::test]
     async fn selected_conversation_is_built_from_durable_chat_sources_not_event_stream_labels() {
         let (admin_url, database_name, pool) = create_validation_database("selected_chat_sources").await;
-        let (session_id, _turn_id, _tool_id, _script_id, _process_id, _artifact_id, _model_event_id, final_text) = seed_durable_selected_chat(&pool).await;
+        let (session_id, _turn_id, tool_id, script_id, _process_id, artifact_id, _model_event_id, final_text) = seed_durable_selected_chat(&pool).await;
         let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
         drop(pool);
         drop_validation_database(&admin_url, &database_name).await;
@@ -1957,6 +2007,9 @@ mod tests {
         assert_eq!(snapshot.selected_chat_entries[0].body, "Exact submitted composer text");
         assert_eq!(snapshot.selected_chat_entries[1].author, "Tool");
         assert!(snapshot.selected_chat_entries[1].is_tool);
+        assert_eq!(snapshot.selected_chat_entries[1].tool_call_id, Some(tool_id.to_string()));
+        assert_eq!(snapshot.selected_chat_entries[1].script_run_id, Some(script_id.to_string()));
+        assert_eq!(snapshot.selected_chat_entries[1].stdout_artifact_id, Some(artifact_id.to_string()));
         assert_eq!(snapshot.selected_chat_entries[2].author, "Assistant");
         assert_eq!(snapshot.selected_chat_entries[2].body, final_text);
         let forbidden = [

@@ -14,6 +14,7 @@ pub mod model;
 pub mod model_input;
 pub mod operations;
 pub mod output_artifacts;
+pub mod output_renderers;
 pub mod policy;
 pub mod projection;
 pub mod requirements;

@@ -156,6 +156,46 @@ class RobdexDesignLabHome extends StatelessWidget {
     if (surface == 'agentRuntimeStarterKitImageEvidence') {
       return _AgentRuntimeScenario(data: _starterKitImageEvidenceData());
     }
+    if (surface == 'agentRuntimeExpandedToolCard') {
+      return Scaffold(
+        backgroundColor: const Color(0xFF0E141B),
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: ChatTimeline(
+              threadId: 'agent-runtime-expanded-tool-card',
+              title: 'Runtime validation',
+              entries: const [
+                ChatEntry(
+                  id: 'tool-expanded-proof',
+                  author: 'Tool',
+                  displayLabel: 'Tool',
+                  timestamp: null,
+                  body: '',
+                  subtitle: 'Execute code',
+                  kind: 'execute_code',
+                  status: 'failed',
+                  command: 'print(tree.list(".", depth=2))\nfail("later validation failed")',
+                  output: '.\n├── backend\n│   └── Cargo.toml\n└── frontend\nstderr:\nlater validation failed\nstdout stdout-artifact-1 (96 bytes, 4 lines)\nstderr stderr-artifact-1 (24 bytes, 1 line)',
+                  toolCallId: 'tool-call-1',
+                  scriptRunId: 'script-run-1',
+                  stdoutArtifactId: 'stdout-artifact-1',
+                  stderrArtifactId: 'stderr-artifact-1',
+                  deliveryState: 'delivered',
+                  isTool: true,
+                ),
+              ],
+              contextWindowRemainingPercent: null,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: false,
+              isRunning: false,
+              initialExpandedEntryIds: {'tool-expanded-proof'},
+            ),
+          ),
+        ),
+      );
+    }
     if (surface == 'agentRuntimeCreateSessionModal') {
       return Scaffold(
         backgroundColor: const Color(0xFF0E141B),

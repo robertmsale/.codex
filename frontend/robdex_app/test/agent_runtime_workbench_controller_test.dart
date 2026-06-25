@@ -554,6 +554,14 @@ void main() {
             status: 'completed',
             processId: 'proc-terminal',
             hasProcessId: true,
+            toolCallId: 'tool-call-terminal',
+            hasToolCallId: true,
+            scriptRunId: 'script-run-terminal',
+            hasScriptRunId: true,
+            stdoutArtifactId: 'stdout-terminal',
+            hasStdoutArtifactId: true,
+            stderrArtifactId: 'stderr-terminal',
+            hasStderrArtifactId: true,
             command: 'execute_code',
             output: 'ok',
             deliveryState: 'delivered',
@@ -592,6 +600,11 @@ void main() {
     ));
 
     expect(controller.data.selectedConversation.map((entry) => entry.author), containsAll(<String>['User', 'Tool', 'Assistant']));
+    final toolEntry = controller.data.selectedConversation.firstWhere((entry) => entry.isTool);
+    expect(toolEntry.toolCallId, 'tool-call-terminal');
+    expect(toolEntry.scriptRunId, 'script-run-terminal');
+    expect(toolEntry.stdoutArtifactId, 'stdout-terminal');
+    expect(toolEntry.stderrArtifactId, 'stderr-terminal');
     expect(controller.data.selectedConversation.every((entry) => entry.status == 'completed'), isTrue);
     expect(controller.data.selectedConversation.any((entry) => entry.isStreaming), isFalse);
     expect(controller.data.selectedConversation.length, 3);
