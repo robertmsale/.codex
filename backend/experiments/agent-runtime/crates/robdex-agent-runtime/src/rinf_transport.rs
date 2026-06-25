@@ -1354,39 +1354,40 @@ fn process_actions(
 
 fn role_admin_surface_rows(view: &AgentRuntimeRoleAdminView) -> Vec<AgentRuntimeWorkbenchFact> {
     let mut rows = view.rows.iter().map(|row| {
-        fact(row.title.as_str(), format!("status={} · current version available", row.status).as_str())
+        fact(row.title.as_str(), format!("{} · current version available", row.status).as_str())
     }).collect::<Vec<_>>();
     if let Some(detail) = &view.selected_detail {
+        let policy_count = detail.policy.len();
+        let capability_count = detail.capabilities.len();
         rows.push(fact("Selected role detail", format!(
-            "displayName={} · version={} · model={} · status={} · capabilities={} · policies={} · routing={} · visibility={} · lifecycle={} · instructionBytes={}",
+            "{} is {} on version {} using {}. {} {} and {} approval polic{} are configured. Routing, visibility, and lifecycle protections are ready. Instructions are {}.",
             detail.display_name,
+            detail.status,
             detail.version,
             detail.model,
-            detail.status,
-            detail.capabilities.join(","),
-            detail.policy.iter().map(|row| format!("{}={}", row.action, row.decision)).collect::<Vec<_>>().join(","),
-            detail.routing.iter().map(|fact| format!("{}={}", fact.label, fact.value)).collect::<Vec<_>>().join(","),
-            detail.visibility.iter().map(|fact| format!("{}={}", fact.label, fact.value)).collect::<Vec<_>>().join(","),
-            detail.lifecycle_authority.iter().map(|fact| format!("{}={}", fact.label, fact.value)).collect::<Vec<_>>().join(","),
-            detail.instruction_text.len(),
+            capability_count,
+            if capability_count == 1 { "capability" } else { "capabilities" },
+            policy_count,
+            if policy_count == 1 { "y" } else { "ies" },
+            if detail.instruction_text.is_empty() { "empty" } else { "present" },
         ).as_str()));
     }
     for version in &view.version_rows {
-        rows.push(fact("Immutable version", format!("version={} · status={} · created={}", version.version, version.status, version.created_at.as_deref().unwrap_or("unknown")).as_str()));
+        rows.push(fact("Immutable version", format!("Version {} is {} · created {}", version.version, version.status, version.created_at.as_deref().unwrap_or("unknown")).as_str()));
     }
     if let Some(draft) = &view.editor_draft {
+        let recipient_count = draft.allowed_recipients.len();
         rows.push(fact("CodeForge instruction editor", format!(
-            "defaultModel={} · reasoning={} · routingMode={} · defaultRecipient={} · allowedRecipients={} · reservedActions={} · listed={} · ownerVisible={} · lifecycleReserved={} · instructionBytes={}",
+            "Draft uses {} with {} reasoning and {} routing to {}. {} recipient{} can receive messages. Protected routing and lifecycle actions are configured. The role is {} and owner visibility is {}. Instructions are {}.",
             draft.model,
             draft.reasoning_effort,
             draft.routing_mode,
-            draft.default_recipient.as_deref().unwrap_or("none"),
-            draft.allowed_recipients.join(","),
-            draft.routing_reserved_actions.join(","),
-            draft.listed,
-            draft.owner_visible,
-            draft.lifecycle_reserved_actions.join(","),
-            draft.instruction_text.len(),
+            draft.default_recipient.as_deref().unwrap_or("the owner"),
+            recipient_count,
+            if recipient_count == 1 { "" } else { "s" },
+            if draft.listed { "listed" } else { "hidden" },
+            if draft.owner_visible { "enabled" } else { "disabled" },
+            if draft.instruction_text.is_empty() { "empty" } else { "present" },
         ).as_str()));
     }
     rows
@@ -5476,9 +5477,9 @@ mod tests {
         assert!(compaction.rows.iter().any(|row| row.label == "compaction.failed" && row.value.contains("checkpoint=checkpoint-failed") && row.value.contains("failure=\"forced fixture failure\"")));
         assert!(compaction.actions.iter().any(|action| action.kind == "compactionManual" && action.title == "Compact selected session"));
         let role_admin = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "roleAdmin").expect("role admin surface");
-        assert!(role_admin.rows.iter().any(|row| row.label == "Selected role detail" && row.value.contains("capabilities=tool.execute_code") && row.value.contains("policies=tool.execute_code=allow") && row.value.contains("instructionBytes=") && !row.value.contains("role-version")));
-        assert!(role_admin.rows.iter().any(|row| row.label == "Immutable version" && row.value.contains("version=") && row.value.contains("status=") && !row.value.contains("versionId=")));
-        assert!(role_admin.rows.iter().any(|row| row.label == "CodeForge instruction editor" && row.value.contains("defaultModel=gpt-5.4-mini") && row.value.contains("routingMode=direct")));
+        assert!(role_admin.rows.iter().any(|row| row.label == "Selected role detail" && row.value.contains("Runtime Allow") && row.value.contains("1 capability") && row.value.contains("1 approval policy") && row.value.contains("Instructions are present") && !row.value.contains("role-version") && !row.value.contains("capabilities=") && !row.value.contains("policies=") && !row.value.contains("instructionBytes=")));
+        assert!(role_admin.rows.iter().any(|row| row.label == "Immutable version" && row.value.contains("Version ") && row.value.contains(" is ") && !row.value.contains("version=") && !row.value.contains("status=") && !row.value.contains("versionId=")));
+        assert!(role_admin.rows.iter().any(|row| row.label == "CodeForge instruction editor" && row.value.contains("gpt-5.4-mini") && row.value.contains("direct routing") && row.value.contains("Instructions are present") && !row.value.contains("defaultModel=") && !row.value.contains("routingMode=")));
         assert!(role_admin.actions.iter().any(|action| action.title == "Create role draft"));
         assert!(role_admin.actions.iter().any(|action| action.title == "Update role draft"));
         assert!(role_admin.actions.iter().any(|action| action.title == "Activate current version"));
