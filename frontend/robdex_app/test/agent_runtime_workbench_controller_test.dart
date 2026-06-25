@@ -2194,6 +2194,8 @@ void main() {
     expect(find.text('Session Settings'), findsOneWidget);
     expect(find.text('Processes (2)'), findsOneWidget);
     expect(find.text('Approve command execution'), findsOneWidget);
+    expect(find.text('Started 09:14'), findsOneWidget);
+    expect(find.textContaining('Requested 4m ago'), findsOneWidget);
     expect(find.text('Duplicate Settings Unavailable'), findsOneWidget);
     expect(find.text('No typed duplicate operation exists'), findsOneWidget);
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionControl.title')), 'Updated Session');

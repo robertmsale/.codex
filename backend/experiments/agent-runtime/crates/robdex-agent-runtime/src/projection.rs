@@ -2174,6 +2174,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn selected_session_managed_processes_are_projected_from_current_rows_not_timeline_events() {
+        let (admin_url, database_name, pool) = create_validation_database("managed_process_rows").await;
+        db::init(&pool).await.expect("init schema");
+        let session_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let running_id = Uuid::new_v4();
+        let completed_id = Uuid::new_v4();
+        let lost_id = Uuid::new_v4();
+        let timeline_only_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','project-a','/tmp/processes','Process row proof',true)")
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .expect("session");
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, completed_at) VALUES ($1,$2,'user','start processes','completed',now())")
+            .bind(turn_id)
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .expect("turn");
+        for (id, handle, status, end_time, stdin_policy, binary, argv) in [
+            (running_id, "row-running", "running", false, "allow", "python", json!(["-m", "http.server"])),
+            (completed_id, "row-completed", "completed", true, "none", "echo", json!(["done"])),
+            (lost_id, "row-lost", "lost", true, "forbid", "tail", json!(["-f", "app.log"])),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO managed_processes (
+                    id, handle, session_id, starting_turn_id, binary_name, argv, cwd, os_pid,
+                    status, start_time, end_time, end_of_turn_behavior, end_of_session_behavior, metadata
+                )
+                VALUES ($1,$2,$3,$4,$5,$6,'/tmp/processes',4242,$7,now() - interval '5 minutes',
+                    CASE WHEN $8 THEN now() - interval '1 minute' ELSE NULL END,
+                    'continue','terminate',$9)
+                "#,
+            )
+            .bind(id)
+            .bind(handle)
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(binary)
+            .bind(argv)
+            .bind(status)
+            .bind(end_time)
+            .bind(json!({"stdinPolicy": stdin_policy}))
+            .execute(&pool)
+            .await
+            .expect("managed process");
+        }
+        sqlx::query("INSERT INTO event_stream (session_id, turn_id, entity_type, entity_id, event_type, status, payload) VALUES ($1,$2,'process',$3,'process.started','lost',$4)")
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(running_id)
+            .bind(json!({"handle":"row-running","binary":"timeline-binary","status":"lost"}))
+            .execute(&pool)
+            .await
+            .expect("conflicting process event");
+        sqlx::query("INSERT INTO event_stream (session_id, turn_id, entity_type, entity_id, event_type, status, payload) VALUES ($1,$2,'process',$3,'process.started','running',$4)")
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(timeline_only_id)
+            .bind(json!({"handle":"timeline-only","binary":"timeline","argv":["fake"],"cwd":"/tmp/event-only"}))
+            .execute(&pool)
+            .await
+            .expect("timeline-only process event");
+
+        let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
+        let event_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1")
+            .bind(session_id)
+            .fetch_one(&pool)
+            .await
+            .expect("event rows");
+        drop(pool);
+        drop_validation_database(&admin_url, &database_name).await;
+
+        assert_eq!(event_rows, 2);
+        let selected = snapshot.selected_session.as_ref().expect("selected session");
+        assert_eq!(selected.managed_process_count, 3);
+        assert_eq!(selected.managed_processes.len(), 3);
+        let by_handle = selected
+            .managed_processes
+            .iter()
+            .map(|process| (process.handle.as_str(), process))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let running = by_handle.get("row-running").expect("running row");
+        assert_eq!(running.status, "running");
+        assert!(running.command_label.contains("python"));
+        assert!(running.started_at.is_some());
+        assert!(running.ended_at.is_none());
+        assert!(running.can_terminate);
+        assert!(running.can_flush);
+        assert!(running.can_input);
+        let completed = by_handle.get("row-completed").expect("completed row");
+        assert_eq!(completed.status, "completed");
+        assert!(completed.started_at.is_some());
+        assert!(completed.ended_at.is_some());
+        assert!(!completed.can_terminate);
+        assert!(completed.can_flush);
+        assert!(!completed.can_input);
+        let lost = by_handle.get("row-lost").expect("lost row");
+        assert_eq!(lost.status, "lost");
+        assert!(lost.started_at.is_some());
+        assert!(lost.ended_at.is_some());
+        assert!(!lost.can_terminate);
+        assert!(lost.can_flush);
+        assert!(!lost.can_input);
+        assert!(!by_handle.contains_key("timeline-only"), "timeline-only process event must not create a selected managed-process row");
+        assert!(
+            selected
+                .managed_processes
+                .iter()
+                .all(|process| !process.command_label.contains("timeline-binary")),
+            "event-stream process payload must not override authoritative managed_processes rows"
+        );
+    }
+
+    #[tokio::test]
     async fn postgres_backed_snapshot_builds_from_current_schema() {
         let admin_url = std::env::var("ROBDEX_AGENT_RUNTIME_VALIDATION_ADMIN_DATABASE_URL")
             .unwrap_or_else(|_| "postgres://postgres@127.0.0.1:5432/postgres".to_string());

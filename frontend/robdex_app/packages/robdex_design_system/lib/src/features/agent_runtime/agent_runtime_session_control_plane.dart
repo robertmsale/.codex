@@ -222,6 +222,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
     return _section('Processes (${control.managedProcesses.length})', [
       for (final process in control.managedProcesses) _processRow(process),
       if (first != null) _detailPanel([
+        _factRow('Started', first.startedAt),
         _factRow('PID', first.pid.isEmpty ? 'Unavailable' : first.pid),
         _factRow('CWD', first.cwd),
         _factRow('Policy', 'End of turn: ${first.endOfTurnBehavior} · End of session: ${first.endOfSessionBehavior}'),
@@ -241,7 +242,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
         TextField(key: const ValueKey('agentRuntime.sessionControl.approvalReason'), controller: _reason, style: const TextStyle(color: Colors.white), decoration: _input().copyWith(labelText: 'Decision reason')),
         const SizedBox(height: 12),
         for (final approval in control.approvals)
-          _decisionCard(approval.title, approval.contextSummary, approval.status, [
+          _decisionCard(approval.title, [approval.contextSummary, 'Requested ${approval.requestedAt}'.trim()].where((line) => line.isNotEmpty && line != 'Requested').join(' · '), approval.status, [
             _smallButton('Approve', Colors.green, approval.canDecide ? () => widget.onApprove(approval.id, _reason.text) : null),
             _smallButton('Deny', Colors.redAccent, approval.canDecide ? () => widget.onDeny(approval.id, _reason.text) : null),
             _smallButton('Resume', Colors.blueAccent, approval.canResume ? () => widget.onResumeApproval(approval.id) : null),
@@ -314,7 +315,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
   Widget _factRow(String label, String value) => Padding(padding: const EdgeInsets.only(bottom: 10), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [SizedBox(width: 120, child: Text(label, style: const TextStyle(color: Color(0xFFB8C4D3)))), Expanded(child: Text(value.isEmpty ? 'Unavailable' : value, style: const TextStyle(color: Color(0xFFE8EEF6))))]));
   Widget _pill(String text, Color color) => Container(padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4), decoration: BoxDecoration(color: color.withValues(alpha: .18), borderRadius: BorderRadius.circular(7)), child: Text(text, style: TextStyle(color: color, fontSize: 12)));
   Widget _detailPanel(List<Widget> children) => Container(margin: const EdgeInsets.only(top: 8), padding: const EdgeInsets.all(12), decoration: BoxDecoration(border: Border.all(color: const Color(0x1FFFFFFF)), borderRadius: BorderRadius.circular(8)), child: Column(children: children));
-  Widget _processRow(AgentRuntimeManagedProcessRow p) => Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Row(children: [Expanded(flex: 2, child: Text(p.handle, style: const TextStyle(color: Color(0xFFE8EEF6)))), Expanded(flex: 3, child: Text(p.command, style: const TextStyle(color: Color(0xFFE8EEF6)))), Expanded(child: _pill(p.status, p.status == 'running' ? Colors.green : Colors.orange)), IconButton(onPressed: p.canTerminate ? () => widget.onTerminateProcess(p.handle) : null, icon: const Icon(Icons.close_rounded, size: 18))]));
+  Widget _processRow(AgentRuntimeManagedProcessRow p) => Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Row(children: [Expanded(flex: 2, child: Text(p.handle, style: const TextStyle(color: Color(0xFFE8EEF6)))), Expanded(flex: 3, child: Text(p.command, style: const TextStyle(color: Color(0xFFE8EEF6)))), Expanded(flex: 2, child: Text(p.startedAt.isEmpty ? 'Started unavailable' : 'Started ${p.startedAt}', style: const TextStyle(color: Color(0xFFB8C4D3), fontSize: 12))), Expanded(child: _pill(p.status, p.status == 'running' ? Colors.green : Colors.orange)), IconButton(onPressed: p.canTerminate ? () => widget.onTerminateProcess(p.handle) : null, icon: const Icon(Icons.close_rounded, size: 18))]));
   Widget _decisionCard(String title, String subtitle, String status, List<Widget> actions) => Container(margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(14), decoration: BoxDecoration(border: Border.all(color: const Color(0x668B5CF6)), borderRadius: BorderRadius.circular(8)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(children: [Expanded(child: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600))), _pill(status, Colors.purpleAccent)]), const SizedBox(height: 6), Text(subtitle, style: const TextStyle(color: Color(0xFFB8C4D3))), const SizedBox(height: 10), Wrap(spacing: 10, children: actions)]));
   Widget _smallButton(String label, Color color, VoidCallback? onPressed) => OutlinedButton(onPressed: onPressed, style: OutlinedButton.styleFrom(foregroundColor: color), child: Text(label));
   Widget _quick(String label, Color color, VoidCallback? onPressed) => Padding(padding: const EdgeInsets.only(right: 12), child: OutlinedButton(onPressed: onPressed, style: OutlinedButton.styleFrom(foregroundColor: color), child: Text(label)));

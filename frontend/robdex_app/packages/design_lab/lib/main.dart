@@ -218,40 +218,7 @@ class RobdexDesignLabHome extends StatelessWidget {
       );
     }
     if (surface == 'agentRuntimeSessionSettingsModal') {
-      return AgentRuntimeSessionControlPlane(
-        data: mockAgentRuntimeConnected,
-        onClose: () {},
-        onSave: ({
-          required sessionId,
-          required project,
-          required role,
-          required model,
-          required workdir,
-          required worktreeRoot,
-          required title,
-          required name,
-          required tracked,
-        }) {},
-        onCloseSession: (_) {},
-        onArchiveSession: (_) {},
-        onForkSession: (_) {},
-        onCompact: (_) {},
-        onGrantGodMode: (_) {},
-        onRevokeGodMode: (_) {},
-        onTerminateProcess: (_) {},
-        onFlushProcess: (_) {},
-        onInputProcess: (_, _) {},
-        onApprove: (_, _) {},
-        onDeny: (_, _) {},
-        onResumeApproval: (_) {},
-        onPreviewCommandRequest: (_) {},
-        onApproveCommandRequest: (_) {},
-        onDenyCommandRequest: (_) {},
-        onApplyCommandRequest: (_) {},
-        onShowCommand: (_) {},
-        onShowCommandRequest: (_) {},
-        onSetRequirements: (_, {required title, required key, required statement}) {},
-      );
+      return buildAgentRuntimeSessionSettingsSurface();
     }
     if (surface == 'agentRuntimeGlobalSettingsModal') {
       return Scaffold(
@@ -478,6 +445,43 @@ class RobdexDesignLabHome extends StatelessWidget {
       ),
     );
   }
+}
+
+Widget buildAgentRuntimeSessionSettingsSurface() {
+  return AgentRuntimeSessionControlPlane(
+    data: mockAgentRuntimeConnected,
+    onClose: () {},
+    onSave: ({
+      required sessionId,
+      required project,
+      required role,
+      required model,
+      required workdir,
+      required worktreeRoot,
+      required title,
+      required name,
+      required tracked,
+    }) {},
+    onCloseSession: (_) {},
+    onArchiveSession: (_) {},
+    onForkSession: (_) {},
+    onCompact: (_) {},
+    onGrantGodMode: (_) {},
+    onRevokeGodMode: (_) {},
+    onTerminateProcess: (_) {},
+    onFlushProcess: (_) {},
+    onInputProcess: (_, _) {},
+    onApprove: (_, _) {},
+    onDeny: (_, _) {},
+    onResumeApproval: (_) {},
+    onPreviewCommandRequest: (_) {},
+    onApproveCommandRequest: (_) {},
+    onDenyCommandRequest: (_) {},
+    onApplyCommandRequest: (_) {},
+    onShowCommand: (_) {},
+    onShowCommandRequest: (_) {},
+    onSetRequirements: (_, {required title, required key, required statement}) {},
+  );
 }
 
 WorkbenchViewData _cleanRobdexGenericWorkbench(WorkbenchViewData workbench) {
