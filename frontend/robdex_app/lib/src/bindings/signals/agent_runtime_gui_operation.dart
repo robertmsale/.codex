@@ -55,6 +55,7 @@ abstract class AgentRuntimeGuiOperation {
       case 42: return AgentRuntimeGuiOperationClearRequirements.load(deserializer);
       case 43: return AgentRuntimeGuiOperationShowRequirementsStatus.load(deserializer);
       case 44: return AgentRuntimeGuiOperationListRequirementsPackets.load(deserializer);
+      case 45: return AgentRuntimeGuiOperationLoadFullSizeImage.load(deserializer);
       default: throw Exception('Unknown variant index for AgentRuntimeGuiOperation: ' + index.toString());
     }
   }
@@ -3181,5 +3182,73 @@ class AgentRuntimeGuiOperationListRequirementsPackets extends AgentRuntimeGuiOpe
     }());
 
     return fullString ?? 'AgentRuntimeGuiOperationListRequirementsPackets';
+  }
+}
+
+
+@immutable
+class AgentRuntimeGuiOperationLoadFullSizeImage extends AgentRuntimeGuiOperation {
+  const AgentRuntimeGuiOperationLoadFullSizeImage({
+    required this.sessionId,
+    required this.imageArtifactId,
+  }) : super();
+
+  static AgentRuntimeGuiOperationLoadFullSizeImage load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = AgentRuntimeGuiOperationLoadFullSizeImage(
+      sessionId: deserializer.deserializeString(),
+      imageArtifactId: deserializer.deserializeString(),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final String sessionId;
+  final String imageArtifactId;
+
+  AgentRuntimeGuiOperationLoadFullSizeImage copyWith({
+    String? sessionId,
+    String? imageArtifactId,
+  }) {
+    return AgentRuntimeGuiOperationLoadFullSizeImage(
+      sessionId: sessionId ?? this.sessionId,
+      imageArtifactId: imageArtifactId ?? this.imageArtifactId,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(45);
+    serializer.serializeString(sessionId);
+    serializer.serializeString(imageArtifactId);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is AgentRuntimeGuiOperationLoadFullSizeImage
+      && sessionId == other.sessionId
+      && imageArtifactId == other.imageArtifactId;
+  }
+
+  @override
+  int get hashCode => Object.hash(sessionId, imageArtifactId);
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'sessionId: $sessionId, '
+        'imageArtifactId: $imageArtifactId'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'AgentRuntimeGuiOperationLoadFullSizeImage';
   }
 }

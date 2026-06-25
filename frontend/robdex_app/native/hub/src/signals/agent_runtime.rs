@@ -73,6 +73,7 @@ pub enum AgentRuntimeGuiOperation {
     ClearRequirements { session_id: String },
     ShowRequirementsStatus { session_id: String },
     ListRequirementsPackets { session_id: String },
+    LoadFullSizeImage { session_id: String, image_artifact_id: String },
 }
 
 #[derive(Clone, Debug, Deserialize, SignalPiece)]
@@ -252,6 +253,8 @@ pub struct AgentRuntimeOperationResult {
     pub operation: String,
     pub outcome: String,
     pub message: String,
+    pub value_json: String,
+    pub has_value_json: bool,
 }
 
 #[derive(Clone, Debug, Serialize, SignalPiece)]
@@ -515,6 +518,12 @@ pub struct AgentRuntimeChatEntry {
     pub has_process_id: bool,
     pub command: String,
     pub output: String,
+    pub image_preview_base64: String,
+    pub has_image_preview_base64: bool,
+    pub image_preview_content_type: String,
+    pub has_image_preview_content_type: bool,
+    pub image_preview_error: String,
+    pub has_image_preview_error: bool,
     pub delivery_state: String,
     pub is_streaming: bool,
     pub is_tool: bool,

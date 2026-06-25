@@ -143,11 +143,7 @@ void main() {
     for (final title in <String>[
       'Session',
       'Compaction',
-      'Statistics',
       'Process Manager',
-      'Image artifacts',
-      'Settings',
-      'History',
       'Approvals',
       'Command Registry',
       'Role Admin',
@@ -155,8 +151,9 @@ void main() {
     ]) {
       await expectVisibleText(title);
     }
-    expect(mockAgentRuntimeConnected.operationSurfaces.map((surface) => surface.title), contains('History'));
-    expect(mockAgentRuntimeConnected.operationSurfaces.expand((surface) => surface.rows).map((row) => row.label), contains('Role imported'));
+    expect(mockAgentRuntimeConnected.operationSurfaces.map((surface) => surface.title), isNot(contains('History')));
+    expect(mockAgentRuntimeConnected.operationSurfaces.map((surface) => surface.title), isNot(contains('Image artifacts')));
+    expect(mockAgentRuntimeConnected.operationSurfaces.map((surface) => surface.title), isNot(contains('Statistics')));
   });
 
 }

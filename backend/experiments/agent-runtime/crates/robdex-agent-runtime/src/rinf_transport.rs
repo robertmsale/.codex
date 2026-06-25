@@ -239,6 +239,9 @@ pub struct AgentRuntimeChatEntry {
     pub process_id: Option<String>,
     pub command: String,
     pub output: String,
+    pub image_preview_base64: Option<String>,
+    pub image_preview_content_type: Option<String>,
+    pub image_preview_error: Option<String>,
     pub delivery_state: String,
     pub is_streaming: bool,
     pub is_tool: bool,
@@ -1013,6 +1016,9 @@ fn agent_runtime_chat_entry(entry: &robdex_agent_runtime_projection::AgentRuntim
         process_id: entry.process_id.clone(),
         command: entry.command.clone(),
         output: entry.output.clone(),
+        image_preview_base64: entry.image_preview_base64.clone(),
+        image_preview_content_type: entry.image_preview_content_type.clone(),
+        image_preview_error: entry.image_preview_error.clone(),
         delivery_state: entry.delivery_state.clone(),
         is_streaming: entry.is_streaming,
         is_tool: entry.is_tool,
@@ -1100,70 +1106,11 @@ fn operation_surfaces(
         actions: compaction_actions(controller_state.selected_session_id.as_deref().or_else(|| selected.map(|session| session.id.as_str()))),
     });
     surfaces.push(AgentRuntimeOperationSurface {
-        surface_id: "statistics".to_string(),
-        title: "Statistics".to_string(),
-        subtitle: "Activity and budget".to_string(),
-        rows: statistics_rows(projection, controller_state),
-        actions: Vec::new(),
-    });
-    surfaces.push(AgentRuntimeOperationSurface {
         surface_id: "processManager".to_string(),
         title: "Process Manager".to_string(),
         subtitle: "Managed process handles".to_string(),
         rows: process_rows(projection, selected),
         actions: process_actions(projection, selected),
-    });
-    surfaces.push(AgentRuntimeOperationSurface {
-        surface_id: "imageArtifacts".to_string(),
-        title: "Image artifacts".to_string(),
-        subtitle: "Selected session evidence".to_string(),
-        rows: image_artifact_rows(selected),
-        actions: Vec::new(),
-    });
-    surfaces.push(AgentRuntimeOperationSurface {
-        surface_id: "settings".to_string(),
-        title: "Settings".to_string(),
-        subtitle: "Runtime connection defaults".to_string(),
-        rows: vec![
-            fact("Connection", connection_state_label(&controller_state.connection_state)),
-            fact("Project", selected.and_then(|session| session.project_key.as_deref()).unwrap_or("Runtime")),
-            fact("Role", selected.and_then(|session| session.role_id.as_deref()).unwrap_or("Runtime default")),
-            fact("Model", selected.and_then(|session| session.metadata.get("model").and_then(Value::as_str)).unwrap_or("Runtime default")),
-            fact("Registry scope", format!("{} commands", projection.map(|projection| projection.command_registry.len()).unwrap_or(0)).as_str()),
-            fact("Discovery", view.discovery.title.as_str()),
-        ],
-        actions: Vec::new(),
-    });
-    surfaces.push(AgentRuntimeOperationSurface {
-        surface_id: "history".to_string(),
-        title: "History".to_string(),
-        subtitle: "Runtime audit events".to_string(),
-        rows: history_rows(projection),
-        actions: Vec::new(),
-    });
-    surfaces.push(AgentRuntimeOperationSurface {
-        surface_id: "diagnostics".to_string(),
-        title: "Diagnostics".to_string(),
-        subtitle: "Runtime transport state".to_string(),
-        rows: diagnostics_rows(projection, controller_state, view),
-        actions: vec![
-            AgentRuntimeWorkbenchActionRow {
-                id: "diagnostics:refresh".to_string(),
-                title: "Refresh".to_string(),
-                subtitle: "Refresh current runtime projection".to_string(),
-                kind: "diagnosticsRefresh".to_string(),
-                state_text: "ready".to_string(),
-                tone: "info".to_string(),
-            },
-            AgentRuntimeWorkbenchActionRow {
-                id: "diagnostics:rehydrate".to_string(),
-                title: "Rehydrate".to_string(),
-                subtitle: "Refresh the selected runtime state".to_string(),
-                kind: "diagnosticsRehydrate".to_string(),
-                state_text: "ready".to_string(),
-                tone: "info".to_string(),
-            },
-        ],
     });
     surfaces.push(AgentRuntimeOperationSurface {
         surface_id: "roleAdmin".to_string(),
@@ -1222,37 +1169,6 @@ fn operation_surfaces(
 
 fn fact(label: &str, value: &str) -> AgentRuntimeWorkbenchFact {
     AgentRuntimeWorkbenchFact { label: label.to_string(), value: value.to_string() }
-}
-
-fn image_artifact_rows(selected: Option<&robdex_agent_runtime_projection::SelectedSessionDetail>) -> Vec<AgentRuntimeWorkbenchFact> {
-    let Some(selected) = selected else {
-        return vec![fact("Image evidence", "Select a session to inspect image artifacts")];
-    };
-    if selected.image_artifacts.is_empty() {
-        return vec![fact("Image evidence", "No image artifacts for the selected session")];
-    }
-    let mut rows = vec![fact("Image artifacts", selected.image_artifacts.len().to_string().as_str())];
-    for (index, artifact) in selected.image_artifacts.iter().take(6).enumerate() {
-        let mime = artifact.get("mimeType").and_then(Value::as_str).unwrap_or("image");
-        let bytes = artifact.get("byteCount").and_then(Value::as_i64).map(|value| value.to_string()).unwrap_or_else(|| "unknown size".to_string());
-        let width = artifact.get("width").and_then(Value::as_i64);
-        let height = artifact.get("height").and_then(Value::as_i64);
-        let dimensions = match (width, height) {
-            (Some(width), Some(height)) => format!("{width} × {height}"),
-            _ => "dimensions unavailable".to_string(),
-        };
-        let retrieval = artifact
-            .get("retrieval")
-            .and_then(|value| value.get("available"))
-            .and_then(Value::as_bool)
-            .map(|available| if available { "retrievable" } else { "metadata only" })
-            .unwrap_or("retrievable");
-        rows.push(fact(
-            format!("Evidence image {}", index + 1).as_str(),
-            format!("{mime} · {bytes} bytes · {dimensions} · {retrieval}").as_str(),
-        ));
-    }
-    rows
 }
 
 fn current_turn_label(projection: Option<&RuntimeProjection>) -> &'static str {
@@ -1363,40 +1279,6 @@ fn session_actions(selected: Option<&robdex_agent_runtime_projection::SelectedSe
     actions
 }
 
-fn statistics_rows(projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> Vec<AgentRuntimeWorkbenchFact> {
-    let Some(projection) = projection else { return Vec::new(); };
-    let _ = controller_state;
-    let stats = &projection.statistics;
-    fact_rows([
-        ("Sessions", stats.sessions.to_string()),
-        ("Open sessions", stats.open_sessions.to_string()),
-        ("Closed sessions", stats.closed_sessions.to_string()),
-        ("Archived sessions", stats.archived_sessions.to_string()),
-        ("Turns", stats.turns.to_string()),
-        ("Running turns", stats.running_turns.to_string()),
-        ("Failed turns", stats.failed_turns.to_string()),
-        ("Model events", stats.model_events.to_string()),
-        ("Tool calls", stats.tool_calls.to_string()),
-        ("Scripts", stats.script_runs.to_string()),
-        ("Host actions", stats.host_api_calls.to_string()),
-        ("Commands", stats.command_runs.to_string()),
-        ("Processes", stats.managed_processes.to_string()),
-        ("Output artifacts", stats.output_artifacts.to_string()),
-        ("Compactions", stats.compaction_checkpoints.to_string()),
-        ("Approvals", stats.approval_requests.to_string()),
-        ("Command requests", stats.command_registry_requests.to_string()),
-        ("Workflow memories", stats.workflow_memories.to_string()),
-        ("Selected chat entries", projection.selected_chat_entries.len().to_string()),
-        ("Failed rows", stats.failed_rows.to_string()),
-        ("Running rows", stats.running_rows.to_string()),
-        ("Lost rows", stats.lost_rows.to_string()),
-    ])
-}
-
-fn fact_rows<const N: usize>(items: [(&str, String); N]) -> Vec<AgentRuntimeWorkbenchFact> {
-    items.into_iter().map(|(label, value)| fact(label, value.as_str())).collect()
-}
-
 fn process_rows(
     projection: Option<&RuntimeProjection>,
     selected: Option<&robdex_agent_runtime_projection::SelectedSessionDetail>,
@@ -1472,68 +1354,6 @@ fn process_actions(
             })
         })
         .collect()
-}
-
-fn history_rows(projection: Option<&RuntimeProjection>) -> Vec<AgentRuntimeWorkbenchFact> {
-    projection
-        .map(|projection| projection.timeline.iter().rev().take(24).map(|item| {
-            let status = item.status.as_deref().unwrap_or("recorded");
-            let entity = item.entity_id.as_deref().unwrap_or(item.entity_type.as_str());
-            let when = item.created_at.as_deref().unwrap_or("now");
-            let payload_summary = compact_json_summary(&item.payload, 160);
-            let raw_json = compact_json_summary(&item.payload, 600);
-            fact(item.event_type.as_str(), format!(
-                "sequence={} · eventType={} · status={} · timestamp={} · entityKind={} · entityId={} · payloadSummary={} · rawJson={}",
-                item.sequence,
-                item.event_type,
-                status,
-                when,
-                item.entity_type,
-                entity,
-                payload_summary,
-                raw_json,
-            ).as_str())
-        }).collect())
-        .unwrap_or_default()
-}
-
-fn diagnostics_rows(
-    projection: Option<&RuntimeProjection>,
-    controller_state: &GuiControllerState,
-    view: &AgentRuntimeWorkbenchViewModel,
-) -> Vec<AgentRuntimeWorkbenchFact> {
-    let mut rows = vec![
-        fact("Base URL", view.base_url.as_str()),
-        fact("Connection state", connection_state_label(&controller_state.connection_state)),
-        fact("WebSocket URL", view.discovery.web_socket_url.as_deref().unwrap_or("Unavailable")),
-        fact("Last watermark", view.watermark_label.as_str()),
-        fact(
-            "Resync state",
-            projection
-                .and_then(|projection| projection.resync_required.as_ref())
-                .map(|state| if state.required { state.reason.as_str() } else { "Current" })
-                .unwrap_or("Current"),
-        ),
-        fact("Pending request count", view.pending_request_count.to_string().as_str()),
-        fact("Recent output log", view.output_log.last().map(String::as_str).unwrap_or("No recent output")),
-        fact("Last typed error", view.error_message.as_deref().unwrap_or("None")),
-        fact("Discovery path", view.discovery.discovery_path.as_str()),
-        fact("iCloud profile path", view.remote_discovery.discovery_path.as_str()),
-        fact("Imported profile path", view.imported_remote_discovery.discovery_path.as_str()),
-        fact("Stream packets", view.output_log.len().to_string().as_str()),
-        fact("WebSocket events", projection.map(|projection| projection.timeline.len()).unwrap_or(0).to_string().as_str()),
-        fact("Payload bytes", view.output_log.iter().map(|line| line.len()).sum::<usize>().to_string().as_str()),
-        fact("Delta count", projection.map(|projection| projection.watermark).unwrap_or(0).to_string().as_str()),
-        fact("Full snapshots", "0"),
-        fact("Selected chat entries", projection.map(|projection| projection.selected_chat_entries.len()).unwrap_or(0).to_string().as_str()),
-    ];
-    rows.extend(view.controller_facts.iter().filter(|fact| {
-        matches!(
-            fact.label.as_str(),
-            "Stream packets" | "WebSocket events" | "Payload bytes" | "Delta count" | "Full snapshots" | "Selected chat entries"
-        )
-    }).cloned());
-    rows
 }
 
 fn role_admin_surface_rows(view: &AgentRuntimeRoleAdminView) -> Vec<AgentRuntimeWorkbenchFact> {
@@ -4090,6 +3910,9 @@ mod tests {
             process_id: None,
             command: String::new(),
             output: String::new(),
+            image_preview_base64: None,
+            image_preview_content_type: None,
+            image_preview_error: None,
             delivery_state: if streaming { "streaming" } else { "delivered" }.to_string(),
             is_streaming: streaming,
             is_tool: false,
@@ -5284,6 +5107,9 @@ mod tests {
                     process_id: None,
                     command: String::new(),
                     output: String::new(),
+                    image_preview_base64: None,
+                    image_preview_content_type: None,
+                    image_preview_error: None,
                     delivery_state: "delivered".to_string(),
                     is_streaming: false,
                     is_tool: false,
@@ -5300,6 +5126,9 @@ mod tests {
                     process_id: Some("process-1".to_string()),
                     command: "output('ok')".to_string(),
                     output: "ok".to_string(),
+                    image_preview_base64: None,
+                    image_preview_content_type: None,
+                    image_preview_error: None,
                     delivery_state: "delivered".to_string(),
                     is_streaming: false,
                     is_tool: true,
@@ -5316,6 +5145,9 @@ mod tests {
                     process_id: None,
                     command: String::new(),
                     output: String::new(),
+                    image_preview_base64: None,
+                    image_preview_content_type: None,
+                    image_preview_error: None,
                     delivery_state: "delivered".to_string(),
                     is_streaming: false,
                     is_tool: false,
@@ -5640,44 +5472,24 @@ mod tests {
         let surface_titles = shell.operation_surfaces.iter().map(|surface| surface.title.as_str()).collect::<Vec<_>>();
         assert!(surface_titles.contains(&"Session"));
         assert!(surface_titles.contains(&"Compaction"));
-        assert!(surface_titles.contains(&"Statistics"));
         assert!(surface_titles.contains(&"Process Manager"));
-        assert!(surface_titles.contains(&"Image artifacts"));
-        assert!(surface_titles.contains(&"Settings"));
-        assert!(surface_titles.contains(&"History"));
-        assert!(surface_titles.contains(&"Diagnostics"));
         assert!(surface_titles.contains(&"Role Admin"));
         assert!(surface_titles.contains(&"Workflow Memory"));
         assert!(surface_titles.contains(&"Approvals"));
         assert!(surface_titles.contains(&"Command Registry"));
-        let history = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "history").expect("history surface");
-        assert!(history.rows.iter().any(|row| row.label == "tool.completed"));
-        assert!(history.rows.iter().any(|row| row.value.contains("eventType=tool.completed") && row.value.contains("payloadSummary={\"bounded\":true") && row.value.contains("rawJson={\"bounded\":true")));
-        assert!(history.rows.iter().any(|row| row.label == "role.imported" && row.value.contains("entityKind=role")));
+        for removed in ["Statistics", "Image artifacts", "Settings", "History", "Diagnostics"] {
+            assert!(!surface_titles.contains(&removed), "removed operation surface {removed} must not project");
+        }
+        for removed_id in ["statistics", "imageArtifacts", "settings", "history", "diagnostics"] {
+            assert!(
+                shell.operation_surfaces.iter().all(|surface| surface.surface_id != removed_id),
+                "removed operation surface id {removed_id} must not project"
+            );
+        }
         let compaction = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "compaction").expect("compaction surface");
         assert!(compaction.rows.iter().any(|row| row.label == "compaction.completed" && row.value.contains("checkpoint=checkpoint-completed") && row.value.contains("boundaryTurn=turn-1") && row.value.contains("replacementEstimate=") && row.value.contains("providerModel=")));
         assert!(compaction.rows.iter().any(|row| row.label == "compaction.failed" && row.value.contains("checkpoint=checkpoint-failed") && row.value.contains("failure=\"forced fixture failure\"")));
         assert!(compaction.actions.iter().any(|action| action.kind == "compactionManual" && action.title == "Compact selected session"));
-        let statistics = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "statistics").expect("statistics surface");
-        for (label, value) in [
-            ("Sessions", "3"),
-            ("Open sessions", "1"),
-            ("Closed sessions", "1"),
-            ("Archived sessions", "1"),
-            ("Turns", "4"),
-            ("Running turns", "1"),
-            ("Failed turns", "1"),
-            ("Tool calls", "3"),
-            ("Scripts", "4"),
-            ("Commands", "6"),
-            ("Processes", "7"),
-            ("Output artifacts", "8"),
-            ("Compactions", "2"),
-            ("Workflow memories", "2"),
-            ("Selected chat entries", "3"),
-        ] {
-            assert!(statistics.rows.iter().any(|row| row.label == label && row.value == value), "missing statistic {label}={value}");
-        }
         let role_admin = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "roleAdmin").expect("role admin surface");
         assert!(role_admin.rows.iter().any(|row| row.label == "Selected role detail" && row.value.contains("capabilities=tool.execute_code") && row.value.contains("policyDecisions=tool.execute_code=allow") && row.value.contains("instructionBytes=")));
         assert!(role_admin.rows.iter().any(|row| row.label == "Immutable version" && row.value.contains("versionId=role-version-1")));
@@ -5701,15 +5513,6 @@ mod tests {
         assert!(process_manager.actions.iter().any(|action| action.id == "proc-allow" && action.kind == "processInput" && action.state_text == "ready"));
         assert!(process_manager.actions.iter().any(|action| action.id == "proc-allow" && action.kind == "processTerminate" && action.state_text == "ready"));
         assert!(process_manager.actions.iter().any(|action| action.id == "proc-forbid" && action.kind == "processInput" && action.state_text == "disabled: stdin rejected"));
-        let image_artifacts = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "imageArtifacts").expect("image artifacts surface");
-        assert!(image_artifacts.rows.iter().any(|row| row.label == "Image artifacts" && row.value == "1"));
-        assert!(image_artifacts.rows.iter().any(|row| row.label == "Evidence image 1" && row.value.contains("image/png") && row.value.contains("1366 × 1024") && row.value.contains("retrievable")));
-        assert!(image_artifacts.actions.is_empty(), "image artifact surface must not expose fake controls");
-        let diagnostics = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "diagnostics").expect("diagnostics surface");
-        for label in ["Base URL", "Connection state", "WebSocket URL", "Last watermark", "Resync state", "Pending request count", "Recent output log", "Last typed error", "Discovery path", "iCloud profile path", "Imported profile path", "Stream packets", "WebSocket events", "Payload bytes", "Delta count", "Full snapshots", "Selected chat entries"] {
-            assert!(diagnostics.rows.iter().any(|row| row.label == label), "missing diagnostics row {label}");
-        }
-        assert_eq!(diagnostics.actions.iter().map(|action| action.title.as_str()).collect::<Vec<_>>(), vec!["Refresh", "Rehydrate"]);
         let approvals = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "approvals").expect("approvals surface");
         assert!(approvals.rows.iter().any(|row| row.value.contains("approver=owner") && row.value.contains("reason=approved for fixture") && row.value.contains("resumable=approved")));
         assert!(approvals.actions.iter().any(|action| action.title == "Resume" && action.kind == "approvalResume"));

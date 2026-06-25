@@ -60,8 +60,8 @@ safe, preserve timeline ordering, and set explicit `resyncRequired` state when
 they detect a gap or incompatible stream condition.
 
 The projection includes server status, session list items, optional selected
-session detail, typed selected-session chat entries, separate history/event rows, pending approvals, role summaries, command
-registry summaries, workflow memory summaries, and a top-level watermark. Selected-session chat is backed by turns.input_text, model_events final_response payloads, and tool/script/process/output-artifact records; audit events remain available through History/Diagnostics surfaces.
+session detail, typed selected-session chat entries, internal history/event rows, pending approvals, role summaries, command
+registry summaries, workflow memory summaries, and a top-level watermark. Selected-session chat is backed by turns.input_text, model_events final_response payloads, tool/script/process/output-artifact records, and stored image artifacts. Human-readable activity belongs in the selected-session timeline; machine-readable history remains in PostgreSQL/server internals.
 Deltas cover session upsert/archive/close, selected-session replacement or
 patch, timeline append, turn/tool/script/process status changes, approval
 upsert/removal, role upsert/archive, command registry upsert/disable, workflow
@@ -206,11 +206,13 @@ Role Admin GUI operations are implemented: validation/options/detail/export dire
 
 The mounted Agent Runtime GUI now uses the canonical Robdex Workbench structure:
 brushed-metal left project/session rail, center shared `ChatTimeline`, shared
-`ComposerPanel`, and toolbar-opened modal or sheet surfaces for operations. The
-connected layout must not mount a permanent operations pane. Diagnostics,
-History, Statistics, Settings, Process Manager, Role Admin, Workflow Memory,
-Approvals, Command Registry, and Compaction live behind typed toolbar
-affordances.
+`ComposerPanel`, and toolbar-opened modal or sheet surfaces for active
+operations. The connected layout must not mount a permanent operations pane.
+Process Manager, Role Admin, Workflow Memory, Approvals, Command Registry,
+Requirements Review, and Compaction live behind typed toolbar affordances.
+Statistics, generic Settings, History, Diagnostics, and a separate image-artifact
+sheet are not user-facing operation surfaces; stored images render in the
+selected-session timeline.
 
 Workflow Memory inspection is implemented inside that modal operations surface.
 It is an inspector plus feedback surface for
@@ -860,7 +862,7 @@ The intended client sequence is:
    shutdown detection without mutating or corrupting the local projection.
 
 Selected-session state uses the same path with `selectedSessionId` on both the
-snapshot and WebSocket URLs. Runtime audit deltas append to History/Diagnostics;
+snapshot and WebSocket URLs. Runtime audit deltas remain server-owned history;
 selected-session chat remains a typed transcript while semantic deltas update session/admin summaries through
 the projection reducer. GUI surfaces render from the reduced
 `RuntimeProjection` and request a fresh snapshot whenever resync state is set.
@@ -1565,7 +1567,7 @@ The current experimental CLI executes each `send` as a short-lived runtime proce
 
 ## Selected chat and history boundary
 
-The connected Agent Runtime shell treats the center panel as product chat, not as an event-stream viewer. Rust shapes selected-session chat entries from user turn input, assistant final responses, and canonical tool rows. Raw runtime events such as `role.imported`, `turn.started`, `policy.decision`, `model.final_response`, approval events, command-registry events, workflow-memory events, and compaction events remain audit history and must render in History or Diagnostics detail surfaces.
+The connected Agent Runtime shell treats the center panel as product chat, not as an event-stream viewer. Rust shapes selected-session chat entries from user turn input, assistant final responses, canonical tool rows, and selected-session stored image artifacts. Valid PNG/JPEG artifacts from `starter_image_artifacts.binary_content` render through the shared `ChatTimeline` image preview path, and full-size loading uses session-scoped Rust/Rinf retrieval. Raw runtime events such as `role.imported`, `turn.started`, `policy.decision`, `model.final_response`, approval events, command-registry events, workflow-memory events, and compaction events remain PostgreSQL/server history rather than separate user-facing sheets.
 
 Submitted steering inputs are part of selected-session chat ordering. Active
 turn steering appears inside the owning turn after the initial user input and

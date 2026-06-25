@@ -610,6 +610,20 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
       isTool: true,
     ),
     ChatEntry(
+      id: 'image-artifact-1',
+      author: 'Runtime',
+      displayLabel: 'Image',
+      timestamp: null,
+      body: 'Captured evidence',
+      subtitle: 'image/png · 1 × 1 · 68 bytes',
+      kind: 'imageView',
+      status: 'stored',
+      output: 'agent-runtime-image://session-a/image-artifact-1',
+      imagePreviewBase64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQVR4nGO4Y2T0HxkzkC4AAMMYI/FM3SW3AAAAAElFTkSuQmCC',
+      imagePreviewContentType: 'image/png',
+    ),
+    ChatEntry(
       id: 'chat-assistant-1',
       author: 'Assistant',
       displayLabel: 'Assistant',
@@ -685,21 +699,6 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
       ],
     ),
     AgentRuntimeOperationSurface(
-      surfaceId: 'statistics',
-      title: 'Statistics',
-      subtitle: 'Activity and budget',
-      rows: [
-        AgentRuntimeFact(label: 'Turns', value: '4'),
-        AgentRuntimeFact(label: 'Messages', value: '2'),
-        AgentRuntimeFact(label: 'Tools and scripts', value: '3'),
-        AgentRuntimeFact(label: 'Processes', value: '1'),
-        AgentRuntimeFact(label: 'Output artifacts', value: '2'),
-        AgentRuntimeFact(label: 'Context budget', value: '42 KB of 256 KB'),
-        AgentRuntimeFact(label: 'Recent activity', value: '12 events'),
-      ],
-      actions: [],
-    ),
-    AgentRuntimeOperationSurface(
       surfaceId: 'processManager',
       title: 'Process Manager',
       subtitle: 'Managed process handles',
@@ -711,51 +710,6 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
         AgentRuntimeActionItem(id: 'dev-server', title: 'Send input', subtitle: 'Send text to this process', kind: 'processInput', stateText: 'ready', tone: 'info'),
         AgentRuntimeActionItem(id: 'dev-server', title: 'Flush output', subtitle: 'Read new process output', kind: 'processFlush', stateText: 'ready', tone: 'info'),
       ],
-    ),
-    AgentRuntimeOperationSurface(
-      surfaceId: 'imageArtifacts',
-      title: 'Image artifacts',
-      subtitle: 'Selected session evidence',
-      rows: [
-        AgentRuntimeFact(label: 'Image artifacts', value: '1'),
-        AgentRuntimeFact(label: 'Evidence image 1', value: 'image/png · 1024 bytes · 1366 × 1024 · retrievable'),
-      ],
-      actions: [],
-    ),
-    AgentRuntimeOperationSurface(
-      surfaceId: 'settings',
-      title: 'Settings',
-      subtitle: 'Runtime connection defaults',
-      rows: [
-        AgentRuntimeFact(label: 'Connection', value: 'Connected'),
-        AgentRuntimeFact(label: 'Project', value: 'Runtime'),
-        AgentRuntimeFact(label: 'Role', value: 'Runtime Allow'),
-        AgentRuntimeFact(label: 'Model', value: 'GPT-5.4 Mini'),
-        AgentRuntimeFact(label: 'Registry scope', value: 'Project commands'),
-        AgentRuntimeFact(label: 'Discovery', value: 'Local runtime ready'),
-      ],
-      actions: [],
-    ),
-    AgentRuntimeOperationSurface(
-      surfaceId: 'history',
-      title: 'History',
-      subtitle: 'Runtime audit events',
-      rows: [
-        AgentRuntimeFact(label: 'Role imported', value: '#1 · completed · role'),
-        AgentRuntimeFact(label: 'Turn started', value: '#2 · running · turn'),
-        AgentRuntimeFact(label: 'Assistant response', value: '#3 · completed · turn'),
-      ],
-      actions: [],
-    ),
-    AgentRuntimeOperationSurface(
-      surfaceId: 'diagnostics',
-      title: 'Diagnostics',
-      subtitle: 'Runtime transport state',
-      rows: [
-        AgentRuntimeFact(label: 'Connection', value: 'streaming'),
-        AgentRuntimeFact(label: 'Selected session', value: 'Runtime validation'),
-      ],
-      actions: [],
     ),
     AgentRuntimeOperationSurface(
       surfaceId: 'roleAdmin',
@@ -907,9 +861,7 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
     runningServers: [
       AgentRuntimeFact(label: 'Design Lab', value: '127.0.0.1:8080'),
     ],
-    imageArtifacts: [
-      AgentRuntimeFact(label: 'Latest image', value: 'screenshot · 1366 × 1024'),
-    ],
+    imageArtifacts: [],
     quickActions: [
       AgentRuntimeActionAvailability(id: 'compact', label: 'Compact...', available: true, reason: ''),
       AgentRuntimeActionAvailability(id: 'godMode', label: 'Grant God Mode...', available: true, reason: ''),

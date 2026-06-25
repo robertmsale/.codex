@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:rinf/rinf.dart';
@@ -194,6 +195,7 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   final AgentRuntimeRemoteProfilePicker _remoteProfilePicker;
   final AgentRuntimeRequestSink _requestSink;
   final Set<String> _pendingRequestIds = <String>{};
+  final Map<String, Completer<FullSizeImageData>> _fullSizeImageLoads = <String, Completer<FullSizeImageData>>{};
   final Map<String, String> _approvalListUpdates = <String, String>{};
   int _serial = 0;
   String _baseUrl = 'http://127.0.0.1:8765';
@@ -438,6 +440,26 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
       'session-send',
       bindings.AgentRuntimeGuiOperationSendMessage(sessionId: sessionId, message: message.trim()),
     );
+  }
+
+  Future<FullSizeImageData> loadFullSizeImage(String path) async {
+    final parts = _agentRuntimeImageIdentity(path);
+    if (parts == null) {
+      throw StateError('Agent Runtime image identity is invalid.');
+    }
+    final requestId = _dispatchOperation(
+      'image-load',
+      bindings.AgentRuntimeGuiOperationLoadFullSizeImage(
+        sessionId: parts.$1,
+        imageArtifactId: parts.$2,
+      ),
+    );
+    final completer = Completer<FullSizeImageData>();
+    _fullSizeImageLoads[requestId] = completer;
+    return completer.future.timeout(const Duration(seconds: 20), onTimeout: () {
+      _fullSizeImageLoads.remove(requestId);
+      throw TimeoutException('Agent Runtime image load timed out.');
+    });
   }
 
   void terminateProcess(String handle) {
@@ -751,6 +773,7 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   void _handleOutput(RustSignalPack<bindings.AgentRuntimeOutputSignal> pack) {
     final signal = pack.message;
     _pendingRequestIds.remove(signal.requestId);
+    _completeFullSizeImageLoad(signal.requestId, signal.output);
     _applyOutput(signal.output);
     _applyApprovalListUpdate(signal.requestId, signal.output);
   }
@@ -770,6 +793,7 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
   @visibleForTesting
   void applyOutputForRequestForTest(String requestId, bindings.AgentRuntimeOutput output) {
     _pendingRequestIds.remove(requestId);
+    _completeFullSizeImageLoad(requestId, output);
     _applyOutput(output);
     _applyApprovalListUpdate(requestId, output);
   }
@@ -889,6 +913,37 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
       operationSurfaces: current.operationSurfaces.map(refreshSurface).toList(growable: false),
     );
     notifyListeners();
+  }
+
+  void _completeFullSizeImageLoad(String requestId, bindings.AgentRuntimeOutput output) {
+    final completer = _fullSizeImageLoads.remove(requestId);
+    if (completer == null) {
+      return;
+    }
+    if (output is! bindings.AgentRuntimeOutputOperationResult) {
+      completer.completeError(StateError('Agent Runtime image load did not return image data.'));
+      return;
+    }
+    final result = output.result;
+    if (result.outcome == 'error') {
+      completer.completeError(StateError(result.message));
+      return;
+    }
+    if (!result.hasValueJson || result.valueJson.trim().isEmpty) {
+      completer.completeError(StateError('Agent Runtime image load returned no image data.'));
+      return;
+    }
+    final decoded = jsonDecode(result.valueJson);
+    if (decoded is Map<String, dynamic>) {
+      final path = decoded['path'];
+      final bytesBase64 = decoded['bytesBase64'];
+      final contentType = decoded['contentType'];
+      if (path is String && bytesBase64 is String && bytesBase64.isNotEmpty && contentType is String) {
+        completer.complete(FullSizeImageData(path: path, bytesBase64: bytesBase64, contentType: contentType));
+        return;
+      }
+    }
+    completer.completeError(StateError('Agent Runtime image load response is invalid.'));
   }
 
   AgentRuntimeWorkbenchData get _disconnectedViewModel => AgentRuntimeWorkbenchData(
@@ -1214,10 +1269,25 @@ ChatEntry _chatEntry(bindings.AgentRuntimeChatEntry entry) {
     processId: entry.hasProcessId ? entry.processId : null,
     command: entry.command,
     output: entry.output,
+    imagePreviewBase64: entry.hasImagePreviewBase64 ? entry.imagePreviewBase64 : null,
+    imagePreviewContentType: entry.hasImagePreviewContentType ? entry.imagePreviewContentType : null,
+    imagePreviewError: entry.hasImagePreviewError ? entry.imagePreviewError : null,
     deliveryState: entry.deliveryState,
     isStreaming: entry.isStreaming,
     isTool: entry.isTool,
   );
+}
+
+(String, String)? _agentRuntimeImageIdentity(String path) {
+  final uri = Uri.tryParse(path.trim());
+  if (uri == null || uri.scheme != 'agent-runtime-image' || uri.host.isEmpty) {
+    return null;
+  }
+  final artifactId = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : '';
+  if (artifactId.isEmpty) {
+    return null;
+  }
+  return (uri.host, artifactId);
 }
 
 String _runtimeDisplayCopy(String value) {

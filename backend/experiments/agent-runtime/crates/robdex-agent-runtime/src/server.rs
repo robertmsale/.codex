@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -225,6 +226,7 @@ pub fn app(state: ServerState) -> Router {
         .route("/sessions/{session_id}/processes/{handle}/input", post(input_process))
         .route("/sessions/{session_id}/processes/{handle}/flush", post(flush_process))
         .route("/sessions/{session_id}/image-artifacts/{image_id}", get(image_artifact_metadata))
+        .route("/sessions/{session_id}/image-artifacts/{image_id}/json", get(image_artifact_full_json))
         .route("/sessions/{session_id}/image-artifacts/{image_id}/thumbnail", get(image_artifact_thumbnail))
         .route("/sessions/{session_id}/image-artifacts/{image_id}/full", get(image_artifact_full))
         .route("/approvals", get(list_approvals))
@@ -352,12 +354,8 @@ async fn snapshot(
         }));
         let modal_surface_summaries = vec![
             json!({"surfaceId":"session","title":"Session","rowCount": projection.selected_session.iter().count(), "actionCount": 3}),
-            json!({"surfaceId":"history","title":"History","rowCount": projection.timeline.len(), "actionCount": 0}),
-            json!({"surfaceId":"diagnostics","title":"Diagnostics","rowCount": 7, "actionCount": 0}),
             json!({"surfaceId":"compaction","title":"Compaction","rowCount": projection.statistics.compaction_checkpoints, "actionCount": 1}),
-            json!({"surfaceId":"statistics","title":"Statistics","rowCount": 14, "actionCount": 0}),
             json!({"surfaceId":"processManager","title":"Process Manager","rowCount": projection.statistics.managed_processes, "actionCount": 4}),
-            json!({"surfaceId":"settings","title":"Settings","rowCount": 8, "actionCount": 1}),
             json!({"surfaceId":"roleAdmin","title":"Role Admin","rowCount": projection.roles.len(), "actionCount": 6}),
             json!({"surfaceId":"workflowMemory","title":"Workflow Memory","rowCount": projection.workflow_memories.len(), "actionCount": 3}),
             json!({"surfaceId":"approvals","title":"Approvals","rowCount": projection.pending_approvals.len(), "actionCount": 2}),
@@ -1271,6 +1269,30 @@ async fn image_artifact_thumbnail(
     let bytes = starlark_host::image_artifact_thumbnail(&state.pool, session_id, image_id).await?;
     let mime = metadata.get("mimeType").and_then(Value::as_str).unwrap_or("application/octet-stream").to_string();
     Ok(([(header::CONTENT_TYPE, mime)], bytes).into_response())
+}
+
+async fn image_artifact_full_json(
+    State(state): State<ServerState>,
+    Path((session_id, image_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Value>, ApiError> {
+    let row: Option<(String, Vec<u8>)> = sqlx::query_as(
+        "SELECT mime_type, binary_content FROM starter_image_artifacts WHERE id=$1 AND session_id=$2"
+    )
+    .bind(image_id)
+    .bind(session_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(anyhow::Error::from)?;
+    let Some((content_type, bytes)) = row else {
+        return Err(ApiError::not_found("image_artifact", image_id));
+    };
+    Ok(Json(json!({
+        "path": format!("agent-runtime-image://{session_id}/{image_id}"),
+        "bytesBase64": BASE64_STANDARD.encode(bytes),
+        "contentType": content_type,
+        "imageArtifactId": image_id,
+        "sessionId": session_id,
+    })))
 }
 
 async fn image_artifact_full(
@@ -6700,6 +6722,20 @@ output(tooling.request("Need starter kit helper", "Need a project-local helper t
         let thumbnail = starlark_host::image_artifact_thumbnail(&test_db.pool, session_id, image_row.0).await.expect("thumbnail");
         let full = starlark_host::image_artifact_full(&test_db.pool, session_id, image_row.0).await.expect("full image");
         assert_eq!(thumbnail, full);
+        let router = app(ServerState::new(test_db.pool.clone()));
+        let (json_status, image_json) = request_json(
+            router.clone(),
+            Method::GET,
+            format!("/sessions/{session_id}/image-artifacts/{}/json", image_row.0).as_str(),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(json_status, StatusCode::OK);
+        assert_eq!(image_json["path"], format!("agent-runtime-image://{session_id}/{}", image_row.0));
+        assert_eq!(image_json["contentType"], "image/png");
+        assert_eq!(image_json["imageArtifactId"], image_row.0.to_string());
+        assert_eq!(image_json["sessionId"], session_id.to_string());
+        assert!(image_json["bytesBase64"].as_str().unwrap_or_default().starts_with("iVBORw0KGgo"));
         let attachment = starlark_host::image_artifact_model_attachment(&test_db.pool, session_id, image_row.0).await.expect("model attachment");
         assert_eq!(attachment["binaryInTranscript"], false);
         let request_input = crate::model_input::responses_input(
@@ -6717,6 +6753,14 @@ output(tooling.request("Need starter kit helper", "Need a project-local helper t
         let other_role = db::current_role_snapshot(&test_db.pool, "runtime-allow").await.expect("role");
         let other_session = db::new_session(&test_db.pool, &other_role, Some("starter-other"), ".", Some("."), None, None).await.expect("other");
         assert!(starlark_host::image_artifact_full(&test_db.pool, other_session, image_row.0).await.is_err());
+        let (other_status, _other_json) = request_json(
+            router,
+            Method::GET,
+            format!("/sessions/{other_session}/image-artifacts/{}/json", image_row.0).as_str(),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(other_status, StatusCode::NOT_FOUND);
         let request_status: String = sqlx::query_scalar("SELECT status FROM starter_tooling_requests WHERE session_id=$1")
             .bind(session_id)
             .fetch_one(&test_db.pool)

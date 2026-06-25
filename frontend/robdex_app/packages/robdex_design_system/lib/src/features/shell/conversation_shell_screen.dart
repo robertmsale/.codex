@@ -27,6 +27,7 @@ class ConversationShellScreen extends StatelessWidget {
     this.onSettings,
     this.showPermanentDetail = true,
     this.headerControls,
+    this.loadFullSizeImage,
     this.leftRailWidth = 288,
     this.onLeftRailWidthChanged,
   });
@@ -48,6 +49,7 @@ class ConversationShellScreen extends StatelessWidget {
   final VoidCallback? onSettings;
   final bool showPermanentDetail;
   final Widget? headerControls;
+  final FullSizeImageLoader? loadFullSizeImage;
   final double leftRailWidth;
   final ValueChanged<double>? onLeftRailWidthChanged;
 
@@ -83,6 +85,7 @@ class ConversationShellScreen extends StatelessWidget {
               onSendMessage: onSendMessage,
               onInterrupt: onInterrupt,
               headerControls: headerControls,
+              loadFullSizeImage: loadFullSizeImage,
             );
             final detail = detailContent ?? _ConversationDetail(data: data);
             if (compact) {
@@ -489,11 +492,12 @@ class _SessionTile extends StatelessWidget {
 }
 
 class _ConversationCenter extends StatelessWidget {
-  const _ConversationCenter({super.key, required this.data, required this.onSendMessage, required this.onInterrupt, this.headerControls});
+  const _ConversationCenter({super.key, required this.data, required this.onSendMessage, required this.onInterrupt, this.headerControls, this.loadFullSizeImage});
   final ConversationShellData data;
   final ValueChanged<ComposerSubmission> onSendMessage;
   final VoidCallback onInterrupt;
   final Widget? headerControls;
+  final FullSizeImageLoader? loadFullSizeImage;
 
   @override
   Widget build(BuildContext context) {
@@ -529,6 +533,7 @@ class _ConversationCenter extends StatelessWidget {
                 isRunning: data.isRunning,
               ),
               availableModels: const [],
+              loadFullSizeImage: loadFullSizeImage,
               onSettingsChanged: (_) {},
               onCompactThread: () {},
               headerControls: headerControls,

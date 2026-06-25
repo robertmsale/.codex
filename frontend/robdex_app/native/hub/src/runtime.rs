@@ -1433,6 +1433,7 @@ fn typed_gui_operation(operation: AgentRuntimeGuiOperation) -> std::result::Resu
         },
         AgentRuntimeGuiOperation::GrantGodMode { session_id, reason } => GuiOperationRequest::GrantGodMode { session_id, reason },
         AgentRuntimeGuiOperation::RevokeGodMode { session_id, reason } => GuiOperationRequest::RevokeGodMode { session_id, reason },
+        AgentRuntimeGuiOperation::LoadFullSizeImage { session_id, image_artifact_id } => GuiOperationRequest::LoadFullSizeImage { session_id, image_artifact_id },
         AgentRuntimeGuiOperation::CloseSession { session_id, reason } => GuiOperationRequest::CloseSession { session_id, reason: non_empty(reason) },
         AgentRuntimeGuiOperation::ArchiveSession { session_id } => GuiOperationRequest::ArchiveSession { session_id },
         AgentRuntimeGuiOperation::ForkSession { session_id, at_turn } => GuiOperationRequest::ForkSession { session_id, at_turn },
@@ -1620,6 +1621,9 @@ fn agent_runtime_chat_entry_from_value(value: &serde_json::Value) -> AgentRuntim
     let string = |key: &str| value.get(key).and_then(|value| value.as_str()).unwrap_or_default().to_string();
     let timestamp = string("timestamp");
     let process_id = string("processId");
+    let image_preview_base64 = string("imagePreviewBase64");
+    let image_preview_content_type = string("imagePreviewContentType");
+    let image_preview_error = string("imagePreviewError");
     AgentRuntimeChatEntry {
         id: string("id"),
         author: string("author"),
@@ -1634,6 +1638,12 @@ fn agent_runtime_chat_entry_from_value(value: &serde_json::Value) -> AgentRuntim
         process_id,
         command: string("command"),
         output: string("output"),
+        has_image_preview_base64: !image_preview_base64.is_empty(),
+        image_preview_base64,
+        has_image_preview_content_type: !image_preview_content_type.is_empty(),
+        image_preview_content_type,
+        has_image_preview_error: !image_preview_error.is_empty(),
+        image_preview_error,
         delivery_state: string("deliveryState"),
         is_streaming: value.get("isStreaming").and_then(|value| value.as_bool()).unwrap_or_default(),
         is_tool: value.get("isTool").and_then(|value| value.as_bool()).unwrap_or_default(),
@@ -1663,10 +1673,14 @@ fn controller_state_from_value(value: &serde_json::Value) -> AgentRuntimeControl
 
 fn typed_operation_result(result: robdex_agent_runtime_projection::GuiOperationResult) -> AgentRuntimeOperationResult {
     let mut error_message = None;
+    let mut value_json = String::new();
     let outcome = match result.outcome {
         GuiOperationOutcome::Accepted { .. } => "accepted",
         GuiOperationOutcome::ProjectionUpdated { .. } => "projectionUpdated",
-        GuiOperationOutcome::DirectValue { .. } => "directValue",
+        GuiOperationOutcome::DirectValue { value } => {
+            value_json = value.to_string();
+            "directValue"
+        }
         GuiOperationOutcome::CommandRegistryRequests { .. } => "commandRegistryRequests",
         GuiOperationOutcome::Error { error } => {
             error_message = Some(error.error.message);
@@ -1677,6 +1691,8 @@ fn typed_operation_result(result: robdex_agent_runtime_projection::GuiOperationR
         operation: format!("{:?}", result.operation),
         outcome: outcome.to_string(),
         message: error_message.unwrap_or_else(|| format!("{:?}", result.expectation)),
+        has_value_json: !value_json.is_empty(),
+        value_json,
     }
 }
 
@@ -1808,6 +1824,12 @@ fn typed_conversation_shell_view(view: robdex_agent_runtime::rinf_transport::Age
                 process_id,
                 command: entry.command,
                 output: entry.output,
+                has_image_preview_base64: entry.image_preview_base64.is_some(),
+                image_preview_base64: entry.image_preview_base64.unwrap_or_default(),
+                has_image_preview_content_type: entry.image_preview_content_type.is_some(),
+                image_preview_content_type: entry.image_preview_content_type.unwrap_or_default(),
+                has_image_preview_error: entry.image_preview_error.is_some(),
+                image_preview_error: entry.image_preview_error.unwrap_or_default(),
                 delivery_state: entry.delivery_state,
                 is_streaming: entry.is_streaming,
                 is_tool: entry.is_tool,

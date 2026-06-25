@@ -18,6 +18,12 @@ class AgentRuntimeChatEntry {
     required this.hasProcessId,
     required this.command,
     required this.output,
+    this.imagePreviewBase64 = '',
+    this.hasImagePreviewBase64 = false,
+    this.imagePreviewContentType = '',
+    this.hasImagePreviewContentType = false,
+    this.imagePreviewError = '',
+    this.hasImagePreviewError = false,
     required this.deliveryState,
     required this.isStreaming,
     required this.isTool,
@@ -39,6 +45,12 @@ class AgentRuntimeChatEntry {
       hasProcessId: deserializer.deserializeBool(),
       command: deserializer.deserializeString(),
       output: deserializer.deserializeString(),
+      imagePreviewBase64: deserializer.deserializeString(),
+      hasImagePreviewBase64: deserializer.deserializeBool(),
+      imagePreviewContentType: deserializer.deserializeString(),
+      hasImagePreviewContentType: deserializer.deserializeBool(),
+      imagePreviewError: deserializer.deserializeString(),
+      hasImagePreviewError: deserializer.deserializeBool(),
       deliveryState: deserializer.deserializeString(),
       isStreaming: deserializer.deserializeBool(),
       isTool: deserializer.deserializeBool(),
@@ -69,6 +81,12 @@ class AgentRuntimeChatEntry {
   final bool hasProcessId;
   final String command;
   final String output;
+  final String imagePreviewBase64;
+  final bool hasImagePreviewBase64;
+  final String imagePreviewContentType;
+  final bool hasImagePreviewContentType;
+  final String imagePreviewError;
+  final bool hasImagePreviewError;
   final String deliveryState;
   final bool isStreaming;
   final bool isTool;
@@ -87,6 +105,12 @@ class AgentRuntimeChatEntry {
     bool? hasProcessId,
     String? command,
     String? output,
+    String? imagePreviewBase64,
+    bool? hasImagePreviewBase64,
+    String? imagePreviewContentType,
+    bool? hasImagePreviewContentType,
+    String? imagePreviewError,
+    bool? hasImagePreviewError,
     String? deliveryState,
     bool? isStreaming,
     bool? isTool,
@@ -105,6 +129,12 @@ class AgentRuntimeChatEntry {
       hasProcessId: hasProcessId ?? this.hasProcessId,
       command: command ?? this.command,
       output: output ?? this.output,
+      imagePreviewBase64: imagePreviewBase64 ?? this.imagePreviewBase64,
+      hasImagePreviewBase64: hasImagePreviewBase64 ?? this.hasImagePreviewBase64,
+      imagePreviewContentType: imagePreviewContentType ?? this.imagePreviewContentType,
+      hasImagePreviewContentType: hasImagePreviewContentType ?? this.hasImagePreviewContentType,
+      imagePreviewError: imagePreviewError ?? this.imagePreviewError,
+      hasImagePreviewError: hasImagePreviewError ?? this.hasImagePreviewError,
       deliveryState: deliveryState ?? this.deliveryState,
       isStreaming: isStreaming ?? this.isStreaming,
       isTool: isTool ?? this.isTool,
@@ -126,6 +156,12 @@ class AgentRuntimeChatEntry {
     serializer.serializeBool(hasProcessId);
     serializer.serializeString(command);
     serializer.serializeString(output);
+    serializer.serializeString(imagePreviewBase64);
+    serializer.serializeBool(hasImagePreviewBase64);
+    serializer.serializeString(imagePreviewContentType);
+    serializer.serializeBool(hasImagePreviewContentType);
+    serializer.serializeString(imagePreviewError);
+    serializer.serializeBool(hasImagePreviewError);
     serializer.serializeString(deliveryState);
     serializer.serializeBool(isStreaming);
     serializer.serializeBool(isTool);
@@ -157,6 +193,12 @@ class AgentRuntimeChatEntry {
       && hasProcessId == other.hasProcessId
       && command == other.command
       && output == other.output
+      && imagePreviewBase64 == other.imagePreviewBase64
+      && hasImagePreviewBase64 == other.hasImagePreviewBase64
+      && imagePreviewContentType == other.imagePreviewContentType
+      && hasImagePreviewContentType == other.hasImagePreviewContentType
+      && imagePreviewError == other.imagePreviewError
+      && hasImagePreviewError == other.hasImagePreviewError
       && deliveryState == other.deliveryState
       && isStreaming == other.isStreaming
       && isTool == other.isTool;

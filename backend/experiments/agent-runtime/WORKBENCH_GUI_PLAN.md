@@ -6,8 +6,11 @@ The connected Agent Runtime product surface now uses the canonical Robdex
 Workbench pattern as a chat-centered product shell. The shell
 presents a brushed-metal left project/session rail, the shared `ChatTimeline` in
 the center, the shared `ComposerPanel` for selected-session messages, and
-toolbar-opened modal or sheet surfaces for History, Diagnostics, Statistics,
-Settings, Role Admin, Workflow Memory, and global Command Registry inventory.
+toolbar-opened modal or sheet surfaces for active runtime operations: Compaction,
+Process Manager, Role Admin, Workflow Memory, Requirements Review, Approvals,
+and global Command Registry inventory. The removed Statistics, Image artifacts,
+Settings, History, and Diagnostics sheets are not part of the GUI operation
+surface.
 Selected-session settings and controls use the full-screen shared design-system
 `AgentRuntimeSessionControlPlane`. That control plane folds in selected-session
 identity/settings, lifecycle, compaction, God Mode, current managed processes,
@@ -149,8 +152,8 @@ The shell uses stable regions:
      status from raw events. The first Flutter shell receives these items as
      Rust-shaped workbench-shell session rows.
 3. **Center selected-session chat transcript**
-   - Product-shaped chat for the selected session: user messages, assistant responses, and compact tool/result summaries.
-   - Runtime audit events, process events, approvals, command-registry changes, errors, and workflow-memory events render in History/Diagnostics or the relevant modal operations surface, not in the center chat transcript.
+   - Product-shaped chat for the selected session: user messages, assistant responses, compact tool/result summaries, and stored image previews from selected-session image artifacts.
+   - Runtime audit events, process events, approvals, command-registry changes, errors, and workflow-memory events remain in PostgreSQL/server history or the relevant active modal operations surface, not in removed History/Diagnostics sheets.
 4. **Right attention and operations detail**
    - Pending approvals, resumable approvals, command-registry requests, blocked
      process/session actions, validation failures, and safe next operations.

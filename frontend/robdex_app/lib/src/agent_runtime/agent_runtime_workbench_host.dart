@@ -111,6 +111,7 @@ class _AgentRuntimeWorkbenchHostState extends State<AgentRuntimeWorkbenchHost> {
           onCreateProject: () => _showCreateProjectModal(context, shell, data),
           onEditProject: (projectId) => _showProjectSettingsModal(context, projectId),
           onNewSessionInProject: (projectId) => _openProjectCreateSession(context, shell, data, projectId),
+          loadFullSizeImage: _controller.loadFullSizeImage,
           onArchiveProject: _controller.archiveProject,
           onSettings: () => _showGlobalSettingsModal(context, data),
           showPermanentDetail: false,

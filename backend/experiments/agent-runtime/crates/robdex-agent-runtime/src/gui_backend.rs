@@ -240,6 +240,7 @@ impl GuiBackendController {
             | GuiOperationRequest::CompactSession { .. }
             | GuiOperationRequest::GrantGodMode { .. }
             | GuiOperationRequest::RevokeGodMode { .. }
+            | GuiOperationRequest::LoadFullSizeImage { .. }
             | GuiOperationRequest::CloseSession { .. }
             | GuiOperationRequest::ArchiveSession { .. }
             | GuiOperationRequest::ForkSession { .. }
@@ -366,6 +367,7 @@ impl GuiBackendController {
             | GuiOperationRequest::ValidateProjectRuntimeConfig { .. }
             | GuiOperationRequest::ExportProjectRuntimeConfig { .. }
             | GuiOperationRequest::InspectProjectRuntimeHookEvaluations { .. }
+            | GuiOperationRequest::LoadFullSizeImage { .. }
             | GuiOperationRequest::ShowRequirementsStatus { .. }
             | GuiOperationRequest::ListRequirementsPackets { .. } => Ok(GuiOperationOutcome::DirectValue { value }),
             GuiOperationRequest::CreateSession { .. } => {
@@ -514,6 +516,7 @@ impl GuiBackendController {
             GuiOperationRequest::CompactSession { session_id, .. } => format!("/sessions/{session_id}/compact"),
             GuiOperationRequest::GrantGodMode { session_id, .. } => format!("/sessions/{session_id}/god-mode/grant"),
             GuiOperationRequest::RevokeGodMode { session_id, .. } => format!("/sessions/{session_id}/god-mode/revoke"),
+            GuiOperationRequest::LoadFullSizeImage { session_id, image_artifact_id } => format!("/sessions/{session_id}/image-artifacts/{image_artifact_id}/json"),
             GuiOperationRequest::CloseSession { session_id, .. } => format!("/sessions/{session_id}/close"),
             GuiOperationRequest::ArchiveSession { session_id } => format!("/sessions/{session_id}/archive"),
             GuiOperationRequest::ForkSession { session_id, .. } => format!("/sessions/{session_id}/fork"),

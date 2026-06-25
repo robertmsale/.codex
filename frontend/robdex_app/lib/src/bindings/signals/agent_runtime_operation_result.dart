@@ -8,6 +8,8 @@ class AgentRuntimeOperationResult {
     required this.operation,
     required this.outcome,
     required this.message,
+    this.valueJson = '',
+    this.hasValueJson = false,
   });
 
   static AgentRuntimeOperationResult deserialize(BinaryDeserializer deserializer) {
@@ -16,6 +18,8 @@ class AgentRuntimeOperationResult {
       operation: deserializer.deserializeString(),
       outcome: deserializer.deserializeString(),
       message: deserializer.deserializeString(),
+      valueJson: deserializer.deserializeString(),
+      hasValueJson: deserializer.deserializeBool(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -33,16 +37,22 @@ class AgentRuntimeOperationResult {
   final String operation;
   final String outcome;
   final String message;
+  final String valueJson;
+  final bool hasValueJson;
 
   AgentRuntimeOperationResult copyWith({
     String? operation,
     String? outcome,
     String? message,
+    String? valueJson,
+    bool? hasValueJson,
   }) {
     return AgentRuntimeOperationResult(
       operation: operation ?? this.operation,
       outcome: outcome ?? this.outcome,
       message: message ?? this.message,
+      valueJson: valueJson ?? this.valueJson,
+      hasValueJson: hasValueJson ?? this.hasValueJson,
     );
   }
 
@@ -51,6 +61,8 @@ class AgentRuntimeOperationResult {
     serializer.serializeString(operation);
     serializer.serializeString(outcome);
     serializer.serializeString(message);
+    serializer.serializeString(valueJson);
+    serializer.serializeBool(hasValueJson);
     serializer.decreaseContainerDepth();
   }
 
@@ -68,7 +80,9 @@ class AgentRuntimeOperationResult {
     return other is AgentRuntimeOperationResult
       && operation == other.operation
       && outcome == other.outcome
-      && message == other.message;
+      && message == other.message
+      && valueJson == other.valueJson
+      && hasValueJson == other.hasValueJson;
   }
 
   @override
@@ -76,6 +90,8 @@ class AgentRuntimeOperationResult {
         operation,
         outcome,
         message,
+        valueJson,
+        hasValueJson,
       );
 
   @override

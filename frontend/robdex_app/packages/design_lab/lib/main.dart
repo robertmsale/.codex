@@ -154,7 +154,7 @@ class RobdexDesignLabHome extends StatelessWidget {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected);
     }
     if (surface == 'agentRuntimeStarterKitImageEvidence') {
-      return _AgentRuntimeScenario(data: _starterKitImageEvidenceData(), focusSurfaceId: 'imageArtifacts');
+      return _AgentRuntimeScenario(data: _starterKitImageEvidenceData());
     }
     if (surface == 'agentRuntimeCreateSessionModal') {
       return Scaffold(
@@ -310,9 +310,6 @@ class RobdexDesignLabHome extends StatelessWidget {
         ),
       );
     }
-    if (surface == 'agentRuntimeHistorySurface') {
-      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'history');
-    }
     if (surface == 'agentRuntimeProcessManagerSurface') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'processManager');
     }
@@ -347,9 +344,6 @@ class RobdexDesignLabHome extends StatelessWidget {
         ),
         focusSurfaceId: 'compaction',
       );
-    }
-    if (surface == 'agentRuntimeStatisticsSurface') {
-      return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'statistics');
     }
     if (surface == 'agentRuntimeWorkflowMemorySurface') {
       return _AgentRuntimeScenario(data: mockAgentRuntimeConnected, focusSurfaceId: 'workflowMemory');
@@ -785,12 +779,12 @@ bool _hasConnectedRuntime(AgentRuntimeWorkbenchData data) {
 
 AgentRuntimeWorkbenchData _starterKitImageEvidenceData() {
   const previewPng =
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+      'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQVR4nGO4Y2T0HxkzkC4AAMMYI/FM3SW3AAAAAElFTkSuQmCC';
   return mockAgentRuntimeConnected.copyWith(
     selectedSessionLabel: 'Starter kit evidence',
     timelineTitle: 'Starter kit evidence',
     timelineSubtitle: 'Image artifact, managed server, and Requirements evidence projected from runtime state',
-    detailTitle: 'Image artifacts',
+    detailTitle: 'Timeline evidence',
     detailSubtitle: 'Runtime-owned evidence handles',
     sessions: const [
       AgentRuntimeSessionItem(
@@ -856,9 +850,9 @@ AgentRuntimeWorkbenchData _starterKitImageEvidenceData() {
         timestamp: null,
         body: 'Image artifact captured',
         subtitle: 'Screenshot evidence · image/png · 1 KB',
-        kind: 'image.capture_from_file',
+        kind: 'imageView',
         status: 'completed',
-        output: 'Artifact handle stored; binary content stays outside transcript text.',
+        output: 'agent-runtime-image://starter-session/starter-tool-image',
         imagePreviewBase64: previewPng,
         imagePreviewContentType: 'image/png',
         isTool: true,
@@ -872,26 +866,10 @@ AgentRuntimeWorkbenchData _starterKitImageEvidenceData() {
         status: 'completed',
       ),
     ],
-    operationSurfaces: [
-      ...mockAgentRuntimeConnected.operationSurfaces.where((surface) => surface.surfaceId != 'imageArtifacts'),
-      const AgentRuntimeOperationSurface(
-        surfaceId: 'imageArtifacts',
-        title: 'Image artifacts',
-        subtitle: 'Selected session evidence',
-        rows: [
-          AgentRuntimeFact(label: 'Artifact', value: 'Screenshot evidence image'),
-          AgentRuntimeFact(label: 'Capture method', value: 'Design Lab Bun WebView'),
-          AgentRuntimeFact(label: 'Viewport', value: '1366 × 1024'),
-          AgentRuntimeFact(label: 'Reviewed flow', value: 'Selected session timeline and Requirements evidence'),
-          AgentRuntimeFact(label: 'Reviewer delivery', value: 'Image artifact attachment'),
-          AgentRuntimeFact(label: 'Transcript boundary', value: 'Binary bytes are not copied into chat text'),
-        ],
-        actions: [],
-      ),
-    ],
+    operationSurfaces: mockAgentRuntimeConnected.operationSurfaces,
     controllerFacts: const [
       AgentRuntimeFact(label: 'Selected session', value: 'Starter kit evidence'),
-      AgentRuntimeFact(label: 'Image artifacts', value: '1 available'),
+      AgentRuntimeFact(label: 'Timeline images', value: '1 preview available'),
       AgentRuntimeFact(label: 'Requirements evidence', value: 'Artifact attached'),
     ],
   );

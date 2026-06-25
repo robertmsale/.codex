@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use robdex_agent_runtime_projection::{
     timeline_by_sequence, timeline_item_id, AgentRuntimeChatEntry, CommandRegistryRequestSummary,
     CommandRegistrySummary, ManagedProcessSummary, PendingApprovalSummary, ProjectSummary, RequirementsPacketSummary,
@@ -848,6 +849,9 @@ async fn selected_chat_entries(
             process_id: None,
             command: String::new(),
             output: String::new(),
+            image_preview_base64: None,
+            image_preview_content_type: None,
+            image_preview_error: None,
             delivery_state: if status == "completed" { "delivered" } else { "sending" }.to_string(),
             is_streaming: status == "running",
             is_tool: false,
@@ -865,10 +869,78 @@ async fn selected_chat_entries(
             entries.push(assistant);
         }
     }
+    entries.extend(image_artifact_chat_entries(pool, session_id).await?);
+    entries.sort_by(|left, right| {
+        left.timestamp
+            .cmp(&right.timestamp)
+            .then(left.id.cmp(&right.id))
+    });
     if entries.len() > 50 {
         entries = entries.split_off(entries.len() - 50);
     }
     Ok(entries)
+}
+
+async fn image_artifact_chat_entries(pool: &PgPool, session_id: Uuid) -> Result<Vec<AgentRuntimeChatEntry>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, source_type, source_path, mime_type, byte_count, width, height,
+               retrieval_metadata, binary_content, created_at
+        FROM starter_image_artifacts
+        WHERE session_id = $1
+        ORDER BY created_at ASC, id ASC
+        LIMIT 50
+        "#,
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let id = row.get::<Uuid, _>("id");
+            let mime_type: String = row.get("mime_type");
+            let byte_count: i64 = row.get("byte_count");
+            let width: Option<i32> = row.get("width");
+            let height: Option<i32> = row.get("height");
+            let source_type: String = row.get("source_type");
+            let source_path: Option<String> = row.get("source_path");
+            let retrieval_metadata: Value = row.get("retrieval_metadata");
+            let bytes: Vec<u8> = row.get("binary_content");
+            let dimensions = match (width, height) {
+                (Some(width), Some(height)) => format!("{width} × {height}"),
+                _ => "dimensions unavailable".to_string(),
+            };
+            let source = source_path
+                .filter(|path| !path.trim().is_empty())
+                .unwrap_or(source_type);
+            let caption = retrieval_metadata
+                .get("description")
+                .and_then(Value::as_str)
+                .or_else(|| retrieval_metadata.get("captureDescription").and_then(Value::as_str))
+                .or_else(|| retrieval_metadata.get("sourceDescription").and_then(Value::as_str))
+                .unwrap_or("Image artifact");
+            AgentRuntimeChatEntry {
+                id: format!("imageArtifact:{id}"),
+                author: "Runtime".to_string(),
+                display_label: "Image artifact".to_string(),
+                timestamp: Some(time(row.get("created_at"))),
+                body: caption.to_string(),
+                subtitle: format!("{mime_type} · {dimensions} · {byte_count} bytes"),
+                kind: "imageView".to_string(),
+                status: "stored".to_string(),
+                process_id: None,
+                command: source,
+                output: format!("agent-runtime-image://{session_id}/{id}"),
+                image_preview_base64: Some(BASE64_STANDARD.encode(bytes)),
+                image_preview_content_type: Some(mime_type),
+                image_preview_error: None,
+                delivery_state: "delivered".to_string(),
+                is_streaming: false,
+                is_tool: false,
+            }
+        })
+        .collect())
 }
 
 async fn submitted_input_chat_entries_for_turn(pool: &PgPool, turn_id: Uuid) -> Result<Vec<AgentRuntimeChatEntry>> {
@@ -916,6 +988,9 @@ async fn submitted_input_chat_entries_for_turn(pool: &PgPool, turn_id: Uuid) -> 
                 process_id: None,
                 command: String::new(),
                 output: String::new(),
+                image_preview_base64: None,
+                image_preview_content_type: None,
+                image_preview_error: None,
                 delivery_state: if status == "applied" { "delivered" } else { "queued" }.to_string(),
                 is_streaming: false,
                 is_tool: false,
@@ -955,6 +1030,9 @@ async fn turn_chat_entry(pool: &PgPool, turn_id: Uuid) -> Result<Option<AgentRun
             process_id: None,
             command: String::new(),
             output: String::new(),
+            image_preview_base64: None,
+            image_preview_content_type: None,
+            image_preview_error: None,
             delivery_state: if status == "completed" { "delivered" } else { "sending" }.to_string(),
             is_streaming: status == "running",
             is_tool: false,
@@ -1001,6 +1079,9 @@ async fn assistant_chat_entry(
             process_id: None,
             command: String::new(),
             output: String::new(),
+            image_preview_base64: None,
+            image_preview_content_type: None,
+            image_preview_error: None,
             delivery_state: "delivered".to_string(),
             is_streaming: false,
             is_tool: false,
@@ -1090,6 +1171,9 @@ async fn tool_chat_entries(
                 process_id: process,
                 command,
                 output,
+                image_preview_base64: None,
+                image_preview_content_type: None,
+                image_preview_error: None,
                 delivery_state: if status == "completed" { "delivered" } else { "running" }.to_string(),
                 is_streaming: status == "running",
                 is_tool: true,
@@ -1861,6 +1945,52 @@ mod tests {
         }
         assert!(snapshot.timeline.iter().any(|item| item.event_type == "role.imported"));
         assert!(snapshot.timeline.iter().any(|item| item.event_type == "tool.completed"));
+    }
+
+    #[tokio::test]
+    async fn selected_conversation_projects_stored_image_artifacts_as_chat_image_entries() {
+        let (admin_url, database_name, pool) = create_validation_database("selected_image_chat").await;
+        let (session_id, turn_id, tool_id, script_id, process_id, _artifact_id, _model_event_id, _final_text) = seed_durable_selected_chat(&pool).await;
+        let image_id = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO starter_image_artifacts (
+                id, session_id, turn_id, tool_call_id, script_run_id, process_id,
+                source_type, source_path, mime_type, byte_count, width, height,
+                retrieval_metadata, binary_content
+            ) VALUES ($1,$2,$3,$4,$5,$6,'screenshot','/tmp/evidence.png','image/png',8,1,1,$7,decode('89504e470d0a1a0a','hex'))
+            "#,
+        )
+        .bind(image_id)
+        .bind(session_id)
+        .bind(turn_id)
+        .bind(tool_id)
+        .bind(script_id)
+        .bind(process_id)
+        .bind(json!({"description":"Screenshot evidence"}))
+        .execute(&pool)
+        .await
+        .expect("insert image artifact");
+
+        let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
+        drop(pool);
+        drop_validation_database(&admin_url, &database_name).await;
+
+        let image = snapshot
+            .selected_chat_entries
+            .iter()
+            .find(|entry| entry.id == format!("imageArtifact:{image_id}"))
+            .expect("image artifact chat entry");
+        assert_eq!(image.author, "Runtime");
+        assert_eq!(image.display_label, "Image artifact");
+        assert_eq!(image.kind, "imageView");
+        assert_eq!(image.status, "stored");
+        assert_eq!(image.body, "Screenshot evidence");
+        assert_eq!(image.image_preview_content_type.as_deref(), Some("image/png"));
+        assert_eq!(image.image_preview_base64.as_deref(), Some("iVBORw0KGgo="));
+        assert_eq!(image.output, format!("agent-runtime-image://{session_id}/{image_id}"));
+        assert!(image.subtitle.contains("image/png"));
+        assert!(image.subtitle.contains("1 × 1"));
     }
 
     #[tokio::test]

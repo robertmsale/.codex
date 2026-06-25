@@ -218,6 +218,12 @@ pub struct AgentRuntimeChatEntry {
     pub process_id: Option<String>,
     pub command: String,
     pub output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_preview_base64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_preview_content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_preview_error: Option<String>,
     pub delivery_state: String,
     pub is_streaming: bool,
     pub is_tool: bool,
@@ -695,6 +701,7 @@ pub enum GuiOperationName {
     CompactSession,
     GrantGodMode,
     RevokeGodMode,
+    LoadFullSizeImage,
     CloseSession,
     ArchiveSession,
     ForkSession,
@@ -756,6 +763,7 @@ pub enum GuiOperationRequest {
     CompactSession { session_id: String, through_turn: Option<String> },
     GrantGodMode { session_id: String, reason: String },
     RevokeGodMode { session_id: String, reason: String },
+    LoadFullSizeImage { session_id: String, image_artifact_id: String },
     CloseSession { session_id: String, reason: Option<String> },
     ArchiveSession { session_id: String },
     ForkSession { session_id: String, at_turn: String },
@@ -817,6 +825,7 @@ impl GuiOperationRequest {
             Self::CompactSession { .. } => GuiOperationName::CompactSession,
             Self::GrantGodMode { .. } => GuiOperationName::GrantGodMode,
             Self::RevokeGodMode { .. } => GuiOperationName::RevokeGodMode,
+            Self::LoadFullSizeImage { .. } => GuiOperationName::LoadFullSizeImage,
             Self::CloseSession { .. } => GuiOperationName::CloseSession,
             Self::ArchiveSession { .. } => GuiOperationName::ArchiveSession,
             Self::ForkSession { .. } => GuiOperationName::ForkSession,
@@ -891,6 +900,7 @@ impl GuiOperationRequest {
             | Self::ValidateProjectRuntimeConfig { .. }
             | Self::ExportProjectRuntimeConfig { .. }
             | Self::InspectProjectRuntimeHookEvaluations { .. }
+            | Self::LoadFullSizeImage { .. }
             | Self::ShowCommand { .. }
             | Self::ListCommandRegistryRequests
             | Self::ShowCommandRegistryRequest { .. }
@@ -935,6 +945,7 @@ impl GuiOperationRequest {
             Self::CompactSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/compact", r#"{"throughTurn"?}"#, r#"{"sessionId","checkpointId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::GrantGodMode { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/god-mode/grant", r#"{"reason"}"#, r#"{"sessionId","grantId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::RevokeGodMode { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/god-mode/revoke", r#"{"reason"}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
+            Self::LoadFullSizeImage { .. } => http_mapping(self.name(), "GET", "/sessions/{sessionId}/image-artifacts/{imageArtifactId}/json", "none", r#"{"path","bytesBase64","contentType"}"#, GuiOperationExpectation::DirectResult),
             Self::CloseSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/close", r#"{"reason"?}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ArchiveSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/archive", "{}", r#"{"sessionId","tracked"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ForkSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/fork", r#"{"atTurn"}"#, r#"{"sessionId","forkedFromSessionId","forkedFromTurnId"}"#, GuiOperationExpectation::WaitForDelta),
@@ -980,6 +991,7 @@ impl GuiOperationRequest {
             | Self::ListCommandRegistry { .. }
             | Self::ExportProjectRuntimeConfig { .. }
             | Self::InspectProjectRuntimeHookEvaluations { .. }
+            | Self::LoadFullSizeImage { .. }
             | Self::ShowCommand { .. }
             | Self::ListCommandRegistryRequests
             | Self::ShowCommandRegistryRequest { .. }
@@ -1724,6 +1736,7 @@ mod tests {
             GuiOperationRequest::CompactSession { session_id: "session-1".to_string(), through_turn: None },
             GuiOperationRequest::GrantGodMode { session_id: "session-1".to_string(), reason: "break-glass host shell needed".to_string() },
             GuiOperationRequest::RevokeGodMode { session_id: "session-1".to_string(), reason: "break-glass complete".to_string() },
+            GuiOperationRequest::LoadFullSizeImage { session_id: "session-1".to_string(), image_artifact_id: "image-1".to_string() },
             GuiOperationRequest::CloseSession { session_id: "session-1".to_string(), reason: Some("done".to_string()) },
             GuiOperationRequest::ArchiveSession { session_id: "session-1".to_string() },
             GuiOperationRequest::ForkSession { session_id: "session-1".to_string(), at_turn: "turn-1".to_string() },
@@ -2489,6 +2502,9 @@ mod tests {
             process_id: if is_tool { Some("proc-1".to_string()) } else { None },
             command: if is_tool { "output('delta')".to_string() } else { String::new() },
             output: if is_tool { "partial output".to_string() } else { String::new() },
+            image_preview_base64: None,
+            image_preview_content_type: None,
+            image_preview_error: None,
             delivery_state: if status == "completed" { "delivered".to_string() } else { "streaming".to_string() },
             is_streaming: status == "running",
             is_tool,

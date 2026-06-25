@@ -189,7 +189,7 @@ void main() {
     addTearDown(controller.dispose);
 
     controller.applyOutputForTest(const bindings.AgentRuntimeOutputOperationResult(
-      result: bindings.AgentRuntimeOperationResult(operation: 'CreateSession', outcome: 'accepted', message: 'created'),
+      result: bindings.AgentRuntimeOperationResult(operation: 'CreateSession', outcome: 'accepted', message: 'created', valueJson: '', hasValueJson: false),
     ));
     expect(controller.data.outputLog.last, contains('CreateSession'));
 
@@ -294,6 +294,8 @@ void main() {
         operation: 'CreateSession',
         outcome: 'error',
         message: 'Create session requires role.',
+        valueJson: '',
+        hasValueJson: false,
       ),
     ));
 
@@ -737,7 +739,7 @@ void main() {
       controller.applyOutputForRequestForTest(
         requestId,
         const bindings.AgentRuntimeOutputOperationResult(
-          result: bindings.AgentRuntimeOperationResult(operation: 'approval', outcome: 'accepted', message: 'updated'),
+          result: bindings.AgentRuntimeOperationResult(operation: 'approval', outcome: 'accepted', message: 'updated', valueJson: '', hasValueJson: false),
         ),
       );
       expect(controller.data.actions.where((action) => action.id == 'approval-1'), isEmpty);
@@ -788,6 +790,12 @@ void main() {
       hasProcessId: false,
       command: '',
       output: '',
+      imagePreviewBase64: '',
+      hasImagePreviewBase64: false,
+      imagePreviewContentType: '',
+      hasImagePreviewContentType: false,
+      imagePreviewError: '',
+      hasImagePreviewError: false,
       deliveryState: 'delivered',
       isStreaming: false,
       isTool: false,
@@ -806,6 +814,12 @@ void main() {
       hasProcessId: false,
       command: '',
       output: '',
+      imagePreviewBase64: '',
+      hasImagePreviewBase64: false,
+      imagePreviewContentType: '',
+      hasImagePreviewContentType: false,
+      imagePreviewError: '',
+      hasImagePreviewError: false,
       deliveryState: 'delivered',
       isStreaming: false,
       isTool: false,
@@ -817,6 +831,108 @@ void main() {
     expect([user.author, assistant.author], isNot(contains('assistant')));
     expect(user.body, 'exact submitted text');
     expect(assistant.body, '**actual final response**');
+  });
+
+  test('agent runtime image artifacts map to shared chat image fields and full-size typed loading', () async {
+    final sentRequests = <String, bindings.AgentRuntimeRequest>{};
+    final controller = AgentRuntimeWorkbenchController(
+      requestSink: (requestId, request) {
+        sentRequests[requestId] = request;
+      },
+    );
+    addTearDown(controller.dispose);
+
+    final entry = agentRuntimeChatEntryToChatEntryForTest(const bindings.AgentRuntimeChatEntry(
+      id: 'imageArtifact:image-1',
+      author: 'Runtime',
+      displayLabel: 'Image',
+      timestamp: '2026-06-25T12:00:00Z',
+      hasTimestamp: true,
+      body: 'Screenshot evidence',
+      subtitle: 'image/png · 1 × 1 · 68 bytes',
+      kind: 'imageView',
+      status: 'stored',
+      processId: '',
+      hasProcessId: false,
+      command: '',
+      output: 'agent-runtime-image://session-1/image-1',
+      imagePreviewBase64: 'iVBORw0KGgo=',
+      hasImagePreviewBase64: true,
+      imagePreviewContentType: 'image/png',
+      hasImagePreviewContentType: true,
+      imagePreviewError: '',
+      hasImagePreviewError: false,
+      deliveryState: 'stored',
+      isStreaming: false,
+      isTool: false,
+    ));
+    expect(entry.kind, 'imageView');
+    expect(entry.output, 'agent-runtime-image://session-1/image-1');
+    expect(entry.imagePreviewBase64, 'iVBORw0KGgo=');
+    expect(entry.imagePreviewContentType, 'image/png');
+
+    final load = controller.loadFullSizeImage('agent-runtime-image://session-1/image-1');
+    expect(sentRequests, hasLength(1));
+    final requestId = sentRequests.keys.single;
+    final request = sentRequests.values.single;
+    expect(request, isA<bindings.AgentRuntimeRequestDispatchOperation>());
+    final operation = (request as bindings.AgentRuntimeRequestDispatchOperation).operation;
+    expect(operation, isA<bindings.AgentRuntimeGuiOperationLoadFullSizeImage>());
+    final typed = operation as bindings.AgentRuntimeGuiOperationLoadFullSizeImage;
+    expect(typed.sessionId, 'session-1');
+    expect(typed.imageArtifactId, 'image-1');
+
+    controller.applyOutputForRequestForTest(
+      requestId,
+      const bindings.AgentRuntimeOutputOperationResult(
+        result: bindings.AgentRuntimeOperationResult(
+          operation: 'LoadFullSizeImage',
+          outcome: 'directValue',
+          message: 'loaded',
+          valueJson: '{"path":"agent-runtime-image://session-1/image-1","bytesBase64":"iVBORw0KGgo=","contentType":"image/png"}',
+          hasValueJson: true,
+        ),
+      ),
+    );
+
+    final full = await load;
+    expect(full.path, 'agent-runtime-image://session-1/image-1');
+    expect(full.bytesBase64, 'iVBORw0KGgo=');
+    expect(full.contentType, 'image/png');
+  });
+
+  testWidgets('agent runtime conversation renders image preview and opens shared full-size viewer', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1366, 1024));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    var loadedPath = '';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ConversationShellScreen(
+          data: agentRuntimeConversationShellData(mockAgentRuntimeConnected),
+          onSessionSelected: (_) {},
+          onCreateSession: () {},
+          onSendMessage: (_) {},
+          onInterrupt: () {},
+          loadFullSizeImage: (path) async {
+            loadedPath = path;
+            return FullSizeImageData(
+              path: path,
+              bytesBase64:
+                  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+              contentType: 'image/png',
+            );
+          },
+        ),
+      ),
+    );
+
+    expect(find.byType(Image), findsWidgets);
+    await tester.tap(find.byTooltip('Open full size image'));
+    await tester.pumpAndSettle();
+
+    expect(loadedPath, 'agent-runtime-image://session-a/image-artifact-1');
+    expect(find.byTooltip('Close image'), findsOneWidget);
+    expect(find.byType(InteractiveViewer), findsOneWidget);
   });
 
   testWidgets('connected Agent Runtime shell renders left rail plus center chat with modal operation toolbar', (tester) async {
@@ -831,12 +947,12 @@ void main() {
           onInterrupt: () {},
           showPermanentDetail: false,
           headerControls: IconButton(
-            key: const ValueKey('agentRuntime.toolbar.history'),
+            key: const ValueKey('agentRuntime.toolbar.operations'),
             tooltip: 'Runtime operations',
             onPressed: () {
               showModalBottomSheet<void>(
-                context: tester.element(find.byKey(const ValueKey('agentRuntime.toolbar.history'))),
-                builder: (_) => const AgentRuntimeOperationsDetail(data: mockAgentRuntimeConnected, focusSurfaceId: 'history'),
+                context: tester.element(find.byKey(const ValueKey('agentRuntime.toolbar.operations'))),
+                builder: (_) => const AgentRuntimeOperationsDetail(data: mockAgentRuntimeConnected, focusSurfaceId: 'compaction'),
               );
             },
             icon: const Icon(Icons.manage_history_rounded),
@@ -846,19 +962,19 @@ void main() {
     );
 
     expect(find.byKey(const ValueKey('conversationShell.center')), findsOneWidget);
-    expect(find.text('History'), findsNothing);
+    expect(find.text('Compaction'), findsNothing);
     expect(find.text('More'), findsNothing);
     expect(find.text('New'), findsNothing);
     expect(find.text('Details'), findsNothing);
-    expect(find.text('Role imported'), findsNothing);
+    expect(find.text('Compact selected session'), findsNothing);
     await tester.tap(find.byTooltip('New session'));
     await tester.pump();
     expect(globalCreates, 1);
 
-    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.history')));
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.operations')));
     await tester.pumpAndSettle();
-    expect(find.text('History'), findsWidgets);
-    expect(find.text('Role imported'), findsWidgets);
+    expect(find.text('Compaction'), findsWidgets);
+    expect(find.text('Compact selected session'), findsWidgets);
   });
 
   testWidgets('project rows expose scoped management menus without forbidden actions on All or Unassigned', (tester) async {
