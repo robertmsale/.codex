@@ -3978,11 +3978,25 @@ mod tests {
             .expect("reviewer required");
         assert_eq!(required, &vec![json!("mustProvideClaims"), json!("route")]);
         let prompt = request["params"]["input"][0]["text"].as_str().unwrap_or_default();
-        assert!(prompt.contains("Latest source claim packet:"));
-        assert!(prompt.contains("Requirement keys to review from this claim packet:"));
+        let expected_prompt = serde_json::to_string_pretty(&json!({
+            "summary": "implemented",
+            "requirements": {
+                "mustProvideClaims": {
+                    "kind": "satisfied",
+                    "summary": "implemented",
+                    "evidence": [{"type": "testsRun", "value": "cargo test passed"}]
+                }
+            }
+        }))
+        .expect("serialize expected prompt");
+        assert_eq!(prompt, expected_prompt);
+        assert!(!prompt.contains("Review subject:"));
+        assert!(!prompt.contains("Latest source claim packet:"));
+        assert!(!prompt.contains("Requirement keys to review from this claim packet:"));
         assert!(prompt.contains("implemented"));
         assert!(prompt.contains("cargo test passed"));
-        assert!(prompt.contains("`mustProvideClaims` priorStatus=pending"));
+        assert!(!prompt.contains("priorStatus"));
+        assert!(!prompt.contains("Must provide claims"));
         assert!(prompt.contains("\"requirements\""));
         transport.abort();
         server.abort();
