@@ -495,6 +495,10 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     _approvalListUpdates[requestId] = action.id;
   }
 
+  void approveApprovalById(String approvalId, String reason) {
+    approveAction(AgentRuntimeActionItem(id: approvalId, title: '', subtitle: '', kind: 'approval', stateText: '', tone: ''), reason);
+  }
+
   void denyAction(AgentRuntimeActionItem action, String reason) {
     if (reason.trim().isEmpty) {
       _bridgeErrorMessage = 'Approval reason is required.';
@@ -505,9 +509,17 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     _approvalListUpdates[requestId] = action.id;
   }
 
+  void denyApprovalById(String approvalId, String reason) {
+    denyAction(AgentRuntimeActionItem(id: approvalId, title: '', subtitle: '', kind: 'approval', stateText: '', tone: ''), reason);
+  }
+
   void resumeApproval(AgentRuntimeActionItem action) {
     final requestId = _dispatchOperation('approval-resume', agentRuntimeApprovalResumeOperationForTest(action.id));
     _approvalListUpdates[requestId] = action.id;
+  }
+
+  void resumeApprovalById(String approvalId) {
+    resumeApproval(AgentRuntimeActionItem(id: approvalId, title: '', subtitle: '', kind: 'approval', stateText: '', tone: ''));
   }
 
 
@@ -531,12 +543,24 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
     _dispatchOperation('session-compact', bindings.AgentRuntimeGuiOperationCompactSession(sessionId: action.id, throughTurn: ''));
   }
 
+  void compactSessionById(String sessionId) {
+    _dispatchOperation('session-compact', bindings.AgentRuntimeGuiOperationCompactSession(sessionId: sessionId, throughTurn: ''));
+  }
+
   void grantGodMode(AgentRuntimeActionItem action) {
     _dispatchOperation('god-mode-grant', bindings.AgentRuntimeGuiOperationGrantGodMode(sessionId: action.id, reason: 'Owner enabled break-glass shell for this session'));
   }
 
+  void grantGodModeById(String sessionId) {
+    _dispatchOperation('god-mode-grant', bindings.AgentRuntimeGuiOperationGrantGodMode(sessionId: sessionId, reason: 'Owner enabled break-glass shell for this session'));
+  }
+
   void revokeGodMode(AgentRuntimeActionItem action) {
     _dispatchOperation('god-mode-revoke', bindings.AgentRuntimeGuiOperationRevokeGodMode(sessionId: action.id, reason: 'Owner revoked break-glass shell for this session'));
+  }
+
+  void revokeGodModeById(String sessionId) {
+    _dispatchOperation('god-mode-revoke', bindings.AgentRuntimeGuiOperationRevokeGodMode(sessionId: sessionId, reason: 'Owner revoked break-glass shell for this session'));
   }
 
   void approveCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId, AgentRuntimeCommandRegistryDecisionDraft decision) {
@@ -553,6 +577,26 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
 
   void applyCommandRegistryRequest(AgentRuntimeActionItem action, String sessionId) {
     _dispatchOperation('registry-apply', agentRuntimeCommandRegistryApplyOperationForTest(action.id, sessionId));
+  }
+
+  void previewCommandRegistryRequestById(String requestId, String sessionId) {
+    previewCommandRegistryRequest(AgentRuntimeActionItem(id: requestId, title: '', subtitle: '', kind: 'commandRegistryRequest', stateText: '', tone: ''), sessionId, const AgentRuntimeCommandRegistryDecisionDraft.empty());
+  }
+
+  void approveCommandRegistryRequestById(String requestId, String sessionId) {
+    approveCommandRegistryRequest(AgentRuntimeActionItem(id: requestId, title: '', subtitle: '', kind: 'commandRegistryRequest', stateText: '', tone: ''), sessionId, const AgentRuntimeCommandRegistryDecisionDraft.empty().copyWith(status: 'approved'));
+  }
+
+  void denyCommandRegistryRequestById(String requestId, String sessionId) {
+    denyCommandRegistryRequest(AgentRuntimeActionItem(id: requestId, title: '', subtitle: '', kind: 'commandRegistryRequest', stateText: '', tone: ''), sessionId, const AgentRuntimeCommandRegistryDecisionDraft.empty().copyWith(status: 'denied'));
+  }
+
+  void applyCommandRegistryRequestById(String requestId, String sessionId) {
+    applyCommandRegistryRequest(AgentRuntimeActionItem(id: requestId, title: '', subtitle: '', kind: 'commandRegistryRequest', stateText: '', tone: ''), sessionId);
+  }
+
+  void setRequirementsForSession(String sessionId) {
+    _dispatchOperation('requirements-set', bindings.AgentRuntimeGuiOperationSetRequirements(sessionId: sessionId, title: 'Session Requirements', requirements: const []));
   }
 
   void validateRoleDraft(AgentRuntimeRoleEditorDraft draft) {
@@ -1021,11 +1065,34 @@ AgentRuntimeWorkbenchData _workbenchData(bindings.AgentRuntimeWorkbenchViewModel
     workflowMemory: _workflowMemory(view.workflowMemory),
     controllerFacts: view.controllerFacts.map(_fact).toList(growable: false),
     operationSurfaces: view.shell.operationSurfaces.map(_operationSurface).toList(growable: false),
+    selectedSessionControlPlane: view.shell.hasSelectedSessionControlPlane ? _selectedControlPlane(view.shell.selectedSessionControlPlane) : null,
     outputLog: view.outputLog,
     pendingRequestCount: view.pendingRequestCount,
     errorMessage: view.hasErrorMessage ? view.errorMessage : null,
   );
 }
+
+AgentRuntimeSelectedSessionControlPlane _selectedControlPlane(bindings.AgentRuntimeSelectedSessionControlPlane value) => AgentRuntimeSelectedSessionControlPlane(
+      sessionId: value.sessionId,
+      title: value.title,
+      name: value.name,
+      status: value.status,
+      roleId: value.roleId,
+      projectKey: value.projectKey,
+      activeModel: value.activeModel,
+      workdir: value.workdir,
+      worktreeRoot: value.worktreeRoot,
+      tracked: value.tracked,
+      modelOptions: value.modelOptions.map(_modelOption).toList(growable: false),
+      godMode: AgentRuntimeGodModeState(active: value.godMode.active, reason: value.godMode.reason, grantedBy: value.godMode.grantedBy, grantedAt: value.godMode.grantedAt),
+      managedProcesses: value.managedProcesses.map((process) => AgentRuntimeManagedProcessRow(id: process.id, handle: process.handle, command: process.command, status: process.status, startedAt: process.startedAt, endedAt: process.endedAt, cwd: process.cwd, pid: process.pid, stdinPolicy: process.stdinPolicy, endOfTurnBehavior: process.endOfTurnBehavior, endOfSessionBehavior: process.endOfSessionBehavior, latestOutputSummary: process.latestOutputSummary, canTerminate: process.canTerminate, canFlush: process.canFlush, canInput: process.canInput)).toList(growable: false),
+      approvals: value.approvals.map((approval) => AgentRuntimeApprovalCard(id: approval.id, title: approval.title, status: approval.status, requiredApprover: approval.requiredApprover, requestedAt: approval.requestedAt, contextSummary: approval.contextSummary, canDecide: approval.canDecide, canResume: approval.canResume, decisionSummary: approval.decisionSummary)).toList(growable: false),
+      commandRequests: value.commandRequests.map((request) => AgentRuntimeCommandRequestCard(id: request.id, title: request.title, operation: request.operation, status: request.status, scopeSummary: request.scopeSummary, policySummary: request.policySummary, previewStatus: request.previewStatus, applyStatus: request.applyStatus, canPreview: request.canPreview, canDecide: request.canDecide, canApply: request.canApply, commandSummary: request.commandSummary)).toList(growable: false),
+      requirementsReview: AgentRuntimeRequirementsReviewPanel(active: value.requirementsReview.active, status: value.requirementsReview.status, progressSummary: value.requirementsReview.progressSummary, reviewerStatus: value.requirementsReview.reviewerStatus, ownerActionStatus: value.requirementsReview.ownerActionStatus, latestPacketStatus: value.requirementsReview.latestPacketStatus),
+      runningServers: value.runningServers.map(_fact).toList(growable: false),
+      imageArtifacts: value.imageArtifacts.map(_fact).toList(growable: false),
+      quickActions: value.quickActions.map((action) => AgentRuntimeActionAvailability(id: action.id, label: action.label, available: action.available, reason: action.reason)).toList(growable: false),
+    );
 
 AgentRuntimeModelOption _modelOption(bindings.AgentRuntimeModelOption option) => AgentRuntimeModelOption(
       id: option.id,

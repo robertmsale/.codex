@@ -339,7 +339,103 @@ pub struct AgentRuntimeConversationShellViewModel {
     pub approvals: Vec<AgentRuntimeActionRow>,
     pub diagnostics: Vec<AgentRuntimeFact>,
     pub operation_surfaces: Vec<AgentRuntimeOperationSurface>,
+    pub selected_session_control_plane: AgentRuntimeSelectedSessionControlPlane,
+    pub has_selected_session_control_plane: bool,
 }
+
+#[derive(Clone, Debug, Default, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeSelectedSessionControlPlane {
+    pub session_id: String,
+    pub title: String,
+    pub name: String,
+    pub status: String,
+    pub role_id: String,
+    pub project_key: String,
+    pub active_model: String,
+    pub workdir: String,
+    pub worktree_root: String,
+    pub tracked: bool,
+    pub model_options: Vec<AgentRuntimeModelOption>,
+    pub god_mode: AgentRuntimeGodModeState,
+    pub managed_processes: Vec<AgentRuntimeManagedProcessRow>,
+    pub approvals: Vec<AgentRuntimeApprovalCard>,
+    pub command_requests: Vec<AgentRuntimeCommandRequestCard>,
+    pub requirements_review: AgentRuntimeRequirementsReviewPanel,
+    pub running_servers: Vec<AgentRuntimeFact>,
+    pub image_artifacts: Vec<AgentRuntimeFact>,
+    pub quick_actions: Vec<AgentRuntimeActionAvailability>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeGodModeState { pub active: bool, pub reason: String, pub granted_by: String, pub granted_at: String }
+
+#[derive(Clone, Debug, Default, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeManagedProcessRow {
+    pub id: String,
+    pub handle: String,
+    pub command: String,
+    pub status: String,
+    pub started_at: String,
+    pub ended_at: String,
+    pub cwd: String,
+    pub pid: String,
+    pub stdin_policy: String,
+    pub end_of_turn_behavior: String,
+    pub end_of_session_behavior: String,
+    pub latest_output_summary: String,
+    pub can_terminate: bool,
+    pub can_flush: bool,
+    pub can_input: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeApprovalCard {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub required_approver: String,
+    pub requested_at: String,
+    pub context_summary: String,
+    pub can_decide: bool,
+    pub can_resume: bool,
+    pub decision_summary: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeCommandRequestCard {
+    pub id: String,
+    pub title: String,
+    pub operation: String,
+    pub status: String,
+    pub scope_summary: String,
+    pub policy_summary: String,
+    pub preview_status: String,
+    pub apply_status: String,
+    pub can_preview: bool,
+    pub can_decide: bool,
+    pub can_apply: bool,
+    pub command_summary: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeRequirementsReviewPanel {
+    pub active: bool,
+    pub status: String,
+    pub progress_summary: String,
+    pub reviewer_status: String,
+    pub owner_action_status: String,
+    pub latest_packet_status: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, SignalPiece)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeActionAvailability { pub id: String, pub label: String, pub available: bool, pub reason: String }
 
 #[derive(Clone, Debug, Serialize, SignalPiece)]
 #[serde(rename_all = "camelCase")]

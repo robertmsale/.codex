@@ -1771,6 +1771,8 @@ fn typed_workbench_view(view: InternalWorkbenchViewModel) -> AgentRuntimeWorkben
 
 fn typed_conversation_shell_view(view: robdex_agent_runtime::rinf_transport::AgentRuntimeConversationShellViewModel) -> AgentRuntimeConversationShellViewModel {
     let selected_session_id = view.selected_session_id.unwrap_or_default();
+    let selected_session_control_plane = view.selected_session_control_plane.map(typed_selected_session_control_plane);
+    let has_selected_session_control_plane = selected_session_control_plane.is_some();
     AgentRuntimeConversationShellViewModel {
         projects: view.projects.into_iter().map(|project| AgentRuntimeShellProjectRow {
             id: project.id,
@@ -1828,6 +1830,93 @@ fn typed_conversation_shell_view(view: robdex_agent_runtime::rinf_transport::Age
             subtitle: surface.subtitle,
             rows: surface.rows.into_iter().map(|fact| AgentRuntimeFact { label: fact.label, value: fact.value }).collect(),
             actions: surface.actions.into_iter().map(typed_action_row).collect(),
+        }).collect(),
+        selected_session_control_plane: selected_session_control_plane.unwrap_or_default(),
+        has_selected_session_control_plane,
+    }
+}
+
+fn typed_selected_session_control_plane(view: robdex_agent_runtime::rinf_transport::AgentRuntimeSelectedSessionControlPlane) -> AgentRuntimeSelectedSessionControlPlane {
+    AgentRuntimeSelectedSessionControlPlane {
+        session_id: view.session_id,
+        title: view.title,
+        name: view.name,
+        status: view.status,
+        role_id: view.role_id,
+        project_key: view.project_key,
+        active_model: view.active_model,
+        workdir: view.workdir,
+        worktree_root: view.worktree_root,
+        tracked: view.tracked,
+        model_options: view.model_options.into_iter().map(|option| AgentRuntimeModelOption {
+            id: option.id,
+            display_label: option.display_label,
+            source: option.source,
+            is_default: option.is_default,
+        }).collect(),
+        god_mode: AgentRuntimeGodModeState {
+            active: view.god_mode.active,
+            reason: view.god_mode.reason,
+            granted_by: view.god_mode.granted_by,
+            granted_at: view.god_mode.granted_at,
+        },
+        managed_processes: view.managed_processes.into_iter().map(|process| AgentRuntimeManagedProcessRow {
+            id: process.id,
+            handle: process.handle,
+            command: process.command,
+            status: process.status,
+            started_at: process.started_at,
+            ended_at: process.ended_at,
+            cwd: process.cwd,
+            pid: process.pid,
+            stdin_policy: process.stdin_policy,
+            end_of_turn_behavior: process.end_of_turn_behavior,
+            end_of_session_behavior: process.end_of_session_behavior,
+            latest_output_summary: process.latest_output_summary,
+            can_terminate: process.can_terminate,
+            can_flush: process.can_flush,
+            can_input: process.can_input,
+        }).collect(),
+        approvals: view.approvals.into_iter().map(|approval| AgentRuntimeApprovalCard {
+            id: approval.id,
+            title: approval.title,
+            status: approval.status,
+            required_approver: approval.required_approver,
+            requested_at: approval.requested_at,
+            context_summary: approval.context_summary,
+            can_decide: approval.can_decide,
+            can_resume: approval.can_resume,
+            decision_summary: approval.decision_summary,
+        }).collect(),
+        command_requests: view.command_requests.into_iter().map(|request| AgentRuntimeCommandRequestCard {
+            id: request.id,
+            title: request.title,
+            operation: request.operation,
+            status: request.status,
+            scope_summary: request.scope_summary,
+            policy_summary: request.policy_summary,
+            preview_status: request.preview_status,
+            apply_status: request.apply_status,
+            can_preview: request.can_preview,
+            can_decide: request.can_decide,
+            can_apply: request.can_apply,
+            command_summary: request.command_summary,
+        }).collect(),
+        requirements_review: AgentRuntimeRequirementsReviewPanel {
+            active: view.requirements_review.active,
+            status: view.requirements_review.status,
+            progress_summary: view.requirements_review.progress_summary,
+            reviewer_status: view.requirements_review.reviewer_status,
+            owner_action_status: view.requirements_review.owner_action_status,
+            latest_packet_status: view.requirements_review.latest_packet_status,
+        },
+        running_servers: view.running_servers.into_iter().map(|fact| AgentRuntimeFact { label: fact.label, value: fact.value }).collect(),
+        image_artifacts: view.image_artifacts.into_iter().map(|fact| AgentRuntimeFact { label: fact.label, value: fact.value }).collect(),
+        quick_actions: view.quick_actions.into_iter().map(|action| AgentRuntimeActionAvailability {
+            id: action.id,
+            label: action.label,
+            available: action.available,
+            reason: action.reason,
         }).collect(),
     }
 }

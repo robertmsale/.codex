@@ -1,6 +1,18 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 class TraitHelpers {
+  static void serializeVectorAgentRuntimeActionAvailability(List<AgentRuntimeActionAvailability> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeActionAvailability> deserializeVectorAgentRuntimeActionAvailability(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeActionAvailability.deserialize(deserializer));
+  }
+
   static void serializeVectorAgentRuntimeActionRow(List<AgentRuntimeActionRow> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
@@ -11,6 +23,18 @@ class TraitHelpers {
   static List<AgentRuntimeActionRow> deserializeVectorAgentRuntimeActionRow(BinaryDeserializer deserializer) {
     final length = deserializer.deserializeLength();
     return List.generate(length, (_) => AgentRuntimeActionRow.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeApprovalCard(List<AgentRuntimeApprovalCard> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeApprovalCard> deserializeVectorAgentRuntimeApprovalCard(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeApprovalCard.deserialize(deserializer));
   }
 
   static void serializeVectorAgentRuntimeBadge(List<AgentRuntimeBadge> value, BinarySerializer serializer) {
@@ -37,6 +61,18 @@ class TraitHelpers {
     return List.generate(length, (_) => AgentRuntimeChatEntry.deserialize(deserializer));
   }
 
+  static void serializeVectorAgentRuntimeCommandRequestCard(List<AgentRuntimeCommandRequestCard> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeCommandRequestCard> deserializeVectorAgentRuntimeCommandRequestCard(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeCommandRequestCard.deserialize(deserializer));
+  }
+
   static void serializeVectorAgentRuntimeFact(List<AgentRuntimeFact> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
@@ -47,6 +83,18 @@ class TraitHelpers {
   static List<AgentRuntimeFact> deserializeVectorAgentRuntimeFact(BinaryDeserializer deserializer) {
     final length = deserializer.deserializeLength();
     return List.generate(length, (_) => AgentRuntimeFact.deserialize(deserializer));
+  }
+
+  static void serializeVectorAgentRuntimeManagedProcessRow(List<AgentRuntimeManagedProcessRow> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<AgentRuntimeManagedProcessRow> deserializeVectorAgentRuntimeManagedProcessRow(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => AgentRuntimeManagedProcessRow.deserialize(deserializer));
   }
 
   static void serializeVectorAgentRuntimeModelOption(List<AgentRuntimeModelOption> value, BinarySerializer serializer) {

@@ -35,6 +35,7 @@ class AgentRuntimeWorkbenchData {
     required this.workflowMemory,
     required this.controllerFacts,
     this.operationSurfaces = const [],
+    this.selectedSessionControlPlane,
     required this.outputLog,
     required this.pendingRequestCount,
     this.errorMessage,
@@ -73,6 +74,7 @@ class AgentRuntimeWorkbenchData {
   final AgentRuntimeWorkflowMemoryData workflowMemory;
   final List<AgentRuntimeFact> controllerFacts;
   final List<AgentRuntimeOperationSurface> operationSurfaces;
+  final AgentRuntimeSelectedSessionControlPlane? selectedSessionControlPlane;
   final List<String> outputLog;
   final int pendingRequestCount;
   final String? errorMessage;
@@ -122,6 +124,7 @@ class AgentRuntimeWorkbenchData {
       ),
       controllerFacts: _objects(json['controllerFacts']).map(AgentRuntimeFact.fromJson).toList(growable: false),
       operationSurfaces: _objects(json['operationSurfaces']).map(AgentRuntimeOperationSurface.fromJson).toList(growable: false),
+      selectedSessionControlPlane: json['selectedSessionControlPlane'] is Map ? AgentRuntimeSelectedSessionControlPlane.fromJson(Map<String, dynamic>.from(json['selectedSessionControlPlane'] as Map)) : null,
       outputLog: (json['outputLog'] as List<dynamic>? ?? const []).map((value) => '$value').toList(growable: false),
       pendingRequestCount: (json['pendingRequestCount'] as num?)?.toInt() ?? 0,
       errorMessage: json['errorMessage'] as String?,
@@ -162,6 +165,7 @@ class AgentRuntimeWorkbenchData {
     AgentRuntimeWorkflowMemoryData? workflowMemory,
     List<AgentRuntimeFact>? controllerFacts,
     List<AgentRuntimeOperationSurface>? operationSurfaces,
+    AgentRuntimeSelectedSessionControlPlane? selectedSessionControlPlane,
     List<String>? outputLog,
     int? pendingRequestCount,
     String? errorMessage,
@@ -200,6 +204,7 @@ class AgentRuntimeWorkbenchData {
       workflowMemory: workflowMemory ?? this.workflowMemory,
       controllerFacts: controllerFacts ?? this.controllerFacts,
       operationSurfaces: operationSurfaces ?? this.operationSurfaces,
+      selectedSessionControlPlane: selectedSessionControlPlane ?? this.selectedSessionControlPlane,
       outputLog: outputLog ?? this.outputLog,
       pendingRequestCount: pendingRequestCount ?? this.pendingRequestCount,
       errorMessage: errorMessage ?? this.errorMessage,
@@ -433,6 +438,118 @@ class AgentRuntimeOperationSurface {
   }
 }
 
+class AgentRuntimeSelectedSessionControlPlane {
+  const AgentRuntimeSelectedSessionControlPlane({
+    required this.sessionId,
+    required this.title,
+    required this.name,
+    required this.status,
+    required this.roleId,
+    required this.projectKey,
+    required this.activeModel,
+    required this.workdir,
+    required this.worktreeRoot,
+    required this.tracked,
+    required this.modelOptions,
+    required this.godMode,
+    required this.managedProcesses,
+    required this.approvals,
+    required this.commandRequests,
+    required this.requirementsReview,
+    required this.runningServers,
+    required this.imageArtifacts,
+    required this.quickActions,
+  });
+
+  final String sessionId;
+  final String title;
+  final String name;
+  final String status;
+  final String roleId;
+  final String projectKey;
+  final String activeModel;
+  final String workdir;
+  final String worktreeRoot;
+  final bool tracked;
+  final List<AgentRuntimeModelOption> modelOptions;
+  final AgentRuntimeGodModeState godMode;
+  final List<AgentRuntimeManagedProcessRow> managedProcesses;
+  final List<AgentRuntimeApprovalCard> approvals;
+  final List<AgentRuntimeCommandRequestCard> commandRequests;
+  final AgentRuntimeRequirementsReviewPanel requirementsReview;
+  final List<AgentRuntimeFact> runningServers;
+  final List<AgentRuntimeFact> imageArtifacts;
+  final List<AgentRuntimeActionAvailability> quickActions;
+
+  factory AgentRuntimeSelectedSessionControlPlane.fromJson(Map<String, dynamic> json) {
+    return AgentRuntimeSelectedSessionControlPlane(
+      sessionId: '${json['sessionId'] ?? ''}',
+      title: '${json['title'] ?? ''}',
+      name: '${json['name'] ?? ''}',
+      status: '${json['status'] ?? ''}',
+      roleId: '${json['roleId'] ?? ''}',
+      projectKey: '${json['projectKey'] ?? ''}',
+      activeModel: '${json['activeModel'] ?? ''}',
+      workdir: '${json['workdir'] ?? ''}',
+      worktreeRoot: '${json['worktreeRoot'] ?? ''}',
+      tracked: json['tracked'] == true,
+      modelOptions: _objects(json['modelOptions']).map(AgentRuntimeModelOption.fromJson).toList(growable: false),
+      godMode: AgentRuntimeGodModeState.fromJson(Map<String, dynamic>.from((json['godMode'] as Map?) ?? const {})),
+      managedProcesses: _objects(json['managedProcesses']).map(AgentRuntimeManagedProcessRow.fromJson).toList(growable: false),
+      approvals: _objects(json['approvals']).map(AgentRuntimeApprovalCard.fromJson).toList(growable: false),
+      commandRequests: _objects(json['commandRequests']).map(AgentRuntimeCommandRequestCard.fromJson).toList(growable: false),
+      requirementsReview: AgentRuntimeRequirementsReviewPanel.fromJson(Map<String, dynamic>.from((json['requirementsReview'] as Map?) ?? const {})),
+      runningServers: _objects(json['runningServers']).map(AgentRuntimeFact.fromJson).toList(growable: false),
+      imageArtifacts: _objects(json['imageArtifacts']).map(AgentRuntimeFact.fromJson).toList(growable: false),
+      quickActions: _objects(json['quickActions']).map(AgentRuntimeActionAvailability.fromJson).toList(growable: false),
+    );
+  }
+}
+
+class AgentRuntimeGodModeState {
+  const AgentRuntimeGodModeState({required this.active, required this.reason, required this.grantedBy, required this.grantedAt});
+  final bool active;
+  final String reason;
+  final String grantedBy;
+  final String grantedAt;
+  factory AgentRuntimeGodModeState.fromJson(Map<String, dynamic> json) => AgentRuntimeGodModeState(active: json['active'] == true, reason: '${json['reason'] ?? ''}', grantedBy: '${json['grantedBy'] ?? ''}', grantedAt: '${json['grantedAt'] ?? ''}');
+}
+
+class AgentRuntimeManagedProcessRow {
+  const AgentRuntimeManagedProcessRow({required this.id, required this.handle, required this.command, required this.status, required this.startedAt, required this.endedAt, required this.cwd, required this.pid, required this.stdinPolicy, required this.endOfTurnBehavior, required this.endOfSessionBehavior, required this.latestOutputSummary, required this.canTerminate, required this.canFlush, required this.canInput});
+  final String id, handle, command, status, startedAt, endedAt, cwd, pid, stdinPolicy, endOfTurnBehavior, endOfSessionBehavior, latestOutputSummary;
+  final bool canTerminate, canFlush, canInput;
+  factory AgentRuntimeManagedProcessRow.fromJson(Map<String, dynamic> json) => AgentRuntimeManagedProcessRow(id: '${json['id'] ?? ''}', handle: '${json['handle'] ?? ''}', command: '${json['command'] ?? ''}', status: '${json['status'] ?? ''}', startedAt: '${json['startedAt'] ?? ''}', endedAt: '${json['endedAt'] ?? ''}', cwd: '${json['cwd'] ?? ''}', pid: '${json['pid'] ?? ''}', stdinPolicy: '${json['stdinPolicy'] ?? ''}', endOfTurnBehavior: '${json['endOfTurnBehavior'] ?? ''}', endOfSessionBehavior: '${json['endOfSessionBehavior'] ?? ''}', latestOutputSummary: '${json['latestOutputSummary'] ?? ''}', canTerminate: json['canTerminate'] == true, canFlush: json['canFlush'] == true, canInput: json['canInput'] == true);
+}
+
+class AgentRuntimeApprovalCard {
+  const AgentRuntimeApprovalCard({required this.id, required this.title, required this.status, required this.requiredApprover, required this.requestedAt, required this.contextSummary, required this.canDecide, required this.canResume, required this.decisionSummary});
+  final String id, title, status, requiredApprover, requestedAt, contextSummary, decisionSummary;
+  final bool canDecide, canResume;
+  factory AgentRuntimeApprovalCard.fromJson(Map<String, dynamic> json) => AgentRuntimeApprovalCard(id: '${json['id'] ?? ''}', title: '${json['title'] ?? ''}', status: '${json['status'] ?? ''}', requiredApprover: '${json['requiredApprover'] ?? ''}', requestedAt: '${json['requestedAt'] ?? ''}', contextSummary: '${json['contextSummary'] ?? ''}', canDecide: json['canDecide'] == true, canResume: json['canResume'] == true, decisionSummary: '${json['decisionSummary'] ?? ''}');
+}
+
+class AgentRuntimeCommandRequestCard {
+  const AgentRuntimeCommandRequestCard({required this.id, required this.title, required this.operation, required this.status, required this.scopeSummary, required this.policySummary, required this.previewStatus, required this.applyStatus, required this.canPreview, required this.canDecide, required this.canApply, required this.commandSummary});
+  final String id, title, operation, status, scopeSummary, policySummary, previewStatus, applyStatus, commandSummary;
+  final bool canPreview, canDecide, canApply;
+  factory AgentRuntimeCommandRequestCard.fromJson(Map<String, dynamic> json) => AgentRuntimeCommandRequestCard(id: '${json['id'] ?? ''}', title: '${json['title'] ?? ''}', operation: '${json['operation'] ?? ''}', status: '${json['status'] ?? ''}', scopeSummary: '${json['scopeSummary'] ?? ''}', policySummary: '${json['policySummary'] ?? ''}', previewStatus: '${json['previewStatus'] ?? ''}', applyStatus: '${json['applyStatus'] ?? ''}', canPreview: json['canPreview'] == true, canDecide: json['canDecide'] == true, canApply: json['canApply'] == true, commandSummary: '${json['commandSummary'] ?? ''}');
+}
+
+class AgentRuntimeRequirementsReviewPanel {
+  const AgentRuntimeRequirementsReviewPanel({required this.active, required this.status, required this.progressSummary, required this.reviewerStatus, required this.ownerActionStatus, required this.latestPacketStatus});
+  final bool active;
+  final String status, progressSummary, reviewerStatus, ownerActionStatus, latestPacketStatus;
+  factory AgentRuntimeRequirementsReviewPanel.fromJson(Map<String, dynamic> json) => AgentRuntimeRequirementsReviewPanel(active: json['active'] == true, status: '${json['status'] ?? ''}', progressSummary: '${json['progressSummary'] ?? ''}', reviewerStatus: '${json['reviewerStatus'] ?? ''}', ownerActionStatus: '${json['ownerActionStatus'] ?? ''}', latestPacketStatus: '${json['latestPacketStatus'] ?? ''}');
+}
+
+class AgentRuntimeActionAvailability {
+  const AgentRuntimeActionAvailability({required this.id, required this.label, required this.available, required this.reason});
+  final String id, label, reason;
+  final bool available;
+  factory AgentRuntimeActionAvailability.fromJson(Map<String, dynamic> json) => AgentRuntimeActionAvailability(id: '${json['id'] ?? ''}', label: '${json['label'] ?? ''}', available: json['available'] == true, reason: '${json['reason'] ?? ''}');
+}
+
 class AgentRuntimeCommandRegistryDecisionDraft {
   const AgentRuntimeCommandRegistryDecisionDraft({
     required this.status,
@@ -460,6 +577,32 @@ class AgentRuntimeCommandRegistryDecisionDraft {
     required this.forbiddenArgs,
     required this.executionPolicy,
   });
+
+  const AgentRuntimeCommandRegistryDecisionDraft.empty()
+      : status = '',
+        scopeType = '',
+        projectKey = '',
+        policyDecision = '',
+        policyReason = '',
+        actionId = '',
+        displayName = '',
+        binaryName = '',
+        argvTemplate = const [],
+        defaultCwd = '',
+        cwdPolicy = '',
+        envPolicy = '',
+        stdinPolicy = '',
+        syncAllowed = false,
+        asyncAllowed = false,
+        maxRuntimeMs = null,
+        endOfTurnBehavior = '',
+        endOfSessionBehavior = '',
+        mutationClass = '',
+        modelDescription = '',
+        allowCwdArg = false,
+        allowArgsArg = false,
+        forbiddenArgs = const [],
+        executionPolicy = '';
 
   final String status;
   final String scopeType;

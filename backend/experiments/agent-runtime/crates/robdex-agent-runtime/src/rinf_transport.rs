@@ -260,6 +260,111 @@ pub struct AgentRuntimeConversationShellViewModel {
     pub approvals: Vec<AgentRuntimeWorkbenchActionRow>,
     pub diagnostics: Vec<AgentRuntimeWorkbenchFact>,
     pub operation_surfaces: Vec<AgentRuntimeOperationSurface>,
+    pub selected_session_control_plane: Option<AgentRuntimeSelectedSessionControlPlane>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeSelectedSessionControlPlane {
+    pub session_id: String,
+    pub title: String,
+    pub name: String,
+    pub status: String,
+    pub role_id: String,
+    pub project_key: String,
+    pub active_model: String,
+    pub workdir: String,
+    pub worktree_root: String,
+    pub tracked: bool,
+    pub model_options: Vec<AgentRuntimeModelOption>,
+    pub god_mode: AgentRuntimeGodModeState,
+    pub managed_processes: Vec<AgentRuntimeManagedProcessRow>,
+    pub approvals: Vec<AgentRuntimeApprovalCard>,
+    pub command_requests: Vec<AgentRuntimeCommandRequestCard>,
+    pub requirements_review: AgentRuntimeRequirementsReviewPanel,
+    pub running_servers: Vec<AgentRuntimeWorkbenchFact>,
+    pub image_artifacts: Vec<AgentRuntimeWorkbenchFact>,
+    pub quick_actions: Vec<AgentRuntimeActionAvailability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeGodModeState {
+    pub active: bool,
+    pub reason: String,
+    pub granted_by: String,
+    pub granted_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeManagedProcessRow {
+    pub id: String,
+    pub handle: String,
+    pub command: String,
+    pub status: String,
+    pub started_at: String,
+    pub ended_at: String,
+    pub cwd: String,
+    pub pid: String,
+    pub stdin_policy: String,
+    pub end_of_turn_behavior: String,
+    pub end_of_session_behavior: String,
+    pub latest_output_summary: String,
+    pub can_terminate: bool,
+    pub can_flush: bool,
+    pub can_input: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeApprovalCard {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub required_approver: String,
+    pub requested_at: String,
+    pub context_summary: String,
+    pub can_decide: bool,
+    pub can_resume: bool,
+    pub decision_summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeCommandRequestCard {
+    pub id: String,
+    pub title: String,
+    pub operation: String,
+    pub status: String,
+    pub scope_summary: String,
+    pub policy_summary: String,
+    pub preview_status: String,
+    pub apply_status: String,
+    pub can_preview: bool,
+    pub can_decide: bool,
+    pub can_apply: bool,
+    pub command_summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeRequirementsReviewPanel {
+    pub active: bool,
+    pub status: String,
+    pub progress_summary: String,
+    pub reviewer_status: String,
+    pub owner_action_status: String,
+    pub latest_packet_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeActionAvailability {
+    pub id: String,
+    pub label: String,
+    pub available: bool,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -584,6 +689,7 @@ impl AgentRuntimeConversationShellViewModel {
             approvals: Vec::new(),
             diagnostics: Vec::new(),
             operation_surfaces: Vec::new(),
+            selected_session_control_plane: None,
         }
     }
 
@@ -675,8 +781,139 @@ impl AgentRuntimeConversationShellViewModel {
             approvals,
             diagnostics: view.controller_facts.clone(),
             operation_surfaces: operation_surfaces(projection, controller_state, view),
+            selected_session_control_plane: selected_session_control_plane(projection, view.model_options.as_slice()),
         }
     }
+}
+
+fn selected_session_control_plane(
+    projection: Option<&RuntimeProjection>,
+    model_options: &[AgentRuntimeModelOption],
+) -> Option<AgentRuntimeSelectedSessionControlPlane> {
+    let projection = projection?;
+    let session = projection.selected_session.as_ref()?;
+    let god_mode_value = session.metadata.get("godMode").unwrap_or(&Value::Null);
+    let god_mode = AgentRuntimeGodModeState {
+        active: god_mode_value.get("active").and_then(Value::as_bool).unwrap_or(false),
+        reason: god_mode_value.get("reason").and_then(Value::as_str).unwrap_or("").to_string(),
+        granted_by: god_mode_value.get("grantedBy").and_then(Value::as_str).unwrap_or("").to_string(),
+        granted_at: god_mode_value.get("grantedAt").and_then(Value::as_str).unwrap_or("").to_string(),
+    };
+    let selected_id = session.id.as_str();
+    let managed_processes = session
+        .managed_processes
+        .iter()
+        .map(|process| AgentRuntimeManagedProcessRow {
+            id: process.id.clone(),
+            handle: process.handle.clone(),
+            command: process.command_label.clone(),
+            status: process.status.clone(),
+            started_at: process.started_at.clone().unwrap_or_default(),
+            ended_at: process.ended_at.clone().unwrap_or_default(),
+            cwd: process.cwd.clone(),
+            pid: process.os_pid.map(|pid| pid.to_string()).unwrap_or_default(),
+            stdin_policy: process.stdin_policy.clone(),
+            end_of_turn_behavior: process.end_of_turn_behavior.clone(),
+            end_of_session_behavior: process.end_of_session_behavior.clone(),
+            latest_output_summary: process.latest_output_summary.clone().unwrap_or_else(|| "No output artifact yet".to_string()),
+            can_terminate: process.can_terminate,
+            can_flush: process.can_flush,
+            can_input: process.can_input,
+        })
+        .collect();
+    let approvals = projection
+        .pending_approvals
+        .iter()
+        .filter(|approval| approval.session_id == selected_id)
+        .map(|approval| AgentRuntimeApprovalCard {
+            id: approval.id.clone(),
+            title: approval.action_name.clone(),
+            status: approval.status.clone(),
+            required_approver: approval.required_approver_kind.clone(),
+            requested_at: approval.created_at.clone().unwrap_or_default(),
+            context_summary: control_plane_json_summary(&approval.input_context),
+            can_decide: approval.can_decide,
+            can_resume: approval.can_resume,
+            decision_summary: approval.decision_reason.clone().or_else(|| approval.decision_at.clone()).unwrap_or_default(),
+        })
+        .collect();
+    let command_requests = projection
+        .command_registry_requests
+        .iter()
+        .filter(|request| request.final_project_key.as_deref() == session.project_key.as_deref() || request.scope_summary.as_deref().unwrap_or("").contains(selected_id))
+        .map(|request| AgentRuntimeCommandRequestCard {
+            id: request.id.clone(),
+            title: request.action_label.clone(),
+            operation: request.operation.clone(),
+            status: request.status.clone(),
+            scope_summary: request.scope_summary.clone().unwrap_or_else(|| "Global request".to_string()),
+            policy_summary: request.policy_summary.clone().unwrap_or_else(|| "Policy pending".to_string()),
+            preview_status: request.preview_label.clone(),
+            apply_status: request.apply_status.clone(),
+            can_preview: request.can_preview,
+            can_decide: request.can_decide,
+            can_apply: request.can_apply,
+            command_summary: request.action_id.clone(),
+        })
+        .collect();
+    let requirements = session.requirements_review.as_ref();
+    let requirements_review = AgentRuntimeRequirementsReviewPanel {
+        active: requirements.map(|summary| summary.active).unwrap_or(false),
+        status: requirements.and_then(|summary| summary.review_status.clone()).unwrap_or_else(|| "inactive".to_string()),
+        progress_summary: requirements
+            .map(|summary| format!("{} passed · {} unresolved · {} blocked · {} waived", summary.passed, summary.unresolved, summary.blocked, summary.waived))
+            .unwrap_or_else(|| "No active Requirements".to_string()),
+        reviewer_status: requirements.and_then(|summary| summary.reviewer_session_id.clone()).map(|_| "Reviewer ready".to_string()).unwrap_or_else(|| "No reviewer".to_string()),
+        owner_action_status: requirements.and_then(|summary| summary.owner_action.as_ref()).map(control_plane_json_summary).unwrap_or_default(),
+        latest_packet_status: requirements.and_then(|summary| summary.latest_verdict_packet_id.clone().or_else(|| summary.latest_claim_packet_id.clone())).unwrap_or_default(),
+    };
+    Some(AgentRuntimeSelectedSessionControlPlane {
+        session_id: session.id.clone(),
+        title: session.title.clone().unwrap_or_else(|| "Untitled session".to_string()),
+        name: session.name.clone().unwrap_or_default(),
+        status: session.status.clone(),
+        role_id: session.role_id.clone().unwrap_or_default(),
+        project_key: session.project_key.clone().unwrap_or_default(),
+        active_model: session.active_model.clone().or_else(|| session.metadata.get("model").and_then(Value::as_str).map(str::to_string)).unwrap_or_default(),
+        workdir: session.workdir.clone(),
+        worktree_root: session.worktree_root.clone().unwrap_or_else(|| session.workdir.clone()),
+        tracked: true,
+        model_options: model_options.to_vec(),
+        god_mode,
+        managed_processes,
+        approvals,
+        command_requests,
+        requirements_review,
+        running_servers: session.running_servers.iter().map(|server| fact(server.get("handle").and_then(Value::as_str).unwrap_or("server"), server.get("status").and_then(Value::as_str).unwrap_or("unknown"))).collect(),
+        image_artifacts: session.image_artifacts.iter().map(|artifact| fact(artifact.get("imageArtifactId").and_then(Value::as_str).unwrap_or("image"), artifact.get("mimeType").and_then(Value::as_str).unwrap_or("artifact"))).collect(),
+        quick_actions: vec![
+            action_availability("compact", "Compact…", !session.id.is_empty(), ""),
+            action_availability(if god_mode_value.get("active").and_then(Value::as_bool).unwrap_or(false) { "revokeGodMode" } else { "grantGodMode" }, if god_mode_value.get("active").and_then(Value::as_bool).unwrap_or(false) { "Revoke God Mode…" } else { "Grant God Mode…" }, !session.id.is_empty(), ""),
+            action_availability("setRequirements", "Set Requirements…", !session.id.is_empty(), ""),
+            action_availability("exportBundle", "Export Bundle…", false, "Export is unavailable because no typed export operation is registered."),
+            action_availability("dangerZone", "Danger Zone", !session.id.is_empty(), ""),
+        ],
+    })
+}
+
+fn action_availability(id: &str, label: &str, available: bool, reason: &str) -> AgentRuntimeActionAvailability {
+    AgentRuntimeActionAvailability {
+        id: id.to_string(),
+        label: label.to_string(),
+        available,
+        reason: reason.to_string(),
+    }
+}
+
+fn control_plane_json_summary(value: &Value) -> String {
+    if let Some(summary) = value.get("summary").and_then(Value::as_str) {
+        return summary.to_string();
+    }
+    if let Some(reason) = value.get("reason").and_then(Value::as_str) {
+        return reason.to_string();
+    }
+    let text = value.to_string();
+    if text.len() > 140 { format!("{}…", &text[..140]) } else { text }
 }
 
 fn submission_feedback_label(
@@ -3501,7 +3738,7 @@ mod tests {
         RoleEditorLifecycleAuthorityMetadata, RoleEditorModelDefaults, RoleEditorRoutingMetadata,
         AgentRuntimeChatEntry, AgentRuntimeChatTransportDiagnostics, RoleEditorVisibilityMetadata,
         RoleSummary, RoleVersionSummary, RuntimeDelta, RuntimeDeltaKind, RuntimeProjection,
-        RuntimeStatistics, SelectedSessionDetail, ServerStatusProjection, SessionListItem, TimelineItem,
+        ManagedProcessSummary, RuntimeStatistics, SelectedSessionDetail, ServerStatusProjection, SessionListItem, TimelineItem,
         WorkflowMemoryEventSummary, WorkflowMemorySummary,
     };
     use std::net::SocketAddr;
@@ -3521,6 +3758,7 @@ mod tests {
                         role_id: Some("gui-role".to_string()),
                         role_version: Some("1.0.0".to_string()),
                         project_key: Some("transport-project".to_string()),
+                        active_model: Some("gpt-5.4-mini".to_string()),
                         workdir: "/tmp/transport".to_string(),
                         worktree_root: Some("/tmp/transport".to_string()),
                         title: Some("Transport session".to_string()),
@@ -3567,6 +3805,52 @@ mod tests {
                             progress: vec![json!({"requirementKey":"packet_history","status":"unresolved"})],
                             owner_action: None,
                         }),
+                        managed_processes: vec![
+                            ManagedProcessSummary {
+                                id: "process-allow".to_string(),
+                                handle: "proc-allow".to_string(),
+                                turn_id: None,
+                                binary_name: "python".to_string(),
+                                argv: vec!["-u".to_string(), "worker.py".to_string()],
+                                command_label: "python -u worker.py".to_string(),
+                                cwd: "/tmp/transport".to_string(),
+                                status: "running".to_string(),
+                                started_at: Some("2026-06-18T00:00:00Z".to_string()),
+                                ended_at: None,
+                                os_pid: Some(1234),
+                                stdin_policy: "allow".to_string(),
+                                end_of_turn_behavior: "continue".to_string(),
+                                end_of_session_behavior: "terminate".to_string(),
+                                output_artifacts: Vec::new(),
+                                latest_output_summary: Some("stdout: 4 lines, 120 bytes".to_string()),
+                                can_terminate: true,
+                                can_flush: true,
+                                can_input: true,
+                                metadata: json!({}),
+                            },
+                            ManagedProcessSummary {
+                                id: "process-done".to_string(),
+                                handle: "proc-done".to_string(),
+                                turn_id: None,
+                                binary_name: "python".to_string(),
+                                argv: vec!["done.py".to_string()],
+                                command_label: "python done.py".to_string(),
+                                cwd: "/tmp/transport".to_string(),
+                                status: "completed".to_string(),
+                                started_at: Some("2026-06-18T00:00:00Z".to_string()),
+                                ended_at: Some("2026-06-18T00:01:00Z".to_string()),
+                                os_pid: Some(1235),
+                                stdin_policy: "none".to_string(),
+                                end_of_turn_behavior: "continue".to_string(),
+                                end_of_session_behavior: "terminate".to_string(),
+                                output_artifacts: Vec::new(),
+                                latest_output_summary: Some("stderr: 1 lines, 20 bytes".to_string()),
+                                can_terminate: false,
+                                can_flush: true,
+                                can_input: false,
+                                metadata: json!({}),
+                            },
+                        ],
                     }),
                     timeline: vec![
                         TimelineItem {
@@ -4781,6 +5065,7 @@ mod tests {
                 role_id: Some("runtime-allow".to_string()),
                 role_version: Some("role-version-1".to_string()),
                 project_key: Some("project-a".to_string()),
+                active_model: Some("gpt-5.4-mini".to_string()),
                 workdir: "/tmp/project-a".to_string(),
                 worktree_root: Some("/tmp/project-a".to_string()),
                 title: Some("Runtime check".to_string()),
@@ -4805,6 +5090,30 @@ mod tests {
                 running_servers: vec![json!({"handle":"server-1","status":"running"})],
                 tooling_requests: vec![json!({"packetId":"tooling-1","status":"routed"})],
                 requirements_review: None,
+                managed_processes: vec![
+                    ManagedProcessSummary {
+                        id: "process-1".to_string(),
+                        handle: "proc-1".to_string(),
+                        turn_id: Some("turn-1".to_string()),
+                        binary_name: "python".to_string(),
+                        argv: vec!["-u".to_string(), "worker.py".to_string()],
+                        command_label: "python -u worker.py".to_string(),
+                        cwd: "/tmp/project-a".to_string(),
+                        status: "running".to_string(),
+                        started_at: Some("2026-06-18T00:00:00Z".to_string()),
+                        ended_at: None,
+                        os_pid: Some(2345),
+                        stdin_policy: "allow".to_string(),
+                        end_of_turn_behavior: "continue".to_string(),
+                        end_of_session_behavior: "terminate".to_string(),
+                        output_artifacts: Vec::new(),
+                        latest_output_summary: Some("stdout: 2 lines, 80 bytes".to_string()),
+                        can_terminate: true,
+                        can_flush: true,
+                        can_input: true,
+                        metadata: json!({}),
+                    },
+                ],
             }),
             timeline: vec![
                 TimelineItem {
@@ -5002,8 +5311,8 @@ mod tests {
                 state_text: "Needs registry decision".to_string(),
                 apply_status: "pending".to_string(),
                 final_scope_type: None,
-                final_project_key: None,
-                scope_summary: None,
+                final_project_key: Some("project-a".to_string()),
+                scope_summary: Some("Selected project project-a".to_string()),
                 final_policy: None,
                 policy_summary: None,
                 can_preview: true,
@@ -5216,6 +5525,38 @@ mod tests {
         assert_eq!(shell.dynamic_roles[0].short_label, "R");
         assert!(shell.approvals.iter().any(|row| row.id == "approval-1"));
         assert!(shell.command_registry_requests.iter().any(|row| row.id == "request-1"));
+        let control_plane = shell.selected_session_control_plane.as_ref().expect("selected session control plane");
+        assert_eq!(control_plane.session_id, "session-1");
+        assert_eq!(control_plane.role_id, "runtime-allow");
+        assert_eq!(control_plane.project_key, "project-a");
+        assert_eq!(control_plane.active_model, "gpt-5.4-mini");
+        assert_eq!(control_plane.workdir, "/tmp/project-a");
+        assert!(control_plane.model_options.iter().all(|model| !model.id.trim().is_empty()));
+        assert!(control_plane.managed_processes.iter().any(|process| {
+            process.handle == "proc-1"
+                && process.command.contains("python")
+                && process.status == "running"
+                && process.can_terminate
+                && process.can_flush
+                && process.can_input
+                && process.latest_output_summary.contains("stdout")
+        }));
+        assert!(control_plane.approvals.iter().any(|approval| {
+            approval.id == "approval-1"
+                && approval.status == "approved"
+                && approval.can_resume
+                && approval.decision_summary.contains("approved")
+        }));
+        assert!(control_plane.command_requests.iter().any(|request| {
+            request.id == "request-1"
+                && request.title == "rg · audit"
+                && request.status == "pending"
+                && request.can_preview
+                && request.can_decide
+                && !request.scope_summary.trim().is_empty()
+        }));
+        assert!(control_plane.quick_actions.iter().any(|action| action.id == "compact" && action.available));
+        assert!(control_plane.quick_actions.iter().any(|action| action.id == "exportBundle" && !action.available));
         assert_eq!(shell.workflow_memory.rows.len(), 2);
         assert_eq!(shell.role_management.rows[0].id, "runtime-allow");
         assert!(shell.settings.iter().any(|fact| fact.label == "Connection" && fact.value == "streaming"));

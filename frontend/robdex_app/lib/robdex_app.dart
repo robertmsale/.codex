@@ -3,5 +3,4 @@ export 'src/agent_runtime/agent_runtime_workbench_host.dart'
         AgentRuntimeCreateProjectDialog,
         AgentRuntimeCreateSessionDialog,
         AgentRuntimeGlobalSettingsDialog,
-        AgentRuntimeProjectSettingsDialog,
-        AgentRuntimeSessionSettingsDialog;
+        AgentRuntimeProjectSettingsDialog;

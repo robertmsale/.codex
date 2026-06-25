@@ -19,6 +19,8 @@ class AgentRuntimeConversationShellViewModel {
     required this.approvals,
     required this.diagnostics,
     required this.operationSurfaces,
+    required this.selectedSessionControlPlane,
+    required this.hasSelectedSessionControlPlane,
   });
 
   static AgentRuntimeConversationShellViewModel deserialize(BinaryDeserializer deserializer) {
@@ -38,6 +40,8 @@ class AgentRuntimeConversationShellViewModel {
       approvals: TraitHelpers.deserializeVectorAgentRuntimeActionRow(deserializer),
       diagnostics: TraitHelpers.deserializeVectorAgentRuntimeFact(deserializer),
       operationSurfaces: TraitHelpers.deserializeVectorAgentRuntimeOperationSurface(deserializer),
+      selectedSessionControlPlane: AgentRuntimeSelectedSessionControlPlane.deserialize(deserializer),
+      hasSelectedSessionControlPlane: deserializer.deserializeBool(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -66,6 +70,8 @@ class AgentRuntimeConversationShellViewModel {
   final List<AgentRuntimeActionRow> approvals;
   final List<AgentRuntimeFact> diagnostics;
   final List<AgentRuntimeOperationSurface> operationSurfaces;
+  final AgentRuntimeSelectedSessionControlPlane selectedSessionControlPlane;
+  final bool hasSelectedSessionControlPlane;
 
   AgentRuntimeConversationShellViewModel copyWith({
     List<AgentRuntimeShellProjectRow>? projects,
@@ -82,6 +88,8 @@ class AgentRuntimeConversationShellViewModel {
     List<AgentRuntimeActionRow>? approvals,
     List<AgentRuntimeFact>? diagnostics,
     List<AgentRuntimeOperationSurface>? operationSurfaces,
+    AgentRuntimeSelectedSessionControlPlane? selectedSessionControlPlane,
+    bool? hasSelectedSessionControlPlane,
   }) {
     return AgentRuntimeConversationShellViewModel(
       projects: projects ?? this.projects,
@@ -98,6 +106,8 @@ class AgentRuntimeConversationShellViewModel {
       approvals: approvals ?? this.approvals,
       diagnostics: diagnostics ?? this.diagnostics,
       operationSurfaces: operationSurfaces ?? this.operationSurfaces,
+      selectedSessionControlPlane: selectedSessionControlPlane ?? this.selectedSessionControlPlane,
+      hasSelectedSessionControlPlane: hasSelectedSessionControlPlane ?? this.hasSelectedSessionControlPlane,
     );
   }
 
@@ -117,6 +127,8 @@ class AgentRuntimeConversationShellViewModel {
     TraitHelpers.serializeVectorAgentRuntimeActionRow(approvals, serializer);
     TraitHelpers.serializeVectorAgentRuntimeFact(diagnostics, serializer);
     TraitHelpers.serializeVectorAgentRuntimeOperationSurface(operationSurfaces, serializer);
+    selectedSessionControlPlane.serialize(serializer);
+    serializer.serializeBool(hasSelectedSessionControlPlane);
     serializer.decreaseContainerDepth();
   }
 
@@ -145,7 +157,9 @@ class AgentRuntimeConversationShellViewModel {
       && listEquals(commandRegistryRequests, other.commandRegistryRequests)
       && listEquals(approvals, other.approvals)
       && listEquals(diagnostics, other.diagnostics)
-      && listEquals(operationSurfaces, other.operationSurfaces);
+      && listEquals(operationSurfaces, other.operationSurfaces)
+      && selectedSessionControlPlane == other.selectedSessionControlPlane
+      && hasSelectedSessionControlPlane == other.hasSelectedSessionControlPlane;
   }
 
   @override
@@ -164,6 +178,8 @@ class AgentRuntimeConversationShellViewModel {
         approvals,
         diagnostics,
         operationSurfaces,
+        selectedSessionControlPlane,
+        hasSelectedSessionControlPlane,
       );
 
   @override
@@ -185,7 +201,9 @@ class AgentRuntimeConversationShellViewModel {
         'commandRegistryRequests: $commandRegistryRequests, '
         'approvals: $approvals, '
         'diagnostics: $diagnostics, '
-        'operationSurfaces: $operationSurfaces'
+        'operationSurfaces: $operationSurfaces, '
+        'selectedSessionControlPlane: $selectedSessionControlPlane, '
+        'hasSelectedSessionControlPlane: $hasSelectedSessionControlPlane'
         ')';
       return true;
     }());

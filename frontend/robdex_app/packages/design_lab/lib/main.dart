@@ -218,28 +218,37 @@ class RobdexDesignLabHome extends StatelessWidget {
       );
     }
     if (surface == 'agentRuntimeSessionSettingsModal') {
-      return Scaffold(
-        backgroundColor: const Color(0xFF0E141B),
-        body: Center(
-          child: AgentRuntimeSessionSettingsDialog(
-            shell: agentRuntimeConversationShellData(mockAgentRuntimeConnected),
-            data: mockAgentRuntimeConnected,
-            onSave: ({
-              required sessionId,
-              required project,
-              required role,
-              required model,
-              required workdir,
-              required worktreeRoot,
-              required title,
-              required name,
-              required tracked,
-            }) {},
-            onClose: (_) {},
-            onArchive: (_) {},
-            onFork: (_) {},
-          ),
-        ),
+      return AgentRuntimeSessionControlPlane(
+        data: mockAgentRuntimeConnected,
+        onClose: () {},
+        onSave: ({
+          required sessionId,
+          required project,
+          required role,
+          required model,
+          required workdir,
+          required worktreeRoot,
+          required title,
+          required name,
+          required tracked,
+        }) {},
+        onCloseSession: (_) {},
+        onArchiveSession: (_) {},
+        onForkSession: (_) {},
+        onCompact: (_) {},
+        onGrantGodMode: (_) {},
+        onRevokeGodMode: (_) {},
+        onTerminateProcess: (_) {},
+        onFlushProcess: (_) {},
+        onInputProcess: (_, _) {},
+        onApprove: (_, _) {},
+        onDeny: (_, _) {},
+        onResumeApproval: (_) {},
+        onPreviewCommandRequest: (_) {},
+        onApproveCommandRequest: (_) {},
+        onDenyCommandRequest: (_) {},
+        onApplyCommandRequest: (_) {},
+        onSetRequirements: (_) {},
       );
     }
     if (surface == 'agentRuntimeGlobalSettingsModal') {
