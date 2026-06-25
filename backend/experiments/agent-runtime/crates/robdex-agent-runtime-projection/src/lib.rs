@@ -214,6 +214,14 @@ pub struct AgentRuntimeChatEntry {
     pub kind: String,
     pub status: String,
     pub process_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_artifact_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_artifact_id: Option<String>,
     pub command: String,
     pub output: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2495,6 +2503,10 @@ mod tests {
             kind: if is_tool { "execute_code".to_string() } else { "message".to_string() },
             status: status.to_string(),
             process_id: if is_tool { Some("proc-1".to_string()) } else { None },
+            tool_call_id: if is_tool { Some("tool-1".to_string()) } else { None },
+            script_run_id: if is_tool { Some("script-1".to_string()) } else { None },
+            stdout_artifact_id: if is_tool { Some("stdout-1".to_string()) } else { None },
+            stderr_artifact_id: if is_tool { Some("stderr-1".to_string()) } else { None },
             command: if is_tool { "print('delta')".to_string() } else { String::new() },
             output: if is_tool { "partial output".to_string() } else { String::new() },
             image_preview_base64: None,

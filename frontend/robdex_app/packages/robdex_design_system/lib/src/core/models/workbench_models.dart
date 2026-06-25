@@ -712,6 +712,10 @@ class ChatEntry {
     this.kind,
     this.status,
     this.processId,
+    this.toolCallId,
+    this.scriptRunId,
+    this.stdoutArtifactId,
+    this.stderrArtifactId,
     this.command,
     this.output,
     this.imagePreviewBase64,
@@ -733,6 +737,10 @@ class ChatEntry {
   final String? kind;
   final String? status;
   final String? processId;
+  final String? toolCallId;
+  final String? scriptRunId;
+  final String? stdoutArtifactId;
+  final String? stderrArtifactId;
   final String? command;
   final String? output;
   final String? imagePreviewBase64;
@@ -767,6 +775,10 @@ class ChatEntry {
       kind: json['kind'] as String?,
       status: json['status'] as String?,
       processId: json['processId'] as String?,
+      toolCallId: json['toolCallId'] as String?,
+      scriptRunId: json['scriptRunId'] as String?,
+      stdoutArtifactId: json['stdoutArtifactId'] as String?,
+      stderrArtifactId: json['stderrArtifactId'] as String?,
       command: json['command'] as String?,
       output: json['output'] as String?,
       imagePreviewBase64: json['imagePreviewBase64'] as String?,

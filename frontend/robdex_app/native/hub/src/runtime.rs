@@ -1621,6 +1621,10 @@ fn agent_runtime_chat_entry_from_value(value: &serde_json::Value) -> AgentRuntim
     let string = |key: &str| value.get(key).and_then(|value| value.as_str()).unwrap_or_default().to_string();
     let timestamp = string("timestamp");
     let process_id = string("processId");
+    let tool_call_id = string("toolCallId");
+    let script_run_id = string("scriptRunId");
+    let stdout_artifact_id = string("stdoutArtifactId");
+    let stderr_artifact_id = string("stderrArtifactId");
     let image_preview_base64 = string("imagePreviewBase64");
     let image_preview_content_type = string("imagePreviewContentType");
     let image_preview_error = string("imagePreviewError");
@@ -1636,6 +1640,14 @@ fn agent_runtime_chat_entry_from_value(value: &serde_json::Value) -> AgentRuntim
         status: string("status"),
         has_process_id: !process_id.is_empty(),
         process_id,
+        has_tool_call_id: !tool_call_id.is_empty(),
+        tool_call_id,
+        has_script_run_id: !script_run_id.is_empty(),
+        script_run_id,
+        has_stdout_artifact_id: !stdout_artifact_id.is_empty(),
+        stdout_artifact_id,
+        has_stderr_artifact_id: !stderr_artifact_id.is_empty(),
+        stderr_artifact_id,
         command: string("command"),
         output: string("output"),
         has_image_preview_base64: !image_preview_base64.is_empty(),
@@ -1810,6 +1822,10 @@ fn typed_conversation_shell_view(view: robdex_agent_runtime::rinf_transport::Age
         selected_conversation: view.selected_conversation.into_iter().map(|entry| {
             let timestamp = entry.timestamp.unwrap_or_default();
             let process_id = entry.process_id.unwrap_or_default();
+            let tool_call_id = entry.tool_call_id.unwrap_or_default();
+            let script_run_id = entry.script_run_id.unwrap_or_default();
+            let stdout_artifact_id = entry.stdout_artifact_id.unwrap_or_default();
+            let stderr_artifact_id = entry.stderr_artifact_id.unwrap_or_default();
             AgentRuntimeChatEntry {
                 id: entry.id,
                 author: entry.author,
@@ -1822,6 +1838,14 @@ fn typed_conversation_shell_view(view: robdex_agent_runtime::rinf_transport::Age
                 status: entry.status,
                 has_process_id: !process_id.is_empty(),
                 process_id,
+                has_tool_call_id: !tool_call_id.is_empty(),
+                tool_call_id,
+                has_script_run_id: !script_run_id.is_empty(),
+                script_run_id,
+                has_stdout_artifact_id: !stdout_artifact_id.is_empty(),
+                stdout_artifact_id,
+                has_stderr_artifact_id: !stderr_artifact_id.is_empty(),
+                stderr_artifact_id,
                 command: entry.command,
                 output: entry.output,
                 has_image_preview_base64: entry.image_preview_base64.is_some(),

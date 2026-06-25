@@ -16,6 +16,14 @@ class AgentRuntimeChatEntry {
     required this.status,
     required this.processId,
     required this.hasProcessId,
+    this.toolCallId = '',
+    this.hasToolCallId = false,
+    this.scriptRunId = '',
+    this.hasScriptRunId = false,
+    this.stdoutArtifactId = '',
+    this.hasStdoutArtifactId = false,
+    this.stderrArtifactId = '',
+    this.hasStderrArtifactId = false,
     required this.command,
     required this.output,
     this.imagePreviewBase64 = '',
@@ -43,6 +51,14 @@ class AgentRuntimeChatEntry {
       status: deserializer.deserializeString(),
       processId: deserializer.deserializeString(),
       hasProcessId: deserializer.deserializeBool(),
+      toolCallId: deserializer.deserializeString(),
+      hasToolCallId: deserializer.deserializeBool(),
+      scriptRunId: deserializer.deserializeString(),
+      hasScriptRunId: deserializer.deserializeBool(),
+      stdoutArtifactId: deserializer.deserializeString(),
+      hasStdoutArtifactId: deserializer.deserializeBool(),
+      stderrArtifactId: deserializer.deserializeString(),
+      hasStderrArtifactId: deserializer.deserializeBool(),
       command: deserializer.deserializeString(),
       output: deserializer.deserializeString(),
       imagePreviewBase64: deserializer.deserializeString(),
@@ -79,6 +95,14 @@ class AgentRuntimeChatEntry {
   final String status;
   final String processId;
   final bool hasProcessId;
+  final String toolCallId;
+  final bool hasToolCallId;
+  final String scriptRunId;
+  final bool hasScriptRunId;
+  final String stdoutArtifactId;
+  final bool hasStdoutArtifactId;
+  final String stderrArtifactId;
+  final bool hasStderrArtifactId;
   final String command;
   final String output;
   final String imagePreviewBase64;
@@ -103,6 +127,14 @@ class AgentRuntimeChatEntry {
     String? status,
     String? processId,
     bool? hasProcessId,
+    String? toolCallId,
+    bool? hasToolCallId,
+    String? scriptRunId,
+    bool? hasScriptRunId,
+    String? stdoutArtifactId,
+    bool? hasStdoutArtifactId,
+    String? stderrArtifactId,
+    bool? hasStderrArtifactId,
     String? command,
     String? output,
     String? imagePreviewBase64,
@@ -127,6 +159,14 @@ class AgentRuntimeChatEntry {
       status: status ?? this.status,
       processId: processId ?? this.processId,
       hasProcessId: hasProcessId ?? this.hasProcessId,
+      toolCallId: toolCallId ?? this.toolCallId,
+      hasToolCallId: hasToolCallId ?? this.hasToolCallId,
+      scriptRunId: scriptRunId ?? this.scriptRunId,
+      hasScriptRunId: hasScriptRunId ?? this.hasScriptRunId,
+      stdoutArtifactId: stdoutArtifactId ?? this.stdoutArtifactId,
+      hasStdoutArtifactId: hasStdoutArtifactId ?? this.hasStdoutArtifactId,
+      stderrArtifactId: stderrArtifactId ?? this.stderrArtifactId,
+      hasStderrArtifactId: hasStderrArtifactId ?? this.hasStderrArtifactId,
       command: command ?? this.command,
       output: output ?? this.output,
       imagePreviewBase64: imagePreviewBase64 ?? this.imagePreviewBase64,
@@ -154,6 +194,14 @@ class AgentRuntimeChatEntry {
     serializer.serializeString(status);
     serializer.serializeString(processId);
     serializer.serializeBool(hasProcessId);
+    serializer.serializeString(toolCallId);
+    serializer.serializeBool(hasToolCallId);
+    serializer.serializeString(scriptRunId);
+    serializer.serializeBool(hasScriptRunId);
+    serializer.serializeString(stdoutArtifactId);
+    serializer.serializeBool(hasStdoutArtifactId);
+    serializer.serializeString(stderrArtifactId);
+    serializer.serializeBool(hasStderrArtifactId);
     serializer.serializeString(command);
     serializer.serializeString(output);
     serializer.serializeString(imagePreviewBase64);
@@ -191,6 +239,14 @@ class AgentRuntimeChatEntry {
       && status == other.status
       && processId == other.processId
       && hasProcessId == other.hasProcessId
+      && toolCallId == other.toolCallId
+      && hasToolCallId == other.hasToolCallId
+      && scriptRunId == other.scriptRunId
+      && hasScriptRunId == other.hasScriptRunId
+      && stdoutArtifactId == other.stdoutArtifactId
+      && hasStdoutArtifactId == other.hasStdoutArtifactId
+      && stderrArtifactId == other.stderrArtifactId
+      && hasStderrArtifactId == other.hasStderrArtifactId
       && command == other.command
       && output == other.output
       && imagePreviewBase64 == other.imagePreviewBase64
@@ -205,7 +261,7 @@ class AgentRuntimeChatEntry {
   }
 
   @override
-  int get hashCode => Object.hash(
+  int get hashCode => Object.hashAll([
         id,
         author,
         displayLabel,
@@ -217,12 +273,26 @@ class AgentRuntimeChatEntry {
         status,
         processId,
         hasProcessId,
+        toolCallId,
+        hasToolCallId,
+        scriptRunId,
+        hasScriptRunId,
+        stdoutArtifactId,
+        hasStdoutArtifactId,
+        stderrArtifactId,
+        hasStderrArtifactId,
         command,
         output,
+        imagePreviewBase64,
+        hasImagePreviewBase64,
+        imagePreviewContentType,
+        hasImagePreviewContentType,
+        imagePreviewError,
+        hasImagePreviewError,
         deliveryState,
         isStreaming,
         isTool,
-      );
+      ]);
 
   @override
   String toString() {
@@ -241,8 +311,22 @@ class AgentRuntimeChatEntry {
         'status: $status, '
         'processId: $processId, '
         'hasProcessId: $hasProcessId, '
+        'toolCallId: $toolCallId, '
+        'hasToolCallId: $hasToolCallId, '
+        'scriptRunId: $scriptRunId, '
+        'hasScriptRunId: $hasScriptRunId, '
+        'stdoutArtifactId: $stdoutArtifactId, '
+        'hasStdoutArtifactId: $hasStdoutArtifactId, '
+        'stderrArtifactId: $stderrArtifactId, '
+        'hasStderrArtifactId: $hasStderrArtifactId, '
         'command: $command, '
         'output: $output, '
+        'imagePreviewBase64: $imagePreviewBase64, '
+        'hasImagePreviewBase64: $hasImagePreviewBase64, '
+        'imagePreviewContentType: $imagePreviewContentType, '
+        'hasImagePreviewContentType: $hasImagePreviewContentType, '
+        'imagePreviewError: $imagePreviewError, '
+        'hasImagePreviewError: $hasImagePreviewError, '
         'deliveryState: $deliveryState, '
         'isStreaming: $isStreaming, '
         'isTool: $isTool'

@@ -47,6 +47,7 @@ class ChatTimeline extends StatefulWidget {
     this.composerDisabledHint,
     this.composerPlaceholder,
     this.composerStatusMessage,
+    this.initialExpandedEntryIds = const <String>{},
   });
 
   final String? threadId;
@@ -78,6 +79,7 @@ class ChatTimeline extends StatefulWidget {
   final String? composerDisabledHint;
   final String? composerPlaceholder;
   final String? composerStatusMessage;
+  final Set<String> initialExpandedEntryIds;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -91,6 +93,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
   void initState() {
     super.initState();
     _autoScrollController = _TimelineAutoScrollController();
+    _expandedEntryKeys.addAll(widget.initialExpandedEntryIds);
   }
 
   @override
@@ -2128,6 +2131,18 @@ class _ToolEventRow extends StatelessWidget {
             if (expanded && _hasValue(entry.output)) ...[
               const SizedBox(height: 8),
               _EventSection(label: 'Output', value: entry.output!, mono: true),
+            ],
+            if (expanded && (entry.scriptRunId?.trim().isNotEmpty == true || entry.stdoutArtifactId?.trim().isNotEmpty == true || entry.stderrArtifactId?.trim().isNotEmpty == true)) ...[
+              const SizedBox(height: 8),
+              _EventSection(
+                label: 'Saved detail',
+                value: [
+                  if (entry.scriptRunId?.trim().isNotEmpty == true) 'script ${entry.scriptRunId!.trim()}',
+                  if (entry.stdoutArtifactId?.trim().isNotEmpty == true) 'stdout ${entry.stdoutArtifactId!.trim()}',
+                  if (entry.stderrArtifactId?.trim().isNotEmpty == true) 'stderr ${entry.stderrArtifactId!.trim()}',
+                ].join('\n'),
+                mono: true,
+              ),
             ],
           ],
         ),

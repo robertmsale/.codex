@@ -3185,7 +3185,6 @@ class AgentRuntimeGuiOperationListRequirementsPackets extends AgentRuntimeGuiOpe
   }
 }
 
-
 @immutable
 class AgentRuntimeGuiOperationLoadFullSizeImage extends AgentRuntimeGuiOperation {
   const AgentRuntimeGuiOperationLoadFullSizeImage({
@@ -3235,7 +3234,10 @@ class AgentRuntimeGuiOperationLoadFullSizeImage extends AgentRuntimeGuiOperation
   }
 
   @override
-  int get hashCode => Object.hash(sessionId, imageArtifactId);
+  int get hashCode => Object.hash(
+        sessionId,
+        imageArtifactId,
+      );
 
   @override
   String toString() {
