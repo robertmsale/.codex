@@ -3286,6 +3286,8 @@ pub(crate) fn requirements_worker_claim_schema(set: &RequirementSetState) -> Val
 fn requirements_claim_schema_for_requirements<'a>(
     requirements: impl Iterator<Item = &'a RequirementState>,
 ) -> Value {
+    const REQUIREMENTS_GLOBAL_SUMMARY_MAX_LENGTH: u32 = 1_000;
+    const REQUIREMENTS_PER_ITEM_SUMMARY_MAX_LENGTH: u32 = 600;
     let mut requirement_properties = serde_json::Map::new();
     for requirement in requirements {
         let key = requirement.key.trim();
@@ -3300,6 +3302,7 @@ fn requirements_claim_schema_for_requirements<'a>(
                     .claim_schema_description
                     .as_deref()
                     .unwrap_or(default_description.as_str()),
+                REQUIREMENTS_PER_ITEM_SUMMARY_MAX_LENGTH,
             ),
         );
     }
@@ -3309,6 +3312,7 @@ fn requirements_claim_schema_for_requirements<'a>(
         "summary".to_string(),
         json!({
             "type": "string",
+            "maxLength": REQUIREMENTS_GLOBAL_SUMMARY_MAX_LENGTH,
             "description": "Concise global outcome or progress note. Do not duplicate per-requirement evidence here."
         }),
     );
@@ -3352,12 +3356,14 @@ pub(crate) fn requirements_verdict_schema_for_scope<'a>(
     set: &RequirementSetState,
     scope_keys: impl IntoIterator<Item = &'a str>,
 ) -> Value {
+    const REQUIREMENTS_REVIEW_SUMMARY_MAX_LENGTH: u32 = 1_000;
     let (properties, required) = requirements_verdict_properties(set, scope_keys);
     json!({
         "type": "object",
         "properties": {
             "summary": {
                 "type": "string",
+                "maxLength": REQUIREMENTS_REVIEW_SUMMARY_MAX_LENGTH,
                 "description": "Concise reviewer progress note or final verdict summary. Do not duplicate every per-requirement verdict."
             },
             "requirements": {
@@ -3453,7 +3459,7 @@ fn canonical_requirement_schema_description(requirement: &RequirementState) -> S
     )
 }
 
-fn claim_property_schema(description: &str) -> Value {
+fn claim_property_schema(description: &str, summary_max_length: u32) -> Value {
     let typed_evidence = json!({
         "type": "object",
         "properties": {
@@ -3479,7 +3485,7 @@ fn claim_property_schema(description: &str) -> Value {
                 "type": "string",
                 "enum": ["satisfied"]
             },
-            "summary": { "type": "string" },
+            "summary": { "type": "string", "maxLength": summary_max_length },
             "evidence": evidence_array.clone()
         },
         "required": ["kind", "summary", "evidence"],
@@ -3493,7 +3499,7 @@ fn claim_property_schema(description: &str) -> Value {
                 "type": "string",
                 "enum": ["blocked"]
             },
-            "summary": { "type": "string" },
+            "summary": { "type": "string", "maxLength": summary_max_length },
             "blocker": { "type": "string" },
             "ownerDecisionNeeded": { "type": "string" },
             "evidence": evidence_array.clone()
@@ -3509,7 +3515,7 @@ fn claim_property_schema(description: &str) -> Value {
                 "type": "string",
                 "enum": ["notApplicable"]
             },
-            "summary": { "type": "string" },
+            "summary": { "type": "string", "maxLength": summary_max_length },
             "evidence": evidence_array
         },
         "required": ["kind", "summary", "evidence"],
@@ -5825,6 +5831,17 @@ pub async fn orchestrator_requirements_status(
                     })
                     .collect::<Vec<_>>()
         };
+        let review_status = review.as_ref().map(|binding| binding.status.clone());
+        let summary_status = if requirement_set_active
+            && matches!(review_status.as_deref(), Some("passed" | "waiverAccepted"))
+            && requirements
+                .as_ref()
+                .is_some_and(requirement_set_has_unresolved_progress)
+        {
+            Some("inReview".to_string())
+        } else {
+            review_status
+        };
         return Ok(json!({
             "threadId": recipient.thread_id,
             "displayName": recipient.display_name,
@@ -5835,7 +5852,7 @@ pub async fn orchestrator_requirements_status(
                 "activeRequirementCount": active_requirements.len(),
                 "storedRequirementCount": stored_requirements.len(),
                 "requirementSetActive": requirement_set_active,
-                "status": review.as_ref().map(|binding| binding.status.clone()),
+                "status": summary_status,
                 "reviewerThreadId": review.as_ref().map(|binding| binding.reviewer_thread_id.clone()),
                 "requirementSetId": review
                     .as_ref()
@@ -6607,7 +6624,7 @@ pub(crate) async fn mark_requirements_review_verdict(
             .as_ref()
             .map(|requirements| verdict_has_invalid_still_passing(requirements, &verdict_payload))
             .unwrap_or(false);
-        let status = if invalid_still_passing {
+        let verdict_status = if invalid_still_passing {
             "failed".to_string()
         } else {
             requirement_status_from_verdict(&verdict_payload)
@@ -6619,7 +6636,12 @@ pub(crate) async fn mark_requirements_review_verdict(
             .requirements
             .as_ref()
             .map(requirement_set_all_passed_or_waived)
-            .unwrap_or(matches!(status.as_str(), "passed" | "waiverAccepted"));
+            .unwrap_or(matches!(verdict_status.as_str(), "passed" | "waiverAccepted"));
+        let status = if is_terminal {
+            verdict_status
+        } else {
+            non_terminal_requirements_review_status(verdict_status.as_str())
+        };
         if is_terminal
             && let Some(requirements) = source.requirements.as_mut()
         {
@@ -6722,6 +6744,25 @@ fn requirement_set_all_passed_or_waived(set: &RequirementSetState) -> bool {
                 Some("passed" | "waived")
             )
         })
+}
+
+fn requirement_set_has_unresolved_progress(set: &RequirementSetState) -> bool {
+    set.requirements.iter().any(|requirement| {
+        !matches!(
+            set.review_progress
+                .get(requirement.key.as_str())
+                .map(|progress| progress.status.as_str()),
+            Some("passed" | "waived")
+        )
+    })
+}
+
+fn non_terminal_requirements_review_status(verdict_status: &str) -> String {
+    match verdict_status {
+        "passed" | "waiverAccepted" => "inReview",
+        other => other,
+    }
+    .to_string()
 }
 
 fn verdict_has_invalid_still_passing(set: &RequirementSetState, verdict_payload: &Value) -> bool {
@@ -7796,6 +7837,7 @@ mod tests {
             required,
             &vec![json!("summary"), json!("requirements")]
         );
+        assert_eq!(schema["properties"]["summary"]["maxLength"], json!(1000));
         let requirements_schema = &schema["properties"]["requirements"];
         let alternatives = requirements_schema["anyOf"].as_array().expect("requirements anyOf");
         assert!(alternatives.iter().any(|item| {
@@ -7813,6 +7855,13 @@ mod tests {
             claims["required"],
             json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
         );
+        let satisfied = claims["properties"]["nativeGuiIsSourceOfTruth"]["anyOf"]
+            .as_array()
+            .expect("claim anyOf")
+            .iter()
+            .find(|item| item["properties"]["kind"]["enum"] == json!(["satisfied"]))
+            .expect("satisfied claim schema");
+        assert_eq!(satisfied["properties"]["summary"]["maxLength"], json!(600));
         assert!(schema["properties"].get("finalDisposition").is_none());
     }
 
@@ -7824,6 +7873,7 @@ mod tests {
             .and_then(Value::as_array)
             .expect("required array");
         assert_eq!(required, &vec![json!("summary"), json!("requirements")]);
+        assert_eq!(schema["properties"]["summary"]["maxLength"], json!(1000));
         let requirements_schema = &schema["properties"]["requirements"];
         let requirements_object = requirements_schema["anyOf"]
             .as_array()
@@ -8165,6 +8215,147 @@ mod tests {
             status["summary"]["verdicts"][0]["progressStatus"],
             json!("passed")
         );
+    }
+
+    #[tokio::test]
+    async fn partial_scoped_pass_keeps_requirement_set_active_and_review_status_nonterminal() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut state = PersistedState::default();
+        let mut project = PersistedProjectState {
+            project_root: Some(temp.path().display().to_string()),
+            cwd: Some(temp.path().display().to_string()),
+            ..Default::default()
+        };
+        project.agents.insert(
+            "source-thread".to_string(),
+            PersistedAgentState {
+                display_name: Some("Source".to_string()),
+                role: Some("worker".to_string()),
+                requirements: Some(sample_requirement_set()),
+                requirement_review: Some(RequirementReviewBindingState {
+                    source_thread_id: "source-thread".to_string(),
+                    reviewer_thread_id: "reviewer-thread".to_string(),
+                    requirement_set_id: Some("web-gui-contract".to_string()),
+                    status: "inReview".to_string(),
+                    latest_claim_packet: Some(json!({"summary": "claimed"})),
+                    latest_verdict_packet: None,
+                    updated_at: 100,
+                }),
+                ..Default::default()
+            },
+        );
+        project.agents.insert(
+            "reviewer-thread".to_string(),
+            PersistedAgentState {
+                display_name: Some("Requirements Reviewer".to_string()),
+                role: Some("requirements-reviewer".to_string()),
+                parent_thread_id: Some("source-thread".to_string()),
+                hidden_from_peer_list: true,
+                ..Default::default()
+            },
+        );
+        state.projects.insert("project".to_string(), project);
+        persist_state(&runtime, &state).await.expect("persist state");
+
+        mark_requirements_review_verdict(
+            &runtime,
+            "source-thread",
+            "reviewer-thread",
+            json!({
+                "overallVerdict": "pass",
+                "nativeGuiIsSourceOfTruth": {
+                    "verdict": "pass",
+                    "reason": "Scoped evidence passes.",
+                    "evidenceAssessment": "Sufficient.",
+                    "requiredCorrection": ""
+                },
+                "route": {
+                    "destination": "orchestrator",
+                    "message": "Scoped package passed."
+                }
+            }),
+        )
+        .await
+        .expect("mark verdict");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent = agent_state_for_thread(&state, "source-thread").expect("source agent");
+        let requirements = agent.requirements.as_ref().expect("requirements");
+        assert!(requirements.active);
+        assert_eq!(
+            requirements.review_progress["nativeGuiIsSourceOfTruth"].status,
+            "passed"
+        );
+        assert!(!requirements
+            .review_progress
+            .contains_key("noInventedWebsocketEventShapes"));
+        assert_eq!(
+            agent.requirement_review.as_ref().map(|review| review.status.as_str()),
+            Some("inReview")
+        );
+        assert!(active_requirements_claim_schema_for_thread(&state, "source-thread").is_some());
+    }
+
+    #[tokio::test]
+    async fn requirements_status_never_reports_passed_while_active_set_has_unresolved_requirements() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut requirements = sample_requirement_set();
+        requirements.review_progress.insert(
+            "nativeGuiIsSourceOfTruth".to_string(),
+            RequirementReviewProgressState {
+                status: "passed".to_string(),
+                updated_at: Some(10),
+            },
+        );
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "orch-1": {"displayName": "Orch", "role": "orchestrator", "projectRoot": temp.path().display().to_string()},
+                            "worker-1": {
+                                "displayName": "Worker",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "requirements": requirements,
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "web-gui-contract",
+                                    "status": "passed",
+                                    "latestVerdictPacket": {"overallVerdict": "pass", "nativeGuiIsSourceOfTruth": {"verdict": "pass"}},
+                                    "updatedAt": 12
+                                }
+                            },
+                            "reviewer-1": {"displayName": "Reviewer", "role": "requirements-reviewer", "projectRoot": temp.path().display().to_string(), "parentThreadId": "worker-1", "hiddenFromPeerList": true}
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let status = orchestrator_requirements_status(
+            &runtime,
+            "orch-1",
+            Some("worker-1"),
+            None,
+            None,
+        )
+        .await
+        .expect("requirements status");
+        assert_eq!(status["summary"]["requirementSetActive"], json!(true));
+        assert_ne!(status["summary"]["status"], json!("passed"));
+        assert_eq!(status["summary"]["pendingCount"], json!(1));
+        assert_eq!(status["summary"]["passedCount"], json!(1));
     }
 
     #[tokio::test]

@@ -1118,16 +1118,22 @@ impl BridgeRuntime {
             }
         }
 
-        let overall = payload
+        let raw_overall = payload
             .get("overallVerdict")
             .and_then(Value::as_str)
             .unwrap_or("fail");
+        let state_value = self.state_document.read().await.clone();
+        let pass_would_be_premature = source_requirement_set_requires_completion(&state_value, source_thread_id);
+        let overall = if matches!(raw_overall, "pass" | "waiverAccepted") && pass_would_be_premature {
+            "partialPass"
+        } else {
+            raw_overall
+        };
         let route_message = payload
             .get("route")
             .and_then(|route| route.get("message"))
             .and_then(Value::as_str)
             .unwrap_or("");
-        let state_value = self.state_document.read().await.clone();
         let source_label = sender_label_for_thread(&state_value, source_thread_id);
         let text = compose_requirements_verdict_route_message(overall, &source_label, route_message, payload);
         if text.trim().is_empty() {
@@ -1216,7 +1222,7 @@ impl BridgeRuntime {
                 .and_then(|agent| agent.requirements.as_ref())
                 .map(|set| !set.active)
                 .unwrap_or(false);
-            if overall == "pass" && requirements_inactive {
+            if raw_overall == "pass" && requirements_inactive {
                 if let Err(error) = archive_thread(self, reviewer_thread_id).await {
                     tracing::warn!(
                         "failed to archive completed requirements reviewer {reviewer_thread_id}: {error}"
@@ -2934,6 +2940,7 @@ fn compose_requirements_verdict_route_message(
 ) -> String {
     let headline = match overall {
         "notYet" => "Requirements review is not yet complete.",
+        "partialPass" => "Scoped Requirements review passed; the full RequirementSet is still active.",
         "pass" => "Requirements review passed.",
         "fail" => "Requirements review failed.",
         "acceptedBlocked" => "Requirements review accepted a true blocker.",
@@ -2999,6 +3006,49 @@ fn requirements_review_status_for_thread_value(state: &Value, thread_id: &str) -
         .and_then(|review| review.get("status"))
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+fn source_requirement_set_requires_completion(state: &Value, thread_id: &str) -> bool {
+    state
+        .get("projects")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|projects| projects.values())
+        .find_map(|project| {
+            project
+                .get("agents")
+                .and_then(Value::as_object)
+                .and_then(|agents| agents.get(thread_id))
+        })
+        .and_then(|agent| agent.get("requirements"))
+        .is_some_and(|requirements| {
+            requirements.get("active").and_then(Value::as_bool) == Some(true)
+                && !requirement_set_value_all_passed_or_waived(requirements)
+        })
+}
+
+fn requirement_set_value_all_passed_or_waived(requirements: &Value) -> bool {
+    let Some(items) = requirements.get("requirements").and_then(Value::as_array) else {
+        return false;
+    };
+    if items.is_empty() {
+        return false;
+    }
+    let progress = requirements
+        .get("reviewProgress")
+        .and_then(Value::as_object);
+    items.iter().all(|requirement| {
+        let Some(key) = requirement.get("key").and_then(Value::as_str) else {
+            return false;
+        };
+        matches!(
+            progress
+                .and_then(|progress| progress.get(key))
+                .and_then(|progress| progress.get("status"))
+                .and_then(Value::as_str),
+            Some("passed" | "waived")
+        )
+    })
 }
 
 enum ReviewableRequirementsClaim {
@@ -3916,17 +3966,9 @@ mod tests {
     #[tokio::test]
     async fn reviewer_packet_embedded_in_text_updates_progress_from_whole_response() {
         let temp = TempDir::new().expect("tempdir");
-        let settings = BridgeSettings {
-            http: HttpArgs {
-                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
-                port: 42080,
-            },
-            app_server_url: "ws://127.0.0.1:9".to_string(),
-            project_path: temp.path().to_path_buf(),
-            cwd: temp.path().to_path_buf(),
-            paths: BridgePaths::new(PathBuf::from(temp.path()).join("state")),
-        };
-        let runtime = BridgeRuntime::new(settings).await.expect("runtime");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         runtime
             .persist_state_document(json!({
                 "projects": {
@@ -3990,6 +4032,10 @@ mod tests {
                 .maybe_record_requirements_verdict("reviewer-1", "review-turn-embedded")
                 .await
         );
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("verdict route request timeout")
+            .expect("verdict route request");
         let state = runtime.state_document_value().await;
         let source = &state["projects"]["alpha"]["agents"]["worker-1"];
         assert_eq!(
@@ -3997,6 +4043,8 @@ mod tests {
             json!("passed")
         );
         assert_eq!(source["requirements"]["active"], json!(false));
+        transport.abort();
+        server.abort();
     }
 
     #[tokio::test]
@@ -4419,6 +4467,189 @@ mod tests {
                     .contains(headline)
             );
         }
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn partial_scoped_pass_routes_back_to_source_not_orchestrator() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "orchestratorThreadID": "orch-1",
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string()
+                            },
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirements": [
+                                        {"key": "passedScoped", "statement": "Scoped item.", "severity": "blocker", "verificationMethod": "sourceInspection"},
+                                        {"key": "stillPending", "statement": "Pending item.", "severity": "blocker", "verificationMethod": "sourceInspection"}
+                                    ],
+                                    "reviewProgress": {
+                                        "passedScoped": {"status": "passed", "updatedAt": 1}
+                                    }
+                                },
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "requirements-alpha",
+                                    "status": "inReview",
+                                    "updatedAt": 1
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        runtime
+            .maybe_route_requirements_verdict(
+                "worker-1",
+                "reviewer-1",
+                "review-turn-partial-pass",
+                &json!({
+                    "overallVerdict": "pass",
+                    "passedScoped": {
+                        "verdict": "pass",
+                        "reason": "Scoped evidence passed.",
+                        "evidenceAssessment": "sufficient",
+                        "requiredCorrection": ""
+                    },
+                    "route": {
+                        "destination": "orchestrator",
+                        "message": "Do not route this partial pass as final."
+                    }
+                }),
+            )
+            .await;
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "worker-1");
+        let text = request["params"]["input"][0]["text"].as_str().unwrap_or_default();
+        assert!(text.contains("Scoped Requirements review passed"));
+        assert!(!text.contains("Requirements review passed."));
+        let state = runtime.state_document_value().await;
+        assert_eq!(state["projects"]["alpha"]["agents"]["worker-1"]["requirements"]["active"], json!(true));
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn follow_up_after_partial_pass_routes_new_claim_to_reviewer() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirements": [
+                                        {"key": "passedScoped", "statement": "Scoped item.", "severity": "blocker", "verificationMethod": "sourceInspection"},
+                                        {"key": "stillPending", "statement": "Pending item.", "severity": "blocker", "verificationMethod": "sourceInspection"}
+                                    ],
+                                    "reviewProgress": {
+                                        "passedScoped": {"status": "passed", "updatedAt": 1}
+                                    }
+                                },
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "requirements-alpha",
+                                    "status": "inReview",
+                                    "latestVerdictPacket": {"overallVerdict": "pass", "passedScoped": {"verdict": "pass"}},
+                                    "updatedAt": 1
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "worker-1".to_string(),
+                vec![test_chat_message(
+                    "worker-1",
+                    "turn-follow-up",
+                    "final-follow-up",
+                    Some("final_answer"),
+                    r#"{"summary":"follow-up","requirements":{"stillPending":{"kind":"satisfied","summary":"fixed","evidence":[{"type":"testsRun","value":"cargo test -p codex-robdex-bridge follow_up_after_partial_pass_routes_new_claim_to_reviewer"}]}}}"#,
+                )],
+            );
+        }
+
+        assert!(runtime.maybe_route_requirements_review("worker-1", "turn-follow-up").await);
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "reviewer-1");
+        let requirements_object = request["params"]["outputSchema"]["properties"]["requirements"]["anyOf"]
+            .as_array()
+            .expect("requirements anyOf")
+            .iter()
+            .find(|item| item["type"] == json!("object"))
+            .expect("requirements object");
+        assert_eq!(requirements_object["required"], json!(["stillPending", "overallVerdict", "route"]));
+        assert_eq!(
+            runtime.state_document_value().await["projects"]["alpha"]["agents"]["worker-1"]["requirements"]["active"],
+            json!(true)
+        );
         transport.abort();
         server.abort();
     }

@@ -13,6 +13,7 @@ use codex_app_server_adapter::app_server_protocol::{
     TurnStartedNotification, TurnStatus,
 };
 use codex_app_server_adapter::protocol::models::{ContentItem, MessagePhase, ResponseItem};
+use serde_json::Value;
 
 use crate::{
     models::{
@@ -23,6 +24,8 @@ use crate::{
 };
 
 const CONTEXT_WINDOW_BASELINE_TOKENS: i64 = 12_000;
+const MAX_MODEL_VISIBLE_COMMENTARY_CHARS: usize = 4_000;
+const MAX_REQUIREMENTS_SUMMARY_CHARS: usize = 1_000;
 
 #[derive(Debug, Clone)]
 pub enum UpstreamRuntimeEvent {
@@ -779,10 +782,11 @@ impl ItemNotification for ItemCompletedNotification {
 fn upsert_message(
     thread_cache: &mut ThreadCachePayload,
     thread_id: &str,
-    message: RobdexChatMessage,
+    mut message: RobdexChatMessage,
     mode: UpsertMode,
     changed_thread_ids: &mut BTreeSet<String>,
 ) -> bool {
+    bound_model_visible_message_text(&mut message);
     if !is_renderable_message(&message) && find_message(thread_cache, thread_id, &message.id).is_none() {
         return false;
     }
@@ -826,6 +830,36 @@ fn upsert_message(
         changed_thread_ids.insert(thread_id.to_string());
     }
     next
+}
+
+fn bound_model_visible_message_text(message: &mut RobdexChatMessage) {
+    if message.role != "assistant" {
+        return;
+    }
+    if message.phase.as_deref() == Some("commentary") {
+        message.text = truncate_chars(&message.text, MAX_MODEL_VISIBLE_COMMENTARY_CHARS);
+        return;
+    }
+    if let Ok(mut value) = serde_json::from_str::<Value>(message.text.trim())
+        && let Some(object) = value.as_object_mut()
+        && let Some(summary) = object.get_mut("summary")
+        && let Some(text) = summary.as_str()
+        && text.chars().count() > MAX_REQUIREMENTS_SUMMARY_CHARS
+    {
+        *summary = Value::String(truncate_chars(text, MAX_REQUIREMENTS_SUMMARY_CHARS));
+        if let Ok(next) = serde_json::to_string(&value) {
+            message.text = next;
+        }
+    }
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut truncated = text.chars().take(max_chars).collect::<String>();
+    truncated.push_str(BRIDGE_TRUNCATION_MARKER);
+    truncated
 }
 
 fn is_renderable_message(message: &RobdexChatMessage) -> bool {
@@ -1714,6 +1748,58 @@ mod tests {
         let message = &cache.message_cache_by_thread_id["thread-1"][0];
         assert_eq!(message.text, large_text);
         assert!(!message.text.contains(BRIDGE_TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn thread_cache_bounds_oversized_requirements_summary_and_commentary() {
+        let mut cache = ThreadCachePayload::default();
+        let mut changed = BTreeSet::new();
+        let oversized_summary = "summary ".repeat(1_000);
+        upsert_message(
+            &mut cache,
+            "thread-1",
+            RobdexChatMessage {
+                id: "final-1".to_string(),
+                thread_id: "thread-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                role: "assistant".to_string(),
+                text: serde_json::json!({"summary": oversized_summary, "requirements": null}).to_string(),
+                phase: Some("final_answer".to_string()),
+                created_at: 1,
+                subtitle: None,
+                tool_metadata: None,
+                delivery_state: "completed".to_string(),
+            },
+            UpsertMode::Merge,
+            &mut changed,
+        );
+        let value: Value = serde_json::from_str(&cache.message_cache_by_thread_id["thread-1"][0].text)
+            .expect("json final message");
+        let summary = value["summary"].as_str().expect("summary");
+        assert!(summary.len() < "summary ".repeat(1_000).len());
+        assert!(summary.contains(BRIDGE_TRUNCATION_MARKER));
+
+        upsert_message(
+            &mut cache,
+            "thread-1",
+            RobdexChatMessage {
+                id: "commentary-1".to_string(),
+                thread_id: "thread-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                role: "assistant".to_string(),
+                text: "commentary ".repeat(1_000),
+                phase: Some("commentary".to_string()),
+                created_at: 2,
+                subtitle: None,
+                tool_metadata: None,
+                delivery_state: "completed".to_string(),
+            },
+            UpsertMode::Merge,
+            &mut changed,
+        );
+        let commentary = &cache.message_cache_by_thread_id["thread-1"][1].text;
+        assert!(commentary.len() < "commentary ".repeat(1_000).len());
+        assert!(commentary.contains(BRIDGE_TRUNCATION_MARKER));
     }
 
     #[test]
