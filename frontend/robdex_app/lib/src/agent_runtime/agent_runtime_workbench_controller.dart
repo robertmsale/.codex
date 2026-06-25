@@ -1098,6 +1098,7 @@ AgentRuntimeSelectedSessionControlPlane _selectedControlPlane(bindings.AgentRunt
       worktreeRoot: value.worktreeRoot,
       tracked: value.tracked,
       modelOptions: value.modelOptions.map(_modelOption).toList(growable: false),
+      projectOptions: value.projectOptions.map(_shellProject).toList(growable: false),
       godMode: AgentRuntimeGodModeState(active: value.godMode.active, reason: value.godMode.reason, grantedBy: value.godMode.grantedBy, grantedAt: value.godMode.grantedAt),
       managedProcesses: value.managedProcesses.map((process) => AgentRuntimeManagedProcessRow(id: process.id, handle: process.handle, command: process.command, status: process.status, startedAt: process.startedAt, endedAt: process.endedAt, cwd: process.cwd, pid: process.pid, stdinPolicy: process.stdinPolicy, endOfTurnBehavior: process.endOfTurnBehavior, endOfSessionBehavior: process.endOfSessionBehavior, latestOutputSummary: process.latestOutputSummary, canTerminate: process.canTerminate, canFlush: process.canFlush, canInput: process.canInput)).toList(growable: false),
       approvals: value.approvals.map((approval) => AgentRuntimeApprovalCard(id: approval.id, title: approval.title, status: approval.status, requiredApprover: approval.requiredApprover, requestedAt: approval.requestedAt, contextSummary: approval.contextSummary, canDecide: approval.canDecide, canResume: approval.canResume, decisionSummary: approval.decisionSummary)).toList(growable: false),
@@ -1106,6 +1107,20 @@ AgentRuntimeSelectedSessionControlPlane _selectedControlPlane(bindings.AgentRunt
       runningServers: value.runningServers.map(_fact).toList(growable: false),
       imageArtifacts: value.imageArtifacts.map(_fact).toList(growable: false),
       quickActions: value.quickActions.map((action) => AgentRuntimeActionAvailability(id: action.id, label: action.label, available: action.available, reason: action.reason)).toList(growable: false),
+    );
+
+ConversationProject _shellProject(bindings.AgentRuntimeShellProjectRow project) => ConversationProject(
+      id: project.id,
+      title: project.title,
+      subtitle: project.subtitle,
+      canEdit: project.id != '__all__' && project.id != '__unassigned__',
+      canArchive: project.id != '__all__' && project.id != '__unassigned__',
+      canCreateSession: project.selectable,
+      defaultWorkdir: project.defaultWorkdir,
+      defaultWorktreeRoot: project.defaultWorktreeRoot,
+      defaultRoleId: project.defaultRoleId,
+      defaultModel: project.defaultModel,
+      archived: project.archived,
     );
 
 AgentRuntimeModelOption _modelOption(bindings.AgentRuntimeModelOption option) => AgentRuntimeModelOption(

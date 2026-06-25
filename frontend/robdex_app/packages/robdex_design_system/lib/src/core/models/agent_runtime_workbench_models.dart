@@ -1,3 +1,4 @@
+import 'conversation_shell_models.dart';
 import 'workbench_models.dart';
 
 class AgentRuntimeWorkbenchData {
@@ -451,6 +452,7 @@ class AgentRuntimeSelectedSessionControlPlane {
     required this.worktreeRoot,
     required this.tracked,
     required this.modelOptions,
+    required this.projectOptions,
     required this.godMode,
     required this.managedProcesses,
     required this.approvals,
@@ -472,6 +474,7 @@ class AgentRuntimeSelectedSessionControlPlane {
   final String worktreeRoot;
   final bool tracked;
   final List<AgentRuntimeModelOption> modelOptions;
+  final List<ConversationProject> projectOptions;
   final AgentRuntimeGodModeState godMode;
   final List<AgentRuntimeManagedProcessRow> managedProcesses;
   final List<AgentRuntimeApprovalCard> approvals;
@@ -494,6 +497,17 @@ class AgentRuntimeSelectedSessionControlPlane {
       worktreeRoot: '${json['worktreeRoot'] ?? ''}',
       tracked: json['tracked'] == true,
       modelOptions: _objects(json['modelOptions']).map(AgentRuntimeModelOption.fromJson).toList(growable: false),
+      projectOptions: _objects(json['projectOptions']).map((project) => ConversationProject(
+        id: '${project['id'] ?? ''}',
+        title: '${project['title'] ?? ''}',
+        subtitle: '${project['subtitle'] ?? ''}',
+        canCreateSession: project['selectable'] != false,
+        defaultWorkdir: '${project['defaultWorkdir'] ?? ''}',
+        defaultWorktreeRoot: '${project['defaultWorktreeRoot'] ?? ''}',
+        defaultRoleId: '${project['defaultRoleId'] ?? ''}',
+        defaultModel: '${project['defaultModel'] ?? ''}',
+        archived: project['archived'] == true,
+      )).toList(growable: false),
       godMode: AgentRuntimeGodModeState.fromJson(Map<String, dynamic>.from((json['godMode'] as Map?) ?? const {})),
       managedProcesses: _objects(json['managedProcesses']).map(AgentRuntimeManagedProcessRow.fromJson).toList(growable: false),
       approvals: _objects(json['approvals']).map(AgentRuntimeApprovalCard.fromJson).toList(growable: false),
@@ -504,6 +518,50 @@ class AgentRuntimeSelectedSessionControlPlane {
       quickActions: _objects(json['quickActions']).map(AgentRuntimeActionAvailability.fromJson).toList(growable: false),
     );
   }
+
+  AgentRuntimeSelectedSessionControlPlane copyWith({
+    String? sessionId,
+    String? title,
+    String? name,
+    String? status,
+    String? roleId,
+    String? projectKey,
+    String? activeModel,
+    String? workdir,
+    String? worktreeRoot,
+    bool? tracked,
+    List<AgentRuntimeModelOption>? modelOptions,
+    List<ConversationProject>? projectOptions,
+    AgentRuntimeGodModeState? godMode,
+    List<AgentRuntimeManagedProcessRow>? managedProcesses,
+    List<AgentRuntimeApprovalCard>? approvals,
+    List<AgentRuntimeCommandRequestCard>? commandRequests,
+    AgentRuntimeRequirementsReviewPanel? requirementsReview,
+    List<AgentRuntimeFact>? runningServers,
+    List<AgentRuntimeFact>? imageArtifacts,
+    List<AgentRuntimeActionAvailability>? quickActions,
+  }) => AgentRuntimeSelectedSessionControlPlane(
+    sessionId: sessionId ?? this.sessionId,
+    title: title ?? this.title,
+    name: name ?? this.name,
+    status: status ?? this.status,
+    roleId: roleId ?? this.roleId,
+    projectKey: projectKey ?? this.projectKey,
+    activeModel: activeModel ?? this.activeModel,
+    workdir: workdir ?? this.workdir,
+    worktreeRoot: worktreeRoot ?? this.worktreeRoot,
+    tracked: tracked ?? this.tracked,
+    modelOptions: modelOptions ?? this.modelOptions,
+    projectOptions: projectOptions ?? this.projectOptions,
+    godMode: godMode ?? this.godMode,
+    managedProcesses: managedProcesses ?? this.managedProcesses,
+    approvals: approvals ?? this.approvals,
+    commandRequests: commandRequests ?? this.commandRequests,
+    requirementsReview: requirementsReview ?? this.requirementsReview,
+    runningServers: runningServers ?? this.runningServers,
+    imageArtifacts: imageArtifacts ?? this.imageArtifacts,
+    quickActions: quickActions ?? this.quickActions,
+  );
 }
 
 class AgentRuntimeGodModeState {

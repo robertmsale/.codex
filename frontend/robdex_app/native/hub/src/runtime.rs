@@ -1854,6 +1854,17 @@ fn typed_selected_session_control_plane(view: robdex_agent_runtime::rinf_transpo
             source: option.source,
             is_default: option.is_default,
         }).collect(),
+        project_options: view.project_options.into_iter().map(|project| AgentRuntimeShellProjectRow {
+            id: project.id,
+            title: project.title,
+            subtitle: project.subtitle,
+            selectable: project.selectable,
+            default_workdir: project.default_workdir,
+            default_worktree_root: project.default_worktree_root,
+            default_role_id: project.default_role_id.unwrap_or_default(),
+            default_model: project.default_model,
+            archived: project.archived,
+        }).collect(),
         god_mode: AgentRuntimeGodModeState {
             active: view.god_mode.active,
             reason: view.god_mode.reason,

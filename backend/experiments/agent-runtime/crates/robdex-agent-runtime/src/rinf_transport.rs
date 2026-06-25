@@ -277,6 +277,7 @@ pub struct AgentRuntimeSelectedSessionControlPlane {
     pub worktree_root: String,
     pub tracked: bool,
     pub model_options: Vec<AgentRuntimeModelOption>,
+    pub project_options: Vec<AgentRuntimeShellProjectRow>,
     pub god_mode: AgentRuntimeGodModeState,
     pub managed_processes: Vec<AgentRuntimeManagedProcessRow>,
     pub approvals: Vec<AgentRuntimeApprovalCard>,
@@ -881,6 +882,7 @@ fn selected_session_control_plane(
         worktree_root: session.worktree_root.clone().unwrap_or_else(|| session.workdir.clone()),
         tracked: true,
         model_options: model_options.to_vec(),
+        project_options: shell_project_rows(Some(projection), session.project_key.as_deref()),
         god_mode,
         managed_processes,
         approvals,
@@ -5048,6 +5050,17 @@ mod tests {
                 database: "connected".to_string(),
                 message: Some("runtime ready".to_string()),
             },
+            projects: vec![ProjectSummary {
+                project_key: "project-a".to_string(),
+                display_name: "Project A".to_string(),
+                default_workdir: "/tmp/project-a".to_string(),
+                default_worktree_root: "/tmp/project-a".to_string(),
+                default_role_id: Some("runtime-allow".to_string()),
+                default_model: "gpt-5.4-mini".to_string(),
+                archived: false,
+                created_at: None,
+                updated_at: None,
+            }],
             sessions: vec![SessionListItem {
                 id: "session-1".to_string(),
                 status: "open".to_string(),
@@ -5534,6 +5547,7 @@ mod tests {
         assert_eq!(control_plane.active_model, "gpt-5.4-mini");
         assert_eq!(control_plane.workdir, "/tmp/project-a");
         assert!(control_plane.model_options.iter().all(|model| !model.id.trim().is_empty()));
+        assert!(control_plane.project_options.iter().any(|project| project.id == "project-a"));
         assert!(control_plane.managed_processes.iter().any(|process| {
             process.handle == "proc-1"
                 && process.command.contains("python")
