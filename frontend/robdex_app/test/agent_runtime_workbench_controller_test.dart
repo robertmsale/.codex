@@ -1897,13 +1897,21 @@ void main() {
     expect(submitted!['worktreeRoot'], '/work/live/root');
   });
 
-  testWidgets('Create Session modal blocks unavailable model options with inline recovery text', (tester) async {
+  testWidgets('Create Session modal falls back to persisted project model when runtime model cache is empty', (tester) async {
     Map<String, String>? submitted;
     const shell = ConversationShellData(
       appTitle: 'Agent Runtime',
       connectionLabel: 'Runtime healthy',
       projects: [
         ConversationProject(id: '__unassigned__', title: 'Unassigned'),
+        ConversationProject(
+          id: 'project-a',
+          title: 'Project A',
+          defaultWorkdir: '/work/project-a',
+          defaultWorktreeRoot: '/work/project-a/root',
+          defaultRoleId: 'runtime-safe-builder',
+          defaultModel: 'codex-cached-project-model',
+        ),
       ],
       sessions: [],
       selectedSessionId: null,
@@ -1921,6 +1929,7 @@ void main() {
           body: AgentRuntimeCreateSessionDialog(
             shell: shell,
             data: mockAgentRuntimeConnected.copyWith(modelOptions: const []),
+            initialProjectId: 'project-a',
             onCreate: ({
               required role,
               required project,
@@ -1930,17 +1939,26 @@ void main() {
               required title,
               required name,
             }) {
-              submitted = {'model': model};
+              submitted = {'project': project, 'model': model};
             },
           ),
         ),
       ),
     );
 
-    expect(find.textContaining('Model options are unavailable'), findsOneWidget);
-    expect(find.byKey(const ValueKey('agentRuntime.createSession.noModel')), findsOneWidget);
-    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Create')).onPressed, isNull);
-    expect(submitted, isNull);
+    expect(find.textContaining('Model options are unavailable'), findsNothing);
+    expect(find.textContaining('Codex auth'), findsNothing);
+    expect(find.byKey(const ValueKey('agentRuntime.createSession.noModel')), findsNothing);
+    expect(find.byKey(const ValueKey('agentRuntime.createSession.model')), findsOneWidget);
+    expect(find.text('Codex Cached Project Model'), findsOneWidget);
+
+    await tester.enterText(find.byKey(const ValueKey('agentRuntime.createSession.title')), 'Cached Model Session');
+    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+    await tester.pumpAndSettle();
+
+    expect(submitted, isNotNull);
+    expect(submitted!['project'], 'project-a');
+    expect(submitted!['model'], 'codex-cached-project-model');
   });
 
   testWidgets('Project Settings modal saves every field and exposes only archive and unarchive lifecycle actions', (tester) async {

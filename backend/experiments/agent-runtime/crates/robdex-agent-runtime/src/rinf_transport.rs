@@ -622,7 +622,8 @@ impl AgentRuntimeWorkbenchViewModel {
             .selected_session_id
             .as_deref()
             .or_else(|| projection.and_then(|projection| projection.selected_session.as_ref().map(|session| session.id.as_str())));
-        let role_admin = role_admin_view(projection, model_options);
+        let effective_model_options = effective_model_options(projection, model_options);
+        let role_admin = role_admin_view(projection, &effective_model_options);
         let workflow_memory = workflow_memory_view(
             projection,
             selected_session_id,
@@ -641,7 +642,7 @@ impl AgentRuntimeWorkbenchViewModel {
                 .map(|projection| projection.watermark.to_string())
                 .unwrap_or_else(|| "—".to_string()),
             status_badges: status_badges(projection, controller_state, pending_request_count),
-            model_options: model_options.to_vec(),
+            model_options: effective_model_options,
             selected_session_label: selected_session_label.clone(),
             sessions_title: projection
                 .map(|projection| format!("Sessions ({})", projection.sessions.len()))
@@ -907,6 +908,53 @@ fn action_availability(id: &str, label: &str, available: bool, reason: &str) -> 
         available,
         reason: reason.to_string(),
     }
+}
+
+fn effective_model_options(
+    projection: Option<&RuntimeProjection>,
+    discovered: &[AgentRuntimeModelOption],
+) -> Vec<AgentRuntimeModelOption> {
+    let mut options = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut has_default = false;
+    for option in discovered {
+        let id = option.id.trim();
+        if id.is_empty() || !seen.insert(id.to_string()) {
+            continue;
+        }
+        has_default |= option.is_default;
+        options.push(option.clone());
+    }
+    let mut add_persisted = |id: Option<&str>, source: &str| {
+        let id = id.unwrap_or_default().trim();
+        if id.is_empty() || !seen.insert(id.to_string()) {
+            return;
+        }
+        let is_default = !has_default;
+        has_default |= is_default;
+        options.push(AgentRuntimeModelOption {
+            id: id.to_string(),
+            display_label: id.to_string(),
+            source: source.to_string(),
+            is_default,
+        });
+    };
+    if let Some(projection) = projection {
+        if let Some(session) = &projection.selected_session {
+            add_persisted(session.active_model.as_deref(), "selected-session-active-model");
+            add_persisted(
+                session.metadata.get("model").and_then(Value::as_str),
+                "selected-session-metadata-model",
+            );
+        }
+        for project in &projection.projects {
+            add_persisted(Some(project.default_model.as_str()), "project-default-model");
+        }
+        for role in &projection.roles {
+            add_persisted(role.model.as_deref(), "role-default-model");
+        }
+    }
+    options
 }
 
 fn control_plane_json_summary(value: &Value) -> String {
@@ -5726,6 +5774,94 @@ mod tests {
             &model_options,
         );
         assert_eq!(view.model_options, model_options);
+    }
+
+    #[test]
+    fn workbench_view_falls_back_to_persisted_runtime_model_defaults() {
+        let projection = RuntimeProjection {
+            projects: vec![ProjectSummary {
+                project_key: "project-a".to_string(),
+                display_name: "Project A".to_string(),
+                default_workdir: "/tmp/project-a".to_string(),
+                default_worktree_root: "/tmp/project-a".to_string(),
+                default_role_id: Some("runtime-allow".to_string()),
+                default_model: "project-default-model".to_string(),
+                archived: false,
+                created_at: None,
+                updated_at: None,
+            }],
+            roles: vec![RoleSummary {
+                id: "runtime-allow".to_string(),
+                display_name: "Runtime Allow".to_string(),
+                current_version_id: Some("role-version-1".to_string()),
+                status: "active".to_string(),
+                model: Some("role-default-model".to_string()),
+                reasoning_effort: Some("medium".to_string()),
+                archived_at: None,
+                version: Some("1.0.0".to_string()),
+                instruction_text: None,
+                capabilities: Vec::new(),
+                policy: std::collections::BTreeMap::new(),
+                routing: json!({}),
+                visibility: json!({}),
+                lifecycle_authority: json!({}),
+                versions: Vec::new(),
+            }],
+            selected_session: Some(SelectedSessionDetail {
+                id: "session-1".to_string(),
+                role_id: Some("runtime-allow".to_string()),
+                role_version: Some("role-version-1".to_string()),
+                project_key: Some("project-a".to_string()),
+                active_model: Some("selected-active-model".to_string()),
+                workdir: "/tmp/project-a".to_string(),
+                worktree_root: Some("/tmp/project-a".to_string()),
+                title: Some("Runtime check".to_string()),
+                name: Some("runtime-check".to_string()),
+                status: "open".to_string(),
+                pending_approval_count: 0,
+                managed_process_count: 0,
+                active_turn_id: None,
+                queued_submitted_input_count: 0,
+                applied_steering_count: 0,
+                submit_disposition: None,
+                submit_status: None,
+                terminal_submission_rejection: None,
+                metadata: json!({"model":"metadata-model"}),
+                project_runtime: json!({}),
+                hook_overrides: json!({}),
+                subagents: json!({}),
+                contracts: Vec::new(),
+                resource_leases: Vec::new(),
+                recent_hook_failures: Vec::new(),
+                image_artifacts: Vec::new(),
+                running_servers: Vec::new(),
+                tooling_requests: Vec::new(),
+                requirements_review: None,
+                managed_processes: Vec::new(),
+            }),
+            ..RuntimeProjection::default()
+        };
+        let view = AgentRuntimeWorkbenchViewModel::from_runtime_state(
+            "http://127.0.0.1:8765",
+            Some(&projection),
+            &GuiControllerState::default(),
+            &[],
+            0,
+            None,
+            &AgentRuntimeDiscoveryView::default(),
+            &AgentRuntimeDiscoveryView::not_loaded_remote(),
+            &AgentRuntimeDiscoveryView::not_loaded_imported(),
+            &[],
+        );
+        let ids = view.model_options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["selected-active-model", "metadata-model", "project-default-model", "role-default-model"]);
+        assert_eq!(view.model_options[0].source, "selected-session-active-model");
+        assert!(view.model_options[0].is_default);
+        assert!(view.role_admin.editor_options.models.iter().any(|model| model == "project-default-model"));
+        assert!(view.shell.projects.iter().any(|project| project.default_model == "project-default-model"));
+        let control_plane = view.shell.selected_session_control_plane.as_ref().expect("selected session control plane");
+        assert!(control_plane.model_options.iter().any(|model| model.id == "selected-active-model"));
+        assert!(control_plane.model_options.iter().any(|model| model.id == "role-default-model"));
     }
 
     #[test]

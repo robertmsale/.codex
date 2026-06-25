@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_models_manager::manager::{ModelsEndpointClient, ModelsManager, OpenAiModelsManager, RefreshStrategy};
 use codex_protocol::error::{CodexErr, Result as CoreResult};
-use codex_protocol::openai_models::{ModelInfo, ModelVisibility};
+use codex_protocol::openai_models::ModelInfo;
 use codex_api::ResponsesApiRequest;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -299,7 +299,6 @@ impl CodexModelOptionsProvider {
     }
 
     pub async fn model_options(&self, force_refresh: bool) -> Result<Vec<CodexModelOption>> {
-        let auth = read_codex_auth(&self.auth_path)?;
         let codex_home = self.auth_path.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
         let endpoint = Arc::new(CodexAuthModelsEndpoint {
             http: reqwest::Client::new(),
@@ -316,17 +315,16 @@ impl CodexModelOptionsProvider {
         } else {
             RefreshStrategy::OnlineIfUncached
         };
-        let catalog = manager.raw_model_catalog(strategy).await;
-        let chatgpt_auth = auth.endpoint == CHATGPT_CODEX_RESPONSES_URL;
-        let mut options = catalog.models
+        let mut options = manager
+            .list_models(strategy)
+            .await
             .into_iter()
-            .filter(|model| model.visibility == ModelVisibility::List)
-            .filter(|model| chatgpt_auth || model.supported_in_api)
+            .filter(|model| model.show_in_picker)
             .map(|model| CodexModelOption {
-                id: model.slug,
+                id: model.model,
                 display_label: model.display_name,
                 source: "codex-models-manager".to_string(),
-                is_default: false,
+                is_default: model.is_default,
             })
             .collect::<Vec<_>>();
         options.sort_by(|left, right| right.is_default.cmp(&left.is_default).then(left.display_label.to_lowercase().cmp(&right.display_label.to_lowercase())));

@@ -503,10 +503,7 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
               ],
               if (modelOptionsUnavailable) ...[
                 const SizedBox(height: 14),
-                const _RuntimeFormNotice(
-                  message: 'Model options are unavailable. Refresh the runtime connection or fix Codex auth, then reopen Create session.',
-                  tone: _RuntimeFormNoticeTone.error,
-                ),
+                const _RuntimeFormNotice(message: 'Model options are still loading from the runtime. Reopen Create session after the next runtime update.', tone: _RuntimeFormNoticeTone.error),
               ],
               const SizedBox(height: 18),
               _RuntimeFormSection(
@@ -653,13 +650,7 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
     Navigator.of(context).pop();
   }
 
-  List<AgentRuntimeModelOption> _modelOptions() {
-    final seen = <String>{};
-    return widget.data.modelOptions.where((model) {
-      final id = model.id.trim();
-      return id.isNotEmpty && seen.add(id);
-    }).toList(growable: false);
-  }
+  List<AgentRuntimeModelOption> _modelOptions() => _runtimeModelOptions(widget.data, projects: widget.shell.projects);
 
   ConversationProject? _projectDefaults(String projectId) {
     for (final project in widget.shell.projects) {
@@ -840,12 +831,46 @@ class _RuntimeSettingsActionGroup extends StatelessWidget {
   }
 }
 
-List<AgentRuntimeModelOption> _runtimeModelOptions(AgentRuntimeWorkbenchData data) {
+List<AgentRuntimeModelOption> _runtimeModelOptions(AgentRuntimeWorkbenchData data, {List<ConversationProject> projects = const []}) {
   final seen = <String>{};
-  return data.modelOptions.where((model) {
+  final options = data.modelOptions.where((model) {
     final id = model.id.trim();
     return id.isNotEmpty && seen.add(id);
   }).toList(growable: false);
+  if (options.isNotEmpty) {
+    return options;
+  }
+  final fallback = <AgentRuntimeModelOption>[];
+  void addFallback(String? modelId, String source) {
+    final id = modelId?.trim() ?? '';
+    if (id.isEmpty || id == 'model unknown' || !seen.add(id)) {
+      return;
+    }
+    fallback.add(AgentRuntimeModelOption(id: id, displayLabel: _modelDisplayLabel(id), source: source, isDefault: fallback.isEmpty));
+  }
+
+  for (final project in projects) {
+    addFallback(project.defaultModel, 'project-default-model');
+  }
+  addFallback(data.roleAdmin.selectedDetail?.model, 'role-default-model');
+  return fallback;
+}
+
+String _modelDisplayLabel(String id) {
+  final trimmed = id.trim();
+  if (trimmed.isEmpty) {
+    return 'Model';
+  }
+  return trimmed
+      .split(RegExp(r'[-_\s]+'))
+      .where((part) => part.isNotEmpty)
+      .map((part) {
+        if (part.length <= 3 && part == part.toUpperCase()) {
+          return part;
+        }
+        return part[0].toUpperCase() + part.substring(1);
+      })
+      .join(' ');
 }
 
 String _defaultModelId(AgentRuntimeWorkbenchData data) {
@@ -983,7 +1008,7 @@ class _CreateProjectDialogState extends State<AgentRuntimeCreateProjectDialog> {
               if (_error != null) ...[const SizedBox(height: 14), _RuntimeFormNotice(message: _error!, tone: _RuntimeFormNoticeTone.error)],
               if (modelUnavailable) ...[
                 const SizedBox(height: 14),
-                const _RuntimeFormNotice(message: 'Model options are unavailable. Refresh the runtime connection or fix Codex auth, then reopen Create project.', tone: _RuntimeFormNoticeTone.error),
+                const _RuntimeFormNotice(message: 'Model options are still loading from the runtime. Reopen Create project after the next runtime update.', tone: _RuntimeFormNoticeTone.error),
               ],
               const SizedBox(height: 18),
               _RuntimeFormSection(
@@ -1275,7 +1300,7 @@ class _ProjectSettingsDialogState extends State<AgentRuntimeProjectSettingsDialo
               if (_error != null) ...[const SizedBox(height: 14), _RuntimeFormNotice(message: _error!, tone: _RuntimeFormNoticeTone.error)],
               if (modelUnavailable) ...[
                 const SizedBox(height: 14),
-                const _RuntimeFormNotice(message: 'Model options are unavailable. Refresh the runtime connection or fix Codex auth, then reopen Project settings.', tone: _RuntimeFormNoticeTone.error),
+                const _RuntimeFormNotice(message: 'Model options are still loading from the runtime. Reopen Project settings after the next runtime update.', tone: _RuntimeFormNoticeTone.error),
               ],
               const SizedBox(height: 18),
               _RuntimeFormSection(
