@@ -906,11 +906,14 @@ event count.
 Starlark scripts emit final tool output only through:
 
 ```python
-print(value)
+print("label:", value)
 ```
 
 Host API calls return values to the script, but they do not implicitly append to
 the final tool output. This keeps tool result packets deterministic and concise.
+`print(...)` accepts zero or more positional values, renders each value with the
+same visible-output stringification, joins multiple values with one ASCII space,
+and appends one visible output line per call.
 
 ## Output artifacts and bounded retrieval
 

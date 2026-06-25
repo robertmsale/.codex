@@ -833,6 +833,40 @@ void main() {
     expect(assistant.body, '**actual final response**');
   });
 
+  test('agent runtime RFC3339 timestamp maps to epoch seconds for local wall-clock labels', () {
+    final localWallClock = DateTime(2026, 6, 25, 12, 34);
+    final timestamp = localWallClock.toUtc().toIso8601String();
+    final entry = agentRuntimeChatEntryToChatEntryForTest(bindings.AgentRuntimeChatEntry(
+      id: 'turn:1:assistant',
+      author: 'Assistant',
+      displayLabel: 'Assistant',
+      timestamp: timestamp,
+      hasTimestamp: true,
+      body: 'timestamp check',
+      subtitle: 'completed',
+      kind: 'message',
+      status: 'completed',
+      processId: '',
+      hasProcessId: false,
+      command: '',
+      output: '',
+      imagePreviewBase64: '',
+      hasImagePreviewBase64: false,
+      imagePreviewContentType: '',
+      hasImagePreviewContentType: false,
+      imagePreviewError: '',
+      hasImagePreviewError: false,
+      deliveryState: 'delivered',
+      isStreaming: false,
+      isTool: false,
+    ));
+
+    final expectedEpochSeconds = localWallClock.millisecondsSinceEpoch ~/ 1000;
+    expect(entry.timestamp, expectedEpochSeconds);
+    expect(entry.timestamp, isNot(localWallClock.millisecondsSinceEpoch));
+    expect(formatLocalTimeLabel(entry.timestamp), '12:34 PM');
+  });
+
   test('agent runtime image artifacts map to shared chat image fields and full-size typed loading', () async {
     final sentRequests = <String, bindings.AgentRuntimeRequest>{};
     final controller = AgentRuntimeWorkbenchController(
@@ -2477,7 +2511,7 @@ void main() {
         status: 'completed',
         processId: 'process-1',
         hasProcessId: true,
-        command: 'output("ok")',
+        command: 'print("ok")',
         output: 'ok',
         deliveryState: 'delivered',
         isStreaming: false,
@@ -2587,7 +2621,7 @@ void main() {
           status: 'completed',
           processId: 'process-1',
           hasProcessId: true,
-          command: 'output("ok")',
+          command: 'print("ok")',
           output: 'ok',
           deliveryState: 'delivered',
           isStreaming: false,
