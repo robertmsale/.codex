@@ -334,6 +334,7 @@ pub struct AgentRuntimeApprovalCard {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeCommandRequestCard {
     pub id: String,
+    pub action_id: String,
     pub title: String,
     pub operation: String,
     pub status: String,
@@ -843,6 +844,7 @@ fn selected_session_control_plane(
         .filter(|request| request.final_project_key.as_deref() == session.project_key.as_deref() || request.scope_summary.as_deref().unwrap_or("").contains(selected_id))
         .map(|request| AgentRuntimeCommandRequestCard {
             id: request.id.clone(),
+            action_id: request.action_id.clone(),
             title: request.action_label.clone(),
             operation: request.operation.clone(),
             status: request.status.clone(),

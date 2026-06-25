@@ -248,7 +248,9 @@ class RobdexDesignLabHome extends StatelessWidget {
         onApproveCommandRequest: (_) {},
         onDenyCommandRequest: (_) {},
         onApplyCommandRequest: (_) {},
-        onSetRequirements: (_) {},
+        onShowCommand: (_) {},
+        onShowCommandRequest: (_) {},
+        onSetRequirements: (_, {required title, required key, required statement}) {},
       );
     }
     if (surface == 'agentRuntimeGlobalSettingsModal') {

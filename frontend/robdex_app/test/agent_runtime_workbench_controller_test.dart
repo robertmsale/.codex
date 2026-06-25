@@ -2163,23 +2163,31 @@ void main() {
             onCloseSession: (id) => actions.add('close:$id'),
             onArchiveSession: (id) => actions.add('archive:$id'),
             onForkSession: (id) => actions.add('fork:$id'),
-            onCompact: (_) {},
+            onCompact: (id) => actions.add('compact:$id'),
             onGrantGodMode: (_) {},
             onRevokeGodMode: (_) {},
-            onTerminateProcess: (_) {},
-            onFlushProcess: (_) {},
-            onInputProcess: (_, _) {},
-            onApprove: (_, _) {},
-            onDeny: (_, _) {},
-            onResumeApproval: (_) {},
-            onPreviewCommandRequest: (_) {},
+            onTerminateProcess: (handle) => actions.add('terminate:$handle'),
+            onFlushProcess: (handle) => actions.add('flush:$handle'),
+            onInputProcess: (handle, text) => actions.add('input:$handle:$text'),
+            onApprove: (id, reason) => actions.add('approve:$id:$reason'),
+            onDeny: (id, reason) => actions.add('deny:$id:$reason'),
+            onResumeApproval: (id) => actions.add('resume:$id'),
+            onPreviewCommandRequest: (id) => actions.add('preview:$id'),
             onApproveCommandRequest: (_) {},
             onDenyCommandRequest: (_) {},
             onApplyCommandRequest: (_) {},
-            onSetRequirements: (_) {},
+            onShowCommand: (id) => actions.add('showCommand:$id'),
+            onShowCommandRequest: (id) => actions.add('showRequest:$id'),
+            onSetRequirements: (id, {required title, required key, required statement}) => actions.add('requirements:$id:$title:$key:$statement'),
           ),
         ),
       );
+    }
+    Future<void> tapVisible(Finder finder) async {
+      await tester.ensureVisible(finder);
+      await tester.pumpAndSettle();
+      await tester.tap(finder);
+      await tester.pumpAndSettle();
     }
 
     await pumpDialog();
@@ -2199,6 +2207,16 @@ void main() {
     expect(saved!['worktreeRoot'], '/work/session/root');
     expect(saved!['project'], 'project-a');
     expect(saved!['role'], 'runtime-allow');
+    await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionControl.processInput')), 'ping');
+    await tapVisible(find.text('Send input'));
+    await tapVisible(find.text('Flush output'));
+    await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionControl.approvalReason')), 'Approved for test');
+    await tapVisible(find.widgetWithText(OutlinedButton, 'Approve').first);
+    await tapVisible(find.widgetWithText(OutlinedButton, 'Resume').last);
+    await tapVisible(find.widgetWithText(OutlinedButton, 'Preview'));
+    await tapVisible(find.widgetWithText(OutlinedButton, 'Show Command'));
+    await tapVisible(find.widgetWithText(OutlinedButton, 'View Details').last);
+    expect(actions, containsAll(['input:dev-server:ping', 'flush:dev-server', 'approve:approval-1:Approved for test', 'resume:approval-2', 'preview:registry-request-1', 'showCommand:cmd.registry.audit', 'showRequest:registry-request-1']));
 
     for (final key in ['closesession', 'archivesession', 'forksession']) {
       await pumpDialog();
@@ -2208,6 +2226,31 @@ void main() {
       await tester.pumpAndSettle();
     }
     expect(actions, containsAll(['close:session-a', 'archive:session-a', 'fork:session-a']));
+    await pumpDialog();
+    await tester.tap(find.text('Set Requirements…'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'Requirement statement'), 'Prove the selected-session control plane.');
+    await tester.tap(find.widgetWithText(FilledButton, 'Set Requirements'));
+    await tester.pumpAndSettle();
+    expect(actions, contains('requirements:session-a:Session Requirements:owner_requirement:Prove the selected-session control plane.'));
+  });
+
+  testWidgets('production host opens full-screen session control plane from toolbar', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = AgentRuntimeWorkbenchController(requestSink: (_, _) {});
+    addTearDown(controller.dispose);
+    controller.setViewDataForTest(mockAgentRuntimeConnected, shell: agentRuntimeConversationShellData(mockAgentRuntimeConnected));
+
+    await tester.pumpWidget(MaterialApp(home: AgentRuntimeWorkbenchHost(controller: controller)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.sessionSettings')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AgentRuntimeSessionControlPlane), findsOneWidget);
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('Session Settings'), findsOneWidget);
+    expect(find.text('Processes (2)'), findsOneWidget);
   });
 
   testWidgets('typed selected conversation renders chat bubbles and excludes raw runtime event names', (tester) async {

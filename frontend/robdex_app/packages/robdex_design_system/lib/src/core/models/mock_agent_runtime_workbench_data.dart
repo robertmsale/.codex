@@ -878,6 +878,7 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
     commandRequests: [
       AgentRuntimeCommandRequestCard(
         id: 'registry-request-1',
+        actionId: 'cmd.registry.audit',
         title: 'Search audit',
         operation: 'Approve command',
         status: 'pending',

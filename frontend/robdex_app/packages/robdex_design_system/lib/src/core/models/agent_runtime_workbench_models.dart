@@ -530,10 +530,10 @@ class AgentRuntimeApprovalCard {
 }
 
 class AgentRuntimeCommandRequestCard {
-  const AgentRuntimeCommandRequestCard({required this.id, required this.title, required this.operation, required this.status, required this.scopeSummary, required this.policySummary, required this.previewStatus, required this.applyStatus, required this.canPreview, required this.canDecide, required this.canApply, required this.commandSummary});
-  final String id, title, operation, status, scopeSummary, policySummary, previewStatus, applyStatus, commandSummary;
+  const AgentRuntimeCommandRequestCard({required this.id, required this.actionId, required this.title, required this.operation, required this.status, required this.scopeSummary, required this.policySummary, required this.previewStatus, required this.applyStatus, required this.canPreview, required this.canDecide, required this.canApply, required this.commandSummary});
+  final String id, actionId, title, operation, status, scopeSummary, policySummary, previewStatus, applyStatus, commandSummary;
   final bool canPreview, canDecide, canApply;
-  factory AgentRuntimeCommandRequestCard.fromJson(Map<String, dynamic> json) => AgentRuntimeCommandRequestCard(id: '${json['id'] ?? ''}', title: '${json['title'] ?? ''}', operation: '${json['operation'] ?? ''}', status: '${json['status'] ?? ''}', scopeSummary: '${json['scopeSummary'] ?? ''}', policySummary: '${json['policySummary'] ?? ''}', previewStatus: '${json['previewStatus'] ?? ''}', applyStatus: '${json['applyStatus'] ?? ''}', canPreview: json['canPreview'] == true, canDecide: json['canDecide'] == true, canApply: json['canApply'] == true, commandSummary: '${json['commandSummary'] ?? ''}');
+  factory AgentRuntimeCommandRequestCard.fromJson(Map<String, dynamic> json) => AgentRuntimeCommandRequestCard(id: '${json['id'] ?? ''}', actionId: '${json['actionId'] ?? ''}', title: '${json['title'] ?? ''}', operation: '${json['operation'] ?? ''}', status: '${json['status'] ?? ''}', scopeSummary: '${json['scopeSummary'] ?? ''}', policySummary: '${json['policySummary'] ?? ''}', previewStatus: '${json['previewStatus'] ?? ''}', applyStatus: '${json['applyStatus'] ?? ''}', canPreview: json['canPreview'] == true, canDecide: json['canDecide'] == true, canApply: json['canApply'] == true, commandSummary: '${json['commandSummary'] ?? ''}');
 }
 
 class AgentRuntimeRequirementsReviewPanel {

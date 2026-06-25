@@ -1890,6 +1890,7 @@ fn typed_selected_session_control_plane(view: robdex_agent_runtime::rinf_transpo
         }).collect(),
         command_requests: view.command_requests.into_iter().map(|request| AgentRuntimeCommandRequestCard {
             id: request.id,
+            action_id: request.action_id,
             title: request.title,
             operation: request.operation,
             status: request.status,
