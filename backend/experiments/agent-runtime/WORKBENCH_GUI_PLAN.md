@@ -6,10 +6,14 @@ The connected Agent Runtime product surface now uses the canonical Robdex
 Workbench pattern as a chat-centered product shell. The shell
 presents a brushed-metal left project/session rail, the shared `ChatTimeline` in
 the center, the shared `ComposerPanel` for selected-session messages, and
-toolbar-opened modal or sheet surfaces for Session, History, Diagnostics,
-Compaction, Statistics, Process Manager, Settings, Role Admin, Workflow Memory,
-Approvals, and Command Registry. The connected layout must not mount a permanent
-operations operations pane. The login/setup screen remains the disconnected entry
+toolbar-opened modal or sheet surfaces for History, Diagnostics, Statistics,
+Settings, Role Admin, Workflow Memory, and global Command Registry inventory.
+Selected-session settings and controls use the full-screen shared design-system
+`AgentRuntimeSessionControlPlane`. That control plane folds in selected-session
+identity/settings, lifecycle, compaction, God Mode, current managed processes,
+selected-session approvals, selected-session command requests, and Requirements
+Review actions. The connected layout must not mount a permanent operations
+operations pane. The login/setup screen remains the disconnected entry
 point. Runtime projection, discovery, project, role, model, workflow-memory, and
 operation decisions remain Rust-owned; Dart assembles the shared shell, sends
 typed Rinf intents, and keeps only widget-local draft, selection, and connection

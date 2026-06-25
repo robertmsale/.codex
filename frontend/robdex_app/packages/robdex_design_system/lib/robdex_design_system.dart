@@ -9,6 +9,7 @@ export 'src/core/models/thread_stats_models.dart';
 export 'src/core/models/workbench_models.dart';
 export 'src/core/models/workbench_view_data.dart';
 export 'src/features/agent_runtime/agent_runtime_conversation_shell_adapter.dart';
+export 'src/features/agent_runtime/agent_runtime_session_control_plane.dart';
 export 'src/features/agent_runtime/agent_runtime_workbench.dart';
 export 'src/features/chat/chat_timeline.dart';
 export 'src/features/composer/composer_panel.dart';

@@ -305,15 +305,35 @@ class _AgentRuntimeWorkbenchHostState extends State<AgentRuntimeWorkbenchHost> {
   }
 
   Future<void> _showSessionSettingsModal(BuildContext context, ConversationShellData shell, AgentRuntimeWorkbenchData data) {
-    return showDialog<void>(
-      context: context,
-      builder: (context) => AgentRuntimeSessionSettingsDialog(
-        shell: shell,
-        data: data,
-        onSave: _controller.updateSessionSettings,
-        onClose: _controller.closeSession,
-        onArchive: _controller.archiveSession,
-        onFork: _controller.forkSession,
+    return Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (context) {
+          final control = data.selectedSessionControlPlane;
+          final sessionId = control?.sessionId ?? shell.selectedSessionId ?? '';
+          return AgentRuntimeSessionControlPlane(
+            data: data,
+            onClose: () => Navigator.of(context).pop(),
+            onSave: _controller.updateSessionSettings,
+            onCloseSession: _controller.closeSession,
+            onArchiveSession: _controller.archiveSession,
+            onForkSession: _controller.forkSession,
+            onCompact: _controller.compactSessionById,
+            onGrantGodMode: _controller.grantGodModeById,
+            onRevokeGodMode: _controller.revokeGodModeById,
+            onTerminateProcess: _controller.terminateProcess,
+            onFlushProcess: _controller.flushProcess,
+            onInputProcess: _controller.inputProcess,
+            onApprove: _controller.approveApprovalById,
+            onDeny: _controller.denyApprovalById,
+            onResumeApproval: _controller.resumeApprovalById,
+            onPreviewCommandRequest: (requestId) => _controller.previewCommandRegistryRequestById(requestId, sessionId),
+            onApproveCommandRequest: (requestId) => _controller.approveCommandRegistryRequestById(requestId, sessionId),
+            onDenyCommandRequest: (requestId) => _controller.denyCommandRegistryRequestById(requestId, sessionId),
+            onApplyCommandRequest: (requestId) => _controller.applyCommandRegistryRequestById(requestId, sessionId),
+            onSetRequirements: _controller.setRequirementsForSession,
+          );
+        },
       ),
     );
   }
@@ -334,6 +354,15 @@ class _AgentRuntimeToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hasSessionSurface = surfaces.any((surface) => surface.surfaceId == 'session');
+    final menuSurfaces = surfaces.where((surface) => !const {
+          'session',
+          'processManager',
+          'approvals',
+          'commandRegistry',
+          'compaction',
+          'requirementsReview',
+          'godMode',
+        }.contains(surface.surfaceId)).toList(growable: false);
     return Wrap(
       spacing: 6,
       crossAxisAlignment: WrapCrossAlignment.center,
@@ -360,7 +389,7 @@ class _AgentRuntimeToolbar extends StatelessWidget {
           key: const ValueKey('agentRuntime.toolbar.sections'),
           tooltip: 'Runtime operation sections',
           onSelected: onOpenSurface,
-          itemBuilder: (context) => [for (final surface in surfaces) PopupMenuItem(value: surface.surfaceId, child: Text(surface.title))],
+          itemBuilder: (context) => [for (final surface in menuSurfaces) PopupMenuItem(value: surface.surfaceId, child: Text(surface.title))],
           icon: const Icon(Icons.more_horiz_rounded, size: 18),
         ),
       ],
@@ -786,24 +815,6 @@ class _RuntimeReadOnlyMetadata extends StatelessWidget {
   }
 }
 
-class _RuntimeSwitchRow extends StatelessWidget {
-  const _RuntimeSwitchRow({required this.label, required this.value, required this.onChanged});
-
-  final String label;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return SwitchListTile(
-      contentPadding: EdgeInsets.zero,
-      value: value,
-      onChanged: onChanged,
-      title: Text(label),
-    );
-  }
-}
-
 class _RuntimeSettingsActionGroup extends StatelessWidget {
   const _RuntimeSettingsActionGroup({required this.title, required this.actions});
 
@@ -875,34 +886,6 @@ DropdownButtonFormField<String> _roleDropdown({
     isExpanded: true,
     decoration: _runtimeInputDecoration(hintText: roles.isEmpty ? 'No roles available' : 'Choose role'),
   );
-}
-
-DropdownButtonFormField<String> _projectDropdown({
-  required Key key,
-  required List<ConversationProject> projects,
-  required String value,
-  required ValueChanged<String> onChanged,
-}) {
-  return DropdownButtonFormField<String>(
-    key: key,
-    initialValue: projects.any((project) => project.id == value) ? value : null,
-    items: [for (final project in projects) DropdownMenuItem(value: project.id, child: Text(project.title, overflow: TextOverflow.ellipsis))],
-    onChanged: projects.isEmpty ? null : (next) => onChanged(next ?? ''),
-    isExpanded: true,
-    decoration: _runtimeInputDecoration(hintText: projects.isEmpty ? 'No projects available' : 'Choose project'),
-  );
-}
-
-String? _projectIdForSession(List<ConversationProject> projects, ConversationSession? session) {
-  if (session == null) {
-    return null;
-  }
-  for (final project in projects) {
-    if (project.title == session.subtitle || project.id == session.subtitle) {
-      return project.id;
-    }
-  }
-  return null;
 }
 
 enum _RuntimeFormNoticeTone { error }
@@ -1354,195 +1337,6 @@ class _ProjectSettingsDialogState extends State<AgentRuntimeProjectSettingsDialo
       defaultWorktreeRoot: _worktreeRoot.text,
       defaultRoleId: _role,
       defaultModel: _model,
-    );
-    _popDialogIfPresent(context);
-  }
-}
-
-class AgentRuntimeSessionSettingsDialog extends StatefulWidget {
-  const AgentRuntimeSessionSettingsDialog({
-    super.key,
-    required this.shell,
-    required this.data,
-    required this.onSave,
-    required this.onClose,
-    required this.onArchive,
-    required this.onFork,
-  });
-
-  final ConversationShellData shell;
-  final AgentRuntimeWorkbenchData data;
-  final void Function({
-    required String sessionId,
-    required String project,
-    required String role,
-    required String model,
-    required String workdir,
-    required String worktreeRoot,
-    required String title,
-    required String name,
-    required bool tracked,
-  }) onSave;
-  final ValueChanged<String> onClose;
-  final ValueChanged<String> onArchive;
-  final ValueChanged<String> onFork;
-
-  @override
-  State<AgentRuntimeSessionSettingsDialog> createState() => _AgentRuntimeSessionSettingsDialogState();
-}
-
-class _AgentRuntimeSessionSettingsDialogState extends State<AgentRuntimeSessionSettingsDialog> {
-  late final ConversationSession? _session;
-  late String _project;
-  late String _role;
-  late String _model;
-  late final TextEditingController _title;
-  late final TextEditingController _name;
-  late final TextEditingController _workdir;
-  late final TextEditingController _worktreeRoot;
-  bool _tracked = true;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    ConversationSession? selected;
-    for (final session in widget.shell.sessions) {
-      if (session.id == widget.shell.selectedSessionId) {
-        selected = session;
-        break;
-      }
-    }
-    _session = selected;
-    final projectChoices = widget.shell.projects.where((project) => project.id != '__all__').toList(growable: false);
-    _project = _projectIdForSession(projectChoices, selected) ?? (projectChoices.any((project) => project.id == '__unassigned__') ? '__unassigned__' : (projectChoices.isNotEmpty ? projectChoices.first.id : '__unassigned__'));
-    final roles = widget.data.roleAdmin.rows.where((role) => role.id.isNotEmpty).toList(growable: false);
-    final sessionRole = _session?.rolePresentation.roleId ?? '';
-    _role = roles.any((role) => role.id == sessionRole) ? sessionRole : (roles.isNotEmpty ? roles.first.id : '');
-    _model = _defaultModelId(widget.data);
-    _title = TextEditingController(text: _session?.title ?? '');
-    _name = TextEditingController(text: (_session?.title ?? '').toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-').replaceAll(RegExp(r'^-|-$'), ''));
-    _workdir = TextEditingController(text: '.');
-    _worktreeRoot = TextEditingController(text: '.');
-  }
-
-  @override
-  void dispose() {
-    _title.dispose();
-    _name.dispose();
-    _workdir.dispose();
-    _worktreeRoot.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final sessionId = widget.shell.selectedSessionId ?? '';
-    final projects = widget.shell.projects.where((project) => project.id.isNotEmpty && project.id != '__all__').toList(growable: false);
-    final roles = widget.data.roleAdmin.rows.where((role) => role.id.isNotEmpty).toList(growable: false);
-    final modelOptions = _runtimeModelOptions(widget.data);
-    final modelUnavailable = modelOptions.isEmpty;
-    return AlertDialog(
-      title: const Text('Session settings'),
-      contentPadding: const EdgeInsets.fromLTRB(24, 12, 24, 10),
-      content: SizedBox(
-        width: 720,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _RuntimeReadOnlyMetadata(label: 'Selected session', value: sessionId.isEmpty ? 'No selected session' : 'Session metadata is read-only'),
-              if (_error != null) ...[const SizedBox(height: 14), _RuntimeFormNotice(message: _error!, tone: _RuntimeFormNoticeTone.error)],
-              if (modelUnavailable) ...[
-                const SizedBox(height: 14),
-                const _RuntimeFormNotice(message: 'Model options are unavailable. Refresh the runtime connection or fix Codex auth, then reopen Session settings.', tone: _RuntimeFormNoticeTone.error),
-              ],
-              const SizedBox(height: 18),
-              _RuntimeFormSection(
-                title: 'Session identity',
-                description: 'Title is editable. Session name is stable metadata kept with the existing session.',
-                children: [
-                  _RuntimeFormGrid(children: [
-                    _RuntimeLabeledField(label: 'Title', child: TextField(key: const ValueKey('agentRuntime.sessionSettings.title'), controller: _title, decoration: _runtimeInputDecoration(hintText: 'Session title'))),
-                    _RuntimeReadOnlyMetadata(label: 'Session name', value: _name.text.isEmpty ? 'No stored name' : _name.text),
-                  ]),
-                ],
-              ),
-              const SizedBox(height: 16),
-              _RuntimeFormSection(
-                title: 'Runtime configuration',
-                description: 'Choose the project, role, and model used for future messages.',
-                children: [
-                  _RuntimeFormGrid(children: [
-                    _RuntimeLabeledField(label: 'Project', child: _projectDropdown(key: const ValueKey('agentRuntime.sessionSettings.project'), projects: projects, value: _project, onChanged: (value) => setState(() => _project = value))),
-                    _RuntimeLabeledField(label: 'Role', child: _roleDropdown(key: const ValueKey('agentRuntime.sessionSettings.role'), roles: roles, value: _role, onChanged: (value) => setState(() => _role = value))),
-                    _RuntimeLabeledField(label: 'Model', child: _modelDropdown(key: const ValueKey('agentRuntime.sessionSettings.model'), options: modelOptions, value: _model, onChanged: (value) => setState(() => _model = value))),
-                  ]),
-                ],
-              ),
-              const SizedBox(height: 16),
-              _RuntimeFormSection(
-                title: 'Workspace',
-                description: 'Free-form paths stay editable because they are filesystem locations.',
-                children: [
-                  _RuntimeFormGrid(children: [
-                    _RuntimeLabeledField(label: 'Workdir', child: TextField(key: const ValueKey('agentRuntime.sessionSettings.workdir'), controller: _workdir, decoration: _runtimeInputDecoration(hintText: '/path/to/workdir'))),
-                    _RuntimeLabeledField(label: 'Worktree root', child: TextField(key: const ValueKey('agentRuntime.sessionSettings.worktreeRoot'), controller: _worktreeRoot, decoration: _runtimeInputDecoration(hintText: '/path/to/worktree'))),
-                  ]),
-                ],
-              ),
-              const SizedBox(height: 12),
-              _RuntimeSwitchRow(label: 'Tracked', value: _tracked, onChanged: (value) => setState(() => _tracked = value)),
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
-        TextButton(onPressed: sessionId.isEmpty ? null : () => _lifecycle(widget.onClose), child: const Text('Close session')),
-        TextButton(onPressed: sessionId.isEmpty ? null : () => _lifecycle(widget.onArchive), child: const Text('Archive session')),
-        TextButton(onPressed: sessionId.isEmpty ? null : () => _lifecycle(widget.onFork), child: const Text('Fork session')),
-        FilledButton(onPressed: sessionId.isEmpty || modelUnavailable ? null : _submit, child: const Text('Save')),
-      ],
-    );
-  }
-
-  void _lifecycle(ValueChanged<String> action) {
-    final sessionId = widget.shell.selectedSessionId;
-    if (sessionId == null || sessionId.isEmpty) {
-      return;
-    }
-    action(sessionId);
-    _popDialogIfPresent(context);
-  }
-
-  void _submit() {
-    final sessionId = widget.shell.selectedSessionId;
-    final missing = <String>[
-      if (sessionId == null || sessionId.isEmpty) 'session',
-      if (_project.trim().isEmpty) 'project',
-      if (_role.trim().isEmpty) 'role',
-      if (_model.trim().isEmpty) 'model',
-      if (_title.text.trim().isEmpty) 'title',
-      if (_name.text.trim().isEmpty) 'name',
-      if (_workdir.text.trim().isEmpty) 'workdir',
-      if (_worktreeRoot.text.trim().isEmpty) 'worktree root',
-    ];
-    if (missing.isNotEmpty) {
-      setState(() => _error = 'Required: ${missing.join(', ')}');
-      return;
-    }
-    widget.onSave(
-      sessionId: sessionId!,
-      project: _project,
-      role: _role,
-      model: _model,
-      workdir: _workdir.text,
-      worktreeRoot: _worktreeRoot.text,
-      title: _title.text,
-      name: _name.text,
-      tracked: _tracked,
     );
     _popDialogIfPresent(context);
   }

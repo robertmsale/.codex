@@ -2125,105 +2125,86 @@ void main() {
     expect(saved, isNull);
   });
 
-  testWidgets('Session Settings modal saves fields and dispatches lifecycle actions', (tester) async {
+  testWidgets('Session control plane saves projected fields and dispatches lifecycle actions', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1200, 1000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final actions = <String>[];
     Map<String, Object?>? saved;
-    const shell = ConversationShellData(
-      appTitle: 'Agent Runtime',
-      connectionLabel: 'Runtime healthy',
-      projects: [
-        ConversationProject(id: '__unassigned__', title: 'Unassigned'),
-        ConversationProject(id: 'project-a', title: 'Project A'),
-      ],
-      sessions: [
-        ConversationSession(
-          id: 'session-a',
-          title: 'Session Alpha',
-          subtitle: 'Project A',
-          role: 'Runtime',
-          selected: true,
-          rolePresentation: ConversationRolePresentation(
-            roleId: 'runtime-allow',
-            displayLabel: 'Runtime Allow',
-            shortLabel: 'RA',
-            iconKey: 'runtime',
-            tone: 'success',
-            statusLabel: 'open',
-            description: 'Runtime role',
-          ),
-        ),
-      ],
-      selectedSessionId: 'session-a',
-      timelineTitle: 'Selected session',
-      entries: [],
-      composerEnabled: true,
-      isRunning: false,
-      detailTitle: 'Operations',
-      detailSections: [],
-    );
 
     Future<void> pumpDialog() async {
       await tester.pumpWidget(
         MaterialApp(
-          home: Scaffold(
-            body: AgentRuntimeSessionSettingsDialog(
-              shell: shell,
-              data: mockAgentRuntimeConnected,
-              onSave: ({
-                required sessionId,
-                required project,
-                required role,
-                required model,
-                required workdir,
-                required worktreeRoot,
-                required title,
-                required name,
-                required tracked,
-              }) {
-                saved = {
-                  'sessionId': sessionId,
-                  'project': project,
-                  'role': role,
-                  'model': model,
-                  'workdir': workdir,
-                  'worktreeRoot': worktreeRoot,
-                  'title': title,
-                  'name': name,
-                  'tracked': tracked,
-                };
-              },
-              onClose: (id) => actions.add('close:$id'),
-              onArchive: (id) => actions.add('archive:$id'),
-              onFork: (id) => actions.add('fork:$id'),
-            ),
+          home: AgentRuntimeSessionControlPlane(
+            data: mockAgentRuntimeConnected,
+            onClose: () {},
+            onSave: ({
+              required sessionId,
+              required project,
+              required role,
+              required model,
+              required workdir,
+              required worktreeRoot,
+              required title,
+              required name,
+              required tracked,
+            }) {
+              saved = {
+                'sessionId': sessionId,
+                'project': project,
+                'role': role,
+                'model': model,
+                'workdir': workdir,
+                'worktreeRoot': worktreeRoot,
+                'title': title,
+                'name': name,
+                'tracked': tracked,
+              };
+            },
+            onCloseSession: (id) => actions.add('close:$id'),
+            onArchiveSession: (id) => actions.add('archive:$id'),
+            onForkSession: (id) => actions.add('fork:$id'),
+            onCompact: (_) {},
+            onGrantGodMode: (_) {},
+            onRevokeGodMode: (_) {},
+            onTerminateProcess: (_) {},
+            onFlushProcess: (_) {},
+            onInputProcess: (_, _) {},
+            onApprove: (_, _) {},
+            onDeny: (_, _) {},
+            onResumeApproval: (_) {},
+            onPreviewCommandRequest: (_) {},
+            onApproveCommandRequest: (_) {},
+            onDenyCommandRequest: (_) {},
+            onApplyCommandRequest: (_) {},
+            onSetRequirements: (_) {},
           ),
         ),
       );
     }
 
     await pumpDialog();
-    expect(find.widgetWithText(TextField, 'Session'), findsNothing);
-    expect(find.widgetWithText(TextField, 'Name'), findsNothing);
-    expect(find.byKey(const ValueKey('agentRuntime.sessionSettings.model')), findsOneWidget);
-    await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionSettings.title')), 'Updated Session');
-    await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionSettings.workdir')), '/work/session');
-    await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionSettings.worktreeRoot')), '/work/session/root');
-    await tester.tap(find.text('Save'));
+    expect(find.text('Session Settings'), findsOneWidget);
+    expect(find.text('Processes (2)'), findsOneWidget);
+    expect(find.text('Approve command execution'), findsOneWidget);
+    await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionControl.title')), 'Updated Session');
+    await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionControl.workdir')), '/work/session');
+    await tester.enterText(find.byKey(const ValueKey('agentRuntime.sessionControl.worktreeroot')), '/work/session/root');
+    await tester.tap(find.text('Save changes'));
     await tester.pumpAndSettle();
     expect(saved!['sessionId'], 'session-a');
     expect(saved!['title'], 'Updated Session');
-    expect(saved!['name'], 'session-alpha');
-    expect(saved!['model'], mockAgentRuntimeConnected.modelOptions.single.id);
+    expect(saved!['name'], 'runtime-validation');
+    expect(saved!['model'], 'codex-live-model');
     expect(saved!['workdir'], '/work/session');
     expect(saved!['worktreeRoot'], '/work/session/root');
     expect(saved!['project'], 'project-a');
     expect(saved!['role'], 'runtime-allow');
 
-    for (final label in ['Close session', 'Archive session', 'Fork session']) {
+    for (final key in ['closesession', 'archivesession', 'forksession']) {
       await pumpDialog();
-      tester.widget<TextButton>(find.widgetWithText(TextButton, label)).onPressed!();
+      final finder = find.byKey(ValueKey('agentRuntime.sessionControl.$key'));
+      await tester.ensureVisible(finder);
+      await tester.tap(finder);
       await tester.pumpAndSettle();
     }
     expect(actions, containsAll(['close:session-a', 'archive:session-a', 'fork:session-a']));
@@ -2620,12 +2601,26 @@ void main() {
     controller.resumeApproval(approval);
     controller.approveCommandRegistryRequest(request, 'session-2', registryDecision);
     controller.applyCommandRegistryRequest(request, 'session-2');
+    controller.denyApprovalById('approval-2', 'No');
+    controller.previewCommandRegistryRequestById('registry-request-2', 'session-2');
+    controller.denyCommandRegistryRequestById('registry-request-3', 'session-2');
+    controller.compactSessionById('session-2');
+    controller.grantGodModeById('session-2');
+    controller.revokeGodModeById('session-2');
+    controller.setRequirementsForSession('session-2');
 
-    expect(sentRequests, hasLength(4));
+    expect(sentRequests, hasLength(11));
     expect((sentRequests[0] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationDecideApproval>());
     expect((sentRequests[1] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationResumeApproval>());
     expect((sentRequests[2] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationDecideCommandRegistryRequest>());
     expect((sentRequests[3] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationApplyCommandRegistryRequest>());
+    expect((sentRequests[4] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationDecideApproval>());
+    expect((sentRequests[5] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationPreviewCommandRegistryRequest>());
+    expect((sentRequests[6] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationDecideCommandRegistryRequest>());
+    expect((sentRequests[7] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationCompactSession>());
+    expect((sentRequests[8] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationGrantGodMode>());
+    expect((sentRequests[9] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationRevokeGodMode>());
+    expect((sentRequests[10] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationSetRequirements>());
   });
 
   test('imported remote profile typed signals are stable generated intents', () {

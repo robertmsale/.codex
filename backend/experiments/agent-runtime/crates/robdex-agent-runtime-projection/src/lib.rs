@@ -88,6 +88,8 @@ pub struct SelectedSessionDetail {
     pub role_id: Option<String>,
     pub role_version: Option<String>,
     pub project_key: Option<String>,
+    #[serde(default)]
+    pub active_model: Option<String>,
     pub workdir: String,
     pub worktree_root: Option<String>,
     pub title: Option<String>,
@@ -122,6 +124,35 @@ pub struct SelectedSessionDetail {
     pub tooling_requests: Vec<Value>,
     #[serde(default)]
     pub requirements_review: Option<RequirementsReviewSummary>,
+    #[serde(default)]
+    pub managed_processes: Vec<ManagedProcessSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedProcessSummary {
+    pub id: String,
+    pub handle: String,
+    pub turn_id: Option<String>,
+    pub binary_name: String,
+    #[serde(default)]
+    pub argv: Vec<String>,
+    pub command_label: String,
+    pub cwd: String,
+    pub status: String,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub os_pid: Option<i64>,
+    pub stdin_policy: String,
+    pub end_of_turn_behavior: String,
+    pub end_of_session_behavior: String,
+    pub output_artifacts: Vec<Value>,
+    pub latest_output_summary: Option<String>,
+    pub can_terminate: bool,
+    pub can_flush: bool,
+    pub can_input: bool,
+    #[serde(default)]
+    pub metadata: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1752,6 +1783,7 @@ mod tests {
             role_id: Some("role".to_string()),
             role_version: Some("1".to_string()),
             project_key: None,
+            active_model: None,
             workdir: ".".to_string(),
             worktree_root: None,
             title: Some("selected".to_string()),
@@ -1776,6 +1808,7 @@ mod tests {
             running_servers: Vec::new(),
             tooling_requests: Vec::new(),
             requirements_review: None,
+            managed_processes: Vec::new(),
         });
         projection.apply_delta(delta(1, RuntimeDeltaKind::SessionUpsert { session: session("session-1") }));
         projection.apply_delta(delta(2, RuntimeDeltaKind::SessionArchive {
@@ -1808,6 +1841,7 @@ mod tests {
             role_id: Some("role".to_string()),
             role_version: Some("1".to_string()),
             project_key: None,
+            active_model: None,
             workdir: ".".to_string(),
             worktree_root: None,
             title: Some("selected".to_string()),
@@ -1832,6 +1866,7 @@ mod tests {
             running_servers: Vec::new(),
             tooling_requests: Vec::new(),
             requirements_review: None,
+            managed_processes: Vec::new(),
         };
         projection.apply_delta(delta(1, RuntimeDeltaKind::SelectedSessionReplace { session: Some(detail.clone()) }));
         assert_eq!(projection.selected_session, Some(detail));
@@ -1845,6 +1880,7 @@ mod tests {
             role_id: Some("role".to_string()),
             role_version: Some("1".to_string()),
             project_key: None,
+            active_model: None,
             workdir: ".".to_string(),
             worktree_root: None,
             title: Some("selected".to_string()),
@@ -1869,6 +1905,7 @@ mod tests {
             running_servers: Vec::new(),
             tooling_requests: Vec::new(),
             requirements_review: None,
+            managed_processes: Vec::new(),
         });
         let summary = RequirementsReviewSummary {
             active: true,

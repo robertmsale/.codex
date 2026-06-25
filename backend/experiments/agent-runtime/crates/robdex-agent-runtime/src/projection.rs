@@ -1,7 +1,7 @@
 use anyhow::Result;
 use robdex_agent_runtime_projection::{
     timeline_by_sequence, timeline_item_id, AgentRuntimeChatEntry, CommandRegistryRequestSummary,
-    CommandRegistrySummary, PendingApprovalSummary, ProjectSummary, RequirementsPacketSummary,
+    CommandRegistrySummary, ManagedProcessSummary, PendingApprovalSummary, ProjectSummary, RequirementsPacketSummary,
     RequirementsReviewSummary, RoleSummary, RuntimeDelta, RuntimeStatistics, RuntimeDeltaKind,
     RuntimeProjection, SelectedSessionDetail, ServerStatusProjection, SessionListItem, TimelineItem,
     WorkflowMemoryEventSummary, WorkflowMemorySummary,
@@ -499,7 +499,9 @@ async fn selected_session_detail(
         let requirements = crate::requirements::status(pool, session_id).await?;
         map.insert("requirementsReview".to_string(), serde_json::to_value(&requirements).unwrap_or(serde_json::Value::Null));
     }
+    let active_model = metadata.get("model").and_then(Value::as_str).map(str::to_string);
     let requirements_review = requirements_review_summary(pool, session_id).await?;
+    let managed_processes = selected_managed_processes(pool, session_id).await?;
     let active_turn_id = crate::db::active_turn_id(pool, session_id).await?.map(|id| id.to_string());
     let (queued_submitted_input_count, applied_steering_count, submit_disposition, submit_status) =
         crate::db::submitted_input_counts(pool, session_id).await?;
@@ -603,6 +605,7 @@ async fn selected_session_detail(
         role_id: row.get("role_id"),
         role_version: row.get("role_version"),
         project_key: row.get("project_key"),
+        active_model,
         workdir: row.get("workdir"),
         worktree_root: row.get("worktree_root"),
         title: row.get("title"),
@@ -627,7 +630,104 @@ async fn selected_session_detail(
         running_servers,
         tooling_requests,
         requirements_review,
+        managed_processes,
     }))
+}
+
+async fn selected_managed_processes(pool: &PgPool, session_id: Uuid) -> Result<Vec<ManagedProcessSummary>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, handle, starting_turn_id, binary_name, argv, cwd, os_pid, status, start_time, end_time,
+               end_of_turn_behavior, end_of_session_behavior, metadata
+        FROM managed_processes
+        WHERE session_id = $1
+        ORDER BY
+            CASE status WHEN 'running' THEN 0 WHEN 'starting' THEN 1 WHEN 'lost' THEN 2 ELSE 3 END,
+            start_time DESC,
+            id ASC
+        LIMIT 50
+        "#,
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+    let mut processes = Vec::new();
+    for row in rows {
+        let id: Uuid = row.get("id");
+        let argv_value: Value = row.get("argv");
+        let argv = argv_value
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let binary_name: String = row.get("binary_name");
+        let command_label = std::iter::once(binary_name.clone())
+            .chain(argv.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let artifact_rows = sqlx::query(
+            "SELECT id, stream, byte_count, line_count, created_at FROM execution_output_artifacts WHERE process_id=$1 ORDER BY created_at DESC LIMIT 4",
+        )
+        .bind(id)
+        .fetch_all(pool)
+        .await?;
+        let mut latest_output_summary = None;
+        let output_artifacts = artifact_rows
+            .into_iter()
+            .map(|artifact| {
+                let stream: String = artifact.get("stream");
+                let byte_count: i64 = artifact.get("byte_count");
+                let line_count: i64 = artifact.get("line_count");
+                if latest_output_summary.is_none() {
+                    latest_output_summary = Some(format!("{stream}: {line_count} lines, {byte_count} bytes"));
+                }
+                json!({
+                    "artifactId": artifact.get::<Uuid, _>("id"),
+                    "stream": stream,
+                    "byteCount": byte_count,
+                    "lineCount": line_count,
+                    "createdAt": optional_time(Some(artifact.get::<chrono::DateTime<chrono::Utc>, _>("created_at"))),
+                })
+            })
+            .collect::<Vec<_>>();
+        let status: String = row.get("status");
+        let metadata: Value = row.get("metadata");
+        let stdin_policy = metadata
+            .get("stdinPolicy")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| metadata.get("stdin_policy").and_then(Value::as_str).unwrap_or("none"))
+            .to_string();
+        let running = matches!(status.as_str(), "running" | "starting");
+        let can_input = running && stdin_policy != "none";
+        processes.push(ManagedProcessSummary {
+            id: id.to_string(),
+            handle: row.get("handle"),
+            turn_id: row.get::<Option<Uuid>, _>("starting_turn_id").map(|id| id.to_string()),
+            binary_name,
+            argv,
+            command_label,
+            cwd: row.get("cwd"),
+            status,
+            started_at: optional_time(Some(row.get::<chrono::DateTime<chrono::Utc>, _>("start_time"))),
+            ended_at: optional_time(row.get("end_time")),
+            os_pid: row.get("os_pid"),
+            stdin_policy,
+            end_of_turn_behavior: row.get("end_of_turn_behavior"),
+            end_of_session_behavior: row.get("end_of_session_behavior"),
+            output_artifacts,
+            latest_output_summary,
+            can_terminate: running,
+            can_flush: true,
+            can_input,
+            metadata,
+        });
+    }
+    Ok(processes)
 }
 
 pub async fn requirements_review_summary(pool: &PgPool, session_id: Uuid) -> Result<Option<RequirementsReviewSummary>> {
@@ -2050,6 +2150,21 @@ mod tests {
         assert_eq!(snapshot.statistics.failed_rows, 1);
         assert_eq!(snapshot.statistics.running_rows, 2);
         assert_eq!(snapshot.statistics.lost_rows, 1);
+        let selected = snapshot.selected_session.as_ref().expect("selected session detail");
+        assert_eq!(selected.managed_process_count, 1);
+        assert_eq!(selected.managed_processes.len(), 1);
+        let process = &selected.managed_processes[0];
+        assert_eq!(process.handle, "stats-process");
+        assert_eq!(process.status, "running");
+        assert_eq!(process.binary_name, "sleep");
+        assert_eq!(process.cwd, ".");
+        assert_eq!(process.end_of_turn_behavior, "terminate");
+        assert_eq!(process.end_of_session_behavior, "terminate");
+        assert!(process.can_terminate);
+        assert!(process.can_flush);
+        assert!(!process.can_input);
+        assert_eq!(process.latest_output_summary.as_deref(), Some("stdout: 1 lines, 14 bytes"));
+        assert!(process.output_artifacts.iter().any(|artifact| artifact["artifactId"] == artifact_id.to_string()));
         assert_eq!(global_snapshot.statistics.sessions, 2);
         assert_eq!(global_snapshot.statistics.open_sessions, 2);
         assert_eq!(global_snapshot.statistics.turns, 2);

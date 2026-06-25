@@ -426,6 +426,18 @@ and unreachable/unhealthy profiles. Remaining gates are mDNS/Bonjour discovery,
 native iOS file-picker polish beyond the typed import boundary, and root/system
 service integration beyond the completed per-user LaunchAgent workflow.
 
+Selected-session settings and owner controls use the full-screen session control
+plane. The old narrow selected-session settings dialog is not the production
+route. The control plane is rendered from the shared Robdex design-system widget
+in both production and Design Lab. Rust/PostgreSQL/Rinf own the typed projection
+for session identity, active model, God Mode state, current `managed_processes`
+rows, selected-session approvals, selected-session command registry requests,
+Requirements Review state, running server/image summaries, and quick-action
+availability. Dart dispatches typed operations for saves, lifecycle, compaction,
+God Mode, process control, approvals, command registry, and Requirements
+actions; it does not reconstruct those states from generic operation-surface
+display rows.
+
 ## Resident server MVP
 
 The experimental server binary is `robdex-agent-runtime-server`. It is isolated
