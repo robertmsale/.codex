@@ -27,6 +27,7 @@ use starlark::values::AllocValue;
 use starlark::values::list::UnpackList;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
+use starlark::values::tuple::UnpackTuple;
 use starlark_map::small_map::SmallMap;
 use uuid::Uuid;
 use wait_timeout::ChildExt;
@@ -1339,8 +1340,13 @@ fn workflow_memory_builtins(builder: &mut GlobalsBuilder) {
 
 #[starlark_module]
 fn print_builtins(builder: &mut GlobalsBuilder) {
-    fn print<'v>(value: Value<'v>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<NoneType> {
-        let text = value.unpack_str().map(ToString::to_string).unwrap_or_else(|| value.to_string());
+    fn print<'v>(#[starlark(args)] args: UnpackTuple<Value<'v>>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<NoneType> {
+        let text = args
+            .items
+            .iter()
+            .map(|value| value.unpack_str().map(ToString::to_string).unwrap_or_else(|| value.to_string()))
+            .collect::<Vec<_>>()
+            .join(" ");
         host_kernel(eval).output.borrow_mut().push(text);
         Ok(NoneType)
     }
@@ -5077,6 +5083,7 @@ mod tests {
         let mut policy = BTreeMap::new();
         policy.insert("fs.read".to_string(), ManifestDecision::Allow);
         policy.insert("fs.write".to_string(), ManifestDecision::Allow);
+        policy.insert("tree.list".to_string(), ManifestDecision::Allow);
         policy.insert("workflow_memory.search".to_string(), ManifestDecision::Allow);
         policy.insert("workflow_memory.remember.project".to_string(), ManifestDecision::Allow);
         policy.insert("workflow_memory.feedback".to_string(), ManifestDecision::Allow);
@@ -5187,6 +5194,68 @@ mod tests {
         let error = legacy.error.unwrap_or_default();
         assert!(error.contains("Variable `output` not found") || error.contains("not found: output"), "{error}");
         assert!(!error.contains("blocked by policy"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn print_accepts_zero_and_multiple_positional_arguments() {
+        let root = ExecutionRoot::new(".").expect("root");
+        let session = Uuid::new_v4();
+        let result = evaluate_starlark(
+            test_pool(),
+            session,
+            Uuid::new_v4(),
+            r#"print()
+print("label:", 123, True)"#,
+            root,
+            test_role(),
+            None,
+            vec![],
+            vec![],
+        );
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert_eq!(result.output, "\nlabel: 123 True");
+    }
+
+    #[tokio::test]
+    async fn print_commands_label_and_command_description_succeeds() {
+        let root = ExecutionRoot::new(".").expect("root");
+        let session = Uuid::new_v4();
+        let result = evaluate_starlark(
+            test_pool(),
+            session,
+            Uuid::new_v4(),
+            r#"print("commands:", cmd.describe())"#,
+            root,
+            test_role(),
+            None,
+            vec![test_command("echo", &["/bin/echo"], "cmd.describe.echo", "echo_tool", "forbid", "terminate", None)],
+            vec![],
+        );
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert!(result.output.starts_with("commands: "), "{}", result.output);
+        assert!(result.output.contains("cmd.describe.echo"), "{}", result.output);
+        assert!(result.output.contains("echo_tool"), "{}", result.output);
+    }
+
+    #[tokio::test]
+    async fn print_tree_label_and_tree_list_succeeds() {
+        let root = ExecutionRoot::new(".").expect("root");
+        let session = Uuid::new_v4();
+        let result = evaluate_starlark(
+            test_pool(),
+            session,
+            Uuid::new_v4(),
+            r#"tree = struct(list = lambda path, depth=2: "visible.txt")
+print("tree:", tree.list(".", depth=2))"#,
+            root,
+            test_role(),
+            None,
+            vec![],
+            vec![],
+        );
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert!(result.output.starts_with("tree: "), "{}", result.output);
+        assert!(result.output.contains("visible.txt"), "{}", result.output);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -1260,7 +1260,7 @@ ChatEntry _chatEntry(bindings.AgentRuntimeChatEntry entry) {
     id: entry.id,
     author: entry.author,
     displayLabel: entry.displayLabel,
-    timestamp: entry.hasTimestamp ? DateTime.tryParse(entry.timestamp)?.millisecondsSinceEpoch : null,
+    timestamp: entry.hasTimestamp ? _rfc3339EpochSeconds(entry.timestamp) : null,
     body: entry.body,
     subtitle: entry.subtitle,
     kind: entry.kind,
@@ -1275,6 +1275,11 @@ ChatEntry _chatEntry(bindings.AgentRuntimeChatEntry entry) {
     isStreaming: entry.isStreaming,
     isTool: entry.isTool,
   );
+}
+
+int? _rfc3339EpochSeconds(String timestamp) {
+  final parsed = DateTime.tryParse(timestamp);
+  return parsed == null ? null : parsed.millisecondsSinceEpoch ~/ 1000;
 }
 
 (String, String)? _agentRuntimeImageIdentity(String path) {
