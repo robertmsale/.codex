@@ -1541,31 +1541,26 @@ fn command_registry_surface_rows(projection: Option<&RuntimeProjection>) -> Vec<
         .command_registry
         .iter()
         .map(|command| {
+            let command_name = command.binary_name.as_deref().unwrap_or(command.starlark_method.as_deref().unwrap_or("command"));
+            let availability = if command.enabled { "enabled" } else { "disabled" };
+            let run_modes = match (command.sync_allowed, command.async_allowed) {
+                (Some(true), Some(true)) => "sync and async runs allowed",
+                (Some(true), _) => "sync runs allowed",
+                (_, Some(true)) => "async runs allowed",
+                _ => "run mode unavailable",
+            };
             fact(
                 command.action_id.as_str(),
                 format!(
-                    "displayName={} · scope={} · project={} · enabled={} · commandVersion={} · binary={} · argvTemplate={} · cwdPolicy={} · envPolicy={} · stdinPolicy={} · syncAllowed={} · asyncAllowed={} · maxRuntimeMs={} · endOfTurn={} · endOfSession={} · mutationClass={} · modelDescription={} · allowCwdArg={} · allowArgsArg={} · forbiddenArgs={} · executionPolicy={}",
+                    "{} for {} is {}. Runs {} in {} with {} input. {}. Working directory, environment, lifecycle, and safety rules are configured. Description: {}.",
                     command.action_id,
-                    command.scope_type,
-                    command.project_key.as_deref().unwrap_or("global"),
-                    command.enabled,
-                    command.command_version.map(|value| value.to_string()).or_else(|| command.current_version_id.clone()).unwrap_or_else(|| "none".to_string()),
-                    command.binary_name.as_deref().unwrap_or(command.starlark_method.as_deref().unwrap_or("command")),
-                    if command.argv_template.is_empty() { "none".to_string() } else { command.argv_template.join(" ") },
-                    command.cwd_policy.as_deref().unwrap_or("unknown"),
-                    command.env_policy.as_deref().unwrap_or("unknown"),
-                    command.stdin_policy.as_deref().unwrap_or("unknown"),
-                    command.sync_allowed.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string()),
-                    command.async_allowed.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string()),
-                    command.max_runtime_ms.map(|value| value.to_string()).unwrap_or_else(|| "none".to_string()),
-                    command.end_of_turn_behavior.as_deref().unwrap_or("unknown"),
-                    command.end_of_session_behavior.as_deref().unwrap_or("unknown"),
-                    command.mutation_class.as_deref().unwrap_or("unknown"),
-                    command.model_description.as_deref().unwrap_or("unknown"),
-                    command.allow_cwd_arg.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string()),
-                    command.allow_args_arg.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string()),
-                    if command.forbidden_args.is_empty() { "none".to_string() } else { command.forbidden_args.join(" ") },
-                    command.execution_policy.as_deref().unwrap_or("unknown"),
+                    command.project_key.as_deref().unwrap_or(command.scope_type.as_str()),
+                    availability,
+                    command_name,
+                    if command.argv_template.is_empty() { "the registered template".to_string() } else { command.argv_template.join(" ") },
+                    command.stdin_policy.as_deref().unwrap_or("standard"),
+                    run_modes,
+                    command.model_description.as_deref().unwrap_or("No description provided"),
                 )
                 .as_str(),
             )
@@ -1574,8 +1569,7 @@ fn command_registry_surface_rows(projection: Option<&RuntimeProjection>) -> Vec<
             fact(
                 request.action_label.as_str(),
                 format!(
-                    "request={} · requester={} · requestedAction={} · rationale=runtime-owned · recommendedPolicy=runtime-owned · status={} · finalScope={} · finalPolicy={} · previewResult={} · applyState={}",
-                    request.id,
+                    "{} requested a change to {}. Status: {}. Scope: {}. Policy: {}. Preview: {}. Apply: {}.",
                     request.operation,
                     request.action_id,
                     request.status,
@@ -5503,8 +5497,8 @@ mod tests {
         assert!(approvals.rows.iter().any(|row| row.value.contains("approver=owner") && row.value.contains("reason=approved for fixture") && row.value.contains("resume=approved")));
         assert!(approvals.actions.iter().any(|action| action.title == "Resume" && action.kind == "approvalResume"));
         let command_registry = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "commandRegistry").expect("command registry surface");
-        assert!(command_registry.rows.iter().any(|row| row.label == "rg_project" && row.value.contains("enabled=true")));
-        assert!(command_registry.rows.iter().any(|row| row.label == "rg · audit" && row.value.contains("previewResult=Preview decision")));
+        assert!(command_registry.rows.iter().any(|row| row.label == "rg_project" && row.value.contains("is enabled") && !row.value.contains("enabled=")));
+        assert!(command_registry.rows.iter().any(|row| row.label == "rg · audit" && row.value.contains("Preview: Preview decision") && !row.value.contains("previewResult=")));
         assert!(command_registry.actions.iter().any(|action| action.title == "Review"));
         assert!(command_registry.actions.iter().any(|action| action.title == "Preview Decision"));
         assert!(command_registry.actions.iter().any(|action| action.title == "Approve"));
@@ -6790,8 +6784,8 @@ mod tests {
                 })
                     && view_model.shell.operation_surfaces.iter().any(|surface| {
                         surface.surface_id == "commandRegistry"
-                            && surface.rows.iter().any(|row| row.label == "cmd.transport.echo" && row.value.contains("argvTemplate=hello") && row.value.contains("endOfSession=terminate") && row.value.contains("executionPolicy=allow"))
-                            && surface.rows.iter().any(|row| row.label == "transport · pending" && row.value.contains("requestedAction=cmd.transport.pending"))
+                            && surface.rows.iter().any(|row| row.label == "cmd.transport.echo" && row.value.contains("is enabled") && row.value.contains("hello") && !row.value.contains("argvTemplate=") && !row.value.contains("executionPolicy="))
+                            && surface.rows.iter().any(|row| row.label == "transport · pending" && row.value.contains("requested a change to cmd.transport.pending") && !row.value.contains("requestedAction="))
                             && surface.actions.iter().any(|action| action.title == "Review")
                             && surface.actions.iter().any(|action| action.title == "Preview Decision")
                             && surface.actions.iter().any(|action| action.title == "Approve")
