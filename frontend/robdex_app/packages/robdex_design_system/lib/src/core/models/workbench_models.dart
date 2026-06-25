@@ -816,10 +816,8 @@ ChatSemanticCard? _semanticCardFromMessageBody({
     return null;
   }
 
-  final verdictPayload = _asObject(decoded['requirements']) ?? decoded;
-  if (verdictPayload['overallVerdict'] is String &&
-      _asObject(verdictPayload['route']) != null) {
-    return _requirementsVerdictCard(verdictPayload);
+  if (_isRequirementsVerdictPacket(decoded)) {
+    return _requirementsVerdictCard(decoded);
   }
 
   if (decoded.containsKey('requirements')) {
@@ -842,6 +840,23 @@ ChatSemanticCard? _semanticCardFromMessageBody({
 
 Map<String, dynamic>? _asObject(Object? value) {
   return value is Map<String, dynamic> ? value : null;
+}
+
+bool _isRequirementsVerdictPacket(Map<String, dynamic> payload) {
+  final requirements = _asObject(payload['requirements']);
+  final verdictPayload = requirements ?? payload;
+  if (verdictPayload['overallVerdict'] is String) {
+    return true;
+  }
+  if (_asObject(verdictPayload['route']) != null) {
+    return verdictPayload.entries.any((entry) {
+      if (entry.key == 'route') {
+        return false;
+      }
+      return _asObject(entry.value)?['verdict'] is String;
+    });
+  }
+  return verdictPayload.entries.any((entry) => _asObject(entry.value)?['verdict'] is String);
 }
 
 ChatSemanticCard _requirementsClaimCard(Map<String, dynamic> payload) {
@@ -908,10 +923,13 @@ ChatSemanticCard _requirementsClaimCard(Map<String, dynamic> payload) {
 }
 
 ChatSemanticCard _requirementsVerdictCard(Map<String, dynamic> payload) {
-  final overall = payload['overallVerdict'] as String? ?? 'unknown';
-  final routeMessage = _asObject(payload['route'])?['message'] as String? ?? '';
+  final nestedRequirements = _asObject(payload['requirements']);
+  final verdictPayload = nestedRequirements ?? payload;
+  final route = _asObject(verdictPayload['route']) ?? _asObject(payload['route']);
+  final overall = _requirementsOverallVerdict(verdictPayload);
+  final routeMessage = route?['message'] as String? ?? payload['summary'] as String? ?? '';
   final rows =
-      payload.entries
+      verdictPayload.entries
           .where((entry) => entry.key != 'overallVerdict' && entry.key != 'route')
           .where((entry) => _asObject(entry.value) != null)
           .map((entry) {
@@ -931,7 +949,7 @@ ChatSemanticCard _requirementsVerdictCard(Map<String, dynamic> payload) {
               title: key,
               summary: reason,
               detail: null,
-              trailingLabel: _titleCaseVerdict(verdict),
+              trailingLabel: _requirementsVerdictTrailingLabel(verdict, value),
               tone: _verdictTone(verdict),
               icon: _verdictIcon(verdict),
               bullets: bullets,
@@ -947,6 +965,8 @@ ChatSemanticCard _requirementsVerdictCard(Map<String, dynamic> payload) {
       'fail' => 'Requirements Review Failed',
       'acceptedBlocked' => 'Requirements Review Accepted Blocker',
       'rejectedBlocked' => 'Requirements Review Rejected Blocker',
+      'waiverRequired' => 'Requirements Review Needs Waiver',
+      'waiverAccepted' => 'Requirements Review Waiver Accepted',
       'needsHumanWaiver' => 'Requirements Review Needs Waiver',
       _ => 'Requirements Review',
     },
@@ -1004,9 +1024,9 @@ ChatSemanticCard _plannerResponseCard(Map<String, dynamic> payload) {
 
 String _verdictTone(String value) {
   return switch (value) {
-    'pass' => 'success',
-    'fail' || 'rejectedBlocked' => 'danger',
-    'acceptedBlocked' || 'needsHumanWaiver' => 'warning',
+    'pass' || 'waiverAccepted' || 'stillPassing' => 'success',
+    'fail' || 'rejectedBlocked' || 'notYet' => 'danger',
+    'acceptedBlocked' || 'waiverRequired' || 'needsHumanWaiver' => 'warning',
     _ => 'secondary',
   };
 }
@@ -1023,11 +1043,12 @@ String _claimTone(String value) {
 
 String _verdictIcon(String value) {
   return switch (value) {
-    'pass' => 'verified',
+    'pass' || 'waiverAccepted' || 'stillPassing' => 'verified',
     'fail' => 'cancel',
     'acceptedBlocked' => 'warning',
     'rejectedBlocked' => 'problem',
-    'needsHumanWaiver' => 'gavel',
+    'waiverRequired' || 'needsHumanWaiver' => 'gavel',
+    'notYet' => 'problem',
     _ => 'review',
   };
 }
@@ -1047,11 +1068,55 @@ String _titleCaseVerdict(String value) {
   return switch (value) {
     'acceptedBlocked' => 'Accepted blocker',
     'rejectedBlocked' => 'Rejected blocker',
+    'waiverRequired' => 'Waiver required',
+    'waiverAccepted' => 'Waiver accepted',
     'needsHumanWaiver' => 'Needs waiver',
+    'notYet' => 'Not yet',
+    'stillPassing' => 'Still passing',
     'pass' => 'Pass',
     'fail' => 'Fail',
     _ => 'Unknown',
   };
+}
+
+String _requirementsOverallVerdict(Map<String, dynamic> verdictPayload) {
+  final explicit = verdictPayload['overallVerdict'] as String?;
+  if (explicit != null && explicit.trim().isNotEmpty) {
+    return explicit.trim();
+  }
+  final verdicts = verdictPayload.entries
+      .where((entry) => entry.key != 'route')
+      .map((entry) => _asObject(entry.value)?['verdict'] as String?)
+      .whereType<String>()
+      .toList(growable: false);
+  if (verdicts.isEmpty) {
+    return 'unknown';
+  }
+  if (verdicts.any((verdict) => verdict == 'fail' || verdict == 'rejectedBlocked' || verdict == 'notYet')) {
+    return 'fail';
+  }
+  if (verdicts.any((verdict) => verdict == 'waiverRequired')) {
+    return 'waiverRequired';
+  }
+  if (verdicts.any((verdict) => verdict == 'acceptedBlocked')) {
+    return 'acceptedBlocked';
+  }
+  if (verdicts.every((verdict) => verdict == 'waiverAccepted')) {
+    return 'waiverAccepted';
+  }
+  if (verdicts.every((verdict) => verdict == 'pass' || verdict == 'stillPassing' || verdict == 'waiverAccepted')) {
+    return 'pass';
+  }
+  return 'unknown';
+}
+
+String _requirementsVerdictTrailingLabel(String verdict, Map<String, dynamic> value) {
+  final risk = value['risk'] as String?;
+  final label = _titleCaseVerdict(verdict);
+  if (risk != null && risk.trim().isNotEmpty) {
+    return '$label · risk ${risk.trim()}';
+  }
+  return label;
 }
 
 String _titleCaseClaim(String value) {

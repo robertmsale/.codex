@@ -2128,6 +2128,57 @@ void main() {
     expect(find.textContaining('"requirements"'), findsNothing);
   });
 
+  testWidgets('current structured requirements review verdicts render without claim fallbacks', (
+    WidgetTester tester,
+  ) async {
+    const verdictJson = '''
+{"summary":"Previously passed requirements still pass. Runtime proof remains externally blocked.","requirements":{"addBackendOauthRegressionTests":{"verdict":"stillPassing"},"fixLocalStackQboOauthCompletion":{"verdict":"acceptedBlocked","reason":"Runtime completion proof remains blocked on owner browser action.","evidenceAssessment":"External owner action is outside worker control.","requiredCorrection":"Owner must complete consent.","risk":"medium"},"runFocusedValidation":{"verdict":"pass","reason":"Focused validation passed.","evidenceAssessment":"Targeted tests passed.","requiredCorrection":"","risk":"low"},"route":{"destination":"orchestrator","message":"Accepted blocker; route to orchestrator for owner action."}}}
+''';
+    final entry = ChatEntry.fromJson({
+      'id': 'review-current-schema',
+      'author': 'Assistant',
+      'displayLabel': 'Assistant',
+      'body': verdictJson,
+      'isStreaming': false,
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: Scaffold(
+          body: ChatTimeline(
+            threadId: 'requirements-reviewer',
+            entries: [entry],
+            title: 'Requirements Reviewer',
+            contextWindowRemainingPercent: 92,
+            onSend: (_) {},
+            onInterrupt: () {},
+            composerEnabled: false,
+            isRunning: false,
+            showComposer: false,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Requirements Review Accepted Blocker'), findsOneWidget);
+    expect(find.textContaining('Accepted blocker; route to orchestrator for owner action.'), findsOneWidget);
+    expect(find.text('addBackendOauthRegressionTests'), findsOneWidget);
+    expect(find.text('fixLocalStackQboOauthCompletion'), findsOneWidget);
+    expect(find.text('runFocusedValidation'), findsOneWidget);
+    expect(find.text('Still passing'), findsOneWidget);
+    expect(find.text('Accepted blocker · risk medium'), findsOneWidget);
+    expect(find.text('Pass · risk low'), findsOneWidget);
+    expect(find.textContaining('Runtime completion proof remains blocked on owner browser action.'), findsOneWidget);
+    expect(find.textContaining('Evidence: External owner action is outside worker control.'), findsOneWidget);
+    expect(find.textContaining('Correction: Owner must complete consent.'), findsOneWidget);
+    expect(find.text('route'), findsNothing);
+    expect(find.textContaining('Requirements Claim'), findsNothing);
+    expect(find.textContaining('Unknown'), findsNothing);
+    expect(find.textContaining('"requirements"'), findsNothing);
+  });
+
   test('thread stats model parses bridge DTO payload', () {
     final stats = ThreadStatsData.fromJson({
       'threadId': 'thread-a',
