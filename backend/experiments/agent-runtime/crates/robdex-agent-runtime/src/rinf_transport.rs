@@ -1178,24 +1178,22 @@ fn compaction_rows(projection: Option<&RuntimeProjection>) -> Vec<AgentRuntimeWo
     let Some(projection) = projection else { return Vec::new(); };
     let mut rows = Vec::new();
     for item in projection.timeline.iter().rev().filter(|item| item.event_type.starts_with("compaction.")).take(12) {
-        let payload_summary = compact_json_summary(&item.payload, 180);
+        let state = item.status.as_deref().unwrap_or("recorded");
+        let estimate_available = item.payload.get("estimate").or_else(|| item.payload.get("replacementContextEstimate")).is_some();
+        let model_available = item.payload.get("providerModel").or_else(|| item.payload.get("modelProviderMetadata")).is_some();
+        let issue = item.payload.get("reason").or_else(|| item.payload.get("failureInfo")).map(compact_json_summary_value);
         rows.push(fact(
             item.event_type.as_str(),
             format!(
-                "checkpoint={} · status={} · boundaryTurn={} · created={} · replacementEstimate={} · providerModel={} · failure={} · payloadSummary={}",
-                item.entity_id.as_deref()
-                    .or_else(|| item.payload.get("checkpointId").and_then(Value::as_str))
-                    .unwrap_or("none"),
-                item.status.as_deref().unwrap_or("recorded"),
-                item.turn_id.as_deref()
-                    .or_else(|| item.payload.get("compactedThroughTurnId").and_then(Value::as_str))
-                    .or_else(|| item.payload.get("requestedThroughTurnId").and_then(Value::as_str))
-                    .unwrap_or("none"),
-                item.created_at.as_deref().unwrap_or("unknown"),
-                item.payload.get("estimate").or_else(|| item.payload.get("replacementContextEstimate")).map(compact_json_summary_value).unwrap_or_else(|| "unknown".to_string()),
-                item.payload.get("providerModel").or_else(|| item.payload.get("modelProviderMetadata")).map(compact_json_summary_value).unwrap_or_else(|| "runtime-owned".to_string()),
-                item.payload.get("reason").or_else(|| item.payload.get("failureInfo")).map(compact_json_summary_value).unwrap_or_else(|| "none".to_string()),
-                payload_summary,
+                "{} compaction checkpoint recorded at {}. Boundary information is {}. Replacement estimate is {}. Model metadata is {}.{}",
+                state,
+                item.created_at.as_deref().unwrap_or("an unknown time"),
+                if item.turn_id.is_some()
+                    || item.payload.get("compactedThroughTurnId").is_some()
+                    || item.payload.get("requestedThroughTurnId").is_some() { "available" } else { "not available" },
+                if estimate_available { "available" } else { "not available" },
+                if model_available { "available" } else { "runtime-owned" },
+                issue.map(|text| format!(" Note: {text}." )).unwrap_or_default(),
             )
             .as_str(),
         ));
@@ -1396,29 +1394,25 @@ fn role_admin_surface_rows(view: &AgentRuntimeRoleAdminView) -> Vec<AgentRuntime
 fn workflow_memory_surface_rows(view: &AgentRuntimeWorkflowMemoryView) -> Vec<AgentRuntimeWorkbenchFact> {
     let mut rows = view.rows.iter().map(|row| {
         fact(row.title.as_str(), format!(
-            "selected={} · scope={} · project={} · saved={} · helpful={}",
-            row.selected,
-            row.scope_type,
-            row.project_key.as_deref().unwrap_or("none"),
-            row.promoted_at.as_deref().unwrap_or("unknown"),
+            "{} memory for {} was saved {}. Helpfulness score: {}.",
+            if row.selected { "Selected" } else { "Available" },
+            row.project_key.as_deref().unwrap_or(row.scope_type.as_str()),
+            row.promoted_at.as_deref().unwrap_or("at an unknown time"),
             row.helpful_score,
         ).as_str())
     }).collect::<Vec<_>>();
     if let Some(detail) = &view.selected_detail {
         rows.push(fact("Selected memory detail", format!(
-            "title={} · scope={} · origin={} · provider={} · model={} · dimensions={} · storage={} · preview={}",
+            "{} applies to {} and came from {}. Embedding metadata is {}. Preview: {}",
             detail.title,
             detail.scope_label,
-            if detail.source_session_id.is_empty() { "Saved workflow" } else { "Saved from session" },
-            detail.provider.as_deref().unwrap_or("unknown"),
-            detail.model.as_deref().unwrap_or("unknown"),
-            detail.dimensions.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string()),
-            detail.storage_type.as_deref().unwrap_or("unknown"),
+            if detail.source_session_id.is_empty() { "saved workflow guidance" } else { "a prior session" },
+            if detail.provider.is_some() || detail.model.is_some() || detail.dimensions.is_some() || detail.storage_type.is_some() { "available" } else { "not available" },
             detail.source_preview,
         ).as_str()));
     }
     rows.extend(view.recent_events.iter().map(|event| {
-        fact("Recent memory event", format!("type={} · created={} · summary={}", event.title, event.created_at.as_deref().unwrap_or("unknown"), event.subtitle).as_str())
+        fact("Recent memory event", format!("{} at {}. {}", event.title, event.created_at.as_deref().unwrap_or("unknown time"), event.subtitle).as_str())
     }));
     rows
 }
@@ -5466,8 +5460,8 @@ mod tests {
             );
         }
         let compaction = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "compaction").expect("compaction surface");
-        assert!(compaction.rows.iter().any(|row| row.label == "compaction.completed" && row.value.contains("checkpoint=checkpoint-completed") && row.value.contains("boundaryTurn=turn-1") && row.value.contains("replacementEstimate=") && row.value.contains("providerModel=")));
-        assert!(compaction.rows.iter().any(|row| row.label == "compaction.failed" && row.value.contains("checkpoint=checkpoint-failed") && row.value.contains("failure=\"forced fixture failure\"")));
+        assert!(compaction.rows.iter().any(|row| row.label == "compaction.completed" && row.value.contains("completed compaction checkpoint") && row.value.contains("Boundary information is available") && row.value.contains("Replacement estimate is available") && row.value.contains("Model metadata is available") && !row.value.contains("checkpoint=") && !row.value.contains("boundaryTurn=") && !row.value.contains("providerModel=") && !row.value.contains("payloadSummary=")));
+        assert!(compaction.rows.iter().any(|row| row.label == "compaction.failed" && row.value.contains("failed compaction checkpoint") && row.value.contains("Note:") && !row.value.contains("checkpoint=") && !row.value.contains("failure=")));
         assert!(compaction.actions.iter().any(|action| action.kind == "compactionManual" && action.title == "Compact selected session"));
         let role_admin = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "roleAdmin").expect("role admin surface");
         assert!(role_admin.rows.iter().any(|row| row.label == "Selected role detail" && row.value.contains("Runtime Allow") && row.value.contains("1 capability") && row.value.contains("1 approval policy") && row.value.contains("Instructions are present") && !row.value.contains("role-version") && !row.value.contains("capabilities=") && !row.value.contains("policies=") && !row.value.contains("instructionBytes=")));
@@ -5479,8 +5473,8 @@ mod tests {
         assert!(role_admin.actions.iter().any(|action| action.title == "Archive role"));
         assert!(role_admin.actions.iter().any(|action| action.title == "Export current role"));
         let workflow_memory = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "workflowMemory").expect("workflow memory surface");
-        assert!(workflow_memory.rows.iter().any(|row| row.label == "Selected memory detail" && row.value.contains("origin=") && row.value.contains("preview=") && !row.value.contains("sourceHash") && !row.value.contains("commandFingerprint") && !row.value.contains("memoryId")));
-        assert!(workflow_memory.rows.iter().any(|row| row.label == "Recent memory event" && row.value.contains("workflow_memory.helpful") && !row.value.contains("id=")));
+        assert!(workflow_memory.rows.iter().any(|row| row.label == "Selected memory detail" && row.value.contains("applies to") && row.value.contains("Preview:") && !row.value.contains("origin=") && !row.value.contains("provider=") && !row.value.contains("model=") && !row.value.contains("dimensions=") && !row.value.contains("storage=") && !row.value.contains("sourceHash") && !row.value.contains("commandFingerprint") && !row.value.contains("memoryId")));
+        assert!(workflow_memory.rows.iter().any(|row| row.label == "Recent memory event" && row.value.contains("workflow_memory.helpful") && !row.value.contains("type=") && !row.value.contains("created=") && !row.value.contains("summary=") && !row.value.contains("id=")));
         assert!(workflow_memory.actions.iter().any(|action| action.id.ends_with(":attempted")));
         assert!(workflow_memory.actions.iter().any(|action| action.id.ends_with(":helpful")));
         assert!(workflow_memory.actions.iter().any(|action| action.id.ends_with(":notHelpful")));
