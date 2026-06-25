@@ -263,6 +263,14 @@ async fn projection_deltas_from_event_row(
                 deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SelectedChatUpdate { entry }));
             }
         }
+        "runtime.validation_failed" => {
+            if let Some(turn_id) = uuid_from_option(item.turn_id.as_deref())
+                && let Some(session_id) = uuid_from_option(item.session_id.as_deref())
+                && let Some(entry) = runtime_error_chat_entry(pool, session_id, turn_id).await?
+            {
+                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SelectedChatUpdate { entry }));
+            }
+        }
         "approval.requested" => {
             if let Some(id) = uuid_from_option(entity_id.as_deref())
                 && let Some(approval) = pending_approval_summary(pool, id).await?
@@ -861,6 +869,10 @@ async fn selected_chat_entries(
             entries.push(tool);
         }
 
+        if let Some(runtime_error) = runtime_error_chat_entry(pool, session_id, turn_id).await? {
+            entries.push(runtime_error);
+        }
+
         if let Some(assistant) = assistant_chat_entry(pool, session_id, turn_id).await? {
             entries.push(assistant);
         }
@@ -957,6 +969,52 @@ async fn turn_chat_entry(pool: &PgPool, turn_id: Uuid) -> Result<Option<AgentRun
             output: String::new(),
             delivery_state: if status == "completed" { "delivered" } else { "sending" }.to_string(),
             is_streaming: status == "running",
+            is_tool: false,
+        }
+    }))
+}
+
+async fn runtime_error_chat_entry(
+    pool: &PgPool,
+    session_id: Uuid,
+    turn_id: Uuid,
+) -> Result<Option<AgentRuntimeChatEntry>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, payload, created_at
+        FROM model_events
+        WHERE session_id = $1 AND turn_id = $2 AND event_type = 'runtime_error'
+        ORDER BY ordinal DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(session_id)
+    .bind(turn_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| {
+        let id = row.get::<Uuid, _>("id");
+        let payload: Value = row.get("payload");
+        let body = payload
+            .get("finalText")
+            .and_then(Value::as_str)
+            .or_else(|| payload.get("summary").and_then(Value::as_str))
+            .unwrap_or("Runtime could not start the model request. Check the role settings and try again.")
+            .to_string();
+        AgentRuntimeChatEntry {
+            id: format!("runtime:{id}:error"),
+            author: "Runtime".to_string(),
+            display_label: "Runtime".to_string(),
+            timestamp: Some(time(row.get("created_at"))),
+            body,
+            subtitle: "failed".to_string(),
+            kind: "system_error".to_string(),
+            status: "failed".to_string(),
+            process_id: None,
+            command: String::new(),
+            output: String::new(),
+            delivery_state: "failed".to_string(),
+            is_streaming: false,
             is_tool: false,
         }
     }))

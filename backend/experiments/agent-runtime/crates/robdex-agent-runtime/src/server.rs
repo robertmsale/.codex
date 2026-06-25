@@ -1331,8 +1331,9 @@ async fn resume_approval(State(state): State<ServerState>, Path(approval_id): Pa
     Ok(Json(json!({"approvalId": approval_id, "status": "resumed"})))
 }
 
-async fn role_editor_options() -> Result<Json<Value>, ApiError> {
-    Ok(Json(serde_json::to_value(crate::roles::editor_options()).map_err(anyhow::Error::from)?))
+async fn role_editor_options(State(state): State<ServerState>) -> Result<Json<Value>, ApiError> {
+    let recipients = routing::recipient_options(&state.pool).await?;
+    Ok(Json(serde_json::to_value(crate::roles::editor_options(recipients)).map_err(anyhow::Error::from)?))
 }
 
 async fn validate_role_draft(State(state): State<ServerState>, payload: std::result::Result<Json<RoleEditorDraft>, JsonRejection>) -> Result<Json<Value>, ApiError> {
@@ -1704,6 +1705,7 @@ async fn state_ws_loop(state: ServerState, query: WsQuery, socket: WebSocket) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use crate::compaction;
     use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelInitialTurn, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
     use crate::roles::RoleSnapshot;
@@ -1928,6 +1930,34 @@ mod tests {
         let result = crate::runtime::send_with_model_client(&test_db.pool, session_id, "routing forced failure", &model, compaction::CompactionBudget::default()).await;
         assert!(result.is_err());
         assert_turn_terminal(&test_db.pool, session_id, "routing forced failure", "failed", "failed").await;
+        let snapshot = projection::build_runtime_projection_snapshot(&test_db.pool, Some(session_id)).await.expect("snapshot");
+        assert!(snapshot.selected_chat_entries.iter().any(|entry| entry.author == "Runtime" && entry.display_label == "Runtime" && entry.status == "failed" && entry.kind == "system_error"));
+        assert!(!snapshot.selected_chat_entries.iter().any(|entry| entry.author == "Assistant" && entry.body.contains("routing")));
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn project_progenitor_seed_routes_to_owner_and_rejects_magic_recipients() {
+        let test_db = validation_db().await;
+        let progenitor = db::current_role_snapshot(&test_db.pool, "project-progenitor").await.expect("project progenitor role");
+        assert_eq!(progenitor.routing.default_recipient.as_deref(), Some("owner"));
+        assert_eq!(progenitor.routing.allowed_recipients, vec!["owner".to_string()]);
+        let session_id = db::new_session(&test_db.pool, &progenitor, Some("ezra"), ".", Some("."), Some("Project Progenitor"), None).await.expect("session");
+        let model = FakeModelClient::default();
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "seeded progenitor startup", &model, compaction::CompactionBudget::default()).await.expect("send");
+
+        for recipient in ["operator", "orchestrator"] {
+            let mut invalid = progenitor.routing.clone();
+            invalid.default_recipient = Some(recipient.to_string());
+            invalid.allowed_recipients = vec![recipient.to_string()];
+            let err = routing::validate_routing(&invalid, Some(&test_db.pool), &BTreeSet::new()).await.unwrap_err().to_string();
+            assert!(err.contains(&format!("invalid routing recipient: {recipient}")));
+        }
+
+        let mut active_role_route = progenitor.routing.clone();
+        active_role_route.default_recipient = Some("runtime-allow".to_string());
+        active_role_route.allowed_recipients = vec!["runtime-allow".to_string(), "owner".to_string()];
+        routing::validate_routing(&active_role_route, Some(&test_db.pool), &BTreeSet::new()).await.expect("active role recipient");
         test_db.cleanup().await;
     }
 
@@ -6162,6 +6192,8 @@ mod tests {
         let (status, options) = request_json(router.clone(), Method::GET, "/roles/editor/options", Value::Null).await;
         assert_eq!(status, StatusCode::OK);
         assert!(options["policyDecisions"].as_array().expect("decisions").iter().any(|value| value == "allow"));
+        assert!(options["defaultRecipients"].as_array().expect("recipients").iter().any(|value| value == "owner"));
+        assert!(!options["defaultRecipients"].as_array().expect("recipients").iter().any(|value| value == "operator" || value == "orchestrator" || value == "runtime"));
 
         let draft_v1 = role_editor_draft_json("gui-role", "1.0.0", "inline gui role instructions v1");
         let (status, validation) = request_json(router.clone(), Method::POST, "/roles/editor/validate", draft_v1.clone()).await;
