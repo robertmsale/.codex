@@ -3286,6 +3286,8 @@ pub(crate) fn requirements_worker_claim_schema(set: &RequirementSetState) -> Val
 fn requirements_claim_schema_for_requirements<'a>(
     requirements: impl Iterator<Item = &'a RequirementState>,
 ) -> Value {
+    const REQUIREMENTS_GLOBAL_SUMMARY_MAX_LENGTH: u32 = 1_000;
+    const REQUIREMENTS_PER_ITEM_SUMMARY_MAX_LENGTH: u32 = 600;
     let mut requirement_properties = serde_json::Map::new();
     for requirement in requirements {
         let key = requirement.key.trim();
@@ -3300,6 +3302,7 @@ fn requirements_claim_schema_for_requirements<'a>(
                     .claim_schema_description
                     .as_deref()
                     .unwrap_or(default_description.as_str()),
+                REQUIREMENTS_PER_ITEM_SUMMARY_MAX_LENGTH,
             ),
         );
     }
@@ -3309,6 +3312,7 @@ fn requirements_claim_schema_for_requirements<'a>(
         "summary".to_string(),
         json!({
             "type": "string",
+            "maxLength": REQUIREMENTS_GLOBAL_SUMMARY_MAX_LENGTH,
             "description": "Concise global outcome or progress note. Do not duplicate per-requirement evidence here."
         }),
     );
@@ -3345,19 +3349,21 @@ fn requirements_claim_schema_for_requirements<'a>(
 
 #[cfg(test)]
 pub(crate) fn requirements_verdict_schema(set: &RequirementSetState) -> Value {
-    requirements_verdict_schema_for_scope(set, set.requirements.iter().map(|requirement| requirement.key.as_str()))
+    requirements_verdict_schema_for_review_keys(set, set.requirements.iter().map(|requirement| requirement.key.as_str()))
 }
 
-pub(crate) fn requirements_verdict_schema_for_scope<'a>(
+pub(crate) fn requirements_verdict_schema_for_review_keys<'a>(
     set: &RequirementSetState,
-    scope_keys: impl IntoIterator<Item = &'a str>,
+    review_keys: impl IntoIterator<Item = &'a str>,
 ) -> Value {
-    let (properties, required) = requirements_verdict_properties(set, scope_keys);
+    const REQUIREMENTS_REVIEW_SUMMARY_MAX_LENGTH: u32 = 1_000;
+    let (properties, required) = requirements_verdict_properties(set, review_keys);
     json!({
         "type": "object",
         "properties": {
             "summary": {
                 "type": "string",
+                "maxLength": REQUIREMENTS_REVIEW_SUMMARY_MAX_LENGTH,
                 "description": "Concise reviewer progress note or final verdict summary. Do not duplicate every per-requirement verdict."
             },
             "requirements": {
@@ -3380,18 +3386,18 @@ pub(crate) fn requirements_verdict_schema_for_scope<'a>(
 
 fn requirements_verdict_properties<'a>(
     set: &RequirementSetState,
-    scope_keys: impl IntoIterator<Item = &'a str>,
+    review_keys: impl IntoIterator<Item = &'a str>,
 ) -> (serde_json::Map<String, Value>, Vec<String>) {
     let mut properties = serde_json::Map::new();
     let mut required = Vec::new();
-    let scope = scope_keys
+    let review_keys = review_keys
         .into_iter()
         .map(str::trim)
         .filter(|key| !key.is_empty())
         .collect::<std::collections::BTreeSet<_>>();
     for requirement in &set.requirements {
         let key = requirement.key.trim();
-        if key.is_empty() || !scope.contains(key) {
+        if key.is_empty() || !review_keys.contains(key) {
             continue;
         }
         required.push(key.to_string());
@@ -3412,16 +3418,7 @@ fn requirements_verdict_properties<'a>(
             verdict_property_schema(&verdict_description, requirement_review_previously_passed(set, key)),
         );
     }
-    required.push("overallVerdict".to_string());
     required.push("route".to_string());
-    properties.insert(
-        "overallVerdict".to_string(),
-        json!({
-            "type": "string",
-            "enum": ["notYet", "pass", "fail", "acceptedBlocked", "rejectedBlocked", "needsHumanWaiver", "waiverAccepted"],
-            "description": "Overall gate verdict. Blocked is not success; only acceptedBlocked can leave the source agent, and only when evidence proves a true external dependency. Use waiverAccepted only after an explicit human/owner waiver has been accepted."
-        }),
-    );
     properties.insert(
         "route".to_string(),
         json!({
@@ -3453,7 +3450,7 @@ fn canonical_requirement_schema_description(requirement: &RequirementState) -> S
     )
 }
 
-fn claim_property_schema(description: &str) -> Value {
+fn claim_property_schema(description: &str, summary_max_length: u32) -> Value {
     let typed_evidence = json!({
         "type": "object",
         "properties": {
@@ -3479,7 +3476,7 @@ fn claim_property_schema(description: &str) -> Value {
                 "type": "string",
                 "enum": ["satisfied"]
             },
-            "summary": { "type": "string" },
+            "summary": { "type": "string", "maxLength": summary_max_length },
             "evidence": evidence_array.clone()
         },
         "required": ["kind", "summary", "evidence"],
@@ -3493,7 +3490,7 @@ fn claim_property_schema(description: &str) -> Value {
                 "type": "string",
                 "enum": ["blocked"]
             },
-            "summary": { "type": "string" },
+            "summary": { "type": "string", "maxLength": summary_max_length },
             "blocker": { "type": "string" },
             "ownerDecisionNeeded": { "type": "string" },
             "evidence": evidence_array.clone()
@@ -3509,7 +3506,7 @@ fn claim_property_schema(description: &str) -> Value {
                 "type": "string",
                 "enum": ["notApplicable"]
             },
-            "summary": { "type": "string" },
+            "summary": { "type": "string", "maxLength": summary_max_length },
             "evidence": evidence_array
         },
         "required": ["kind", "summary", "evidence"],
@@ -5825,6 +5822,17 @@ pub async fn orchestrator_requirements_status(
                     })
                     .collect::<Vec<_>>()
         };
+        let review_status = review.as_ref().map(|binding| binding.status.clone());
+        let summary_status = if requirement_set_active
+            && matches!(review_status.as_deref(), Some("passed" | "waiverAccepted"))
+            && requirements
+                .as_ref()
+                .is_some_and(requirement_set_has_unresolved_progress)
+        {
+            Some("inReview".to_string())
+        } else {
+            review_status
+        };
         return Ok(json!({
             "threadId": recipient.thread_id,
             "displayName": recipient.display_name,
@@ -5835,7 +5843,7 @@ pub async fn orchestrator_requirements_status(
                 "activeRequirementCount": active_requirements.len(),
                 "storedRequirementCount": stored_requirements.len(),
                 "requirementSetActive": requirement_set_active,
-                "status": review.as_ref().map(|binding| binding.status.clone()),
+                "status": summary_status,
                 "reviewerThreadId": review.as_ref().map(|binding| binding.reviewer_thread_id.clone()),
                 "requirementSetId": review
                     .as_ref()
@@ -6472,14 +6480,14 @@ pub(crate) fn requirements_review_prompt(
     _source_thread_id: &str,
     _turn_id: &str,
     claim_text: &str,
-    review_scope: &[String],
+    review_keys: &[String],
 ) -> String {
     let mut prompt = format!("Review subject: {source_label}\n\n");
     prompt.push_str("Latest source claim packet:\n");
     prompt.push_str(&compact_source_claim_packet(claim_text));
-    prompt.push_str("\n\nReview scope:\n");
-    prompt.push_str(&compact_requirement_review_scope(set, review_scope));
-    prompt.push_str("\n\nReview only the scoped requirement keys in the active structured output schema. If a scoped key was previously passed and the schema offers `stillPassing`, use that shortcut only after confirming the pass still holds.");
+    prompt.push_str("\n\nRequirement keys to review from this claim packet:\n");
+    prompt.push_str(&compact_requirement_review_keys(set, review_keys));
+    prompt.push_str("\n\nReturn per-requirement verdicts only for the keys present in the active structured output schema. Do not declare an overall pass for this subset. Robdex derives the full RequirementSet status from persisted progress across every requirement. If a reviewed key was previously passed and the schema offers `stillPassing`, use that shortcut only after confirming the pass still holds.");
     prompt
 }
 
@@ -6494,14 +6502,14 @@ fn compact_source_claim_packet(claim_text: &str) -> String {
         .unwrap_or_else(|| trimmed.to_string())
 }
 
-fn compact_requirement_review_scope(set: &RequirementSetState, review_scope: &[String]) -> String {
-    let scope = review_scope
+fn compact_requirement_review_keys(set: &RequirementSetState, review_keys: &[String]) -> String {
+    let review_keys = review_keys
         .iter()
         .map(|key| key.as_str())
         .collect::<std::collections::BTreeSet<_>>();
     let mut lines = Vec::new();
     for requirement in &set.requirements {
-        if !scope.contains(requirement.key.as_str()) {
+        if !review_keys.contains(requirement.key.as_str()) {
             continue;
         }
         let prior = set
@@ -6607,19 +6615,22 @@ pub(crate) async fn mark_requirements_review_verdict(
             .as_ref()
             .map(|requirements| verdict_has_invalid_still_passing(requirements, &verdict_payload))
             .unwrap_or(false);
-        let status = if invalid_still_passing {
-            "failed".to_string()
-        } else {
-            requirement_status_from_verdict(&verdict_payload)
-        };
         if let Some(requirements) = source.requirements.as_mut() {
             update_requirement_review_progress(requirements, &verdict_payload);
+            if invalid_still_passing {
+                mark_invalid_still_passing_failures(requirements, &verdict_payload);
+            }
         }
         let is_terminal = source
             .requirements
             .as_ref()
             .map(requirement_set_all_passed_or_waived)
-            .unwrap_or(matches!(status.as_str(), "passed" | "waiverAccepted"));
+            .unwrap_or(false);
+        let status = source
+            .requirements
+            .as_ref()
+            .map(derive_requirement_review_status_from_progress)
+            .unwrap_or_else(|| "inReview".to_string());
         if is_terminal
             && let Some(requirements) = source.requirements.as_mut()
         {
@@ -6724,6 +6735,17 @@ fn requirement_set_all_passed_or_waived(set: &RequirementSetState) -> bool {
         })
 }
 
+fn requirement_set_has_unresolved_progress(set: &RequirementSetState) -> bool {
+    set.requirements.iter().any(|requirement| {
+        !matches!(
+            set.review_progress
+                .get(requirement.key.as_str())
+                .map(|progress| progress.status.as_str()),
+            Some("passed" | "waived")
+        )
+    })
+}
+
 fn verdict_has_invalid_still_passing(set: &RequirementSetState, verdict_payload: &Value) -> bool {
     let Some(verdict_object) = verdict_payload.as_object() else {
         return false;
@@ -6738,18 +6760,55 @@ fn verdict_has_invalid_still_passing(set: &RequirementSetState, verdict_payload:
     })
 }
 
-fn requirement_status_from_verdict(verdict_payload: &Value) -> String {
-    match verdict_payload.get("overallVerdict").and_then(Value::as_str) {
-        Some("notYet") => "notYet",
-        Some("pass") => "passed",
-        Some("fail") => "failed",
-        Some("acceptedBlocked") => "blocked",
-        Some("rejectedBlocked") => "failed",
-        Some("needsHumanWaiver") => "waiverRequired",
-        Some("waiverAccepted") => "waiverAccepted",
-        _ => "inReview",
+fn mark_invalid_still_passing_failures(set: &mut RequirementSetState, verdict_payload: &Value) {
+    let now = unix_now();
+    let Some(verdict_object) = verdict_payload.as_object() else {
+        return;
+    };
+    for requirement in &set.requirements {
+        if verdict_object
+            .get(requirement.key.as_str())
+            .and_then(|value| value.get("verdict"))
+            .and_then(Value::as_str)
+            == Some("stillPassing")
+            && !requirement_review_previously_passed(set, requirement.key.as_str())
+        {
+            set.review_progress.insert(
+                requirement.key.clone(),
+                RequirementReviewProgressState {
+                    status: "failed".to_string(),
+                    updated_at: Some(now),
+                },
+            );
+        }
     }
-    .to_string()
+}
+
+fn derive_requirement_review_status_from_progress(set: &RequirementSetState) -> String {
+    if requirement_set_all_passed_or_waived(set) {
+        let any_waived = set.requirements.iter().any(|requirement| {
+            set.review_progress
+                .get(requirement.key.as_str())
+                .map(|progress| progress.status.as_str())
+                == Some("waived")
+        });
+        return if any_waived { "waiverAccepted" } else { "passed" }.to_string();
+    }
+    let statuses = set
+        .review_progress
+        .values()
+        .map(|progress| progress.status.as_str())
+        .collect::<Vec<_>>();
+    if statuses.iter().any(|status| *status == "waiverRequired") {
+        return "waiverRequired".to_string();
+    }
+    if statuses.iter().any(|status| *status == "blocked") {
+        return "blocked".to_string();
+    }
+    if statuses.iter().any(|status| *status == "failed") {
+        return "failed".to_string();
+    }
+    "inReview".to_string()
 }
 
 pub async fn orchestrator_spawn_agent(
@@ -7796,6 +7855,7 @@ mod tests {
             required,
             &vec![json!("summary"), json!("requirements")]
         );
+        assert_eq!(schema["properties"]["summary"]["maxLength"], json!(1000));
         let requirements_schema = &schema["properties"]["requirements"];
         let alternatives = requirements_schema["anyOf"].as_array().expect("requirements anyOf");
         assert!(alternatives.iter().any(|item| {
@@ -7813,6 +7873,13 @@ mod tests {
             claims["required"],
             json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
         );
+        let satisfied = claims["properties"]["nativeGuiIsSourceOfTruth"]["anyOf"]
+            .as_array()
+            .expect("claim anyOf")
+            .iter()
+            .find(|item| item["properties"]["kind"]["enum"] == json!(["satisfied"]))
+            .expect("satisfied claim schema");
+        assert_eq!(satisfied["properties"]["summary"]["maxLength"], json!(600));
         assert!(schema["properties"].get("finalDisposition").is_none());
     }
 
@@ -7824,6 +7891,7 @@ mod tests {
             .and_then(Value::as_array)
             .expect("required array");
         assert_eq!(required, &vec![json!("summary"), json!("requirements")]);
+        assert_eq!(schema["properties"]["summary"]["maxLength"], json!(1000));
         let requirements_schema = &schema["properties"]["requirements"];
         let requirements_object = requirements_schema["anyOf"]
             .as_array()
@@ -7837,7 +7905,8 @@ mod tests {
             .expect("verdict required array");
         assert!(verdict_required.iter().any(|value| value.as_str() == Some("nativeGuiIsSourceOfTruth")));
         assert!(verdict_required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
-        assert!(verdict_required.iter().any(|value| value.as_str() == Some("overallVerdict")));
+        assert!(!verdict_required.iter().any(|value| value.as_str() == Some("overallVerdict")));
+        assert!(requirements_object["properties"].get("overallVerdict").is_none());
         assert!(verdict_required.iter().any(|value| value.as_str() == Some("route")));
     }
 
@@ -7957,7 +8026,7 @@ mod tests {
     }
 
     #[test]
-    fn scoped_reviewer_schema_requires_only_current_review_scope() {
+    fn reviewer_schema_requires_only_claimed_review_keys_without_overall_verdict() {
         let mut set = sample_requirement_set();
         set.review_progress.insert(
             "nativeGuiIsSourceOfTruth".to_string(),
@@ -7966,7 +8035,7 @@ mod tests {
                 updated_at: Some(100),
             },
         );
-        let schema = requirements_verdict_schema_for_scope(
+        let schema = requirements_verdict_schema_for_review_keys(
             &set,
             ["noInventedWebsocketEventShapes"].iter().copied(),
         );
@@ -7979,8 +8048,9 @@ mod tests {
             .expect("requirements object");
         assert_eq!(
             requirements_object["required"],
-            json!(["noInventedWebsocketEventShapes", "overallVerdict", "route"])
+            json!(["noInventedWebsocketEventShapes", "route"])
         );
+        assert!(requirements_object["properties"].get("overallVerdict").is_none());
         assert!(requirements_object["properties"].get("nativeGuiIsSourceOfTruth").is_none());
         assert!(requirements_object["properties"].get("noInventedWebsocketEventShapes").is_some());
     }
@@ -8063,17 +8133,18 @@ mod tests {
         );
         assert!(prompt.contains("Review subject: Worker"));
         assert!(prompt.contains("Latest source claim packet:"));
-        assert!(prompt.contains("Review scope:"));
+        assert!(prompt.contains("Requirement keys to review from this claim packet:"));
         assert!(prompt.contains("`noInventedWebsocketEventShapes` priorStatus=pending"));
         assert!(!prompt.contains("previouslyPassed"));
         assert!(!prompt.contains("currentlyUnresolved"));
-        assert!(prompt.contains("Review only the scoped requirement keys"));
+        assert!(prompt.contains("Do not declare an overall pass for this subset."));
+        assert!(prompt.contains("Robdex derives the full RequirementSet status"));
         assert!(!prompt.contains("Requirements:\n"));
         assert!(!prompt.contains("Perform an adversarial Requirements Review."));
         assert!(!prompt.contains("Compare every canonical requirement"));
         assert!(!prompt.contains("The web GUI must mirror the native Flutter GUI."));
 
-        let schema = requirements_verdict_schema_for_scope(
+        let schema = requirements_verdict_schema_for_review_keys(
             &set,
             ["noInventedWebsocketEventShapes"].iter().copied(),
         );
@@ -8086,15 +8157,15 @@ mod tests {
             .expect("requirements object");
         assert_eq!(
             requirements_object["required"],
-            json!(["noInventedWebsocketEventShapes", "overallVerdict", "route"])
+            json!(["noInventedWebsocketEventShapes", "route"])
         );
         let drift_schema_description = serde_json::to_string(
             &requirements_object["properties"]["noInventedWebsocketEventShapes"],
         )
-        .expect("serialize scoped schema");
+        .expect("serialize review-key schema");
         assert!(drift_schema_description.contains("Do not invent websocket or HTTP event shapes."));
         assert!(drift_schema_description.contains("Severity: blocker"));
-        assert!(drift_schema_description.contains("verification: sourceInspection"));
+        assert!(drift_schema_description.contains("verification: diffReview"));
     }
 
     #[tokio::test]
@@ -8137,7 +8208,7 @@ mod tests {
                                     "requirementSetId": "web-gui-contract",
                                     "status": "blocked",
                                     "latestClaimPacket": {"summary": "sparse", "requirements": {"noInventedWebsocketEventShapes": {"kind": "blocked", "summary": "blocked", "blocker": "owner decision", "ownerDecisionNeeded": "approve scope", "evidence": [{"type":"sourceInspection","value":"review binding state"}]}}},
-                                    "latestVerdictPacket": {"overallVerdict": "acceptedBlocked", "noInventedWebsocketEventShapes": {"verdict": "acceptedBlocked"}},
+                                    "latestVerdictPacket": {"noInventedWebsocketEventShapes": {"verdict": "acceptedBlocked"}},
                                     "updatedAt": 12
                                 }
                             },
@@ -8165,6 +8236,146 @@ mod tests {
             status["summary"]["verdicts"][0]["progressStatus"],
             json!("passed")
         );
+    }
+
+    #[tokio::test]
+    async fn positive_subset_progress_keeps_requirement_set_active_and_review_status_nonterminal() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut state = PersistedState::default();
+        let mut project = PersistedProjectState {
+            project_root: Some(temp.path().display().to_string()),
+            cwd: Some(temp.path().display().to_string()),
+            ..Default::default()
+        };
+        project.agents.insert(
+            "source-thread".to_string(),
+            PersistedAgentState {
+                display_name: Some("Source".to_string()),
+                role: Some("worker".to_string()),
+                requirements: Some(sample_requirement_set()),
+                requirement_review: Some(RequirementReviewBindingState {
+                    source_thread_id: "source-thread".to_string(),
+                    reviewer_thread_id: "reviewer-thread".to_string(),
+                    requirement_set_id: Some("web-gui-contract".to_string()),
+                    status: "inReview".to_string(),
+                    latest_claim_packet: Some(json!({"summary": "claimed"})),
+                    latest_verdict_packet: None,
+                    updated_at: 100,
+                }),
+                ..Default::default()
+            },
+        );
+        project.agents.insert(
+            "reviewer-thread".to_string(),
+            PersistedAgentState {
+                display_name: Some("Requirements Reviewer".to_string()),
+                role: Some("requirements-reviewer".to_string()),
+                parent_thread_id: Some("source-thread".to_string()),
+                hidden_from_peer_list: true,
+                ..Default::default()
+            },
+        );
+        state.projects.insert("project".to_string(), project);
+        persist_state(&runtime, &state).await.expect("persist state");
+
+        mark_requirements_review_verdict(
+            &runtime,
+            "source-thread",
+            "reviewer-thread",
+            json!({
+                "nativeGuiIsSourceOfTruth": {
+                    "verdict": "pass",
+                    "reason": "Reviewed evidence passes.",
+                    "evidenceAssessment": "Sufficient.",
+                    "requiredCorrection": ""
+                },
+                "route": {
+                    "destination": "orchestrator",
+                    "message": "Reviewed key passed."
+                }
+            }),
+        )
+        .await
+        .expect("mark verdict");
+
+        let state = parse_state(&runtime.state_document_value().await);
+        let agent = agent_state_for_thread(&state, "source-thread").expect("source agent");
+        let requirements = agent.requirements.as_ref().expect("requirements");
+        assert!(requirements.active);
+        assert_eq!(
+            requirements.review_progress["nativeGuiIsSourceOfTruth"].status,
+            "passed"
+        );
+        assert!(!requirements
+            .review_progress
+            .contains_key("noInventedWebsocketEventShapes"));
+        assert_eq!(
+            agent.requirement_review.as_ref().map(|review| review.status.as_str()),
+            Some("inReview")
+        );
+        assert!(active_requirements_claim_schema_for_thread(&state, "source-thread").is_some());
+    }
+
+    #[tokio::test]
+    async fn requirements_status_never_reports_passed_while_active_set_has_unresolved_requirements() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
+            .await
+            .expect("runtime");
+        let mut requirements = sample_requirement_set();
+        requirements.review_progress.insert(
+            "nativeGuiIsSourceOfTruth".to_string(),
+            RequirementReviewProgressState {
+                status: "passed".to_string(),
+                updated_at: Some(10),
+            },
+        );
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "orch-1": {"displayName": "Orch", "role": "orchestrator", "projectRoot": temp.path().display().to_string()},
+                            "worker-1": {
+                                "displayName": "Worker",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "requirements": requirements,
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "web-gui-contract",
+                                    "status": "passed",
+                                    "latestVerdictPacket": {"nativeGuiIsSourceOfTruth": {"verdict": "pass"}},
+                                    "updatedAt": 12
+                                }
+                            },
+                            "reviewer-1": {"displayName": "Reviewer", "role": "requirements-reviewer", "projectRoot": temp.path().display().to_string(), "parentThreadId": "worker-1", "hiddenFromPeerList": true}
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        let status = orchestrator_requirements_status(
+            &runtime,
+            "orch-1",
+            Some("worker-1"),
+            None,
+            None,
+        )
+        .await
+        .expect("requirements status");
+        assert_eq!(status["summary"]["requirementSetActive"], json!(true));
+        assert_ne!(status["summary"]["status"], json!("passed"));
+        assert_eq!(status["summary"]["pendingCount"], json!(1));
+        assert_eq!(status["summary"]["passedCount"], json!(1));
     }
 
     #[tokio::test]
@@ -8228,7 +8439,7 @@ mod tests {
                                     "requirementSetId": "requirements-status-matrix",
                                     "status": "inReview",
                                     "latestClaimPacket": {"summary": "cheap", "requirements": {"notFinished": true}},
-                                    "latestVerdictPacket": {"overallVerdict": "notYet", "notYetRequirement": {"verdict": "notYet"}},
+                                    "latestVerdictPacket": {"notYetRequirement": {"verdict": "notYet"}},
                                     "updatedAt": 12
                                 }
                             },
@@ -8890,7 +9101,6 @@ requirements:
             "source-thread",
             "reviewer-thread",
             json!({
-                "overallVerdict": "pass",
                 "nativeGuiIsSourceOfTruth": {
                     "verdict": "pass",
                     "reason": "Evidence matches.",
@@ -8979,7 +9189,6 @@ requirements:
             "source-thread",
             "reviewer-thread",
             json!({
-                "overallVerdict": "fail",
                 "nativeGuiIsSourceOfTruth": {
                     "verdict": "pass",
                     "reason": "Still preserved.",
@@ -9031,7 +9240,6 @@ requirements:
             "source-thread",
             "reviewer-thread",
             json!({
-                "overallVerdict": "fail",
                 "nativeGuiIsSourceOfTruth": {
                     "verdict": "fail",
                     "reason": "The correction regressed native fidelity.",
@@ -9143,7 +9351,6 @@ requirements:
             "source-thread",
             "reviewer-thread",
             json!({
-                "overallVerdict": "pass",
                 "nativeGuiIsSourceOfTruth": {
                     "verdict": "stillPassing"
                 },
@@ -9258,7 +9465,6 @@ requirements:
                 "source-thread",
                 "reviewer-thread",
                 json!({
-                    "overallVerdict": overall,
                     "singleRequirement": {
                         "verdict": per_requirement_verdict,
                         "reason": "reason",
@@ -9323,7 +9529,6 @@ requirements:
             "source-thread",
             "reviewer-thread",
             json!({
-                "overallVerdict": "pass",
                 "singleRequirement": {"verdict": "stillPassing"},
                 "route": {"destination": "sourceAgent", "message": "invalid"}
             }),
@@ -9390,7 +9595,6 @@ requirements:
             "source-thread",
             "reviewer-thread",
             json!({
-                "overallVerdict": "waiverAccepted",
                 "nativeGuiIsSourceOfTruth": {
                     "verdict": "waiverAccepted",
                     "reason": "Owner accepted waiver.",
@@ -9421,7 +9625,8 @@ requirements:
             review
                 .latest_verdict_packet
                 .as_ref()
-                .and_then(|packet| packet.get("overallVerdict"))
+                .and_then(|packet| packet.get("nativeGuiIsSourceOfTruth"))
+                .and_then(|item| item.get("verdict"))
                 .and_then(Value::as_str),
             Some("waiverAccepted")
         );
@@ -12601,7 +12806,7 @@ requirements:
                                     "requirementSetId": "requirements-design",
                                     "status": "failed",
                                     "latestClaimPacket": {"summary": "claimed", "requirements": {"visualProof": {"kind": "satisfied", "summary": "captured", "evidence": [{"type":"screenshot","value":"screenshot artifact"}]}}},
-                                    "latestVerdictPacket": {"overallVerdict": "fail", "visualProof": {"verdict": "fail", "requiredCorrection": "capture"}},
+                                    "latestVerdictPacket": {"visualProof": {"verdict": "fail", "requiredCorrection": "capture"}},
                                     "updatedAt": 101
                                 },
                                 "requirementPackets": [{
