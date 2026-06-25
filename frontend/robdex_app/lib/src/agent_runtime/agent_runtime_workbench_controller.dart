@@ -822,9 +822,9 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
       _viewModel = current.copyWith(
         watermarkLabel: output.projection.watermark.toString(),
         statusBadges: [
-          ...current.statusBadges.where((badge) => badge.label != 'Sessions' && badge.label != 'History events'),
+          ...current.statusBadges.where((badge) => badge.label != 'Sessions' && badge.label != 'Timeline entries'),
           AgentRuntimeStatusBadge(label: 'Sessions', value: output.projection.sessionCount.toString(), tone: output.projection.sessionCount == 0 ? 'muted' : 'info'),
-          AgentRuntimeStatusBadge(label: 'History events', value: output.projection.timelineCount.toString(), tone: output.projection.timelineCount == 0 ? 'muted' : 'info'),
+          AgentRuntimeStatusBadge(label: 'Timeline entries', value: output.projection.timelineCount.toString(), tone: output.projection.timelineCount == 0 ? 'muted' : 'info'),
         ],
         pendingRequestCount: _pendingRequestIds.length,
       );

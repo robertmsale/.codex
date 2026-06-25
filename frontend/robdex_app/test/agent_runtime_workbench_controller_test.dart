@@ -1357,8 +1357,7 @@ void main() {
                 mainAxisSize: MainAxisSize.min,
                 children: const [
                   TextField(decoration: InputDecoration(labelText: 'Base URL')),
-                  Text('Runtime identity'),
-                  Text('Current connection state'),
+                  Text('Connection controls'),
                 ],
               ),
               actions: [
@@ -1382,8 +1381,7 @@ void main() {
     expect(settingsOpened, true);
     expect(find.text('Global settings'), findsOneWidget);
     expect(find.text('Base URL'), findsOneWidget);
-    expect(find.text('Runtime identity'), findsOneWidget);
-    expect(find.text('Current connection state'), findsOneWidget);
+    expect(find.text('Connection controls'), findsOneWidget);
     expect(selectedProjectId, 'project-b');
     expect(selectedSessionId, 'session-b');
     expect(projectSelectionCalls, 0);
@@ -1400,7 +1398,7 @@ void main() {
     expect(hydrateOrReconnectCalls, 0);
   });
 
-  testWidgets('Global Settings modal renders concrete controls, diagnostics, inline errors, and dispatches every action', (tester) async {
+  testWidgets('Global Settings modal renders concrete controls, inline errors, and dispatches every action', (tester) async {
     final actions = <String>[];
     await tester.pumpWidget(
       MaterialApp(
@@ -1434,13 +1432,6 @@ void main() {
       'Refresh imported profile',
       'Connect imported profile',
       'Disconnect',
-      'Runtime identity',
-      'Health URL',
-      'WebSocket URL',
-      'Discovery path',
-      'iCloud profile path',
-      'Imported profile path',
-      'Connection state',
     ]) {
       expect(find.text(label), findsWidgets);
     }
@@ -1587,7 +1578,7 @@ void main() {
     expect(find.text('Origin'), findsOneWidget);
     expect(find.text('Saved from a session'), findsOneWidget);
     expect(find.text('Source details'), findsOneWidget);
-    expect(find.text('Available in Diagnostics'), findsOneWidget);
+    expect(find.text('Stored in runtime audit history'), findsOneWidget);
     expect(find.text('Source script'), findsNothing);
     expect(find.text('Source hash'), findsNothing);
     expect(find.text('Command fingerprint'), findsNothing);
@@ -1613,7 +1604,7 @@ void main() {
     expect(feedback, containsAll(['memory-1:attempted', 'memory-1:helpful', 'memory-1:notHelpful']));
   });
 
-  testWidgets('Runtime Operations stays one detail surface with all required sections', (tester) async {
+  testWidgets('Runtime Operations omits removed operation sheets and keeps active sections', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1400, 4000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
@@ -1625,9 +1616,6 @@ void main() {
     );
 
     for (final section in [
-      'History',
-      'Diagnostics',
-      'Statistics',
       'Compaction',
       'Process Manager',
       'Approvals',
@@ -1636,6 +1624,9 @@ void main() {
       'Workflow Memory',
     ]) {
       expect(find.text(section), findsWidgets);
+    }
+    for (final removed in ['History', 'Diagnostics', 'Statistics', 'Image artifacts', 'Settings']) {
+      expect(find.text(removed), findsNothing);
     }
     expect(find.byType(AgentRuntimeOperationsDetail), findsOneWidget);
   });

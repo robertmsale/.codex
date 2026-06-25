@@ -1581,6 +1581,7 @@ class _ImageGenerationEventRow extends StatelessWidget {
     final theme = Theme.of(context);
     final timestampLabel = formatLocalTimeLabel(entry.timestamp);
     final path = entry.output?.trim();
+    final showPath = path != null && path.isNotEmpty && !path.startsWith('agent-runtime-image://');
 
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 760),
@@ -1637,7 +1638,7 @@ class _ImageGenerationEventRow extends StatelessWidget {
                       ),
                     ),
                   ],
-                  if (path != null && path.isNotEmpty) ...[
+                  if (showPath) ...[
                     const SizedBox(height: 6),
                     SelectableText(
                       path,

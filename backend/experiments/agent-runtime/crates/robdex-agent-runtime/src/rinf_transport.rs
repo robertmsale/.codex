@@ -3475,7 +3475,7 @@ fn runtime_detail_facts(projection: Option<&RuntimeProjection>, controller_state
         }
         let current_turn = if projection.timeline.iter().any(|item| item.event_type == "turn.started" && item.status.as_deref() == Some("running")) { "Running" } else { "Idle" };
         facts.push(AgentRuntimeWorkbenchFact { label: "Current turn".to_string(), value: current_turn.to_string() });
-        facts.push(AgentRuntimeWorkbenchFact { label: "History events".to_string(), value: projection.timeline.len().to_string() });
+        facts.push(AgentRuntimeWorkbenchFact { label: "Timeline entries".to_string(), value: projection.timeline.len().to_string() });
         facts.push(AgentRuntimeWorkbenchFact { label: "Chat entries".to_string(), value: projection.selected_chat_entries.len().to_string() });
         facts.push(AgentRuntimeWorkbenchFact { label: "Approval requests".to_string(), value: projection.pending_approvals.len().to_string() });
         facts.push(AgentRuntimeWorkbenchFact { label: "Command requests".to_string(), value: projection.command_registry_requests.len().to_string() });

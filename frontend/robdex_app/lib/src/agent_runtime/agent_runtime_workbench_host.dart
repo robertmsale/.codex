@@ -377,7 +377,7 @@ class _AgentRuntimeToolbar extends StatelessWidget {
         IconButton(
           key: const ValueKey('agentRuntime.toolbar.runtimeOperations'),
           tooltip: 'Runtime operations',
-          onPressed: () => onOpenSurface('history'),
+          onPressed: () => onOpenSurface(surfaces.any((surface) => surface.surfaceId == 'processManager') ? 'processManager' : 'compaction'),
           icon: const Icon(Icons.manage_history_rounded, size: 18),
         ),
         IconButton(
@@ -1133,15 +1133,6 @@ class _GlobalSettingsDialogState extends State<AgentRuntimeGlobalSettingsDialog>
 
   @override
   Widget build(BuildContext context) {
-    final diagnostics = <(String, String)>[
-      ('Runtime identity', widget.data.discovery.runtimeIdentity ?? 'Unavailable'),
-      ('Health URL', widget.data.discovery.healthUrl ?? 'Unavailable'),
-      ('WebSocket URL', widget.data.discovery.webSocketUrl ?? 'Unavailable'),
-      ('Discovery path', widget.data.discovery.discoveryPath),
-      ('iCloud profile path', widget.data.remoteDiscovery.discoveryPath),
-      ('Imported profile path', widget.data.importedRemoteDiscovery.discoveryPath),
-      ('Connection state', widget.data.connectionState),
-    ];
     return AlertDialog(
       title: const Text('Global settings'),
       content: SizedBox(
@@ -1187,36 +1178,6 @@ class _GlobalSettingsDialogState extends State<AgentRuntimeGlobalSettingsDialog>
               _RuntimeSettingsActionGroup(title: 'Disconnect', actions: [
                 OutlinedButton(onPressed: widget.onDisconnect, child: const Text('Disconnect')),
               ]),
-              const SizedBox(height: 18),
-              Text('Diagnostics', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
-              const SizedBox(height: 10),
-              for (final row in diagnostics)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final label = Text(row.$1, style: const TextStyle(color: Color(0xFFAAB6C4)));
-                      final value = Text(row.$2.isEmpty ? 'Unavailable' : row.$2, softWrap: true);
-                      if (constraints.maxWidth < 430) {
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            label,
-                            const SizedBox(height: 2),
-                            value,
-                          ],
-                        );
-                      }
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          SizedBox(width: 170, child: label),
-                          Expanded(child: value),
-                        ],
-                      );
-                    },
-                  ),
-                ),
             ],
           ),
         ),

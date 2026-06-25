@@ -3551,7 +3551,7 @@ class _WorkflowMemoryPanel extends StatelessWidget {
                 _FactRow(AgentRuntimeFact(label: 'Scope', value: _displayCopy(detail.scopeLabel))),
                 _FactRow(AgentRuntimeFact(label: 'Origin', value: detail.sourceSessionId.isEmpty ? 'Saved workflow' : 'Saved from a session')),
                 _FactRow(AgentRuntimeFact(label: 'Summary', value: detail.summary)),
-                _FactRow(const AgentRuntimeFact(label: 'Source details', value: 'Available in Diagnostics')),
+                _FactRow(const AgentRuntimeFact(label: 'Source details', value: 'Stored in runtime audit history')),
                 if (workflowMemory.recentEvents.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Text('Recent events', style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF93A5BC))),

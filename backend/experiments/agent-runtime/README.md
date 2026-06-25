@@ -1578,7 +1578,7 @@ handoff has produced a durable placement. The audit row remains in
 `submitted_inputs` and the event stream even when the visible chat entry is
 rendered from turn placement.
 
-The Rust/Rinf view model keeps those concepts separate: typed `AgentRuntimeChatEntry` values feed the shared `ChatTimeline`; history and operations DTO fields feed modal or sheet surfaces. Dart maps each chat entry to `ChatEntry` one-to-one and must not translate raw runtime event names into chat messages.
+The Rust/Rinf view model keeps those concepts separate: typed `AgentRuntimeChatEntry` values feed the shared `ChatTimeline`; machine history remains PostgreSQL/server-owned; active operation DTO fields feed the remaining typed operation surfaces. Dart maps each chat entry to `ChatEntry` one-to-one and must not translate raw runtime event names into chat messages.
 
 ## Robdex streaming transport notes
 

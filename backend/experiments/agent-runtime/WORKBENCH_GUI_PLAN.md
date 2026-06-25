@@ -22,9 +22,10 @@ operation decisions remain Rust-owned; Dart assembles the shared shell, sends
 typed Rinf intents, and keeps only widget-local draft, selection, and connection
 state.
 
-Operations diagnostics are retained as modal/sheet content rather than the
-primary connected app shell. New visual work must extend the Robdex Workbench
-conversation-shell contract, not rebuild a parallel dashboard, permanent operations pane or diagnostics-first workflow.
+Operational state is retained in typed Rust/PostgreSQL projections and logs
+rather than a generic diagnostics modal or sheet. New visual work must extend
+the Robdex Workbench conversation-shell contract, not rebuild a parallel
+dashboard, permanent operations pane, or diagnostics-first workflow.
 
 This plan records the current Workbench-compatible Agent Runtime GUI contract. It began as the backend/Rust planning source of truth and now also
 records the implemented Flutter-facing shared shell, Rust/Rinf transport
