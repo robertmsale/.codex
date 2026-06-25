@@ -1065,7 +1065,13 @@ impl BridgeRuntime {
         let payload = extract_json_object_from_text(verdict_text.trim())
             .unwrap_or_else(|| json!({ "raw": verdict_text.trim() }));
         let verdict_payload = match reviewable_requirements_verdict_payload(&payload) {
-            ReviewableRequirementsVerdict::Verdict(value) => value,
+            ReviewableRequirementsVerdict::Verdict(value) => {
+                if requirements_verdict_has_reviewable_entries(&state, &source_thread_id, &value) {
+                    value
+                } else {
+                    invalid_requirements_verdict_payload(&state, &source_thread_id, payload.clone())
+                }
+            }
             ReviewableRequirementsVerdict::NullCommentary => {
                 let _ = record_requirement_packet(
                     self,
@@ -1082,7 +1088,7 @@ impl BridgeRuntime {
                 .await;
                 return true;
             }
-            ReviewableRequirementsVerdict::Invalid => payload.clone(),
+            ReviewableRequirementsVerdict::Invalid => invalid_requirements_verdict_payload(&state, &source_thread_id, payload.clone()),
         };
         let _ = mark_requirements_review_verdict(self, &source_thread_id, thread_id, verdict_payload.clone()).await;
         let _ = record_requirement_packet(
@@ -3276,6 +3282,78 @@ fn reviewable_requirements_verdict_payload(payload: &Value) -> ReviewableRequire
     }
 }
 
+fn requirements_verdict_has_reviewable_entries(state: &Value, source_thread_id: &str, payload: &Value) -> bool {
+    let parsed_state = parse_state(state);
+    let Some(set) = active_requirements_for_thread(&parsed_state, source_thread_id) else {
+        return payload.as_object().is_some_and(|object| !object.is_empty());
+    };
+    let Some(object) = payload.as_object() else {
+        return false;
+    };
+    set.requirements.iter().any(|requirement| {
+        object
+            .get(requirement.key.as_str())
+            .and_then(|value| value.get("verdict"))
+            .and_then(Value::as_str)
+            .is_some()
+    })
+}
+
+fn invalid_requirements_verdict_payload(state: &Value, source_thread_id: &str, raw_payload: Value) -> Value {
+    let raw_output = raw_payload
+        .get("raw")
+        .cloned()
+        .unwrap_or_else(|| raw_payload.clone());
+    let parsed_state = parse_state(state);
+    let Some(set) = active_requirements_for_thread(&parsed_state, source_thread_id) else {
+        return raw_payload;
+    };
+    let latest_claim_packet = parsed_state
+        .projects
+        .values()
+        .find_map(|project| project.agents.get(source_thread_id))
+        .and_then(|agent| agent.requirement_review.as_ref())
+        .and_then(|review| review.latest_claim_packet.clone())
+        .unwrap_or(Value::Null);
+    let mut keys = reviewable_requirement_claim_keys(&set, &latest_claim_packet);
+    if keys.is_empty() {
+        keys = set
+            .requirements
+            .iter()
+            .filter(|requirement| {
+                !matches!(
+                    set.review_progress
+                        .get(requirement.key.as_str())
+                        .map(|progress| progress.status.as_str()),
+                    Some("passed" | "waived")
+                )
+            })
+            .map(|requirement| requirement.key.clone())
+            .collect();
+    }
+    let mut verdict = serde_json::Map::new();
+    verdict.insert("raw".to_string(), raw_output);
+    for key in keys {
+        verdict.insert(
+            key,
+            json!({
+                "verdict": "fail",
+                "reason": "Requirements reviewer did not return a valid verdict packet.",
+                "evidenceAssessment": "No structured Requirements verdict was available to validate the source claim.",
+                "requiredCorrection": "Rerun Requirements Review with a valid per-requirement verdict packet."
+            }),
+        );
+    }
+    verdict.insert(
+        "route".to_string(),
+        json!({
+            "destination": "sourceAgent",
+            "message": "Requirements review failed because the reviewer did not return a valid verdict packet."
+        }),
+    );
+    Value::Object(verdict)
+}
+
 fn requirements_null_claim_prompt() -> String {
     "[Requirements] Active Requirements are still attached. Your last response used `requirements: null`, which is only allowed for mid-turn commentary. Please provide the final Requirements claim packet with `requirements` set to the object containing every currently required requirement claim. Previously passed requirements remain binding even when omitted from the reduced claim schema. Keep `summary` global and concise; do not duplicate evidence between summary, evidence, and justification.".to_string()
 }
@@ -3978,11 +4056,25 @@ mod tests {
             .expect("reviewer required");
         assert_eq!(required, &vec![json!("mustProvideClaims"), json!("route")]);
         let prompt = request["params"]["input"][0]["text"].as_str().unwrap_or_default();
-        assert!(prompt.contains("Latest source claim packet:"));
-        assert!(prompt.contains("Requirement keys to review from this claim packet:"));
+        let expected_prompt = serde_json::to_string_pretty(&json!({
+            "summary": "implemented",
+            "requirements": {
+                "mustProvideClaims": {
+                    "kind": "satisfied",
+                    "summary": "implemented",
+                    "evidence": [{"type": "testsRun", "value": "cargo test passed"}]
+                }
+            }
+        }))
+        .expect("serialize expected prompt");
+        assert_eq!(prompt, expected_prompt);
+        assert!(!prompt.contains("Review subject:"));
+        assert!(!prompt.contains("Latest source claim packet:"));
+        assert!(!prompt.contains("Requirement keys to review from this claim packet:"));
         assert!(prompt.contains("implemented"));
         assert!(prompt.contains("cargo test passed"));
-        assert!(prompt.contains("`mustProvideClaims` priorStatus=pending"));
+        assert!(!prompt.contains("priorStatus"));
+        assert!(!prompt.contains("Must provide claims"));
         assert!(prompt.contains("\"requirements\""));
         transport.abort();
         server.abort();
@@ -4156,7 +4248,7 @@ mod tests {
         let state = runtime.state_document_value().await;
         let source = &state["projects"]["alpha"]["agents"]["worker-1"];
         assert_eq!(source["requirements"]["active"], json!(true));
-        assert_eq!(source["requirementReview"]["status"], json!("inReview"));
+        assert_eq!(source["requirementReview"]["status"], json!("failed"));
         assert_eq!(
             source["requirementReview"]["latestClaimPacket"]["summary"],
             json!("claimed")

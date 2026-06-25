@@ -3280,7 +3280,14 @@ fn planner_turn_output_schema() -> Value {
 }
 
 pub(crate) fn requirements_worker_claim_schema(set: &RequirementSetState) -> Value {
-    requirements_claim_schema_for_requirements(set.requirements.iter())
+    requirements_claim_schema_for_requirements(set.requirements.iter().filter(|requirement| {
+        !matches!(
+            set.review_progress
+                .get(requirement.key.as_str())
+                .map(|progress| progress.status.as_str()),
+            Some("passed" | "waived")
+        )
+    }))
 }
 
 fn requirements_claim_schema_for_requirements<'a>(
@@ -3289,6 +3296,7 @@ fn requirements_claim_schema_for_requirements<'a>(
     const REQUIREMENTS_GLOBAL_SUMMARY_MAX_LENGTH: u32 = 1_000;
     const REQUIREMENTS_PER_ITEM_SUMMARY_MAX_LENGTH: u32 = 600;
     let mut requirement_properties = serde_json::Map::new();
+    let mut requirement_required = Vec::new();
     for requirement in requirements {
         let key = requirement.key.trim();
         if key.is_empty() {
@@ -3305,8 +3313,8 @@ fn requirements_claim_schema_for_requirements<'a>(
                 REQUIREMENTS_PER_ITEM_SUMMARY_MAX_LENGTH,
             ),
         );
+        requirement_required.push(key.to_string());
     }
-    let requirement_required = requirement_properties.keys().cloned().collect::<Vec<_>>();
     let mut properties = serde_json::Map::new();
     properties.insert(
         "summary".to_string(),
@@ -6475,20 +6483,14 @@ pub(crate) async fn ensure_requirements_reviewer_for_thread(
 }
 
 pub(crate) fn requirements_review_prompt(
-    set: &RequirementSetState,
-    source_label: &str,
+    _set: &RequirementSetState,
+    _source_label: &str,
     _source_thread_id: &str,
     _turn_id: &str,
     claim_text: &str,
-    review_keys: &[String],
+    _review_keys: &[String],
 ) -> String {
-    let mut prompt = format!("Review subject: {source_label}\n\n");
-    prompt.push_str("Latest source claim packet:\n");
-    prompt.push_str(&compact_source_claim_packet(claim_text));
-    prompt.push_str("\n\nRequirement keys to review from this claim packet:\n");
-    prompt.push_str(&compact_requirement_review_keys(set, review_keys));
-    prompt.push_str("\n\nReturn per-requirement verdicts only for the keys present in the active structured output schema. Do not declare an overall pass for this subset. Robdex derives the full RequirementSet status from persisted progress across every requirement. If a reviewed key was previously passed and the schema offers `stillPassing`, use that shortcut only after confirming the pass still holds.");
-    prompt
+    compact_source_claim_packet(claim_text)
 }
 
 fn compact_source_claim_packet(claim_text: &str) -> String {
@@ -6500,35 +6502,6 @@ fn compact_source_claim_packet(claim_text: &str) -> String {
         .ok()
         .and_then(|value| serde_json::to_string_pretty(&value).ok())
         .unwrap_or_else(|| trimmed.to_string())
-}
-
-fn compact_requirement_review_keys(set: &RequirementSetState, review_keys: &[String]) -> String {
-    let review_keys = review_keys
-        .iter()
-        .map(|key| key.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut lines = Vec::new();
-    for requirement in &set.requirements {
-        if !review_keys.contains(requirement.key.as_str()) {
-            continue;
-        }
-        let prior = set
-            .review_progress
-            .get(requirement.key.as_str())
-            .map(|progress| progress.status.as_str())
-            .unwrap_or("pending");
-        lines.push(format!(
-            "* `{}` priorStatus={} — {}",
-            requirement.key,
-            prior,
-            requirement.statement.trim()
-        ));
-    }
-    if lines.is_empty() {
-        "(no reviewable requirement claims in source packet)".to_string()
-    } else {
-        lines.join("\n")
-    }
 }
 
 pub(crate) async fn record_requirement_packet(
@@ -7948,13 +7921,13 @@ mod tests {
             .as_array()
             .expect("worker alternatives")
             .iter()
-            .find(|item| item["properties"].get("nativeGuiIsSourceOfTruth").is_some())
+            .find(|item| item["properties"].get("noInventedWebsocketEventShapes").is_some())
             .expect("worker requirements object");
         assert_eq!(
             worker_requirements["required"],
-            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
+            json!(["noInventedWebsocketEventShapes"])
         );
-        assert!(worker_requirements["properties"].get("nativeGuiIsSourceOfTruth").is_some());
+        assert!(worker_requirements["properties"].get("nativeGuiIsSourceOfTruth").is_none());
         assert!(worker_requirements["properties"].get("noInventedWebsocketEventShapes").is_some());
 
         let reviewer_schema = requirements_verdict_schema(&set);
@@ -8123,22 +8096,27 @@ mod tests {
             },
         );
 
+        let claim_packet = r#"{"summary":"fixed one item","requirements":{"noInventedWebsocketEventShapes":{"kind":"satisfied","summary":"fixed","evidence":[{"type":"testsRun","value":"cargo test -p codex-robdex-bridge requirements_"}]}}}"#;
         let prompt = requirements_review_prompt(
             &set,
             "Worker",
             "worker-1",
             "turn-1",
-            r#"{"summary":"fixed one item","requirements":{"noInventedWebsocketEventShapes":{"kind":"satisfied","summary":"fixed","evidence":[{"type":"testsRun","value":"cargo test -p codex-robdex-bridge requirements_"}]}}}"#,
+            claim_packet,
             &["noInventedWebsocketEventShapes".to_string()],
         );
-        assert!(prompt.contains("Review subject: Worker"));
-        assert!(prompt.contains("Latest source claim packet:"));
-        assert!(prompt.contains("Requirement keys to review from this claim packet:"));
-        assert!(prompt.contains("`noInventedWebsocketEventShapes` priorStatus=pending"));
+        assert_eq!(prompt, compact_source_claim_packet(claim_packet));
+        assert!(!prompt.contains("Review subject:"));
+        assert!(!prompt.contains("Worker"));
+        assert!(!prompt.contains("Latest source claim packet:"));
+        assert!(!prompt.contains("Requirement keys to review from this claim packet:"));
+        assert!(!prompt.contains("priorStatus"));
         assert!(!prompt.contains("previouslyPassed"));
         assert!(!prompt.contains("currentlyUnresolved"));
-        assert!(prompt.contains("Do not declare an overall pass for this subset."));
-        assert!(prompt.contains("Robdex derives the full RequirementSet status"));
+        assert!(!prompt.contains("Do not declare an overall pass for this subset."));
+        assert!(!prompt.contains("Robdex derives the full RequirementSet status"));
+        assert!(!prompt.contains("worker-1"));
+        assert!(!prompt.contains("turn-1"));
         assert!(!prompt.contains("Requirements:\n"));
         assert!(!prompt.contains("Perform an adversarial Requirements Review."));
         assert!(!prompt.contains("Compare every canonical requirement"));
@@ -9637,12 +9615,7 @@ requirements:
 
     #[test]
     fn requirements_review_prompt_includes_evidence_without_hidden_ids_or_requirement_prose() {
-        let prompt = requirements_review_prompt(
-            &sample_requirement_set(),
-            "Config Operator",
-            "thread-secret",
-            "turn-secret",
-            r#"{
+        let claim_packet = r#"{
                 "summary": "Rendered reviewer verdict card.",
                 "requirements": {
                     "nativeGuiIsSourceOfTruth": {
@@ -9651,11 +9624,20 @@ requirements:
                         "evidence": [{"type":"screenshot","value":"/tmp/reviewer-verdict-card.png"}]
                     }
                 }
-            }"#,
+            }"#;
+        let prompt = requirements_review_prompt(
+            &sample_requirement_set(),
+            "Config Operator",
+            "thread-secret",
+            "turn-secret",
+            claim_packet,
             &["nativeGuiIsSourceOfTruth".to_string()],
         );
-        assert!(prompt.contains("Review subject: Config Operator"));
-        assert!(prompt.contains("Latest source claim packet:"));
+        assert_eq!(prompt, compact_source_claim_packet(claim_packet));
+        assert!(!prompt.contains("Review subject:"));
+        assert!(!prompt.contains("Config Operator"));
+        assert!(!prompt.contains("Latest source claim packet:"));
+        assert!(!prompt.contains("Requirement keys to review from this claim packet:"));
         assert!(!prompt.contains("Evidence index:"));
         assert!(!prompt.contains("Source evidence summary:"));
         assert!(prompt.contains("Rendered reviewer verdict card."));
@@ -9664,8 +9646,8 @@ requirements:
         assert!(!prompt.contains("Source turn ID"));
         assert!(!prompt.contains("thread-secret"));
         assert!(!prompt.contains("turn-secret"));
-        assert!(prompt.contains("`nativeGuiIsSourceOfTruth` priorStatus=pending"));
-        assert!(prompt.contains("The web GUI must mirror the native Flutter GUI."));
+        assert!(!prompt.contains("priorStatus"));
+        assert!(!prompt.contains("The web GUI must mirror the native Flutter GUI."));
         assert!(!prompt.contains("Do not invent websocket or HTTP event shapes."));
     }
 
