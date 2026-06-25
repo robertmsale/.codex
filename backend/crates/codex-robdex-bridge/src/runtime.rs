@@ -31,7 +31,7 @@ use crate::{
         mark_requirements_review_verdict, parse_state, persist_state, prune_archived_thread_locally,
         prune_missing_project_roots, record_requirement_packet, requirements_review_prompt,
         requirements_review_source_for_reviewer, requirements_review_target_for_thread,
-        requirements_verdict_schema_for_scope, run_compaction_hook_best_effort, send_follow_up_message,
+        requirements_verdict_schema_for_review_keys, run_compaction_hook_best_effort, send_follow_up_message,
         send_thread_input, tracked_project_identity_for_thread,
         PersistedState, RequirementPacketState, RequirementSetState,
     },
@@ -1118,32 +1118,24 @@ impl BridgeRuntime {
             }
         }
 
-        let raw_overall = payload
-            .get("overallVerdict")
-            .and_then(Value::as_str)
-            .unwrap_or("fail");
         let state_value = self.state_document.read().await.clone();
-        let pass_would_be_premature = source_requirement_set_requires_completion(&state_value, source_thread_id);
-        let overall = if matches!(raw_overall, "pass" | "waiverAccepted") && pass_would_be_premature {
-            "partialPass"
-        } else {
-            raw_overall
-        };
+        let status = derived_requirement_review_status_for_thread(&state_value, source_thread_id)
+            .unwrap_or_else(|| "inReview".to_string());
         let route_message = payload
             .get("route")
             .and_then(|route| route.get("message"))
             .and_then(Value::as_str)
             .unwrap_or("");
         let source_label = sender_label_for_thread(&state_value, source_thread_id);
-        let text = compose_requirements_verdict_route_message(overall, &source_label, route_message, payload);
+        let text = compose_requirements_verdict_route_message(status.as_str(), &source_label, route_message, payload);
         if text.trim().is_empty() {
             return;
         }
 
         let parsed_state = parse_state(&state_value);
-        let destination_thread_id = match overall {
-            "notYet" | "fail" | "rejectedBlocked" => source_thread_id.to_string(),
-            "needsHumanWaiver" => {
+        let destination_thread_id = match status.as_str() {
+            "inReview" | "failed" | "notYet" => source_thread_id.to_string(),
+            "waiverRequired" => {
                 let Some(project) = tracked_project_for_thread(&state_value, source_thread_id) else {
                     return;
                 };
@@ -1155,7 +1147,7 @@ impl BridgeRuntime {
                 };
                 orchestrator_thread_id
             }
-            "acceptedBlocked" => {
+            "blocked" => {
                 let Some(project) = tracked_project_for_thread(&state_value, source_thread_id) else {
                     return;
                 };
@@ -1167,7 +1159,7 @@ impl BridgeRuntime {
                 };
                 orchestrator_thread_id
             }
-            "pass" | "waiverAccepted" => {
+            "passed" | "waiverAccepted" => {
                 let Some(project) = tracked_project_for_thread(&state_value, source_thread_id) else {
                     return;
                 };
@@ -1222,7 +1214,7 @@ impl BridgeRuntime {
                 .and_then(|agent| agent.requirements.as_ref())
                 .map(|set| !set.active)
                 .unwrap_or(false);
-            if raw_overall == "pass" && requirements_inactive {
+            if status == "passed" && requirements_inactive {
                 if let Err(error) = archive_thread(self, reviewer_thread_id).await {
                     tracing::warn!(
                         "failed to archive completed requirements reviewer {reviewer_thread_id}: {error}"
@@ -1425,7 +1417,7 @@ impl BridgeRuntime {
             service_tier: tracked_service_tier_for_thread_value(&state, &reviewer_thread_id),
             approvals_reviewer: tracked_approvals_reviewer_for_thread_value(&state, &reviewer_thread_id),
             personality: tracked_personality_for_thread_value(&state, &reviewer_thread_id),
-            output_schema: Some(requirements_verdict_schema_for_scope(
+            output_schema: Some(requirements_verdict_schema_for_review_keys(
                 &set,
                 review_scope.iter().map(|key| key.as_str()),
             )),
@@ -2933,19 +2925,17 @@ fn compose_auto_routed_reply(text: &str, sender_label: &str, local_image_paths: 
 }
 
 fn compose_requirements_verdict_route_message(
-    overall: &str,
+    status: &str,
     source_label: &str,
     route_message: &str,
     payload: &Value,
 ) -> String {
-    let headline = match overall {
-        "notYet" => "Requirements review is not yet complete.",
-        "partialPass" => "Scoped Requirements review passed; the full RequirementSet is still active.",
-        "pass" => "Requirements review passed.",
-        "fail" => "Requirements review failed.",
-        "acceptedBlocked" => "Requirements review accepted a true blocker.",
-        "rejectedBlocked" => "Requirements review rejected the blocker claim.",
-        "needsHumanWaiver" => "Requirements review requires a human waiver.",
+    let headline = match status {
+        "inReview" | "notYet" => "Requirements review recorded progress; the full RequirementSet is still active.",
+        "passed" => "Requirements review passed.",
+        "failed" => "Requirements review failed.",
+        "blocked" => "Requirements review accepted a true blocker.",
+        "waiverRequired" => "Requirements review requires a human waiver.",
         "waiverAccepted" => "Requirements review recorded an accepted human waiver.",
         _ => "Requirements review completed.",
     };
@@ -2962,7 +2952,7 @@ fn compose_requirements_verdict_route_message(
         .into_iter()
         .flat_map(|object| object.iter())
         .filter(|(key, value)| {
-            *key != "overallVerdict" && *key != "route" && value.is_object()
+            *key != "route" && value.is_object()
         })
         .filter_map(|(key, value)| {
             let verdict = value.get("verdict").and_then(Value::as_str)?;
@@ -3008,7 +2998,7 @@ fn requirements_review_status_for_thread_value(state: &Value, thread_id: &str) -
         .map(str::to_string)
 }
 
-fn source_requirement_set_requires_completion(state: &Value, thread_id: &str) -> bool {
+fn derived_requirement_review_status_for_thread(state: &Value, thread_id: &str) -> Option<String> {
     state
         .get("projects")
         .and_then(Value::as_object)
@@ -3021,10 +3011,7 @@ fn source_requirement_set_requires_completion(state: &Value, thread_id: &str) ->
                 .and_then(|agents| agents.get(thread_id))
         })
         .and_then(|agent| agent.get("requirements"))
-        .is_some_and(|requirements| {
-            requirements.get("active").and_then(Value::as_bool) == Some(true)
-                && !requirement_set_value_all_passed_or_waived(requirements)
-        })
+        .map(derive_requirement_review_status_from_requirements_value)
 }
 
 fn requirement_set_value_all_passed_or_waived(requirements: &Value) -> bool {
@@ -3049,6 +3036,44 @@ fn requirement_set_value_all_passed_or_waived(requirements: &Value) -> bool {
             Some("passed" | "waived")
         )
     })
+}
+
+fn derive_requirement_review_status_from_requirements_value(requirements: &Value) -> String {
+    if requirement_set_value_all_passed_or_waived(requirements) {
+        let any_waived = requirements
+            .get("requirements")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|requirement| requirement.get("key").and_then(Value::as_str))
+            .any(|key| {
+                requirements
+                    .get("reviewProgress")
+                    .and_then(Value::as_object)
+                    .and_then(|progress| progress.get(key))
+                    .and_then(|progress| progress.get("status"))
+                    .and_then(Value::as_str)
+                    == Some("waived")
+            });
+        return if any_waived { "waiverAccepted" } else { "passed" }.to_string();
+    }
+    let progress_values = requirements
+        .get("reviewProgress")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|progress| progress.values())
+        .filter_map(|progress| progress.get("status").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    if progress_values.iter().any(|status| *status == "waiverRequired") {
+        return "waiverRequired".to_string();
+    }
+    if progress_values.iter().any(|status| *status == "blocked") {
+        return "blocked".to_string();
+    }
+    if progress_values.iter().any(|status| *status == "failed") {
+        return "failed".to_string();
+    }
+    "inReview".to_string()
 }
 
 enum ReviewableRequirementsClaim {
@@ -3951,10 +3976,10 @@ mod tests {
         let required = requirements_object["required"]
             .as_array()
             .expect("reviewer required");
-        assert_eq!(required, &vec![json!("mustProvideClaims"), json!("overallVerdict"), json!("route")]);
+        assert_eq!(required, &vec![json!("mustProvideClaims"), json!("route")]);
         let prompt = request["params"]["input"][0]["text"].as_str().unwrap_or_default();
         assert!(prompt.contains("Latest source claim packet:"));
-        assert!(prompt.contains("Review scope:"));
+        assert!(prompt.contains("Requirement keys to review from this claim packet:"));
         assert!(prompt.contains("implemented"));
         assert!(prompt.contains("cargo test passed"));
         assert!(prompt.contains("`mustProvideClaims` priorStatus=pending"));
@@ -4022,7 +4047,7 @@ mod tests {
                     "review-turn-embedded",
                     "final-embedded",
                     Some("final_answer"),
-                    "Reviewed.\n{\"summary\":\"ok\",\"requirements\":{\"mustProvideClaims\":{\"verdict\":\"pass\",\"reason\":\"proof\",\"evidenceAssessment\":\"ok\",\"requiredCorrection\":\"\"},\"overallVerdict\":\"pass\",\"route\":{\"destination\":\"orchestrator\",\"message\":\"done\"}}}",
+                    "Reviewed.\n{\"summary\":\"ok\",\"requirements\":{\"mustProvideClaims\":{\"verdict\":\"pass\",\"reason\":\"proof\",\"evidenceAssessment\":\"ok\",\"requiredCorrection\":\"\"},\"route\":{\"destination\":\"orchestrator\",\"message\":\"done\"}}}",
                 )],
             );
         }
@@ -4244,7 +4269,20 @@ mod tests {
                                 "displayName": "Worker One",
                                 "role": "worker",
                                 "projectRoot": temp.path().display().to_string(),
-                                "cwd": temp.path().display().to_string()
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "requirements": [{
+                                        "key": "mustProve",
+                                        "statement": "Must prove.",
+                                        "severity": "blocker",
+                                        "verificationMethod": "manualEvidence"
+                                    }],
+                                    "reviewProgress": {
+                                        "mustProve": {"status": "failed", "updatedAt": 1}
+                                    }
+                                }
                             },
                             "reviewer-1": {
                                 "displayName": "Requirements Reviewer: Worker One",
@@ -4266,7 +4304,6 @@ mod tests {
                 "reviewer-1",
                 "review-turn-1",
                 &json!({
-                    "overallVerdict": "fail",
                     "route": {
                         "target": "sourceAgent",
                         "message": "Fix the missing proof."
@@ -4357,7 +4394,6 @@ mod tests {
                 "reviewer-1",
                 "review-turn-not-yet",
                 &json!({
-                    "overallVerdict": "notYet",
                     "route": {"destination": "sourceAgent", "message": "Need concrete evidence."},
                     "mustProve": {"verdict": "notYet"}
                 }),
@@ -4374,7 +4410,7 @@ mod tests {
             request["params"]["input"][0]["text"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("not yet complete")
+                .contains("full RequirementSet is still active")
         );
         let state = runtime.state_document_value().await;
         assert_eq!(state["projects"]["alpha"]["agents"]["worker-1"]["requirements"]["active"], json!(true));
@@ -4410,7 +4446,20 @@ mod tests {
                                 "displayName": "Worker One",
                                 "role": "worker",
                                 "projectRoot": temp.path().display().to_string(),
-                                "cwd": temp.path().display().to_string()
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "requirements": [{
+                                        "key": "mustProve",
+                                        "statement": "Must prove.",
+                                        "severity": "blocker",
+                                        "verificationMethod": "manualEvidence"
+                                    }],
+                                    "reviewProgress": {
+                                        "mustProve": {"status": "waiverRequired", "updatedAt": 1}
+                                    }
+                                }
                             },
                             "reviewer-1": {
                                 "displayName": "Requirements Reviewer: Worker One",
@@ -4434,13 +4483,60 @@ mod tests {
                 "Requirements review accepted a true blocker.",
             ),
         ] {
+            let progress_status = if verdict == "pass" { "passed" } else { "blocked" };
+            let active = verdict != "pass";
+            runtime
+                .persist_state_document(json!({
+                    "projects": {
+                        "alpha": {
+                            "projectRoot": temp.path().display().to_string(),
+                            "cwd": temp.path().display().to_string(),
+                            "orchestratorThreadID": "orch-1",
+                            "agents": {
+                                "orch-1": {
+                                    "displayName": "Orchestrator",
+                                    "role": "orchestrator",
+                                    "projectRoot": temp.path().display().to_string(),
+                                    "cwd": temp.path().display().to_string()
+                                },
+                                "worker-1": {
+                                    "displayName": "Worker One",
+                                    "role": "worker",
+                                    "projectRoot": temp.path().display().to_string(),
+                                    "cwd": temp.path().display().to_string(),
+                                    "requirements": {
+                                        "id": "requirements-alpha",
+                                        "active": active,
+                                        "requirements": [{
+                                            "key": "mustProve",
+                                            "statement": "Must prove.",
+                                            "severity": "blocker",
+                                            "verificationMethod": "manualEvidence"
+                                        }],
+                                        "reviewProgress": {
+                                            "mustProve": {"status": progress_status, "updatedAt": 1}
+                                        }
+                                    }
+                                },
+                                "reviewer-1": {
+                                    "displayName": "Requirements Reviewer: Worker One",
+                                    "role": "requirements-reviewer",
+                                    "projectRoot": temp.path().display().to_string(),
+                                    "parentThreadId": "worker-1",
+                                    "hiddenFromPeerList": true
+                                }
+                            }
+                        }
+                    }
+                }))
+                .await
+                .expect("persist route state");
             runtime
                 .maybe_route_requirements_verdict(
                     "worker-1",
                     "reviewer-1",
                     turn_id,
                     &json!({
-                        "overallVerdict": verdict,
                         "route": {
                             "target": "orchestrator",
                             "message": "Route beyond the worker."
@@ -4454,10 +4550,16 @@ mod tests {
                     }),
                 )
                 .await;
-            let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            let mut request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
                 .await
                 .expect("request timeout")
                 .expect("request");
+            if request["method"] != json!("turn/start") {
+                request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+                    .await
+                    .expect("request timeout")
+                    .expect("request");
+            }
             assert_eq!(request["method"], "turn/start");
             assert_eq!(request["params"]["threadId"], "orch-1");
             assert!(
@@ -4472,7 +4574,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn partial_scoped_pass_routes_back_to_source_not_orchestrator() {
+    async fn positive_subset_progress_routes_back_to_source_not_orchestrator() {
         let temp = TempDir::new().expect("tempdir");
         let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
         let transport = runtime.spawn_transport();
@@ -4534,9 +4636,8 @@ mod tests {
             .maybe_route_requirements_verdict(
                 "worker-1",
                 "reviewer-1",
-                "review-turn-partial-pass",
+                "review-turn-positive-progress",
                 &json!({
-                    "overallVerdict": "pass",
                     "passedScoped": {
                         "verdict": "pass",
                         "reason": "Scoped evidence passed.",
@@ -4557,7 +4658,7 @@ mod tests {
         assert_eq!(request["method"], "turn/start");
         assert_eq!(request["params"]["threadId"], "worker-1");
         let text = request["params"]["input"][0]["text"].as_str().unwrap_or_default();
-        assert!(text.contains("Scoped Requirements review passed"));
+        assert!(text.contains("Requirements review recorded progress"));
         assert!(!text.contains("Requirements review passed."));
         let state = runtime.state_document_value().await;
         assert_eq!(state["projects"]["alpha"]["agents"]["worker-1"]["requirements"]["active"], json!(true));
@@ -4600,7 +4701,7 @@ mod tests {
                                     "reviewerThreadId": "reviewer-1",
                                     "requirementSetId": "requirements-alpha",
                                     "status": "inReview",
-                                    "latestVerdictPacket": {"overallVerdict": "pass", "passedScoped": {"verdict": "pass"}},
+                                    "latestVerdictPacket": {"passedScoped": {"verdict": "pass"}},
                                     "updatedAt": 1
                                 }
                             },
@@ -4645,7 +4746,7 @@ mod tests {
             .iter()
             .find(|item| item["type"] == json!("object"))
             .expect("requirements object");
-        assert_eq!(requirements_object["required"], json!(["stillPending", "overallVerdict", "route"]));
+        assert_eq!(requirements_object["required"], json!(["stillPending", "route"]));
         assert_eq!(
             runtime.state_document_value().await["projects"]["alpha"]["agents"]["worker-1"]["requirements"]["active"],
             json!(true)
@@ -4678,7 +4779,20 @@ mod tests {
                                 "displayName": "Worker One",
                                 "role": "worker",
                                 "projectRoot": temp.path().display().to_string(),
-                                "cwd": temp.path().display().to_string()
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "requirements": [{
+                                        "key": "mustProve",
+                                        "statement": "Must prove.",
+                                        "severity": "blocker",
+                                        "verificationMethod": "manualEvidence"
+                                    }],
+                                    "reviewProgress": {
+                                        "mustProve": {"status": "waiverRequired", "updatedAt": 1}
+                                    }
+                                }
                             },
                             "reviewer-1": {
                                 "displayName": "Requirements Reviewer: Worker One",
@@ -4700,7 +4814,6 @@ mod tests {
                 "reviewer-1",
                 "review-turn-waiver",
                 &json!({
-                    "overallVerdict": "needsHumanWaiver",
                     "route": {
                         "target": "orchestrator",
                         "message": "Owner decision required."
@@ -4752,7 +4865,20 @@ mod tests {
                                 "displayName": "Worker One",
                                 "role": "worker",
                                 "projectRoot": temp.path().display().to_string(),
-                                "cwd": temp.path().display().to_string()
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "requirements": [{
+                                        "key": "blockedRequirement",
+                                        "statement": "Blocked requirement.",
+                                        "severity": "blocker",
+                                        "verificationMethod": "manualEvidence"
+                                    }],
+                                    "reviewProgress": {
+                                        "blockedRequirement": {"status": "blocked", "updatedAt": 1}
+                                    }
+                                }
                             },
                             "reviewer-1": {
                                 "displayName": "Requirements Reviewer: Worker One",
@@ -4774,7 +4900,6 @@ mod tests {
                 "reviewer-1",
                 "review-turn-blocked-no-orch",
                 &json!({
-                    "overallVerdict": "acceptedBlocked",
                     "route": {
                         "target": "orchestrator",
                         "message": "External blocker accepted."
@@ -4830,7 +4955,7 @@ mod tests {
                                     "requirementSetId": "requirements-alpha",
                                     "status": "waiverRequired",
                                     "latestClaimPacket": {"summary": "claimed", "requirements": {}},
-                                    "latestVerdictPacket": {"overallVerdict": "needsHumanWaiver"},
+                                    "latestVerdictPacket": {"needsOwnerDecision": {"verdict": "waiverRequired"}},
                                     "updatedAt": 100
                                 }
                             },
@@ -4929,7 +5054,7 @@ mod tests {
                     "review-turn-1",
                     "final-1",
                     Some("final_answer"),
-                    "{\"overallVerdict\":\"fail\",\"route\":{\"message\":\"worker only\"}}",
+                    "{\"mustProve\":{\"verdict\":\"fail\",\"reason\":\"bad\",\"evidenceAssessment\":\"bad\",\"requiredCorrection\":\"fix\"},\"route\":{\"destination\":\"sourceAgent\",\"message\":\"worker only\"}}",
                 )],
             );
         }
