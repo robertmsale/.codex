@@ -3280,7 +3280,14 @@ fn planner_turn_output_schema() -> Value {
 }
 
 pub(crate) fn requirements_worker_claim_schema(set: &RequirementSetState) -> Value {
-    requirements_claim_schema_for_requirements(set.requirements.iter())
+    requirements_claim_schema_for_requirements(set.requirements.iter().filter(|requirement| {
+        !matches!(
+            set.review_progress
+                .get(requirement.key.as_str())
+                .map(|progress| progress.status.as_str()),
+            Some("passed" | "waived")
+        )
+    }))
 }
 
 fn requirements_claim_schema_for_requirements<'a>(
@@ -3289,6 +3296,7 @@ fn requirements_claim_schema_for_requirements<'a>(
     const REQUIREMENTS_GLOBAL_SUMMARY_MAX_LENGTH: u32 = 1_000;
     const REQUIREMENTS_PER_ITEM_SUMMARY_MAX_LENGTH: u32 = 600;
     let mut requirement_properties = serde_json::Map::new();
+    let mut requirement_required = Vec::new();
     for requirement in requirements {
         let key = requirement.key.trim();
         if key.is_empty() {
@@ -3305,8 +3313,8 @@ fn requirements_claim_schema_for_requirements<'a>(
                 REQUIREMENTS_PER_ITEM_SUMMARY_MAX_LENGTH,
             ),
         );
+        requirement_required.push(key.to_string());
     }
-    let requirement_required = requirement_properties.keys().cloned().collect::<Vec<_>>();
     let mut properties = serde_json::Map::new();
     properties.insert(
         "summary".to_string(),
@@ -7913,13 +7921,13 @@ mod tests {
             .as_array()
             .expect("worker alternatives")
             .iter()
-            .find(|item| item["properties"].get("nativeGuiIsSourceOfTruth").is_some())
+            .find(|item| item["properties"].get("noInventedWebsocketEventShapes").is_some())
             .expect("worker requirements object");
         assert_eq!(
             worker_requirements["required"],
-            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
+            json!(["noInventedWebsocketEventShapes"])
         );
-        assert!(worker_requirements["properties"].get("nativeGuiIsSourceOfTruth").is_some());
+        assert!(worker_requirements["properties"].get("nativeGuiIsSourceOfTruth").is_none());
         assert!(worker_requirements["properties"].get("noInventedWebsocketEventShapes").is_some());
 
         let reviewer_schema = requirements_verdict_schema(&set);
