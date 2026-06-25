@@ -2278,6 +2278,48 @@ void main() {
     expect(find.text('Processes (2)'), findsOneWidget);
   });
 
+  testWidgets('session control plane remains dismissable without a selected session', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    var closed = false;
+
+    await tester.pumpWidget(MaterialApp(
+      home: AgentRuntimeSessionControlPlane(
+        data: mockAgentRuntimeEmpty,
+        onClose: () => closed = true,
+        onSave: ({required sessionId, required project, required role, required model, required workdir, required worktreeRoot, required title, required name, required tracked}) {},
+        onCloseSession: (_) {},
+        onArchiveSession: (_) {},
+        onForkSession: (_) {},
+        onCompact: (_) {},
+        onGrantGodMode: (_) {},
+        onRevokeGodMode: (_) {},
+        onTerminateProcess: (_) {},
+        onFlushProcess: (_) {},
+        onInputProcess: (_, _) {},
+        onApprove: (_, _) {},
+        onDeny: (_, _) {},
+        onResumeApproval: (_) {},
+        onPreviewCommandRequest: (_) {},
+        onApproveCommandRequest: (_) {},
+        onDenyCommandRequest: (_) {},
+        onApplyCommandRequest: (_) {},
+        onShowCommand: (_) {},
+        onShowCommandRequest: (_) {},
+        onSetRequirements: (_, {required title, required key, required statement}) {},
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AgentRuntimeSessionControlPlane), findsOneWidget);
+    expect(find.text('Session Settings'), findsOneWidget);
+    expect(find.text('Select a session to open settings.'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.sessionControl.close')));
+    await tester.pumpAndSettle();
+
+    expect(closed, isTrue);
+  });
+
   testWidgets('typed selected conversation renders chat bubbles and excludes raw runtime event names', (tester) async {
     final entries = [
       agentRuntimeChatEntryToChatEntryForTest(const bindings.AgentRuntimeChatEntry(

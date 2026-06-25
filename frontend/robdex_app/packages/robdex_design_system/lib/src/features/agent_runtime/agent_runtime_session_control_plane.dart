@@ -99,9 +99,28 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
   Widget build(BuildContext context) {
     final control = widget.data.selectedSessionControlPlane;
     if (control == null) {
-      return const Scaffold(
-        backgroundColor: Color(0xFF05090F),
-        body: Center(child: Text('Select a session to open settings.')),
+      return Scaffold(
+        backgroundColor: const Color(0xFF05090F),
+        body: SafeArea(
+          child: Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF07111C), Color(0xFF04101A), Color(0xFF081B2B)]),
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: Column(
+                children: [
+                  _emptyHeader(),
+                  const Expanded(
+                    child: Center(
+                      child: Text('Select a session to open settings.', style: TextStyle(color: Color(0xFFE8EEF6))),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       );
     }
     final wide = MediaQuery.sizeOf(context).width >= 980;
@@ -155,7 +174,32 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
           const SizedBox(height: 5),
           const Text('Manage and control this runtime session', style: TextStyle(color: Color(0xFFB8C4D3), fontSize: 14)),
         ])),
-        IconButton.outlined(onPressed: widget.onClose, icon: const Icon(Icons.close_rounded, color: Colors.white)),
+        IconButton.outlined(
+          key: const ValueKey('agentRuntime.sessionControl.close'),
+          onPressed: widget.onClose,
+          icon: const Icon(Icons.close_rounded, color: Colors.white),
+        ),
+      ]),
+    );
+  }
+
+  Widget _emptyHeader() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(28, 20, 18, 18),
+      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0x223B82F6)))),
+      child: Row(children: [
+        const Icon(Icons.terminal_rounded, color: Colors.white, size: 28),
+        const SizedBox(width: 18),
+        const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Session Settings', style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w700)),
+          SizedBox(height: 5),
+          Text('Select a session before editing runtime settings', style: TextStyle(color: Color(0xFFB8C4D3), fontSize: 14)),
+        ])),
+        IconButton.outlined(
+          key: const ValueKey('agentRuntime.sessionControl.close'),
+          onPressed: widget.onClose,
+          icon: const Icon(Icons.close_rounded, color: Colors.white),
+        ),
       ]),
     );
   }
