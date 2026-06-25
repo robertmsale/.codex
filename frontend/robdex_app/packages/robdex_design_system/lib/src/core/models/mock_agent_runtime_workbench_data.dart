@@ -716,7 +716,7 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
       title: 'Role Admin',
       subtitle: 'Runtime role inventory',
       rows: [
-        AgentRuntimeFact(label: 'Runtime Allow', value: 'active · role-version-1'),
+        AgentRuntimeFact(label: 'Runtime Allow', value: 'active · current version'),
       ],
       actions: [],
     ),
@@ -861,7 +861,6 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
     runningServers: [
       AgentRuntimeFact(label: 'Design Lab', value: '127.0.0.1:8080'),
     ],
-    imageArtifacts: [],
     quickActions: [
       AgentRuntimeActionAvailability(id: 'compact', label: 'Compact...', available: true, reason: ''),
       AgentRuntimeActionAvailability(id: 'godMode', label: 'Grant God Mode...', available: true, reason: ''),

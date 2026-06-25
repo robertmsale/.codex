@@ -459,7 +459,6 @@ class AgentRuntimeSelectedSessionControlPlane {
     required this.commandRequests,
     required this.requirementsReview,
     required this.runningServers,
-    required this.imageArtifacts,
     required this.quickActions,
   });
 
@@ -481,7 +480,6 @@ class AgentRuntimeSelectedSessionControlPlane {
   final List<AgentRuntimeCommandRequestCard> commandRequests;
   final AgentRuntimeRequirementsReviewPanel requirementsReview;
   final List<AgentRuntimeFact> runningServers;
-  final List<AgentRuntimeFact> imageArtifacts;
   final List<AgentRuntimeActionAvailability> quickActions;
 
   factory AgentRuntimeSelectedSessionControlPlane.fromJson(Map<String, dynamic> json) {
@@ -514,7 +512,6 @@ class AgentRuntimeSelectedSessionControlPlane {
       commandRequests: _objects(json['commandRequests']).map(AgentRuntimeCommandRequestCard.fromJson).toList(growable: false),
       requirementsReview: AgentRuntimeRequirementsReviewPanel.fromJson(Map<String, dynamic>.from((json['requirementsReview'] as Map?) ?? const {})),
       runningServers: _objects(json['runningServers']).map(AgentRuntimeFact.fromJson).toList(growable: false),
-      imageArtifacts: _objects(json['imageArtifacts']).map(AgentRuntimeFact.fromJson).toList(growable: false),
       quickActions: _objects(json['quickActions']).map(AgentRuntimeActionAvailability.fromJson).toList(growable: false),
     );
   }
@@ -538,7 +535,6 @@ class AgentRuntimeSelectedSessionControlPlane {
     List<AgentRuntimeCommandRequestCard>? commandRequests,
     AgentRuntimeRequirementsReviewPanel? requirementsReview,
     List<AgentRuntimeFact>? runningServers,
-    List<AgentRuntimeFact>? imageArtifacts,
     List<AgentRuntimeActionAvailability>? quickActions,
   }) => AgentRuntimeSelectedSessionControlPlane(
     sessionId: sessionId ?? this.sessionId,
@@ -559,7 +555,6 @@ class AgentRuntimeSelectedSessionControlPlane {
     commandRequests: commandRequests ?? this.commandRequests,
     requirementsReview: requirementsReview ?? this.requirementsReview,
     runningServers: runningServers ?? this.runningServers,
-    imageArtifacts: imageArtifacts ?? this.imageArtifacts,
     quickActions: quickActions ?? this.quickActions,
   );
 }

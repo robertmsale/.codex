@@ -23,7 +23,6 @@ class AgentRuntimeSelectedSessionControlPlane {
     required this.commandRequests,
     required this.requirementsReview,
     required this.runningServers,
-    required this.imageArtifacts,
     required this.quickActions,
   });
 
@@ -48,7 +47,6 @@ class AgentRuntimeSelectedSessionControlPlane {
       commandRequests: TraitHelpers.deserializeVectorAgentRuntimeCommandRequestCard(deserializer),
       requirementsReview: AgentRuntimeRequirementsReviewPanel.deserialize(deserializer),
       runningServers: TraitHelpers.deserializeVectorAgentRuntimeFact(deserializer),
-      imageArtifacts: TraitHelpers.deserializeVectorAgentRuntimeFact(deserializer),
       quickActions: TraitHelpers.deserializeVectorAgentRuntimeActionAvailability(deserializer),
     );
     deserializer.decreaseContainerDepth();
@@ -82,7 +80,6 @@ class AgentRuntimeSelectedSessionControlPlane {
   final List<AgentRuntimeCommandRequestCard> commandRequests;
   final AgentRuntimeRequirementsReviewPanel requirementsReview;
   final List<AgentRuntimeFact> runningServers;
-  final List<AgentRuntimeFact> imageArtifacts;
   final List<AgentRuntimeActionAvailability> quickActions;
 
   AgentRuntimeSelectedSessionControlPlane copyWith({
@@ -104,7 +101,6 @@ class AgentRuntimeSelectedSessionControlPlane {
     List<AgentRuntimeCommandRequestCard>? commandRequests,
     AgentRuntimeRequirementsReviewPanel? requirementsReview,
     List<AgentRuntimeFact>? runningServers,
-    List<AgentRuntimeFact>? imageArtifacts,
     List<AgentRuntimeActionAvailability>? quickActions,
   }) {
     return AgentRuntimeSelectedSessionControlPlane(
@@ -126,7 +122,6 @@ class AgentRuntimeSelectedSessionControlPlane {
       commandRequests: commandRequests ?? this.commandRequests,
       requirementsReview: requirementsReview ?? this.requirementsReview,
       runningServers: runningServers ?? this.runningServers,
-      imageArtifacts: imageArtifacts ?? this.imageArtifacts,
       quickActions: quickActions ?? this.quickActions,
     );
   }
@@ -151,7 +146,6 @@ class AgentRuntimeSelectedSessionControlPlane {
     TraitHelpers.serializeVectorAgentRuntimeCommandRequestCard(commandRequests, serializer);
     requirementsReview.serialize(serializer);
     TraitHelpers.serializeVectorAgentRuntimeFact(runningServers, serializer);
-    TraitHelpers.serializeVectorAgentRuntimeFact(imageArtifacts, serializer);
     TraitHelpers.serializeVectorAgentRuntimeActionAvailability(quickActions, serializer);
     serializer.decreaseContainerDepth();
   }
@@ -186,7 +180,6 @@ class AgentRuntimeSelectedSessionControlPlane {
       && listEquals(commandRequests, other.commandRequests)
       && requirementsReview == other.requirementsReview
       && listEquals(runningServers, other.runningServers)
-      && listEquals(imageArtifacts, other.imageArtifacts)
       && listEquals(quickActions, other.quickActions);
   }
 
@@ -210,7 +203,6 @@ class AgentRuntimeSelectedSessionControlPlane {
         commandRequests,
         requirementsReview,
         runningServers,
-        imageArtifacts,
         quickActions,
       );
 
@@ -238,7 +230,6 @@ class AgentRuntimeSelectedSessionControlPlane {
         'commandRequests: $commandRequests, '
         'requirementsReview: $requirementsReview, '
         'runningServers: $runningServers, '
-        'imageArtifacts: $imageArtifacts, '
         'quickActions: $quickActions'
         ')';
       return true;

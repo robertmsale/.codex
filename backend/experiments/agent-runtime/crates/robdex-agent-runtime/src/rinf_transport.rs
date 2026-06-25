@@ -287,7 +287,6 @@ pub struct AgentRuntimeSelectedSessionControlPlane {
     pub command_requests: Vec<AgentRuntimeCommandRequestCard>,
     pub requirements_review: AgentRuntimeRequirementsReviewPanel,
     pub running_servers: Vec<AgentRuntimeWorkbenchFact>,
-    pub image_artifacts: Vec<AgentRuntimeWorkbenchFact>,
     pub quick_actions: Vec<AgentRuntimeActionAvailability>,
 }
 
@@ -893,7 +892,6 @@ fn selected_session_control_plane(
         command_requests,
         requirements_review,
         running_servers: session.running_servers.iter().map(|server| fact(server.get("handle").and_then(Value::as_str).unwrap_or("server"), server.get("status").and_then(Value::as_str).unwrap_or("unknown"))).collect(),
-        image_artifacts: session.image_artifacts.iter().map(|artifact| fact(artifact.get("imageArtifactId").and_then(Value::as_str).unwrap_or("image"), artifact.get("mimeType").and_then(Value::as_str).unwrap_or("artifact"))).collect(),
         quick_actions: vec![
             action_availability("compact", "Compact…", !session.id.is_empty(), ""),
             action_availability(if god_mode_value.get("active").and_then(Value::as_bool).unwrap_or(false) { "revokeGodMode" } else { "grantGodMode" }, if god_mode_value.get("active").and_then(Value::as_bool).unwrap_or(false) { "Revoke God Mode…" } else { "Grant God Mode…" }, !session.id.is_empty(), ""),
@@ -1143,10 +1141,7 @@ fn operation_surfaces(
         subtitle: "Pending and decided owner decisions".to_string(),
         rows: projection.map(|projection| projection.pending_approvals.iter().map(|request| {
             fact(request.action_name.as_str(), format!(
-                "id={} · session={} · turn={} · approver={} · status={} · created={} · decided={} · reason={} · resumable={}",
-                request.id,
-                request.session_id,
-                request.turn_id.as_deref().unwrap_or("none"),
+                "approver={} · status={} · requested={} · decided={} · reason={} · resume={}",
                 request.required_approver_kind,
                 request.status,
                 request.created_at.as_deref().unwrap_or("unknown"),
@@ -1287,12 +1282,17 @@ fn process_rows(
     let mut rows = vec![fact("Managed processes", count.to_string().as_str())];
     if let Some(projection) = projection {
         for item in projection.timeline.iter().filter(|item| item.event_type.contains("process.")).take(12) {
+            let binary = item.payload.get("binary").and_then(Value::as_str).unwrap_or("unknown");
+            let output_available = item.payload.get("artifactId").and_then(Value::as_str)
+                .or_else(|| item.payload.get("stdoutArtifactId").and_then(Value::as_str))
+                .or_else(|| item.payload.get("payload").and_then(|payload| payload.get("cursor")).and_then(Value::as_str))
+                .or(item.summary.as_deref())
+                .is_some();
             rows.push(fact(
-                item.payload.get("handle").and_then(Value::as_str).or(item.entity_id.as_deref()).unwrap_or("process"),
+                "Managed process",
                 format!(
-                    "processId={} · binary={} · argv={} · cwd={} · status={} · start={} · endOfTurn={} · endOfSession={} · stdinPolicy={} · latestOutput={}",
-                    item.entity_id.as_deref().unwrap_or("unknown"),
-                    item.payload.get("binary").and_then(Value::as_str).unwrap_or("unknown"),
+                    "binary={} · argv={} · cwd={} · status={} · started={} · endOfTurn={} · endOfSession={} · stdin={} · output={}",
+                    binary,
                     item.payload.get("argv").map(compact_json_summary_value).unwrap_or_else(|| "[]".to_string()),
                     item.payload.get("cwd").and_then(Value::as_str).unwrap_or("unknown"),
                     item.status.as_deref().unwrap_or("recorded"),
@@ -1300,11 +1300,7 @@ fn process_rows(
                     item.payload.get("endOfTurnBehavior").and_then(Value::as_str).unwrap_or("unknown"),
                     item.payload.get("endOfSessionBehavior").and_then(Value::as_str).unwrap_or("unknown"),
                     item.payload.get("stdinPolicy").and_then(Value::as_str).unwrap_or("unknown"),
-                    item.payload.get("artifactId").and_then(Value::as_str)
-                        .or_else(|| item.payload.get("stdoutArtifactId").and_then(Value::as_str))
-                        .or_else(|| item.payload.get("payload").and_then(|payload| payload.get("cursor")).and_then(Value::as_str))
-                        .or(item.summary.as_deref())
-                        .unwrap_or("none"),
+                    if output_available { "available" } else { "none" },
                 )
                 .as_str(),
             ));
@@ -1358,12 +1354,11 @@ fn process_actions(
 
 fn role_admin_surface_rows(view: &AgentRuntimeRoleAdminView) -> Vec<AgentRuntimeWorkbenchFact> {
     let mut rows = view.rows.iter().map(|row| {
-        fact(row.title.as_str(), format!("status={} · currentVersion={} · rowId={}", row.status, row.current_version_id.as_deref().unwrap_or("none"), row.id).as_str())
+        fact(row.title.as_str(), format!("status={} · current version available", row.status).as_str())
     }).collect::<Vec<_>>();
     if let Some(detail) = &view.selected_detail {
         rows.push(fact("Selected role detail", format!(
-            "id={} · displayName={} · version={} · model={} · status={} · capabilities={} · policyDecisions={} · routing={} · visibility={} · lifecycleAuthority={} · instructionBytes={}",
-            detail.id,
+            "displayName={} · version={} · model={} · status={} · capabilities={} · policies={} · routing={} · visibility={} · lifecycle={} · instructionBytes={}",
             detail.display_name,
             detail.version,
             detail.model,
@@ -1377,12 +1372,11 @@ fn role_admin_surface_rows(view: &AgentRuntimeRoleAdminView) -> Vec<AgentRuntime
         ).as_str()));
     }
     for version in &view.version_rows {
-        rows.push(fact("Immutable version", format!("versionId={} · version={} · status={} · created={}", version.version_id, version.version, version.status, version.created_at.as_deref().unwrap_or("unknown")).as_str()));
+        rows.push(fact("Immutable version", format!("version={} · status={} · created={}", version.version, version.status, version.created_at.as_deref().unwrap_or("unknown")).as_str()));
     }
     if let Some(draft) = &view.editor_draft {
         rows.push(fact("CodeForge instruction editor", format!(
-            "roleId={} · defaultModel={} · reasoning={} · routingMode={} · defaultRecipient={} · allowedRecipients={} · reservedActions={} · listed={} · ownerVisible={} · lifecycleReserved={} · instructionBytes={}",
-            draft.role_id,
+            "defaultModel={} · reasoning={} · routingMode={} · defaultRecipient={} · allowedRecipients={} · reservedActions={} · listed={} · ownerVisible={} · lifecycleReserved={} · instructionBytes={}",
             draft.model,
             draft.reasoning_effort,
             draft.routing_mode,
@@ -1401,36 +1395,29 @@ fn role_admin_surface_rows(view: &AgentRuntimeRoleAdminView) -> Vec<AgentRuntime
 fn workflow_memory_surface_rows(view: &AgentRuntimeWorkflowMemoryView) -> Vec<AgentRuntimeWorkbenchFact> {
     let mut rows = view.rows.iter().map(|row| {
         fact(row.title.as_str(), format!(
-            "memoryId={} · selected={} · scope={} · project={} · sourceSession={} · promoted={} · helpful={}",
-            row.id,
+            "selected={} · scope={} · project={} · saved={} · helpful={}",
             row.selected,
             row.scope_type,
             row.project_key.as_deref().unwrap_or("none"),
-            row.source_session_id,
             row.promoted_at.as_deref().unwrap_or("unknown"),
             row.helpful_score,
         ).as_str())
     }).collect::<Vec<_>>();
     if let Some(detail) = &view.selected_detail {
         rows.push(fact("Selected memory detail", format!(
-            "id={} · title={} · scope={} · projectMetadata={} · sourceScript={} · provider={} · model={} · dimensions={} · storage={} · sourceHash={} · commandFingerprint={} · sourcePreview={} · starlark={}",
-            detail.id,
+            "title={} · scope={} · origin={} · provider={} · model={} · dimensions={} · storage={} · preview={}",
             detail.title,
             detail.scope_label,
-            detail.source_session_id,
-            detail.source_script_run_id.as_deref().unwrap_or("none"),
+            if detail.source_session_id.is_empty() { "Saved workflow" } else { "Saved from session" },
             detail.provider.as_deref().unwrap_or("unknown"),
             detail.model.as_deref().unwrap_or("unknown"),
             detail.dimensions.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string()),
             detail.storage_type.as_deref().unwrap_or("unknown"),
-            detail.source_hash.as_deref().unwrap_or("none"),
-            detail.command_fingerprint.as_deref().unwrap_or("none"),
             detail.source_preview,
-            detail.source_starlark,
         ).as_str()));
     }
     rows.extend(view.recent_events.iter().map(|event| {
-        fact("Recent memory event", format!("id={} · type={} · created={} · payload={}", event.id, event.title, event.created_at.as_deref().unwrap_or("unknown"), event.subtitle).as_str())
+        fact("Recent memory event", format!("type={} · created={} · summary={}", event.title, event.created_at.as_deref().unwrap_or("unknown"), event.subtitle).as_str())
     }));
     rows
 }
@@ -3651,7 +3638,6 @@ mod tests {
                         contracts: vec![json!({"contractId":"contract-1","status":"active"})],
                         resource_leases: vec![json!({"leaseId":"lease-1","status":"assigned"})],
                         recent_hook_failures: vec![json!({"evaluationId":"eval-1"})],
-                        image_artifacts: vec![json!({"imageArtifactId":"image-1","mimeType":"image/png","byteCount":1024,"width":1366,"height":1024,"retrieval":{"available":true}})],
                         running_servers: vec![json!({"handle":"server-1","status":"running"})],
                         tooling_requests: vec![json!({"packetId":"tooling-1","status":"routed"})],
                         requirements_review: Some(robdex_agent_runtime_projection::RequirementsReviewSummary {
@@ -4972,7 +4958,6 @@ mod tests {
                 contracts: vec![json!({"contractId":"contract-1","status":"active"})],
                 resource_leases: vec![json!({"leaseId":"lease-1","status":"assigned"})],
                 recent_hook_failures: vec![json!({"evaluationId":"eval-1"})],
-                image_artifacts: vec![json!({"imageArtifactId":"image-1","mimeType":"image/png","byteCount":1024,"width":1366,"height":1024,"retrieval":{"available":true}})],
                 running_servers: vec![json!({"handle":"server-1","status":"running"})],
                 tooling_requests: vec![json!({"packetId":"tooling-1","status":"routed"})],
                 requirements_review: None,
@@ -5491,8 +5476,8 @@ mod tests {
         assert!(compaction.rows.iter().any(|row| row.label == "compaction.failed" && row.value.contains("checkpoint=checkpoint-failed") && row.value.contains("failure=\"forced fixture failure\"")));
         assert!(compaction.actions.iter().any(|action| action.kind == "compactionManual" && action.title == "Compact selected session"));
         let role_admin = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "roleAdmin").expect("role admin surface");
-        assert!(role_admin.rows.iter().any(|row| row.label == "Selected role detail" && row.value.contains("capabilities=tool.execute_code") && row.value.contains("policyDecisions=tool.execute_code=allow") && row.value.contains("instructionBytes=")));
-        assert!(role_admin.rows.iter().any(|row| row.label == "Immutable version" && row.value.contains("versionId=role-version-1")));
+        assert!(role_admin.rows.iter().any(|row| row.label == "Selected role detail" && row.value.contains("capabilities=tool.execute_code") && row.value.contains("policies=tool.execute_code=allow") && row.value.contains("instructionBytes=") && !row.value.contains("role-version")));
+        assert!(role_admin.rows.iter().any(|row| row.label == "Immutable version" && row.value.contains("version=") && row.value.contains("status=") && !row.value.contains("versionId=")));
         assert!(role_admin.rows.iter().any(|row| row.label == "CodeForge instruction editor" && row.value.contains("defaultModel=gpt-5.4-mini") && row.value.contains("routingMode=direct")));
         assert!(role_admin.actions.iter().any(|action| action.title == "Create role draft"));
         assert!(role_admin.actions.iter().any(|action| action.title == "Update role draft"));
@@ -5500,21 +5485,21 @@ mod tests {
         assert!(role_admin.actions.iter().any(|action| action.title == "Archive role"));
         assert!(role_admin.actions.iter().any(|action| action.title == "Export current role"));
         let workflow_memory = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "workflowMemory").expect("workflow memory surface");
-        assert!(workflow_memory.rows.iter().any(|row| row.label == "Selected memory detail" && row.value.contains("sourceScript=script-1") && row.value.contains("sourceHash=hash") && row.value.contains("commandFingerprint=fingerprint") && row.value.contains("starlark=output(cmd.describe())")));
-        assert!(workflow_memory.rows.iter().any(|row| row.label == "Recent memory event" && row.value.contains("workflow_memory.helpful")));
+        assert!(workflow_memory.rows.iter().any(|row| row.label == "Selected memory detail" && row.value.contains("origin=") && row.value.contains("preview=") && !row.value.contains("sourceHash") && !row.value.contains("commandFingerprint") && !row.value.contains("memoryId")));
+        assert!(workflow_memory.rows.iter().any(|row| row.label == "Recent memory event" && row.value.contains("workflow_memory.helpful") && !row.value.contains("id=")));
         assert!(workflow_memory.actions.iter().any(|action| action.id.ends_with(":attempted")));
         assert!(workflow_memory.actions.iter().any(|action| action.id.ends_with(":helpful")));
         assert!(workflow_memory.actions.iter().any(|action| action.id.ends_with(":notHelpful")));
         let process_manager = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "processManager").expect("process manager surface");
         assert!(process_manager.rows.iter().any(|row| row.label == "Managed processes" && row.value == "2"));
-        assert!(process_manager.rows.iter().any(|row| row.label == "proc-allow" && row.value.contains("binary=python") && row.value.contains("argv=[\"-u\",\"worker.py\"]") && row.value.contains("cwd=/tmp/project-a") && row.value.contains("stdinPolicy=allow") && row.value.contains("latestOutput=artifact-process-stdout")));
-        assert!(process_manager.rows.iter().any(|row| row.label == "proc-forbid" && row.value.contains("binary=tail") && row.value.contains("stdinPolicy=forbid")));
+        assert!(process_manager.rows.iter().any(|row| row.label == "Managed process" && row.value.contains("binary=python") && row.value.contains("argv=[\"-u\",\"worker.py\"]") && row.value.contains("cwd=/tmp/project-a") && row.value.contains("stdin=allow") && row.value.contains("output=available")));
+        assert!(process_manager.rows.iter().any(|row| row.label == "Managed process" && row.value.contains("binary=tail") && row.value.contains("stdin=forbid")));
         assert!(process_manager.actions.iter().any(|action| action.id == "proc-allow" && action.kind == "processFlush" && action.state_text == "ready"));
         assert!(process_manager.actions.iter().any(|action| action.id == "proc-allow" && action.kind == "processInput" && action.state_text == "ready"));
         assert!(process_manager.actions.iter().any(|action| action.id == "proc-allow" && action.kind == "processTerminate" && action.state_text == "ready"));
         assert!(process_manager.actions.iter().any(|action| action.id == "proc-forbid" && action.kind == "processInput" && action.state_text == "disabled: stdin rejected"));
         let approvals = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "approvals").expect("approvals surface");
-        assert!(approvals.rows.iter().any(|row| row.value.contains("approver=owner") && row.value.contains("reason=approved for fixture") && row.value.contains("resumable=approved")));
+        assert!(approvals.rows.iter().any(|row| row.value.contains("approver=owner") && row.value.contains("reason=approved for fixture") && row.value.contains("resume=approved")));
         assert!(approvals.actions.iter().any(|action| action.title == "Resume" && action.kind == "approvalResume"));
         let command_registry = shell.operation_surfaces.iter().find(|surface| surface.surface_id == "commandRegistry").expect("command registry surface");
         assert!(command_registry.rows.iter().any(|row| row.label == "rg_project" && row.value.contains("enabled=true")));
@@ -5636,7 +5621,6 @@ mod tests {
                 contracts: Vec::new(),
                 resource_leases: Vec::new(),
                 recent_hook_failures: Vec::new(),
-                image_artifacts: Vec::new(),
                 running_servers: Vec::new(),
                 tooling_requests: Vec::new(),
                 requirements_review: None,

@@ -1160,7 +1160,6 @@ AgentRuntimeSelectedSessionControlPlane _selectedControlPlane(bindings.AgentRunt
       commandRequests: value.commandRequests.map((request) => AgentRuntimeCommandRequestCard(id: request.id, actionId: request.actionId, title: request.title, operation: request.operation, status: request.status, scopeSummary: request.scopeSummary, policySummary: request.policySummary, previewStatus: request.previewStatus, applyStatus: request.applyStatus, canPreview: request.canPreview, canDecide: request.canDecide, canApply: request.canApply, commandSummary: request.commandSummary)).toList(growable: false),
       requirementsReview: AgentRuntimeRequirementsReviewPanel(active: value.requirementsReview.active, status: value.requirementsReview.status, progressSummary: value.requirementsReview.progressSummary, reviewerStatus: value.requirementsReview.reviewerStatus, ownerActionStatus: value.requirementsReview.ownerActionStatus, latestPacketStatus: value.requirementsReview.latestPacketStatus),
       runningServers: value.runningServers.map(_fact).toList(growable: false),
-      imageArtifacts: value.imageArtifacts.map(_fact).toList(growable: false),
       quickActions: value.quickActions.map((action) => AgentRuntimeActionAvailability(id: action.id, label: action.label, available: action.available, reason: action.reason)).toList(growable: false),
     );
 

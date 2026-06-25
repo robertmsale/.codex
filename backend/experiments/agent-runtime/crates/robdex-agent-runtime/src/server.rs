@@ -6770,8 +6770,11 @@ output(tooling.request("Need starter kit helper", "Need a project-local helper t
         let projected = projection::build_runtime_projection_snapshot(&test_db.pool, Some(session_id)).await.expect("projection");
         let selected = projected.selected_session.expect("selected session");
         assert_eq!(selected.project_runtime["activeToolBundleVersionIds"]["bundleVersion"], "starter-kit-1");
-        assert_eq!(selected.image_artifacts.len(), 1);
-        assert_eq!(selected.image_artifacts[0]["mimeType"], "image/png");
+        assert!(projected.selected_chat_entries.iter().any(|entry| {
+            entry.kind == "imageView"
+                && entry.image_preview_content_type.as_deref() == Some("image/png")
+                && entry.output == format!("agent-runtime-image://{session_id}/{}", image_row.0)
+        }));
         assert_eq!(selected.tooling_requests.len(), 1);
         assert_eq!(selected.tooling_requests[0]["status"], "routed");
         test_db.cleanup().await;
@@ -6875,7 +6878,7 @@ output(server.stop("fullsmoke"))
         assert_eq!(released, 1);
         let projected = projection::build_runtime_projection_snapshot(&test_db.pool, Some(session_id)).await.expect("projection");
         let selected = projected.selected_session.expect("selected session");
-        assert_eq!(selected.image_artifacts.len(), 1);
+        assert!(projected.selected_chat_entries.iter().any(|entry| entry.kind == "imageView"));
         assert_eq!(selected.tooling_requests.len(), 1);
         assert!(selected.running_servers.iter().any(|server| server["handle"] == "fullsmoke" && server["status"] == "stopped"));
         let output_artifacts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_output_artifacts WHERE session_id=$1")

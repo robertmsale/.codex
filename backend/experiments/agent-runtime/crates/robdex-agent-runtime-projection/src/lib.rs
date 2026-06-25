@@ -117,8 +117,6 @@ pub struct SelectedSessionDetail {
     #[serde(default)]
     pub recent_hook_failures: Vec<Value>,
     #[serde(default)]
-    pub image_artifacts: Vec<Value>,
-    #[serde(default)]
     pub running_servers: Vec<Value>,
     #[serde(default)]
     pub tooling_requests: Vec<Value>,
@@ -1817,7 +1815,6 @@ mod tests {
             contracts: Vec::new(),
             resource_leases: Vec::new(),
             recent_hook_failures: Vec::new(),
-            image_artifacts: Vec::new(),
             running_servers: Vec::new(),
             tooling_requests: Vec::new(),
             requirements_review: None,
@@ -1875,7 +1872,6 @@ mod tests {
             contracts: Vec::new(),
             resource_leases: Vec::new(),
             recent_hook_failures: Vec::new(),
-            image_artifacts: Vec::new(),
             running_servers: Vec::new(),
             tooling_requests: Vec::new(),
             requirements_review: None,
@@ -1914,7 +1910,6 @@ mod tests {
             contracts: Vec::new(),
             resource_leases: Vec::new(),
             recent_hook_failures: Vec::new(),
-            image_artifacts: Vec::new(),
             running_servers: Vec::new(),
             tooling_requests: Vec::new(),
             requirements_review: None,

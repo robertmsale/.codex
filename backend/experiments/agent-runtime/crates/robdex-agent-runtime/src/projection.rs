@@ -557,21 +557,6 @@ async fn selected_session_detail(
             "createdAt": optional_time(Some(row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"))),
         }))
         .collect::<Vec<_>>();
-    let image_rows = sqlx::query("SELECT id, mime_type, byte_count, width, height, retrieval_metadata FROM starter_image_artifacts WHERE session_id=$1 ORDER BY created_at DESC LIMIT 20")
-        .bind(session_id)
-        .fetch_all(pool)
-        .await?;
-    let image_artifacts = image_rows
-        .into_iter()
-        .map(|row| json!({
-            "imageArtifactId": row.get::<Uuid, _>("id"),
-            "mimeType": row.get::<String, _>("mime_type"),
-            "byteCount": row.get::<i64, _>("byte_count"),
-            "width": row.get::<Option<i32>, _>("width"),
-            "height": row.get::<Option<i32>, _>("height"),
-            "retrieval": row.get::<Value, _>("retrieval_metadata"),
-        }))
-        .collect::<Vec<_>>();
     let server_rows = sqlx::query("SELECT handle, status, url, port, readiness_config FROM starter_managed_servers WHERE session_id=$1 ORDER BY created_at DESC LIMIT 20")
         .bind(session_id)
         .fetch_all(pool)
@@ -627,7 +612,6 @@ async fn selected_session_detail(
         contracts,
         resource_leases,
         recent_hook_failures,
-        image_artifacts,
         running_servers,
         tooling_requests,
         requirements_review,
@@ -646,7 +630,6 @@ async fn selected_managed_processes(pool: &PgPool, session_id: Uuid) -> Result<V
             CASE status WHEN 'running' THEN 0 WHEN 'starting' THEN 1 WHEN 'lost' THEN 2 ELSE 3 END,
             start_time DESC,
             id ASC
-        LIMIT 50
         "#,
     )
     .bind(session_id)
@@ -820,7 +803,6 @@ async fn selected_chat_entries(
         FROM turns
         WHERE session_id = $1
         ORDER BY started_at ASC, id ASC
-        LIMIT 50
         "#,
     )
     .bind(session_id)
@@ -875,9 +857,6 @@ async fn selected_chat_entries(
             .cmp(&right.timestamp)
             .then(left.id.cmp(&right.id))
     });
-    if entries.len() > 50 {
-        entries = entries.split_off(entries.len() - 50);
-    }
     Ok(entries)
 }
 
@@ -889,7 +868,6 @@ async fn image_artifact_chat_entries(pool: &PgPool, session_id: Uuid) -> Result<
         FROM starter_image_artifacts
         WHERE session_id = $1
         ORDER BY created_at ASC, id ASC
-        LIMIT 50
         "#,
     )
     .bind(session_id)
@@ -1991,6 +1969,47 @@ mod tests {
         assert_eq!(image.output, format!("agent-runtime-image://{session_id}/{image_id}"));
         assert!(image.subtitle.contains("image/png"));
         assert!(image.subtitle.contains("1 × 1"));
+    }
+
+    #[tokio::test]
+    async fn selected_conversation_renders_every_stored_image_artifact_without_cap() {
+        let (admin_url, database_name, pool) = create_validation_database("all_selected_images").await;
+        let (session_id, turn_id, tool_id, script_id, process_id, _artifact_id, _model_event_id, _final_text) = seed_durable_selected_chat(&pool).await;
+        let image_count = 55;
+        for index in 0..image_count {
+            let image_id = Uuid::new_v4();
+            sqlx::query(
+                r#"
+                INSERT INTO starter_image_artifacts (
+                    id, session_id, turn_id, tool_call_id, script_run_id, process_id,
+                    source_type, source_path, mime_type, byte_count, width, height,
+                    retrieval_metadata, binary_content, created_at
+                ) VALUES ($1,$2,$3,$4,$5,$6,'screenshot',NULL,'image/png',8,1,1,$7,decode('89504e470d0a1a0a','hex'), now() + ($8::int * interval '1 second'))
+                "#,
+            )
+            .bind(image_id)
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(tool_id)
+            .bind(script_id)
+            .bind(process_id)
+            .bind(json!({"description": format!("Screenshot evidence {index}")}))
+            .bind(index)
+            .execute(&pool)
+            .await
+            .expect("insert image artifact");
+        }
+
+        let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
+        drop(pool);
+        drop_validation_database(&admin_url, &database_name).await;
+
+        let rendered_images = snapshot
+            .selected_chat_entries
+            .iter()
+            .filter(|entry| entry.kind == "imageView")
+            .count();
+        assert_eq!(rendered_images, image_count as usize);
     }
 
     #[tokio::test]

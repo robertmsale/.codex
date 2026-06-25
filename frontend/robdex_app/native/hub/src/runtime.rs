@@ -1948,7 +1948,6 @@ fn typed_selected_session_control_plane(view: robdex_agent_runtime::rinf_transpo
             latest_packet_status: view.requirements_review.latest_packet_status,
         },
         running_servers: view.running_servers.into_iter().map(|fact| AgentRuntimeFact { label: fact.label, value: fact.value }).collect(),
-        image_artifacts: view.image_artifacts.into_iter().map(|fact| AgentRuntimeFact { label: fact.label, value: fact.value }).collect(),
         quick_actions: view.quick_actions.into_iter().map(|action| AgentRuntimeActionAvailability {
             id: action.id,
             label: action.label,

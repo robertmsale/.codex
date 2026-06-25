@@ -367,7 +367,6 @@ pub struct AgentRuntimeSelectedSessionControlPlane {
     pub command_requests: Vec<AgentRuntimeCommandRequestCard>,
     pub requirements_review: AgentRuntimeRequirementsReviewPanel,
     pub running_servers: Vec<AgentRuntimeFact>,
-    pub image_artifacts: Vec<AgentRuntimeFact>,
     pub quick_actions: Vec<AgentRuntimeActionAvailability>,
 }
 
