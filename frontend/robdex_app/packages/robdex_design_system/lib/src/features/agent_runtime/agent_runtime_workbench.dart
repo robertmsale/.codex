@@ -1640,7 +1640,7 @@ class _RoleManagerMainColumn extends StatelessWidget {
                 onCanArchiveAgentsChanged: onCanArchiveAgentsChanged,
               ),
             const SizedBox(height: 12),
-            _RoleSurface(
+            _RoleEditorSection(
               title: 'Policy preview',
               child: _PolicyTable(policy: policy.isEmpty ? draft.policy : policy),
             ),
@@ -1698,7 +1698,7 @@ class _RoleManagerStructuredControls extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final narrow = constraints.maxWidth < 560;
-        final capabilitiesEditor = _RoleSurface(
+        final capabilitiesEditor = _RoleEditorSection(
           title: 'Capabilities',
           child: _OptionChecklist(
             keyPrefix: 'capability',
@@ -1716,7 +1716,7 @@ class _RoleManagerStructuredControls extends StatelessWidget {
             },
           ),
         );
-        final policyEditor = _RoleSurface(
+        final policyEditor = _RoleEditorSection(
           title: 'Policy decisions',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1751,7 +1751,7 @@ class _RoleManagerStructuredControls extends StatelessWidget {
             ],
           ),
         );
-        final left = _RoleSurface(
+        final left = _RoleEditorSection(
           title: 'Routing',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1791,7 +1791,7 @@ class _RoleManagerStructuredControls extends StatelessWidget {
             ],
           ),
         );
-        final middle = _RoleSurface(
+        final middle = _RoleEditorSection(
           title: 'Lifecycle Authority',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1809,7 +1809,7 @@ class _RoleManagerStructuredControls extends StatelessWidget {
             ],
           ),
         );
-        final right = _RoleSurface(
+        final right = _RoleEditorSection(
           title: 'Visibility',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1823,17 +1823,49 @@ class _RoleManagerStructuredControls extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (narrow)
-              Column(children: [capabilitiesEditor, const SizedBox(height: 10), policyEditor, const SizedBox(height: 10)])
+              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [capabilitiesEditor, const _RoleEditorDivider(), policyEditor])
             else
-              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: capabilitiesEditor), const SizedBox(width: 10), Expanded(child: policyEditor)]),
-            const SizedBox(height: 10),
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: capabilitiesEditor), const SizedBox(width: 18), Expanded(child: policyEditor)]),
+            const _RoleEditorDivider(),
             if (narrow)
-              Column(children: [left, const SizedBox(height: 10), middle, const SizedBox(height: 10), right])
+              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [left, const _RoleEditorDivider(), middle, const _RoleEditorDivider(), right])
             else
-              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: left), const SizedBox(width: 10), Expanded(child: middle), const SizedBox(width: 10), Expanded(child: right)]),
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: left), const SizedBox(width: 18), Expanded(child: middle), const SizedBox(width: 18), Expanded(child: right)]),
           ],
         );
       },
+    );
+  }
+}
+
+class _RoleEditorDivider extends StatelessWidget {
+  const _RoleEditorDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 14),
+      child: Divider(height: 1, color: Color(0xFF1B2A3A)),
+    );
+  }
+}
+
+class _RoleEditorSection extends StatelessWidget {
+  const _RoleEditorSection({required this.title, required this.child});
+
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: theme.textTheme.labelMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 8),
+        child,
+      ],
     );
   }
 }
@@ -3741,28 +3773,6 @@ class _EditorSwitch extends StatelessWidget {
         Switch(value: value, onChanged: onChanged),
         Flexible(child: Text(label, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFFB7C4D8)))),
       ],
-    );
-  }
-}
-
-class _CompactKeyValue extends StatelessWidget {
-  const _CompactKeyValue({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 104, child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF93A5BC)))),
-          Expanded(child: Text(value.isEmpty ? '—' : value, maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.labelSmall?.copyWith(color: const Color(0xFFD6E2F2)))),
-        ],
-      ),
     );
   }
 }
