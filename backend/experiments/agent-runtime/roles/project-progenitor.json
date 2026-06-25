@@ -11,6 +11,7 @@
   },
   "capabilities": [
     "tool.execute_code",
+    "workflow_memory.search",
     "tooling.request",
     "project_runtime.request_change",
     "file.head",
@@ -24,6 +25,7 @@
   ],
   "policy": {
     "tool.execute_code": "allow",
+    "workflow_memory.search": "allow",
     "tooling.request": "allow",
     "project_runtime.request_change": "allow",
     "file.head": "allow",

@@ -194,7 +194,7 @@ pub async fn help_results_for_latest_prior_script(
     current_script_run_id: Uuid,
     limit: i64,
 ) -> Result<Vec<HelpResult>> {
-    let Some((prior_source, project_key)) = latest_prior_non_memory_script(pool, session_id, current_script_run_id).await? else {
+    let Some((prior_source, project_key)) = latest_prior_failed_non_memory_script(pool, session_id, current_script_run_id).await? else {
         return Ok(Vec::new());
     };
     search(pool, session_id, project_key.as_deref(), &prior_source, limit).await
@@ -452,7 +452,7 @@ fn memory_event_row_to_json(row: sqlx::postgres::PgRow) -> Value {
     })
 }
 
-async fn latest_prior_non_memory_script(
+async fn latest_prior_failed_non_memory_script(
     pool: &PgPool,
     session_id: Uuid,
     current_script_run_id: Uuid,
@@ -466,6 +466,7 @@ async fn latest_prior_non_memory_script(
         JOIN sessions s ON s.id = t.session_id
         WHERE t.session_id=$1
           AND sr.id <> $2
+          AND sr.status = 'failed'
           AND sr.source NOT LIKE '%workflow_memory.%'
         ORDER BY COALESCE(sr.completed_at, sr.started_at) DESC
         LIMIT 1

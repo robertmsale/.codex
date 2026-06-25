@@ -35,7 +35,7 @@ seed["modelDefaults"]["reasoningEffort"] = "low"
 seed["instructionText"] = (
     "You are a live server validation role. For the user's request, call only "
     "execute_code with harmless read-only Starlark. Prefer fs.read(\"Cargo.toml\") "
-    "or output a small constant. Do not request mutations."
+    "or print a small constant. Do not request mutations."
 )
 json.dump(seed, sys.stdout, indent=2)
 PY
@@ -54,7 +54,7 @@ echo "session_id=$session_id"
 
 send_json="$(curl -fsS -X POST "$BASE_URL/sessions/$session_id/send" \
   -H 'content-type: application/json' \
-  -d '{"message":"Use execute_code with exactly this harmless read-only Starlark: content = fs.read(\"Cargo.toml\"); output({\"validation\":\"ok\",\"contains_workspace\":\"workspace\" in content})"}')"
+  -d '{"message":"Use execute_code with exactly this harmless read-only Starlark: content = fs.read(\"Cargo.toml\"); print({\"validation\":\"ok\",\"contains_workspace\":\"workspace\" in content})"}')"
 turn_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["turnId"])' <<<"$send_json")"
 echo "turn_id=$turn_id"
 echo "send_result=$send_json"

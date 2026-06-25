@@ -714,7 +714,7 @@ curl -sS -X POST http://127.0.0.1:8765/sessions \
 
 curl -sS -X POST http://127.0.0.1:8765/sessions/<session-id>/send \
   -H 'content-type: application/json' \
-  -d '{"message":"Use execute_code with exactly this Starlark source: content = fs.read(\"Cargo.toml\"); output({\"validation\":\"ok\",\"contains_workspace\":\"workspace\" in content})"}'
+  -d '{"message":"Use execute_code with exactly this Starlark source: content = fs.read(\"Cargo.toml\"); print({\"validation\":\"ok\",\"contains_workspace\":\"workspace\" in content})"}'
 ```
 
 Message submission is unified through the Rust server. Sending while a live
@@ -906,7 +906,7 @@ event count.
 Starlark scripts emit final tool output only through:
 
 ```python
-output(value)
+print(value)
 ```
 
 Host API calls return values to the script, but they do not implicitly append to
@@ -933,11 +933,11 @@ Agents retrieve stored output intentionally inside Starlark with bounded helpers
 
 ```python
 artifact = outputs.last()
-output(outputs.tail(artifact, lines=200))
-output(outputs.head(artifact, lines=50))
-output(outputs.slice(artifact, start_line=500, end_line=650))
-output(outputs.search(artifact, "error", context=20))
-output(outputs.stats(artifact))
+print(outputs.tail(artifact, lines=200))
+print(outputs.head(artifact, lines=50))
+print(outputs.slice(artifact, start_line=500, end_line=650))
+print(outputs.search(artifact, "error", context=20))
+print(outputs.stats(artifact))
 ```
 
 Every retrieval helper enforces hard byte/line caps and reports returned,
@@ -946,7 +946,7 @@ do not dump unbounded stdout, stderr, or artifact bodies into model-visible
 responses. Same-turn steering transcript reconstruction stores idempotent
 metadata summaries for command, shell, and managed-process boundaries; hidden
 stdout/stderr remains artifact-only unless a Starlark program explicitly emits a
-bounded value through `output(...)`. Retrieval is session-scoped: an artifact id
+bounded value through `print(...)`. Retrieval is session-scoped: an artifact id
 alone is not sufficient to read output from a different session.
 
 ## Model input context management
@@ -1284,7 +1284,7 @@ Runtime service OS user, and persist audit rows,
 events, process handles, and separate stdout/stderr output artifacts. Hidden
 shell stdout/stderr is durable audit/retrieval data and is not copied into
 same-turn model history unless a bounded value is explicitly emitted through
-`output(...)`. Without an active grant the
+`print(...)`. Without an active grant the
 `shell(...)` function fails closed with `God Mode required: shell(...) disabled`
 and does not spawn a process. Closing or archiving a session revokes the active
 grant; async shell processes are session-owned managed processes with
@@ -1506,7 +1506,7 @@ ROBDEX_AGENT_RUNTIME_EMBEDDING_MODEL=qwen3-embedding-4b-dwq \
 scripts/validate-lmstudio-embeddings.sh
 ```
 
-The model-visible Starlark API is concise: `workflow_memory.help()` searches using the latest prior relevant non-memory script in the same session, not the tiny current help script; `workflow_memory.remember_when(condition, title, reason)` records a candidate and promotes it only after the full script exits successfully with `condition == True`; `workflow_memory.mark_attempted(id, variant=True)` and `workflow_memory.mark_not_helpful(id, reason)` record bounded feedback events. First/plain attempts are not auto-promoted. The intended loop is plain attempt fails, call `workflow_memory.help()`, try exact or variant help when useful, and enter remember mode only for a later successful script with explicit success criteria.
+The model-visible Starlark API is concise: `workflow_memory.help()` searches using the latest prior failed non-memory script in the same session, not the tiny current help script; `workflow_memory.remember_when(condition, title, reason)` records a candidate and promotes it only after the full script exits successfully with `condition == True`; `workflow_memory.mark_attempted(id, variant=True)` and `workflow_memory.mark_not_helpful(id, reason)` record bounded feedback events. Failed `execute_code` results include the recovery hint `Hint: run print(workflow_memory.help()) to search prior successful patterns for the last failed script.` Successful results do not include that hint. First/plain attempts are not auto-promoted. The intended loop is plain attempt fails, call `print(workflow_memory.help())`, try exact or variant help when useful, and enter remember mode only for a later successful script with explicit success criteria.
 
 Role policy gates native memory actions: `workflow_memory.search`, `workflow_memory.remember.project`, `workflow_memory.remember.global`, and `workflow_memory.feedback`. Seed runtime roles allow project-scoped validation memory; global memory remains approval-gated or denied.
 

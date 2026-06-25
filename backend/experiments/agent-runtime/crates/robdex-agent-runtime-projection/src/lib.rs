@@ -2076,8 +2076,8 @@ mod tests {
             summary: "Summary".to_string(),
             helpful_score: 1.0,
             promoted_at: None,
-            source_preview: "output(\"hello\")".to_string(),
-            source_starlark: Some("output(\"hello\")".to_string()),
+            source_preview: "print(\"hello\")".to_string(),
+            source_starlark: Some("print(\"hello\")".to_string()),
             provider: Some("provider".to_string()),
             model: Some("model".to_string()),
             dimensions: Some(2560),
@@ -2495,7 +2495,7 @@ mod tests {
             kind: if is_tool { "execute_code".to_string() } else { "message".to_string() },
             status: status.to_string(),
             process_id: if is_tool { Some("proc-1".to_string()) } else { None },
-            command: if is_tool { "output('delta')".to_string() } else { String::new() },
+            command: if is_tool { "print('delta')".to_string() } else { String::new() },
             output: if is_tool { "partial output".to_string() } else { String::new() },
             image_preview_base64: None,
             image_preview_content_type: None,
@@ -2542,7 +2542,7 @@ mod tests {
 
         assert!(projection.selected_chat_entries.iter().any(|entry| entry.id == "turn-1-user" && entry.author == "User" && entry.body == "exact user composer text"));
         assert!(projection.selected_chat_entries.iter().any(|entry| entry.id == "assistant-1" && entry.author == "Assistant" && entry.body == "complete assistant final" && !entry.is_streaming));
-        assert!(projection.selected_chat_entries.iter().any(|entry| entry.id == "tool-1" && entry.author == "Tool" && entry.is_tool && entry.status == "completed" && entry.command.contains("output")));
+        assert!(projection.selected_chat_entries.iter().any(|entry| entry.id == "tool-1" && entry.author == "Tool" && entry.is_tool && entry.status == "completed" && entry.command.contains("print")));
         println!(
             "agent_runtime_selected_chat_delta_counters full_snapshot_count={} delta_count={} average_payload_bytes={} max_payload_bytes={} selected_chat_entry_count={} coalesced_payload_frequency={} dropped_intermediate_payload_count={} unrelated_modal_rebuilds={} unrelated_rail_rebuilds={}",
             diagnostics.full_snapshot_count,

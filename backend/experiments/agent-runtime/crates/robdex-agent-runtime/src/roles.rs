@@ -42,8 +42,8 @@ pub fn default_tool_bundle_for_role(role_id: &str) -> Vec<&'static str> {
             "project_runtime.request_change",
         ],
         "project-progenitor" => vec![
-            "project_runtime.request_change", "tooling.request", "file.head", "tree.list",
-            "tree.find",
+            "project_runtime.request_change", "tooling.request", "workflow_memory.search",
+            "file.head", "tree.list", "tree.find",
         ],
         "simulator-steward" => vec![
             "simulator.inventory", "simulator.lease.assign", "simulator.lease.release",
@@ -825,6 +825,7 @@ mod tests {
 
         let progenitor = default_tool_bundle_for_role("project-progenitor");
         assert!(progenitor.contains(&"project_runtime.request_change"));
+        assert!(progenitor.contains(&"workflow_memory.search"));
         assert!(!progenitor.contains(&"command_registry.apply"));
 
         let steward = default_tool_bundle_for_role("simulator-steward");
@@ -847,6 +848,8 @@ mod tests {
         assert!(manifest.visibility.owner_visible);
         assert!(manifest.capabilities.contains(&"project_runtime.request_change".to_string()));
         assert!(manifest.capabilities.contains(&"tooling.request".to_string()));
+        assert!(manifest.capabilities.contains(&"workflow_memory.search".to_string()));
+        assert_eq!(manifest.policy.get("workflow_memory.search"), Some(&ManifestDecision::Allow));
         assert!(!manifest.capabilities.contains(&"command_registry.apply".to_string()));
         assert_eq!(manifest.routing.default_recipient.as_deref(), Some("owner"));
         assert_eq!(manifest.routing.allowed_recipients, vec!["owner".to_string()]);
@@ -856,6 +859,7 @@ mod tests {
         assert!(prompt.contains("project-local"));
         assert!(prompt.contains("Do not edit global skills"));
         assert!(default_tool_bundle_for_role("project-progenitor").contains(&"project_runtime.request_change"));
+        assert!(default_tool_bundle_for_role("project-progenitor").contains(&"workflow_memory.search"));
         assert!(!default_tool_bundle_for_role("project-progenitor").contains(&"command_registry.apply"));
     }
 }

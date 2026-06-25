@@ -31,7 +31,7 @@ printf '\n[sessions]\nALLOW_SESSION=%s\nDENY_SESSION=%s\nAPPROVAL_SESSION=%s\n' 
 printf '\n[session snapshots include instruction text]\n'
 sql "select id || ' ' || role_id || ' ' || role_version || ' instr=' || length(role_snapshot->>'instructionText') from sessions where id in ('$ALLOW_SESSION','$DENY_SESSION','$APPROVAL_SESSION') order by created_at"
 
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$ALLOW_SESSION" --message 'Use execute_code with exactly this Starlark source: text = fs.read("Cargo.toml"); output("db canonical instruction proof")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$ALLOW_SESSION" --message 'Use execute_code with exactly this Starlark source: text = fs.read("Cargo.toml"); print("db canonical instruction proof")'
 ALLOW_TURN=$(sql "select id from turns where session_id='$ALLOW_SESSION' order by started_at desc limit 1")
 printf '\n[model request uses session snapshot instructions]\n'
 sql "select event_type || ':' || ((payload->'request'->'roleInstructions'->>'source')) || ':' || left((payload->'request'->'roleInstructions'->>'prefix'), 80) from event_stream where turn_id='$ALLOW_TURN' and event_type in ('model.tool_call','model.final_response') order by sequence"
@@ -64,8 +64,8 @@ printf 'old_session='; sql "select (role_snapshot->>'version') || ' ' || (role_s
 run cargo run --quiet --bin robdex-agent-runtime -- roles import roles/runtime-allow.json >/tmp/agent-runtime-role-restore.log
 rm -rf "$TMPDIR"
 
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$DENY_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/db-role-deny.txt", "deny should not execute"); output("deny should not execute")'
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/db-role-approval.txt", "approval should pause"); output("approval should not execute")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$DENY_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/db-role-deny.txt", "deny should not execute"); print("deny should not execute")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("tmp/db-role-approval.txt", "approval should pause"); print("approval should not execute")'
 
 printf '\n[denied action evidence]\n'
 sql "select sequence || ':' || event_type || ':' || status || ':' || (payload->>'action') || ':' || (payload->>'decision') from event_stream where session_id='$DENY_SESSION' and event_type in ('policy.decision','command.completed') order by sequence"
