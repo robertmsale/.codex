@@ -4,7 +4,7 @@ This document describes the Robdex Requirements system as a control-plane featur
 
 The short version:
 
-Requirements turn the operator-approved task outcome into an explicit completion contract. When active, Robdex gives the source agent a structured output schema for every turn. Mid-turn commentary can use `requirements: null`, but a final completion claim must fill a per-requirement claim object. Robdex then routes that claim packet to a bound Requirements reviewer, whose own structured output schema forces a per-requirement verdict. Passing verdicts shrink future worker claim schemas, but the reviewer always checks the full canonical RequirementSet and can re-fail previously passed requirements if later work regresses them.
+Requirements turn the operator-approved task outcome into an explicit completion contract. When active, Robdex gives the source agent a structured output schema for every turn. Mid-turn commentary can use `requirements: null`, but a final completion claim must fill a per-requirement claim object. Robdex then routes that claim packet to a bound Requirements reviewer, whose own structured output schema forces a per-requirement verdict for the reviewable keys in the claim packet. Passing verdicts shrink future worker claim schemas, and later reviewable claims can re-fail previously passed requirements if later work regresses them.
 
 ## Why Requirements Exist
 
@@ -339,7 +339,7 @@ To reduce output cost, Robdex modifies the reviewer schema for requirements that
 
 This is only available for requirements whose review progress is already `passed`.
 
-The reviewer prompt instructs:
+The reviewer schema instructs:
 
 - use `stillPassing` only after checking that the previously passed requirement still passes for the same reason;
 - do not use it for new, failed, blocked, waived, changed, or insufficiently evidenced requirements;
@@ -371,7 +371,7 @@ Purpose: reduce worker output tokens.
 
 ### Reviewer
 
-The reviewer verdict schema is scoped to the current source packet's reviewable keys. The prompt includes the latest source claim packet, canonical requirement text for those scope keys, and prior persisted status for those scope keys. It does not dump global `previouslyPassed`, `currentlyUnresolved`, or `previousFailuresBlockersWaivers` lists.
+The reviewer verdict schema is scoped to the current source packet's reviewable keys and carries canonical requirement descriptions for those keys. The reviewer prompt input is exactly the current compacted source claim packet text. It does not add a subject line, headings, reviewer instructions, requirement-key inventory, canonical requirement prose, source IDs, turn IDs, prior statuses, or global `previouslyPassed`, `currentlyUnresolved`, or `previousFailuresBlockersWaivers` lists.
 
 Purpose: keep review focused and deterministic while reducing reviewer output tokens.
 
