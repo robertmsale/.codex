@@ -2837,7 +2837,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_races_with_archive_and_close_leave_no_live_queue_or_late_work() {
+    async fn submit_races_with_archive_leave_no_live_queue_or_late_work() {
         let test_db = validation_db().await;
         let state = ServerState::new(test_db.pool.clone());
         let router = app(state.clone());
@@ -2898,19 +2898,19 @@ mod tests {
             .bind(archive_session_id)
             .fetch_one(&test_db.pool)
             .await
-            .expect("close accepted");
+            .expect("archive accepted");
         assert_eq!(archive_accepted, 0, "archive race must leave no live accepted queue");
         let archive_late_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text='archive race steering'")
             .bind(archive_session_id)
             .fetch_one(&test_db.pool)
             .await
-            .expect("close late turns");
+            .expect("archive late turns");
         assert_eq!(archive_late_turns, 0, "archive race must not start late work");
         let archive_terminal_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status IN ('abandoned','rejected')")
             .bind(archive_session_id)
             .fetch_one(&test_db.pool)
             .await
-            .expect("close terminal rows");
+            .expect("archive terminal rows");
         assert!(archive_terminal_rows >= 1, "accepted input must be abandoned or terminal submit rejected");
         test_db.cleanup().await;
     }
@@ -8101,7 +8101,7 @@ print(outputs.stats(artifact))
     }
 
     #[tokio::test]
-    async fn requirements_lifecycle_close_archive_and_fork_preserve_hidden_reviewer_semantics() {
+    async fn requirements_lifecycle_archive_and_fork_preserve_hidden_reviewer_semantics() {
         let test_db = validation_db().await;
         let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
         let source = db::new_session(&test_db.pool, &role, Some("requirements-lifecycle"), ".", Some("."), None, None).await.expect("source");
