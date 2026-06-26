@@ -21,6 +21,8 @@
     "file.search",
     "tree.list",
     "tree.find",
+    "git.status",
+    "git.diff",
     "image.describe"
   ],
   "policy": {
@@ -35,6 +37,8 @@
     "file.search": "allow",
     "tree.list": "allow",
     "tree.find": "allow",
+    "git.status": "allow",
+    "git.diff": "allow",
     "image.describe": "allow"
   },
   "routing": {

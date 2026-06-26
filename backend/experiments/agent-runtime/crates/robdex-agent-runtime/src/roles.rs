@@ -43,7 +43,7 @@ pub fn default_tool_bundle_for_role(role_id: &str) -> Vec<&'static str> {
         ],
         "project-progenitor" => vec![
             "project_runtime.request_change", "tooling.request", "workflow_memory.search",
-            "file.head", "tree.list", "tree.find",
+            "file.head", "tree.list", "tree.find", "git.status", "git.diff",
         ],
         "simulator-steward" => vec![
             "simulator.inventory", "simulator.lease.assign", "simulator.lease.release",
@@ -735,6 +735,7 @@ mod tests {
         LifecycleAuthorityMetadata, ManifestDecision, ModelDefaults, PromptSource, RoleManifest,
         RoleRegistry, RoutingMetadata, VisibilityMetadata, default_tool_bundle_for_role,
     };
+    use crate::policy::{PolicyEngine, RuntimeDecision};
 
     fn temp_role_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -844,13 +845,29 @@ mod tests {
         let manifest: RoleManifest = serde_json::from_str(&manifest_text).expect("parse project progenitor manifest");
         let registry = RoleRegistry::from_root(root.clone());
         registry.validate_manifest(&manifest, &root).expect("valid project progenitor manifest");
+        let imported = registry.load_for_import(&root.join("project-progenitor.json")).expect("import project progenitor manifest");
+        let status_decision = PolicyEngine::decide(&imported.snapshot, "git.status", serde_json::json!({}));
+        let diff_decision = PolicyEngine::decide(&imported.snapshot, "git.diff", serde_json::json!({"paths":[]}));
+        let commit_decision = PolicyEngine::decide(&imported.snapshot, "git.commit", serde_json::json!({"message":"nope","paths":[]}));
+        assert_eq!(status_decision.decision, RuntimeDecision::Allow);
+        assert_eq!(diff_decision.decision, RuntimeDecision::Allow);
+        assert_eq!(commit_decision.decision, RuntimeDecision::Deny);
         assert_eq!(manifest.id, "project-progenitor");
         assert!(manifest.visibility.owner_visible);
         assert!(manifest.capabilities.contains(&"project_runtime.request_change".to_string()));
         assert!(manifest.capabilities.contains(&"tooling.request".to_string()));
         assert!(manifest.capabilities.contains(&"workflow_memory.search".to_string()));
+        assert!(manifest.capabilities.contains(&"git.status".to_string()));
+        assert!(manifest.capabilities.contains(&"git.diff".to_string()));
         assert_eq!(manifest.policy.get("workflow_memory.search"), Some(&ManifestDecision::Allow));
+        assert_eq!(manifest.policy.get("git.status"), Some(&ManifestDecision::Allow));
+        assert_eq!(manifest.policy.get("git.diff"), Some(&ManifestDecision::Allow));
         assert!(!manifest.capabilities.contains(&"command_registry.apply".to_string()));
+        for mutating_git in ["git.restore", "git.add", "git.commit", "git.reset", "git.merge", "git.cherry-pick", "git.pull", "git.fetch", "git.push"] {
+            assert!(!manifest.capabilities.contains(&mutating_git.to_string()));
+            assert!(!manifest.policy.contains_key(mutating_git));
+            assert!(!default_tool_bundle_for_role("project-progenitor").contains(&mutating_git));
+        }
         assert_eq!(manifest.routing.default_recipient.as_deref(), Some("owner"));
         assert_eq!(manifest.routing.allowed_recipients, vec!["owner".to_string()]);
         assert!(!manifest.lifecycle_authority.can_spawn_agents);
@@ -860,6 +877,8 @@ mod tests {
         assert!(prompt.contains("Do not edit global skills"));
         assert!(default_tool_bundle_for_role("project-progenitor").contains(&"project_runtime.request_change"));
         assert!(default_tool_bundle_for_role("project-progenitor").contains(&"workflow_memory.search"));
+        assert!(default_tool_bundle_for_role("project-progenitor").contains(&"git.status"));
+        assert!(default_tool_bundle_for_role("project-progenitor").contains(&"git.diff"));
         assert!(!default_tool_bundle_for_role("project-progenitor").contains(&"command_registry.apply"));
     }
 }
