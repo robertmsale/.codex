@@ -155,10 +155,11 @@ class _AgentRuntimeWorkbenchHostState extends State<AgentRuntimeWorkbenchHost> {
     await preferences.setDouble(_leftRailWidthPreferenceKey, width);
   }
 
-  AgentRuntimeOperationsDetail _operationsDetail(AgentRuntimeWorkbenchData data, String? focusSurfaceId, String selectedSessionId) {
+  AgentRuntimeOperationsDetail _operationsDetail(AgentRuntimeWorkbenchData data, String? focusSurfaceId, String selectedSessionId, {VoidCallback? onClose}) {
     return AgentRuntimeOperationsDetail(
       data: data,
       focusSurfaceId: focusSurfaceId,
+      onClose: onClose ?? () => Navigator.of(context).maybePop(),
       onRoleValidate: _controller.validateRoleDraft,
       onRoleCreate: _controller.createRoleFromDraft,
       onRoleUpdate: _controller.updateRoleFromDraft,
@@ -223,11 +224,20 @@ class _AgentRuntimeWorkbenchHostState extends State<AgentRuntimeWorkbenchHost> {
     }
     return showModalBottomSheet<void>(
       context: context,
+      isDismissible: true,
+      enableDrag: true,
       isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
       backgroundColor: const Color(0xFF111820),
-      builder: (context) => FractionallySizedBox(
+      builder: (sheetContext) => FractionallySizedBox(
         heightFactor: 0.86,
-        child: _operationsDetail(data, surfaceId, selectedSessionId),
+        child: _operationsDetail(
+          data,
+          surfaceId,
+          selectedSessionId,
+          onClose: () => Navigator.of(sheetContext).pop(),
+        ),
       ),
     );
   }
@@ -374,30 +384,46 @@ class _AgentRuntimeToolbar extends StatelessWidget {
       spacing: 6,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        IconButton(
-          key: const ValueKey('agentRuntime.toolbar.runtimeOperations'),
-          tooltip: 'Runtime operations',
-          onPressed: () => onOpenSurface(surfaces.any((surface) => surface.surfaceId == 'processManager') ? 'processManager' : 'compaction'),
-          icon: const Icon(Icons.manage_history_rounded, size: 18),
+        Semantics(
+          button: true,
+          label: 'Runtime operations',
+          child: IconButton(
+            key: const ValueKey('agentRuntime.toolbar.runtimeOperations'),
+            tooltip: 'Runtime operations',
+            onPressed: () => onOpenSurface(surfaces.any((surface) => surface.surfaceId == 'processManager') ? 'processManager' : 'compaction'),
+            icon: const Icon(Icons.manage_history_rounded, size: 18),
+          ),
         ),
-        IconButton(
-          key: const ValueKey('agentRuntime.toolbar.sessionSettings'),
-          tooltip: 'Session settings',
-          onPressed: hasSessionSurface ? onOpenSessionSettings : null,
-          icon: const Icon(Icons.tune_rounded, size: 18),
+        Semantics(
+          button: true,
+          label: 'Session settings',
+          child: IconButton(
+            key: const ValueKey('agentRuntime.toolbar.sessionSettings'),
+            tooltip: 'Session settings',
+            onPressed: hasSessionSurface ? onOpenSessionSettings : null,
+            icon: const Icon(Icons.tune_rounded, size: 18),
+          ),
         ),
-        IconButton(
-          key: const ValueKey('agentRuntime.toolbar.disconnect'),
-          tooltip: 'Disconnect',
-          onPressed: onDisconnect,
-          icon: const Icon(Icons.link_off_rounded, size: 18),
+        Semantics(
+          button: true,
+          label: 'Disconnect',
+          child: IconButton(
+            key: const ValueKey('agentRuntime.toolbar.disconnect'),
+            tooltip: 'Disconnect',
+            onPressed: onDisconnect,
+            icon: const Icon(Icons.link_off_rounded, size: 18),
+          ),
         ),
-        PopupMenuButton<String>(
-          key: const ValueKey('agentRuntime.toolbar.sections'),
-          tooltip: 'Runtime operation sections',
-          onSelected: onOpenSurface,
-          itemBuilder: (context) => [for (final surface in menuSurfaces) PopupMenuItem(value: surface.surfaceId, child: Text(surface.title))],
-          icon: const Icon(Icons.more_horiz_rounded, size: 18),
+        Semantics(
+          button: true,
+          label: 'Runtime operation sections',
+          child: PopupMenuButton<String>(
+            key: const ValueKey('agentRuntime.toolbar.sections'),
+            tooltip: 'Runtime operation sections',
+            onSelected: onOpenSurface,
+            itemBuilder: (context) => [for (final surface in menuSurfaces) PopupMenuItem(value: surface.surfaceId, child: Text(surface.title))],
+            icon: const Icon(Icons.more_horiz_rounded, size: 18),
+          ),
         ),
       ],
     );
