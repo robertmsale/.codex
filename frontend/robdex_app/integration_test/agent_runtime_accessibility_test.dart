@@ -101,6 +101,46 @@ void main() {
     expect(find.byWidgetPredicate((widget) => widget is Semantics && widget.properties.label == 'Runtime URL'), findsOneWidget);
     expect(find.text('Connect to URL'), findsOneWidget);
   });
+
+  testWidgets('Agent Runtime session settings opens with duplicate runtime model options', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    await tester.binding.setSurfaceSize(const Size(1600, 1200));
+    addTearDown(() async => tester.binding.setSurfaceSize(null));
+
+    final duplicateModelData = mockAgentRuntimeConnected.copyWith(
+      selectedSessionControlPlane: mockAgentRuntimeConnected.selectedSessionControlPlane!.copyWith(
+        activeModel: 'codex-live-model',
+        modelOptions: const [
+          AgentRuntimeModelOption(id: 'codex-live-model', displayLabel: 'Codex live model', source: 'runtime', isDefault: true),
+          AgentRuntimeModelOption(id: 'codex-live-model', displayLabel: 'Codex live model duplicate', source: 'runtime', isDefault: false),
+          AgentRuntimeModelOption(id: 'gpt-5.4-mini', displayLabel: 'GPT-5.4 Mini', source: 'runtime', isDefault: false),
+        ],
+      ),
+    );
+    final controller = AgentRuntimeWorkbenchController(requestSink: (_, _) {});
+    addTearDown(controller.dispose);
+    controller.setViewDataForTest(duplicateModelData, shell: agentRuntimeConversationShellData(duplicateModelData));
+
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: AgentRuntimeWorkbenchHost(controller: controller))));
+    await tester.pump();
+    await _pumpUntil(
+      tester,
+      condition: () => find.byKey(const ValueKey('agentRuntime.toolbar.sessionSettings')).evaluate().isNotEmpty,
+      reason: 'session settings toolbar did not render',
+    );
+
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.sessionSettings')));
+    await tester.pump();
+    await _pumpUntil(
+      tester,
+      condition: () => find.byType(AgentRuntimeSessionControlPlane).evaluate().isNotEmpty,
+      reason: 'session settings surface did not open',
+    );
+
+    expect(find.text('Session Settings'), findsOneWidget);
+    expect(find.byType(DropdownButtonFormField<String>), findsNWidgets(3));
+    expect(tester.takeException(), isNull);
+  });
 }
 
 Future<void> _pumpUntil(
