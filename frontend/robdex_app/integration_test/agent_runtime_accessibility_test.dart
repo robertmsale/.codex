@@ -18,8 +18,8 @@ void main() {
     addTearDown(controller.dispose);
     controller.setViewDataForTest(mockAgentRuntimeConnected, shell: agentRuntimeConversationShellData(mockAgentRuntimeConnected));
 
-    await tester.pumpWidget(MaterialApp(home: AgentRuntimeWorkbenchHost(controller: controller)));
-    await tester.pump();
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: AgentRuntimeWorkbenchHost(controller: controller))));
+    await tester.pumpAndSettle();
     await _pumpUntil(
       tester,
       condition: () => find.byKey(const ValueKey('agentRuntime.toolbar.runtimeOperations')).evaluate().isNotEmpty,
@@ -42,10 +42,8 @@ void main() {
     expect(find.text('Process Manager'), findsWidgets);
     expect(find.bySemanticsLabel('Close runtime operations detail'), findsOneWidget);
 
-    final closeButton = tester.widget<IconButton>(find.byKey(const ValueKey('agentRuntime.operationsDetail.close')));
-    expect(closeButton.onPressed, isNotNull);
-    closeButton.onPressed!();
-    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.operationsDetail.close')));
+    await tester.pumpAndSettle();
     await _pumpUntil(
       tester,
       condition: () => find.byKey(const ValueKey('agentRuntime.operationsDetail.close')).evaluate().isEmpty,
