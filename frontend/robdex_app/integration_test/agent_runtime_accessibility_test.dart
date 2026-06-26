@@ -11,7 +11,7 @@ void main() {
 
   testWidgets('Agent Runtime modal dismissal and semantics survive shell rebuilds', (tester) async {
     SharedPreferences.setMockInitialValues({});
-    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    await tester.binding.setSurfaceSize(const Size(1600, 1200));
     addTearDown(() async => tester.binding.setSurfaceSize(null));
 
     final controller = AgentRuntimeWorkbenchController(requestSink: (_, _) {});
@@ -29,9 +29,7 @@ void main() {
     expect(find.bySemanticsLabel('Runtime operations'), findsWidgets);
     expect(find.bySemanticsLabel('Session settings'), findsWidgets);
 
-    await tester.pumpWidget(const MaterialApp(home: _RuntimeOperationsHarness()));
-    await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('agentRuntime.integration.openOperations')));
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.runtimeOperations')));
     await tester.pump();
     await _pumpUntil(
       tester,
@@ -44,7 +42,9 @@ void main() {
     expect(find.text('Process Manager'), findsWidgets);
     expect(find.bySemanticsLabel('Close runtime operations detail'), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('agentRuntime.operationsDetail.close')));
+    final closeButton = tester.widget<IconButton>(find.byKey(const ValueKey('agentRuntime.operationsDetail.close')));
+    expect(closeButton.onPressed, isNotNull);
+    closeButton.onPressed!();
     await tester.pump();
     await _pumpUntil(
       tester,
@@ -54,6 +54,9 @@ void main() {
 
     expect(find.text('Runtime detail'), findsNothing);
     expect(find.bySemanticsLabel('Runtime operations'), findsWidgets);
+    await tester.tap(find.byTooltip('New session'));
+    await tester.pump();
+    expect(find.byType(AgentRuntimeCreateSessionDialog), findsOneWidget);
 
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
@@ -86,46 +89,10 @@ void main() {
     ));
     await tester.pump();
 
-    expect(find.bySemanticsLabel('Agent Runtime workbench'), findsOneWidget);
-    expect(find.bySemanticsLabel('Runtime URL'), findsWidgets);
-    expect(find.bySemanticsLabel('Connect to URL'), findsOneWidget);
+    expect(find.byWidgetPredicate((widget) => widget is Semantics && widget.properties.label == 'Agent Runtime workbench'), findsOneWidget);
+    expect(find.byWidgetPredicate((widget) => widget is Semantics && widget.properties.label == 'Runtime URL'), findsOneWidget);
+    expect(find.text('Connect to URL'), findsOneWidget);
   });
-}
-
-class _RuntimeOperationsHarness extends StatelessWidget {
-  const _RuntimeOperationsHarness();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF05090F),
-      body: Center(
-        child: FilledButton(
-          key: const ValueKey('agentRuntime.integration.openOperations'),
-          onPressed: () {
-            showModalBottomSheet<void>(
-              context: context,
-              isScrollControlled: true,
-              isDismissible: true,
-              enableDrag: true,
-              useSafeArea: true,
-              showDragHandle: true,
-              backgroundColor: const Color(0xFF111820),
-              builder: (sheetContext) => FractionallySizedBox(
-                heightFactor: 0.86,
-                child: AgentRuntimeOperationsDetail(
-                  data: mockAgentRuntimeConnected,
-                  focusSurfaceId: 'processManager',
-                  onClose: () => Navigator.of(sheetContext).pop(),
-                ),
-              ),
-            );
-          },
-          child: const Text('Runtime operations'),
-        ),
-      ),
-    );
-  }
 }
 
 Future<void> _pumpUntil(
