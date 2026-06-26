@@ -113,9 +113,9 @@ async fn run_validation(client: &Client, pool: &PgPool, base: &str) -> Result<()
     assert_error_code(&bad_request, "bad_request")?;
     let missing_session = get_json(client, base, &format!("/sessions/{}", Uuid::new_v4()), StatusCode::NOT_FOUND).await?;
     assert_error_code(&missing_session, "not_found")?;
-    let closed = post_json(client, base, &format!("/sessions/{session_id}/close"), json!({"reason":"server validation conflict setup"}), StatusCode::OK).await?;
-    assert_eq_str(&closed, "/status", "closed")?;
-    let conflict = post_json(client, base, &format!("/sessions/{session_id}/send"), json!({"message":"must not call model because session is closed"}), StatusCode::CONFLICT).await?;
+    let archived = post_json(client, base, &format!("/sessions/{session_id}/archive"), json!({"reason":"server validation conflict setup"}), StatusCode::OK).await?;
+    assert_eq_str(&archived, "/status", "archived")?;
+    let conflict = post_json(client, base, &format!("/sessions/{session_id}/send"), json!({"message":"must not call model because session is archived"}), StatusCode::CONFLICT).await?;
     assert_error_code(&conflict, "conflict")?;
     let validation = post_json(client, base, &format!("/command-registry/requests/{request_id}/preview-decision"), json!({"status":"maybe"}), StatusCode::UNPROCESSABLE_ENTITY).await?;
     assert_error_code(&validation, "validation_failed")?;
@@ -281,7 +281,7 @@ async fn next_ws_json(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungsten
     let message = tokio::time::timeout(Duration::from_secs(10), ws.next())
         .await
         .context("timed out waiting for websocket message")?
-        .context("websocket closed")?
+        .context("websocket archived")?
         .context("websocket message error")?;
     let text = message.into_text().context("websocket message was not text")?;
     serde_json::from_str(&text).with_context(|| format!("websocket text was not JSON: {text}"))

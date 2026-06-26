@@ -241,7 +241,6 @@ impl GuiBackendController {
             | GuiOperationRequest::GrantGodMode { .. }
             | GuiOperationRequest::RevokeGodMode { .. }
             | GuiOperationRequest::LoadFullSizeImage { .. }
-            | GuiOperationRequest::CloseSession { .. }
             | GuiOperationRequest::ArchiveSession { .. }
             | GuiOperationRequest::ForkSession { .. }
             | GuiOperationRequest::DecideApproval { .. }
@@ -431,8 +430,7 @@ impl GuiBackendController {
             | GuiOperationRequest::ResumeApproval { approval_id } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: Some(approval_id.clone()),
             }),
-            GuiOperationRequest::CloseSession { session_id, .. }
-            | GuiOperationRequest::ArchiveSession { session_id } => {
+            GuiOperationRequest::ArchiveSession { session_id } => {
                 let base_url = self.required_base_url()?;
                 self.replace_sync_client(&base_url, Some(session_id))?;
                 let _ = self.hydrate_current().await?;
@@ -517,7 +515,6 @@ impl GuiBackendController {
             GuiOperationRequest::GrantGodMode { session_id, .. } => format!("/sessions/{session_id}/god-mode/grant"),
             GuiOperationRequest::RevokeGodMode { session_id, .. } => format!("/sessions/{session_id}/god-mode/revoke"),
             GuiOperationRequest::LoadFullSizeImage { session_id, image_artifact_id } => format!("/sessions/{session_id}/image-artifacts/{image_artifact_id}/json"),
-            GuiOperationRequest::CloseSession { session_id, .. } => format!("/sessions/{session_id}/close"),
             GuiOperationRequest::ArchiveSession { session_id } => format!("/sessions/{session_id}/archive"),
             GuiOperationRequest::ForkSession { session_id, .. } => format!("/sessions/{session_id}/fork"),
             GuiOperationRequest::DecideApproval { approval_id, .. } => format!("/approvals/{approval_id}/decide"),
@@ -707,7 +704,7 @@ mod tests {
                         kind: RuntimeDeltaKind::SessionUpsert {
                             session: SessionListItem {
                                 id: "session-from-websocket".to_string(),
-                                status: "open".to_string(),
+                                status: "stopped".to_string(),
                                 role_id: Some("runtime-allow".to_string()),
                                 role_version: Some("1.0.0".to_string()),
                                 project_key: None,
@@ -716,7 +713,6 @@ mod tests {
                                 workdir: ".".to_string(),
                                 tracked: true,
                                 archived_at: None,
-                                closed_at: None,
                                 updated_at: None,
                             },
                         },

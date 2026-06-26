@@ -147,7 +147,7 @@ The shell uses stable regions:
    - This strip is always visible and never replaced by session content.
 2. **Left operational session rail**
    - Scannable session list grouped by operational state: running, blocked,
-     needs approval, failed, open/idle, closed, archived when intentionally
+     needs approval, failed, open/idle, archived when intentionally
      surfaced.
 - Items expose typed state from `RuntimeProjection`; Dart does not infer
      status from raw events. The first Flutter shell receives these items as

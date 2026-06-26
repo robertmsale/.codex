@@ -97,47 +97,17 @@ ALL_LIST=$(cargo run --quiet --bin robdex-agent-runtime -- sessions list --all)
 printf '%s\n' "$ALL_LIST" | rg "$ARCHIVE"
 run cargo run --quiet --bin robdex-agent-runtime -- sessions show "$ARCHIVE"
 
-CLOSE=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow --project lifecycle --workdir "$ROOT")
-STALE_PROCESS_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-sql "insert into managed_processes (id, handle, session_id, binary_name, argv, cwd, status, end_of_turn_behavior, end_of_session_behavior, metadata) values ('$STALE_PROCESS_ID', 'close-stale-handle', '$CLOSE', 'rg', '[]'::jsonb, '$ROOT', 'running', 'continue', 'block', '{}'::jsonb)" >/dev/null
+STOPPED=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow --project lifecycle --workdir "$ROOT")
+STOPPED_SESSION_STATUS=$(sql "select status from sessions where id='$STOPPED'")
+assert_eq stopped_session_status stopped "$STOPPED_SESSION_STATUS"
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$STOPPED" --message 'Stopped sessions remain sendable.'
+run cargo run --quiet --bin robdex-agent-runtime -- sessions archive "$STOPPED"
 set +e
-BLOCKED_CLOSE=$(cargo run --quiet --bin robdex-agent-runtime -- sessions close "$CLOSE" --reason 'lifecycle validation blocked close' 2>&1)
-BLOCKED_CLOSE_STATUS=$?
+ARCHIVED_SEND=$(cargo run --quiet --bin robdex-agent-runtime -- send --session "$STOPPED" --message 'This must be rejected before turn creation.' 2>&1)
+ARCHIVED_STATUS=$?
 set -e
-printf 'blocked_close_status=%s\n%s\n' "$BLOCKED_CLOSE_STATUS" "$BLOCKED_CLOSE"
-CLOSE_SESSION_STATUS=$(sql "select status from sessions where id='$CLOSE'")
-assert_eq blocked_close_session_open open "$CLOSE_SESSION_STATUS"
-CLOSE_PROCESS_STATUS=$(sql "select status from managed_processes where session_id='$CLOSE' and handle='close-stale-handle'")
-assert_eq blocked_close_process_running running "$CLOSE_PROCESS_STATUS"
-CLOSE_BLOCKED_EVENTS=$(sql "select count(*) from event_stream where session_id='$CLOSE' and event_type='session.closeBlocked'")
-assert_eq close_blocked_event 1 "$CLOSE_BLOCKED_EVENTS"
-CLOSE_CLOSED_EVENTS=$(sql "select count(*) from event_stream where session_id='$CLOSE' and event_type='session.closed'")
-assert_eq blocked_close_no_closed_event 0 "$CLOSE_CLOSED_EVENTS"
-sql "update managed_processes set status='terminated', end_time=now(), termination_reason='validationCleanup' where session_id='$CLOSE' and handle='close-stale-handle'" >/dev/null
-run cargo run --quiet --bin robdex-agent-runtime -- sessions close "$CLOSE" --reason 'lifecycle validation close'
-CLOSE_CLOSED_EVENTS_AFTER=$(sql "select count(*) from event_stream where session_id='$CLOSE' and event_type='session.closed'")
-assert_eq successful_close_event 1 "$CLOSE_CLOSED_EVENTS_AFTER"
-set +e
-CLOSED_SEND=$(cargo run --quiet --bin robdex-agent-runtime -- send --session "$CLOSE" --message 'This must be rejected before turn creation.' 2>&1)
-CLOSED_STATUS=$?
-set -e
-printf 'closed_send_status=%s\n' "$CLOSED_STATUS"
-printf '%s\n' "$CLOSED_SEND" | rg 'not open|session close'
-CLOSED_TURNS=$(sql "select count(*) from turns where session_id='$CLOSE'")
-assert_eq closed_turns 0 "$CLOSED_TURNS"
-
-DETACHED_TERMINATE=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow --project lifecycle --workdir "$ROOT")
-DETACHED_PROCESS_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-sql "insert into managed_processes (id, handle, session_id, binary_name, argv, cwd, status, end_of_turn_behavior, end_of_session_behavior, metadata) values ('$DETACHED_PROCESS_ID', 'detached-terminate-handle', '$DETACHED_TERMINATE', 'rg', '[]'::jsonb, '$ROOT', 'running', 'continue', 'terminate', '{}'::jsonb)" >/dev/null
-set +e
-DETACHED_CLOSE=$(cargo run --quiet --bin robdex-agent-runtime -- sessions close "$DETACHED_TERMINATE" --reason 'detached terminable should block' 2>&1)
-DETACHED_CLOSE_STATUS=$?
-set -e
-printf 'detached_terminable_close_status=%s\n%s\n' "$DETACHED_CLOSE_STATUS" "$DETACHED_CLOSE"
-DETACHED_SESSION_STATUS=$(sql "select status from sessions where id='$DETACHED_TERMINATE'")
-assert_eq detached_terminable_remains_open open "$DETACHED_SESSION_STATUS"
-DETACHED_CLOSED_EVENTS=$(sql "select count(*) from event_stream where session_id='$DETACHED_TERMINATE' and event_type='session.closed'")
-assert_eq detached_terminable_no_closed_event 0 "$DETACHED_CLOSED_EVENTS"
+printf 'archived_send_status=%s\n' "$ARCHIVED_STATUS"
+printf '%s\n' "$ARCHIVED_SEND" | rg 'archived'
 
 APPROVAL_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-approval-rg --project lifecycle --workdir "$ROOT")
 run cargo run --quiet --bin robdex-agent-runtime -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("approval-paused.txt", "paused"); print("paused")'

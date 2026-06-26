@@ -1258,12 +1258,12 @@ fn session_actions(selected: Option<&robdex_agent_runtime_projection::SelectedSe
     let Some(session) = selected else {
         return Vec::new();
     };
-    let mut actions: Vec<AgentRuntimeWorkbenchActionRow> = ["closeSession", "archiveSession", "forkSession"]
+    let mut actions: Vec<AgentRuntimeWorkbenchActionRow> = ["archiveSession", "forkSession"]
         .iter()
         .map(|kind| AgentRuntimeWorkbenchActionRow {
             id: session.id.clone(),
             title: match *kind {
-                "closeSession" => "Close session",
+                
                 "archiveSession" => "Archive session",
                 _ => "Fork session",
             }.to_string(),
@@ -1465,7 +1465,7 @@ fn requirements_review_status_label(status: Option<&str>) -> &'static str {
         Some("ready") => "Awaiting review",
         Some("inReview") => "In review",
         Some("reviewed") => "Reviewed",
-        Some("closed") => "Closed",
+        
         Some("inactive") => "Inactive",
         Some("failed") => "Needs correction",
         Some(_) => "Needs attention",
@@ -3342,10 +3342,10 @@ fn json_object_facts(value: &Value) -> Vec<AgentRuntimeWorkbenchFact> {
 
 fn status_tone(status: &str) -> &'static str {
     match status {
-        "open" | "streaming" | "connected" | "ok" | "completed" => "success",
+        "stopped" | "streaming" | "connected" | "ok" | "completed" => "success",
         "pending" | "connecting" | "hydrating" | "reconnecting" => "warning",
         "failed" | "error" | "lost" | "blocked" => "danger",
-        "closed" | "disabled" | "archived" => "muted",
+        "disabled" | "archived" => "muted",
         _ => "info",
     }
 }
@@ -3633,7 +3633,7 @@ mod tests {
                         worktree_root: Some("/tmp/transport".to_string()),
                         title: Some("Transport session".to_string()),
                         name: Some("transport-session".to_string()),
-                        status: "open".to_string(),
+                        status: "stopped".to_string(),
                         pending_approval_count: 1,
                         managed_process_count: 2,
                         active_turn_id: None,
@@ -3838,7 +3838,7 @@ mod tests {
                         kind: RuntimeDeltaKind::SessionUpsert {
                             session: SessionListItem {
                                 id: "transport-session-delta".to_string(),
-                                status: "open".to_string(),
+                                status: "stopped".to_string(),
                                 role_id: Some("runtime-allow".to_string()),
                                 role_version: Some("1.0.0".to_string()),
                                 project_key: None,
@@ -3847,7 +3847,6 @@ mod tests {
                                 workdir: ".".to_string(),
                                 tracked: true,
                                 archived_at: None,
-                                closed_at: None,
                                 updated_at: None,
                             },
                         },
@@ -3992,7 +3991,7 @@ mod tests {
                     },
                     sessions: vec![SessionListItem {
                         id: "00000000-0000-0000-0000-00000000d15c".to_string(),
-                        status: "open".to_string(),
+                        status: "stopped".to_string(),
                         role_id: Some("runtime-allow".to_string()),
                         role_version: Some("1.0.0".to_string()),
                         project_key: None,
@@ -4001,7 +4000,6 @@ mod tests {
                         workdir: ".".to_string(),
                         tracked: true,
                         archived_at: None,
-                        closed_at: None,
                         updated_at: None,
                     }],
                     ..RuntimeProjection::default()
@@ -4087,7 +4085,7 @@ mod tests {
                     sessions: vec![
                         SessionListItem {
                             id: "00000000-0000-0000-0000-000000000101".to_string(),
-                            status: "open".to_string(),
+                            status: "stopped".to_string(),
                             role_id: Some("runtime-no-rg".to_string()),
                             role_version: Some("1.0.0".to_string()),
                             project_key: Some("zeta-project".to_string()),
@@ -4096,12 +4094,11 @@ mod tests {
                             workdir: "/tmp/zeta".to_string(),
                             tracked: true,
                             archived_at: None,
-                            closed_at: None,
                             updated_at: None,
                         },
                         SessionListItem {
                             id: "00000000-0000-0000-0000-000000000102".to_string(),
-                            status: "open".to_string(),
+                            status: "stopped".to_string(),
                             role_id: Some("runtime-no-rg".to_string()),
                             role_version: Some("1.0.0".to_string()),
                             project_key: Some("alpha-project".to_string()),
@@ -4110,7 +4107,6 @@ mod tests {
                             workdir: "/tmp/alpha".to_string(),
                             tracked: true,
                             archived_at: None,
-                            closed_at: None,
                             updated_at: None,
                         },
                     ],
@@ -4126,7 +4122,7 @@ mod tests {
                         kind: RuntimeDeltaKind::SessionUpsert {
                             session: SessionListItem {
                                 id: "00000000-0000-0000-0000-000000000103".to_string(),
-                                status: "open".to_string(),
+                                status: "stopped".to_string(),
                                 role_id: Some("runtime-no-rg".to_string()),
                                 role_version: Some("1.0.0".to_string()),
                                 project_key: Some("zeta-project".to_string()),
@@ -4135,7 +4131,6 @@ mod tests {
                                 workdir: "/tmp/zeta".to_string(),
                                 tracked: true,
                                 archived_at: None,
-                                closed_at: None,
                                 updated_at: None,
                             },
                         },
@@ -4181,7 +4176,7 @@ mod tests {
                     }],
                     sessions: vec![SessionListItem {
                         id: "00000000-0000-0000-0000-000000000201".to_string(),
-                        status: "open".to_string(),
+                        status: "stopped".to_string(),
                         role_id: Some("runtime-no-rg".to_string()),
                         role_version: Some("1.0.0".to_string()),
                         project_key: Some("zeta-project".to_string()),
@@ -4190,7 +4185,6 @@ mod tests {
                         workdir: "/tmp/zeta".to_string(),
                         tracked: true,
                         archived_at: None,
-                        closed_at: None,
                         updated_at: None,
                     }],
                     roles: vec![test_role_summary()],
@@ -4935,7 +4929,7 @@ mod tests {
             }],
             sessions: vec![SessionListItem {
                 id: "session-1".to_string(),
-                status: "open".to_string(),
+                status: "stopped".to_string(),
                 role_id: Some("runtime-allow".to_string()),
                 role_version: Some("role-version-1".to_string()),
                 project_key: Some("project-a".to_string()),
@@ -4944,7 +4938,6 @@ mod tests {
                 workdir: "/tmp/project-a".to_string(),
                 tracked: true,
                 archived_at: None,
-                closed_at: None,
                 updated_at: None,
             }],
             selected_session: Some(SelectedSessionDetail {
@@ -4957,7 +4950,7 @@ mod tests {
                 worktree_root: Some("/tmp/project-a".to_string()),
                 title: Some("Runtime check".to_string()),
                 name: Some("runtime-check".to_string()),
-                status: "open".to_string(),
+                status: "stopped".to_string(),
                 pending_approval_count: 1,
                 managed_process_count: 2,
                 active_turn_id: Some("turn-queued".to_string()),
@@ -5316,7 +5309,6 @@ mod tests {
             statistics: RuntimeStatistics {
                 sessions: 3,
                 open_sessions: 1,
-                closed_sessions: 1,
                 archived_sessions: 1,
                 turns: 4,
                 running_turns: 1,
@@ -5543,7 +5535,7 @@ mod tests {
             sessions: vec![AgentRuntimeWorkbenchSessionRow {
                 id: "session-custom".to_string(),
                 title: "Custom runtime role".to_string(),
-                status: "open".to_string(),
+                status: "stopped".to_string(),
                 subtitle: "Custom role subtitle".to_string(),
                 group_label: "Neon Incident Commander".to_string(),
                 tone: "warning".to_string(),
@@ -5632,7 +5624,7 @@ mod tests {
                 worktree_root: Some("/tmp/project-a".to_string()),
                 title: Some("Runtime check".to_string()),
                 name: Some("runtime-check".to_string()),
-                status: "open".to_string(),
+                status: "stopped".to_string(),
                 pending_approval_count: 0,
                 managed_process_count: 0,
                 active_turn_id: None,

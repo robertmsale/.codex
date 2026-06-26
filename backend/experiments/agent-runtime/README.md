@@ -62,7 +62,7 @@ they detect a gap or incompatible stream condition.
 The projection includes server status, session list items, optional selected
 session detail, typed selected-session chat entries, internal history/event rows, pending approvals, role summaries, command
 registry summaries, workflow memory summaries, and a top-level watermark. Selected-session chat is backed by turns.input_text, model_events final_response payloads, tool/script/process/output-artifact records, and stored image artifacts. Human-readable activity belongs in the selected-session timeline; machine-readable history remains in PostgreSQL/server internals.
-Deltas cover session upsert/archive/close, selected-session replacement or
+Deltas cover session upsert/archive, selected-session replacement or
 patch, timeline append, turn/tool/script/process status changes, approval
 upsert/removal, role upsert/archive, command registry upsert/disable, workflow
 memory updates/events, and explicit resync-required signaling.
@@ -100,7 +100,7 @@ layout.
 Operation vocabulary is typed by `GuiOperationRequest`, `GuiOperationResult`,
 `GuiOperationOutcome`, `GuiOperationExpectation`, and `ApiErrorPacket`.
 Operations cover connect, hydrate, rehydrate, disconnect, select session,
-create/send/close/archive/fork session, decide/resume approval, command
+create/send/archive/fork session, decide/resume approval, command
 registry list/show/request preview/decide/apply, project runtime config
 validate/import/activate/archive/export/evaluation-inspection, and
 workflow-memory feedback. Project runtime config changes are typed Rust/Rinf
@@ -166,7 +166,6 @@ Every operation uses the API error packet
 | `ArchiveProject` | `/projects/{projectKey}/archive` | POST | `{}` | `{project}` | `WaitForDelta` |
 | `UnarchiveProject` | `/projects/{projectKey}/unarchive` | POST | `{}` | `{project}` | `WaitForDelta` |
 | `SendMessage` | `/sessions/{sessionId}/send` | POST | `{message}` | `{sessionId, turnId?, submittedInputId, disposition, status, orderingKey, lifecycle}` | `WaitForDelta` |
-| `CloseSession` | `/sessions/{sessionId}/close` | POST | `{reason?}` | `{sessionId, status}` | `WaitForDelta` |
 | `ArchiveSession` | `/sessions/{sessionId}/archive` | POST | `{}` | `{sessionId, tracked}` | `WaitForDelta` |
 | `ForkSession` | `/sessions/{sessionId}/fork` | POST | `{atTurn}` | `{sessionId, forkedFromSessionId, forkedFromTurnId}` | `WaitForDelta` |
 | `DecideApproval` | `/approvals/{approvalId}/decide` | POST | `{decision, reason}`; `reason` is required | `{approvalId, decision}` | `WaitForDelta` |
@@ -671,7 +670,6 @@ POST /sessions
 GET  /sessions/{sessionId}
 GET  /sessions/{sessionId}/history
 POST /sessions/{sessionId}/send
-POST /sessions/{sessionId}/close
 POST /sessions/{sessionId}/archive
 POST /sessions/{sessionId}/fork
 GET  /sessions/{sessionId}/requirements
@@ -722,7 +720,7 @@ session is idle persists a submitted input with `idle_turn_start` disposition
 and starts the next normal turn. Sending while the session already has active
 runtime work persists the input with a steering or queued-continuation
 disposition; the current runtime drains the durable queue serially without
-starting a second concurrent running turn. Closed or archived sessions reject
+starting a second concurrent running turn. Archived sessions reject
 before runtime placement with a typed terminal lifecycle error and create no
 turn.
 
@@ -820,7 +818,7 @@ streams serde-compatible `RuntimeDelta` values derived from Postgres
 `event_stream` rows through the shared projection crate. Each event-stream row
 always produces a `TimelineAppend` delta for timeline rendering. The runtime
 server adapter also emits semantic deltas from the same row when the current DB
-state can be mapped to a projection entity: session create/archive/close,
+state can be mapped to a projection entity: session create/archive,
 turn/tool/script/process status, approval pending/removal, role changes,
 command-registry changes, and workflow-memory summaries/events. When one
 event-stream row produces multiple deltas, the server sends them in stable
@@ -1138,7 +1136,7 @@ The lifecycle boundary list is:
 `on_session_created`, `on_turn_submitted`, `on_turn_start`,
 `on_model_request`, `on_model_final`, `on_tool_start`, `on_tool_complete`,
 `on_packet_recorded`, `on_resource_reserved`, `on_resource_released`,
-`on_turn_complete`, `on_session_close`, `on_session_archive`, and
+`on_turn_complete`, `on_session_archive`, and
 `on_compaction_complete`.
 
 Hook context is an immutable bounded summary containing project/session
@@ -1151,7 +1149,7 @@ history are excluded.
 
 Validated hooks return typed intents only: `require_output_schema`,
 `record_packet`, `route_packet`, `notify_session`, `ensure_subagent`,
-`close_subagent`, `reserve_resource`, `release_resource`,
+`deactivate_subagent`, `reserve_resource`, `release_resource`,
 `add_turn_obligation`, `update_contract_progress`,
 `request_owner_approval`, and `block_with_reason`. Each lifecycle boundary has
 a Rust-owned allowlist. Every accepted intent receives a stable idempotency key
@@ -1227,10 +1225,7 @@ The `worktree_root`, `title`, and `name` fields are explicit session metadata:
 operator label. `send` uses the stored session workdir and rejects sessions whose status is not
 `open` before creating a turn. Archive is visibility-only: it sets
 `tracked=false` and `archived_at` while preserving direct show/history access and
-leaving rows in place. Close is terminal: it sets `status=closed`, records
-`closed_at`, emits `session.closed`, rejects future sends, terminates any live
-session process handles owned by this runtime, and marks remaining running
-managed-process rows as `sessionClosed`.
+leaving rows in place. Archive is terminal: it sets `archived_at`, emits `session.archived`, rejects future sends, releases leases, revokes God Mode, deactivates nested review workflows/subagents, and marks session-ending managed resources terminated or released.
 
 Forking is legal only from a completed source turn. A fork creates a new open
 session with inherited role snapshot, project key, workdir, and lineage fields.

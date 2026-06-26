@@ -1434,7 +1434,6 @@ fn typed_gui_operation(operation: AgentRuntimeGuiOperation) -> std::result::Resu
         AgentRuntimeGuiOperation::GrantGodMode { session_id, reason } => GuiOperationRequest::GrantGodMode { session_id, reason },
         AgentRuntimeGuiOperation::RevokeGodMode { session_id, reason } => GuiOperationRequest::RevokeGodMode { session_id, reason },
         AgentRuntimeGuiOperation::LoadFullSizeImage { session_id, image_artifact_id } => GuiOperationRequest::LoadFullSizeImage { session_id, image_artifact_id },
-        AgentRuntimeGuiOperation::CloseSession { session_id, reason } => GuiOperationRequest::CloseSession { session_id, reason: non_empty(reason) },
         AgentRuntimeGuiOperation::ArchiveSession { session_id } => GuiOperationRequest::ArchiveSession { session_id },
         AgentRuntimeGuiOperation::ForkSession { session_id, at_turn } => GuiOperationRequest::ForkSession { session_id, at_turn },
         AgentRuntimeGuiOperation::DecideApproval { approval_id, decision, reason } => GuiOperationRequest::DecideApproval {
@@ -2214,7 +2213,6 @@ fn agent_runtime_request_replaces_stream(request: &AgentRuntimeRequest) -> bool 
                 | AgentRuntimeGuiOperation::CreateSession { .. }
                 | AgentRuntimeGuiOperation::UpdateSessionSettings { .. }
                 | AgentRuntimeGuiOperation::ForkSession { .. }
-                | AgentRuntimeGuiOperation::CloseSession { .. }
                 | AgentRuntimeGuiOperation::ArchiveSession { .. }
         ),
         _ => false,

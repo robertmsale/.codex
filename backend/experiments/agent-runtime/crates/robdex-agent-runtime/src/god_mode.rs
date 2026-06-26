@@ -67,8 +67,8 @@ pub async fn require_active_grant(pool: &PgPool, session_id: Uuid) -> Result<God
 
 pub async fn grant_session(pool: &PgPool, session_id: Uuid, actor: &str, reason: &str, expires_at: Option<DateTime<Utc>>) -> Result<GodModeGrant> {
     let session = db::session_record(pool, session_id).await?;
-    if session.status != "open" || session.archived_at.is_some() {
-        return Err(RuntimeDomainError::conflict(format!("God Mode grant blocked: session is not open: {session_id}")).into());
+    if session.status != "stopped" || session.archived_at.is_some() {
+        return Err(RuntimeDomainError::conflict(format!("God Mode grant blocked: session is archived: {session_id}")).into());
     }
     let reason = reason.trim();
     if reason.is_empty() {
@@ -203,7 +203,7 @@ mod tests {
         let restarted_pool = PgPoolOptions::new().max_connections(5).connect(&database_url()).await.expect("new pool");
         let after_restart = active_grant(&restarted_pool, session).await.expect("active lookup").expect("active grant");
         assert_eq!(after_restart.id, grant.id);
-        crate::db::close_session(&restarted_pool, session, "test close", 0).await.expect("close revokes");
+        crate::db::archive_session(&restarted_pool, session).await.expect("archive revokes");
         assert!(active_grant(&restarted_pool, session).await.expect("active lookup after close").is_none());
 
         let archived_session = crate::db::new_session(&restarted_pool, &role, None, ".", None, None, None).await.expect("archive session");

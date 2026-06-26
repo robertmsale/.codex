@@ -543,7 +543,7 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
     AgentRuntimeSessionItem(
       id: 'session-a',
       title: 'Runtime validation',
-      status: 'open',
+      status: 'stopped',
       subtitle: 'runtime-allow · /Users/robertsale/.codex',
       groupLabel: 'Open',
       tone: 'success',
@@ -551,7 +551,7 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
     AgentRuntimeSessionItem(
       id: 'session-b',
       title: 'Blocked command review',
-      status: 'open',
+      status: 'stopped',
       subtitle: '1 approval pending',
       groupLabel: 'Attention',
       tone: 'warning',
@@ -671,7 +671,7 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
         AgentRuntimeFact(label: 'Current turn', value: 'Idle'),
       ],
       actions: [
-        AgentRuntimeActionItem(id: 'session-a', title: 'Close session', subtitle: 'Runtime validation', kind: 'closeSession', stateText: 'Ready', tone: 'info'),
+        AgentRuntimeActionItem(id: 'session-a', title: 'Archive session', subtitle: 'Runtime validation', kind: 'archiveSession', stateText: 'Ready', tone: 'info'),
         AgentRuntimeActionItem(id: 'session-a', title: 'Archive session', subtitle: 'Runtime validation', kind: 'archiveSession', stateText: 'Ready', tone: 'info'),
         AgentRuntimeActionItem(id: 'session-a', title: 'Fork session', subtitle: 'Runtime validation', kind: 'forkSession', stateText: 'Ready', tone: 'info'),
         AgentRuntimeActionItem(id: 'session-a', title: 'Enable God Mode', subtitle: 'Allow break-glass host zsh shell for this session.', kind: 'godModeGrant', stateText: 'Disabled', tone: 'warning'),
@@ -758,7 +758,7 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
     sessionId: 'session-a',
     title: 'Runtime validation',
     name: 'runtime-validation',
-    status: 'open',
+    status: 'stopped',
     roleId: 'runtime-allow',
     projectKey: 'project-a',
     activeModel: 'codex-live-model',

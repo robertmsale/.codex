@@ -219,7 +219,6 @@ pub fn app(state: ServerState) -> Router {
         .route("/sessions/{session_id}/requirements/packets", get(requirements_packets))
         .route("/sessions/{session_id}/requirements/reviewer/send", post(send_requirements_reviewer_message))
         .route("/sessions/{session_id}/settings", post(update_session_settings))
-        .route("/sessions/{session_id}/close", post(close_session))
         .route("/sessions/{session_id}/archive", post(archive_session))
         .route("/sessions/{session_id}/fork", post(fork_session))
         .route("/sessions/{session_id}/processes/{handle}/terminate", post(terminate_process))
@@ -912,7 +911,7 @@ fn spawn_submit_worker(state: ServerState, session_id: Uuid) {
                     break;
                 }
             };
-            if let Err(error) = db::ensure_session_open(&state.pool, session_id).await {
+            if let Err(error) = db::ensure_session_not_archived(&state.pool, session_id).await {
                 let abandoned = db::abandon_unapplied_submitted_inputs(&state.pool, session_id, "terminal lifecycle before submitted input drain").await.unwrap_or(0);
                 let _ = db::append_event(&state.pool, session_id, None, "submitted_input", Some(next.id), "submitted_input.abandoned", Some("abandoned"), json!({"count": abandoned, "reason": error.to_string()})).await;
                 break;
@@ -1134,11 +1133,6 @@ async fn submit_message_to_session(
 }
 
 #[derive(Debug, Deserialize)]
-struct CloseRequest {
-    reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct GodModeRequest {
     reason: String,
 }
@@ -1198,27 +1192,11 @@ async fn clear_requirements(
     Ok(Json(json!({"sessionId": session_id, "status": "inactive"})))
 }
 
-async fn close_session(
-    State(state): State<ServerState>,
-    Path(session_id): Path<Uuid>,
-    payload: std::result::Result<Json<CloseRequest>, JsonRejection>,
-) -> Result<Json<Value>, ApiError> {
-    let request = parse_json(payload)?;
-    let live_terminated = starlark_host::terminate_session_processes_for_close(session_id);
-    db::close_session(
-        &state.pool,
-        session_id,
-        request.reason.as_deref().unwrap_or("closed by server"),
-        live_terminated,
-    )
-    .await?;
-    Ok(Json(json!({"sessionId": session_id, "status": "closed"})))
-}
-
 async fn archive_session(
     State(state): State<ServerState>,
     Path(session_id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
+    starlark_host::terminate_session_processes_for_archive(session_id);
     db::archive_session(&state.pool, session_id).await?;
     Ok(Json(json!({"sessionId": session_id, "tracked": false})))
 }
@@ -2530,15 +2508,6 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(archived["tracked"], false);
 
-        let (status, closed) = request_json(
-            router,
-            Method::POST,
-            &format!("/sessions/{session_id}/close"),
-            json!({"reason":"server validation"}),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(closed["status"], "closed");
         test_db.cleanup().await;
     }
 
@@ -2602,7 +2571,7 @@ mod tests {
         assert_ne!(second_row.get::<String, _>("disposition"), "idle_turn_start");
         assert_eq!(second_row.get::<String, _>("status"), "accepted");
         assert!(second_row.get::<i64, _>("ordering_key") > 0);
-        assert_eq!(second_row.get::<String, _>("observed_lifecycle_state"), "open");
+        assert_eq!(second_row.get::<String, _>("observed_lifecycle_state"), "stopped");
         assert!(second_row.get::<Option<Uuid>, _>("placement_turn_id").is_none());
         assert!(second_row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("accepted_at").is_some());
         assert!(second_row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("applied_at").is_none());
@@ -2763,24 +2732,24 @@ mod tests {
         assert_eq!(rejected_row.get::<String, _>("observed_lifecycle_state"), "archived");
         assert!(rejected_row.get::<Value, _>("failure_metadata")["reason"].as_str().unwrap_or_default().contains("archived"));
 
-        let (_, created_closed) = request_json(
+        let (_, created_archived) = request_json(
             router.clone(),
             Method::POST,
             "/sessions",
-            json!({"role":"runtime-no-rg","project":"terminal-proof","model":"fake-model","workdir":".","worktreeRoot":".","title":"Closed proof","name":"closed-proof"}),
+            json!({"role":"runtime-no-rg","project":"terminal-proof","model":"fake-model","workdir":".","worktreeRoot":".","title":"Archive proof","name":"archive-proof"}),
         )
         .await;
-        let closed_session_id: Uuid = serde_json::from_value(created_closed["sessionId"].clone()).expect("closed session id");
-        let (status, _) = request_json(router.clone(), Method::POST, &format!("/sessions/{closed_session_id}/close"), json!({"reason":"terminal submit proof"})).await;
+        let archived_session_id: Uuid = serde_json::from_value(created_archived["sessionId"].clone()).expect("archived session id");
+        let (status, _) = request_json(router.clone(), Method::POST, &format!("/sessions/{archived_session_id}/archive"), json!({})).await;
         assert_eq!(status, StatusCode::OK);
-        let (status, _) = request_json(router, Method::POST, &format!("/sessions/{closed_session_id}/send"), json!({"message":"closed reject"})).await;
+        let (status, _) = request_json(router, Method::POST, &format!("/sessions/{archived_session_id}/send"), json!({"message":"archived reject"})).await;
         assert_eq!(status, StatusCode::CONFLICT);
-        let closed_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1")
-            .bind(closed_session_id)
+        let archived_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1")
+            .bind(archived_session_id)
             .fetch_one(&state.pool)
             .await
-            .expect("closed turns");
-        assert_eq!(closed_turns, 0);
+            .expect("archived turns");
+        assert_eq!(archived_turns, 0);
         test_db.cleanup().await;
     }
 
@@ -2908,41 +2877,41 @@ mod tests {
             .expect("archive terminal rows");
         assert!(archive_terminal_rows >= 1, "accepted input must be abandoned or terminal submit rejected");
 
-        let (_, closed_created) = request_json(
+        let (_, archived_created) = request_json(
             router.clone(),
             Method::POST,
             "/sessions",
-            json!({"role":"runtime-no-rg","project":"submit-race","model":"fake-model","workdir":".","worktreeRoot":".","title":"Close race","name":"close-race"}),
+            json!({"role":"runtime-no-rg","project":"submit-race","model":"fake-model","workdir":".","worktreeRoot":".","title":"Archive race","name":"archive-race"}),
         ).await;
-        let close_session_id: Uuid = serde_json::from_value(closed_created["sessionId"].clone()).expect("close session");
-        state.active_compactions.lock().await.insert(close_session_id);
-        let close_send_path = format!("/sessions/{close_session_id}/send");
-        let close_path = format!("/sessions/{close_session_id}/close");
-        let (send_result, close_result) = tokio::join!(
-            request_json(router.clone(), Method::POST, &close_send_path, json!({"message":"close race steering"})),
-            request_json(router, Method::POST, &close_path, json!({"reason":"race proof"})),
+        let archive_session_id: Uuid = serde_json::from_value(archived_created["sessionId"].clone()).expect("archive session");
+        state.active_compactions.lock().await.insert(archive_session_id);
+        let archive_send_path = format!("/sessions/{archive_session_id}/send");
+        let archive_path = format!("/sessions/{archive_session_id}/archive");
+        let (send_result, archive_result) = tokio::join!(
+            request_json(router.clone(), Method::POST, &archive_send_path, json!({"message":"archive race steering"})),
+            request_json(router, Method::POST, &archive_path, json!({})),
         );
         assert!(matches!(send_result.0, StatusCode::OK | StatusCode::CONFLICT), "submit result must be typed accept or terminal reject: {:?}", send_result);
-        assert_eq!(close_result.0, StatusCode::OK);
-        state.active_compactions.lock().await.remove(&close_session_id);
-        let close_accepted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='accepted'")
-            .bind(close_session_id)
+        assert_eq!(archive_result.0, StatusCode::OK);
+        state.active_compactions.lock().await.remove(&archive_session_id);
+        let archive_accepted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status='accepted'")
+            .bind(archive_session_id)
             .fetch_one(&test_db.pool)
             .await
             .expect("close accepted");
-        assert_eq!(close_accepted, 0, "close race must leave no live accepted queue");
-        let close_late_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text='close race steering'")
-            .bind(close_session_id)
+        assert_eq!(archive_accepted, 0, "archive race must leave no live accepted queue");
+        let archive_late_turns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM turns WHERE session_id=$1 AND input_text='archive race steering'")
+            .bind(archive_session_id)
             .fetch_one(&test_db.pool)
             .await
             .expect("close late turns");
-        assert_eq!(close_late_turns, 0, "close race must not start late work");
-        let close_terminal_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status IN ('abandoned','rejected')")
-            .bind(close_session_id)
+        assert_eq!(archive_late_turns, 0, "archive race must not start late work");
+        let archive_terminal_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM submitted_inputs WHERE session_id=$1 AND status IN ('abandoned','rejected')")
+            .bind(archive_session_id)
             .fetch_one(&test_db.pool)
             .await
             .expect("close terminal rows");
-        assert!(close_terminal_rows >= 1, "accepted input must be abandoned or terminal submit rejected");
+        assert!(archive_terminal_rows >= 1, "accepted input must be abandoned or terminal submit rejected");
         test_db.cleanup().await;
     }
 
@@ -4470,25 +4439,6 @@ mod tests {
             .execute(&test_db.pool)
             .await
             .expect("blocking managed process");
-        let blocked_close = transport
-            .send(GuiTransportRequestPacket {
-                packet_id: "settings-close-blocked-by-process".to_string(),
-                intent: GuiTransportRequest::DispatchOperation {
-                    operation: GuiOperationRequest::CloseSession {
-                        session_id: blocker_session.to_string(),
-                        reason: Some("blocked process policy proof".to_string()),
-                    },
-                },
-            })
-            .await;
-        assert!(blocked_close.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::OperationResult { result } if matches!(&result.outcome, GuiOperationOutcome::Error { error } if error.error.code == "conflict" && error.error.message.contains("managed processes")))), "close must surface typed process-policy failure: {blocked_close:?}");
-        let blocked_event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='session.closeBlocked'")
-            .bind(blocker_session)
-            .fetch_one(&test_db.pool)
-            .await
-            .expect("close blocked event count");
-        assert_eq!(blocked_event_count, 1, "process-policy close failure must append a recovery/audit event");
-
         let terminable_session = db::new_session(
             &test_db.pool,
             &role,
@@ -4510,20 +4460,17 @@ mod tests {
             .execute(&test_db.pool)
             .await
             .expect("terminable managed process row");
-        let terminable_close = transport
+        let terminable_archive = transport
             .send(GuiTransportRequestPacket {
-                packet_id: "settings-close-terminates-process".to_string(),
+                packet_id: "settings-archive-terminates-process".to_string(),
                 intent: GuiTransportRequest::DispatchOperation {
-                    operation: GuiOperationRequest::CloseSession {
-                        session_id: terminable_session.to_string(),
-                        reason: Some("terminates live process policy proof".to_string()),
-                    },
+                    operation: GuiOperationRequest::ArchiveSession { session_id: terminable_session.to_string() },
                 },
             })
             .await;
-        assert!(terminable_close.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
-            if view_model.shell.sessions.iter().any(|row| row.id == terminable_session.to_string() && row.status == "closed")
-        )), "Close must terminate session-ending managed processes and refresh the connected projection: {terminable_close:?}");
+        assert!(terminable_archive.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+            if view_model.shell.sessions.iter().any(|row| row.id == terminable_session.to_string() && row.archived_at.is_some())
+        )), "Archive must terminate session-ending managed processes and refresh the connected projection: {terminable_archive:?}");
         let terminated_process_row: (String, Option<String>, bool) = sqlx::query_as(
             "SELECT status, termination_reason, end_time IS NOT NULL FROM managed_processes WHERE id=$1",
         )
@@ -4531,20 +4478,17 @@ mod tests {
         .fetch_one(&test_db.pool)
         .await
         .expect("terminated process row");
-        assert_eq!(terminated_process_row.0, "sessionClosed");
-        assert_eq!(terminated_process_row.1.as_deref(), Some("sessionClosed"));
+        assert_eq!(terminated_process_row.0, "sessionTerminated");
+        assert_eq!(terminated_process_row.1.as_deref(), Some("sessionTerminated"));
         assert!(terminated_process_row.2);
-        let terminable_session_row: (String, Option<String>) =
-            sqlx::query_as("SELECT status, close_reason FROM sessions WHERE id=$1")
+        let terminable_session_row: (String, Option<chrono::DateTime<chrono::Utc>>) =
+            sqlx::query_as("SELECT status, archived_at FROM sessions WHERE id=$1")
                 .bind(terminable_session)
                 .fetch_one(&test_db.pool)
                 .await
-                .expect("terminable closed session row");
-        assert_eq!(terminable_session_row.0, "closed");
-        assert_eq!(
-            terminable_session_row.1.as_deref(),
-            Some("terminates live process policy proof")
-        );
+                .expect("terminable archived session row");
+        assert_eq!(terminable_session_row.0, "stopped");
+        assert!(terminable_session_row.1.is_some());
         let _ = transport
             .send(GuiTransportRequestPacket {
                 packet_id: "settings-select-zeta".to_string(),
@@ -4599,7 +4543,7 @@ mod tests {
         assert_eq!(created_row.5.as_deref(), Some("runtime-no-rg"));
         assert_eq!(created_row.6.as_deref(), Some("gpt-5.4-mini"));
         assert!(created_row.7);
-        assert_eq!(created_row.8, "open");
+        assert_eq!(created_row.8, "stopped");
 
         let update = transport
             .send(GuiTransportRequestPacket {
@@ -4698,27 +4642,24 @@ mod tests {
         assert_eq!(fork_linkage.2, 1);
         assert_eq!(fork_linkage.3.as_deref(), Some("alpha-project"));
 
-        let close = transport
+        let archive = transport
             .send(GuiTransportRequestPacket {
-                packet_id: "settings-close-session".to_string(),
+                packet_id: "settings-archive-session".to_string(),
                 intent: GuiTransportRequest::DispatchOperation {
-                    operation: GuiOperationRequest::CloseSession {
-                        session_id: forked_session_id.clone(),
-                        reason: Some("settings modal close proof".to_string()),
-                    },
+                    operation: GuiOperationRequest::ArchiveSession { session_id: forked_session_id.clone() },
                 },
             })
             .await;
-        assert!(close.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
-            if view_model.shell.sessions.iter().any(|row| row.id == forked_session_id && row.status == "closed")
-        )), "Close must update connected GUI state immediately: {close:?}");
-        let closed_row: (String, Option<String>) = sqlx::query_as("SELECT status, close_reason FROM sessions WHERE id=$1")
+        assert!(archive.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
+            if !view_model.shell.sessions.iter().any(|row| row.id == forked_session_id)
+        )), "Archive must update connected GUI state immediately: {archive:?}");
+        let archived_row: (String, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as("SELECT status, archived_at FROM sessions WHERE id=$1")
             .bind(forked_uuid)
             .fetch_one(&test_db.pool)
             .await
-            .expect("closed row");
-        assert_eq!(closed_row.0, "closed");
-        assert_eq!(closed_row.1.as_deref(), Some("settings modal close proof"));
+            .expect("archived row");
+        assert_eq!(archived_row.0, "stopped");
+        assert!(archived_row.1.is_some());
 
         let archive = transport
             .send(GuiTransportRequestPacket {
@@ -4976,10 +4917,7 @@ mod tests {
             ),
             (
                 "typed-error-close",
-                GuiOperationRequest::CloseSession {
-                    session_id: Uuid::nil().to_string(),
-                    reason: Some("missing session".to_string()),
-                },
+                GuiOperationRequest::ArchiveSession { session_id: Uuid::nil().to_string() },
             ),
             (
                 "typed-error-archive",
@@ -5613,29 +5551,29 @@ mod tests {
         })
         .await;
 
-        let close_session_id = db::new_session(
+        let archive_session_id = db::new_session(
             &test_db.pool,
             &role,
             Some("semantic-session"),
             ".",
             Some("."),
-            Some("Semantic close session"),
+            Some("Semantic archive session"),
             Some("semantic-close-session"),
         )
         .await
-        .expect("new close session");
+        .expect("new archive session");
         apply_until(&mut ws, &mut client_projection, |_delta, projection| {
-            projection.sessions.iter().any(|session| session.id == close_session_id.to_string())
+            projection.sessions.iter().any(|session| session.id == archive_session_id.to_string())
         })
         .await;
-        db::close_session(&test_db.pool, close_session_id, "semantic close", 0)
+        db::archive_session(&test_db.pool, archive_session_id)
             .await
-            .expect("close");
+            .expect("archive");
         apply_until(&mut ws, &mut client_projection, |_delta, projection| {
             projection
                 .sessions
                 .iter()
-                .any(|session| session.id == close_session_id.to_string() && session.status == "closed")
+                .all(|session| session.id != archive_session_id.to_string())
         })
         .await;
 
@@ -7136,11 +7074,11 @@ print(git.cleanup_integrated_worktree("integrated-worktree"))
     async fn starter_kit_server_port_leases_release_on_close_and_archive() {
         let test_db = validation_db().await;
         let role = db::current_role_snapshot(&test_db.pool, "runtime-allow").await.expect("role");
-        let close_session = db::new_session(&test_db.pool, &role, Some("starter-server-close"), ".", Some("."), None, None).await.expect("close session");
-        insert_starter_server_fixture(&test_db.pool, close_session, "close-fixture", 39101).await;
-        db::close_session(&test_db.pool, close_session, "starter close release", 0).await.expect("close session");
+        let archive_session = db::new_session(&test_db.pool, &role, Some("starter-server-archive"), ".", Some("."), None, None).await.expect("archive session");
+        insert_starter_server_fixture(&test_db.pool, archive_session, "archive-fixture", 39101).await;
+        db::archive_session(&test_db.pool, archive_session).await.expect("archive session");
         let close_release: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM starter_port_leases WHERE session_id=$1 AND status='released' AND release_reason='session.close'")
-            .bind(close_session)
+            .bind(archive_session)
             .fetch_one(&test_db.pool)
             .await
             .expect("close release");
@@ -8191,13 +8129,13 @@ print(outputs.stats(artifact))
         db::archive_session(&test_db.pool, source).await.expect("archive");
         assert!(!db::list_sessions(&test_db.pool, true).await.expect("list").iter().any(|session| session.id == reviewer));
         assert_eq!(db::session_record(&test_db.pool, reviewer).await.expect("exact reviewer").id, reviewer);
-        db::close_session(&test_db.pool, source, "done", 0).await.expect("close");
+        db::archive_session(&test_db.pool, source).await.expect("archive session");
         let status: String = sqlx::query_scalar("SELECT status FROM sessions WHERE id=$1")
             .bind(reviewer)
             .fetch_one(&test_db.pool)
             .await
             .expect("reviewer status");
-        assert_eq!(status, "closed");
+        assert_eq!(status, "stopped");
         test_db.cleanup().await;
     }
 
@@ -9059,9 +8997,9 @@ def hook(ctx):
         assert!(checkpoint.replacement_context.contains("obligation="));
         assert!(checkpoint.replacement_context.contains("resourceType=iosSimulator"));
         assert!(!checkpoint.replacement_context.contains("payload\":{\""), "compaction must summarize workflow state by ids and metadata, not hidden packet bodies");
-        assert_eq!(crate::lifecycle_hooks::close_subagent(&test_db.pool, session, "reviewer", "wf-1").await.expect("close"), Some(subagent));
-        let closed = db::session_record(&test_db.pool, subagent).await.expect("closed subagent");
-        assert_eq!(closed.status, "closed");
+        assert_eq!(crate::lifecycle_hooks::deactivate_subagent(&test_db.pool, session, "reviewer", "wf-1").await.expect("deactivate"), Some(subagent));
+        let inactive = db::session_record(&test_db.pool, subagent).await.expect("inactive subagent");
+        assert!(inactive.archived_at.is_some());
 
         crate::lifecycle_hooks::release_resource(&test_db.pool, Some(session), json!({"resourceType":"iosSimulator","leaseId": lease.0.to_string(), "releaseReason":"test complete"})).await.expect("release");
         let released: String = sqlx::query_scalar("SELECT status FROM resource_leases WHERE id=$1")
@@ -9194,21 +9132,21 @@ def hook(ctx):
             .execute(&test_db.pool)
             .await
             .expect("managed process");
-        db::close_session(&test_db.pool, session, "cleanup test", 1).await.expect("close session");
+        db::archive_session(&test_db.pool, session).await.expect("archive session");
         let lease_status: String = sqlx::query_scalar("SELECT status FROM resource_leases WHERE id=$1")
             .bind(lease)
             .fetch_one(&test_db.pool)
             .await
             .expect("lease status");
         assert_eq!(lease_status, "released");
-        let subagent_record = db::session_record(&test_db.pool, subagent).await.expect("subagent closed by lifecycle");
-        assert_eq!(subagent_record.status, "closed");
+        let subagent_record = db::session_record(&test_db.pool, subagent).await.expect("subagent deactivated by lifecycle");
+        assert!(subagent_record.archived_at.is_some());
         let process_status: String = sqlx::query_scalar("SELECT status FROM managed_processes WHERE session_id=$1 AND handle='cleanup-proc'")
             .bind(session)
             .fetch_one(&test_db.pool)
             .await
             .expect("process status");
-        assert_eq!(process_status, "sessionClosed");
+        assert_eq!(process_status, "sessionTerminated");
         let cleanup_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='lifecycle.cleanup'")
             .bind(session)
             .fetch_one(&test_db.pool)

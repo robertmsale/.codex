@@ -8,8 +8,8 @@ class AgentRuntimeOperationResult {
     required this.operation,
     required this.outcome,
     required this.message,
-    this.valueJson = '',
-    this.hasValueJson = false,
+    required this.valueJson,
+    required this.hasValueJson,
   });
 
   static AgentRuntimeOperationResult deserialize(BinaryDeserializer deserializer) {

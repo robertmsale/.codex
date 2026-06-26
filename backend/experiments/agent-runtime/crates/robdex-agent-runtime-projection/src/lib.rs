@@ -63,7 +63,6 @@ pub struct SessionListItem {
     pub workdir: String,
     pub tracked: bool,
     pub archived_at: Option<String>,
-    pub closed_at: Option<String>,
     pub updated_at: Option<String>,
 }
 
@@ -483,8 +482,6 @@ pub struct RuntimeStatistics {
     #[serde(default)]
     pub open_sessions: u64,
     #[serde(default)]
-    pub closed_sessions: u64,
-    #[serde(default)]
     pub archived_sessions: u64,
     pub turns: u64,
     #[serde(default)]
@@ -708,7 +705,6 @@ pub enum GuiOperationName {
     GrantGodMode,
     RevokeGodMode,
     LoadFullSizeImage,
-    CloseSession,
     ArchiveSession,
     ForkSession,
     DecideApproval,
@@ -770,7 +766,6 @@ pub enum GuiOperationRequest {
     GrantGodMode { session_id: String, reason: String },
     RevokeGodMode { session_id: String, reason: String },
     LoadFullSizeImage { session_id: String, image_artifact_id: String },
-    CloseSession { session_id: String, reason: Option<String> },
     ArchiveSession { session_id: String },
     ForkSession { session_id: String, at_turn: String },
     DecideApproval { approval_id: String, decision: String, reason: String },
@@ -832,7 +827,6 @@ impl GuiOperationRequest {
             Self::GrantGodMode { .. } => GuiOperationName::GrantGodMode,
             Self::RevokeGodMode { .. } => GuiOperationName::RevokeGodMode,
             Self::LoadFullSizeImage { .. } => GuiOperationName::LoadFullSizeImage,
-            Self::CloseSession { .. } => GuiOperationName::CloseSession,
             Self::ArchiveSession { .. } => GuiOperationName::ArchiveSession,
             Self::ForkSession { .. } => GuiOperationName::ForkSession,
             Self::DecideApproval { .. } => GuiOperationName::DecideApproval,
@@ -885,7 +879,6 @@ impl GuiOperationRequest {
             | Self::CompactSession { .. }
             | Self::GrantGodMode { .. }
             | Self::RevokeGodMode { .. }
-            | Self::CloseSession { .. }
             | Self::ArchiveSession { .. }
             | Self::ForkSession { .. }
             | Self::DecideApproval { .. }
@@ -952,7 +945,6 @@ impl GuiOperationRequest {
             Self::GrantGodMode { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/god-mode/grant", r#"{"reason"}"#, r#"{"sessionId","grantId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::RevokeGodMode { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/god-mode/revoke", r#"{"reason"}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::LoadFullSizeImage { .. } => http_mapping(self.name(), "GET", "/sessions/{sessionId}/image-artifacts/{imageArtifactId}/json", "none", r#"{"path","bytesBase64","contentType"}"#, GuiOperationExpectation::DirectResult),
-            Self::CloseSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/close", r#"{"reason"?}"#, r#"{"sessionId","status"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ArchiveSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/archive", "{}", r#"{"sessionId","tracked"}"#, GuiOperationExpectation::WaitForDelta),
             Self::ForkSession { .. } => http_mapping(self.name(), "POST", "/sessions/{sessionId}/fork", r#"{"atTurn"}"#, r#"{"sessionId","forkedFromSessionId","forkedFromTurnId"}"#, GuiOperationExpectation::WaitForDelta),
             Self::DecideApproval { .. } => http_mapping(self.name(), "POST", "/approvals/{approvalId}/decide", r#"{"decision","reason"}"#, r#"{"approvalId","decision"}"#, GuiOperationExpectation::WaitForDelta),
@@ -1051,7 +1043,6 @@ impl GuiOperationRequest {
             Self::CompactSession { through_turn, .. } => Some(json!({"throughTurn": through_turn})),
             Self::GrantGodMode { reason, .. } | Self::RevokeGodMode { reason, .. } => Some(json!({"reason": reason})),
             Self::InputProcess { text, .. } => Some(json!({"text": text})),
-            Self::CloseSession { reason, .. } => Some(json!({"reason": reason})),
             Self::ArchiveSession { .. } | Self::ResumeApproval { .. } => Some(json!({})),
             Self::ForkSession { at_turn, .. } => Some(json!({"atTurn": at_turn})),
             Self::DecideApproval { decision, reason, .. } => Some(json!({"decision": decision, "reason": reason})),
@@ -1347,7 +1338,6 @@ pub enum RuntimeDeltaKind {
     ServerStatus { status: ServerStatusProjection },
     SessionUpsert { session: SessionListItem },
     SessionArchive { session_id: String, archived_at: Option<String> },
-    SessionClose { session_id: String, closed_at: Option<String> },
     SelectedSessionReplace { session: Option<SelectedSessionDetail> },
     SelectedSessionPatch { session: SelectedSessionDetail },
     SelectedChatAppend { entry: AgentRuntimeChatEntry },
@@ -1438,7 +1428,7 @@ fn apply_delta_kind(projection: &mut RuntimeProjection, kind: RuntimeDeltaKind) 
         RuntimeDeltaKind::SessionUpsert { session } => upsert_by(&mut projection.sessions, session, |item| item.id.as_str()),
         RuntimeDeltaKind::SessionArchive { session_id, archived_at } => {
             if let Some(index) = projection.sessions.iter().position(|item| item.id == session_id) {
-                if projection.sessions[index].status == "open" {
+                if projection.sessions[index].status == "stopped" {
                     projection.sessions.remove(index);
                     true
                 } else {
@@ -1448,16 +1438,6 @@ fn apply_delta_kind(projection: &mut RuntimeProjection, kind: RuntimeDeltaKind) 
                     changed |= replace_if_changed(&mut session.archived_at, archived_at);
                     changed
                 }
-            } else {
-                false
-            }
-        }
-        RuntimeDeltaKind::SessionClose { session_id, closed_at } => {
-            if let Some(session) = projection.sessions.iter_mut().find(|item| item.id == session_id) {
-                let mut changed = false;
-                changed |= replace_if_changed(&mut session.status, "closed".to_string());
-                changed |= replace_if_changed(&mut session.closed_at, closed_at);
-                changed
             } else {
                 false
             }
@@ -1607,7 +1587,7 @@ mod tests {
     fn session(id: &str) -> SessionListItem {
         SessionListItem {
             id: id.to_string(),
-            status: "open".to_string(),
+            status: "stopped".to_string(),
             role_id: Some("role".to_string()),
             role_version: Some("1".to_string()),
             project_key: Some("project".to_string()),
@@ -1616,7 +1596,6 @@ mod tests {
             workdir: ".".to_string(),
             tracked: true,
             archived_at: None,
-            closed_at: None,
             updated_at: None,
         }
     }
@@ -1743,7 +1722,6 @@ mod tests {
             GuiOperationRequest::GrantGodMode { session_id: "session-1".to_string(), reason: "break-glass host shell needed".to_string() },
             GuiOperationRequest::RevokeGodMode { session_id: "session-1".to_string(), reason: "break-glass complete".to_string() },
             GuiOperationRequest::LoadFullSizeImage { session_id: "session-1".to_string(), image_artifact_id: "image-1".to_string() },
-            GuiOperationRequest::CloseSession { session_id: "session-1".to_string(), reason: Some("done".to_string()) },
             GuiOperationRequest::ArchiveSession { session_id: "session-1".to_string() },
             GuiOperationRequest::ForkSession { session_id: "session-1".to_string(), at_turn: "turn-1".to_string() },
             GuiOperationRequest::DecideApproval { approval_id: "approval-1".to_string(), decision: "approved".to_string(), reason: "operator approved".to_string() },
@@ -1807,7 +1785,7 @@ mod tests {
             worktree_root: None,
             title: Some("selected".to_string()),
             name: None,
-            status: "open".to_string(),
+            status: "stopped".to_string(),
             pending_approval_count: 0,
             managed_process_count: 0,
             active_turn_id: None,
@@ -1838,11 +1816,11 @@ mod tests {
     }
 
     #[test]
-    fn session_archive_keeps_non_open_session_consistent_with_snapshot_filter() {
+    fn session_archive_keeps_running_session_consistent_with_snapshot_filter() {
         let mut projection = RuntimeProjection::default();
-        let mut closed = session("session-1");
-        closed.status = "closed".to_string();
-        projection.apply_delta(delta(1, RuntimeDeltaKind::SessionUpsert { session: closed }));
+        let mut running = session("session-1");
+        running.status = "running".to_string();
+        projection.apply_delta(delta(1, RuntimeDeltaKind::SessionUpsert { session: running }));
         projection.apply_delta(delta(2, RuntimeDeltaKind::SessionArchive {
             session_id: "session-1".to_string(),
             archived_at: Some("archived".to_string()),
@@ -1864,7 +1842,7 @@ mod tests {
             worktree_root: None,
             title: Some("selected".to_string()),
             name: None,
-            status: "open".to_string(),
+            status: "stopped".to_string(),
             pending_approval_count: 0,
             managed_process_count: 0,
             active_turn_id: None,
@@ -1902,7 +1880,7 @@ mod tests {
             worktree_root: None,
             title: Some("selected".to_string()),
             name: None,
-            status: "open".to_string(),
+            status: "stopped".to_string(),
             pending_approval_count: 0,
             managed_process_count: 0,
             active_turn_id: None,

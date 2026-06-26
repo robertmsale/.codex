@@ -185,11 +185,6 @@ enum SessionsCommand {
     History {
         id: Uuid,
     },
-    Close {
-        id: Uuid,
-        #[arg(long, default_value = "closed by operator")]
-        reason: String,
-    },
     Archive {
         id: Uuid,
     },
@@ -349,12 +344,8 @@ async fn main() -> Result<()> {
             SessionsCommand::History { id } => {
                 println!("{}", serde_json::to_string_pretty(&db::history_json(&pool, id).await?)?);
             }
-            SessionsCommand::Close { id, reason } => {
-                let live_terminated = robdex_agent_runtime::starlark_host::terminate_session_processes_for_close(id);
-                db::close_session(&pool, id, &reason, live_terminated).await?;
-                println!("closed {id}");
-            }
             SessionsCommand::Archive { id } => {
+                robdex_agent_runtime::starlark_host::terminate_session_processes_for_archive(id);
                 db::archive_session(&pool, id).await?;
                 println!("archived {id}");
             }

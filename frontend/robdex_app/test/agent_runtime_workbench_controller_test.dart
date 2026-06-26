@@ -1280,7 +1280,7 @@ void main() {
             shortLabel: 'RT',
             iconKey: 'runtime',
             tone: 'success',
-            statusLabel: 'open',
+            statusLabel: 'stopped',
             description: 'Runtime role',
           ),
         ),
@@ -1364,7 +1364,7 @@ void main() {
             shortLabel: 'RT',
             iconKey: 'runtime',
             tone: 'success',
-            statusLabel: 'open',
+            statusLabel: 'stopped',
             description: 'Runtime role',
           ),
         ),
@@ -1379,7 +1379,7 @@ void main() {
             shortLabel: 'RT',
             iconKey: 'runtime',
             tone: 'success',
-            statusLabel: 'open',
+            statusLabel: 'stopped',
             description: 'Runtime role',
           ),
         ),
@@ -1452,7 +1452,7 @@ void main() {
             shortLabel: 'RT',
             iconKey: 'runtime',
             tone: 'success',
-            statusLabel: 'open',
+            statusLabel: 'stopped',
             description: 'Runtime role',
           ),
         ),
@@ -1790,7 +1790,6 @@ void main() {
               onWorkflowMemoryAttempted: (_) => events.add('memory.attempted'),
               onWorkflowMemoryHelpful: (_) => events.add('memory.helpful'),
               onWorkflowMemoryNotHelpful: (_) => events.add('memory.notHelpful'),
-              onSessionClose: (_) => events.add('session.close'),
               onSessionArchive: (_) => events.add('session.archive'),
               onSessionFork: (_) => events.add('session.fork'),
               onProcessTerminate: (_) => events.add('process.terminate'),
@@ -1815,8 +1814,7 @@ void main() {
     }
 
     await pumpOperations(focusSurfaceId: 'session');
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Close session'));
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Archive session'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Archive session').first);
     await tester.tap(find.widgetWithText(OutlinedButton, 'Fork session'));
 
     await pumpOperations(focusSurfaceId: 'processManager');
@@ -1947,7 +1945,6 @@ void main() {
     expect(
       events,
       containsAll([
-        'session.close',
         'session.archive',
         'session.fork',
         'process.input',
@@ -2418,7 +2415,6 @@ void main() {
                 'tracked': tracked,
               };
             },
-            onCloseSession: (id) => actions.add('close:$id'),
             onArchiveSession: (id) => actions.add('archive:$id'),
             onForkSession: (id) => actions.add('fork:$id'),
             onCompact: (id) => actions.add('compact:$id'),
@@ -2501,14 +2497,14 @@ void main() {
     await tapVisible(find.text('Revoke God Mode…'));
     expect(actions, contains('revokeGodMode:session-a'));
 
-    for (final key in ['closesession', 'archivesession', 'forksession']) {
+    for (final key in ['archivesession', 'forksession']) {
       await pumpDialog();
       final finder = find.byKey(ValueKey('agentRuntime.sessionControl.$key'));
       await tester.ensureVisible(finder);
       await tester.tap(finder);
       await tester.pumpAndSettle();
     }
-    expect(actions, containsAll(['close:session-a', 'archive:session-a', 'fork:session-a']));
+    expect(actions, containsAll(['archive:session-a', 'fork:session-a']));
     await pumpDialog();
     await tester.tap(find.text('Set Requirements…'));
     await tester.pumpAndSettle();
@@ -2586,7 +2582,7 @@ void main() {
     expect(find.byType(AgentRuntimeCreateSessionDialog), findsOneWidget);
   });
 
-  testWidgets('production host Danger Zone Close session and Archive session dispatch typed operations and return to session settings', (tester) async {
+  testWidgets('production host Danger Zone Archive session and Archive session dispatch typed operations and return to session settings', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1200, 1000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final sentRequests = <bindings.AgentRuntimeRequest>[];
@@ -2609,12 +2605,12 @@ void main() {
     expect(find.byType(AgentRuntimeSessionControlPlane), findsOneWidget);
 
     await openDangerZone();
-    await tester.tap(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.closeSession')));
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.archiveSession')));
     await tester.pumpAndSettle();
-    expect((sentRequests.single as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationCloseSession>());
+    expect((sentRequests.single as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationArchiveSession>());
     expect(find.text('Danger Zone'), findsOneWidget);
     expect(find.byType(AgentRuntimeSessionControlPlane), findsOneWidget);
-    expect(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.closeSession')), findsNothing);
+    expect(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.archiveSession')), findsNothing);
 
     await openDangerZone();
     await tester.tap(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.archiveSession')));
@@ -2636,7 +2632,6 @@ void main() {
         data: mockAgentRuntimeEmpty,
         onClose: () => closed = true,
         onSave: ({required sessionId, required project, required role, required model, required workdir, required worktreeRoot, required title, required name, required tracked}) {},
-        onCloseSession: (_) {},
         onArchiveSession: (_) {},
         onForkSession: (_) {},
         onCompact: (_) {},
@@ -2772,7 +2767,7 @@ void main() {
             shortLabel: 'RT',
             iconKey: 'runtime',
             tone: 'success',
-            statusLabel: 'open',
+            statusLabel: 'stopped',
             description: 'Selected',
           ),
         ),
@@ -2863,7 +2858,7 @@ void main() {
     }
   });
 
-  test('session close archive and fork use generated typed operation intents', () {
+  test('session archive and fork use generated typed operation intents', () {
     final sentRequests = <bindings.AgentRuntimeRequest>[];
     final controller = AgentRuntimeWorkbenchController(
       requestSink: (requestId, request) {
@@ -2872,14 +2867,12 @@ void main() {
     );
     addTearDown(controller.dispose);
 
-    controller.closeSession('session-2');
     controller.archiveSession('session-2');
     controller.forkSession('session-2');
 
-    expect(sentRequests, hasLength(3));
-    expect((sentRequests[0] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationCloseSession>());
-    expect((sentRequests[1] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationArchiveSession>());
-    expect((sentRequests[2] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationForkSession>());
+    expect(sentRequests, hasLength(2));
+    expect((sentRequests[0] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationArchiveSession>());
+    expect((sentRequests[1] as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationForkSession>());
   });
 
   test('managed process controls use generated typed operation intents', () {

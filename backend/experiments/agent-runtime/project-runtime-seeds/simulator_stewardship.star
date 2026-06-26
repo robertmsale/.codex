@@ -21,7 +21,7 @@ channel(
 
 resource_type(
     id = "iosSimulator",
-    lease_policy = {"exclusive": True, "release_on_session_close": True},
+    lease_policy = {"exclusive": True, "release_on_session_archive": True},
 )
 
 steward_binding(

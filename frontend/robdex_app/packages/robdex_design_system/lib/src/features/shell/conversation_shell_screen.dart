@@ -21,7 +21,6 @@ class ConversationShellScreen extends StatelessWidget {
     this.onNewSessionInProject,
     this.onArchiveProject,
     this.detailContent,
-    this.onCloseSession,
     this.onArchiveSession,
     this.onForkSession,
     this.onSettings,
@@ -43,7 +42,6 @@ class ConversationShellScreen extends StatelessWidget {
   final ValueChanged<String>? onNewSessionInProject;
   final ValueChanged<String>? onArchiveProject;
   final Widget? detailContent;
-  final ValueChanged<String>? onCloseSession;
   final ValueChanged<String>? onArchiveSession;
   final ValueChanged<String>? onForkSession;
   final VoidCallback? onSettings;
@@ -74,7 +72,6 @@ class ConversationShellScreen extends StatelessWidget {
               onEditProject: onEditProject,
               onNewSessionInProject: onNewSessionInProject,
               onArchiveProject: onArchiveProject,
-              onCloseSession: onCloseSession,
               onArchiveSession: onArchiveSession,
               onForkSession: onForkSession,
               onSettings: onSettings,
@@ -166,7 +163,6 @@ class _ConversationRail extends StatefulWidget {
     this.onEditProject,
     this.onNewSessionInProject,
     this.onArchiveProject,
-    this.onCloseSession,
     this.onArchiveSession,
     this.onForkSession,
     this.onSettings,
@@ -181,7 +177,6 @@ class _ConversationRail extends StatefulWidget {
   final ValueChanged<String>? onEditProject;
   final ValueChanged<String>? onNewSessionInProject;
   final ValueChanged<String>? onArchiveProject;
-  final ValueChanged<String>? onCloseSession;
   final ValueChanged<String>? onArchiveSession;
   final ValueChanged<String>? onForkSession;
   final VoidCallback? onSettings;
@@ -270,7 +265,6 @@ class _ConversationRailState extends State<_ConversationRail> {
                       child: _RailSessionsSection(
                         data: widget.data,
                         onSessionSelected: widget.onSessionSelected,
-                        onCloseSession: widget.onCloseSession,
                         onArchiveSession: widget.onArchiveSession,
                         onForkSession: widget.onForkSession,
                       ),
@@ -384,14 +378,12 @@ class _RailSessionsSection extends StatelessWidget {
   const _RailSessionsSection({
     required this.data,
     required this.onSessionSelected,
-    this.onCloseSession,
     this.onArchiveSession,
     this.onForkSession,
   });
 
   final ConversationShellData data;
   final ValueChanged<String> onSessionSelected;
-  final ValueChanged<String>? onCloseSession;
   final ValueChanged<String>? onArchiveSession;
   final ValueChanged<String>? onForkSession;
 
@@ -415,7 +407,6 @@ class _RailSessionsSection extends StatelessWidget {
                     return _SessionTile(
                       session: session,
                       onTap: () => onSessionSelected(session.id),
-                      onClose: onCloseSession == null ? null : () => onCloseSession!(session.id),
                       onArchive: onArchiveSession == null ? null : () => onArchiveSession!(session.id),
                       onFork: onForkSession == null ? null : () => onForkSession!(session.id),
                     );
@@ -428,10 +419,9 @@ class _RailSessionsSection extends StatelessWidget {
 }
 
 class _SessionTile extends StatelessWidget {
-  const _SessionTile({required this.session, required this.onTap, this.onClose, this.onArchive, this.onFork});
+  const _SessionTile({required this.session, required this.onTap, this.onArchive, this.onFork});
   final ConversationSession session;
   final VoidCallback onTap;
-  final VoidCallback? onClose;
   final VoidCallback? onArchive;
   final VoidCallback? onFork;
 
@@ -468,8 +458,6 @@ class _SessionTile extends StatelessWidget {
                 tooltip: 'Session actions',
                 onSelected: (value) {
                   switch (value) {
-                    case 'close':
-                      onClose?.call();
                     case 'archive':
                       onArchive?.call();
                     case 'fork':
@@ -477,7 +465,6 @@ class _SessionTile extends StatelessWidget {
                   }
                 },
                 itemBuilder: (context) => [
-                  PopupMenuItem(value: 'close', enabled: onClose != null, child: const Text('Close')),
                   PopupMenuItem(value: 'archive', enabled: onArchive != null, child: const Text('Archive')),
                   PopupMenuItem(value: 'fork', enabled: onFork != null, child: const Text('Fork')),
                 ],

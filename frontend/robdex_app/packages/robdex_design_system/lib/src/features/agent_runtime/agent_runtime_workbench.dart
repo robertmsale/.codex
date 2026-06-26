@@ -41,7 +41,6 @@ class AgentRuntimeWorkbench extends StatelessWidget {
     this.onWorkflowMemoryAttempted,
     this.onWorkflowMemoryHelpful,
     this.onWorkflowMemoryNotHelpful,
-    this.onSessionClose,
     this.onSessionArchive,
     this.onSessionFork,
     this.onProcessTerminate,
@@ -88,7 +87,6 @@ class AgentRuntimeWorkbench extends StatelessWidget {
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryAttempted;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryHelpful;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryNotHelpful;
-  final ValueChanged<String>? onSessionClose;
   final ValueChanged<String>? onSessionArchive;
   final ValueChanged<String>? onSessionFork;
   final ValueChanged<String>? onProcessTerminate;
@@ -171,7 +169,6 @@ class AgentRuntimeWorkbench extends StatelessWidget {
                                   onWorkflowMemoryAttempted: onWorkflowMemoryAttempted,
                                   onWorkflowMemoryHelpful: onWorkflowMemoryHelpful,
                                   onWorkflowMemoryNotHelpful: onWorkflowMemoryNotHelpful,
-                                  onSessionClose: onSessionClose,
                                   onSessionArchive: onSessionArchive,
                                   onSessionFork: onSessionFork,
                                   onProcessTerminate: onProcessTerminate,
@@ -222,7 +219,6 @@ class AgentRuntimeWorkbench extends StatelessWidget {
                                           onWorkflowMemoryAttempted: onWorkflowMemoryAttempted,
                                           onWorkflowMemoryHelpful: onWorkflowMemoryHelpful,
                                           onWorkflowMemoryNotHelpful: onWorkflowMemoryNotHelpful,
-                                          onSessionClose: onSessionClose,
                                           onSessionArchive: onSessionArchive,
                                           onSessionFork: onSessionFork,
                                           onProcessTerminate: onProcessTerminate,
@@ -621,7 +617,6 @@ class _DetailsPanel extends StatelessWidget {
     this.onWorkflowMemoryAttempted,
     this.onWorkflowMemoryHelpful,
     this.onWorkflowMemoryNotHelpful,
-    this.onSessionClose,
     this.onSessionArchive,
     this.onSessionFork,
     this.onProcessTerminate,
@@ -660,7 +655,6 @@ class _DetailsPanel extends StatelessWidget {
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryAttempted;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryHelpful;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryNotHelpful;
-  final ValueChanged<String>? onSessionClose;
   final ValueChanged<String>? onSessionArchive;
   final ValueChanged<String>? onSessionFork;
   final ValueChanged<String>? onProcessTerminate;
@@ -793,8 +787,6 @@ class _DetailsPanel extends StatelessWidget {
   VoidCallback? Function(AgentRuntimeActionItem) _operationActionHandler(String surfaceId) {
     return (action) {
       switch (action.kind) {
-        case 'closeSession':
-          return onSessionClose == null ? null : () => onSessionClose!(action.id);
         case 'archiveSession':
           return onSessionArchive == null ? null : () => onSessionArchive!(action.id);
         case 'forkSession':
@@ -858,7 +850,6 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
     this.onWorkflowMemoryAttempted,
     this.onWorkflowMemoryHelpful,
     this.onWorkflowMemoryNotHelpful,
-    this.onSessionClose,
     this.onSessionArchive,
     this.onSessionFork,
     this.onProcessTerminate,
@@ -897,7 +888,6 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryAttempted;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryHelpful;
   final ValueChanged<AgentRuntimeWorkflowMemoryDetail>? onWorkflowMemoryNotHelpful;
-  final ValueChanged<String>? onSessionClose;
   final ValueChanged<String>? onSessionArchive;
   final ValueChanged<String>? onSessionFork;
   final ValueChanged<String>? onProcessTerminate;
@@ -938,7 +928,6 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
       onWorkflowMemoryAttempted: onWorkflowMemoryAttempted,
       onWorkflowMemoryHelpful: onWorkflowMemoryHelpful,
       onWorkflowMemoryNotHelpful: onWorkflowMemoryNotHelpful,
-      onSessionClose: onSessionClose,
       onSessionArchive: onSessionArchive,
       onSessionFork: onSessionFork,
       onProcessTerminate: onProcessTerminate,

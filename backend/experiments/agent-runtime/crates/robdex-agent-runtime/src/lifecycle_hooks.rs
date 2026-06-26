@@ -43,7 +43,6 @@ pub enum LifecycleHook {
     OnResourceReserved,
     OnResourceReleased,
     OnTurnComplete,
-    OnSessionClose,
     OnSessionArchive,
     OnCompactionComplete,
 }
@@ -64,7 +63,6 @@ impl LifecycleHook {
             Self::OnResourceReserved => "on_resource_reserved",
             Self::OnResourceReleased => "on_resource_released",
             Self::OnTurnComplete => "on_turn_complete",
-            Self::OnSessionClose => "on_session_close",
             Self::OnSessionArchive => "on_session_archive",
             Self::OnCompactionComplete => "on_compaction_complete",
         }
@@ -85,7 +83,6 @@ impl LifecycleHook {
             "on_resource_reserved" => Self::OnResourceReserved,
             "on_resource_released" => Self::OnResourceReleased,
             "on_turn_complete" => Self::OnTurnComplete,
-            "on_session_close" => Self::OnSessionClose,
             "on_session_archive" => Self::OnSessionArchive,
             "on_compaction_complete" => Self::OnCompactionComplete,
             other => bail!("unknown lifecycle hook: {other}"),
@@ -107,7 +104,6 @@ impl LifecycleHook {
             Self::OnResourceReserved,
             Self::OnResourceReleased,
             Self::OnTurnComplete,
-            Self::OnSessionClose,
             Self::OnSessionArchive,
             Self::OnCompactionComplete,
         ]
@@ -122,7 +118,7 @@ pub enum HookIntentType {
     RoutePacket,
     NotifySession,
     EnsureSubagent,
-    CloseSubagent,
+    DeactivateSubagent,
     ReserveResource,
     ReleaseResource,
     AddTurnObligation,
@@ -139,7 +135,7 @@ impl HookIntentType {
             Self::RoutePacket => "route_packet",
             Self::NotifySession => "notify_session",
             Self::EnsureSubagent => "ensure_subagent",
-            Self::CloseSubagent => "close_subagent",
+            Self::DeactivateSubagent => "deactivate_subagent",
             Self::ReserveResource => "reserve_resource",
             Self::ReleaseResource => "release_resource",
             Self::AddTurnObligation => "add_turn_obligation",
@@ -156,7 +152,7 @@ impl HookIntentType {
             "route_packet" => Self::RoutePacket,
             "notify_session" => Self::NotifySession,
             "ensure_subagent" => Self::EnsureSubagent,
-            "close_subagent" => Self::CloseSubagent,
+            "deactivate_subagent" => Self::DeactivateSubagent,
             "reserve_resource" => Self::ReserveResource,
             "release_resource" => Self::ReleaseResource,
             "add_turn_obligation" => Self::AddTurnObligation,
@@ -180,11 +176,11 @@ pub fn allowed_intents(boundary: LifecycleHook) -> BTreeSet<HookIntentType> {
         LifecycleHook::OnModelFinal => BTreeSet::from([RecordPacket, RoutePacket, EnsureSubagent, UpdateContractProgress, RequestOwnerApproval, BlockWithReason]),
         LifecycleHook::OnToolStart => BTreeSet::from([RecordPacket, BlockWithReason]),
         LifecycleHook::OnToolComplete => BTreeSet::from([RecordPacket, RoutePacket, AddTurnObligation, ReserveResource, ReleaseResource, BlockWithReason]),
-        LifecycleHook::OnPacketRecorded => BTreeSet::from([RoutePacket, NotifySession, EnsureSubagent, CloseSubagent, UpdateContractProgress, RequestOwnerApproval, BlockWithReason]),
+        LifecycleHook::OnPacketRecorded => BTreeSet::from([RoutePacket, NotifySession, EnsureSubagent, DeactivateSubagent, UpdateContractProgress, RequestOwnerApproval, BlockWithReason]),
         LifecycleHook::OnResourceReserved => BTreeSet::from([NotifySession, RecordPacket, AddTurnObligation]),
         LifecycleHook::OnResourceReleased => BTreeSet::from([NotifySession, RecordPacket]),
         LifecycleHook::OnTurnComplete => BTreeSet::from([NotifySession, ReleaseResource, AddTurnObligation, RecordPacket, RoutePacket]),
-        LifecycleHook::OnSessionClose | LifecycleHook::OnSessionArchive => BTreeSet::from([CloseSubagent, ReleaseResource, RecordPacket, NotifySession]),
+        LifecycleHook::OnSessionArchive => BTreeSet::from([DeactivateSubagent, ReleaseResource, RecordPacket, NotifySession]),
         LifecycleHook::OnCompactionComplete => BTreeSet::from([RecordPacket, RoutePacket, NotifySession]),
     }
 }
@@ -665,7 +661,7 @@ pub fn validate_intent(boundary: LifecycleHook, intent: &HookIntent) -> Result<H
             required_string(&intent.payload, "roleId")?;
             required_string(&intent.payload, "workflowIdentity")?;
         }
-        HookIntentType::CloseSubagent => {
+        HookIntentType::DeactivateSubagent => {
             required_string(&intent.payload, "subagentKey")?;
             required_string(&intent.payload, "workflowIdentity")?;
         }
@@ -930,8 +926,8 @@ fn hook_intent_builtins(builder: &mut GlobalsBuilder) {
         Ok(hook_intent_json("ensure_subagent", kwargs)?)
     }
 
-    fn close_subagent<'v>(#[starlark(kwargs)] kwargs: SmallMap<String, StarlarkValue<'v>>) -> anyhow::Result<String> {
-        Ok(hook_intent_json("close_subagent", kwargs)?)
+    fn deactivate_subagent<'v>(#[starlark(kwargs)] kwargs: SmallMap<String, StarlarkValue<'v>>) -> anyhow::Result<String> {
+        Ok(hook_intent_json("deactivate_subagent", kwargs)?)
     }
 
     fn reserve_resource<'v>(#[starlark(kwargs)] kwargs: SmallMap<String, StarlarkValue<'v>>) -> anyhow::Result<String> {
@@ -1245,10 +1241,10 @@ async fn apply_hook_intents_with_version(
                     json!({"source":"hook","idempotencyKey": key}),
                 ).await?
             }
-            HookIntentType::CloseSubagent => {
-                close_subagent(
+            HookIntentType::DeactivateSubagent => {
+                deactivate_subagent(
                     pool,
-                    session_id.ok_or_else(|| anyhow::anyhow!("close_subagent requires session_id"))?,
+                    session_id.ok_or_else(|| anyhow::anyhow!("deactivate_subagent requires session_id"))?,
                     required_string(&intent.payload, "subagentKey")?,
                     required_string(&intent.payload, "workflowIdentity")?,
                 ).await?.unwrap_or_else(Uuid::nil)
@@ -1566,8 +1562,8 @@ pub async fn route_packet_envelope(
 ) -> Result<Uuid> {
     if let Some(target) = target_session_id {
         let target_record = db::session_record(pool, target).await?;
-        if target_record.status != "open" || target_record.closed_at.is_some() || target_record.archived_at.is_some() {
-            bail!("routing target is not an open live session");
+        if target_record.archived_at.is_some() {
+            bail!("routing target is archived");
         }
         if target_record.hidden && target_record.parent_session_id != source_session_id {
             bail!("routing target hidden subagent is outside the source parent relationship");
@@ -1754,8 +1750,8 @@ pub async fn ensure_subagent(pool: &PgPool, parent_session_id: Uuid, subagent_ke
     Ok(session_id)
 }
 
-pub async fn close_subagent(pool: &PgPool, parent_session_id: Uuid, subagent_key: &str, workflow_identity: &str) -> Result<Option<Uuid>> {
-    let row = sqlx::query("UPDATE generic_subagents SET lifecycle_status='closed', closed_at=now() WHERE parent_session_id=$1 AND subagent_key=$2 AND workflow_identity=$3 AND lifecycle_status='open' RETURNING subagent_session_id")
+pub async fn deactivate_subagent(pool: &PgPool, parent_session_id: Uuid, subagent_key: &str, workflow_identity: &str) -> Result<Option<Uuid>> {
+    let row = sqlx::query("UPDATE generic_subagents SET lifecycle_status='inactive', inactive_at=now() WHERE parent_session_id=$1 AND subagent_key=$2 AND workflow_identity=$3 AND lifecycle_status='open' RETURNING subagent_session_id")
         .bind(parent_session_id)
         .bind(subagent_key)
         .bind(workflow_identity)
@@ -1763,7 +1759,7 @@ pub async fn close_subagent(pool: &PgPool, parent_session_id: Uuid, subagent_key
         .await?;
     if let Some(row) = row {
         let session_id: Uuid = row.get("subagent_session_id");
-        sqlx::query("UPDATE sessions SET status='closed', closed_at=COALESCE(closed_at, now()), close_reason='subagent closed by lifecycle hook', updated_at=now() WHERE id=$1")
+        sqlx::query("UPDATE sessions SET status='stopped', updated_at=now() WHERE id=$1")
             .bind(session_id)
             .execute(pool)
             .await?;
@@ -1782,23 +1778,22 @@ pub async fn cleanup_session_lifecycle_resources(pool: &PgPool, session_id: Uuid
     .execute(pool)
     .await?
     .rows_affected();
-    let closed_subagents = sqlx::query(
-        "UPDATE generic_subagents SET lifecycle_status='closed', closed_at=COALESCE(closed_at, now()) WHERE parent_session_id=$1 AND lifecycle_status='open'",
+    let inactive_subagents = sqlx::query(
+        "UPDATE generic_subagents SET lifecycle_status='inactive', inactive_at=COALESCE(inactive_at, now()) WHERE parent_session_id=$1 AND lifecycle_status='open'",
     )
     .bind(session_id)
     .execute(pool)
     .await?
     .rows_affected();
-    let closed_subagent_sessions = sqlx::query(
-        "UPDATE sessions SET status='closed', closed_at=COALESCE(closed_at, now()), close_reason=$2, updated_at=now() WHERE parent_session_id=$1 AND hidden=true AND status='open'",
+    let inactive_subagent_sessions = sqlx::query(
+        "UPDATE sessions SET status='stopped', updated_at=now() WHERE parent_session_id=$1 AND hidden=true",
     )
     .bind(session_id)
-    .bind(reason)
     .execute(pool)
     .await?
     .rows_affected();
     let terminated_processes = sqlx::query(
-        "UPDATE managed_processes SET status='sessionClosed', end_time=COALESCE(end_time, now()), termination_reason=$2 WHERE session_id=$1 AND status='running' AND end_of_session_behavior='terminate'",
+        "UPDATE managed_processes SET status='sessionTerminated', end_time=COALESCE(end_time, now()), termination_reason=$2 WHERE session_id=$1 AND status='running' AND end_of_session_behavior='terminate'",
     )
     .bind(session_id)
     .bind(reason)
@@ -1809,8 +1804,8 @@ pub async fn cleanup_session_lifecycle_resources(pool: &PgPool, session_id: Uuid
         "sessionId": session_id,
         "reason": reason,
         "releasedLeases": released_leases,
-        "closedSubagents": closed_subagents,
-        "closedSubagentSessions": closed_subagent_sessions,
+        "inactiveSubagents": inactive_subagents,
+        "inactiveSubagentSessions": inactive_subagent_sessions,
         "terminatedProcesses": terminated_processes,
         "godModeRevocation": "rust_god_mode_revoke_active_called_by_session_lifecycle",
     });
@@ -1821,7 +1816,7 @@ pub async fn cleanup_session_lifecycle_resources(pool: &PgPool, session_id: Uuid
 pub async fn parent_subagent_projection(pool: &PgPool, parent_session_id: Uuid) -> Result<Value> {
     let rows = sqlx::query(
         r#"
-        SELECT g.subagent_session_id, g.subagent_key, g.workflow_identity, g.subagent_kind, g.role_id, g.lifecycle_status, g.created_at, g.closed_at,
+        SELECT g.subagent_session_id, g.subagent_key, g.workflow_identity, g.subagent_kind, g.role_id, g.lifecycle_status, g.created_at, g.inactive_at,
                (SELECT COUNT(*) FROM runtime_packets p WHERE p.parent_session_id=g.parent_session_id) AS packet_count,
                (SELECT COUNT(*) FROM runtime_envelopes e WHERE e.target_session_id=g.subagent_session_id AND e.status='pending') AS pending_envelopes
         FROM generic_subagents g
@@ -1842,7 +1837,7 @@ pub async fn parent_subagent_projection(pool: &PgPool, parent_session_id: Uuid) 
             "roleId": row.get::<String, _>("role_id"),
             "lifecycleStatus": row.get::<String, _>("lifecycle_status"),
             "createdAt": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
-            "closedAt": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("closed_at"),
+            "inactiveAt": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("inactive_at"),
             "packetCount": row.get::<i64, _>("packet_count"),
             "pendingEnvelopes": row.get::<i64, _>("pending_envelopes"),
         }))
@@ -1883,7 +1878,7 @@ pub async fn reserve_resource(pool: &PgPool, owning_session_id: Option<Uuid>, pa
         .bind(payload.get("status").and_then(Value::as_str).unwrap_or("reserved"))
         .bind(lease_purpose)
         .bind(payload.get("expiryPolicy").cloned().unwrap_or_else(|| json!({})))
-        .bind(payload.get("lifecyclePolicy").cloned().unwrap_or_else(|| json!({"releaseOnSessionClose": true})))
+        .bind(payload.get("lifecyclePolicy").cloned().unwrap_or_else(|| json!({"releaseOnSessionArchive": true})))
         .bind(json!({"source":"hook","idempotencyKey": idempotency_key}))
         .execute(pool)
         .await?;
@@ -2009,7 +2004,7 @@ mod tests {
             HookIntent { intent_type: "route_packet".to_string(), key: None, payload: json!({"packetId": Uuid::nil().to_string()}), idempotency_key: None },
             HookIntent { intent_type: "notify_session".to_string(), key: None, payload: json!({"message":"m"}), idempotency_key: None },
             HookIntent { intent_type: "ensure_subagent".to_string(), key: None, payload: json!({"subagentKey":"k","subagentKind":"kind","roleId":"requirements-reviewer","workflowIdentity":"wf"}), idempotency_key: None },
-            HookIntent { intent_type: "close_subagent".to_string(), key: None, payload: json!({"subagentKey":"k","workflowIdentity":"wf"}), idempotency_key: None },
+            HookIntent { intent_type: "deactivate_subagent".to_string(), key: None, payload: json!({"subagentKey":"k","workflowIdentity":"wf"}), idempotency_key: None },
             HookIntent { intent_type: "reserve_resource".to_string(), key: None, payload: json!({"resourceType":"iosSimulator"}), idempotency_key: None },
             HookIntent { intent_type: "release_resource".to_string(), key: None, payload: json!({"resourceType":"iosSimulator"}), idempotency_key: None },
             HookIntent { intent_type: "add_turn_obligation".to_string(), key: None, payload: json!({"obligationType":"leaseIdleCheck"}), idempotency_key: None },
@@ -2279,9 +2274,9 @@ command_bundle_binding(id = "reviewer_commands", role_id = "requirements-reviewe
 channel(id = "requirements", packet_types = ["requirements.claim", "requirements.verdict"])
 route(id = "claim_to_reviewer", source = "requirements.claim", target = "subagent:requirements-reviewer")
 contract_workflow(id = "requirements_review", contract_type = "requirements", packet_types = ["requirements.claim", "requirements.verdict"])
-resource_type(id = "iosSimulator", lease_policy = {"exclusive": True, "release_on_session_close": True})
+resource_type(id = "iosSimulator", lease_policy = {"exclusive": True, "release_on_session_archive": True})
 steward_binding(resource_type = "iosSimulator", steward_role = "simulator-steward")
-lifecycle_policy(id = "close_cleanup", release_leases = True, close_subagents = True)
+lifecycle_policy(id = "archive_cleanup", release_leases = True, deactivate_subagents = True)
 hook_binding(name = "on_model_request", source = "x = 1")
 "#;
         let manifest = compile_project_runtime_source(source).expect("compiled manifest");

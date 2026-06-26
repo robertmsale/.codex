@@ -521,7 +521,7 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
     model: &M,
     budget: compaction::CompactionBudget,
 ) -> Result<Uuid> {
-    let session = db::ensure_session_open(pool, session_id).await?;
+    let session = db::ensure_session_not_archived(pool, session_id).await?;
     let workdir = session.workdir.clone();
     let role_snapshot = db::session_role_snapshot(pool, session_id).await?;
     let mut model_role_snapshot = role_snapshot.clone();

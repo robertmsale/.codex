@@ -94,9 +94,7 @@ async fn runtime_statistics(pool: &PgPool, selected_session_id: Option<Uuid>) ->
     }
     Ok(RuntimeStatistics {
         sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false", selected_session_id).await?,
-        open_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false AND closed_at IS NULL AND archived_at IS NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false AND closed_at IS NULL AND archived_at IS NULL", selected_session_id).await?,
-        closed_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false AND closed_at IS NOT NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false AND closed_at IS NOT NULL", selected_session_id).await?,
-        archived_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false AND archived_at IS NOT NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false AND archived_at IS NOT NULL", selected_session_id).await?,
+        open_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false AND archived_at IS NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false AND archived_at IS NULL", selected_session_id).await?,        archived_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false AND archived_at IS NOT NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false AND archived_at IS NOT NULL", selected_session_id).await?,
         turns: scoped_count(pool, "SELECT COUNT(*) FROM turns", "SELECT COUNT(*) FROM turns WHERE session_id=$1", selected_session_id).await?,
         running_turns: scoped_count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'running'", "SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status = 'running'", selected_session_id).await?,
         failed_turns: scoped_count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'failed'", "SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status = 'failed'", selected_session_id).await?,
@@ -193,17 +191,6 @@ async fn projection_deltas_from_event_row(
                 deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SessionArchive {
                     session_id: id.to_string(),
                     archived_at: None,
-                }));
-            }
-        }
-        "session.closed" => {
-            if let Some(id) = uuid_from_option(entity_id.as_deref()) {
-                if let Some(session) = session_list_item(pool, id).await? {
-                    deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SessionUpsert { session }));
-                }
-                deltas.push(same_row_delta(watermark, RuntimeDeltaKind::SessionClose {
-                    session_id: id.to_string(),
-                    closed_at: None,
                 }));
             }
         }
@@ -391,9 +378,9 @@ async fn session_list_items(pool: &PgPool) -> Result<Vec<SessionListItem>> {
     let rows = sqlx::query(
         r#"
         SELECT id, status, role_id, role_version, project_key, workdir, title, name, tracked,
-               archived_at, closed_at, updated_at
+               archived_at, updated_at
         FROM sessions
-        WHERE archived_at IS NULL AND hidden = false AND (tracked = true OR status <> 'open')
+        WHERE archived_at IS NULL AND hidden = false
         ORDER BY updated_at DESC, created_at DESC
         "#,
     )
@@ -412,7 +399,6 @@ async fn session_list_items(pool: &PgPool) -> Result<Vec<SessionListItem>> {
             workdir: row.get("workdir"),
             tracked: row.get("tracked"),
             archived_at: optional_time(row.get("archived_at")),
-            closed_at: optional_time(row.get("closed_at")),
             updated_at: optional_time(Some(row.get("updated_at"))),
         })
         .collect())
@@ -422,9 +408,9 @@ async fn session_list_item(pool: &PgPool, session_id: Uuid) -> Result<Option<Ses
     let row = sqlx::query(
         r#"
         SELECT id, status, role_id, role_version, project_key, workdir, title, name, tracked,
-               archived_at, closed_at, updated_at
+               archived_at, updated_at
         FROM sessions
-        WHERE id = $1 AND archived_at IS NULL AND hidden = false AND (tracked = true OR status <> 'open')
+        WHERE id = $1 AND archived_at IS NULL AND hidden = false
         "#,
     )
     .bind(session_id)
@@ -441,7 +427,6 @@ async fn session_list_item(pool: &PgPool, session_id: Uuid) -> Result<Option<Ses
         workdir: row.get("workdir"),
         tracked: row.get("tracked"),
         archived_at: optional_time(row.get("archived_at")),
-        closed_at: optional_time(row.get("closed_at")),
         updated_at: optional_time(Some(row.get("updated_at"))),
     }))
 }
@@ -1912,7 +1897,7 @@ mod tests {
         let artifact_id = Uuid::new_v4();
         let model_event_id = Uuid::new_v4();
         let final_text = "## Distinctive final\n\n- exact **markdown** response\n- no placeholder".to_string();
-        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','project-a','/tmp/project-a','Durable selected chat',true)")
+        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'stopped','runtime-allow','project-a','/tmp/project-a','Durable selected chat',true)")
             .bind(session_id)
             .execute(pool)
             .await
@@ -2051,7 +2036,7 @@ mod tests {
         let stderr_artifact_id = Uuid::new_v4();
         let tree_output = ".\n├── backend\n│   └── Cargo.toml\n└── frontend\n";
         let stderr = "later validation failed after tree output";
-        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','project-a','/tmp/project-a','Tree failure projection',true)")
+        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'stopped','runtime-allow','project-a','/tmp/project-a','Tree failure projection',true)")
             .bind(session_id)
             .execute(&pool)
             .await
@@ -2281,7 +2266,7 @@ mod tests {
                 disposition, status, observed_lifecycle_state, accepted_at, applied_at
             )
             VALUES ($1,$2,$3,'operator','gui','operator',$4,$5,
-                'active_turn_steering','applied','open',now(),now())
+                'active_turn_steering','applied','stopped',now(),now())
             "#,
         )
         .bind(submitted_id)
@@ -2326,7 +2311,7 @@ mod tests {
         let post_final_submitted_id = Uuid::new_v4();
         let post_compaction_submitted_id = Uuid::new_v4();
         let checkpoint_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','project-a','/tmp/project-a','Placed submitted chat',true)")
+        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'stopped','runtime-allow','project-a','/tmp/project-a','Placed submitted chat',true)")
             .bind(session_id)
             .execute(&pool)
             .await
@@ -2351,7 +2336,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("post-final turn");
-        sqlx::query("INSERT INTO submitted_inputs (id, session_id, actor, source, role, content, payload, disposition, status, observed_lifecycle_state, placement_turn_id, accepted_at, applied_at) VALUES ($1,$2,'operator','gui','user','first input after committed final',$3,'queued_next_turn_after_final_output','applied','open',$4,now() - interval '3 minutes',now() - interval '3 minutes')")
+        sqlx::query("INSERT INTO submitted_inputs (id, session_id, actor, source, role, content, payload, disposition, status, observed_lifecycle_state, placement_turn_id, accepted_at, applied_at) VALUES ($1,$2,'operator','gui','user','first input after committed final',$3,'queued_next_turn_after_final_output','applied','stopped',$4,now() - interval '3 minutes',now() - interval '3 minutes')")
             .bind(post_final_submitted_id)
             .bind(session_id)
             .bind(json!({"content":"first input after committed final"}))
@@ -2373,7 +2358,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("post-compaction turn");
-        sqlx::query("INSERT INTO submitted_inputs (id, session_id, actor, source, role, content, payload, disposition, status, observed_lifecycle_state, placement_turn_id, accepted_at, applied_at) VALUES ($1,$2,'operator','gui','user','first input after compaction',$3,'queued_continuation_after_compaction','applied','open',$4,now() - interval '90 seconds',now() - interval '60 seconds')")
+        sqlx::query("INSERT INTO submitted_inputs (id, session_id, actor, source, role, content, payload, disposition, status, observed_lifecycle_state, placement_turn_id, accepted_at, applied_at) VALUES ($1,$2,'operator','gui','user','first input after compaction',$3,'queued_continuation_after_compaction','applied','stopped',$4,now() - interval '90 seconds',now() - interval '60 seconds')")
             .bind(post_compaction_submitted_id)
             .bind(session_id)
             .bind(json!({"content":"first input after compaction"}))
@@ -2423,12 +2408,12 @@ mod tests {
         let registry_request_id = Uuid::new_v4();
         let other_session_id = Uuid::new_v4();
         let other_turn_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','stats-project','/tmp/stats','Stats seed',true)")
+        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'stopped','runtime-allow','stats-project','/tmp/stats','Stats seed',true)")
             .bind(session_id)
             .execute(&pool)
             .await
             .expect("session");
-        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','stats-project','/tmp/other','Stats other',true)")
+        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'stopped','runtime-allow','stats-project','/tmp/other','Stats other',true)")
             .bind(other_session_id)
             .execute(&pool)
             .await
@@ -2471,7 +2456,6 @@ mod tests {
 
         assert_eq!(snapshot.statistics.sessions, 1);
         assert_eq!(snapshot.statistics.open_sessions, 1);
-        assert_eq!(snapshot.statistics.closed_sessions, 0);
         assert_eq!(snapshot.statistics.archived_sessions, 0);
         assert_eq!(snapshot.statistics.turns, 1);
         assert_eq!(snapshot.statistics.running_turns, 0);
@@ -2523,7 +2507,7 @@ mod tests {
         let completed_id = Uuid::new_v4();
         let lost_id = Uuid::new_v4();
         let timeline_only_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','project-a','/tmp/processes','Process row proof',true)")
+        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'stopped','runtime-allow','project-a','/tmp/processes','Process row proof',true)")
             .bind(session_id)
             .execute(&pool)
             .await

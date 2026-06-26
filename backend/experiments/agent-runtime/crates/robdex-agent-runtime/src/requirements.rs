@@ -1075,18 +1075,18 @@ pub async fn packet_history(pool: &PgPool, source_session_id: Uuid) -> Result<Ve
     })).collect())
 }
 
-pub async fn close_nested_reviewers(pool: &PgPool, source_session_id: Uuid) -> Result<()> {
-    let rows = sqlx::query("SELECT id FROM sessions WHERE parent_session_id=$1 AND session_kind='requirementsReviewer' AND status='open'")
+pub async fn deactivate_nested_reviewers(pool: &PgPool, source_session_id: Uuid) -> Result<()> {
+    let rows = sqlx::query("SELECT id FROM sessions WHERE parent_session_id=$1 AND session_kind='requirementsReviewer' AND archived_at IS NULL")
         .bind(source_session_id)
         .fetch_all(pool)
         .await?;
     for row in rows {
         let reviewer_id: Uuid = row.get("id");
-        sqlx::query("UPDATE sessions SET status='closed', closed_at=COALESCE(closed_at, now()), close_reason='source session closed', updated_at=now() WHERE id=$1")
+        sqlx::query("UPDATE sessions SET status='stopped', updated_at=now() WHERE id=$1")
             .bind(reviewer_id)
             .execute(pool)
             .await?;
-        db::append_event(pool, source_session_id, None, "requirements", Some(reviewer_id), "requirements.reviewerClosed", Some("closed"), json!({"reviewerSessionId": reviewer_id})).await?;
+        db::append_event(pool, source_session_id, None, "requirements", Some(reviewer_id), "requirements.reviewerInactive", Some("inactive"), json!({"reviewerSessionId": reviewer_id})).await?;
     }
     Ok(())
 }

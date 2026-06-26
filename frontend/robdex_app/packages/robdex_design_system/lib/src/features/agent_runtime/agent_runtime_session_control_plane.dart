@@ -8,7 +8,6 @@ class AgentRuntimeSessionControlPlane extends StatefulWidget {
     required this.data,
     required this.onClose,
     required this.onSave,
-    required this.onCloseSession,
     required this.onArchiveSession,
     required this.onForkSession,
     required this.onCompact,
@@ -32,7 +31,6 @@ class AgentRuntimeSessionControlPlane extends StatefulWidget {
   final AgentRuntimeWorkbenchData data;
   final VoidCallback onClose;
   final void Function({required String sessionId, required String project, required String role, required String model, required String workdir, required String worktreeRoot, required String title, required String name, required bool tracked}) onSave;
-  final ValueChanged<String> onCloseSession;
   final ValueChanged<String> onArchiveSession;
   final ValueChanged<String> onForkSession;
   final ValueChanged<String> onCompact;
@@ -235,7 +233,6 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
       const SizedBox(height: 14),
       _section('Session Actions', [
         Wrap(spacing: 12, runSpacing: 12, children: [
-          _actionTile(Icons.close_rounded, 'Close Session', 'Gracefully close and terminate', Colors.redAccent, () => widget.onCloseSession(control.sessionId)),
           _actionTile(Icons.archive_outlined, 'Archive Session', 'Hide from active sessions', Colors.orange, () => widget.onArchiveSession(control.sessionId)),
           _actionTile(Icons.call_split_rounded, 'Fork Session', 'Create a new session from a turn', Colors.purpleAccent, () => widget.onForkSession(control.sessionId)),
           _actionTile(Icons.copy_all_rounded, 'Duplicate Settings Unavailable', 'No typed duplicate operation exists', Colors.blueGrey, null),
@@ -392,7 +389,6 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             const Text('Danger Zone', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
             const SizedBox(height: 12),
-            OutlinedButton(key: const ValueKey('agentRuntime.sessionControl.danger.closeSession'), onPressed: () { Navigator.of(context).pop(); widget.onCloseSession(control.sessionId); }, child: const Text('Close session')),
             OutlinedButton(key: const ValueKey('agentRuntime.sessionControl.danger.archiveSession'), onPressed: () { Navigator.of(context).pop(); widget.onArchiveSession(control.sessionId); }, child: const Text('Archive session')),
           ]),
         ),

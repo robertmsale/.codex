@@ -45,7 +45,6 @@ pub enum AgentRuntimeGuiOperation {
     CompactSession { session_id: String, through_turn: String },
     GrantGodMode { session_id: String, reason: String },
     RevokeGodMode { session_id: String, reason: String },
-    CloseSession { session_id: String, reason: String },
     ArchiveSession { session_id: String },
     ForkSession { session_id: String, at_turn: String },
     DecideApproval { approval_id: String, decision: String, reason: String },

@@ -83,10 +83,6 @@ bindings.AgentRuntimeGuiOperation agentRuntimeRequirementsPacketsOperationForTes
 }
 
 @visibleForTesting
-bindings.AgentRuntimeGuiOperation agentRuntimeCloseSessionOperationForTest(String sessionId) {
-  return bindings.AgentRuntimeGuiOperationCloseSession(sessionId: sessionId, reason: 'Closed from Agent Runtime shell');
-}
-
 @visibleForTesting
 bindings.AgentRuntimeGuiOperation agentRuntimeArchiveSessionOperationForTest(String sessionId) {
   return bindings.AgentRuntimeGuiOperationArchiveSession(sessionId: sessionId);
@@ -484,13 +480,6 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
       return;
     }
     _dispatchOperation('process-flush', agentRuntimeFlushProcessOperationForTest(sessionId, handle));
-  }
-
-  void closeSession(String sessionId) {
-    if (sessionId.isEmpty) {
-      return;
-    }
-    _dispatchOperation('session-close', agentRuntimeCloseSessionOperationForTest(sessionId));
   }
 
   void archiveSession(String sessionId) {

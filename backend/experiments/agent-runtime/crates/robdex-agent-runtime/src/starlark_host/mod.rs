@@ -53,7 +53,7 @@ const FAILED_EXECUTE_CODE_RECOVERY_HINT: &str =
 static PROCESS_MANAGER: Lazy<Mutex<BTreeMap<Uuid, BTreeMap<String, ManagedProcess>>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
 
-pub fn terminate_session_processes_for_close(session_id: Uuid) -> usize {
+pub fn terminate_session_processes_for_archive(session_id: Uuid) -> usize {
     let Ok(mut manager) = PROCESS_MANAGER.lock() else {
         return 0;
     };
@@ -64,7 +64,7 @@ pub fn terminate_session_processes_for_close(session_id: Uuid) -> usize {
     let mut remove = Vec::new();
     for (handle, process) in processes.iter_mut() {
         if process.status == "running" && process.end_of_session_behavior == "terminate" {
-            let _ = process.terminate("sessionClosed", true);
+            let _ = process.terminate("sessionTerminated", true);
             terminated += 1;
             remove.push(handle.clone());
         }
@@ -5740,7 +5740,7 @@ print(handle + "\n" + flushed + "\n" + terminated)"#,
         assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ProcessOutput(output) if output.stream == "stdout" && output.content.contains("shell-input:typed-stdin"))));
         assert!(!async_result.records.iter().any(|record| matches!(record, HostRecord::ProcessOutput(output) if output.stream == "combined")));
         assert!(async_result.records.iter().any(|record| matches!(record, HostRecord::ManagedProcess(process) if process.event == "process.terminated")));
-        let _ = terminate_session_processes_for_close(session);
+        let _ = terminate_session_processes_for_archive(session);
     }
 
     #[tokio::test(flavor = "multi_thread")]

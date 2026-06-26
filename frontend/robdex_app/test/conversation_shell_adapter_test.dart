@@ -22,7 +22,7 @@ void main() {
         AgentRuntimeSessionItem(
           id: 'session-custom',
           title: 'Custom role session',
-          status: 'open',
+          status: 'stopped',
           subtitle: 'Project workspace',
           groupLabel: 'Neon Incident Commander',
           tone: 'warning',

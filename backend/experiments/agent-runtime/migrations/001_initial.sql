@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS sessions (
     id UUID PRIMARY KEY,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'stopped' CHECK (status IN ('running', 'stopped')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
@@ -700,7 +700,7 @@ CREATE TABLE IF NOT EXISTS generic_subagents (
     lifecycle_status TEXT NOT NULL DEFAULT 'open',
     audit_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    closed_at TIMESTAMPTZ,
+    inactive_at TIMESTAMPTZ,
     UNIQUE(parent_session_id, subagent_key, workflow_identity)
 );
 CREATE INDEX IF NOT EXISTS generic_subagents_parent_status_idx
@@ -795,13 +795,19 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS name TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tracked BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS close_reason TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS forked_from_session_id UUID;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS forked_from_turn_id UUID;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS root_session_id UUID;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS fork_depth INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS lineage JSONB NOT NULL DEFAULT '{}'::jsonb;
+UPDATE sessions SET status='stopped' WHERE status IN ('open', 'closed');
+ALTER TABLE sessions DROP COLUMN IF EXISTS closed_at;
+ALTER TABLE sessions DROP COLUMN IF EXISTS close_reason;
+ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_status_check;
+ALTER TABLE sessions ADD CONSTRAINT sessions_status_check CHECK (status IN ('running', 'stopped'));
+UPDATE generic_subagents SET lifecycle_status='inactive' WHERE lifecycle_status='closed';
+ALTER TABLE generic_subagents ADD COLUMN IF NOT EXISTS inactive_at TIMESTAMPTZ;
+ALTER TABLE generic_subagents DROP COLUMN IF EXISTS closed_at;
 
 CREATE TABLE IF NOT EXISTS projects (
     project_key TEXT PRIMARY KEY,
