@@ -1024,6 +1024,92 @@ void main() {
     expect(find.text('Compact selected session'), findsWidgets);
   });
 
+  testWidgets('runtime operations modal closes through visible control and restores shell interactivity', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = AgentRuntimeWorkbenchController(requestSink: (_, _) {});
+    addTearDown(controller.dispose);
+    controller.setViewDataForTest(mockAgentRuntimeConnected, shell: agentRuntimeConversationShellData(mockAgentRuntimeConnected));
+
+    await tester.pumpWidget(MaterialApp(home: AgentRuntimeWorkbenchHost(controller: controller)));
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.runtimeOperations')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Runtime detail'), findsOneWidget);
+    expect(find.text('Process Manager'), findsWidgets);
+    expect(find.byKey(const ValueKey('agentRuntime.operationsDetail.close')), findsOneWidget);
+    expect(find.byTooltip('Close runtime operations'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.operationsDetail.close')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Runtime detail'), findsNothing);
+    await tester.tap(find.byTooltip('New session'));
+    await tester.pump();
+    expect(find.byType(AgentRuntimeCreateSessionDialog), findsOneWidget);
+  });
+
+  testWidgets('Agent Runtime controls keep usable semantics after reset-state render and modal dismissal', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: AgentRuntimeWorkbench(
+        data: mockAgentRuntimeEmpty.copyWith(
+          connectionState: 'disconnected',
+          connectionTone: 'muted',
+          statusLabel: 'Not connected',
+          discovery: const AgentRuntimeDiscoveryInfo(
+            state: 'notLoaded',
+            tone: 'muted',
+            title: 'Discovery not loaded',
+            message: 'Refresh discovery to check the local Agent Runtime service.',
+            discoveryPath: '',
+            connectable: false,
+          ),
+        ),
+        baseUrlController: TextEditingController(text: 'http://127.0.0.1:42080'),
+        onConnect: () {},
+        onRefreshDiscovery: () {},
+        onConnectDiscovered: () {},
+        onRefreshIcloudRemoteDiscovery: () {},
+        onConnectIcloudRemote: () {},
+        onImportRemoteProfile: () {},
+        onRefreshImportedRemoteProfile: () {},
+        onConnectImportedRemoteProfile: () {},
+        onDisconnect: () {},
+      )),
+    ));
+    await tester.pump();
+
+    expect(find.bySemanticsLabel('Agent Runtime workbench'), findsOneWidget);
+    expect(find.bySemanticsLabel('Runtime URL'), findsWidgets);
+    expect(find.bySemanticsLabel('Connect to URL'), findsOneWidget);
+    expect(find.bySemanticsLabel('Refresh'), findsWidgets);
+
+    final controller = AgentRuntimeWorkbenchController(requestSink: (_, _) {});
+    addTearDown(controller.dispose);
+    controller.setViewDataForTest(mockAgentRuntimeConnected, shell: agentRuntimeConversationShellData(mockAgentRuntimeConnected));
+
+    await tester.pumpWidget(MaterialApp(home: AgentRuntimeWorkbenchHost(controller: controller)));
+    await tester.pump();
+
+    expect(find.bySemanticsLabel('Runtime operations'), findsWidgets);
+    expect(find.bySemanticsLabel('Session settings'), findsWidgets);
+
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.runtimeOperations')));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Runtime operations detail'), findsOneWidget);
+    expect(find.bySemanticsLabel('Close runtime operations detail'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.operationsDetail.close')));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Runtime operations'), findsWidgets);
+    expect(find.bySemanticsLabel('Close runtime operations detail'), findsNothing);
+  });
+
   testWidgets('project rows expose scoped management menus without forbidden actions on All or Unassigned', (tester) async {
     final selectedActions = <String>[];
     await tester.binding.setSurfaceSize(const Size(700, 800));

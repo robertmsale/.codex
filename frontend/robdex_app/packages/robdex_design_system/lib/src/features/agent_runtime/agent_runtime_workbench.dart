@@ -111,9 +111,13 @@ class AgentRuntimeWorkbench extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: const BoxDecoration(color: Color(0xFF05090F)),
-      child: SafeArea(
+    return Semantics(
+      container: true,
+      explicitChildNodes: true,
+      label: 'Agent Runtime workbench',
+      child: DecoratedBox(
+        decoration: const BoxDecoration(color: Color(0xFF05090F)),
+        child: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
             final narrow = constraints.maxWidth < 720;
@@ -249,6 +253,7 @@ class AgentRuntimeWorkbench extends StatelessWidget {
               ],
             );
           },
+        ),
         ),
       ),
     );
@@ -418,10 +423,14 @@ class _LoginTargetField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final compact = MediaQuery.sizeOf(context).width < 560;
-    final field = TextField(
-      controller: baseUrlController,
-      style: const TextStyle(color: Colors.white),
-      decoration: const InputDecoration(labelText: 'Runtime URL', helperText: 'Manual connection when discovery is unavailable'),
+    final field = Semantics(
+      label: 'Runtime URL',
+      textField: true,
+      child: TextField(
+        controller: baseUrlController,
+        style: const TextStyle(color: Colors.white),
+        decoration: const InputDecoration(labelText: 'Runtime URL', helperText: 'Manual connection when discovery is unavailable'),
+      ),
     );
     if (compact) {
       return Column(
@@ -597,6 +606,7 @@ class _DetailsPanel extends StatelessWidget {
   const _DetailsPanel(
     this.data, {
     this.focusSurfaceId,
+    this.onClose,
     this.onRoleValidate,
     this.onRoleCreate,
     this.onRoleUpdate,
@@ -635,6 +645,7 @@ class _DetailsPanel extends StatelessWidget {
 
   final AgentRuntimeWorkbenchData data;
   final String? focusSurfaceId;
+  final VoidCallback? onClose;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleValidate;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleCreate;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleUpdate;
@@ -691,11 +702,27 @@ class _DetailsPanel extends StatelessWidget {
                   onCommandRegistryPreview: onCommandRegistryPreview,
                 ))
             .toList(growable: false);
-    return _Panel(
-      title: _cleanSectionCopy(data.detailTitle),
-      subtitle: _cleanSectionCopy(data.detailSubtitle),
-      child: ListView(
-        children: [
+    return Semantics(
+      container: true,
+      explicitChildNodes: true,
+      label: 'Runtime operations detail',
+      child: _Panel(
+        title: _cleanSectionCopy(data.detailTitle),
+        subtitle: _cleanSectionCopy(data.detailSubtitle),
+        trailing: onClose == null
+            ? null
+            : Semantics(
+                button: true,
+                label: 'Close runtime operations detail',
+                child: IconButton(
+                  key: const ValueKey('agentRuntime.operationsDetail.close'),
+                  tooltip: 'Close runtime operations',
+                  onPressed: onClose,
+                  icon: const Icon(Icons.close_rounded, size: 18),
+                ),
+              ),
+        child: ListView(
+          children: [
           if (focusSurfaceId == 'commandRegistry') ...[
             _CommandRegistrySurfaceControls(
               selectedSessionId: _selectedSessionId(data),
@@ -757,7 +784,8 @@ class _DetailsPanel extends StatelessWidget {
             const SizedBox(height: 10),
             ...data.controllerFacts.where(_isUserFacingFact).map(_FactRow.new),
           ],
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -815,6 +843,7 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
     super.key,
     required this.data,
     this.focusSurfaceId,
+    this.onClose,
     this.onRoleValidate,
     this.onRoleCreate,
     this.onRoleUpdate,
@@ -853,6 +882,7 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
 
   final AgentRuntimeWorkbenchData data;
   final String? focusSurfaceId;
+  final VoidCallback? onClose;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleValidate;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleCreate;
   final ValueChanged<AgentRuntimeRoleEditorDraft>? onRoleUpdate;
@@ -893,6 +923,7 @@ class AgentRuntimeOperationsDetail extends StatelessWidget {
     return _DetailsPanel(
       data,
       focusSurfaceId: focusSurfaceId,
+      onClose: onClose,
       onRoleValidate: onRoleValidate,
       onRoleCreate: onRoleCreate,
       onRoleUpdate: onRoleUpdate,
@@ -3302,10 +3333,11 @@ String _displayCopy(String value) {
 }
 
 class _Panel extends StatelessWidget {
-  const _Panel({required this.title, required this.child, this.subtitle});
+  const _Panel({required this.title, required this.child, this.subtitle, this.trailing});
 
   final String title;
   final String? subtitle;
+  final Widget? trailing;
   final Widget child;
 
   @override
@@ -3316,7 +3348,12 @@ class _Panel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
+          Row(
+            children: [
+              Expanded(child: Text(title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.w700))),
+              ?trailing,
+            ],
+          ),
           if (subtitle case final subtitle?)
             Padding(
               padding: const EdgeInsets.only(top: 3),
