@@ -1066,43 +1066,32 @@ impl BridgeRuntime {
             .unwrap_or_else(|| json!({ "raw": verdict_text.trim() }));
         let verdict_payload = match reviewable_requirements_verdict_payload(&payload) {
             ReviewableRequirementsVerdict::Verdict(value) => {
-                if requirements_verdict_has_reviewable_entries(&state, &source_thread_id, &value) {
+                if requirements_verdict_has_full_canonical_entries(&state, &source_thread_id, &value) {
                     value
                 } else {
-                    invalid_requirements_verdict_payload(&state, &source_thread_id, payload.clone())
+                    self.correct_invalid_requirements_reviewer_output(
+                        &state,
+                        &source_thread_id,
+                        thread_id,
+                        turn_id,
+                        &payload,
+                    )
+                    .await;
+                    return true;
                 }
             }
-            ReviewableRequirementsVerdict::NullCommentary => {
-                let _ = record_requirement_packet(
-                    self,
+            ReviewableRequirementsVerdict::Invalid => {
+                self.correct_invalid_requirements_reviewer_output(
+                    &state,
                     &source_thread_id,
-                    RequirementPacketState {
-                        packet_type: "verdictNull".to_string(),
-                        source_thread_id: source_thread_id.clone(),
-                        turn_id: Some(turn_id.to_string()),
-                        target_thread_id: Some(thread_id.to_string()),
-                        payload,
-                        created_at: crate::commands::unix_now(),
-                    },
+                    thread_id,
+                    turn_id,
+                    &payload,
                 )
                 .await;
                 return true;
             }
-            ReviewableRequirementsVerdict::Invalid => invalid_requirements_verdict_payload(&state, &source_thread_id, payload.clone()),
         };
-        if self
-            .maybe_reject_requirements_reviewer_all_not_yet(
-                &state,
-                &source_thread_id,
-                thread_id,
-                turn_id,
-                &payload,
-                &verdict_payload,
-            )
-            .await
-        {
-            return true;
-        }
         let _ = mark_requirements_review_verdict(self, &source_thread_id, thread_id, verdict_payload.clone()).await;
         let _ = record_requirement_packet(
             self,
@@ -1122,27 +1111,19 @@ impl BridgeRuntime {
         true
     }
 
-    async fn maybe_reject_requirements_reviewer_all_not_yet(
+    async fn correct_invalid_requirements_reviewer_output(
         &self,
         state_value: &Value,
         source_thread_id: &str,
         reviewer_thread_id: &str,
         turn_id: &str,
         raw_payload: &Value,
-        verdict_payload: &Value,
-    ) -> bool {
-        if !requirements_verdict_all_reviewed_canonical_keys_not_yet(
-            state_value,
-            source_thread_id,
-            verdict_payload,
-        ) {
-            return false;
-        }
-        let dedupe_key = format!("requirements-verdict-all-not-yet|{reviewer_thread_id}|{turn_id}");
+    ) {
+        let dedupe_key = format!("requirements-verdict-invalid|{reviewer_thread_id}|{turn_id}");
         {
             let routed = self.auto_routed_turn_keys.read().await;
             if routed.contains(&dedupe_key) {
-                return true;
+                return;
             }
         }
 
@@ -1150,13 +1131,12 @@ impl BridgeRuntime {
             self,
             source_thread_id,
             RequirementPacketState {
-                packet_type: "verdictAllNotYetRejected".to_string(),
+                packet_type: "verdictCorrection".to_string(),
                 source_thread_id: source_thread_id.to_string(),
                 turn_id: Some(turn_id.to_string()),
                 target_thread_id: Some(reviewer_thread_id.to_string()),
                 payload: json!({
                     "rawRejectedPayload": raw_payload,
-                    "reviewedVerdictPayload": verdict_payload,
                 }),
                 created_at: crate::commands::unix_now(),
             },
@@ -1168,7 +1148,7 @@ impl BridgeRuntime {
             self,
             &parsed_state,
             reviewer_thread_id,
-            Some(REQUIREMENTS_REVIEWER_ALL_NOT_YET_CORRECTION_PROMPT),
+            Some(REQUIREMENTS_REVIEWER_INVALID_OUTPUT_CORRECTION_PROMPT),
             &[],
             None,
             None,
@@ -1180,7 +1160,6 @@ impl BridgeRuntime {
                 .await
                 .insert(dedupe_key);
         }
-        true
     }
 
     async fn maybe_route_requirements_verdict(
@@ -1201,33 +1180,23 @@ impl BridgeRuntime {
         let state_value = self.state_document.read().await.clone();
         let status = derived_requirement_review_status_for_thread(&state_value, source_thread_id)
             .unwrap_or_else(|| "inReview".to_string());
-        let route_message = payload
-            .get("route")
-            .and_then(|route| route.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
         let source_label = sender_label_for_thread(&state_value, source_thread_id);
-        let text = compose_requirements_verdict_route_message(status.as_str(), &source_label, route_message, payload);
+        let text = compose_requirements_verdict_route_message(status.as_str(), &source_label, payload);
         if text.trim().is_empty() {
             return;
         }
 
         let parsed_state = parse_state(&state_value);
         let destination_thread_id = match status.as_str() {
-            "inReview" | "failed" | "notYet" => source_thread_id.to_string(),
-            "waiverRequired" => {
-                let Some(project) = tracked_project_for_thread(&state_value, source_thread_id) else {
-                    return;
-                };
-                let Some(orchestrator_thread_id) = project
-                    .orchestrator_thread_id
-                    .filter(|id| id != reviewer_thread_id && id != source_thread_id)
-                else {
-                    return;
-                };
-                orchestrator_thread_id
-            }
+            "inReview" | "failed" => Some(source_thread_id.to_string()),
             "blocked" => {
+                if requirements_verdict_has_owner_human_blocker(
+                    &state_value,
+                    source_thread_id,
+                    payload,
+                ) {
+                    None
+                } else {
                 let Some(project) = tracked_project_for_thread(&state_value, source_thread_id) else {
                     return;
                 };
@@ -1237,18 +1206,41 @@ impl BridgeRuntime {
                 else {
                     return;
                 };
-                orchestrator_thread_id
+                Some(orchestrator_thread_id)
+                }
             }
             "passed" | "waiverAccepted" => {
                 let Some(project) = tracked_project_for_thread(&state_value, source_thread_id) else {
                     return;
                 };
-                project
-                    .orchestrator_thread_id
-                    .filter(|id| id != reviewer_thread_id)
-                    .unwrap_or_else(|| source_thread_id.to_string())
+                project.orchestrator_thread_id.filter(|id| {
+                    project.auto_route_replies
+                        && id != reviewer_thread_id
+                        && id != source_thread_id
+                })
             }
-            _ => source_thread_id.to_string(),
+            _ => Some(source_thread_id.to_string()),
+        };
+        let Some(destination_thread_id) = destination_thread_id else {
+            self.auto_routed_turn_keys
+                .write()
+                .await
+                .insert(dedupe_key);
+            let requirements_inactive = parse_state(&self.state_document.read().await.clone())
+                .projects
+                .values()
+                .find_map(|project| project.agents.get(source_thread_id))
+                .and_then(|agent| agent.requirements.as_ref())
+                .map(|set| !set.active)
+                .unwrap_or(false);
+            if matches!(status.as_str(), "passed" | "waiverAccepted") && requirements_inactive {
+                if let Err(error) = archive_thread(self, reviewer_thread_id).await {
+                    tracing::warn!(
+                        "failed to archive completed requirements reviewer {reviewer_thread_id}: {error}"
+                    );
+                }
+            }
+            return;
         };
 
         let result = if destination_thread_id == source_thread_id {
@@ -1338,9 +1330,6 @@ impl BridgeRuntime {
         let Some(set) = active_requirements_for_thread(&parsed_state, thread_id) else {
             return false;
         };
-        if requirements_review_status_for_thread_value(&state, thread_id).as_deref() == Some("waiverRequired") {
-            return false;
-        }
         let Some(route_content) = self.auto_route_content_for_thread(thread_id, Some(turn_id)).await else {
             return false;
         };
@@ -3004,15 +2993,13 @@ fn compose_auto_routed_reply(text: &str, sender_label: &str, local_image_paths: 
 fn compose_requirements_verdict_route_message(
     status: &str,
     source_label: &str,
-    route_message: &str,
     payload: &Value,
 ) -> String {
     let headline = match status {
-        "inReview" | "notYet" => "Requirements review recorded progress; the full RequirementSet is still active.",
+        "inReview" => "Requirements review recorded progress; the full RequirementSet is still active.",
         "passed" => "Requirements review passed.",
         "failed" => "Requirements review failed.",
         "blocked" => "Requirements review accepted a true blocker.",
-        "waiverRequired" => "Requirements review requires a human waiver.",
         "waiverAccepted" => "Requirements review recorded an accepted human waiver.",
         _ => "Requirements review completed.",
     };
@@ -3020,16 +3007,12 @@ fn compose_requirements_verdict_route_message(
         format!("[Requirements Review] {headline}"),
         format!("Source agent: {source_label}"),
     ];
-    if !route_message.trim().is_empty() {
-        lines.push(String::new());
-        lines.push(route_message.trim().to_string());
-    }
     let requirement_lines = payload
         .as_object()
         .into_iter()
         .flat_map(|object| object.iter())
-        .filter(|(key, value)| {
-            *key != "route" && value.is_object()
+        .filter(|(_key, value)| {
+            value.is_object()
         })
         .filter_map(|(key, value)| {
             let verdict = value.get("verdict").and_then(Value::as_str)?;
@@ -3058,21 +3041,59 @@ fn compose_requirements_verdict_route_message(
     lines.join("\n")
 }
 
-fn requirements_review_status_for_thread_value(state: &Value, thread_id: &str) -> Option<String> {
-    state
+fn requirements_verdict_has_owner_human_blocker(
+    state: &Value,
+    source_thread_id: &str,
+    payload: &Value,
+) -> bool {
+    let Some(verdicts) = payload.as_object() else {
+        return false;
+    };
+    let accepted_blocked_keys = verdicts
+        .iter()
+        .filter(|(_key, value)| {
+            value.get("verdict").and_then(Value::as_str) == Some("acceptedBlocked")
+        })
+        .map(|(key, _value)| key.as_str())
+        .collect::<Vec<_>>();
+    if accepted_blocked_keys.is_empty() {
+        return false;
+    }
+    let latest_claim_requirements = state
         .get("projects")
-        .and_then(Value::as_object)?
-        .values()
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|projects| projects.values())
         .find_map(|project| {
             project
                 .get("agents")
                 .and_then(Value::as_object)
-                .and_then(|agents| agents.get(thread_id))
+                .and_then(|agents| agents.get(source_thread_id))
         })
         .and_then(|agent| agent.get("requirementReview"))
-        .and_then(|review| review.get("status"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
+        .and_then(|review| review.get("latestClaimPacket"))
+        .and_then(|packet| packet.get("requirements"))
+        .and_then(Value::as_object);
+    accepted_blocked_keys.iter().any(|key| {
+        let Some(claim) = latest_claim_requirements.and_then(|claims| claims.get(*key)) else {
+            return false;
+        };
+        claim.get("kind").and_then(Value::as_str) == Some("blocked")
+            && requirements_claim_mentions_owner_or_human_decision(claim)
+    })
+}
+
+fn requirements_claim_mentions_owner_or_human_decision(claim: &Value) -> bool {
+    ["ownerDecisionNeeded", "blocker", "summary"]
+        .iter()
+        .filter_map(|field| claim.get(*field).and_then(Value::as_str))
+        .map(str::to_ascii_lowercase)
+        .any(|text| {
+            text.contains("owner")
+                || text.contains("human")
+                || text.contains("waiver")
+                || text.contains("orchestrator")
+        })
 }
 
 fn derived_requirement_review_status_for_thread(state: &Value, thread_id: &str) -> Option<String> {
@@ -3141,9 +3162,6 @@ fn derive_requirement_review_status_from_requirements_value(requirements: &Value
         .flat_map(|progress| progress.values())
         .filter_map(|progress| progress.get("status").and_then(Value::as_str))
         .collect::<Vec<_>>();
-    if progress_values.iter().any(|status| *status == "waiverRequired") {
-        return "waiverRequired".to_string();
-    }
     if progress_values.iter().any(|status| *status == "blocked") {
         return "blocked".to_string();
     }
@@ -3161,11 +3179,10 @@ enum ReviewableRequirementsClaim {
 
 enum ReviewableRequirementsVerdict {
     Verdict(Value),
-    NullCommentary,
     Invalid,
 }
 
-const REQUIREMENTS_REVIEWER_ALL_NOT_YET_CORRECTION_PROMPT: &str = "This is the owner. Your last Requirements verdict marked every reviewed claim as notYet. That is invalid and must not be forwarded to the source worker. Review the current source claim packet now. For weak, missing, circular, or unverifiable evidence, emit a full fail verdict with concrete correction. Use pass, fail, acceptedBlocked, rejectedBlocked, waiverRequired, or waiverAccepted as applicable. Use notYet only for an individual claim that is genuinely not reviewable.";
+const REQUIREMENTS_REVIEWER_INVALID_OUTPUT_CORRECTION_PROMPT: &str = "This is the owner. Your last Requirements Review output was invalid. Emit exactly one JSON object with top-level `requirements`. Include every canonical requirement key from the active schema. Use compact verdict-only objects only for `pass`, `acceptedBlocked`, or `waiverAccepted`. Use full `fail` or `rejectedBlocked` objects with `reason`, `evidenceAssessment`, and `requiredCorrection` for rejected outcomes. Do not include reviewer `summary`, `route`, `notYet`, `stillPassing`, `risk`, `waiverRequired`, or `requirements: null`.";
 
 fn reviewable_requirements_claim_payload(payload: &Value) -> ReviewableRequirementsClaim {
     let Some(object) = payload.as_object() else {
@@ -3348,35 +3365,12 @@ fn reviewable_requirements_verdict_payload(payload: &Value) -> ReviewableRequire
         return ReviewableRequirementsVerdict::Invalid;
     };
     match object.get("requirements") {
-        Some(Value::Null) => ReviewableRequirementsVerdict::NullCommentary,
         Some(Value::Object(verdict)) => ReviewableRequirementsVerdict::Verdict(Value::Object(verdict.clone())),
-        Some(_) => ReviewableRequirementsVerdict::Invalid,
-        None => ReviewableRequirementsVerdict::Verdict(payload.clone()),
+        _ => ReviewableRequirementsVerdict::Invalid,
     }
 }
 
-fn requirements_verdict_has_reviewable_entries(state: &Value, source_thread_id: &str, payload: &Value) -> bool {
-    let parsed_state = parse_state(state);
-    let Some(set) = active_requirements_for_thread(&parsed_state, source_thread_id) else {
-        return payload.as_object().is_some_and(|object| !object.is_empty());
-    };
-    let Some(object) = payload.as_object() else {
-        return false;
-    };
-    set.requirements.iter().any(|requirement| {
-        object
-            .get(requirement.key.as_str())
-            .and_then(|value| value.get("verdict"))
-            .and_then(Value::as_str)
-            .is_some()
-    })
-}
-
-fn requirements_verdict_all_reviewed_canonical_keys_not_yet(
-    state: &Value,
-    source_thread_id: &str,
-    payload: &Value,
-) -> bool {
+fn requirements_verdict_has_full_canonical_entries(state: &Value, source_thread_id: &str, payload: &Value) -> bool {
     let parsed_state = parse_state(state);
     let Some(set) = active_requirements_for_thread(&parsed_state, source_thread_id) else {
         return false;
@@ -3384,75 +3378,21 @@ fn requirements_verdict_all_reviewed_canonical_keys_not_yet(
     let Some(object) = payload.as_object() else {
         return false;
     };
-    let mut reviewed = 0usize;
+    if object.len() != set.requirements.len() {
+        return false;
+    }
     for requirement in &set.requirements {
         let Some(value) = object.get(requirement.key.as_str()) else {
-            continue;
+            return false;
         };
         let Some(verdict) = value.get("verdict").and_then(Value::as_str) else {
             return false;
         };
-        reviewed += 1;
-        if verdict != "notYet" {
+        if !matches!(verdict, "pass" | "fail" | "acceptedBlocked" | "rejectedBlocked" | "waiverAccepted") {
             return false;
         }
     }
-    reviewed > 0
-}
-
-fn invalid_requirements_verdict_payload(state: &Value, source_thread_id: &str, raw_payload: Value) -> Value {
-    let raw_output = raw_payload
-        .get("raw")
-        .cloned()
-        .unwrap_or_else(|| raw_payload.clone());
-    let parsed_state = parse_state(state);
-    let Some(set) = active_requirements_for_thread(&parsed_state, source_thread_id) else {
-        return raw_payload;
-    };
-    let latest_claim_packet = parsed_state
-        .projects
-        .values()
-        .find_map(|project| project.agents.get(source_thread_id))
-        .and_then(|agent| agent.requirement_review.as_ref())
-        .and_then(|review| review.latest_claim_packet.clone())
-        .unwrap_or(Value::Null);
-    let mut keys = reviewable_requirement_claim_keys(&set, &latest_claim_packet);
-    if keys.is_empty() {
-        keys = set
-            .requirements
-            .iter()
-            .filter(|requirement| {
-                !matches!(
-                    set.review_progress
-                        .get(requirement.key.as_str())
-                        .map(|progress| progress.status.as_str()),
-                    Some("passed" | "waived")
-                )
-            })
-            .map(|requirement| requirement.key.clone())
-            .collect();
-    }
-    let mut verdict = serde_json::Map::new();
-    verdict.insert("raw".to_string(), raw_output);
-    for key in keys {
-        verdict.insert(
-            key,
-            json!({
-                "verdict": "fail",
-                "reason": "Requirements reviewer did not return a valid verdict packet.",
-                "evidenceAssessment": "No structured Requirements verdict was available to validate the source claim.",
-                "requiredCorrection": "Rerun Requirements Review with a valid per-requirement verdict packet."
-            }),
-        );
-    }
-    verdict.insert(
-        "route".to_string(),
-        json!({
-            "destination": "sourceAgent",
-            "message": "Requirements review failed because the reviewer did not return a valid verdict packet."
-        }),
-    );
-    Value::Object(verdict)
+    true
 }
 
 fn requirements_null_claim_prompt() -> String {
@@ -3464,7 +3404,7 @@ fn requirements_invalid_claim_prompt() -> String {
 }
 
 fn requirements_low_quality_evidence_claim_prompt() -> String {
-    "[Requirements] Robdex rejected the source claim packet before review because one or more claimed requirements lacked concrete typed evidence. Provide sparse claims using `kind`, `summary`, and non-empty evidence objects shaped as `{ \"type\": \"changedFiles|testsRun|sourceInspection|artifact|screenshot|commandOutput|migration|searchProof\", \"value\": \"<concrete proof>\" }`. Evidence must name concrete files, commands, artifacts, inspections, migrations, screenshots, or search proof; placeholders and restated requirement text are not reviewable.".to_string()
+    "[Requirements] Robdex rejected the source claim packet before review because one or more claimed requirements lacked concrete typed evidence. Provide sparse claims using `kind`, `summary`, and non-empty evidence objects shaped as `{ \"type\": \"changedFiles|testsRun|sourceInspection|artifact|screenshot|commandOutput|migration|searchProof\", \"value\": \"<concrete proof>\" }`. Evidence must name concrete files, commands, artifacts, inspections, migrations, screenshots, or search proof; placeholders and restated requirement text are missing evidence.".to_string()
 }
 
 fn requirements_not_finished_continue_prompt() -> String {
@@ -4157,23 +4097,18 @@ mod tests {
             .expect("request");
         assert_eq!(request["method"], "turn/start");
         assert_eq!(request["params"]["threadId"], "reviewer-1");
-        let requirements_object = request["params"]["outputSchema"]["properties"]["requirements"]["anyOf"]
-            .as_array()
-            .expect("requirements anyOf")
-            .iter()
-            .find(|item| item["type"] == json!("object"))
-            .expect("requirements object");
+        let requirements_object = &request["params"]["outputSchema"]["properties"]["requirements"];
         let required = requirements_object["required"]
             .as_array()
             .expect("reviewer required");
-        assert_eq!(required, &vec![json!("alreadyPassed"), json!("mustProvideClaims"), json!("route")]);
+        assert_eq!(required, &vec![json!("alreadyPassed"), json!("mustProvideClaims")]);
         let already_passed_schema = &requirements_object["properties"]["alreadyPassed"];
         assert!(
             already_passed_schema["anyOf"]
                 .as_array()
                 .expect("alreadyPassed anyOf")
                 .iter()
-                .any(|item| item["properties"]["verdict"]["enum"] == json!(["stillPassing"]))
+                .any(|item| item["properties"]["verdict"]["enum"] == json!(["pass", "acceptedBlocked", "waiverAccepted"]))
         );
         let prompt = request["params"]["input"][0]["text"].as_str().unwrap_or_default();
         let expected_prompt = serde_json::to_string_pretty(&json!({
@@ -4267,22 +4202,17 @@ mod tests {
             .expect("request");
         assert_eq!(request["method"], "turn/start");
         assert_eq!(request["params"]["threadId"], "reviewer-1");
-        let requirements_object = request["params"]["outputSchema"]["properties"]["requirements"]["anyOf"]
-            .as_array()
-            .expect("requirements anyOf")
-            .iter()
-            .find(|item| item["type"] == json!("object"))
-            .expect("requirements object");
+        let requirements_object = &request["params"]["outputSchema"]["properties"]["requirements"];
         assert_eq!(
             requirements_object["required"],
-            json!(["alreadyPassed", "mustReviewNow", "route"])
+            json!(["alreadyPassed", "mustReviewNow"])
         );
-        assert!(
+        assert_eq!(
             requirements_object["properties"]["alreadyPassed"]["anyOf"]
                 .as_array()
                 .expect("alreadyPassed anyOf")
-                .iter()
-                .any(|item| item["properties"]["verdict"]["enum"] == json!(["stillPassing"]))
+                .len(),
+            2
         );
         assert!(requirements_object["properties"].get("mustReviewNow").is_some());
         let prompt = request["params"]["input"][0]["text"].as_str().unwrap_or_default();
@@ -4303,28 +4233,26 @@ mod tests {
         assert!(!prompt.contains("alreadyPassed"));
         assert!(!prompt.contains("Requirement keys to review from this claim packet:"));
 
+        let verdict_payload = json!({
+            "alreadyPassed": {
+                "verdict": "fail",
+                "reason": "current changes regress previous behavior",
+                "evidenceAssessment": "regression visible in diff",
+                "requiredCorrection": "restore the previously passing behavior"
+            },
+            "mustReviewNow": {
+                "verdict": "pass"
+            }
+        });
+        mark_requirements_review_verdict(&runtime, "worker-1", "reviewer-1", verdict_payload.clone())
+            .await
+            .expect("mark verdict");
         runtime
             .maybe_route_requirements_verdict(
                 "worker-1",
                 "reviewer-1",
                 "review-turn-regression",
-                &json!({
-                    "alreadyPassed": {
-                        "verdict": "fail",
-                        "reason": "current changes regress previous behavior",
-                        "evidenceAssessment": "regression visible in diff",
-                        "requiredCorrection": "restore the previously passing behavior",
-                        "risk": "high"
-                    },
-                    "mustReviewNow": {
-                        "verdict": "pass",
-                        "reason": "current claim is proven",
-                        "evidenceAssessment": "test evidence is concrete",
-                        "requiredCorrection": "none",
-                        "risk": "none"
-                    },
-                    "route": {"destination": "sourceAgent", "message": "Fix alreadyPassed regression."}
-                }),
+                &verdict_payload,
             )
             .await;
 
@@ -4395,7 +4323,7 @@ mod tests {
                     "review-turn-embedded",
                     "final-embedded",
                     Some("final_answer"),
-                    "Reviewed.\n{\"summary\":\"ok\",\"requirements\":{\"mustProvideClaims\":{\"verdict\":\"pass\",\"reason\":\"proof\",\"evidenceAssessment\":\"ok\",\"requiredCorrection\":\"\"},\"route\":{\"destination\":\"orchestrator\",\"message\":\"done\"}}}",
+                    "Reviewed.\n{\"requirements\":{\"mustProvideClaims\":{\"verdict\":\"pass\"}}}",
                 )],
             );
         }
@@ -4405,10 +4333,11 @@ mod tests {
                 .maybe_record_requirements_verdict("reviewer-1", "review-turn-embedded")
                 .await
         );
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+        let archive_request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
             .await
-            .expect("verdict route request timeout")
-            .expect("verdict route request");
+            .expect("archive request timeout")
+            .expect("archive request");
+        assert_eq!(archive_request["method"], "thread/archive");
         let state = runtime.state_document_value().await;
         let source = &state["projects"]["alpha"]["agents"]["worker-1"];
         assert_eq!(
@@ -4494,29 +4423,27 @@ mod tests {
             .expect("request timeout")
             .expect("request");
         assert_eq!(request["method"], "turn/start");
-        assert_eq!(request["params"]["threadId"], "worker-1");
-        assert!(
-            request["params"]["input"][0]["text"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("Requirements review failed")
+        assert_eq!(request["params"]["threadId"], "reviewer-1");
+        assert_eq!(
+            request["params"]["input"][0]["text"],
+            json!(REQUIREMENTS_REVIEWER_INVALID_OUTPUT_CORRECTION_PROMPT)
         );
         let state = runtime.state_document_value().await;
         let source = &state["projects"]["alpha"]["agents"]["worker-1"];
         assert_eq!(source["requirements"]["active"], json!(true));
-        assert_eq!(source["requirementReview"]["status"], json!("failed"));
+        assert_eq!(source["requirementReview"]["status"], json!("inReview"));
         assert_eq!(
             source["requirementReview"]["latestClaimPacket"]["summary"],
             json!("claimed")
         );
-        assert!(source["requirementReview"]["latestVerdictPacket"]["raw"].is_string());
-        assert_eq!(source["requirementPackets"][0]["packetType"], json!("verdict"));
+        assert!(source["requirementReview"]["latestVerdictPacket"].is_null());
+        assert_eq!(source["requirementPackets"][0]["packetType"], json!("verdictCorrection"));
         transport.abort();
         server.abort();
     }
 
     #[tokio::test]
-    async fn all_not_yet_reviewer_verdict_is_rejected_back_to_reviewer_only() {
+    async fn legacy_invalid_reviewer_verdict_is_corrected_back_to_reviewer_only() {
         let temp = TempDir::new().expect("tempdir");
         let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
         let transport = runtime.spawn_transport();
@@ -4578,8 +4505,8 @@ mod tests {
                 "reviewer-1".to_string(),
                 vec![test_chat_message(
                     "reviewer-1",
-                    "review-turn-all-not-yet",
-                    "final-all-not-yet",
+                    "review-turn-invalid-legacy",
+                    "final-invalid-legacy",
                     Some("final_answer"),
                     "{\"summary\":\"placeholder\",\"requirements\":{\"alreadyPassed\":{\"verdict\":\"notYet\"},\"mustReviewNow\":{\"verdict\":\"notYet\"},\"summary\":{\"verdict\":\"notYet\"},\"route\":{\"destination\":\"sourceAgent\",\"message\":\"worker should never see this\"},\"raw\":\"ignored\"}}",
                 )],
@@ -4588,7 +4515,7 @@ mod tests {
 
         assert!(
             runtime
-                .maybe_record_requirements_verdict("reviewer-1", "review-turn-all-not-yet")
+                .maybe_record_requirements_verdict("reviewer-1", "review-turn-invalid-legacy")
                 .await
         );
         let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
@@ -4598,11 +4525,11 @@ mod tests {
         assert_eq!(request["method"], "turn/start");
         assert_eq!(request["params"]["threadId"], "reviewer-1");
         let correction = request["params"]["input"][0]["text"].as_str().expect("correction text");
-        assert_eq!(correction, REQUIREMENTS_REVIEWER_ALL_NOT_YET_CORRECTION_PROMPT);
+        assert_eq!(correction, REQUIREMENTS_REVIEWER_INVALID_OUTPUT_CORRECTION_PROMPT);
         assert!(correction.starts_with("This is the owner. "));
         assert!(!correction.starts_with("[Requirements Review]"));
         assert!(!correction.contains("[Requirements Review]"));
-        assert!(requests.try_recv().is_err(), "all-notYet rejection must not route to source worker");
+        assert!(requests.try_recv().is_err(), "invalid legacy verdict correction must not route to source worker");
 
         let state = runtime.state_document_value().await;
         let source = &state["projects"]["alpha"]["agents"]["worker-1"];
@@ -4611,9 +4538,9 @@ mod tests {
         assert!(source["requirements"]["reviewProgress"].get("mustReviewNow").is_none());
         assert_eq!(source["requirementReview"]["status"], json!("inReview"));
         assert!(source["requirementReview"]["latestVerdictPacket"].is_null());
-        assert_eq!(source["requirementPackets"][0]["packetType"], json!("verdictAllNotYetRejected"));
+        assert_eq!(source["requirementPackets"][0]["packetType"], json!("verdictCorrection"));
         assert_eq!(source["requirementPackets"][0]["targetThreadId"], json!("reviewer-1"));
-        assert_eq!(source["requirementPackets"][0]["turnId"], json!("review-turn-all-not-yet"));
+        assert_eq!(source["requirementPackets"][0]["turnId"], json!("review-turn-invalid-legacy"));
         assert_eq!(
             source["requirementPackets"][0]["payload"]["rawRejectedPayload"]["requirements"]["mustReviewNow"]["verdict"],
             json!("notYet")
@@ -4625,7 +4552,7 @@ mod tests {
 
         assert!(
             runtime
-                .maybe_record_requirements_verdict("reviewer-1", "review-turn-all-not-yet")
+                .maybe_record_requirements_verdict("reviewer-1", "review-turn-invalid-legacy")
                 .await
         );
         assert!(requests.try_recv().is_err(), "dedupe must suppress repeat correction sends");
@@ -4642,7 +4569,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mixed_reviewer_verdict_with_individual_not_yet_routes_normally() {
+    async fn full_set_fail_verdict_routes_synthesized_correction_to_worker() {
         let temp = TempDir::new().expect("tempdir");
         let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
         let transport = runtime.spawn_transport();
@@ -4664,7 +4591,7 @@ mod tests {
                                     "reviewerThreadId": "reviewer-1",
                                     "requirements": [
                                         {"key": "mustFix", "statement": "Must fix.", "severity": "blocker", "verificationMethod": "manualEvidence"},
-                                        {"key": "notReviewableYet", "statement": "Can be individually not reviewable.", "severity": "high", "verificationMethod": "manualEvidence"}
+                                        {"key": "mustAlsoFix", "statement": "Must also fix.", "severity": "high", "verificationMethod": "manualEvidence"}
                                     ],
                                     "reviewProgress": {}
                                 },
@@ -4699,7 +4626,7 @@ mod tests {
                     "review-turn-mixed",
                     "final-mixed",
                     Some("final_answer"),
-                    "{\"summary\":\"mixed\",\"requirements\":{\"mustFix\":{\"verdict\":\"fail\",\"reason\":\"missing proof\",\"evidenceAssessment\":\"weak\",\"requiredCorrection\":\"add concrete proof\",\"risk\":\"medium\"},\"notReviewableYet\":{\"verdict\":\"notYet\"},\"route\":{\"destination\":\"sourceAgent\",\"message\":\"Fix mustFix.\"}}}",
+                    "{\"requirements\":{\"mustFix\":{\"verdict\":\"fail\",\"reason\":\"missing proof\",\"evidenceAssessment\":\"weak\",\"requiredCorrection\":\"add concrete proof\"},\"mustAlsoFix\":{\"verdict\":\"fail\",\"reason\":\"missing evidence\",\"evidenceAssessment\":\"source claim lacks reviewable evidence\",\"requiredCorrection\":\"provide concrete evidence\"}}}",
                 )],
             );
         }
@@ -4724,7 +4651,7 @@ mod tests {
         let state = runtime.state_document_value().await;
         let source = &state["projects"]["alpha"]["agents"]["worker-1"];
         assert_eq!(source["requirements"]["reviewProgress"]["mustFix"]["status"], json!("failed"));
-        assert_eq!(source["requirements"]["reviewProgress"]["notReviewableYet"]["status"], json!("notYet"));
+        assert_eq!(source["requirements"]["reviewProgress"]["mustAlsoFix"]["status"], json!("failed"));
         assert_eq!(source["requirementReview"]["status"], json!("failed"));
         assert_eq!(source["requirementReview"]["latestVerdictPacket"]["mustFix"]["verdict"], json!("fail"));
         assert_eq!(source["requirementPackets"][0]["packetType"], json!("verdict"));
@@ -4869,10 +4796,6 @@ mod tests {
                 "reviewer-1",
                 "review-turn-1",
                 &json!({
-                    "route": {
-                        "target": "sourceAgent",
-                        "message": "Fix the missing proof."
-                    },
                     "mustProve": {
                         "verdict": "fail",
                         "reason": "No proof.",
@@ -4957,10 +4880,9 @@ mod tests {
             .maybe_route_requirements_verdict(
                 "worker-1",
                 "reviewer-1",
-                "review-turn-not-yet",
+                "review-turn-fail",
                 &json!({
-                    "route": {"destination": "sourceAgent", "message": "Need concrete evidence."},
-                    "mustProve": {"verdict": "notYet"}
+                    "mustProve": {"verdict": "fail", "reason": "Need proof.", "evidenceAssessment": "missing", "requiredCorrection": "Provide concrete evidence."}
                 }),
             )
             .await;
@@ -5022,7 +4944,7 @@ mod tests {
                                         "verificationMethod": "manualEvidence"
                                     }],
                                     "reviewProgress": {
-                                        "mustProve": {"status": "waiverRequired", "updatedAt": 1}
+                                        "mustProve": {"status": "blocked", "updatedAt": 1}
                                     }
                                 }
                             },
@@ -5056,6 +4978,7 @@ mod tests {
                         "alpha": {
                             "projectRoot": temp.path().display().to_string(),
                             "cwd": temp.path().display().to_string(),
+                            "autoRouteReplies": true,
                             "orchestratorThreadID": "orch-1",
                             "agents": {
                                 "orch-1": {
@@ -5102,10 +5025,6 @@ mod tests {
                     "reviewer-1",
                     turn_id,
                     &json!({
-                        "route": {
-                            "target": "orchestrator",
-                            "message": "Route beyond the worker."
-                        },
                         "mustProve": {
                             "verdict": verdict,
                             "reason": "Reviewed.",
@@ -5204,14 +5123,7 @@ mod tests {
                 "review-turn-positive-progress",
                 &json!({
                     "passedScoped": {
-                        "verdict": "pass",
-                        "reason": "Scoped evidence passed.",
-                        "evidenceAssessment": "sufficient",
-                        "requiredCorrection": ""
-                    },
-                    "route": {
-                        "destination": "orchestrator",
-                        "message": "Do not route this partial pass as final."
+                        "verdict": "pass"
                     }
                 }),
             )
@@ -5305,13 +5217,8 @@ mod tests {
             .expect("request");
         assert_eq!(request["method"], "turn/start");
         assert_eq!(request["params"]["threadId"], "reviewer-1");
-        let requirements_object = request["params"]["outputSchema"]["properties"]["requirements"]["anyOf"]
-            .as_array()
-            .expect("requirements anyOf")
-            .iter()
-            .find(|item| item["type"] == json!("object"))
-            .expect("requirements object");
-        assert_eq!(requirements_object["required"], json!(["stillPending", "route"]));
+        let requirements_object = &request["params"]["outputSchema"]["properties"]["requirements"];
+        assert_eq!(requirements_object["required"], json!(["passedScoped", "stillPending"]));
         assert_eq!(
             runtime.state_document_value().await["projects"]["alpha"]["agents"]["worker-1"]["requirements"]["active"],
             json!(true)
@@ -5321,7 +5228,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn waiver_required_verdict_routes_to_orchestrator_without_resuming_source() {
+    async fn owner_decision_blocker_does_not_route_as_normal_completion() {
         let temp = TempDir::new().expect("tempdir");
         let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
         let transport = runtime.spawn_transport();
@@ -5355,8 +5262,27 @@ mod tests {
                                         "verificationMethod": "manualEvidence"
                                     }],
                                     "reviewProgress": {
-                                        "mustProve": {"status": "waiverRequired", "updatedAt": 1}
+                                        "mustProve": {"status": "blocked", "updatedAt": 1}
                                     }
+                                },
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "requirements-alpha",
+                                    "status": "blocked",
+                                    "latestClaimPacket": {
+                                        "summary": "Owner decision needed before runtime proof can complete.",
+                                        "requirements": {
+                                            "mustProve": {
+                                                "kind": "blocked",
+                                                "summary": "Owner decision needed.",
+                                                "blocker": "Owner-authenticated approval is required.",
+                                                "ownerDecisionNeeded": "Owner must complete the browser approval."
+                                            }
+                                        }
+                                    },
+                                    "latestVerdictPacket": {"mustProve": {"verdict": "acceptedBlocked"}},
+                                    "updatedAt": 1
                                 }
                             },
                             "reviewer-1": {
@@ -5377,38 +5303,19 @@ mod tests {
             .maybe_route_requirements_verdict(
                 "worker-1",
                 "reviewer-1",
-                "review-turn-waiver",
+                "review-turn-owner-blocked",
                 &json!({
-                    "route": {
-                        "target": "orchestrator",
-                        "message": "Owner decision required."
-                    },
                     "mustProve": {
-                        "verdict": "waiverRequired",
-                        "reason": "Owner decision required.",
-                        "evidenceAssessment": "Human judgement needed.",
-                        "requiredCorrection": "Obtain owner decision."
+                        "verdict": "acceptedBlocked"
                     }
                 }),
             )
             .await;
 
-        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
-            .await
-            .expect("request timeout")
-            .expect("request");
-        assert_eq!(request["method"], "turn/start");
-        assert_eq!(request["params"]["threadId"], "orch-1");
         assert!(
-            request["params"]["input"][0]["text"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("Requirements review requires a human waiver.")
+            requests.try_recv().is_err(),
+            "owner/human blocker must not route as orchestrator completion or resume source"
         );
-        match tokio::time::timeout(std::time::Duration::from_millis(100), requests.recv()).await {
-            Ok(Some(extra)) => panic!("unexpected source resume: {extra}"),
-            Ok(None) | Err(_) => {}
-        }
         transport.abort();
         server.abort();
     }
@@ -5465,28 +5372,23 @@ mod tests {
                 "reviewer-1",
                 "review-turn-blocked-no-orch",
                 &json!({
-                    "route": {
-                        "target": "orchestrator",
-                        "message": "External blocker accepted."
-                    },
                     "blockedRequirement": {
-                        "verdict": "acceptedBlocked",
-                        "reason": "External dependency.",
-                        "evidenceAssessment": "sufficient",
-                        "requiredCorrection": ""
+                        "verdict": "acceptedBlocked"
                     }
                 }),
             )
             .await;
 
-        let no_request = tokio::time::timeout(std::time::Duration::from_millis(150), requests.recv()).await;
-        assert!(no_request.is_err(), "acceptedBlocked must not fall back to waking the source agent");
+        assert!(
+            requests.try_recv().is_err(),
+            "acceptedBlocked must not fall back to waking the source agent"
+        );
         transport.abort();
         server.abort();
     }
 
     #[tokio::test]
-    async fn waiver_required_review_status_pauses_repeat_source_review() {
+    async fn blocked_owner_follow_up_routes_new_claim_to_reviewer_not_orchestrator() {
         let temp = TempDir::new().expect("tempdir");
         let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
         let transport = runtime.spawn_transport();
@@ -5518,9 +5420,19 @@ mod tests {
                                     "sourceThreadId": "worker-1",
                                     "reviewerThreadId": "reviewer-1",
                                     "requirementSetId": "requirements-alpha",
-                                    "status": "waiverRequired",
-                                    "latestClaimPacket": {"summary": "claimed", "requirements": {}},
-                                    "latestVerdictPacket": {"needsOwnerDecision": {"verdict": "waiverRequired"}},
+                                    "status": "blocked",
+                                    "latestClaimPacket": {
+                                        "summary": "Owner decision pending.",
+                                        "requirements": {
+                                            "needsOwnerDecision": {
+                                                "kind": "blocked",
+                                                "summary": "Waiting for owner.",
+                                                "blocker": "owner decision",
+                                                "ownerDecisionNeeded": "waiver decision"
+                                            }
+                                        }
+                                    },
+                                    "latestVerdictPacket": {"needsOwnerDecision": {"verdict": "acceptedBlocked"}},
                                     "updatedAt": 100
                                 }
                             },
@@ -5543,8 +5455,8 @@ mod tests {
                 "worker-1".to_string(),
                 vec![test_chat_message(
                     "worker-1",
-                    "turn-after-waiver-required",
-                    "final-after-waiver-required",
+                    "turn-after-owner-blocked",
+                    "final-after-owner-blocked",
                     Some("final_answer"),
                     r#"{"summary":"No owner decision yet.","requirements":{"needsOwnerDecision":{"kind":"blocked","summary":"Waiting for owner.","blocker":"owner decision","ownerDecisionNeeded":"waiver decision","evidence":[{"type":"sourceInspection","value":"reviewer requested human waiver"}]}}}"#,
                 )],
@@ -5552,14 +5464,17 @@ mod tests {
         }
 
         assert!(
-            !runtime
-                .maybe_route_requirements_review("worker-1", "turn-after-waiver-required")
+            runtime
+                .maybe_route_requirements_review("worker-1", "turn-after-owner-blocked")
                 .await
         );
-        match tokio::time::timeout(std::time::Duration::from_millis(100), requests.recv()).await {
-            Ok(Some(extra)) => panic!("unexpected repeated review request: {extra}"),
-            Ok(None) | Err(_) => {}
-        }
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "reviewer-1");
+        assert!(requests.try_recv().is_err(), "blocked owner follow-up must not start an orchestrator turn");
         transport.abort();
         server.abort();
     }

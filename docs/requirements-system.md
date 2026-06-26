@@ -117,8 +117,7 @@ Robdex records notable claim/verdict packets for inspection:
 - `claimContinuation`: worker sent a cheap `notFinished` continuation packet, so Robdex kept Requirements active without reviewer dispatch.
 - `claimCorrection`: worker sent a malformed or low-quality sparse claim packet, so Robdex routed correction without reviewer dispatch.
 - `verdict`: final reviewer verdict packet.
-- `verdictAllNotYetRejected`: reviewer sent an invalid verdict packet where every reviewed canonical requirement was `notYet`; Robdex preserved the raw rejected payload for audit, did not mutate source review progress, and sent the owner-authority correction back to the reviewer thread only.
-- `verdictNull`: reviewer commentary/progress packet with `requirements: null`.
+- `verdictCorrection`: reviewer sent output outside the minimal full-set verdict schema; Robdex preserves the raw rejected payload for audit, does not mutate source review progress, and sends the owner-authority correction back to the reviewer thread only.
 
 These packets are not the canonical contract. The RequirementSet is.
 
@@ -264,127 +263,46 @@ This is the token optimization:
 
 ## Reviewer Verdict Schema
 
-The reviewer also receives a structured output schema. It has the same top-level pattern:
+The reviewer also receives a structured output schema. It has one top-level object shape:
 
 ```json
 {
-  "summary": "Concise reviewer summary.",
-  "requirements": null
-}
-```
-
-or a final verdict:
-
-```json
-{
-  "summary": "Requirements review failed because one item lacks evidence.",
   "requirements": {
-    "requirementKey": {
+    "passedRequirement": {
+      "verdict": "pass"
+    },
+    "failedRequirement": {
       "verdict": "fail",
       "reason": "The implementation does not prove the required behavior.",
       "evidenceAssessment": "The cited test only covers a helper, not the real route.",
-      "requiredCorrection": "Add route-level proof and rerun the relevant test.",
-      "risk": "medium"
-    },
-    "overallVerdict": "fail",
-    "route": {
-      "destination": "sourceAgent",
-      "message": "Fix the route-level validation gap and provide exact command evidence."
+      "requiredCorrection": "Add route-level proof and rerun the relevant test."
     }
   }
 }
 ```
 
-Each requirement verdict normally requires:
+The reviewer packet has exactly one top-level property: `requirements`. That object must contain every canonical requirement key in the active RequirementSet and must not contain extra keys.
 
-- `verdict`: one of `pass`, `fail`, `acceptedBlocked`, `rejectedBlocked`, `waiverRequired`, `waiverAccepted`.
-- `reason`: why the verdict was assigned.
-- `evidenceAssessment`: what evidence supports or fails to support the claim.
-- `requiredCorrection`: exact correction when needed, or empty string when not needed.
-- `risk`: one of `none`, `low`, `medium`, `high`, `unknown`.
+Each requirement uses exactly one of two shapes:
 
-The final verdict object also requires:
+- Compact accepted verdict: `{"verdict":"pass"}`, `{"verdict":"acceptedBlocked"}`, or `{"verdict":"waiverAccepted"}`.
+- Explained rejected verdict: `fail` or `rejectedBlocked` with `reason`, `evidenceAssessment`, and `requiredCorrection`.
 
-- `overallVerdict`
-- `route`
+Reviewer output does not contain reviewer `summary`, reviewer `route`, reviewer-authored destination metadata, deferral verdicts, risk fields, null requirement packets, or reviewer-owned overall verdicts. Robdex rejects invalid reviewer output before progress mutation and sends an owner-prefixed correction to the reviewer thread only.
 
-`overallVerdict` can be:
+## Canonical Full-Set Verdicts
 
-- `pass`
-- `notYet`
-- `fail`
-- `acceptedBlocked`
-- `rejectedBlocked`
-- `needsHumanWaiver`
-- `waiverAccepted`
+The reviewer schema is full-set and canonical on every review turn. Sparse worker/source claims remain allowed where the source claim schema permits them, but the reviewer must render a verdict for every canonical key required by the active schema. Terminal success is never reviewer-authored for a subset; it is derived after applying persisted per-requirement progress across the full RequirementSet.
 
-The `route` object contains:
-
-- `destination`: `sourceAgent`, `orchestrator`, `owner`, or `none`.
-- `message`: curated routing message.
-
-## Reviewer `stillPassing` Shorthand
-
-Reviewer output can be expensive when every canonical RequirementSet key is required every time.
-
-To reduce output cost, Robdex modifies the reviewer schema for requirements that have previously passed. For those keys only, the verdict property becomes an `anyOf`:
-
-1. the full verdict object, or
-2. a shorthand object:
-
-```json
-{
-  "verdict": "stillPassing"
-}
-```
-
-This is only available for requirements whose review progress is already `passed`.
-
-The reviewer schema instructs:
-
-- use `stillPassing` only after checking that the previously passed requirement still passes for the same reason;
-- do not use it for new, failed, blocked, waived, changed, or insufficiently evidenced requirements;
-- keep full evidence for changed or questionable requirements.
-
-The bridge also defends this in lifecycle handling. If a reviewer somehow emits `stillPassing` for a requirement that was not previously passed, that is treated as invalid/failing rather than as success.
-
-## Reviewer `notYet` Shorthand
-
-Every scoped requirement may use the exact shortcut:
-
-```json
-{
-  "verdict": "notYet"
-}
-```
-
-This object has no reason, evidence assessment, correction, risk, or other fields. It keeps that individual requirement unresolved and keeps active Requirements attached.
-
-An all-`notYet` reviewer verdict packet is invalid control-plane output. Robdex detects it before per-requirement review progress mutation, before normal `verdict` packet recording, and before routing to the source worker. Robdex records the rejected payload as `verdictAllNotYetRejected`, linked to the source thread id, reviewer thread id, and reviewer turn id, then sends this exact owner-authority correction to the requirements reviewer thread:
-
-`This is the owner. Your last Requirements verdict marked every reviewed claim as notYet. That is invalid and must not be forwarded to the source worker. Review the current source claim packet now. For weak, missing, circular, or unverifiable evidence, emit a full fail verdict with concrete correction. Use pass, fail, acceptedBlocked, rejectedBlocked, waiverRequired, or waiverAccepted as applicable. Use notYet only for an individual claim that is genuinely not reviewable.`
-
-The correction prompt does not use the `[Requirements Review]` prefix. The source worker never receives the rejected all-`notYet` packet, no worker-facing review status is derived from it, and existing `review_progress` remains unchanged. Mixed verdict packets remain valid when at least one reviewed canonical requirement has a verdict other than `notYet`.
-
-## Canonical Versus Scoped Schemas
-
-There are two different schema strategies:
-
-### Worker
+## Worker Sparse Claims And Reviewer Full-Set Verdicts
 
 The worker claim schema is sparse. All canonical requirement keys are optional; omitted keys are unchanged for that turn. Whole-packet and per-key `notFinished` shortcuts are accepted as cheap continue signals.
 
-Purpose: reduce worker output tokens.
-
-### Reviewer
-
-The reviewer verdict schema is scoped to the current source packet's reviewable keys and carries canonical requirement descriptions for those keys. The reviewer prompt input is exactly the current compacted source claim packet text. It does not add a subject line, headings, reviewer instructions, requirement-key inventory, canonical requirement prose, source IDs, turn IDs, prior statuses, or global `previouslyPassed`, `currentlyUnresolved`, or `previousFailuresBlockersWaivers` lists.
-
-Purpose: keep review focused and deterministic while reducing reviewer output tokens.
+The reviewer verdict schema is full-set. It carries every canonical requirement key from the active RequirementSet. The reviewer prompt input is exactly the current compacted source claim packet text. It does not add a subject line, headings, reviewer instructions, requirement-key inventory, canonical requirement prose, source IDs, turn IDs, prior statuses, or global `previouslyPassed`, `currentlyUnresolved`, or `previousFailuresBlockersWaivers` lists.
 
 The full canonical RequirementSet and all progress history remain in Rust-owned persisted bridge state for audit, `requirements-status`, routing, and warm handoff.
 
-Workers should not repeatedly claim unchanged work. Reviewers must verdict only the scoped keys that were claimed as `satisfied`, `blocked`, or `notApplicable`.
+Workers should not repeatedly claim unchanged work. Reviewers must verdict every canonical key required by the schema; passing or accepted outcomes use compact verdict-only objects, while failed or rejected-blocker outcomes include concrete evidence and correction.
 
 ## Review Routing Lifecycle
 
@@ -435,51 +353,33 @@ When a requirements-reviewer turn completes:
 
 1. Robdex finds the source thread bound to the reviewer.
 2. It parses the latest reviewer assistant text.
-3. It accepts `requirements: null` as reviewer commentary/progress and records it.
-4. It rejects an all-`notYet` verdict packet for the reviewed canonical keys before any source review progress mutation or source routing.
-5. It accepts a final verdict object as review output.
-6. It updates source `requirementReview`.
-7. It updates per-requirement `reviewProgress`.
-8. It routes the review result.
+3. It accepts only the top-level `{ "requirements": { ... } }` full-set verdict packet shape.
+4. It rejects invalid reviewer output before source progress mutation, records a `verdictCorrection` packet, and sends the owner-prefixed correction to the reviewer thread only.
+5. It updates per-requirement `reviewProgress` from valid verdicts.
+6. It derives the full RequirementSet status from persisted progress across every canonical requirement.
+7. It routes only from Rust-derived status and persisted verdict details.
 
 ### Verdict Routing
 
-Routing by overall verdict:
+Routing is Rust-derived. Reviewer packets do not choose destinations.
 
-- `fail`: route correction message to the source agent.
-- `rejectedBlocked`: route correction message to the source agent.
-- `needsHumanWaiver`: route to the project orchestrator/owner path for human decision.
-- `pass`: route pass message to orchestrator when available, otherwise source.
-- `acceptedBlocked`: route to orchestrator when available, otherwise source.
-- `waiverAccepted`: route to orchestrator when available, otherwise source.
+- `fail` and `rejectedBlocked` become failed progress and route synthesized correction text to the source worker from `reason`, `evidenceAssessment`, and `requiredCorrection`.
+- `acceptedBlocked` becomes blocked progress. Proven owner/human decision blockers do not route as normal completion. Other true external blockers route only through configured project blocked-routing when a distinct route exists.
+- A fully successful final review routes to the orchestrator only when project auto-routing is enabled and a distinct orchestrator exists. If auto-routing is disabled or no distinct orchestrator exists, Robdex deactivates/completes Requirements without starting an orchestrator turn.
+- `waiverAccepted` contributes to terminal success and deactivates the RequirementSet when every requirement is passed or waived.
 
-On `pass`, the bridge updates only the scoped verdict keys. The active RequirementSet is deactivated only when every canonical requirement is passed or waived; otherwise the set stays active and the reviewer binding remains available.
-
-On `waiverAccepted`, the RequirementSet is also deactivated, but the review binding records the waiver outcome.
-
-## Requirement Progress Semantics
+### Requirement Progress Semantics
 
 Per-requirement `reviewProgress` is derived from reviewer verdicts:
 
 - `pass` -> `passed`
-- `stillPassing` when previously passed -> `passed`
-- invalid `stillPassing` -> `failed`
 - `fail` -> `failed`
 - `rejectedBlocked` -> `failed`
 - `acceptedBlocked` -> `blocked`
-- `waiverRequired` -> `blocked`
 - `waiverAccepted` -> `waived`
 - unknown -> `unresolved`
 
-The overall review binding status is derived from `overallVerdict`:
-
-- `pass` -> `passed`
-- `fail` -> `failed`
-- `acceptedBlocked` -> `blocked`
-- `rejectedBlocked` -> `failed`
-- `needsHumanWaiver` -> `waiverRequired`
-- `waiverAccepted` -> `waiverAccepted`
-- missing/unknown -> `inReview`
+The overall review binding status is derived from persisted progress across every canonical requirement. All passed/waived requirements produce terminal success; any missing, failed, blocked, pending, or unresolved requirement keeps the set nonterminal.
 
 ## Composable Requirements
 
@@ -661,9 +561,9 @@ Structured output should make invalid shape rare. If it happens, Robdex sends a 
 
 A worker should use `blocked` for the specific blocked requirement. The reviewer can accept or reject the blocker. Accepted blockers route to orchestrator/owner instead of pretending the task passed.
 
-### Human Waiver
+### Human Or Owner Decision
 
-If the reviewer determines a requirement needs an explicit owner waiver, it routes a waiver request. Waiver accepted is terminal; waiver rejected or absent means the work remains blocked or failed.
+If review identifies a true owner/human decision blocker, the reviewer uses `acceptedBlocked` only when the source proved the external blocker. Rust-derived blocked routing must not treat that as normal orchestrator completion.
 
 ### Passing Review
 

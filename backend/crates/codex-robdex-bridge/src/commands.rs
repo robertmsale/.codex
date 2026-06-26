@@ -3356,7 +3356,6 @@ fn requirements_claim_schema_for_requirements<'a>(
 }
 
 pub(crate) fn requirements_verdict_schema(set: &RequirementSetState) -> Value {
-    const REQUIREMENTS_REVIEW_SUMMARY_MAX_LENGTH: u32 = 1_000;
     let (properties, required) = requirements_verdict_properties(
         set,
         set.requirements
@@ -3365,26 +3364,17 @@ pub(crate) fn requirements_verdict_schema(set: &RequirementSetState) -> Value {
     );
     json!({
         "type": "object",
+        "description": "Requirements Review verdict packet. Review every canonical requirement key in the active RequirementSet. Passing or accepted outcomes use a compact verdict-only object. Failing or rejected outcomes must include concrete review evidence and correction guidance.",
         "properties": {
-            "summary": {
-                "type": "string",
-                "maxLength": REQUIREMENTS_REVIEW_SUMMARY_MAX_LENGTH,
-                "description": "Concise reviewer progress note or final verdict summary. Do not duplicate every per-requirement verdict."
-            },
             "requirements": {
-                "anyOf": [
-                    {
-                        "type": "object",
-                        "properties": properties,
-                        "required": required,
-                        "additionalProperties": false
-                    },
-                    { "type": "null" }
-                ],
-                "description": "Use null for reviewer commentary/progress. Use the object only for a final Requirements review verdict packet.",
+                "type": "object",
+                "description": "Per-requirement verdicts keyed by canonical requirement key. Every canonical requirement must be present exactly once.",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": false
             }
         },
-        "required": ["summary", "requirements"],
+        "required": ["requirements"],
         "additionalProperties": false
     })
 }
@@ -3423,25 +3413,6 @@ fn requirements_verdict_properties<'a>(
             verdict_property_schema(&verdict_description, requirement_review_previously_passed(set, key)),
         );
     }
-    required.push("route".to_string());
-    properties.insert(
-        "route".to_string(),
-        json!({
-            "type": "object",
-            "properties": {
-                "destination": {
-                    "type": "string",
-                    "enum": ["sourceAgent", "orchestrator", "owner", "none"]
-                },
-                "message": {
-                    "type": "string",
-                    "description": "Curated routing message with exact failed requirements or owner action."
-                }
-            },
-            "required": ["destination", "message"],
-            "additionalProperties": false
-        }),
-    );
     (properties, required)
 }
 
@@ -3535,60 +3506,48 @@ fn claim_property_schema(description: &str, summary_max_length: u32) -> Value {
     })
 }
 
-fn verdict_property_schema(description: &str, allow_still_passing: bool) -> Value {
-    let full_verdict = json!({
+fn verdict_property_schema(description: &str, _allow_still_passing: bool) -> Value {
+    let accepted_verdict = json!({
         "type": "object",
-        "description": description,
+        "description": "Compact successful or accepted verdict. No explanation is required for passing requirements, accepted blockers, or accepted waivers.",
         "properties": {
             "verdict": {
                 "type": "string",
-                "enum": ["pass", "fail", "acceptedBlocked", "rejectedBlocked", "waiverRequired", "waiverAccepted"]
-            },
-            "reason": { "type": "string" },
-            "evidenceAssessment": { "type": "string" },
-            "requiredCorrection": { "type": "string" },
-            "risk": {
-                "type": "string",
-                "enum": ["none", "low", "medium", "high", "unknown"]
+                "description": "Successful or accepted outcome for this requirement.",
+                "enum": ["pass", "acceptedBlocked", "waiverAccepted"]
             }
         },
-        "required": ["verdict", "reason", "evidenceAssessment", "requiredCorrection", "risk"],
+        "required": ["verdict"],
         "additionalProperties": false
     });
-    let not_yet = json!({
-                "type": "object",
-                "properties": {
-                    "verdict": {
-                        "type": "string",
-                        "enum": ["notYet"]
-                    }
-                },
-                "required": ["verdict"],
-                "additionalProperties": false
-    });
-    if !allow_still_passing {
-        return json!({
-            "description": description,
-            "anyOf": [full_verdict, not_yet]
-        });
-    }
-    json!({
-        "description": format!("{description} Previously passed requirements may use {{\"verdict\":\"stillPassing\"}} only after rechecking that the same pass remains valid."),
-        "anyOf": [
-            full_verdict,
-            not_yet,
-            {
-                "type": "object",
-                "properties": {
-                    "verdict": {
-                        "type": "string",
-                        "enum": ["stillPassing"]
-                    }
-                },
-                "required": ["verdict"],
-                "additionalProperties": false
+    let rejected_verdict = json!({
+        "type": "object",
+        "description": "Explained failure or rejected blocker verdict. Required when the requirement does not pass or the claimed blocker is not accepted.",
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "description": "Failure or rejected-blocker outcome for this requirement.",
+                "enum": ["fail", "rejectedBlocked"]
+            },
+            "reason": {
+                "type": "string",
+                "description": "Concise reason the requirement failed or the blocker was rejected. Do not restate the requirement text."
+            },
+            "evidenceAssessment": {
+                "type": "string",
+                "description": "Specific assessment of the evidence inspected, including missing, weak, circular, or contradictory proof."
+            },
+            "requiredCorrection": {
+                "type": "string",
+                "description": "Smallest concrete correction needed for the source agent to satisfy the existing requirement. Do not broaden scope or invent new requirements."
             }
-        ]
+        },
+        "required": ["verdict", "reason", "evidenceAssessment", "requiredCorrection"],
+        "additionalProperties": false
+    });
+    json!({
+        "description": format!("{description} Verdict for this canonical requirement. Use the compact pass/accepted shape only when the requirement is satisfied, the blocker is accepted, or the waiver is accepted. Use the explanatory failure shape when the requirement fails or a blocker is rejected."),
+        "anyOf": [accepted_verdict, rejected_verdict]
     })
 }
 
@@ -5771,10 +5730,8 @@ pub async fn orchestrator_requirements_status(
         let mut passed_count = 0_u32;
         let mut failed_count = 0_u32;
         let mut blocked_count = 0_u32;
-        let mut waiver_required_count = 0_u32;
         let mut waiver_accepted_count = 0_u32;
         let mut pending_count = 0_u32;
-        let mut not_yet_count = 0_u32;
         let mut unknown_count = 0_u32;
         let verdicts = if active_requirements.is_empty() {
             Vec::new()
@@ -5790,9 +5747,7 @@ pub async fn orchestrator_requirements_status(
                             Some("passed") => passed_count += 1,
                             Some("failed") => failed_count += 1,
                             Some("blocked") => blocked_count += 1,
-                            Some("waiverRequired") => waiver_required_count += 1,
                             Some("waived") => waiver_accepted_count += 1,
-                            Some("notYet") => not_yet_count += 1,
                             None => pending_count += 1,
                             _ => unknown_count += 1,
                         }
@@ -5858,10 +5813,8 @@ pub async fn orchestrator_requirements_status(
                 "passedCount": passed_count,
                 "failedCount": failed_count,
                 "blockedCount": blocked_count,
-                "waiverRequiredCount": waiver_required_count,
                 "waiverAcceptedCount": waiver_accepted_count,
                 "pendingCount": pending_count,
-                "notYetCount": not_yet_count,
                 "unknownCount": unknown_count,
                 "requirements": stored_requirements,
                 "verdicts": verdicts,
@@ -6580,16 +6533,8 @@ pub(crate) async fn mark_requirements_review_verdict(
         let Some(source) = project.agents.get_mut(source_thread_id) else {
             continue;
         };
-        let invalid_still_passing = source
-            .requirements
-            .as_ref()
-            .map(|requirements| verdict_has_invalid_still_passing(requirements, &verdict_payload))
-            .unwrap_or(false);
         if let Some(requirements) = source.requirements.as_mut() {
             update_requirement_review_progress(requirements, &verdict_payload);
-            if invalid_still_passing {
-                mark_invalid_still_passing_failures(requirements, &verdict_payload);
-            }
         }
         let is_terminal = source
             .requirements
@@ -6674,12 +6619,8 @@ fn update_requirement_review_progress(set: &mut RequirementSetState, verdict_pay
         };
         let status = match verdict {
             "pass" => "passed",
-            "stillPassing" if requirement_review_previously_passed(set, requirement.key.as_str()) => "passed",
-            "stillPassing" => "failed",
-            "notYet" => "notYet",
             "fail" | "rejectedBlocked" => "failed",
             "acceptedBlocked" => "blocked",
-            "waiverRequired" => "waiverRequired",
             "waiverAccepted" => "waived",
             _ => "unresolved",
         };
@@ -6716,44 +6657,6 @@ fn requirement_set_has_unresolved_progress(set: &RequirementSetState) -> bool {
     })
 }
 
-fn verdict_has_invalid_still_passing(set: &RequirementSetState, verdict_payload: &Value) -> bool {
-    let Some(verdict_object) = verdict_payload.as_object() else {
-        return false;
-    };
-    set.requirements.iter().any(|requirement| {
-        verdict_object
-            .get(requirement.key.as_str())
-            .and_then(|value| value.get("verdict"))
-            .and_then(Value::as_str)
-            == Some("stillPassing")
-            && !requirement_review_previously_passed(set, requirement.key.as_str())
-    })
-}
-
-fn mark_invalid_still_passing_failures(set: &mut RequirementSetState, verdict_payload: &Value) {
-    let now = unix_now();
-    let Some(verdict_object) = verdict_payload.as_object() else {
-        return;
-    };
-    for requirement in &set.requirements {
-        if verdict_object
-            .get(requirement.key.as_str())
-            .and_then(|value| value.get("verdict"))
-            .and_then(Value::as_str)
-            == Some("stillPassing")
-            && !requirement_review_previously_passed(set, requirement.key.as_str())
-        {
-            set.review_progress.insert(
-                requirement.key.clone(),
-                RequirementReviewProgressState {
-                    status: "failed".to_string(),
-                    updated_at: Some(now),
-                },
-            );
-        }
-    }
-}
-
 fn derive_requirement_review_status_from_progress(set: &RequirementSetState) -> String {
     if requirement_set_all_passed_or_waived(set) {
         let any_waived = set.requirements.iter().any(|requirement| {
@@ -6769,9 +6672,6 @@ fn derive_requirement_review_status_from_progress(set: &RequirementSetState) -> 
         .values()
         .map(|progress| progress.status.as_str())
         .collect::<Vec<_>>();
-    if statuses.iter().any(|status| *status == "waiverRequired") {
-        return "waiverRequired".to_string();
-    }
     if statuses.iter().any(|status| *status == "blocked") {
         return "blocked".to_string();
     }
@@ -7860,15 +7760,9 @@ mod tests {
             .get("required")
             .and_then(Value::as_array)
             .expect("required array");
-        assert_eq!(required, &vec![json!("summary"), json!("requirements")]);
-        assert_eq!(schema["properties"]["summary"]["maxLength"], json!(1000));
-        let requirements_schema = &schema["properties"]["requirements"];
-        let requirements_object = requirements_schema["anyOf"]
-            .as_array()
-            .expect("requirements anyOf")
-            .iter()
-            .find(|item| item["type"] == json!("object"))
-            .expect("requirements object");
+        assert_eq!(required, &vec![json!("requirements")]);
+        assert!(schema["properties"].get("summary").is_none());
+        let requirements_object = &schema["properties"]["requirements"];
         let verdict_required = requirements_object
             .get("required")
             .and_then(Value::as_array)
@@ -7877,7 +7771,8 @@ mod tests {
         assert!(verdict_required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
         assert!(!verdict_required.iter().any(|value| value.as_str() == Some("overallVerdict")));
         assert!(requirements_object["properties"].get("overallVerdict").is_none());
-        assert!(verdict_required.iter().any(|value| value.as_str() == Some("route")));
+        assert!(!verdict_required.iter().any(|value| value.as_str() == Some("route")));
+        assert!(requirements_object["properties"].get("route").is_none());
     }
 
     #[test]
@@ -7928,12 +7823,7 @@ mod tests {
         assert!(worker_requirements["properties"].get("noInventedWebsocketEventShapes").is_some());
 
         let reviewer_schema = requirements_verdict_schema(&set);
-        let reviewer_requirements = reviewer_schema["properties"]["requirements"]["anyOf"]
-            .as_array()
-            .expect("reviewer alternatives")
-            .iter()
-            .find(|item| item["type"] == json!("object"))
-            .expect("reviewer requirements object");
+        let reviewer_requirements = &reviewer_schema["properties"]["requirements"];
         let reviewer_required = reviewer_requirements["required"]
             .as_array()
             .expect("reviewer required");
@@ -8006,24 +7896,74 @@ mod tests {
             },
         );
         let schema = requirements_verdict_schema(&set);
-        let requirements_schema = &schema["properties"]["requirements"];
-        let requirements_object = requirements_schema["anyOf"]
-            .as_array()
-            .expect("requirements anyOf")
-            .iter()
-            .find(|item| item["type"] == json!("object"))
-            .expect("requirements object");
+        assert_eq!(schema["required"], json!(["requirements"]));
+        assert!(schema["properties"].get("summary").is_none());
+        let requirements_object = &schema["properties"]["requirements"];
         assert_eq!(
             requirements_object["required"],
-            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes", "route"])
+            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
         );
         assert!(requirements_object["properties"].get("overallVerdict").is_none());
+        assert!(requirements_object["properties"].get("route").is_none());
         assert!(requirements_object["properties"].get("nativeGuiIsSourceOfTruth").is_some());
         assert!(requirements_object["properties"].get("noInventedWebsocketEventShapes").is_some());
     }
 
     #[test]
-    fn reviewer_verdict_schema_offers_still_passing_only_for_previously_passed_requirements() {
+    fn reviewer_schema_is_minimal_full_set_verdict_packet_without_legacy_branches() {
+        let schema = requirements_verdict_schema(&sample_requirement_set());
+        assert_eq!(schema["required"], json!(["requirements"]));
+        assert_eq!(schema["additionalProperties"], json!(false));
+        assert!(schema["properties"].get("summary").is_none());
+        let requirements = &schema["properties"]["requirements"];
+        assert_eq!(requirements["type"], json!("object"));
+        assert_eq!(requirements["additionalProperties"], json!(false));
+        assert_eq!(
+            requirements["required"],
+            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
+        );
+        for key in ["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"] {
+            let any_of = requirements["properties"][key]["anyOf"]
+                .as_array()
+                .expect("requirement anyOf");
+            assert_eq!(any_of.len(), 2);
+            let accepted = any_of
+                .iter()
+                .find(|item| item["required"] == json!(["verdict"]))
+                .expect("accepted verdict shape");
+            assert_eq!(
+                accepted["properties"]["verdict"]["enum"],
+                json!(["pass", "acceptedBlocked", "waiverAccepted"])
+            );
+            let rejected = any_of
+                .iter()
+                .find(|item| item["required"] == json!(["verdict", "reason", "evidenceAssessment", "requiredCorrection"]))
+                .expect("rejected verdict shape");
+            assert_eq!(
+                rejected["properties"]["verdict"]["enum"],
+                json!(["fail", "rejectedBlocked"])
+            );
+            assert!(rejected["properties"].get("risk").is_none());
+        }
+        let serialized = serde_json::to_string(&schema).expect("serialize schema");
+        for forbidden in [
+            "\"summary\"",
+            "\"route\"",
+            "notYet",
+            "stillPassing",
+            "\"risk\"",
+            "waiverRequired",
+            "{\"type\":\"null\"",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "schema must not contain forbidden reviewer artifact {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn reviewer_verdict_schema_uses_only_compact_accepted_and_explained_rejected_shapes() {
         let mut set = sample_requirement_set();
         set.review_progress.insert(
             "nativeGuiIsSourceOfTruth".to_string(),
@@ -8041,36 +7981,26 @@ mod tests {
         );
 
         let schema = requirements_verdict_schema(&set);
-        let requirements_object = schema["properties"]["requirements"]["anyOf"]
-            .as_array()
-            .expect("requirements anyOf")
-            .iter()
-            .find(|item| item["type"] == json!("object"))
-            .expect("requirements object");
+        let requirements_object = &schema["properties"]["requirements"];
         let requirements = &requirements_object["properties"];
         let passed_schema = &requirements["nativeGuiIsSourceOfTruth"];
         let failed_schema = &requirements["noInventedWebsocketEventShapes"];
         let any_of = passed_schema["anyOf"].as_array().expect("passed requirement anyOf");
-        assert_eq!(any_of.len(), 3);
+        assert_eq!(any_of.len(), 2);
         assert!(any_of.iter().any(|item| {
-            item["required"] == json!(["verdict", "reason", "evidenceAssessment", "requiredCorrection", "risk"])
-                && item["properties"]["risk"]["enum"] == json!(["none", "low", "medium", "high", "unknown"])
+            item["required"] == json!(["verdict"])
+                && item["properties"]["verdict"]["enum"] == json!(["pass", "acceptedBlocked", "waiverAccepted"])
         }));
-        let still_passing = any_of
-            .iter()
-            .find(|item| item["properties"]["verdict"]["enum"] == json!(["stillPassing"]))
-            .expect("stillPassing shortcut");
-        assert_eq!(still_passing["required"], json!(["verdict"]));
-        assert_eq!(still_passing.as_object().expect("object").len(), 4);
-        let not_yet = any_of
-            .iter()
-            .find(|item| item["properties"]["verdict"]["enum"] == json!(["notYet"]))
-            .expect("notYet shortcut");
-        assert_eq!(not_yet["required"], json!(["verdict"]));
-        assert_eq!(not_yet.as_object().expect("object").len(), 4);
+        assert!(any_of.iter().any(|item| {
+            item["required"] == json!(["verdict", "reason", "evidenceAssessment", "requiredCorrection"])
+                && item["properties"]["verdict"]["enum"] == json!(["fail", "rejectedBlocked"])
+                && item["properties"].get("risk").is_none()
+        }));
+        assert!(!serde_json::to_string(&schema).expect("serialize schema").contains("stillPassing"));
+        assert!(!serde_json::to_string(&schema).expect("serialize schema").contains("notYet"));
+        assert!(!serde_json::to_string(&schema).expect("serialize schema").contains("waiverRequired"));
         let failed_any_of = failed_schema["anyOf"].as_array().expect("failed requirement anyOf");
         assert_eq!(failed_any_of.len(), 2);
-        assert!(failed_any_of.iter().any(|item| item["properties"]["verdict"]["enum"] == json!(["notYet"])));
 
         let reviewer_required = requirements_object["required"]
             .as_array()
@@ -8117,25 +8047,13 @@ mod tests {
         assert!(!prompt.contains("The web GUI must mirror the native Flutter GUI."));
 
         let schema = requirements_verdict_schema(&set);
-        let requirements_schema = &schema["properties"]["requirements"];
-        let requirements_object = requirements_schema["anyOf"]
-            .as_array()
-            .expect("requirements anyOf")
-            .iter()
-            .find(|item| item["type"] == json!("object"))
-            .expect("requirements object");
+        let requirements_object = &schema["properties"]["requirements"];
         assert_eq!(
             requirements_object["required"],
-            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes", "route"])
+            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes"])
         );
         let native_gui = &requirements_object["properties"]["nativeGuiIsSourceOfTruth"];
-        assert!(
-            native_gui["anyOf"]
-                .as_array()
-                .expect("native anyOf")
-                .iter()
-                .any(|item| item["properties"]["verdict"]["enum"] == json!(["stillPassing"]))
-        );
+        assert_eq!(native_gui["anyOf"].as_array().expect("native anyOf").len(), 2);
         let drift_schema_description = serde_json::to_string(
             &requirements_object["properties"]["noInventedWebsocketEventShapes"],
         )
@@ -8268,10 +8186,6 @@ mod tests {
                     "reason": "Reviewed evidence passes.",
                     "evidenceAssessment": "Sufficient.",
                     "requiredCorrection": ""
-                },
-                "route": {
-                    "destination": "orchestrator",
-                    "message": "Reviewed key passed."
                 }
             }),
         )
@@ -8356,7 +8270,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn requirements_status_counts_pending_failed_blocked_waived_passed_waiver_required_and_not_yet() {
+    async fn requirements_status_counts_pending_failed_blocked_waived_passed_and_unknown_progress() {
         let temp = TempDir::new().expect("tempdir");
         let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
             .await
@@ -8365,10 +8279,9 @@ mod tests {
             ("pendingRequirement", None),
             ("failedRequirement", Some("failed")),
             ("blockedRequirement", Some("blocked")),
-            ("waiverRequiredRequirement", Some("waiverRequired")),
             ("waivedRequirement", Some("waived")),
             ("passedRequirement", Some("passed")),
-            ("notYetRequirement", Some("notYet")),
+            ("legacyUnknownRequirement", Some("legacyUnknown")),
         ];
         let mut requirements = RequirementSetState {
             id: Some("requirements-status-matrix".to_string()),
@@ -8416,7 +8329,7 @@ mod tests {
                                     "requirementSetId": "requirements-status-matrix",
                                     "status": "inReview",
                                     "latestClaimPacket": {"summary": "cheap", "requirements": {"notFinished": true}},
-                                    "latestVerdictPacket": {"notYetRequirement": {"verdict": "notYet"}},
+                                    "latestVerdictPacket": {},
                                     "updatedAt": 12
                                 }
                             },
@@ -8440,11 +8353,11 @@ mod tests {
         assert_eq!(status["summary"]["pendingCount"], json!(1));
         assert_eq!(status["summary"]["failedCount"], json!(1));
         assert_eq!(status["summary"]["blockedCount"], json!(1));
-        assert_eq!(status["summary"]["waiverRequiredCount"], json!(1));
         assert_eq!(status["summary"]["waiverAcceptedCount"], json!(1));
         assert_eq!(status["summary"]["passedCount"], json!(1));
-        assert_eq!(status["summary"]["notYetCount"], json!(1));
-        assert_eq!(status["summary"]["unknownCount"], json!(0));
+        assert_eq!(status["summary"]["unknownCount"], json!(1));
+        assert!(status["summary"].get("waiverRequiredCount").is_none());
+        assert!(status["summary"].get("notYetCount").is_none());
     }
 
     #[tokio::test]
@@ -9089,10 +9002,6 @@ requirements:
                     "reason": "Evidence matches.",
                     "evidenceAssessment": "Sufficient.",
                     "requiredCorrection": ""
-                },
-                "route": {
-                    "destination": "orchestrator",
-                    "message": "All requirements passed."
                 }
             }),
         )
@@ -9177,10 +9086,6 @@ requirements:
                     "reason": "A shape was invented.",
                     "evidenceAssessment": "Needs correction.",
                     "requiredCorrection": "Use the existing protocol."
-                },
-                "route": {
-                    "destination": "sourceAgent",
-                    "message": "Fix protocol drift."
                 }
             }),
         )
@@ -9228,10 +9133,6 @@ requirements:
                     "reason": "Protocol drift fixed.",
                     "evidenceAssessment": "Brief pass.",
                     "requiredCorrection": ""
-                },
-                "route": {
-                    "destination": "sourceAgent",
-                    "message": "Fix the regression."
                 }
             }),
         )
@@ -9265,7 +9166,7 @@ requirements:
     }
 
     #[tokio::test]
-    async fn still_passing_keeps_previous_pass_but_cannot_mask_ineligible_requirements() {
+    async fn full_reviewer_schema_can_regress_previously_passed_requirements() {
         let temp = TempDir::new().expect("tempdir");
         let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
             .await
@@ -9329,14 +9230,13 @@ requirements:
             "reviewer-thread",
             json!({
                 "nativeGuiIsSourceOfTruth": {
-                    "verdict": "stillPassing"
+                    "verdict": "pass"
                 },
                 "noInventedWebsocketEventShapes": {
-                    "verdict": "stillPassing"
-                },
-                "route": {
-                    "destination": "orchestrator",
-                    "message": "Invalid shorthand cannot pass."
+                    "verdict": "fail",
+                    "reason": "Regression found.",
+                    "evidenceAssessment": "Current evidence contradicts the previous pass.",
+                    "requiredCorrection": "Restore the typed websocket event shape proof."
                 }
             }),
         )
@@ -9364,16 +9264,13 @@ requirements:
     #[tokio::test]
     async fn reviewer_verdict_terminal_truth_table_updates_progress_and_active_state() {
         let cases = [
-            ("notYet", "notYet", "notYet", true, false),
-            ("pass", "pass", "passed", false, false),
-            ("stillPassing", "pass", "passed", false, true),
-            ("fail", "fail", "failed", true, false),
-            ("acceptedBlocked", "acceptedBlocked", "blocked", true, false),
-            ("rejectedBlocked", "rejectedBlocked", "failed", true, false),
-            ("waiverRequired", "needsHumanWaiver", "waiverRequired", true, false),
-            ("waiverAccepted", "waiverAccepted", "waived", false, false),
+            ("pass", "passed", false),
+            ("fail", "failed", true),
+            ("acceptedBlocked", "blocked", true),
+            ("rejectedBlocked", "failed", true),
+            ("waiverAccepted", "waived", false),
         ];
-        for (per_requirement_verdict, overall, expected_status, expected_active, seed_passed) in cases {
+        for (per_requirement_verdict, expected_status, expected_active) in cases {
             let temp = TempDir::new().expect("tempdir");
             let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
                 .await
@@ -9391,15 +9288,6 @@ requirements:
                 }],
                 ..Default::default()
             };
-            if seed_passed {
-                requirements.review_progress.insert(
-                    "singleRequirement".to_string(),
-                    RequirementReviewProgressState {
-                        status: "passed".to_string(),
-                        updated_at: Some(1),
-                    },
-                );
-            }
             let mut state = PersistedState::default();
             let mut project = PersistedProjectState {
                 project_root: Some(temp.path().display().to_string()),
@@ -9437,20 +9325,20 @@ requirements:
             state.projects.insert("project".to_string(), project);
             persist_state(&runtime, &state).await.expect("persist state");
 
+            let verdict = match per_requirement_verdict {
+                "fail" | "rejectedBlocked" => json!({
+                    "verdict": per_requirement_verdict,
+                    "reason": "reason",
+                    "evidenceAssessment": "assessment",
+                    "requiredCorrection": "correction"
+                }),
+                _ => json!({"verdict": per_requirement_verdict}),
+            };
             mark_requirements_review_verdict(
                 &runtime,
                 "source-thread",
                 "reviewer-thread",
-                json!({
-                    "singleRequirement": {
-                        "verdict": per_requirement_verdict,
-                        "reason": "reason",
-                        "evidenceAssessment": "assessment",
-                        "requiredCorrection": "",
-                        "risk": "low"
-                    },
-                    "route": {"destination": "sourceAgent", "message": "route"}
-                }),
+                json!({"singleRequirement": verdict}),
             )
             .await
             .expect("mark verdict");
@@ -9465,62 +9353,6 @@ requirements:
             );
             assert_eq!(requirements.active, expected_active, "{per_requirement_verdict}");
         }
-    }
-
-    #[tokio::test]
-    async fn invalid_still_passing_keeps_requirements_active_and_marks_failed() {
-        let temp = TempDir::new().expect("tempdir");
-        let runtime = BridgeRuntime::new(sample_settings(&temp, "ws://127.0.0.1:0".to_string()))
-            .await
-            .expect("runtime");
-        let mut state = PersistedState::default();
-        let mut project = PersistedProjectState {
-            project_root: Some(temp.path().display().to_string()),
-            cwd: Some(temp.path().display().to_string()),
-            ..Default::default()
-        };
-        project.agents.insert(
-            "source-thread".to_string(),
-            PersistedAgentState {
-                role: Some("worker".to_string()),
-                requirements: Some(RequirementSetState {
-                    id: Some("requirements-single".to_string()),
-                    active: true,
-                    requirements: vec![RequirementState {
-                        key: "singleRequirement".to_string(),
-                        statement: "Single requirement.".to_string(),
-                        severity: "blocker".to_string(),
-                        claim_schema_description: None,
-                        verdict_schema_description: None,
-                        verification_method: "sourceInspection".to_string(),
-                    }],
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        );
-        state.projects.insert("project".to_string(), project);
-        persist_state(&runtime, &state).await.expect("persist state");
-        mark_requirements_review_verdict(
-            &runtime,
-            "source-thread",
-            "reviewer-thread",
-            json!({
-                "singleRequirement": {"verdict": "stillPassing"},
-                "route": {"destination": "sourceAgent", "message": "invalid"}
-            }),
-        )
-        .await
-        .expect("mark verdict");
-        let state = parse_state(&runtime.state_document_value().await);
-        let source = agent_state_for_thread(&state, "source-thread").expect("source");
-        let requirements = source.requirements.as_ref().expect("requirements");
-        assert_eq!(requirements.review_progress["singleRequirement"].status, "failed");
-        assert!(requirements.active);
-        assert_eq!(
-            source.requirement_review.as_ref().map(|review| review.status.as_str()),
-            Some("failed")
-        );
     }
 
     #[tokio::test]
@@ -9546,7 +9378,7 @@ requirements:
                     source_thread_id: "source-thread".to_string(),
                     reviewer_thread_id: "reviewer-thread".to_string(),
                     requirement_set_id: Some("web-gui-contract".to_string()),
-                    status: "waiverRequired".to_string(),
+                    status: "blocked".to_string(),
                     latest_claim_packet: Some(json!({"summary": "claimed", "requirements": {}})),
                     latest_verdict_packet: None,
                     updated_at: 100,
@@ -9583,10 +9415,6 @@ requirements:
                     "reason": "Evidence matches.",
                     "evidenceAssessment": "Sufficient.",
                     "requiredCorrection": ""
-                },
-                "route": {
-                    "destination": "none",
-                    "message": "Owner waiver accepted."
                 }
             }),
         )
@@ -9744,7 +9572,7 @@ requirements:
 
     #[test]
     #[ignore = "live Codex/OpenAI schema validation; requires auth/network and costs tokens"]
-    fn live_codex_accepts_still_passing_verdict_schema() {
+    fn live_codex_accepts_minimal_full_set_verdict_schema() {
         let fixture_dir = std::path::PathBuf::from("/tmp/robdex-requirements-schema-validation");
         std::fs::create_dir_all(&fixture_dir).expect("create requirements schema fixture dir");
         let mut set = sample_requirement_set();
@@ -9755,15 +9583,15 @@ requirements:
                 updated_at: Some(100),
             },
         );
-        let schema_path = fixture_dir.join("verdict-still-passing.schema.json");
-        let output_path = fixture_dir.join("verdict-still-passing.output.json");
+        let schema_path = fixture_dir.join("verdict-minimal-full-set.schema.json");
+        let output_path = fixture_dir.join("verdict-minimal-full-set.output.json");
         let _ = std::fs::remove_file(&output_path);
         std::fs::write(
             &schema_path,
             serde_json::to_string_pretty(&requirements_verdict_schema(&set))
-                .expect("serialize stillPassing verdict schema"),
+                .expect("serialize minimal verdict schema"),
         )
-        .expect("write stillPassing verdict schema fixture");
+        .expect("write minimal verdict schema fixture");
 
         let status = std::process::Command::new("codex")
             .arg("exec")
@@ -9776,20 +9604,20 @@ requirements:
             .arg("--output-last-message")
             .arg(&output_path)
             .arg(
-                "Return a minimal valid Requirements review verdict. Use stillPassing for nativeGuiIsSourceOfTruth. Use a full pass verdict for noInventedWebsocketEventShapes. Route to none.",
+                "Return a minimal valid Requirements review verdict. Use compact pass verdict objects for both nativeGuiIsSourceOfTruth and noInventedWebsocketEventShapes.",
             )
             .status()
             .expect("run codex exec");
         assert!(
             status.success(),
-            "codex exec rejected or failed the generated stillPassing verdict schema: {status}"
+            "codex exec rejected or failed the generated minimal verdict schema: {status}"
         );
 
         let output = std::fs::read_to_string(&output_path).expect("read codex output");
         let payload: Value = serde_json::from_str(output.trim()).expect("codex output should be JSON");
         assert_eq!(
             payload["requirements"]["nativeGuiIsSourceOfTruth"]["verdict"],
-            json!("stillPassing")
+            json!("pass")
         );
         assert_eq!(
             payload["requirements"]["noInventedWebsocketEventShapes"]["verdict"],
