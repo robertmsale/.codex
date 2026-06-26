@@ -52,6 +52,16 @@ void main() {
 
     expect(find.text('Runtime detail'), findsNothing);
     expect(find.bySemanticsLabel('Runtime operations'), findsWidgets);
+
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.sessionSettings')));
+    await tester.pumpAndSettle();
+    expect(find.byType(AgentRuntimeSessionControlPlane), findsOneWidget);
+    expect(find.text('Session Settings'), findsOneWidget);
+    expect(find.text('Processes (2)'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.sessionControl.close')));
+    await tester.pumpAndSettle();
+    expect(find.byType(AgentRuntimeSessionControlPlane), findsNothing);
+
     await tester.tap(find.byTooltip('New session'));
     await tester.pump();
     expect(find.byType(AgentRuntimeCreateSessionDialog), findsOneWidget);

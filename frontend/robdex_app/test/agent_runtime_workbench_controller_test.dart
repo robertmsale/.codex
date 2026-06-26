@@ -2536,6 +2536,90 @@ void main() {
     expect(find.text('Processes (2)'), findsOneWidget);
   });
 
+  testWidgets('production host closes session control plane through visible toolbar close and restores shell interactivity', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = AgentRuntimeWorkbenchController(requestSink: (_, _) {});
+    addTearDown(controller.dispose);
+    controller.setViewDataForTest(mockAgentRuntimeConnected, shell: agentRuntimeConversationShellData(mockAgentRuntimeConnected));
+
+    await tester.pumpWidget(MaterialApp(home: AgentRuntimeWorkbenchHost(controller: controller)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.sessionSettings')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AgentRuntimeSessionControlPlane), findsOneWidget);
+    expect(find.byKey(const ValueKey('agentRuntime.sessionControl.close')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.sessionControl.close')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AgentRuntimeSessionControlPlane), findsNothing);
+    await tester.tap(find.byTooltip('New session'));
+    await tester.pump();
+    expect(find.byType(AgentRuntimeCreateSessionDialog), findsOneWidget);
+  });
+
+  testWidgets('Danger Zone Close session and Archive session dismiss sheet and dispatch selected session actions', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final actions = <String>[];
+
+    Future<void> pumpControlPlane() async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AgentRuntimeSessionControlPlane(
+            data: mockAgentRuntimeConnected,
+            onClose: () {},
+            onSave: ({required sessionId, required project, required role, required model, required workdir, required worktreeRoot, required title, required name, required tracked}) {},
+            onCloseSession: (id) => actions.add('close:$id'),
+            onArchiveSession: (id) => actions.add('archive:$id'),
+            onForkSession: (_) {},
+            onCompact: (_) {},
+            onGrantGodMode: (_) {},
+            onRevokeGodMode: (_) {},
+            onTerminateProcess: (_) {},
+            onFlushProcess: (_) {},
+            onInputProcess: (_, _) {},
+            onApprove: (_, _) {},
+            onDeny: (_, _) {},
+            onResumeApproval: (_) {},
+            onPreviewCommandRequest: (_) {},
+            onApproveCommandRequest: (_) {},
+            onDenyCommandRequest: (_) {},
+            onApplyCommandRequest: (_) {},
+            onShowCommand: (_) {},
+            onShowCommandRequest: (_) {},
+            onSetRequirements: (_, {required title, required key, required statement}) {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> openDangerZone() async {
+      await tester.ensureVisible(find.text('Danger Zone'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Danger Zone'));
+      await tester.pumpAndSettle();
+      expect(find.text('Danger Zone'), findsNWidgets(2));
+    }
+
+    await pumpControlPlane();
+    await openDangerZone();
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Close session'));
+    await tester.pumpAndSettle();
+    expect(actions, contains('close:session-a'));
+    expect(find.text('Danger Zone'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Close session'), findsNothing);
+
+    await openDangerZone();
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Archive session'));
+    await tester.pumpAndSettle();
+    expect(actions, contains('archive:session-a'));
+    expect(find.text('Danger Zone'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Archive session'), findsNothing);
+  });
+
   testWidgets('session control plane remains dismissable without a selected session', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1200, 1000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
