@@ -2559,65 +2559,44 @@ void main() {
     expect(find.byType(AgentRuntimeCreateSessionDialog), findsOneWidget);
   });
 
-  testWidgets('Danger Zone Close session and Archive session dismiss sheet and dispatch selected session actions', (tester) async {
+  testWidgets('production host Danger Zone Close session and Archive session dispatch typed operations and return to session settings', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1200, 1000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    final actions = <String>[];
-
-    Future<void> pumpControlPlane() async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: AgentRuntimeSessionControlPlane(
-            data: mockAgentRuntimeConnected,
-            onClose: () {},
-            onSave: ({required sessionId, required project, required role, required model, required workdir, required worktreeRoot, required title, required name, required tracked}) {},
-            onCloseSession: (id) => actions.add('close:$id'),
-            onArchiveSession: (id) => actions.add('archive:$id'),
-            onForkSession: (_) {},
-            onCompact: (_) {},
-            onGrantGodMode: (_) {},
-            onRevokeGodMode: (_) {},
-            onTerminateProcess: (_) {},
-            onFlushProcess: (_) {},
-            onInputProcess: (_, _) {},
-            onApprove: (_, _) {},
-            onDeny: (_, _) {},
-            onResumeApproval: (_) {},
-            onPreviewCommandRequest: (_) {},
-            onApproveCommandRequest: (_) {},
-            onDenyCommandRequest: (_) {},
-            onApplyCommandRequest: (_) {},
-            onShowCommand: (_) {},
-            onShowCommandRequest: (_) {},
-            onSetRequirements: (_, {required title, required key, required statement}) {},
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-    }
+    final sentRequests = <bindings.AgentRuntimeRequest>[];
+    final controller = AgentRuntimeWorkbenchController(requestSink: (_, request) => sentRequests.add(request));
+    addTearDown(controller.dispose);
+    controller.setViewDataForTest(mockAgentRuntimeConnected, shell: agentRuntimeConversationShellData(mockAgentRuntimeConnected));
 
     Future<void> openDangerZone() async {
-      await tester.ensureVisible(find.text('Danger Zone'));
+      await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Danger Zone'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Danger Zone'));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Danger Zone'));
       await tester.pumpAndSettle();
       expect(find.text('Danger Zone'), findsNWidgets(2));
     }
 
-    await pumpControlPlane();
-    await openDangerZone();
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Close session'));
+    await tester.pumpWidget(MaterialApp(home: AgentRuntimeWorkbenchHost(controller: controller)));
     await tester.pumpAndSettle();
-    expect(actions, contains('close:session-a'));
-    expect(find.text('Danger Zone'), findsOneWidget);
-    expect(find.widgetWithText(OutlinedButton, 'Close session'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.sessionSettings')));
+    await tester.pumpAndSettle();
+    expect(find.byType(AgentRuntimeSessionControlPlane), findsOneWidget);
 
     await openDangerZone();
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Archive session'));
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.closeSession')));
     await tester.pumpAndSettle();
-    expect(actions, contains('archive:session-a'));
+    expect((sentRequests.single as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationCloseSession>());
     expect(find.text('Danger Zone'), findsOneWidget);
-    expect(find.widgetWithText(OutlinedButton, 'Archive session'), findsNothing);
+    expect(find.byType(AgentRuntimeSessionControlPlane), findsOneWidget);
+    expect(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.closeSession')), findsNothing);
+
+    await openDangerZone();
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.archiveSession')));
+    await tester.pumpAndSettle();
+    expect(sentRequests, hasLength(2));
+    expect((sentRequests.last as bindings.AgentRuntimeRequestDispatchOperation).operation, isA<bindings.AgentRuntimeGuiOperationArchiveSession>());
+    expect(find.text('Danger Zone'), findsOneWidget);
+    expect(find.byType(AgentRuntimeSessionControlPlane), findsOneWidget);
+    expect(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.archiveSession')), findsNothing);
   });
 
   testWidgets('session control plane remains dismissable without a selected session', (tester) async {
