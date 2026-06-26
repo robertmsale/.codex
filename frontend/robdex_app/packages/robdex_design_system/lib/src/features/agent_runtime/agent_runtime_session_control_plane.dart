@@ -380,8 +380,8 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             const Text('Danger Zone', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
             const SizedBox(height: 12),
-            OutlinedButton(onPressed: () { Navigator.of(context).pop(); widget.onCloseSession(control.sessionId); }, child: const Text('Close session')),
-            OutlinedButton(onPressed: () { Navigator.of(context).pop(); widget.onArchiveSession(control.sessionId); }, child: const Text('Archive session')),
+            OutlinedButton(key: const ValueKey('agentRuntime.sessionControl.danger.closeSession'), onPressed: () { Navigator.of(context).pop(); widget.onCloseSession(control.sessionId); }, child: const Text('Close session')),
+            OutlinedButton(key: const ValueKey('agentRuntime.sessionControl.danger.archiveSession'), onPressed: () { Navigator.of(context).pop(); widget.onArchiveSession(control.sessionId); }, child: const Text('Archive session')),
           ]),
         ),
       ),
