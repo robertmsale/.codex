@@ -2536,6 +2536,33 @@ void main() {
     expect(find.text('Processes (2)'), findsOneWidget);
   });
 
+  testWidgets('session settings normalizes duplicate model dropdown values before render', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final duplicateModelData = mockAgentRuntimeConnected.copyWith(
+      selectedSessionControlPlane: mockAgentRuntimeConnected.selectedSessionControlPlane!.copyWith(
+        activeModel: 'codex-live-model',
+        modelOptions: const [
+          AgentRuntimeModelOption(id: 'codex-live-model', displayLabel: 'Codex live model', source: 'runtime', isDefault: true),
+          AgentRuntimeModelOption(id: 'codex-live-model', displayLabel: 'Codex live model duplicate', source: 'runtime', isDefault: false),
+          AgentRuntimeModelOption(id: 'gpt-5.4-mini', displayLabel: 'GPT-5.4 Mini', source: 'runtime', isDefault: false),
+        ],
+      ),
+    );
+    final controller = AgentRuntimeWorkbenchController(requestSink: (_, _) {});
+    addTearDown(controller.dispose);
+    controller.setViewDataForTest(duplicateModelData, shell: agentRuntimeConversationShellData(duplicateModelData));
+
+    await tester.pumpWidget(MaterialApp(home: AgentRuntimeWorkbenchHost(controller: controller)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.sessionSettings')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AgentRuntimeSessionControlPlane), findsOneWidget);
+    expect(find.byType(DropdownButtonFormField<String>), findsNWidgets(3));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('production host closes session control plane through visible toolbar close and restores shell interactivity', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1200, 1000));
     addTearDown(() => tester.binding.setSurfaceSize(null));

@@ -344,12 +344,13 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
   }
 
   Widget _select(String label, String value, List<String> options, ValueChanged<String> onChanged) {
-    final values = options.contains(value) ? options : [if (value.isNotEmpty) value, ...options];
+    final values = _uniqueSelectValues(value, options);
+    final selectedValue = values.where((item) => item == value).length == 1 ? value : null;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(children: [
         SizedBox(width: 120, child: Text(label, style: const TextStyle(color: Color(0xFFB8C4D3)))),
-        Expanded(child: DropdownButtonFormField<String>(initialValue: values.isEmpty ? null : value, items: [for (final item in values) DropdownMenuItem(value: item, child: Text(item))], onChanged: (value) { if (value != null) onChanged(value); }, decoration: _input())),
+        Expanded(child: DropdownButtonFormField<String>(initialValue: selectedValue, items: [for (final item in values) DropdownMenuItem(value: item, child: Text(item))], onChanged: (value) { if (value != null) onChanged(value); }, decoration: _input())),
       ]),
     );
   }
@@ -366,6 +367,17 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
   Widget _actionTile(IconData icon, String title, String subtitle, Color color, VoidCallback? onTap) {
     final keyName = title.toLowerCase().replaceAll(' ', '');
     return SizedBox(width: 190, child: InkWell(key: ValueKey('agentRuntime.sessionControl.$keyName'), onTap: onTap, child: Container(padding: const EdgeInsets.all(14), decoration: BoxDecoration(color: const Color(0x3307111C), border: Border.all(color: const Color(0x1FFFFFFF)), borderRadius: BorderRadius.circular(7)), child: Row(children: [Icon(icon, color: color), const SizedBox(width: 10), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: const TextStyle(color: Colors.white)), Text(subtitle, style: const TextStyle(color: Color(0xFFB8C4D3), fontSize: 12))]))]))));
+  }
+
+  List<String> _uniqueSelectValues(String value, List<String> options) {
+    final values = <String>[];
+    final seen = <String>{};
+    for (final item in [if (value.isNotEmpty) value, ...options]) {
+      if (item.isNotEmpty && seen.add(item)) {
+        values.add(item);
+      }
+    }
+    return values;
   }
 
   List<String> _roleOptions(AgentRuntimeSelectedSessionControlPlane control) => {control.roleId, ...widget.data.roleAdmin.rows.map((role) => role.id)}.where((value) => value.isNotEmpty).toList(growable: false);
