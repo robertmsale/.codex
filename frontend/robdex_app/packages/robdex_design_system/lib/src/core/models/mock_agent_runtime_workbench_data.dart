@@ -545,7 +545,7 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
       title: 'Runtime validation',
       status: 'stopped',
       subtitle: 'runtime-allow · /Users/robertsale/.codex',
-      groupLabel: 'Open',
+      groupLabel: 'Active',
       tone: 'success',
     ),
     AgentRuntimeSessionItem(
@@ -666,7 +666,7 @@ const mockAgentRuntimeConnected = AgentRuntimeWorkbenchData(
         AgentRuntimeFact(label: 'Role', value: 'Runtime Allow'),
         AgentRuntimeFact(label: 'Project', value: 'Runtime'),
         AgentRuntimeFact(label: 'Workdir', value: 'Project workspace'),
-        AgentRuntimeFact(label: 'Status', value: 'Open'),
+        AgentRuntimeFact(label: 'Status', value: 'Stopped'),
         AgentRuntimeFact(label: 'Created', value: '2026-06-17 08:16'),
         AgentRuntimeFact(label: 'Current turn', value: 'Idle'),
       ],

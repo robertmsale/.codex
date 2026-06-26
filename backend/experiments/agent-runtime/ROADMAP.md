@@ -90,7 +90,7 @@ product specification.
 9. DB-backed typed command registry.
 10. Agent-facing scoped command-registry requests.
 11. Session-only async process manager.
-12. Persistent session lifecycle: metadata, archive, close, fork, history.
+12. Persistent session lifecycle: metadata, archive, fork, history.
 13. Approver ergonomics for command-registry review/preview/decision flow.
 14. Role admin backend routes/CLI.
 15. Agent-led workflow memory using pgvector/LM Studio embeddings.
@@ -104,7 +104,7 @@ product specification.
     interface. `shell(...)` is the explicit break-glass host `/bin/zsh`
     affordance, defaults to `-lc`, accepts explicit `-lc`, `-c`, and login-shell
     `-l`, persists audit data plus separate stdout/stderr output artifacts, and
-    is revoked on session close/archive. Fake stdout-plus-stderr combined
+    is revoked on session archive. Fake stdout-plus-stderr combined
     artifacts are not part of the runtime contract.
 20. Typed API error shape and error mapping polish.
 21. Resident server validation harness.

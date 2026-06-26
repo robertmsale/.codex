@@ -554,7 +554,7 @@ pub async fn ensure_requirements_reviewer_subagent(pool: &PgPool, active: &Activ
         .bind(reviewer_id)
         .execute(pool)
         .await?;
-    let _ = sqlx::query("INSERT INTO generic_subagents (id, parent_session_id, subagent_session_id, subagent_key, workflow_identity, subagent_kind, role_id, workspace_policy, hidden_projection_behavior, lifecycle_status, audit_metadata) VALUES ($1,$2,$3,'requirements-reviewer',$4,'requirementsReviewer','requirements-reviewer',$5,'parent_summary','open',$6) ON CONFLICT (parent_session_id, subagent_key, workflow_identity) DO UPDATE SET subagent_session_id=$3, lifecycle_status='open'")
+    let _ = sqlx::query("INSERT INTO generic_subagents (id, parent_session_id, subagent_session_id, subagent_key, workflow_identity, subagent_kind, role_id, workspace_policy, hidden_projection_behavior, lifecycle_status, audit_metadata) VALUES ($1,$2,$3,'requirements-reviewer',$4,'requirementsReviewer','requirements-reviewer',$5,'parent_summary','active',$6) ON CONFLICT (parent_session_id, subagent_key, workflow_identity) DO UPDATE SET subagent_session_id=$3, lifecycle_status='active'")
         .bind(Uuid::new_v4())
         .bind(active.source_session_id)
         .bind(reviewer_id)
@@ -1016,7 +1016,7 @@ pub async fn migrate_active_requirements_to_generic_workflow(pool: &PgPool) -> R
             .fetch_optional(pool)
             .await? {
             let reviewer_id: Uuid = binding.get("reviewer_session_id");
-            subagents += sqlx::query("INSERT INTO generic_subagents (id, parent_session_id, subagent_session_id, subagent_key, workflow_identity, subagent_kind, role_id, workspace_policy, hidden_projection_behavior, lifecycle_status, audit_metadata) VALUES ($1,$2,$3,'requirements-reviewer',$4,'requirementsReviewer','requirements-reviewer',$5,'parent_summary','open',$6) ON CONFLICT (parent_session_id, subagent_key, workflow_identity) DO UPDATE SET subagent_session_id=$3, lifecycle_status='open'")
+            subagents += sqlx::query("INSERT INTO generic_subagents (id, parent_session_id, subagent_session_id, subagent_key, workflow_identity, subagent_kind, role_id, workspace_policy, hidden_projection_behavior, lifecycle_status, audit_metadata) VALUES ($1,$2,$3,'requirements-reviewer',$4,'requirementsReviewer','requirements-reviewer',$5,'parent_summary','active',$6) ON CONFLICT (parent_session_id, subagent_key, workflow_identity) DO UPDATE SET subagent_session_id=$3, lifecycle_status='active'")
                 .bind(Uuid::new_v4())
                 .bind(source_session_id)
                 .bind(reviewer_id)

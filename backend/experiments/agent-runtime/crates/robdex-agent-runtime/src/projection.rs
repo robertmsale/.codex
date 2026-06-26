@@ -94,7 +94,8 @@ async fn runtime_statistics(pool: &PgPool, selected_session_id: Option<Uuid>) ->
     }
     Ok(RuntimeStatistics {
         sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false", selected_session_id).await?,
-        open_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false AND archived_at IS NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false AND archived_at IS NULL", selected_session_id).await?,        archived_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false AND archived_at IS NOT NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false AND archived_at IS NOT NULL", selected_session_id).await?,
+        non_archived_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false AND archived_at IS NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false AND archived_at IS NULL", selected_session_id).await?,
+        archived_sessions: scoped_count(pool, "SELECT COUNT(*) FROM sessions WHERE hidden = false AND archived_at IS NOT NULL", "SELECT COUNT(*) FROM sessions WHERE id=$1 AND hidden = false AND archived_at IS NOT NULL", selected_session_id).await?,
         turns: scoped_count(pool, "SELECT COUNT(*) FROM turns", "SELECT COUNT(*) FROM turns WHERE session_id=$1", selected_session_id).await?,
         running_turns: scoped_count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'running'", "SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status = 'running'", selected_session_id).await?,
         failed_turns: scoped_count(pool, "SELECT COUNT(*) FROM turns WHERE status = 'failed'", "SELECT COUNT(*) FROM turns WHERE session_id=$1 AND status = 'failed'", selected_session_id).await?,
@@ -2455,7 +2456,7 @@ mod tests {
         drop_validation_database(&admin_url, &database_name).await;
 
         assert_eq!(snapshot.statistics.sessions, 1);
-        assert_eq!(snapshot.statistics.open_sessions, 1);
+        assert_eq!(snapshot.statistics.non_archived_sessions, 1);
         assert_eq!(snapshot.statistics.archived_sessions, 0);
         assert_eq!(snapshot.statistics.turns, 1);
         assert_eq!(snapshot.statistics.running_turns, 0);
@@ -2490,7 +2491,7 @@ mod tests {
         assert_eq!(process.latest_output_summary.as_deref(), Some("stdout: 1 lines, 14 bytes"));
         assert!(process.output_artifacts.iter().any(|artifact| artifact["artifactId"] == artifact_id.to_string()));
         assert_eq!(global_snapshot.statistics.sessions, 2);
-        assert_eq!(global_snapshot.statistics.open_sessions, 2);
+        assert_eq!(global_snapshot.statistics.non_archived_sessions, 2);
         assert_eq!(global_snapshot.statistics.turns, 2);
         assert_eq!(global_snapshot.statistics.failed_turns, 1);
         assert_eq!(global_snapshot.statistics.model_events, 1);

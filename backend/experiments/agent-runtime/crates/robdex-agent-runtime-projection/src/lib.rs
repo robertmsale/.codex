@@ -480,7 +480,7 @@ pub struct RuntimeStatistics {
     #[serde(default)]
     pub sessions: u64,
     #[serde(default)]
-    pub open_sessions: u64,
+    pub non_archived_sessions: u64,
     #[serde(default)]
     pub archived_sessions: u64,
     pub turns: u64,
@@ -1773,7 +1773,7 @@ mod tests {
     }
 
     #[test]
-    fn session_archive_removes_open_session_from_list_without_clearing_selected_detail() {
+    fn session_archive_removes_non_archived_session_from_list_without_clearing_selected_detail() {
         let mut projection = RuntimeProjection::default();
         projection.selected_session = Some(SelectedSessionDetail {
             id: "session-1".to_string(),

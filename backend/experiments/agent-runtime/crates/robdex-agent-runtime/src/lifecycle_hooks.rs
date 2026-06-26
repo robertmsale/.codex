@@ -387,7 +387,7 @@ pub fn validate_runtime_manifest(manifest: &Value) -> Result<()> {
         if name.trim().is_empty() {
             bail!("lifecycle policy name must not be empty");
         }
-        for key in ["releaseLeases", "closeSubagents", "terminateProcesses", "revokeGodMode"] {
+        for key in ["releaseLeases", "deactivateSubagents", "terminateProcesses", "revokeGodMode"] {
             if policy.get(key).is_some() && !policy.get(key).and_then(Value::as_bool).is_some() {
                 bail!("lifecycle policy {key} must be boolean");
             }
@@ -1706,7 +1706,7 @@ pub async fn record_runtime_packet(pool: &PgPool, project_key: Option<&str>, sou
 }
 
 pub async fn ensure_subagent(pool: &PgPool, parent_session_id: Uuid, subagent_key: &str, workflow_identity: &str, subagent_kind: &str, role_id: &str, workspace_policy: Value, audit_metadata: Value) -> Result<Uuid> {
-    let existing = sqlx::query("SELECT subagent_session_id FROM generic_subagents WHERE parent_session_id=$1 AND subagent_key=$2 AND workflow_identity=$3 AND lifecycle_status='open'")
+    let existing = sqlx::query("SELECT subagent_session_id FROM generic_subagents WHERE parent_session_id=$1 AND subagent_key=$2 AND workflow_identity=$3 AND lifecycle_status='active'")
         .bind(parent_session_id)
         .bind(subagent_key)
         .bind(workflow_identity)
@@ -1735,7 +1735,7 @@ pub async fn ensure_subagent(pool: &PgPool, parent_session_id: Uuid, subagent_ke
         .execute(pool)
         .await?;
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO generic_subagents (id, parent_session_id, subagent_session_id, subagent_key, workflow_identity, subagent_kind, role_id, workspace_policy, hidden_projection_behavior, lifecycle_status, audit_metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'parent_summary','open',$9)")
+    sqlx::query("INSERT INTO generic_subagents (id, parent_session_id, subagent_session_id, subagent_key, workflow_identity, subagent_kind, role_id, workspace_policy, hidden_projection_behavior, lifecycle_status, audit_metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'parent_summary','active',$9)")
         .bind(id)
         .bind(parent_session_id)
         .bind(session_id)
@@ -1751,7 +1751,7 @@ pub async fn ensure_subagent(pool: &PgPool, parent_session_id: Uuid, subagent_ke
 }
 
 pub async fn deactivate_subagent(pool: &PgPool, parent_session_id: Uuid, subagent_key: &str, workflow_identity: &str) -> Result<Option<Uuid>> {
-    let row = sqlx::query("UPDATE generic_subagents SET lifecycle_status='inactive', inactive_at=now() WHERE parent_session_id=$1 AND subagent_key=$2 AND workflow_identity=$3 AND lifecycle_status='open' RETURNING subagent_session_id")
+    let row = sqlx::query("UPDATE generic_subagents SET lifecycle_status='inactive', inactive_at=now() WHERE parent_session_id=$1 AND subagent_key=$2 AND workflow_identity=$3 AND lifecycle_status='active' RETURNING subagent_session_id")
         .bind(parent_session_id)
         .bind(subagent_key)
         .bind(workflow_identity)
@@ -1779,7 +1779,7 @@ pub async fn cleanup_session_lifecycle_resources(pool: &PgPool, session_id: Uuid
     .await?
     .rows_affected();
     let inactive_subagents = sqlx::query(
-        "UPDATE generic_subagents SET lifecycle_status='inactive', inactive_at=COALESCE(inactive_at, now()) WHERE parent_session_id=$1 AND lifecycle_status='open'",
+        "UPDATE generic_subagents SET lifecycle_status='inactive', inactive_at=COALESCE(inactive_at, now()) WHERE parent_session_id=$1 AND lifecycle_status='active'",
     )
     .bind(session_id)
     .execute(pool)
@@ -1844,7 +1844,7 @@ pub async fn parent_subagent_projection(pool: &PgPool, parent_session_id: Uuid) 
         .collect::<Vec<_>>();
     Ok(json!({
         "parentSessionId": parent_session_id,
-        "activeSubagents": subagents.iter().filter(|value| value["lifecycleStatus"] == "open").count(),
+        "activeSubagents": subagents.iter().filter(|value| value["lifecycleStatus"] == "active").count(),
         "subagents": subagents,
     }))
 }
@@ -1972,7 +1972,7 @@ mod tests {
             lifecycle_event: "on_model_request".to_string(),
             active_contracts: vec![json!({"contractType":"requirements","status":"active"})],
             recent_packet_summaries: vec![json!({"packetType":"requirements.claim","status":"valid"})],
-            subagent_summaries: vec![json!({"subagentKind":"requirementsReviewer","status":"open"})],
+            subagent_summaries: vec![json!({"subagentKind":"requirementsReviewer","status":"active"})],
             resource_lease_summaries: vec![json!({"resourceType":"iosSimulator","status":"assigned"})],
             visible_command_summaries: vec![json!({"actionId":"cmd.test.echo","scope":"global"})],
             tool_metadata: vec![json!({"toolCallId": Uuid::nil(), "stdoutArtifactId": Uuid::nil(), "stderrArtifactId": Uuid::nil()})],
@@ -1983,7 +1983,7 @@ mod tests {
     #[test]
     fn lifecycle_hook_list_is_complete_and_parseable() {
         let names = LifecycleHook::all().iter().map(|hook| hook.as_str()).collect::<Vec<_>>();
-        assert_eq!(names.len(), 16);
+        assert_eq!(names.len(), 15);
         for name in names {
             assert_eq!(LifecycleHook::parse(name).unwrap().as_str(), name);
         }

@@ -2344,7 +2344,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn database_rejects_more_than_one_running_turn_per_open_session() {
+    async fn database_rejects_more_than_one_running_turn_per_session() {
         let test_db = validation_db().await;
         let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
         let session_id = db::new_session(&test_db.pool, &role, Some("active-turn-constraint"), ".", Some("."), None, None).await.expect("session");
@@ -4469,7 +4469,7 @@ mod tests {
             })
             .await;
         assert!(terminable_archive.iter().any(|packet| matches!(&packet.output, GuiTransportOutput::WorkbenchView { view_model }
-            if view_model.shell.sessions.iter().any(|row| row.id == terminable_session.to_string() && row.archived_at.is_some())
+            if !view_model.shell.sessions.iter().any(|row| row.id == terminable_session.to_string())
         )), "Archive must terminate session-ending managed processes and refresh the connected projection: {terminable_archive:?}");
         let terminated_process_row: (String, Option<String>, bool) = sqlx::query_as(
             "SELECT status, termination_reason, end_time IS NOT NULL FROM managed_processes WHERE id=$1",
@@ -4479,7 +4479,7 @@ mod tests {
         .await
         .expect("terminated process row");
         assert_eq!(terminated_process_row.0, "sessionTerminated");
-        assert_eq!(terminated_process_row.1.as_deref(), Some("sessionTerminated"));
+        assert_eq!(terminated_process_row.1.as_deref(), Some("session archived"));
         assert!(terminated_process_row.2);
         let terminable_session_row: (String, Option<chrono::DateTime<chrono::Utc>>) =
             sqlx::query_as("SELECT status, archived_at FROM sessions WHERE id=$1")
@@ -5558,7 +5558,7 @@ mod tests {
             ".",
             Some("."),
             Some("Semantic archive session"),
-            Some("semantic-close-session"),
+            Some("semantic-archive-session"),
         )
         .await
         .expect("new archive session");
@@ -7071,18 +7071,18 @@ print(git.cleanup_integrated_worktree("integrated-worktree"))
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn starter_kit_server_port_leases_release_on_close_and_archive() {
+    async fn starter_kit_server_port_leases_release_on_archive() {
         let test_db = validation_db().await;
         let role = db::current_role_snapshot(&test_db.pool, "runtime-allow").await.expect("role");
         let archive_session = db::new_session(&test_db.pool, &role, Some("starter-server-archive"), ".", Some("."), None, None).await.expect("archive session");
         insert_starter_server_fixture(&test_db.pool, archive_session, "archive-fixture", 39101).await;
         db::archive_session(&test_db.pool, archive_session).await.expect("archive session");
-        let close_release: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM starter_port_leases WHERE session_id=$1 AND status='released' AND release_reason='session.close'")
+        let lifecycle_release: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM starter_port_leases WHERE session_id=$1 AND status='released' AND release_reason='session.archive'")
             .bind(archive_session)
             .fetch_one(&test_db.pool)
             .await
-            .expect("close release");
-        assert_eq!(close_release, 1);
+            .expect("archive release");
+        assert_eq!(lifecycle_release, 1);
 
         let archive_session = db::new_session(&test_db.pool, &role, Some("starter-server-archive"), ".", Some("."), None, None).await.expect("archive session");
         insert_starter_server_fixture(&test_db.pool, archive_session, "archive-fixture", 39102).await;
@@ -8316,7 +8316,7 @@ print(outputs.stats(artifact))
             .await
             .expect("runtime packet");
         assert_eq!(packet_count, 1);
-        let subagent_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM generic_subagents WHERE parent_session_id=$1 AND subagent_session_id=$2 AND subagent_kind='requirementsReviewer' AND lifecycle_status='open'")
+        let subagent_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM generic_subagents WHERE parent_session_id=$1 AND subagent_session_id=$2 AND subagent_kind='requirementsReviewer' AND lifecycle_status='active'")
             .bind(source)
             .bind(reviewer)
             .fetch_one(&test_db.pool)
@@ -8999,7 +8999,7 @@ def hook(ctx):
         assert!(!checkpoint.replacement_context.contains("payload\":{\""), "compaction must summarize workflow state by ids and metadata, not hidden packet bodies");
         assert_eq!(crate::lifecycle_hooks::deactivate_subagent(&test_db.pool, session, "reviewer", "wf-1").await.expect("deactivate"), Some(subagent));
         let inactive = db::session_record(&test_db.pool, subagent).await.expect("inactive subagent");
-        assert!(inactive.archived_at.is_some());
+        assert_eq!(inactive.status, "stopped");
 
         crate::lifecycle_hooks::release_resource(&test_db.pool, Some(session), json!({"resourceType":"iosSimulator","leaseId": lease.0.to_string(), "releaseReason":"test complete"})).await.expect("release");
         let released: String = sqlx::query_scalar("SELECT status FROM resource_leases WHERE id=$1")
@@ -9062,7 +9062,7 @@ def hook(ctx):
               (SELECT COUNT(*) FROM generic_contracts WHERE id=$2 AND status='active'),
               (SELECT COUNT(*) FROM runtime_packets WHERE id=$3),
               (SELECT COUNT(*) FROM runtime_envelopes WHERE id=$4),
-              (SELECT COUNT(*) FROM generic_subagents WHERE subagent_session_id=$5 AND lifecycle_status='open'),
+              (SELECT COUNT(*) FROM generic_subagents WHERE subagent_session_id=$5 AND lifecycle_status='active'),
               (SELECT COUNT(*) FROM resource_leases WHERE id=$6 AND status='assigned'),
               (SELECT COUNT(*) FROM turn_obligations WHERE session_id=$7 AND idempotency_key='restart-obligation')
             "#,
@@ -9119,7 +9119,7 @@ def hook(ctx):
     }
 
     #[tokio::test]
-    async fn session_close_and_archive_cleanup_lifecycle_resources_and_project_subagent_projection() {
+    async fn session_archive_cleans_lifecycle_resources_and_project_subagent_projection() {
         let test_db = validation_db().await;
         let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
         let session = db::new_session(&test_db.pool, &role, Some("cleanup-project"), ".", Some("."), None, None).await.expect("session");
@@ -9140,7 +9140,14 @@ def hook(ctx):
             .expect("lease status");
         assert_eq!(lease_status, "released");
         let subagent_record = db::session_record(&test_db.pool, subagent).await.expect("subagent deactivated by lifecycle");
-        assert!(subagent_record.archived_at.is_some());
+        assert_eq!(subagent_record.status, "stopped");
+        let subagent_lifecycle_status: String = sqlx::query_scalar("SELECT lifecycle_status FROM generic_subagents WHERE parent_session_id=$1 AND subagent_session_id=$2")
+            .bind(session)
+            .bind(subagent)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("subagent lifecycle status");
+        assert_eq!(subagent_lifecycle_status, "inactive");
         let process_status: String = sqlx::query_scalar("SELECT status FROM managed_processes WHERE session_id=$1 AND handle='cleanup-proc'")
             .bind(session)
             .fetch_one(&test_db.pool)

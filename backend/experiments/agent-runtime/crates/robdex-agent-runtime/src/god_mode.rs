@@ -204,7 +204,7 @@ mod tests {
         let after_restart = active_grant(&restarted_pool, session).await.expect("active lookup").expect("active grant");
         assert_eq!(after_restart.id, grant.id);
         crate::db::archive_session(&restarted_pool, session).await.expect("archive revokes");
-        assert!(active_grant(&restarted_pool, session).await.expect("active lookup after close").is_none());
+        assert!(active_grant(&restarted_pool, session).await.expect("active lookup after archive").is_none());
 
         let archived_session = crate::db::new_session(&restarted_pool, &role, None, ".", None, None, None).await.expect("archive session");
         grant_session(&restarted_pool, archived_session, "test-operator", "archive revoke test", None).await.expect("grant archive");

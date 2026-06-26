@@ -567,7 +567,7 @@ async fn replacement_context_data(pool: &PgPool, session_id: Uuid, turns: &[Comp
     }))
     .collect::<Vec<_>>();
     let active_subagents = sqlx::query(
-        "SELECT subagent_session_id, subagent_key, subagent_kind, lifecycle_status FROM generic_subagents WHERE parent_session_id=$1 AND lifecycle_status='open' ORDER BY created_at ASC LIMIT 20",
+        "SELECT subagent_session_id, subagent_key, subagent_kind, lifecycle_status FROM generic_subagents WHERE parent_session_id=$1 AND lifecycle_status='active' ORDER BY created_at ASC LIMIT 20",
     )
     .bind(session_id)
     .fetch_all(pool)

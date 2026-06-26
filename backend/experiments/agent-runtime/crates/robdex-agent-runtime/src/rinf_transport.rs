@@ -5308,7 +5308,7 @@ mod tests {
             ],
             statistics: RuntimeStatistics {
                 sessions: 3,
-                open_sessions: 1,
+                non_archived_sessions: 1,
                 archived_sessions: 1,
                 turns: 4,
                 running_turns: 1,

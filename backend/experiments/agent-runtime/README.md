@@ -1060,7 +1060,6 @@ robdex-agent-runtime sessions new --role <role-id> --project <key> --workdir <pa
 robdex-agent-runtime sessions list [--all]
 robdex-agent-runtime sessions show <session-id>
 robdex-agent-runtime sessions history <session-id>
-robdex-agent-runtime sessions close <session-id> --reason <text>
 robdex-agent-runtime sessions archive <session-id>
 robdex-agent-runtime sessions fork <session-id> --at-turn <completed-turn-id>
 robdex-agent-runtime requirements set-json --session <session-id> requirements.json
@@ -1223,11 +1222,11 @@ The `worktree_root`, `title`, and `name` fields are explicit session metadata:
 `worktree_root` records the optional owning worktree/root for audit and tooling,
 `title` is user-visible display metadata, and `name` is a stable human-readable
 operator label. `send` uses the stored session workdir and rejects sessions whose status is not
-`open` before creating a turn. Archive is visibility-only: it sets
+not archived before creating a turn. Archive is visibility-only: it sets
 `tracked=false` and `archived_at` while preserving direct show/history access and
 leaving rows in place. Archive is terminal: it sets `archived_at`, emits `session.archived`, rejects future sends, releases leases, revokes God Mode, deactivates nested review workflows/subagents, and marks session-ending managed resources terminated or released.
 
-Forking is legal only from a completed source turn. A fork creates a new open
+Forking is legal only from a completed source turn. A fork creates a new stopped
 session with inherited role snapshot, project key, workdir, and lineage fields.
 Source rows are not copied. History reconstruction traverses lineage through the
 fork boundary and then appends the fork session's own completed turns. Model

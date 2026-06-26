@@ -826,7 +826,7 @@ AgentRuntimeWorkbenchData _starterKitImageEvidenceData() {
         title: 'Starter kit evidence',
         status: 'stopped',
         subtitle: 'Worker tools · Project workspace',
-        groupLabel: 'Open',
+        groupLabel: 'Active',
         tone: 'success',
       ),
       AgentRuntimeSessionItem(

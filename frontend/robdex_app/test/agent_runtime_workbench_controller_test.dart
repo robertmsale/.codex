@@ -345,7 +345,7 @@ void main() {
             shortLabel: 'RA',
             iconKey: 'runtime-allow',
             tone: 'info',
-            statusLabel: 'Open',
+            statusLabel: 'Stopped',
             description: 'Runtime role',
           ),
         ),

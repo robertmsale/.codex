@@ -697,7 +697,7 @@ CREATE TABLE IF NOT EXISTS generic_subagents (
     role_id TEXT NOT NULL,
     workspace_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
     hidden_projection_behavior TEXT NOT NULL DEFAULT 'parent_summary',
-    lifecycle_status TEXT NOT NULL DEFAULT 'open',
+    lifecycle_status TEXT NOT NULL DEFAULT 'active',
     audit_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     inactive_at TIMESTAMPTZ,
@@ -805,6 +805,7 @@ ALTER TABLE sessions DROP COLUMN IF EXISTS closed_at;
 ALTER TABLE sessions DROP COLUMN IF EXISTS close_reason;
 ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_status_check;
 ALTER TABLE sessions ADD CONSTRAINT sessions_status_check CHECK (status IN ('running', 'stopped'));
+UPDATE generic_subagents SET lifecycle_status='active' WHERE lifecycle_status='open';
 UPDATE generic_subagents SET lifecycle_status='inactive' WHERE lifecycle_status='closed';
 ALTER TABLE generic_subagents ADD COLUMN IF NOT EXISTS inactive_at TIMESTAMPTZ;
 ALTER TABLE generic_subagents DROP COLUMN IF EXISTS closed_at;

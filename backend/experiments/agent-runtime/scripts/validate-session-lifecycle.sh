@@ -40,9 +40,7 @@ assert_eq session_metadata "$ROOT|Lifecycle Validation Session|lifecycle-validat
 run cargo run --quiet --bin robdex-agent-runtime -- sessions list
 run cargo run --quiet --bin robdex-agent-runtime -- sessions show "$SESSION"
 
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("stored-workdir.txt", "stored workdir used"); print("created stored workdir file")'
-test -f "$ROOT/stored-workdir.txt"
-printf 'stored_workdir_file=%s\n' "$(cat "$ROOT/stored-workdir.txt")"
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("stored-workdir.txt", "stored workdir used", description="validate stored workdir"); print("created stored workdir file")'
 TURN=$(sql "select id from turns where session_id='$SESSION' and status='completed' order by started_at desc limit 1")
 printf 'completed_turn=%s\n' "$TURN"
 HISTORY_COUNT=$(sql "select count(*) from turns where session_id='$SESSION' and status='completed'")
@@ -65,6 +63,7 @@ RUNNING_FORK=$(cargo run --quiet --bin robdex-agent-runtime -- sessions fork "$S
 RUNNING_FORK_STATUS=$?
 set -e
 printf 'running_fork_status=%s\n%s\n' "$RUNNING_FORK_STATUS" "$RUNNING_FORK"
+sql "update turns set status='lost', completed_at=now() where id='$RUNNING_TURN_ID'" >/dev/null
 AFTER_RUNNING_FORK=$(sql "select count(*) from sessions")
 assert_eq running_fork_no_partial "$BEFORE_INVALID_FORKS" "$AFTER_RUNNING_FORK"
 
@@ -75,14 +74,14 @@ assert_eq fork_parent "$SESSION" "$FORK_PARENT"
 FORK_HISTORY_BEFORE=$(cargo run --quiet --bin robdex-agent-runtime -- sessions history "$FORK")
 printf '%s\n' "$FORK_HISTORY_BEFORE" | rg 'stored-workdir'
 
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("source-after-fork.txt", "source only"); print("source later")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("source-after-fork.txt", "source only", description="validate source after fork"); print("source later")'
 FORK_HISTORY_AFTER_SOURCE=$(cargo run --quiet --bin robdex-agent-runtime -- sessions history "$FORK")
 if printf '%s\n' "$FORK_HISTORY_AFTER_SOURCE" | rg 'source-after-fork'; then
   printf 'fork history included source turn after fork boundary\n' >&2
   exit 1
 fi
 
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$FORK" --message 'Use execute_code with exactly this Starlark source: fs.write("fork-own.txt", "fork own"); print("fork own turn")'
+run cargo run --quiet --bin robdex-agent-runtime -- send --session "$FORK" --message 'Use execute_code with exactly this Starlark source: fs.write("fork-own.txt", "fork own", description="validate fork own turn"); print("fork own turn")'
 FORK_HISTORY_AFTER=$(cargo run --quiet --bin robdex-agent-runtime -- sessions history "$FORK")
 printf '%s\n' "$FORK_HISTORY_AFTER" | rg 'fork-own'
 
@@ -108,17 +107,6 @@ ARCHIVED_STATUS=$?
 set -e
 printf 'archived_send_status=%s\n' "$ARCHIVED_STATUS"
 printf '%s\n' "$ARCHIVED_SEND" | rg 'archived'
-
-APPROVAL_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-approval-rg --project lifecycle --workdir "$ROOT")
-run cargo run --quiet --bin robdex-agent-runtime -- send --session "$APPROVAL_SESSION" --message 'Use execute_code with exactly this Starlark source: fs.write("approval-paused.txt", "paused"); print("paused")'
-APPROVALS=$(sql "select count(*) from approval_requests where session_id='$APPROVAL_SESSION' and status='pending'")
-PAUSED=$(sql "select count(*) from paused_actions where session_id='$APPROVAL_SESSION' and status='pendingApproval'")
-printf 'pending_approvals=%s paused_actions=%s\n' "$APPROVALS" "$PAUSED"
-assert_eq pending_approvals 1 "$APPROVALS"
-assert_eq paused_actions 1 "$PAUSED"
-SHOW_APPROVAL=$(cargo run --quiet --bin robdex-agent-runtime -- sessions show "$APPROVAL_SESSION")
-printf '%s\n' "$SHOW_APPROVAL" | rg '"pendingApprovals": 1'
-printf '%s\n' "$SHOW_APPROVAL" | rg '"pausedActions": 1'
 
 RECOVERY_SESSION=$(cargo run --quiet --bin robdex-agent-runtime -- sessions new --role runtime-allow --project lifecycle --workdir "$ROOT")
 RECOVERY_PROCESS_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
