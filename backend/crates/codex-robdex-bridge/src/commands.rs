@@ -3355,17 +3355,14 @@ fn requirements_claim_schema_for_requirements<'a>(
     })
 }
 
-#[cfg(test)]
 pub(crate) fn requirements_verdict_schema(set: &RequirementSetState) -> Value {
-    requirements_verdict_schema_for_review_keys(set, set.requirements.iter().map(|requirement| requirement.key.as_str()))
-}
-
-pub(crate) fn requirements_verdict_schema_for_review_keys<'a>(
-    set: &RequirementSetState,
-    review_keys: impl IntoIterator<Item = &'a str>,
-) -> Value {
     const REQUIREMENTS_REVIEW_SUMMARY_MAX_LENGTH: u32 = 1_000;
-    let (properties, required) = requirements_verdict_properties(set, review_keys);
+    let (properties, required) = requirements_verdict_properties(
+        set,
+        set.requirements
+            .iter()
+            .map(|requirement| requirement.key.as_str()),
+    );
     json!({
         "type": "object",
         "properties": {
@@ -7999,7 +7996,7 @@ mod tests {
     }
 
     #[test]
-    fn reviewer_schema_requires_only_claimed_review_keys_without_overall_verdict() {
+    fn reviewer_schema_keeps_full_active_requirement_contract_without_overall_verdict() {
         let mut set = sample_requirement_set();
         set.review_progress.insert(
             "nativeGuiIsSourceOfTruth".to_string(),
@@ -8008,10 +8005,7 @@ mod tests {
                 updated_at: Some(100),
             },
         );
-        let schema = requirements_verdict_schema_for_review_keys(
-            &set,
-            ["noInventedWebsocketEventShapes"].iter().copied(),
-        );
+        let schema = requirements_verdict_schema(&set);
         let requirements_schema = &schema["properties"]["requirements"];
         let requirements_object = requirements_schema["anyOf"]
             .as_array()
@@ -8021,10 +8015,10 @@ mod tests {
             .expect("requirements object");
         assert_eq!(
             requirements_object["required"],
-            json!(["noInventedWebsocketEventShapes", "route"])
+            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes", "route"])
         );
         assert!(requirements_object["properties"].get("overallVerdict").is_none());
-        assert!(requirements_object["properties"].get("nativeGuiIsSourceOfTruth").is_none());
+        assert!(requirements_object["properties"].get("nativeGuiIsSourceOfTruth").is_some());
         assert!(requirements_object["properties"].get("noInventedWebsocketEventShapes").is_some());
     }
 
@@ -8122,10 +8116,7 @@ mod tests {
         assert!(!prompt.contains("Compare every canonical requirement"));
         assert!(!prompt.contains("The web GUI must mirror the native Flutter GUI."));
 
-        let schema = requirements_verdict_schema_for_review_keys(
-            &set,
-            ["noInventedWebsocketEventShapes"].iter().copied(),
-        );
+        let schema = requirements_verdict_schema(&set);
         let requirements_schema = &schema["properties"]["requirements"];
         let requirements_object = requirements_schema["anyOf"]
             .as_array()
@@ -8135,7 +8126,15 @@ mod tests {
             .expect("requirements object");
         assert_eq!(
             requirements_object["required"],
-            json!(["noInventedWebsocketEventShapes", "route"])
+            json!(["nativeGuiIsSourceOfTruth", "noInventedWebsocketEventShapes", "route"])
+        );
+        let native_gui = &requirements_object["properties"]["nativeGuiIsSourceOfTruth"];
+        assert!(
+            native_gui["anyOf"]
+                .as_array()
+                .expect("native anyOf")
+                .iter()
+                .any(|item| item["properties"]["verdict"]["enum"] == json!(["stillPassing"]))
         );
         let drift_schema_description = serde_json::to_string(
             &requirements_object["properties"]["noInventedWebsocketEventShapes"],

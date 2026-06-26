@@ -31,7 +31,7 @@ use crate::{
         mark_requirements_review_verdict, parse_state, persist_state, prune_archived_thread_locally,
         prune_missing_project_roots, record_requirement_packet, requirements_review_prompt,
         requirements_review_source_for_reviewer, requirements_review_target_for_thread,
-        requirements_verdict_schema_for_review_keys, run_compaction_hook_best_effort, send_follow_up_message,
+        requirements_verdict_schema, run_compaction_hook_best_effort, send_follow_up_message,
         send_thread_input, tracked_project_identity_for_thread,
         PersistedState, RequirementPacketState, RequirementSetState,
     },
@@ -1497,10 +1497,7 @@ impl BridgeRuntime {
             service_tier: tracked_service_tier_for_thread_value(&state, &reviewer_thread_id),
             approvals_reviewer: tracked_approvals_reviewer_for_thread_value(&state, &reviewer_thread_id),
             personality: tracked_personality_for_thread_value(&state, &reviewer_thread_id),
-            output_schema: Some(requirements_verdict_schema_for_review_keys(
-                &set,
-                review_scope.iter().map(|key| key.as_str()),
-            )),
+            output_schema: Some(requirements_verdict_schema(&set)),
             ..Default::default()
         }
         .turn_start_params(reviewer_thread_id.clone(), json!([{"type":"text","text": prompt}]));
@@ -4106,12 +4103,23 @@ mod tests {
                                     "id": "requirements-alpha",
                                     "active": true,
                                     "reviewerThreadId": "reviewer-1",
-                                    "requirements": [{
-                                        "key": "mustProvideClaims",
-                                        "statement": "Final packets must include requirement claims.",
-                                        "severity": "blocker",
-                                        "verificationMethod": "manualEvidence"
-                                    }]
+                                    "requirements": [
+                                        {
+                                            "key": "alreadyPassed",
+                                            "statement": "Previously passed work must remain valid.",
+                                            "severity": "high",
+                                            "verificationMethod": "manualEvidence"
+                                        },
+                                        {
+                                            "key": "mustProvideClaims",
+                                            "statement": "Final packets must include requirement claims.",
+                                            "severity": "blocker",
+                                            "verificationMethod": "manualEvidence"
+                                        }
+                                    ],
+                                    "reviewProgress": {
+                                        "alreadyPassed": {"status": "passed", "updatedAt": 7}
+                                    }
                                 }
                             },
                             "reviewer-1": {
@@ -4158,7 +4166,15 @@ mod tests {
         let required = requirements_object["required"]
             .as_array()
             .expect("reviewer required");
-        assert_eq!(required, &vec![json!("mustProvideClaims"), json!("route")]);
+        assert_eq!(required, &vec![json!("alreadyPassed"), json!("mustProvideClaims"), json!("route")]);
+        let already_passed_schema = &requirements_object["properties"]["alreadyPassed"];
+        assert!(
+            already_passed_schema["anyOf"]
+                .as_array()
+                .expect("alreadyPassed anyOf")
+                .iter()
+                .any(|item| item["properties"]["verdict"]["enum"] == json!(["stillPassing"]))
+        );
         let prompt = request["params"]["input"][0]["text"].as_str().unwrap_or_default();
         let expected_prompt = serde_json::to_string_pretty(&json!({
             "summary": "implemented",
@@ -4175,11 +4191,147 @@ mod tests {
         assert!(!prompt.contains("Review subject:"));
         assert!(!prompt.contains("Latest source claim packet:"));
         assert!(!prompt.contains("Requirement keys to review from this claim packet:"));
+        assert!(!prompt.contains("alreadyPassed"));
         assert!(prompt.contains("implemented"));
         assert!(prompt.contains("cargo test passed"));
         assert!(!prompt.contains("priorStatus"));
         assert!(!prompt.contains("Must provide claims"));
         assert!(prompt.contains("\"requirements\""));
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn previous_requirement_regression_verdict_updates_full_progress() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirements": [
+                                        {"key": "alreadyPassed", "statement": "Already passed requirement must not regress.", "severity": "high", "verificationMethod": "manualEvidence"},
+                                        {"key": "mustReviewNow", "statement": "Must review current claim.", "severity": "blocker", "verificationMethod": "manualEvidence"}
+                                    ],
+                                    "reviewProgress": {
+                                        "alreadyPassed": {"status": "passed", "updatedAt": 7},
+                                        "mustReviewNow": {"status": "failed", "updatedAt": 8}
+                                    }
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "worker-1".to_string(),
+                vec![test_chat_message(
+                    "worker-1",
+                    "turn-claims",
+                    "final-claims",
+                    Some("final_answer"),
+                    r#"{"summary":"fixed current item","requirements":{"mustReviewNow":{"kind":"satisfied","summary":"done","evidence":[{"type":"testsRun","value":"cargo test requirements_review"}]}}}"#,
+                )],
+            );
+        }
+
+        assert!(runtime.maybe_route_requirements_review("worker-1", "turn-claims").await);
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "reviewer-1");
+        let requirements_object = request["params"]["outputSchema"]["properties"]["requirements"]["anyOf"]
+            .as_array()
+            .expect("requirements anyOf")
+            .iter()
+            .find(|item| item["type"] == json!("object"))
+            .expect("requirements object");
+        assert_eq!(
+            requirements_object["required"],
+            json!(["alreadyPassed", "mustReviewNow", "route"])
+        );
+        assert!(
+            requirements_object["properties"]["alreadyPassed"]["anyOf"]
+                .as_array()
+                .expect("alreadyPassed anyOf")
+                .iter()
+                .any(|item| item["properties"]["verdict"]["enum"] == json!(["stillPassing"]))
+        );
+        assert!(requirements_object["properties"].get("mustReviewNow").is_some());
+        let prompt = request["params"]["input"][0]["text"].as_str().unwrap_or_default();
+        assert_eq!(
+            prompt,
+            serde_json::to_string_pretty(&json!({
+                "summary": "fixed current item",
+                "requirements": {
+                    "mustReviewNow": {
+                        "kind": "satisfied",
+                        "summary": "done",
+                        "evidence": [{"type": "testsRun", "value": "cargo test requirements_review"}]
+                    }
+                }
+            }))
+            .expect("serialize expected prompt")
+        );
+        assert!(!prompt.contains("alreadyPassed"));
+        assert!(!prompt.contains("Requirement keys to review from this claim packet:"));
+
+        runtime
+            .maybe_route_requirements_verdict(
+                "worker-1",
+                "reviewer-1",
+                "review-turn-regression",
+                &json!({
+                    "alreadyPassed": {
+                        "verdict": "fail",
+                        "reason": "current changes regress previous behavior",
+                        "evidenceAssessment": "regression visible in diff",
+                        "requiredCorrection": "restore the previously passing behavior",
+                        "risk": "high"
+                    },
+                    "mustReviewNow": {
+                        "verdict": "pass",
+                        "reason": "current claim is proven",
+                        "evidenceAssessment": "test evidence is concrete",
+                        "requiredCorrection": "none",
+                        "risk": "none"
+                    },
+                    "route": {"destination": "sourceAgent", "message": "Fix alreadyPassed regression."}
+                }),
+            )
+            .await;
+
+        let state = runtime.state_document_value().await;
+        let progress = &state["projects"]["alpha"]["agents"]["worker-1"]["requirements"]["reviewProgress"];
+        assert_eq!(progress["alreadyPassed"]["status"], json!("failed"));
+        assert_eq!(progress["mustReviewNow"]["status"], json!("passed"));
         transport.abort();
         server.abort();
     }
