@@ -117,6 +117,7 @@ Robdex records notable claim/verdict packets for inspection:
 - `claimContinuation`: worker sent a cheap `notFinished` continuation packet, so Robdex kept Requirements active without reviewer dispatch.
 - `claimCorrection`: worker sent a malformed or low-quality sparse claim packet, so Robdex routed correction without reviewer dispatch.
 - `verdict`: final reviewer verdict packet.
+- `verdictAllNotYetRejected`: reviewer sent an invalid verdict packet where every reviewed canonical requirement was `notYet`; Robdex preserved the raw rejected payload for audit, did not mutate source review progress, and sent the owner-authority correction back to the reviewer thread only.
 - `verdictNull`: reviewer commentary/progress packet with `requirements: null`.
 
 These packets are not the canonical contract. The RequirementSet is.
@@ -357,7 +358,13 @@ Every scoped requirement may use the exact shortcut:
 }
 ```
 
-This object has no reason, evidence assessment, correction, risk, or other fields. It keeps the requirement unresolved, keeps active Requirements attached, and routes the compact correction path back to the source when the overall verdict is `notYet`.
+This object has no reason, evidence assessment, correction, risk, or other fields. It keeps that individual requirement unresolved and keeps active Requirements attached.
+
+An all-`notYet` reviewer verdict packet is invalid control-plane output. Robdex detects it before per-requirement review progress mutation, before normal `verdict` packet recording, and before routing to the source worker. Robdex records the rejected payload as `verdictAllNotYetRejected`, linked to the source thread id, reviewer thread id, and reviewer turn id, then sends this exact owner-authority correction to the requirements reviewer thread:
+
+`This is the owner. Your last Requirements verdict marked every reviewed claim as notYet. That is invalid and must not be forwarded to the source worker. Review the current source claim packet now. For weak, missing, circular, or unverifiable evidence, emit a full fail verdict with concrete correction. Use pass, fail, acceptedBlocked, rejectedBlocked, waiverRequired, or waiverAccepted as applicable. Use notYet only for an individual claim that is genuinely not reviewable.`
+
+The correction prompt does not use the `[Requirements Review]` prefix. The source worker never receives the rejected all-`notYet` packet, no worker-facing review status is derived from it, and existing `review_progress` remains unchanged. Mixed verdict packets remain valid when at least one reviewed canonical requirement has a verdict other than `notYet`.
 
 ## Canonical Versus Scoped Schemas
 
@@ -429,10 +436,11 @@ When a requirements-reviewer turn completes:
 1. Robdex finds the source thread bound to the reviewer.
 2. It parses the latest reviewer assistant text.
 3. It accepts `requirements: null` as reviewer commentary/progress and records it.
-4. It accepts a final verdict object as review output.
-5. It updates source `requirementReview`.
-6. It updates per-requirement `reviewProgress`.
-7. It routes the review result.
+4. It rejects an all-`notYet` verdict packet for the reviewed canonical keys before any source review progress mutation or source routing.
+5. It accepts a final verdict object as review output.
+6. It updates source `requirementReview`.
+7. It updates per-requirement `reviewProgress`.
+8. It routes the review result.
 
 ### Verdict Routing
 
