@@ -1090,6 +1090,19 @@ impl BridgeRuntime {
             }
             ReviewableRequirementsVerdict::Invalid => invalid_requirements_verdict_payload(&state, &source_thread_id, payload.clone()),
         };
+        if self
+            .maybe_reject_requirements_reviewer_all_not_yet(
+                &state,
+                &source_thread_id,
+                thread_id,
+                turn_id,
+                &payload,
+                &verdict_payload,
+            )
+            .await
+        {
+            return true;
+        }
         let _ = mark_requirements_review_verdict(self, &source_thread_id, thread_id, verdict_payload.clone()).await;
         let _ = record_requirement_packet(
             self,
@@ -1106,6 +1119,67 @@ impl BridgeRuntime {
         .await;
         self.maybe_route_requirements_verdict(&source_thread_id, thread_id, turn_id, &verdict_payload)
             .await;
+        true
+    }
+
+    async fn maybe_reject_requirements_reviewer_all_not_yet(
+        &self,
+        state_value: &Value,
+        source_thread_id: &str,
+        reviewer_thread_id: &str,
+        turn_id: &str,
+        raw_payload: &Value,
+        verdict_payload: &Value,
+    ) -> bool {
+        if !requirements_verdict_all_reviewed_canonical_keys_not_yet(
+            state_value,
+            source_thread_id,
+            verdict_payload,
+        ) {
+            return false;
+        }
+        let dedupe_key = format!("requirements-verdict-all-not-yet|{reviewer_thread_id}|{turn_id}");
+        {
+            let routed = self.auto_routed_turn_keys.read().await;
+            if routed.contains(&dedupe_key) {
+                return true;
+            }
+        }
+
+        let _ = record_requirement_packet(
+            self,
+            source_thread_id,
+            RequirementPacketState {
+                packet_type: "verdictAllNotYetRejected".to_string(),
+                source_thread_id: source_thread_id.to_string(),
+                turn_id: Some(turn_id.to_string()),
+                target_thread_id: Some(reviewer_thread_id.to_string()),
+                payload: json!({
+                    "rawRejectedPayload": raw_payload,
+                    "reviewedVerdictPayload": verdict_payload,
+                }),
+                created_at: crate::commands::unix_now(),
+            },
+        )
+        .await;
+
+        let parsed_state = parse_state(state_value);
+        let result = send_thread_input(
+            self,
+            &parsed_state,
+            reviewer_thread_id,
+            Some(REQUIREMENTS_REVIEWER_ALL_NOT_YET_CORRECTION_PROMPT),
+            &[],
+            None,
+            None,
+        )
+        .await;
+        if result.is_ok() {
+            self.auto_routed_turn_keys
+                .write()
+                .await
+                .insert(dedupe_key);
+        }
         true
     }
 
@@ -3094,6 +3168,8 @@ enum ReviewableRequirementsVerdict {
     Invalid,
 }
 
+const REQUIREMENTS_REVIEWER_ALL_NOT_YET_CORRECTION_PROMPT: &str = "This is the owner. Your last Requirements verdict marked every reviewed claim as notYet. That is invalid and must not be forwarded to the source worker. Review the current source claim packet now. For weak, missing, circular, or unverifiable evidence, emit a full fail verdict with concrete correction. Use pass, fail, acceptedBlocked, rejectedBlocked, waiverRequired, or waiverAccepted as applicable. Use notYet only for an individual claim that is genuinely not reviewable.";
+
 fn reviewable_requirements_claim_payload(payload: &Value) -> ReviewableRequirementsClaim {
     let Some(object) = payload.as_object() else {
         return ReviewableRequirementsClaim::Invalid;
@@ -3297,6 +3373,34 @@ fn requirements_verdict_has_reviewable_entries(state: &Value, source_thread_id: 
             .and_then(Value::as_str)
             .is_some()
     })
+}
+
+fn requirements_verdict_all_reviewed_canonical_keys_not_yet(
+    state: &Value,
+    source_thread_id: &str,
+    payload: &Value,
+) -> bool {
+    let parsed_state = parse_state(state);
+    let Some(set) = active_requirements_for_thread(&parsed_state, source_thread_id) else {
+        return false;
+    };
+    let Some(object) = payload.as_object() else {
+        return false;
+    };
+    let mut reviewed = 0usize;
+    for requirement in &set.requirements {
+        let Some(value) = object.get(requirement.key.as_str()) else {
+            continue;
+        };
+        let Some(verdict) = value.get("verdict").and_then(Value::as_str) else {
+            return false;
+        };
+        reviewed += 1;
+        if verdict != "notYet" {
+            return false;
+        }
+    }
+    reviewed > 0
 }
 
 fn invalid_requirements_verdict_payload(state: &Value, source_thread_id: &str, raw_payload: Value) -> Value {
@@ -4254,6 +4358,223 @@ mod tests {
             json!("claimed")
         );
         assert!(source["requirementReview"]["latestVerdictPacket"]["raw"].is_string());
+        assert_eq!(source["requirementPackets"][0]["packetType"], json!("verdict"));
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn all_not_yet_reviewer_verdict_is_rejected_back_to_reviewer_only() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirements": [
+                                        {"key": "alreadyPassed", "statement": "Already passed.", "severity": "high", "verificationMethod": "manualEvidence"},
+                                        {"key": "mustReviewNow", "statement": "Must review now.", "severity": "blocker", "verificationMethod": "manualEvidence"}
+                                    ],
+                                    "reviewProgress": {
+                                        "alreadyPassed": {"status": "passed", "updatedAt": 7}
+                                    }
+                                },
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "requirements-alpha",
+                                    "status": "inReview",
+                                    "latestClaimPacket": {
+                                        "summary": "claimed",
+                                        "requirements": {
+                                            "alreadyPassed": {"kind":"satisfied","summary":"still done","evidence":[{"type":"testsRun","value":"cargo test requirements_review"}]},
+                                            "mustReviewNow": {"kind":"satisfied","summary":"done","evidence":[{"type":"testsRun","value":"cargo test requirements_review"}]}
+                                        }
+                                    },
+                                    "updatedAt": 1
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "reviewer-1".to_string(),
+                vec![test_chat_message(
+                    "reviewer-1",
+                    "review-turn-all-not-yet",
+                    "final-all-not-yet",
+                    Some("final_answer"),
+                    "{\"summary\":\"placeholder\",\"requirements\":{\"alreadyPassed\":{\"verdict\":\"notYet\"},\"mustReviewNow\":{\"verdict\":\"notYet\"},\"summary\":{\"verdict\":\"notYet\"},\"route\":{\"destination\":\"sourceAgent\",\"message\":\"worker should never see this\"},\"raw\":\"ignored\"}}",
+                )],
+            );
+        }
+
+        assert!(
+            runtime
+                .maybe_record_requirements_verdict("reviewer-1", "review-turn-all-not-yet")
+                .await
+        );
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "reviewer-1");
+        let correction = request["params"]["input"][0]["text"].as_str().expect("correction text");
+        assert_eq!(correction, REQUIREMENTS_REVIEWER_ALL_NOT_YET_CORRECTION_PROMPT);
+        assert!(correction.starts_with("This is the owner. "));
+        assert!(!correction.starts_with("[Requirements Review]"));
+        assert!(!correction.contains("[Requirements Review]"));
+        assert!(requests.try_recv().is_err(), "all-notYet rejection must not route to source worker");
+
+        let state = runtime.state_document_value().await;
+        let source = &state["projects"]["alpha"]["agents"]["worker-1"];
+        assert_eq!(source["requirements"]["active"], json!(true));
+        assert_eq!(source["requirements"]["reviewProgress"]["alreadyPassed"]["status"], json!("passed"));
+        assert!(source["requirements"]["reviewProgress"].get("mustReviewNow").is_none());
+        assert_eq!(source["requirementReview"]["status"], json!("inReview"));
+        assert!(source["requirementReview"]["latestVerdictPacket"].is_null());
+        assert_eq!(source["requirementPackets"][0]["packetType"], json!("verdictAllNotYetRejected"));
+        assert_eq!(source["requirementPackets"][0]["targetThreadId"], json!("reviewer-1"));
+        assert_eq!(source["requirementPackets"][0]["turnId"], json!("review-turn-all-not-yet"));
+        assert_eq!(
+            source["requirementPackets"][0]["payload"]["rawRejectedPayload"]["requirements"]["mustReviewNow"]["verdict"],
+            json!("notYet")
+        );
+        assert_eq!(
+            state["projects"]["alpha"]["agents"]["reviewer-1"]["parentThreadId"],
+            json!("worker-1")
+        );
+
+        assert!(
+            runtime
+                .maybe_record_requirements_verdict("reviewer-1", "review-turn-all-not-yet")
+                .await
+        );
+        assert!(requests.try_recv().is_err(), "dedupe must suppress repeat correction sends");
+        let state = runtime.state_document_value().await;
+        assert_eq!(
+            state["projects"]["alpha"]["agents"]["worker-1"]["requirementPackets"]
+                .as_array()
+                .expect("packets")
+                .len(),
+            1
+        );
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn mixed_reviewer_verdict_with_individual_not_yet_routes_normally() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirements": [
+                                        {"key": "mustFix", "statement": "Must fix.", "severity": "blocker", "verificationMethod": "manualEvidence"},
+                                        {"key": "notReviewableYet", "statement": "Can be individually not reviewable.", "severity": "high", "verificationMethod": "manualEvidence"}
+                                    ],
+                                    "reviewProgress": {}
+                                },
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "requirements-alpha",
+                                    "status": "inReview",
+                                    "latestClaimPacket": {"summary": "claimed"},
+                                    "updatedAt": 1
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "reviewer-1".to_string(),
+                vec![test_chat_message(
+                    "reviewer-1",
+                    "review-turn-mixed",
+                    "final-mixed",
+                    Some("final_answer"),
+                    "{\"summary\":\"mixed\",\"requirements\":{\"mustFix\":{\"verdict\":\"fail\",\"reason\":\"missing proof\",\"evidenceAssessment\":\"weak\",\"requiredCorrection\":\"add concrete proof\",\"risk\":\"medium\"},\"notReviewableYet\":{\"verdict\":\"notYet\"},\"route\":{\"destination\":\"sourceAgent\",\"message\":\"Fix mustFix.\"}}}",
+                )],
+            );
+        }
+
+        assert!(
+            runtime
+                .maybe_record_requirements_verdict("reviewer-1", "review-turn-mixed")
+                .await
+        );
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "worker-1");
+        assert!(
+            request["params"]["input"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("[Requirements Review]")
+        );
+        let state = runtime.state_document_value().await;
+        let source = &state["projects"]["alpha"]["agents"]["worker-1"];
+        assert_eq!(source["requirements"]["reviewProgress"]["mustFix"]["status"], json!("failed"));
+        assert_eq!(source["requirements"]["reviewProgress"]["notReviewableYet"]["status"], json!("notYet"));
+        assert_eq!(source["requirementReview"]["status"], json!("failed"));
+        assert_eq!(source["requirementReview"]["latestVerdictPacket"]["mustFix"]["verdict"], json!("fail"));
         assert_eq!(source["requirementPackets"][0]["packetType"], json!("verdict"));
         transport.abort();
         server.abort();
