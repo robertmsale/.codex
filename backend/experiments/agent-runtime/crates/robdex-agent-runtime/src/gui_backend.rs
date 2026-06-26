@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 use crate::gui_sync::{RuntimeStateStream, RuntimeSyncClient, RuntimeSyncConfig, SyncError, SyncOutcome};
 
+const SELECTED_ROLE_DRAFT_KEY: &str = "selectedRoleId";
+
 pub struct GuiBackendController {
     http: reqwest::Client,
     base_url: Option<String>,
@@ -293,7 +295,12 @@ impl GuiBackendController {
     }
 
     fn replace_controller_state_from_sync(&mut self, mut next: GuiControllerState) {
-        next.selected_project_id = self.controller_state.selected_project_id.clone();
+        let selected_project_id = self.controller_state.selected_project_id.clone();
+        let selected_workflow_memory_id = self.controller_state.selected_workflow_memory_id.clone();
+        let draft_inputs = self.controller_state.draft_inputs.clone();
+        next.selected_project_id = selected_project_id;
+        next.selected_workflow_memory_id = selected_workflow_memory_id;
+        next.draft_inputs = draft_inputs;
         self.controller_state = next;
     }
 
@@ -353,13 +360,18 @@ impl GuiBackendController {
             | GuiOperationRequest::UpdateProject { .. }
             | GuiOperationRequest::ArchiveProject { .. }
             | GuiOperationRequest::UnarchiveProject { .. } => self.hydrate_current().await,
+            GuiOperationRequest::ShowRoleDetail { role_id } => {
+                self.controller_state
+                    .draft_inputs
+                    .insert(SELECTED_ROLE_DRAFT_KEY.to_string(), role_id.clone());
+                Ok(GuiOperationOutcome::DirectValue { value })
+            }
             GuiOperationRequest::ListCommandRegistry { .. }
             | GuiOperationRequest::ShowCommand { .. }
             | GuiOperationRequest::ShowCommandRegistryRequest { .. }
             | GuiOperationRequest::PreviewCommandRegistryRequest { .. }
             | GuiOperationRequest::RoleEditorOptions
             | GuiOperationRequest::ValidateRoleDraft { .. }
-            | GuiOperationRequest::ShowRoleDetail { .. }
             | GuiOperationRequest::ListRoleVersions { .. }
             | GuiOperationRequest::ShowRoleVersion { .. }
             | GuiOperationRequest::ExportRole { .. }
@@ -443,12 +455,35 @@ impl GuiBackendController {
             | GuiOperationRequest::ApplyCommandRegistryRequest { request_id: session_id, .. } => Ok(GuiOperationOutcome::Accepted {
                 entity_id: Some(session_id.clone()),
             }),
-            GuiOperationRequest::CreateRoleFromDraft { .. }
-            | GuiOperationRequest::UpdateRoleFromDraft { .. }
-            | GuiOperationRequest::ActivateRoleVersion { .. }
-            | GuiOperationRequest::ArchiveRole { .. }
-            | GuiOperationRequest::UnarchiveRole { .. }
-            | GuiOperationRequest::ImportProjectRuntimeConfig { .. }
+            GuiOperationRequest::CreateRoleFromDraft { draft } => {
+                self.controller_state
+                    .draft_inputs
+                    .insert(SELECTED_ROLE_DRAFT_KEY.to_string(), draft.id.clone());
+                self.hydrate_current().await
+            }
+            GuiOperationRequest::UpdateRoleFromDraft { role_id, .. } => {
+                self.controller_state
+                    .draft_inputs
+                    .insert(SELECTED_ROLE_DRAFT_KEY.to_string(), role_id.clone());
+                self.hydrate_current().await
+            }
+            GuiOperationRequest::ActivateRoleVersion { role_id, .. } => {
+                self.controller_state
+                    .draft_inputs
+                    .insert(SELECTED_ROLE_DRAFT_KEY.to_string(), role_id.clone());
+                self.hydrate_current().await
+            }
+            GuiOperationRequest::ArchiveRole { .. } => {
+                self.controller_state.draft_inputs.remove(SELECTED_ROLE_DRAFT_KEY);
+                self.hydrate_current().await
+            }
+            GuiOperationRequest::UnarchiveRole { role_id } => {
+                self.controller_state
+                    .draft_inputs
+                    .insert(SELECTED_ROLE_DRAFT_KEY.to_string(), role_id.clone());
+                self.hydrate_current().await
+            }
+            GuiOperationRequest::ImportProjectRuntimeConfig { .. }
             | GuiOperationRequest::ActivateProjectRuntimeConfig { .. }
             | GuiOperationRequest::ArchiveProjectRuntimeConfig { .. }
             | GuiOperationRequest::SetRequirements { .. }

@@ -629,7 +629,14 @@ impl AgentRuntimeWorkbenchViewModel {
             .as_deref()
             .or_else(|| projection.and_then(|projection| projection.selected_session.as_ref().map(|session| session.id.as_str())));
         let effective_model_options = effective_model_options(projection, model_options);
-        let role_admin = role_admin_view(projection, &effective_model_options);
+        let role_admin = role_admin_view(
+            projection,
+            &effective_model_options,
+            controller_state
+                .draft_inputs
+                .get(SELECTED_ROLE_DRAFT_KEY)
+                .map(String::as_str),
+        );
         let workflow_memory = workflow_memory_view(
             projection,
             selected_session_id,
@@ -692,7 +699,7 @@ impl AgentRuntimeConversationShellViewModel {
             dynamic_roles: Vec::new(),
             actions: Vec::new(),
             settings: Vec::new(),
-            role_management: role_admin_view(None, &[]),
+            role_management: role_admin_view(None, &[], None),
             workflow_memory: workflow_memory_view(None, None, None),
             command_registry_requests: Vec::new(),
             approvals: Vec::new(),
@@ -2951,14 +2958,26 @@ fn command_request_action_row(request: &CommandRegistryRequestSummary) -> AgentR
     }
 }
 
-fn role_admin_view(projection: Option<&RuntimeProjection>, model_options: &[AgentRuntimeModelOption]) -> AgentRuntimeRoleAdminView {
+const SELECTED_ROLE_DRAFT_KEY: &str = "selectedRoleId";
+
+fn role_admin_view(
+    projection: Option<&RuntimeProjection>,
+    model_options: &[AgentRuntimeModelOption],
+    selected_role_id: Option<&str>,
+) -> AgentRuntimeRoleAdminView {
     let roles: Vec<RoleSummary> = projection.map(|projection| projection.roles.clone()).unwrap_or_default();
     let mut rows: Vec<_> = roles.iter().map(role_row).collect();
     rows.sort_by(|left, right| left.id.cmp(&right.id));
-    let selected = roles
+    let selected = selected_role_id
+        .and_then(|role_id| {
+            roles
+                .iter()
+                .find(|role| role.id == role_id && role.status != "archived")
+        })
+        .or_else(|| roles
         .iter()
         .find(|role| role.status != "archived")
-        .or_else(|| roles.first());
+        .or_else(|| roles.first()));
     let selected_detail = selected.map(role_detail);
     let editor_draft = selected.map(role_editor_draft);
     let version_rows = selected.map(role_version_rows).unwrap_or_default();
@@ -4412,6 +4431,54 @@ mod tests {
                 created_at: None,
             }],
         }
+    }
+
+    #[test]
+    fn role_admin_view_preserves_selected_role_from_controller_state() {
+        let mut runtime_allow = test_role_summary();
+        runtime_allow.id = "runtime-allow".to_string();
+        runtime_allow.display_name = "Runtime Allow".to_string();
+        runtime_allow.instruction_text = Some("runtime instructions".to_string());
+        let mut progenitor = test_role_summary();
+        progenitor.id = "project-progenitor".to_string();
+        progenitor.display_name = "Project Progenitor".to_string();
+        progenitor.instruction_text = Some("progenitor instructions".to_string());
+        progenitor.capabilities = vec!["tool.execute_code".to_string(), "git.status".to_string(), "git.diff".to_string()];
+        progenitor.policy = std::collections::BTreeMap::from([
+            ("tool.execute_code".to_string(), "allow".to_string()),
+            ("git.status".to_string(), "allow".to_string()),
+            ("git.diff".to_string(), "allow".to_string()),
+        ]);
+        let projection = RuntimeProjection {
+            roles: vec![runtime_allow, progenitor],
+            ..RuntimeProjection::default()
+        };
+        let mut controller = GuiControllerState::default();
+        controller
+            .draft_inputs
+            .insert(SELECTED_ROLE_DRAFT_KEY.to_string(), "project-progenitor".to_string());
+
+        let view = AgentRuntimeWorkbenchViewModel::from_runtime_state(
+            "http://127.0.0.1:8765",
+            Some(&projection),
+            &controller,
+            &[],
+            0,
+            None,
+            &AgentRuntimeDiscoveryView::default(),
+            &AgentRuntimeDiscoveryView::not_loaded_remote(),
+            &AgentRuntimeDiscoveryView::not_loaded_imported(),
+            &[],
+        );
+
+        assert_eq!(
+            view.role_admin.selected_detail.as_ref().map(|role| role.id.as_str()),
+            Some("project-progenitor")
+        );
+        let draft = view.role_admin.editor_draft.as_ref().expect("selected draft");
+        assert_eq!(draft.role_id, "project-progenitor");
+        assert!(draft.capabilities.iter().any(|capability| capability == "git.status"));
+        assert!(draft.capabilities.iter().any(|capability| capability == "git.diff"));
     }
 
     fn role_draft() -> RoleEditorDraft {
