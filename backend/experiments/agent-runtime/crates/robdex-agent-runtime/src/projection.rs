@@ -2040,6 +2040,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn selected_conversation_keeps_tree_stdout_and_later_failure_inspectable() {
+        let (admin_url, database_name, pool) = create_validation_database("tree_failure_projection").await;
+        db::init(&pool).await.expect("init schema");
+        let session_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let tool_id = Uuid::new_v4();
+        let script_id = Uuid::new_v4();
+        let stdout_artifact_id = Uuid::new_v4();
+        let stderr_artifact_id = Uuid::new_v4();
+        let tree_output = ".\n├── backend\n│   └── Cargo.toml\n└── frontend\n";
+        let stderr = "later validation failed after tree output";
+        sqlx::query("INSERT INTO sessions (id, status, role_id, project_key, workdir, title, tracked) VALUES ($1,'open','runtime-allow','project-a','/tmp/project-a','Tree failure projection',true)")
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .expect("insert session");
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, completed_at) VALUES ($1,$2,'user',$3,'completed',now())")
+            .bind(turn_id)
+            .bind(session_id)
+            .bind("print tree then fail")
+            .execute(&pool)
+            .await
+            .expect("insert turn");
+        sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, result, completed_at) VALUES ($1,$2,$3,'execute_code','tree-fail-call',$4,'failed',$5,now())")
+            .bind(tool_id)
+            .bind(session_id)
+            .bind(turn_id)
+            .bind(json!({"source":"print(tree.list('.', depth=2)); fail('later validation failed')"}))
+            .bind(json!({"ok":false}))
+            .execute(&pool)
+            .await
+            .expect("insert tool");
+        sqlx::query("INSERT INTO script_runs (id, tool_call_id, source, status, final_output, stdout, stderr, truncation, completed_at) VALUES ($1,$2,$3,'failed',$4,$4,$5,$6,now())")
+            .bind(script_id)
+            .bind(tool_id)
+            .bind("print(tree.list('.', depth=2)); fail('later validation failed')")
+            .bind(tree_output)
+            .bind(stderr)
+            .bind(json!({"artifactIds":{"stdout":stdout_artifact_id,"stderr":stderr_artifact_id}}))
+            .execute(&pool)
+            .await
+            .expect("insert script");
+        for (artifact_id, stream, content) in [
+            (stdout_artifact_id, "stdout", tree_output),
+            (stderr_artifact_id, "stderr", stderr),
+        ] {
+            sqlx::query("INSERT INTO execution_output_artifacts (id, session_id, turn_id, tool_call_id, script_run_id, source_type, stream, content, byte_count, line_count, metadata) VALUES ($1,$2,$3,$4,$5,'script_run',$6,$7,$8,$9,$10)")
+                .bind(artifact_id)
+                .bind(session_id)
+                .bind(turn_id)
+                .bind(tool_id)
+                .bind(script_id)
+                .bind(stream)
+                .bind(content)
+                .bind(content.len() as i64)
+                .bind(content.lines().count() as i64)
+                .bind(json!({"test":"tree-failure-projection"}))
+                .execute(&pool)
+                .await
+                .expect("insert artifact");
+        }
+
+        let snapshot = build_runtime_projection_snapshot(&pool, Some(session_id)).await.expect("projection");
+        drop(pool);
+        drop_validation_database(&admin_url, &database_name).await;
+
+        let tool = snapshot.selected_chat_entries.iter().find(|entry| entry.is_tool).expect("tool entry");
+        assert_eq!(tool.status, "failed");
+        assert_eq!(tool.script_run_id, Some(script_id.to_string()));
+        assert_eq!(tool.stdout_artifact_id, Some(stdout_artifact_id.to_string()));
+        assert_eq!(tool.stderr_artifact_id, Some(stderr_artifact_id.to_string()));
+        assert!(tool.output.contains("├── backend"), "{}", tool.output);
+        assert!(tool.output.contains("stderr:"), "{}", tool.output);
+        assert!(tool.output.contains(stderr), "{}", tool.output);
+    }
+
+    #[tokio::test]
     async fn selected_conversation_projects_stored_image_artifacts_as_chat_image_entries() {
         let (admin_url, database_name, pool) = create_validation_database("selected_image_chat").await;
         let (session_id, turn_id, tool_id, script_id, process_id, _artifact_id, _model_event_id, _final_text) = seed_durable_selected_chat(&pool).await;

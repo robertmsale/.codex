@@ -5181,11 +5181,39 @@ mod tests {
             .expect("test pool URL must parse")
     }
 
+    async fn create_validation_database(name: &str) -> (String, String, PgPool) {
+        let admin_url = std::env::var("ROBDEX_AGENT_RUNTIME_TEST_ADMIN_DATABASE_URL")
+            .or_else(|_| std::env::var("ROBDEX_AGENT_RUNTIME_DATABASE_URL"))
+            .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1:5432/postgres".to_string());
+        let suffix = Uuid::new_v4().simple().to_string();
+        let database_name = format!("robdex_agent_runtime_starlark_{name}_{suffix}");
+        let admin_pool = PgPoolOptions::new().max_connections(1).connect(&admin_url).await.expect("connect validation admin Postgres");
+        sqlx::query(&format!(r#"CREATE DATABASE "{database_name}""#))
+            .execute(&admin_pool)
+            .await
+            .expect("create validation database");
+        admin_pool.close().await;
+        let runtime_url = format!("{}/{}", admin_url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&admin_url), database_name);
+        let pool = PgPoolOptions::new().max_connections(5).connect(&runtime_url).await.expect("connect runtime validation database");
+        crate::db::init(&pool).await.expect("init runtime validation database");
+        (admin_url, database_name, pool)
+    }
+
+    async fn drop_validation_database(admin_url: &str, database_name: &str) {
+        let admin_pool = PgPoolOptions::new().max_connections(1).connect(admin_url).await.expect("connect validation admin for cleanup");
+        sqlx::query(&format!(r#"DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)"#))
+            .execute(&admin_pool)
+            .await
+            .expect("drop validation database");
+        admin_pool.close().await;
+    }
+
     fn test_role() -> RoleSnapshot {
         let mut policy = BTreeMap::new();
         policy.insert("fs.read".to_string(), ManifestDecision::Allow);
         policy.insert("fs.write".to_string(), ManifestDecision::Allow);
         policy.insert("tree.list".to_string(), ManifestDecision::Allow);
+        policy.insert("git.status".to_string(), ManifestDecision::Allow);
         policy.insert("workflow_memory.search".to_string(), ManifestDecision::Allow);
         policy.insert("workflow_memory.remember.project".to_string(), ManifestDecision::Allow);
         policy.insert("workflow_memory.feedback".to_string(), ManifestDecision::Allow);
@@ -5376,6 +5404,76 @@ print("tree:", tree.list(".", depth=2))"#,
         for forbidden in ["\"path\"", "\"size\"", "{", "[", "node_modules", ".git"] {
             assert!(!output.contains(forbidden), "forbidden {forbidden} in {}", output);
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_code_owner_observed_tree_smoke_persists_full_plaintext_artifact() -> Result<()> {
+        let (admin_url, database_name, pool) = create_validation_database("tree_smoke").await;
+        let root_dir = std::env::temp_dir().join(format!("agent-runtime-tree-smoke-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(root_dir.join("src/bin"))?;
+        std::fs::create_dir_all(root_dir.join("node_modules/pkg"))?;
+        std::fs::write(root_dir.join("Cargo.toml"), "[package]\nname = \"tree-smoke\"\n")?;
+        std::fs::write(root_dir.join("src/lib.rs"), "pub fn lib() {}\n")?;
+        let git_init = Command::new("git").arg("init").arg("-q").current_dir(&root_dir).output();
+        assert!(git_init.map(|output| output.status.success()).unwrap_or(false), "git init failed");
+
+        let mut role = test_role();
+        role.policy.insert("git.status".to_string(), ManifestDecision::Allow);
+        let root = ExecutionRoot::new(&root_dir)?;
+        let session = crate::db::new_session(&pool, &role, Some("tree-smoke"), root_dir.to_str().unwrap(), None, None, None).await?;
+        let turn_id = Uuid::new_v4();
+        let tool_call_id = Uuid::new_v4();
+        let source = r#"print(workflow_memory.help())
+print("--- cwd tree ---")
+print(tree.list(".", depth=2))
+print("--- git status ---")
+print(git.status())"#;
+        sqlx::query("INSERT INTO turns (id, session_id, role, input_text, status, started_at) VALUES ($1,$2,'user',$3,'running',now())")
+            .bind(turn_id)
+            .bind(session)
+            .bind(source)
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO tool_calls (id, session_id, turn_id, tool_name, call_identity, input, status, started_at) VALUES ($1,$2,$3,'execute_code',$4,$5,'running',now())")
+            .bind(tool_call_id)
+            .bind(session)
+            .bind(turn_id)
+            .bind(format!("call_{tool_call_id}"))
+            .bind(json!({"source": source}))
+            .execute(&pool)
+            .await?;
+
+        let packet = execute_code(&pool, session, turn_id, tool_call_id, source, &root, &role).await?;
+        assert!(packet.ok, "{packet:?}");
+        let stdout_artifact_id = packet.output["stdoutArtifact"]["artifactId"].as_str().expect("stdout artifact id");
+        let stdout_packet = output_artifacts::retrieve(&pool, session, Uuid::parse_str(stdout_artifact_id)?, "head", Some(80), None, None, None, None).await?;
+        assert!(stdout_packet.content.contains("--- cwd tree ---"), "{}", stdout_packet.content);
+        assert!(stdout_packet.content.contains("├── src") || stdout_packet.content.contains("└── src"), "{}", stdout_packet.content);
+        assert!(stdout_packet.content.contains("lib.rs"), "{}", stdout_packet.content);
+        assert!(stdout_packet.content.contains("--- git status ---"), "{}", stdout_packet.content);
+        assert!(!stdout_packet.content.contains("\"path\""), "{}", stdout_packet.content);
+        assert!(!stdout_packet.content.contains("node_modules"), "{}", stdout_packet.content);
+
+        let tree_artifact = sqlx::query(
+            "SELECT content, metadata FROM execution_output_artifacts WHERE session_id=$1 AND script_run_id=$2 AND source_type='starter_file_tree_read' AND stream='tree.list' ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(session)
+        .bind(packet.script_run_id)
+        .fetch_one(&pool)
+        .await?;
+        let tree_content: String = tree_artifact.get("content");
+        let metadata: JsonValue = tree_artifact.get("metadata");
+        assert!(tree_content.starts_with(".\n"), "{tree_content}");
+        assert!(tree_content.contains("Cargo.toml"), "{tree_content}");
+        assert!(tree_content.contains("src"), "{tree_content}");
+        assert!(!tree_content.contains("\"path\""), "{tree_content}");
+        assert!(!tree_content.trim_start().starts_with('['), "{tree_content}");
+        assert_eq!(metadata["operation"], "tree.list");
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(root_dir);
+        drop_validation_database(&admin_url, &database_name).await;
+        Ok(())
     }
 
     #[test]
