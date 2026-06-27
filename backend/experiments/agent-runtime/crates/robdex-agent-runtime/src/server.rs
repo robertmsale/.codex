@@ -2224,14 +2224,42 @@ mod tests {
         let rendered = serde_json::to_string(&shape).expect("shape json");
         assert!(rendered.contains("new role epoch instructions"), "{rendered}");
         assert!(rendered.contains("<role_transition_summary"), "{rendered}");
+        assert!(rendered.contains("role_authority_changed"), "{rendered}");
         assert!(!rendered.contains("<runtime_context"), "role transition must be concise and not dump full runtime context: {rendered}");
-        assert!(!rendered.contains("kind=\\\"role_epoch_changed\\\""), "role change must not be represented as ordinary context_delta: {rendered}");
+        assert!(!rendered.contains("kind=\\\"role_epoch_changed\\\""), "role change must not use legacy role_epoch_changed delta: {rendered}");
         let event_kind: String = sqlx::query_scalar("SELECT event_kind FROM session_context_events WHERE session_id=$1 ORDER BY sequence DESC LIMIT 1")
             .bind(session_id)
             .fetch_one(&test_db.pool)
             .await
             .expect("event");
         assert_eq!(event_kind, "role_authority_changed");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn god_mode_grant_then_revoke_before_next_request_renders_both_events_in_order() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("context-god-mode-batch"), ".", Some("."), None, None).await.expect("session");
+        let model = FakeModelClient { direct_final_text: Some("ok"), ..Default::default() };
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "first", &model, compaction::CompactionBudget::default()).await.expect("first send");
+
+        crate::god_mode::grant_session(&test_db.pool, session_id, "test", "grant before next request", None).await.expect("grant");
+        crate::god_mode::revoke_active(&test_db.pool, session_id, "test", "revoke before next request").await.expect("revoke");
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "after grant revoke batch", &model, compaction::CompactionBudget::default()).await.expect("batch send");
+        let shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("shape");
+        let rendered = serde_json::to_string(&shape).expect("shape json");
+        assert!(rendered.contains("event_count=\\\"2\\\""), "{rendered}");
+        let grant = rendered.find("old_god_mode=inactive new_god_mode=active").expect("grant event represented");
+        let revoke = rendered.find("old_god_mode=active new_god_mode=inactive").expect("revoke event represented");
+        assert!(grant < revoke, "{rendered}");
+        assert!(!rendered.contains("<runtime_context"), "{rendered}");
+
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "unchanged after batch", &model, compaction::CompactionBudget::default()).await.expect("unchanged send");
+        let unchanged_shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("unchanged shape");
+        let unchanged_rendered = serde_json::to_string(&unchanged_shape).expect("unchanged shape json");
+        assert!(!unchanged_rendered.contains("old_god_mode=inactive new_god_mode=active"), "{unchanged_rendered}");
+        assert!(!unchanged_rendered.contains("old_god_mode=active new_god_mode=inactive"), "{unchanged_rendered}");
         test_db.cleanup().await;
     }
 

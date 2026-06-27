@@ -993,6 +993,11 @@ not dump the full command catalog on unchanged turns. Runtime changes append
 durable `session_context_events` rows at mutation time and are rendered once as
 compact developer deltas, such as `cwd_changed`, `project_assignment_changed`,
 `tool_context_changed`, `god_mode_changed`, and `session_lifecycle_changed`.
+If multiple events are pending before the next model request, the runtime emits
+one ordered bounded delta batch containing every pending event sequence and kind
+before advancing the consumed watermark. A grant-then-revoke God Mode sequence
+therefore appears as both the grant and revoke, not only the final inactive
+state.
 Role authority or role-instruction changes append `role_authority_changed`,
 insert a concise `role_transition_summary`, and include the current
 `role_instructions` block instead of dumping the full role JSON. God Mode

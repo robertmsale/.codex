@@ -20,6 +20,14 @@ pub struct ContextSnapshotRecord {
     pub event_sequence: i64,
     pub snapshot: Value,
     pub previous_snapshot: Option<Value>,
+    pub pending_events: Vec<PendingContextEvent>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingContextEvent {
+    pub sequence: i64,
+    pub event_kind: String,
+    pub payload: Value,
 }
 
 pub fn role_epoch(role: &RoleSnapshot) -> String {
@@ -86,34 +94,59 @@ pub fn runtime_context_block(snapshot: &ContextSnapshotRecord) -> String {
 }
 
 pub fn context_delta_block(snapshot: &ContextSnapshotRecord) -> Option<String> {
-    if matches!(snapshot.event_kind.as_str(), "initial" | "unchanged" | "snapshot_refreshed" | "role_authority_changed") {
+    if matches!(snapshot.event_kind.as_str(), "initial" | "unchanged" | "snapshot_refreshed") {
         return None;
     }
-    let details = bounded_delta_details(snapshot);
+    let events = pending_context_events_for_render(snapshot);
+    if events.is_empty() {
+        return None;
+    }
+    let changes = events
+        .iter()
+        .map(|event| {
+            format!(
+                "  <change kind=\"{}\" sequence=\"{}\">{}</change>",
+                xml_escape(&event.event_kind),
+                event.sequence,
+                xml_escape(&bounded_delta_details_for_event(snapshot, event))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     Some(format!(
-        "<context_delta epoch=\"{}\" previous_epoch=\"{}\">\n  <change kind=\"{}\" sequence=\"{}\">{}</change>\n</context_delta>",
+        "<context_delta epoch=\"{}\" previous_epoch=\"{}\" event_count=\"{}\">\n{}\n</context_delta>",
         snapshot.context_epoch,
         snapshot.previous_context_epoch.map(|v| v.to_string()).unwrap_or_else(|| "none".to_string()),
-        xml_escape(&snapshot.event_kind),
-        snapshot.event_sequence,
-        xml_escape(&details)
+        events.len(),
+        changes
     ))
 }
 
 pub fn role_transition_summary_block(snapshot: &ContextSnapshotRecord) -> Option<String> {
-    if snapshot.event_kind != "role_authority_changed" {
+    let role_events = pending_context_events_for_render(snapshot)
+        .into_iter()
+        .filter(|event| event.event_kind == "role_authority_changed")
+        .collect::<Vec<_>>();
+    if role_events.is_empty() {
         return None;
     }
     let previous = snapshot.previous_snapshot.as_ref().and_then(|value| value.pointer("/role/epoch")).and_then(Value::as_str).unwrap_or("unknown");
-    let authority_delta = snapshot
-        .snapshot
-        .pointer("/role/authorityDelta")
-        .map(role_authority_delta_text)
-        .unwrap_or_else(|| "Changed permissions were not summarized by the role save event.".to_string());
+    let authority_delta = role_events
+        .iter()
+        .map(|event| {
+            format!(
+                "sequence={}: {}",
+                event.sequence,
+                role_authority_delta_text(&event.payload)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     Some(format!(
-        "<role_transition_summary epoch=\"{}\" previous_epoch=\"{}\" sequence=\"{}\">\nRole authority changed. Prior role instructions and policy text are not active instructions. Use the current role_instructions block and this concise authority delta as active authority.\n{}\n</role_transition_summary>",
+        "<role_transition_summary epoch=\"{}\" previous_epoch=\"{}\" event_count=\"{}\" sequence=\"{}\">\nRole authority changed. Prior role instructions and policy text are not active instructions. Use the current role_instructions block and this concise authority delta as active authority.\n{}\n</role_transition_summary>",
         xml_escape(&snapshot.role_epoch),
         xml_escape(previous),
+        role_events.len(),
         snapshot.event_sequence,
         xml_escape(&authority_delta)
     ))
@@ -168,34 +201,58 @@ fn role_authority_delta_text(summary: &Value) -> String {
     )
 }
 
-fn bounded_delta_details(snapshot: &ContextSnapshotRecord) -> String {
+fn pending_context_events_for_render(snapshot: &ContextSnapshotRecord) -> Vec<PendingContextEvent> {
+    if !snapshot.pending_events.is_empty() {
+        return snapshot
+            .pending_events
+            .iter()
+            .filter(|event| event.event_kind != "initial")
+            .cloned()
+            .collect();
+    }
+    if matches!(snapshot.event_kind.as_str(), "initial" | "unchanged" | "snapshot_refreshed") {
+        return Vec::new();
+    }
+    vec![PendingContextEvent {
+        sequence: snapshot.event_sequence,
+        event_kind: snapshot.event_kind.clone(),
+        payload: json!({}),
+    }]
+}
+
+fn payload_str<'a>(payload: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| payload.get(*key).and_then(Value::as_str))
+}
+
+fn bounded_delta_details_for_event(snapshot: &ContextSnapshotRecord, event: &PendingContextEvent) -> String {
     let old = snapshot.previous_snapshot.as_ref();
     let current = &snapshot.snapshot;
-    let detail = match snapshot.event_kind.as_str() {
+    let payload = &event.payload;
+    let detail = match event.event_kind.as_str() {
         "cwd_changed" => format!(
             "old_cwd={} new_cwd={} source={} sequence={}",
             old.and_then(|value| value.pointer("/cwd/path")).and_then(Value::as_str).unwrap_or("unknown"),
             current.pointer("/cwd/path").and_then(Value::as_str).unwrap_or("unknown"),
             current.pointer("/cwd/source").and_then(Value::as_str).unwrap_or("unknown"),
-            snapshot.event_sequence,
+            event.sequence,
         ),
         "project_assignment_changed" => format!(
             "old_project={} new_project={} sequence={}",
             old.and_then(|value| value.pointer("/project/key")).and_then(Value::as_str).unwrap_or("unknown"),
             current.pointer("/project/key").and_then(Value::as_str).unwrap_or("unknown"),
-            snapshot.event_sequence,
+            event.sequence,
         ),
         "worktree_root_changed" => format!(
             "old_worktree_root={} new_worktree_root={} sequence={}",
             old.and_then(|value| value.pointer("/worktreeRoot")).and_then(Value::as_str).unwrap_or("unknown"),
             current.pointer("/worktreeRoot").and_then(Value::as_str).unwrap_or("unknown"),
-            snapshot.event_sequence,
+            event.sequence,
         ),
         "model_changed" => format!(
             "old_model={} new_model={} sequence={}",
             old.and_then(|value| value.get("model")).and_then(Value::as_str).unwrap_or("unknown"),
             current.get("model").and_then(Value::as_str).unwrap_or("unknown"),
-            snapshot.event_sequence,
+            event.sequence,
         ),
         "tool_context_changed" => format!(
             "old_command_context={} new_command_context={} old_visible_count={} new_visible_count={} sequence={}",
@@ -203,21 +260,30 @@ fn bounded_delta_details(snapshot: &ContextSnapshotRecord) -> String {
             current.pointer("/tools/commandContextId").and_then(Value::as_str).unwrap_or("unknown"),
             old.and_then(|value| value.pointer("/tools/visibleCommandCount")).and_then(Value::as_i64).unwrap_or_default(),
             current.pointer("/tools/visibleCommandCount").and_then(Value::as_i64).unwrap_or_default(),
-            snapshot.event_sequence,
+            event.sequence,
         ),
         "god_mode_changed" => format!(
             "old_god_mode={} new_god_mode={} sequence={}",
-            old.and_then(|value| value.pointer("/godMode/state")).and_then(Value::as_str).unwrap_or("unknown"),
-            current.pointer("/godMode/state").and_then(Value::as_str).unwrap_or("unknown"),
-            snapshot.event_sequence,
+            payload_str(payload, &["previousGodMode"]).or_else(|| old.and_then(|value| value.pointer("/godMode/state")).and_then(Value::as_str)).unwrap_or("unknown"),
+            payload_str(payload, &["newGodMode"]).or_else(|| current.pointer("/godMode/state").and_then(Value::as_str)).unwrap_or("unknown"),
+            event.sequence,
         ),
         "session_lifecycle_changed" => format!(
             "old_lifecycle={} new_lifecycle={} sequence={}",
-            old.and_then(|value| value.pointer("/lifecycle/status")).and_then(Value::as_str).unwrap_or("unknown"),
-            current.pointer("/lifecycle/status").and_then(Value::as_str).unwrap_or("unknown"),
-            snapshot.event_sequence,
+            payload_str(payload, &["previousLifecycle"]).or_else(|| old.and_then(|value| value.pointer("/lifecycle/status")).and_then(Value::as_str)).unwrap_or("unknown"),
+            payload_str(payload, &["newLifecycle"]).or_else(|| current.pointer("/lifecycle/status").and_then(Value::as_str)).unwrap_or("unknown"),
+            event.sequence,
         ),
-        other => format!("kind={other} sequence={}", snapshot.event_sequence),
+        "role_authority_changed" => format!(
+            "role_id={} previous_role_version_id={} new_role_version_id={} actor={} source={} sequence={}",
+            payload.get("roleId").and_then(Value::as_str).unwrap_or("unknown"),
+            payload.get("previousRoleVersionId").and_then(Value::as_str).unwrap_or("unknown"),
+            payload.get("newRoleVersionId").and_then(Value::as_str).unwrap_or("unknown"),
+            payload.get("actor").and_then(Value::as_str).unwrap_or("unknown"),
+            payload.get("source").and_then(Value::as_str).unwrap_or("unknown"),
+            event.sequence,
+        ),
+        other => format!("kind={other} sequence={}", event.sequence),
     };
     truncate_chars(&detail, 1200)
 }
@@ -350,6 +416,7 @@ pub async fn persist_context_snapshot(
             event_sequence: *prior_watermark,
             snapshot: prior_snapshot.clone(),
             previous_snapshot: Some(prior_snapshot.clone()),
+            pending_events: Vec::new(),
         });
     }
     if previous.is_some() && structural_event_kind.is_some() && pending_count == 0 {
@@ -366,13 +433,20 @@ pub async fn persist_context_snapshot(
         .execute(pool)
         .await?;
     }
-    let pending: Vec<(i64, String, Value)> = sqlx::query_as(
+    let pending: Vec<PendingContextEvent> = sqlx::query_as::<_, (i64, String, Value)>(
         "SELECT sequence, event_kind, payload FROM session_context_events WHERE session_id=$1 AND sequence > $2 ORDER BY sequence ASC",
     )
     .bind(session.id)
     .bind(previous_watermark)
     .fetch_all(pool)
-    .await?;
+    .await?
+    .into_iter()
+    .map(|(sequence, event_kind, payload)| PendingContextEvent {
+        sequence,
+        event_kind,
+        payload,
+    })
+    .collect();
     let (event_sequence, event_kind) = if previous.is_none() {
         let event_sequence: i64 = sqlx::query_scalar(
             "INSERT INTO session_context_events (session_id, turn_id, event_kind, role_epoch, context_epoch, previous_context_epoch, payload) VALUES ($1,$2,'initial',$3,$4,$5,$6) RETURNING sequence",
@@ -386,8 +460,8 @@ pub async fn persist_context_snapshot(
         .fetch_one(pool)
         .await?;
         (event_sequence, "initial".to_string())
-    } else if let Some((sequence, kind, _)) = pending.last() {
-        (*sequence, kind.clone())
+    } else if let Some(event) = pending.last() {
+        (event.sequence, event.event_kind.clone())
     } else {
         unreachable!("unchanged contexts returned early and structural changes create a pending event")
     };
@@ -412,8 +486,17 @@ pub async fn persist_context_snapshot(
         context_event_watermark: watermark,
         event_kind,
         event_sequence,
-        snapshot,
-        previous_snapshot: previous.map(|(_, _, value)| value),
+        snapshot: snapshot.clone(),
+        previous_snapshot: previous.as_ref().map(|(_, _, value)| value.clone()),
+        pending_events: if previous.is_none() {
+            vec![PendingContextEvent {
+                sequence: event_sequence,
+                event_kind: "initial".to_string(),
+                payload: json!({"snapshot": snapshot}),
+            }]
+        } else {
+            pending
+        },
     })
 }
 
@@ -609,6 +692,7 @@ mod tests {
                 "generatedAt": "2026-06-19T00:00:00Z"
             }),
             previous_snapshot: None,
+            pending_events: Vec::new(),
         };
         let block = runtime_context_block(&snapshot);
         assert!(block.contains("state=\"unavailable\""));
@@ -633,9 +717,10 @@ mod tests {
                 "cwd": {"path": "/tmp/old", "source": "session.workdir"},
                 "tools": {"commandContextId":"a","visibleCommandCount":1}
             })),
+            pending_events: Vec::new(),
         };
         let delta = context_delta_block(&snapshot).expect("delta");
-        assert!(delta.contains("<context_delta epoch=\"2\" previous_epoch=\"1\">"));
+        assert!(delta.contains("<context_delta epoch=\"2\" previous_epoch=\"1\" event_count=\"1\">"));
         assert!(delta.contains("kind=\"cwd_changed\""));
         assert!(delta.contains("old_cwd=/tmp/old"));
         assert!(delta.contains("new_cwd=/tmp/new"));
@@ -653,12 +738,34 @@ mod tests {
             event_sequence: 14,
             snapshot: json!({"role": {"epoch": "operator:2.0.1:new"}}),
             previous_snapshot: Some(json!({"role": {"epoch": "operator:2.0.0:old"}})),
+            pending_events: vec![PendingContextEvent {
+                sequence: 14,
+                event_kind: "role_authority_changed".to_string(),
+                payload: json!({
+                    "actor": "gui-role-editor",
+                    "source": "gui-role-editor",
+                    "roleId": "operator",
+                    "previousRoleVersionId": "old",
+                    "newRoleVersionId": "new",
+                    "changedActionSummary": {
+                        "addedActions": ["git.status"],
+                        "removedActions": [],
+                        "changedDecisions": []
+                    },
+                    "changedCapabilitySummary": {
+                        "addedCapabilities": ["git.status"],
+                        "removedCapabilities": []
+                    }
+                }),
+            }],
         };
-        assert!(context_delta_block(&snapshot).is_none());
+        let delta = context_delta_block(&snapshot).expect("role event participates in ordered context delta");
+        assert!(delta.contains("kind=\"role_authority_changed\""));
         let transition = role_transition_summary_block(&snapshot).expect("transition");
         assert!(transition.contains("<role_transition_summary"));
         assert!(transition.contains("Prior role instructions and policy text are not active instructions"));
         assert!(transition.contains("concise authority delta"));
+        assert!(transition.contains("git.status"));
     }
 
     #[test]
@@ -685,6 +792,7 @@ mod tests {
                     "worktreeRoot": "/old-root",
                     "model": "gpt-old",
                 })),
+                pending_events: Vec::new(),
             };
             let delta = context_delta_block(&snapshot).expect("delta");
             assert!(delta.contains(expected), "{delta}");
@@ -703,6 +811,7 @@ mod tests {
             event_sequence: 13,
             snapshot: json!({"role": {"epoch": "operator:2.0.0:test"}}),
             previous_snapshot: Some(json!({"role": {"epoch": "operator:2.0.0:test"}})),
+            pending_events: Vec::new(),
         };
         let command_context = crate::command_registry::RuntimeCommandContextMessage {
             text: "Runtime command context unchanged: cmdctx-test.".to_string(),
@@ -739,11 +848,45 @@ mod tests {
             event_sequence: 14,
             snapshot: json!({"godMode": {"state": "active"}}),
             previous_snapshot: Some(json!({"godMode": {"state": "inactive"}})),
+            pending_events: Vec::new(),
         };
         let delta = context_delta_block(&snapshot).expect("delta");
         assert!(delta.contains("kind=\"god_mode_changed\""));
         assert!(delta.contains("old_god_mode=inactive"));
         assert!(delta.contains("new_god_mode=active"));
         assert!(!delta.contains("<runtime_context"));
+    }
+
+    #[test]
+    fn context_delta_renders_multiple_pending_events_in_order_without_collapsing_final_state() {
+        let snapshot = ContextSnapshotRecord {
+            role_epoch: "operator:2.0.0:test".to_string(),
+            context_epoch: 4,
+            previous_context_epoch: Some(3),
+            context_event_watermark: 22,
+            event_kind: "god_mode_changed".to_string(),
+            event_sequence: 22,
+            snapshot: json!({"godMode": {"state": "inactive"}}),
+            previous_snapshot: Some(json!({"godMode": {"state": "inactive"}})),
+            pending_events: vec![
+                PendingContextEvent {
+                    sequence: 21,
+                    event_kind: "god_mode_changed".to_string(),
+                    payload: json!({"previousGodMode":"inactive","newGodMode":"active"}),
+                },
+                PendingContextEvent {
+                    sequence: 22,
+                    event_kind: "god_mode_changed".to_string(),
+                    payload: json!({"previousGodMode":"active","newGodMode":"inactive"}),
+                },
+            ],
+        };
+        let delta = context_delta_block(&snapshot).expect("delta");
+        assert!(delta.contains("event_count=\"2\""), "{delta}");
+        let grant = delta.find("sequence=\"21\"").expect("grant represented");
+        let revoke = delta.find("sequence=\"22\"").expect("revoke represented");
+        assert!(grant < revoke, "{delta}");
+        assert!(delta.contains("old_god_mode=inactive new_god_mode=active"), "{delta}");
+        assert!(delta.contains("old_god_mode=active new_god_mode=inactive"), "{delta}");
     }
 }
