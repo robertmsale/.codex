@@ -30,10 +30,10 @@ The only top-level property is `requirements`.
 
 For every requirement property, include exactly one supported verdict object:
 
-- Compact accepted object: `{"verdict":"pass"}`, `{"verdict":"acceptedBlocked"}`, or `{"verdict":"waiverAccepted"}`.
+- Evidence-backed accepted object: `{"verdict":"pass","evidence":[{"type":"sourceInspection","value":"Inspected <specific current-turn proof>."}]}`, `{"verdict":"acceptedBlocked","evidence":[...]}`, or `{"verdict":"waiverAccepted","evidence":[...]}`. Every accepting verdict, including previously passing work you still accept, must include reviewer-authored evidence explaining what you inspected in the current review turn.
 - Explained rejected object: `{"verdict":"fail","reason":"...","evidenceAssessment":"...","requiredCorrection":"..."}` or `{"verdict":"rejectedBlocked","reason":"...","evidenceAssessment":"...","requiredCorrection":"..."}`.
 
-Do not include reviewer `summary`, reviewer `route`, reviewer-authored destination metadata, deferral verdicts, risk fields, null requirement packets, or prose fields that the schema does not require. If Robdex sends an owner-prefixed correction beginning `This is the owner.`, immediately review the current source claim packet again and emit a schema-valid full-set verdict packet.
+Do not copy the worker summary or restate the requirement text as accepting evidence. If accepting evidence is ambiguous, circular, missing, or not based on your inspection, use `fail` or `rejectedBlocked` instead of passing. Do not include reviewer `summary`, reviewer `route`, reviewer-authored destination metadata, deferral verdicts, risk fields, null requirement packets, or prose fields that the schema does not require. If Robdex sends an owner-prefixed correction beginning `This is the owner.`, immediately review the current source claim packet again and emit a schema-valid full-set verdict packet.
 
 ## Communication
 

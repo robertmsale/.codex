@@ -269,7 +269,13 @@ The reviewer also receives a structured output schema. It has one top-level obje
 {
   "requirements": {
     "passedRequirement": {
-      "verdict": "pass"
+      "verdict": "pass",
+      "evidence": [
+        {
+          "type": "testsRun",
+          "value": "Inspected the cited route-level test output from this review turn."
+        }
+      ]
     },
     "failedRequirement": {
       "verdict": "fail",
@@ -285,7 +291,7 @@ The reviewer packet has exactly one top-level property: `requirements`. That obj
 
 Each requirement uses exactly one of two shapes:
 
-- Compact accepted verdict: `{"verdict":"pass"}`, `{"verdict":"acceptedBlocked"}`, or `{"verdict":"waiverAccepted"}`.
+- Evidence-backed accepted verdict: `pass`, `acceptedBlocked`, or `waiverAccepted` with a non-empty `evidence` array. Each evidence item must be reviewer-authored inspection proof shaped as `{ "type": "changedFiles|testsRun|sourceInspection|artifact|screenshot|commandOutput|migration|searchProof", "value": "<what the reviewer inspected>" }`.
 - Explained rejected verdict: `fail` or `rejectedBlocked` with `reason`, `evidenceAssessment`, and `requiredCorrection`.
 
 Reviewer output does not contain reviewer `summary`, reviewer `route`, reviewer-authored destination metadata, deferral verdicts, risk fields, null requirement packets, or reviewer-owned overall verdicts. Robdex rejects invalid reviewer output before progress mutation and sends an owner-prefixed correction to the reviewer thread only.
@@ -302,7 +308,7 @@ The reviewer verdict schema is full-set. It carries every canonical requirement 
 
 The full canonical RequirementSet and all progress history remain in Rust-owned persisted bridge state for audit, `requirements-status`, routing, and warm handoff.
 
-Workers should not repeatedly claim unchanged work. Reviewers must verdict every canonical key required by the schema; passing or accepted outcomes use compact verdict-only objects, while failed or rejected-blocker outcomes include concrete evidence and correction.
+Workers should not repeatedly claim unchanged work. Reviewers must verdict every canonical key required by the schema; passing or accepted outcomes include reviewer-authored evidence for the current review turn, while failed or rejected-blocker outcomes include concrete assessment and correction.
 
 ## Review Routing Lifecycle
 

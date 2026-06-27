@@ -3182,7 +3182,7 @@ enum ReviewableRequirementsVerdict {
     Invalid,
 }
 
-const REQUIREMENTS_REVIEWER_INVALID_OUTPUT_CORRECTION_PROMPT: &str = "This is the owner. Your last Requirements Review output was invalid. Emit exactly one JSON object with top-level `requirements`. Include every canonical requirement key from the active schema. Use compact verdict-only objects only for `pass`, `acceptedBlocked`, or `waiverAccepted`. Use full `fail` or `rejectedBlocked` objects with `reason`, `evidenceAssessment`, and `requiredCorrection` for rejected outcomes. Do not include reviewer `summary`, `route`, `notYet`, `stillPassing`, `risk`, `waiverRequired`, or `requirements: null`.";
+const REQUIREMENTS_REVIEWER_INVALID_OUTPUT_CORRECTION_PROMPT: &str = "This is the owner. Your last Requirements Review output was invalid. Emit exactly one JSON object with top-level `requirements`. Include every canonical requirement key from the active schema. For `pass`, `acceptedBlocked`, and `waiverAccepted`, include non-empty reviewer-authored `evidence` shaped as `{ \"type\": \"changedFiles|testsRun|sourceInspection|artifact|screenshot|commandOutput|migration|searchProof\", \"value\": \"<what you inspected>\" }`. Use full `fail` or `rejectedBlocked` objects with `reason`, `evidenceAssessment`, and `requiredCorrection` for rejected outcomes. Do not include reviewer `summary`, `route`, deferral verdicts, shortcut verdicts, risk, waiver escalation fields, or `requirements: null`.";
 
 fn reviewable_requirements_claim_payload(payload: &Value) -> ReviewableRequirementsClaim {
     let Some(object) = payload.as_object() else {
@@ -3389,6 +3389,68 @@ fn requirements_verdict_has_full_canonical_entries(state: &Value, source_thread_
             return false;
         };
         if !matches!(verdict, "pass" | "fail" | "acceptedBlocked" | "rejectedBlocked" | "waiverAccepted") {
+            return false;
+        }
+        if matches!(verdict, "pass" | "acceptedBlocked" | "waiverAccepted")
+            && !reviewer_accepting_verdict_has_concrete_evidence(value)
+        {
+            return false;
+        }
+        if matches!(verdict, "fail" | "rejectedBlocked")
+            && !reviewer_rejected_verdict_has_required_correction_fields(value)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn reviewer_rejected_verdict_has_required_correction_fields(value: &Value) -> bool {
+    for key in ["reason", "evidenceAssessment", "requiredCorrection"] {
+        let Some(text) = value.get(key).and_then(Value::as_str).map(str::trim) else {
+            return false;
+        };
+        if text.is_empty() {
+            return false;
+        }
+    }
+    true
+}
+
+fn reviewer_accepting_verdict_has_concrete_evidence(value: &Value) -> bool {
+    let Some(evidence) = value.get("evidence").and_then(Value::as_array) else {
+        return false;
+    };
+    if evidence.is_empty() {
+        return false;
+    }
+    for item in evidence {
+        let Some(object) = item.as_object() else {
+            return false;
+        };
+        if object.len() != 2 {
+            return false;
+        }
+        let Some(kind) = object.get("type").and_then(Value::as_str) else {
+            return false;
+        };
+        if !matches!(
+            kind,
+            "changedFiles" | "testsRun" | "sourceInspection" | "artifact" | "screenshot" | "commandOutput" | "migration" | "searchProof"
+        ) {
+            return false;
+        }
+        let Some(text) = object.get("value").and_then(Value::as_str).map(str::trim) else {
+            return false;
+        };
+        if text.len() < 4 {
+            return false;
+        }
+        let lower = text.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "todo" | "tbd" | "n/a" | "none" | "placeholder" | "same as requirement" | "requirement satisfied"
+        ) {
             return false;
         }
     }
@@ -4241,7 +4303,8 @@ mod tests {
                 "requiredCorrection": "restore the previously passing behavior"
             },
             "mustReviewNow": {
-                "verdict": "pass"
+                "verdict": "pass",
+                "evidence": [{"type": "sourceInspection", "value": "Reviewed the current claim packet and regression evidence for mustReviewNow."}]
             }
         });
         mark_requirements_review_verdict(&runtime, "worker-1", "reviewer-1", verdict_payload.clone())
@@ -4323,7 +4386,7 @@ mod tests {
                     "review-turn-embedded",
                     "final-embedded",
                     Some("final_answer"),
-                    "Reviewed.\n{\"requirements\":{\"mustProvideClaims\":{\"verdict\":\"pass\"}}}",
+                    "Reviewed.\n{\"requirements\":{\"mustProvideClaims\":{\"verdict\":\"pass\",\"evidence\":[{\"type\":\"sourceInspection\",\"value\":\"Reviewed the current source claim packet and matched the cited testsRun evidence to this requirement.\"}]}}}",
                 )],
             );
         }
@@ -4345,6 +4408,184 @@ mod tests {
             json!("passed")
         );
         assert_eq!(source["requirements"]["active"], json!(false));
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn accepting_reviewer_verdict_without_evidence_is_corrected_before_progress_mutation() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirements": [
+                                        {"key": "mustProvideClaims", "statement": "Final packets must include claims.", "severity": "blocker", "verificationMethod": "manualEvidence"},
+                                        {"key": "mustAlsoProvideClaims", "statement": "All accepting verdicts need reviewer evidence.", "severity": "blocker", "verificationMethod": "manualEvidence"}
+                                    ],
+                                    "reviewProgress": {}
+                                },
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "requirements-alpha",
+                                    "status": "inReview",
+                                    "latestClaimPacket": {"summary": "claimed"},
+                                    "updatedAt": 1
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "reviewer-1".to_string(),
+                vec![test_chat_message(
+                    "reviewer-1",
+                    "review-turn-missing-evidence",
+                    "final-missing-evidence",
+                    Some("final_answer"),
+                    "{\"requirements\":{\"mustProvideClaims\":{\"verdict\":\"pass\"},\"mustAlsoProvideClaims\":{\"verdict\":\"acceptedBlocked\"}}}",
+                )],
+            );
+        }
+
+        assert!(
+            runtime
+                .maybe_record_requirements_verdict("reviewer-1", "review-turn-missing-evidence")
+                .await
+        );
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "reviewer-1");
+        let correction = request["params"]["input"][0]["text"].as_str().expect("correction text");
+        assert!(correction.starts_with("This is the owner. "));
+        assert!(correction.contains("include non-empty reviewer-authored `evidence`"));
+        assert!(requests.try_recv().is_err(), "invalid accepting verdict must not route to source worker");
+
+        let state = runtime.state_document_value().await;
+        let source = &state["projects"]["alpha"]["agents"]["worker-1"];
+        assert_eq!(source["requirements"]["active"], json!(true));
+        assert_eq!(source["requirements"]["reviewProgress"], json!({}));
+        assert_eq!(source["requirementReview"]["status"], json!("inReview"));
+        assert!(source["requirementReview"]["latestVerdictPacket"].is_null());
+        assert_eq!(source["requirementPackets"][0]["packetType"], json!("verdictCorrection"));
+        assert_eq!(source["requirementPackets"][0]["targetThreadId"], json!("reviewer-1"));
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn still_passing_reviewer_verdict_is_corrected_before_progress_mutation_even_with_evidence() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "agents": {
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirements": [{
+                                        "key": "alreadyPassed",
+                                        "statement": "Previously passed work must be reviewed again.",
+                                        "severity": "high",
+                                        "verificationMethod": "manualEvidence"
+                                    }],
+                                    "reviewProgress": {
+                                        "alreadyPassed": {"status": "passed", "updatedAt": 7}
+                                    }
+                                },
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "requirements-alpha",
+                                    "status": "inReview",
+                                    "updatedAt": 1
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+        {
+            let mut thread_cache = runtime.thread_cache.write().await;
+            thread_cache.message_cache_by_thread_id.insert(
+                "reviewer-1".to_string(),
+                vec![test_chat_message(
+                    "reviewer-1",
+                    "review-turn-still-passing",
+                    "final-still-passing",
+                    Some("final_answer"),
+                    "{\"requirements\":{\"alreadyPassed\":{\"verdict\":\"stillPassing\",\"evidence\":[{\"type\":\"sourceInspection\",\"value\":\"Reviewed current-turn evidence.\"}]}}}",
+                )],
+            );
+        }
+
+        assert!(
+            runtime
+                .maybe_record_requirements_verdict("reviewer-1", "review-turn-still-passing")
+                .await
+        );
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "reviewer-1");
+        assert!(requests.try_recv().is_err(), "invalid shortcut verdict must not route to source worker");
+        let state = runtime.state_document_value().await;
+        let source = &state["projects"]["alpha"]["agents"]["worker-1"];
+        assert_eq!(source["requirements"]["reviewProgress"]["alreadyPassed"]["status"], json!("passed"));
+        assert!(source["requirementReview"]["latestVerdictPacket"].is_null());
+        assert_eq!(source["requirementPackets"][0]["packetType"], json!("verdictCorrection"));
         transport.abort();
         server.abort();
     }
@@ -5123,7 +5364,8 @@ mod tests {
                 "review-turn-positive-progress",
                 &json!({
                     "passedScoped": {
-                        "verdict": "pass"
+                        "verdict": "pass",
+                        "evidence": [{"type": "sourceInspection", "value": "Reviewed the current claim packet and persisted progress for passedScoped."}]
                     }
                 }),
             )
@@ -5306,7 +5548,8 @@ mod tests {
                 "review-turn-owner-blocked",
                 &json!({
                     "mustProve": {
-                        "verdict": "acceptedBlocked"
+                        "verdict": "acceptedBlocked",
+                        "evidence": [{"type": "sourceInspection", "value": "Reviewed the source blocker claim and owner-decision evidence for mustProve."}]
                     }
                 }),
             )
@@ -5373,7 +5616,8 @@ mod tests {
                 "review-turn-blocked-no-orch",
                 &json!({
                     "blockedRequirement": {
-                        "verdict": "acceptedBlocked"
+                        "verdict": "acceptedBlocked",
+                        "evidence": [{"type": "sourceInspection", "value": "Reviewed the source blocker claim for blockedRequirement."}]
                     }
                 }),
             )

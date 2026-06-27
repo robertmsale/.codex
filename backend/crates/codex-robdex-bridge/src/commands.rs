@@ -3364,7 +3364,7 @@ pub(crate) fn requirements_verdict_schema(set: &RequirementSetState) -> Value {
     );
     json!({
         "type": "object",
-        "description": "Requirements Review verdict packet. Review every canonical requirement key in the active RequirementSet. Passing or accepted outcomes use a compact verdict-only object. Failing or rejected outcomes must include concrete review evidence and correction guidance.",
+        "description": "Requirements Review verdict packet. Review every canonical requirement key in the active RequirementSet. Passing or accepted outcomes must include concrete reviewer-authored inspection evidence. Failing or rejected outcomes must include concrete review assessment and correction guidance.",
         "properties": {
             "requirements": {
                 "type": "object",
@@ -3507,17 +3507,36 @@ fn claim_property_schema(description: &str, summary_max_length: u32) -> Value {
 }
 
 fn verdict_property_schema(description: &str, _allow_still_passing: bool) -> Value {
+    let typed_evidence = json!({
+        "type": "object",
+        "description": "Concrete reviewer-authored inspection evidence for this verdict. Do not copy the worker summary or restate the requirement text.",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": ["changedFiles", "testsRun", "sourceInspection", "artifact", "screenshot", "commandOutput", "migration", "searchProof"]
+            },
+            "value": { "type": "string" }
+        },
+        "required": ["type", "value"],
+        "additionalProperties": false
+    });
     let accepted_verdict = json!({
         "type": "object",
-        "description": "Compact successful or accepted verdict. No explanation is required for passing requirements, accepted blockers, or accepted waivers.",
+        "description": "Successful or accepted verdict. Required only when the reviewer inspected concrete current-turn evidence proving the requirement is satisfied, the blocker is accepted, or the waiver is accepted.",
         "properties": {
             "verdict": {
                 "type": "string",
                 "description": "Successful or accepted outcome for this requirement.",
                 "enum": ["pass", "acceptedBlocked", "waiverAccepted"]
+            },
+            "evidence": {
+                "type": "array",
+                "description": "Concrete reviewer-authored evidence inspected in this review turn.",
+                "items": typed_evidence,
+                "minItems": 1
             }
         },
-        "required": ["verdict"],
+        "required": ["verdict", "evidence"],
         "additionalProperties": false
     });
     let rejected_verdict = json!({
@@ -3546,7 +3565,7 @@ fn verdict_property_schema(description: &str, _allow_still_passing: bool) -> Val
         "additionalProperties": false
     });
     json!({
-        "description": format!("{description} Verdict for this canonical requirement. Use the compact pass/accepted shape only when the requirement is satisfied, the blocker is accepted, or the waiver is accepted. Use the explanatory failure shape when the requirement fails or a blocker is rejected."),
+        "description": format!("{description} Verdict for this canonical requirement. Use the accepted shape only when the requirement is satisfied, the blocker is accepted, or the waiver is accepted, and include concrete reviewer-authored evidence. Use the explanatory failure shape when the requirement fails or a blocker is rejected."),
         "anyOf": [accepted_verdict, rejected_verdict]
     })
 }
@@ -7929,12 +7948,18 @@ mod tests {
             assert_eq!(any_of.len(), 2);
             let accepted = any_of
                 .iter()
-                .find(|item| item["required"] == json!(["verdict"]))
+                .find(|item| item["required"] == json!(["verdict", "evidence"]))
                 .expect("accepted verdict shape");
             assert_eq!(
                 accepted["properties"]["verdict"]["enum"],
                 json!(["pass", "acceptedBlocked", "waiverAccepted"])
             );
+            assert_eq!(accepted["properties"]["evidence"]["minItems"], json!(1));
+            assert_eq!(
+                accepted["properties"]["evidence"]["items"]["required"],
+                json!(["type", "value"])
+            );
+            assert_eq!(accepted["properties"]["evidence"]["items"]["additionalProperties"], json!(false));
             let rejected = any_of
                 .iter()
                 .find(|item| item["required"] == json!(["verdict", "reason", "evidenceAssessment", "requiredCorrection"]))
@@ -7963,7 +7988,7 @@ mod tests {
     }
 
     #[test]
-    fn reviewer_verdict_schema_uses_only_compact_accepted_and_explained_rejected_shapes() {
+    fn reviewer_verdict_schema_uses_evidence_backed_accepted_and_explained_rejected_shapes() {
         let mut set = sample_requirement_set();
         set.review_progress.insert(
             "nativeGuiIsSourceOfTruth".to_string(),
@@ -7988,8 +8013,10 @@ mod tests {
         let any_of = passed_schema["anyOf"].as_array().expect("passed requirement anyOf");
         assert_eq!(any_of.len(), 2);
         assert!(any_of.iter().any(|item| {
-            item["required"] == json!(["verdict"])
+            item["required"] == json!(["verdict", "evidence"])
                 && item["properties"]["verdict"]["enum"] == json!(["pass", "acceptedBlocked", "waiverAccepted"])
+                && item["properties"]["evidence"]["minItems"] == json!(1)
+                && item["properties"]["evidence"]["items"]["additionalProperties"] == json!(false)
         }));
         assert!(any_of.iter().any(|item| {
             item["required"] == json!(["verdict", "reason", "evidenceAssessment", "requiredCorrection"])
@@ -8007,6 +8034,89 @@ mod tests {
             .expect("reviewer required");
         assert!(reviewer_required.iter().any(|value| value.as_str() == Some("nativeGuiIsSourceOfTruth")));
         assert!(reviewer_required.iter().any(|value| value.as_str() == Some("noInventedWebsocketEventShapes")));
+    }
+
+    #[test]
+    fn reviewer_schema_rejects_accepting_verdicts_without_evidence_and_accepts_typed_evidence() {
+        let schema = requirements_verdict_schema(&sample_requirement_set());
+        let requirement_schema = &schema["properties"]["requirements"]["properties"]["nativeGuiIsSourceOfTruth"];
+        let accepted = requirement_schema["anyOf"]
+            .as_array()
+            .expect("anyOf")
+            .iter()
+            .find(|item| item["properties"]["verdict"]["enum"] == json!(["pass", "acceptedBlocked", "waiverAccepted"]))
+            .expect("accepted schema");
+        assert_eq!(accepted["required"], json!(["verdict", "evidence"]));
+        assert_eq!(accepted["additionalProperties"], json!(false));
+        assert_eq!(accepted["properties"]["evidence"]["minItems"], json!(1));
+        assert_eq!(
+            accepted["properties"]["evidence"]["items"]["properties"]["type"]["enum"],
+            json!(["changedFiles", "testsRun", "sourceInspection", "artifact", "screenshot", "commandOutput", "migration", "searchProof"])
+        );
+        for verdict in ["pass", "acceptedBlocked", "waiverAccepted"] {
+            assert!(
+                !schema_object_shape_accepts(
+                    accepted,
+                    &json!({"verdict": verdict})
+                ),
+                "{verdict} without evidence must be rejected"
+            );
+            assert!(
+                schema_object_shape_accepts(
+                    accepted,
+                    &json!({"verdict": verdict, "evidence": [{"type": "sourceInspection", "value": "Inspected the current diff and test output."}]})
+                ),
+                "{verdict} with minItems 1 typed evidence must be accepted"
+            );
+        }
+    }
+
+    fn schema_object_shape_accepts(schema: &Value, payload: &Value) -> bool {
+        let Some(payload_object) = payload.as_object() else {
+            return false;
+        };
+        let required = schema["required"].as_array().cloned().unwrap_or_default();
+        if !required.iter().all(|key| key.as_str().is_some_and(|key| payload_object.contains_key(key))) {
+            return false;
+        }
+        if schema["additionalProperties"] == json!(false) {
+            let Some(properties) = schema["properties"].as_object() else {
+                return false;
+            };
+            if payload_object.keys().any(|key| !properties.contains_key(key)) {
+                return false;
+            }
+        }
+        let Some(verdict) = payload_object.get("verdict").and_then(Value::as_str) else {
+            return false;
+        };
+        if !schema["properties"]["verdict"]["enum"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(verdict)))
+        {
+            return false;
+        }
+        if let Some(evidence_schema) = schema["properties"].get("evidence") {
+            let Some(evidence) = payload_object.get("evidence").and_then(Value::as_array) else {
+                return false;
+            };
+            let min = evidence_schema["minItems"].as_u64().unwrap_or(0) as usize;
+            if evidence.len() < min {
+                return false;
+            }
+            for item in evidence {
+                let Some(object) = item.as_object() else {
+                    return false;
+                };
+                if object.keys().any(|key| !matches!(key.as_str(), "type" | "value")) {
+                    return false;
+                }
+                if !object.contains_key("type") || !object.contains_key("value") {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     #[test]
@@ -8103,7 +8213,7 @@ mod tests {
                                     "requirementSetId": "web-gui-contract",
                                     "status": "blocked",
                                     "latestClaimPacket": {"summary": "sparse", "requirements": {"noInventedWebsocketEventShapes": {"kind": "blocked", "summary": "blocked", "blocker": "owner decision", "ownerDecisionNeeded": "approve scope", "evidence": [{"type":"sourceInspection","value":"review binding state"}]}}},
-                                    "latestVerdictPacket": {"noInventedWebsocketEventShapes": {"verdict": "acceptedBlocked"}},
+                                    "latestVerdictPacket": {"noInventedWebsocketEventShapes": {"verdict": "acceptedBlocked", "evidence": [{"type":"sourceInspection","value":"Reviewed blocker evidence in persisted requirement review state."}]}},
                                     "updatedAt": 12
                                 }
                             },
@@ -9332,7 +9442,10 @@ requirements:
                     "evidenceAssessment": "assessment",
                     "requiredCorrection": "correction"
                 }),
-                _ => json!({"verdict": per_requirement_verdict}),
+                _ => json!({
+                    "verdict": per_requirement_verdict,
+                    "evidence": [{"type": "sourceInspection", "value": "Reviewed the current source claim packet for this requirement."}]
+                }),
             };
             mark_requirements_review_verdict(
                 &runtime,
@@ -9604,7 +9717,7 @@ requirements:
             .arg("--output-last-message")
             .arg(&output_path)
             .arg(
-                "Return a minimal valid Requirements review verdict. Use compact pass verdict objects for both nativeGuiIsSourceOfTruth and noInventedWebsocketEventShapes.",
+                "Return a minimal valid Requirements review verdict. Use pass verdict objects with one testsRun evidence item for both nativeGuiIsSourceOfTruth and noInventedWebsocketEventShapes.",
             )
             .status()
             .expect("run codex exec");
@@ -9618,6 +9731,11 @@ requirements:
         assert_eq!(
             payload["requirements"]["nativeGuiIsSourceOfTruth"]["verdict"],
             json!("pass")
+        );
+        assert!(
+            payload["requirements"]["nativeGuiIsSourceOfTruth"]["evidence"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
         );
         assert_eq!(
             payload["requirements"]["noInventedWebsocketEventShapes"]["verdict"],
