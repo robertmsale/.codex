@@ -151,7 +151,7 @@ const mockAgentRuntimeRoleAdminInvalid = AgentRuntimeRoleAdminData(
     canArchiveAgents: false,
     lifecycleReservedActions: ['Archive agent'],
   ),
-  validationErrors: ['Capabilities and permission rules must match'],
+  validationErrors: ['Every role action needs exactly one decision.'],
   actionStates: [
     AgentRuntimeActionItem(
       id: 'role:draft-role:validate',

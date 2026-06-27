@@ -1056,6 +1056,17 @@ ConversationShellData? _copyShellWithError(ConversationShellData? shell, String?
 }
 
 bindings.AgentRuntimeRoleEditorDraft _typedRoleDraft(AgentRuntimeRoleEditorDraft draft) {
+  final authorityRows = <AgentRuntimeRolePolicyRow>[];
+  final seenActions = <String>{};
+  for (final row in draft.policy) {
+    final action = row.action.trim();
+    final decision = row.decision.trim();
+    if (action.isEmpty || decision.isEmpty || seenActions.contains(action)) {
+      continue;
+    }
+    seenActions.add(action);
+    authorityRows.add(AgentRuntimeRolePolicyRow(action: action, decision: decision));
+  }
   return bindings.AgentRuntimeRoleEditorDraft(
     id: draft.roleId,
     version: draft.version,
@@ -1065,8 +1076,8 @@ bindings.AgentRuntimeRoleEditorDraft _typedRoleDraft(AgentRuntimeRoleEditorDraft
       reasoningEffort: draft.reasoningEffort,
     ),
     instructionText: draft.instructionText,
-    capabilities: draft.capabilities,
-    policyEntries: draft.policy
+    capabilities: authorityRows.map((row) => row.action).toList(growable: false),
+    policyEntries: authorityRows
         .map((row) => bindings.AgentRuntimeRolePolicyEntry(key: row.action, value: row.decision))
         .toList(growable: false),
     routing: bindings.AgentRuntimeRoleEditorRoutingMetadata(

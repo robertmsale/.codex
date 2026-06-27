@@ -1078,7 +1078,25 @@ class _AgentRuntimeRoleManagerPageState extends State<AgentRuntimeRoleManagerPag
     }
     final key = draft == null
         ? '__empty__'
-        : '${draft.roleId}|${draft.version}|${draft.instructionText.hashCode}|${draft.policy.length}|${draft.capabilities.length}';
+        : [
+            draft.roleId,
+            draft.version,
+            draft.displayName,
+            draft.model,
+            draft.reasoningEffort,
+            draft.instructionText.hashCode.toString(),
+            draft.capabilities.join(','),
+            draft.policy.map((row) => '${row.action}=${row.decision}').join(','),
+            draft.routingMode,
+            draft.defaultRecipient ?? '',
+            draft.allowedRecipients.join(','),
+            draft.routingReservedActions.join(','),
+            draft.listed.toString(),
+            draft.ownerVisible.toString(),
+            draft.canSpawnAgents.toString(),
+            draft.canArchiveAgents.toString(),
+            draft.lifecycleReservedActions.join(','),
+          ].join('|');
     if (_loadedDraftKey == key) {
       return;
     }
@@ -1133,6 +1151,8 @@ class _AgentRuntimeRoleManagerPageState extends State<AgentRuntimeRoleManagerPag
   }
 
   AgentRuntimeRoleEditorDraft _editedDraft() {
+    final policyRows = _rolePolicyRows(_policyController.text);
+    final authorityActions = _dedupeRoleManagerOptions(policyRows.map((row) => row.action).where((action) => action.trim().isNotEmpty).toList(growable: false));
     return AgentRuntimeRoleEditorDraft(
       roleId: _roleIdController.text.trim(),
       version: _versionController.text.trim(),
@@ -1140,8 +1160,11 @@ class _AgentRuntimeRoleManagerPageState extends State<AgentRuntimeRoleManagerPag
       model: _modelController.text.trim(),
       reasoningEffort: _reasoningController.text.trim(),
       instructionText: _instructionController.text,
-      capabilities: _lineList(_capabilitiesController.text),
-      policy: _rolePolicyRows(_policyController.text),
+      capabilities: authorityActions,
+      policy: [
+        for (final row in policyRows)
+          if (authorityActions.contains(row.action)) row,
+      ],
       routingMode: _routingModeController.text.trim().isEmpty ? 'direct' : _routingModeController.text.trim(),
       routingReservedActions: _lineList(_routingReservedController.text),
       defaultRecipient: _defaultRecipientController.text.trim().isEmpty ? null : _defaultRecipientController.text.trim(),
@@ -1653,7 +1676,7 @@ class _RoleManagerMainColumn extends StatelessWidget {
           children: [
             if (!data.editorOptions.isCompleteForPrimaryAuthoring)
               const _InlineNotice(
-                message: 'Role editor options are unavailable. Refresh before editing policies, routing, capabilities, or lifecycle authority.',
+                message: 'Role editor options are unavailable. Refresh before editing authority, routing, or lifecycle access.',
                 tone: 'warning',
               )
             else
@@ -1729,62 +1752,20 @@ class _RoleManagerStructuredControls extends StatelessWidget {
     final allowedRecipients = _lineList(allowedRecipientsController.text);
     final routingReserved = _lineList(routingReservedController.text);
     final lifecycleReserved = _lineList(lifecycleReservedController.text);
-    final capabilities = _lineList(capabilitiesController.text);
     final policyRows = _rolePolicyRows(policyController.text);
     return LayoutBuilder(
       builder: (context, constraints) {
         final narrow = constraints.maxWidth < 560;
-        final capabilitiesEditor = _RoleEditorSection(
-          title: 'Capabilities',
-          child: _OptionChecklist(
-            keyPrefix: 'capability',
-            values: options.capabilities,
-            selected: capabilities,
-            onChanged: (next) {
-              _setLineList(capabilitiesController, next);
-              final currentPolicy = {for (final row in _rolePolicyRows(policyController.text)) row.action: row.decision};
-              final decision = options.policyDecisions.contains('allow') ? 'allow' : options.policyDecisions.first;
-              final synced = [
-                for (final action in next)
-                  AgentRuntimeRolePolicyRow(action: action, decision: currentPolicy[action] ?? decision),
-              ];
-              _setPolicyRows(policyController, synced);
+        final authorityEditor = _RoleEditorSection(
+          title: 'Role authority',
+          child: _RoleAuthorityEditor(
+            rows: policyRows,
+            actions: _dedupeRoleManagerOptions([...options.policyActions, ...options.capabilities]),
+            decisions: options.policyDecisions,
+            onChanged: (rows) {
+              _setPolicyRows(policyController, rows);
+              _setLineList(capabilitiesController, rows.map((row) => row.action).toList(growable: false));
             },
-          ),
-        );
-        final policyEditor = _RoleEditorSection(
-          title: 'Policy decisions',
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              for (final row in policyRows)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Wrap(
-                    spacing: 10,
-                    runSpacing: 8,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      SizedBox(width: 240, child: Text(_roleManagerCompactPolicyAction(row.action), overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFFD6E2F2)))),
-                      _EnumSelect(
-                        key: ValueKey('roleEditor.policy.${row.action}'),
-                        label: 'Decision',
-                        value: row.decision,
-                        values: _withCurrentOptions(options.policyDecisions, row.decision),
-                        onChanged: (value) {
-                          _setPolicyRows(policyController, [
-                            for (final current in _rolePolicyRows(policyController.text))
-                              AgentRuntimeRolePolicyRow(action: current.action, decision: current.action == row.action ? value : current.decision),
-                          ]);
-                        },
-                        displayLabel: _roleManagerHumanLabel,
-                      ),
-                    ],
-                  ),
-                ),
-              if (policyRows.isEmpty)
-                Text('Select capabilities to add policy rows.', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: const Color(0xFF93A5BC))),
-            ],
           ),
         );
         final left = _RoleEditorSection(
@@ -1859,9 +1840,9 @@ class _RoleManagerStructuredControls extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (narrow)
-              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [capabilitiesEditor, const _RoleEditorDivider(), policyEditor])
+              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [authorityEditor])
             else
-              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: capabilitiesEditor), const SizedBox(width: 18), Expanded(child: policyEditor)]),
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: authorityEditor)]),
             const _RoleEditorDivider(),
             if (narrow)
               Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [left, const _RoleEditorDivider(), middle, const _RoleEditorDivider(), right])
@@ -1870,6 +1851,105 @@ class _RoleManagerStructuredControls extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+}
+
+class _RoleAuthorityEditor extends StatelessWidget {
+  const _RoleAuthorityEditor({
+    required this.rows,
+    required this.actions,
+    required this.decisions,
+    required this.onChanged,
+  });
+
+  final List<AgentRuntimeRolePolicyRow> rows;
+  final List<String> actions;
+  final List<String> decisions;
+  final ValueChanged<List<AgentRuntimeRolePolicyRow>> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final selectedActions = rows.map((row) => row.action).toSet();
+    final availableActions = actions.where((action) => action.trim().isNotEmpty).toList(growable: false);
+    final defaultDecision = decisions.contains('allow') ? 'allow' : decisions.isEmpty ? '' : decisions.first;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (rows.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text('Add an action to grant authority.', style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF93A5BC))),
+          ),
+        for (final row in rows)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Wrap(
+              spacing: 10,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                _EnumSelect(
+                  key: ValueKey('roleEditor.authority.${row.action}'),
+                  label: 'Action',
+                  value: row.action,
+                  values: _withCurrentOptions(availableActions, row.action),
+                  onChanged: (value) {
+                    final next = <AgentRuntimeRolePolicyRow>[];
+                    for (final current in rows) {
+                      if (current.action == row.action) {
+                        if (!next.any((item) => item.action == value)) {
+                          next.add(AgentRuntimeRolePolicyRow(action: value, decision: current.decision));
+                        }
+                      } else if (current.action != value) {
+                        next.add(current);
+                      }
+                    }
+                    onChanged(next);
+                  },
+                  displayLabel: _roleManagerHumanLabel,
+                ),
+                _EnumSelect(
+                  key: ValueKey('roleEditor.authorityDecision.${row.action}'),
+                  label: 'Decision',
+                  value: row.decision,
+                  values: _withCurrentOptions(decisions, row.decision),
+                  onChanged: (value) {
+                    onChanged([
+                      for (final current in rows)
+                        AgentRuntimeRolePolicyRow(action: current.action, decision: current.action == row.action ? value : current.decision),
+                    ]);
+                  },
+                  displayLabel: _roleManagerHumanLabel,
+                ),
+                TextButton(
+                  key: ValueKey('roleEditor.removeAuthority.${row.action}'),
+                  onPressed: () => onChanged(rows.where((current) => current.action != row.action).toList(growable: false)),
+                  child: const Text('Remove'),
+                ),
+              ],
+            ),
+          ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 6,
+          children: [
+            for (final action in availableActions)
+              if (!selectedActions.contains(action))
+                ActionChip(
+                  key: ValueKey('roleEditor.addAuthority.$action'),
+                  label: Text(_roleManagerHumanLabel(action)),
+                  onPressed: defaultDecision.isEmpty
+                      ? null
+                      : () => onChanged([
+                            ...rows,
+                            AgentRuntimeRolePolicyRow(action: action, decision: defaultDecision),
+                          ]),
+                ),
+          ],
+        ),
+      ],
     );
   }
 }

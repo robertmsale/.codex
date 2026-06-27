@@ -6169,7 +6169,9 @@ mod tests {
             .expect("stored v1 instruction");
         assert_eq!(stored_v1, "inline gui role instructions v1");
 
-        let draft_v2 = role_editor_draft_json("gui-role", "1.0.1", "inline gui role instructions v2");
+        let mut draft_v2 = role_editor_draft_json("gui-role", "1.0.1", "inline gui role instructions v2");
+        draft_v2["capabilities"] = json!(["fs.read"]);
+        draft_v2["policy"] = json!({"fs.read": "allow"});
         let (status, updated) = request_json(router.clone(), Method::POST, "/roles/gui-role/versions", draft_v2).await;
         assert_eq!(status, StatusCode::OK);
         let version_v2 = updated["versionId"].as_str().expect("updated version").to_string();
@@ -6184,6 +6186,21 @@ mod tests {
             .await
             .expect("current instruction");
         assert_eq!(current_instruction, "inline gui role instructions v2");
+        let current_snapshot = db::current_role_snapshot(&test_db.pool, "gui-role").await.expect("current role snapshot");
+        assert_eq!(current_snapshot.role_version_id.to_string(), version_v2);
+        assert_eq!(current_snapshot.capabilities, vec!["fs.read".to_string()]);
+        assert_eq!(current_snapshot.policy.get("fs.read"), Some(&crate::roles::ManifestDecision::Allow));
+        assert!(!current_snapshot.policy.contains_key("tool.execute_code"));
+        let mut mismatched = role_editor_draft_json("gui-role", "1.0.2", "inline gui role instructions mismatch");
+        mismatched["capabilities"] = json!(["tool.execute_code"]);
+        mismatched["policy"] = json!({"fs.read": "allow"});
+        let (status, validation) = request_json(router.clone(), Method::POST, "/roles/editor/validate", mismatched.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(validation["valid"], false);
+        assert!(validation["errors"].to_string().contains("capabilities must exactly match policy keys"));
+        let (status, error) = request_json(router.clone(), Method::POST, "/roles/gui-role/versions", mismatched).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_api_error(&error, "validation_failed");
         let (status, _) = request_json(router.clone(), Method::POST, "/roles/gui-role/activate", json!({"versionId": version_v1})).await;
         assert_eq!(status, StatusCode::OK);
         let current_version: Uuid = sqlx::query_scalar("SELECT current_version_id FROM roles WHERE id='gui-role'")
