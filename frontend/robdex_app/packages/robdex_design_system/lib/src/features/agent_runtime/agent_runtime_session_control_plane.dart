@@ -172,11 +172,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
           const SizedBox(height: 5),
           const Text('Manage and control this runtime session', style: TextStyle(color: Color(0xFFB8C4D3), fontSize: 14)),
         ])),
-        IconButton.outlined(
-          key: const ValueKey('agentRuntime.sessionControl.close'),
-          onPressed: widget.onClose,
-          icon: const Icon(Icons.close_rounded, color: Colors.white),
-        ),
+        _closeButton(),
       ]),
     );
   }
@@ -193,12 +189,23 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
           SizedBox(height: 5),
           Text('Select a session before editing runtime settings', style: TextStyle(color: Color(0xFFB8C4D3), fontSize: 14)),
         ])),
-        IconButton.outlined(
+        _closeButton(),
+      ]),
+    );
+  }
+
+  Widget _closeButton() {
+    return Semantics(
+      button: true,
+      label: 'Close session settings',
+      child: ExcludeSemantics(
+        child: IconButton.outlined(
           key: const ValueKey('agentRuntime.sessionControl.close'),
+          tooltip: 'Close session settings',
           onPressed: widget.onClose,
           icon: const Icon(Icons.close_rounded, color: Colors.white),
         ),
-      ]),
+      ),
     );
   }
 
@@ -304,13 +311,23 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
       ]);
 
   Widget _quickActions(AgentRuntimeSelectedSessionControlPlane control) {
+    final active = control.status.toLowerCase() == 'running' || control.status.toLowerCase() == 'active';
+    final stoppedReason = active ? null : 'session is ${control.status.isEmpty ? 'not running' : control.status}';
     return Container(
       padding: const EdgeInsets.fromLTRB(26, 18, 26, 22),
       decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0x223B82F6)))),
       child: Wrap(crossAxisAlignment: WrapCrossAlignment.center, spacing: 12, runSpacing: 10, children: [
         const Text('Quick Actions', style: TextStyle(color: Color(0xFFB8C4D3), fontWeight: FontWeight.w600)),
-        _quick('Compact…', Colors.orange, () => widget.onCompact(control.sessionId)),
-        _quick(control.godMode.active ? 'Revoke God Mode…' : 'Grant God Mode…', Colors.orange, () => control.godMode.active ? widget.onRevokeGodMode(control.sessionId) : widget.onGrantGodMode(control.sessionId)),
+        _quick(stoppedReason == null ? 'Compact…' : 'Compact unavailable: $stoppedReason', Colors.orange, stoppedReason == null ? () => widget.onCompact(control.sessionId) : null),
+        _quick(
+          stoppedReason == null
+              ? control.godMode.active
+                  ? 'Revoke God Mode…'
+                  : 'Grant God Mode…'
+              : 'God Mode unavailable: $stoppedReason',
+          Colors.orange,
+          stoppedReason == null ? () => control.godMode.active ? widget.onRevokeGodMode(control.sessionId) : widget.onGrantGodMode(control.sessionId) : null,
+        ),
         _quick('Set Requirements…', Colors.blueAccent, () => _showRequirementsAuthoring(control)),
         _quick('Export Bundle unavailable: no typed export', Colors.blueGrey, null),
         _quick('Danger Zone', Colors.redAccent, () => _showDanger(control)),

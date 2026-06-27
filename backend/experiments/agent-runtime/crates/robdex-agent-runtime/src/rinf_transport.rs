@@ -3008,11 +3008,15 @@ fn role_editor_options_view(roles: &[RoleSummary], model_options: &[AgentRuntime
     for model in roles.iter().filter_map(|role| role.model.as_deref()) {
         push_unique(&mut models, model);
     }
-    let mut capabilities = roles.iter().flat_map(|role| role.capabilities.clone()).collect::<Vec<_>>();
-    push_unique(&mut capabilities, "tool.execute_code");
-    push_unique(&mut capabilities, "message.send");
-    push_unique(&mut capabilities, "command.registry");
-    push_unique(&mut capabilities, "workflow.memory");
+    let mut capabilities = crate::actions::ACTIVE_ACTIONS
+        .iter()
+        .map(|action| (*action).to_string())
+        .collect::<Vec<_>>();
+    for action in roles.iter().flat_map(|role| role.capabilities.iter().chain(role.policy.keys())) {
+        if crate::actions::is_known_action(action) && !action.contains('<') {
+            push_unique(&mut capabilities, action);
+        }
+    }
     let mut policy_actions = roles
         .iter()
         .flat_map(|role| role.policy.keys().cloned())
@@ -3041,7 +3045,7 @@ fn role_editor_options_view(roles: &[RoleSummary], model_options: &[AgentRuntime
         .collect::<Vec<_>>();
     push_unique(&mut reserved_actions, "message.send");
     push_unique(&mut reserved_actions, "agent.archive");
-    push_unique(&mut reserved_actions, "command.registry.apply");
+    push_unique(&mut reserved_actions, "command_registry.apply");
     push_unique(&mut reserved_actions, "workflow_memory.feedback");
     models.sort();
     capabilities.sort();
@@ -5450,6 +5454,20 @@ mod tests {
         assert_eq!(view.role_admin.version_rows.len(), 2);
         assert_eq!(view.role_admin.selected_detail.as_ref().map(|role| role.instruction_text.as_str()), Some("Inline role instructions"));
         assert_eq!(view.role_admin.editor_draft.as_ref().map(|draft| draft.capabilities.len()), Some(1));
+        assert!(!view.role_admin.editor_options.capabilities.iter().any(|action| action == "command.registry" || action == "workflow.memory"));
+        for concrete in [
+            "command_registry.apply",
+            "command_registry.decide",
+            "command_registry.request",
+            "workflow_memory.search",
+            "workflow_memory.remember.project",
+            "workflow_memory.remember.global",
+            "workflow_memory.feedback",
+            "git.status",
+            "git.diff",
+        ] {
+            assert!(view.role_admin.editor_options.capabilities.iter().any(|action| action == concrete), "missing concrete role authority option {concrete}");
+        }
         assert!(view.role_admin.action_states.iter().any(|row| row.kind == "roleAdmin" && row.title == "Validate draft"));
         assert!(view.role_admin.action_states.iter().any(|row| row.kind == "roleAdmin" && row.title == "Create role draft"));
         assert!(view.role_admin.action_states.iter().any(|row| row.kind == "roleAdmin" && row.title == "Update role draft"));

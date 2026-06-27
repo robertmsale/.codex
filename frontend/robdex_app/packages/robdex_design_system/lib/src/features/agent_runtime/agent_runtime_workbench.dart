@@ -536,8 +536,16 @@ class _DiscoveryButton extends StatelessWidget {
               runSpacing: 6,
               children: [
                 ?leadingAction,
-                OutlinedButton(onPressed: onRefresh, child: const Text('Refresh')),
-                FilledButton(onPressed: info.connectable ? onConnect : null, child: const Text('Connect')),
+                Semantics(
+                  label: 'Refresh $label discovery',
+                  button: true,
+                  child: ExcludeSemantics(child: OutlinedButton(onPressed: onRefresh, child: const Text('Refresh'))),
+                ),
+                Semantics(
+                  label: 'Connect $label discovery',
+                  button: true,
+                  child: ExcludeSemantics(child: FilledButton(onPressed: info.connectable ? onConnect : null, child: const Text('Connect'))),
+                ),
               ],
             ),
           ],
@@ -1243,6 +1251,7 @@ class _AgentRuntimeRoleManagerPageState extends State<AgentRuntimeRoleManagerPag
                             onOwnerVisibleChanged: (value) => setState(() => _ownerVisible = value),
                             onCanSpawnAgentsChanged: (value) => setState(() => _canSpawnAgents = value),
                             onCanArchiveAgentsChanged: (value) => setState(() => _canArchiveAgents = value),
+                            onAuthorityChanged: () => setState(() {}),
                           ),
                         ),
                         const SizedBox(height: 12),
@@ -1293,6 +1302,7 @@ class _AgentRuntimeRoleManagerPageState extends State<AgentRuntimeRoleManagerPag
                             onOwnerVisibleChanged: (value) => setState(() => _ownerVisible = value),
                             onCanSpawnAgentsChanged: (value) => setState(() => _canSpawnAgents = value),
                             onCanArchiveAgentsChanged: (value) => setState(() => _canArchiveAgents = value),
+                            onAuthorityChanged: () => setState(() {}),
                           ),
                         ),
                         const VerticalDivider(width: 1, color: Color(0xFF182231)),
@@ -1550,6 +1560,7 @@ class _RoleManagerMainColumn extends StatelessWidget {
     required this.onOwnerVisibleChanged,
     required this.onCanSpawnAgentsChanged,
     required this.onCanArchiveAgentsChanged,
+    required this.onAuthorityChanged,
   });
 
   final AgentRuntimeRoleEditorDraft draft;
@@ -1576,6 +1587,7 @@ class _RoleManagerMainColumn extends StatelessWidget {
   final ValueChanged<bool> onOwnerVisibleChanged;
   final ValueChanged<bool> onCanSpawnAgentsChanged;
   final ValueChanged<bool> onCanArchiveAgentsChanged;
+  final VoidCallback onAuthorityChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -1697,6 +1709,7 @@ class _RoleManagerMainColumn extends StatelessWidget {
                 onOwnerVisibleChanged: onOwnerVisibleChanged,
                 onCanSpawnAgentsChanged: onCanSpawnAgentsChanged,
                 onCanArchiveAgentsChanged: onCanArchiveAgentsChanged,
+                onAuthorityChanged: onAuthorityChanged,
               ),
             const SizedBox(height: 12),
             _RoleEditorSection(
@@ -1728,6 +1741,7 @@ class _RoleManagerStructuredControls extends StatelessWidget {
     required this.onOwnerVisibleChanged,
     required this.onCanSpawnAgentsChanged,
     required this.onCanArchiveAgentsChanged,
+    required this.onAuthorityChanged,
   });
 
   final TextEditingController capabilitiesController;
@@ -1746,6 +1760,7 @@ class _RoleManagerStructuredControls extends StatelessWidget {
   final ValueChanged<bool> onOwnerVisibleChanged;
   final ValueChanged<bool> onCanSpawnAgentsChanged;
   final ValueChanged<bool> onCanArchiveAgentsChanged;
+  final VoidCallback onAuthorityChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -1765,6 +1780,7 @@ class _RoleManagerStructuredControls extends StatelessWidget {
             onChanged: (rows) {
               _setPolicyRows(policyController, rows);
               _setLineList(capabilitiesController, rows.map((row) => row.action).toList(growable: false));
+              onAuthorityChanged();
             },
           ),
         );
@@ -1872,10 +1888,18 @@ class _RoleAuthorityEditor extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final rowByAction = {for (final row in rows) row.action: row};
+    final selectedActions = rowByAction.keys.toSet();
     final availableActions = _dedupeRoleManagerOptions([
       ...actions,
       ...rows.map((row) => row.action),
-    ]).where((action) => action.trim().isNotEmpty).toList(growable: false);
+    ]).where((action) => action.trim().isNotEmpty).toList();
+    availableActions.sort((a, b) {
+      final selectedCompare = (selectedActions.contains(b) ? 1 : 0).compareTo(selectedActions.contains(a) ? 1 : 0);
+      if (selectedCompare != 0) {
+        return selectedCompare;
+      }
+      return _roleManagerHumanLabel(a).compareTo(_roleManagerHumanLabel(b));
+    });
     final defaultDecision = decisions.contains('allow') ? 'allow' : decisions.isEmpty ? '' : decisions.first;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1897,29 +1921,23 @@ class _RoleAuthorityEditor extends StatelessWidget {
               children: [
                 SizedBox(
                   width: 260,
-                  child: CheckboxListTile(
-                    key: ValueKey('roleEditor.capability.$action'),
-                    value: rowByAction.containsKey(action),
-                    onChanged: defaultDecision.isEmpty
-                        ? null
-                        : (selected) {
-                            if (selected == true) {
-                              if (rowByAction.containsKey(action)) {
-                                return;
-                              }
-                              onChanged([
-                                ...rows,
-                                AgentRuntimeRolePolicyRow(action: action, decision: defaultDecision),
-                              ]);
-                            } else {
-                              onChanged(rows.where((current) => current.action != action).toList(growable: false));
-                            }
-                          },
-                    controlAffinity: ListTileControlAffinity.leading,
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    title: Text(_roleManagerHumanLabel(action), overflow: TextOverflow.ellipsis),
-                    subtitle: Text(action, overflow: TextOverflow.ellipsis),
+                  child: Semantics(
+                    label: 'Role authority ${_roleManagerHumanLabel(action)} $action',
+                    checked: rowByAction.containsKey(action),
+                    button: true,
+                    onTap: defaultDecision.isEmpty ? null : () => _toggleRoleAuthorityAction(action, rowByAction.containsKey(action), rows, defaultDecision, onChanged),
+                    child: ExcludeSemantics(
+                      child: CheckboxListTile(
+                        key: ValueKey('roleEditor.capability.$action'),
+                        value: rowByAction.containsKey(action),
+                        onChanged: defaultDecision.isEmpty ? null : (_) => _toggleRoleAuthorityAction(action, rowByAction.containsKey(action), rows, defaultDecision, onChanged),
+                        controlAffinity: ListTileControlAffinity.leading,
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(_roleManagerHumanLabel(action), overflow: TextOverflow.ellipsis),
+                        subtitle: Text(action, overflow: TextOverflow.ellipsis),
+                      ),
+                    ),
                   ),
                 ),
                 if (rowByAction[action] case final row?)
@@ -1946,6 +1964,23 @@ class _RoleAuthorityEditor extends StatelessWidget {
           ),
       ],
     );
+  }
+}
+
+void _toggleRoleAuthorityAction(
+  String action,
+  bool selected,
+  List<AgentRuntimeRolePolicyRow> rows,
+  String defaultDecision,
+  ValueChanged<List<AgentRuntimeRolePolicyRow>> onChanged,
+) {
+  if (selected) {
+    onChanged(rows.where((current) => current.action != action).toList(growable: false));
+  } else {
+    onChanged([
+      ...rows,
+      AgentRuntimeRolePolicyRow(action: action, decision: defaultDecision),
+    ]);
   }
 }
 
@@ -2480,8 +2515,6 @@ String _roleManagerHumanLabel(String value) {
     'hidden': 'Hidden',
     'owner-only': 'Owner only',
     'owner-visible': 'Owner visible',
-    'command.registry': 'Command registry',
-    'workflow.memory': 'Workflow memory',
     'message.send': 'Send message',
     'message.route': 'Route message',
     'agent.spawn': 'Spawn agent',

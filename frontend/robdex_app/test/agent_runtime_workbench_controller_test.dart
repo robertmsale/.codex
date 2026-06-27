@@ -1,3 +1,5 @@
+import 'dart:ui' show SemanticsFlag;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/material.dart';
 import 'package:robdex_app/src/agent_runtime/agent_runtime_workbench_controller.dart';
@@ -127,6 +129,34 @@ void main() {
     final connect = sentRequests.single as bindings.AgentRuntimeRequestConnect;
     expect(connect.baseUrl, 'http://127.0.0.1:8765');
     expect(connect.selectedSessionId, '');
+    expect(controller.data.connectionState, 'connecting');
+    expect(controller.data.statusLabel, 'Connecting to runtime');
+    expect(controller.data.errorMessage, isNull);
+  });
+
+  test('manual connect failure displays actionable inline error', () {
+    late String requestId;
+    final controller = AgentRuntimeWorkbenchController(
+      requestSink: (id, request) {
+        requestId = id;
+      },
+    );
+    addTearDown(controller.dispose);
+
+    controller.connect('http://127.0.0.1:8765');
+    controller.applyOutputForRequestForTest(
+      requestId,
+      const bindings.AgentRuntimeOutputError(
+        error: bindings.AgentRuntimeApiError(
+          code: 'unavailable',
+          message: 'Runtime did not respond. Check the service, then refresh discovery.',
+          details: [],
+        ),
+      ),
+    );
+
+    expect(controller.data.errorMessage, contains('Runtime did not respond'));
+    expect(controller.data.pendingRequestCount, 0);
   });
 
   test('disconnect sends generated typed signal intent', () {
@@ -1087,7 +1117,9 @@ void main() {
     expect(find.bySemanticsLabel('Agent Runtime workbench'), findsOneWidget);
     expect(find.bySemanticsLabel('Runtime URL'), findsWidgets);
     expect(find.bySemanticsLabel('Connect to URL'), findsOneWidget);
-    expect(find.bySemanticsLabel('Refresh'), findsWidgets);
+    expect(find.bySemanticsLabel('Refresh Local discovery'), findsOneWidget);
+    expect(find.bySemanticsLabel('Refresh iCloud discovery'), findsOneWidget);
+    expect(find.bySemanticsLabel('Refresh Imported discovery'), findsOneWidget);
 
     final controller = AgentRuntimeWorkbenchController(requestSink: (_, _) {});
     addTearDown(controller.dispose);
@@ -1529,6 +1561,48 @@ void main() {
     expect(projectSelectionCalls, 0);
     expect(sessionSelectionCalls, 0);
     expect(hydrateOrReconnectCalls, 0);
+  });
+
+  testWidgets('Connect to URL dispatches the visible Runtime URL field value', (tester) async {
+    final urlController = TextEditingController(text: 'http://127.0.0.1:8765');
+    addTearDown(urlController.dispose);
+    var connectedUrl = '';
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: AgentRuntimeWorkbench(
+        data: mockAgentRuntimeEmpty.copyWith(
+          connectionState: 'disconnected',
+          connectionTone: 'muted',
+          statusLabel: 'Not connected',
+          discovery: const AgentRuntimeDiscoveryInfo(
+            state: 'missing',
+            tone: 'muted',
+            title: 'No local runtime',
+            message: 'Start the local runtime or connect manually.',
+            discoveryPath: '',
+            connectable: false,
+          ),
+          remoteDiscovery: mockAgentRuntimeIcloudRemoteStale,
+          importedRemoteDiscovery: mockAgentRuntimeImportedRemoteStale,
+        ),
+        baseUrlController: urlController,
+        onConnect: () => connectedUrl = urlController.text,
+        onRefreshDiscovery: () {},
+        onConnectDiscovered: () {},
+        onRefreshIcloudRemoteDiscovery: () {},
+        onConnectIcloudRemote: () {},
+        onImportRemoteProfile: () {},
+        onRefreshImportedRemoteProfile: () {},
+        onConnectImportedRemoteProfile: () {},
+        onDisconnect: () {},
+      )),
+    ));
+    await tester.pump();
+
+    await tester.enterText(find.bySemanticsLabel('Runtime URL').last, 'http://127.0.0.1:8765');
+    await tester.tap(find.bySemanticsLabel('Connect to URL'));
+    await tester.pump();
+
+    expect(connectedUrl, 'http://127.0.0.1:8765');
   });
 
   testWidgets('Global Settings modal renders concrete controls, inline errors, and dispatches every action', (tester) async {
@@ -2004,6 +2078,12 @@ void main() {
       ),
     );
 
+    await tester.enterText(find.byKey(const ValueKey('agentRuntime.createProject.key')), 'qa-runtime-20260627');
+    tester.testTextInput.hide();
+    await tester.pump();
+    expect(find.byType(AgentRuntimeCreateProjectDialog), findsOneWidget);
+    expect(find.text('qa-runtime-20260627'), findsOneWidget);
+
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.createProject.key')), 'bad key with spaces');
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.createProject.displayName')), 'Bad Project');
     expect(find.text('Tracked'), findsNothing);
@@ -2118,18 +2198,21 @@ void main() {
     expect(find.text('/work/project-a'), findsOneWidget);
     expect(find.text('/work/project-a/root'), findsOneWidget);
 
-    await tester.enterText(find.byKey(const ValueKey('agentRuntime.createSession.title')), 'Live Test Session');
+    await tester.enterText(find.byKey(const ValueKey('agentRuntime.createSession.title')), 'QA runtime smoke 20260627');
+    tester.testTextInput.hide();
+    await tester.pump();
+    expect(find.byType(AgentRuntimeCreateSessionDialog), findsOneWidget);
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.createSession.workdir')), '/work/live');
     await tester.enterText(find.byKey(const ValueKey('agentRuntime.createSession.worktreeRoot')), '/work/live/root');
-    expect(find.text('live-test-session'), findsOneWidget);
+    expect(find.text('qa-runtime-smoke-20260627'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, 'Create'));
     await tester.pumpAndSettle();
 
     expect(submitted, isNotNull);
     expect(submitted!['project'], 'project-a');
     expect(submitted!['model'], mockAgentRuntimeConnected.modelOptions.single.id);
-    expect(submitted!['title'], 'Live Test Session');
-    expect(submitted!['name'], 'live-test-session');
+    expect(submitted!['title'], 'QA runtime smoke 20260627');
+    expect(submitted!['name'], 'qa-runtime-smoke-20260627');
     expect(submitted!['workdir'], '/work/live');
     expect(submitted!['worktreeRoot'], '/work/live/root');
   });
@@ -2580,6 +2663,56 @@ void main() {
     await tester.tap(find.byTooltip('New session'));
     await tester.pump();
     expect(find.byType(AgentRuntimeCreateSessionDialog), findsOneWidget);
+  });
+
+  testWidgets('session control plane can close without a selected session and stopped quick actions give reasons', (tester) async {
+    final actions = <String>[];
+    var closed = 0;
+    Future<void> pumpPlane(AgentRuntimeWorkbenchData data) async {
+      await tester.pumpWidget(MaterialApp(
+        home: AgentRuntimeSessionControlPlane(
+          data: data,
+          onClose: () => closed += 1,
+          onSave: ({required sessionId, required project, required role, required model, required workdir, required worktreeRoot, required title, required name, required tracked}) {},
+          onArchiveSession: (id) => actions.add('archive:$id'),
+          onForkSession: (id) => actions.add('fork:$id'),
+          onCompact: (id) => actions.add('compact:$id'),
+          onGrantGodMode: (id) => actions.add('grant:$id'),
+          onRevokeGodMode: (id) => actions.add('revoke:$id'),
+          onTerminateProcess: (handle) {},
+          onFlushProcess: (handle) {},
+          onInputProcess: (handle, text) {},
+          onApprove: (id, reason) {},
+          onDeny: (id, reason) {},
+          onResumeApproval: (id) {},
+          onPreviewCommandRequest: (id) {},
+          onApproveCommandRequest: (id) {},
+          onDenyCommandRequest: (id) {},
+          onApplyCommandRequest: (id) {},
+          onShowCommand: (id) {},
+          onShowCommandRequest: (id) {},
+          onSetRequirements: (id, {required title, required key, required statement}) {},
+        ),
+      ));
+      await tester.pump();
+    }
+
+    await pumpPlane(mockAgentRuntimeEmpty);
+    expect(find.text('Select a session to open settings.'), findsOneWidget);
+    expect(find.bySemanticsLabel('Close session settings'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.sessionControl.close')));
+    await tester.pump();
+    expect(closed, 1);
+
+    await pumpPlane(mockAgentRuntimeConnected.copyWith(
+      selectedSessionControlPlane: mockAgentRuntimeConnected.selectedSessionControlPlane!.copyWith(status: 'stopped'),
+    ));
+    expect(find.text('Compact unavailable: session is stopped'), findsOneWidget);
+    expect(find.text('God Mode unavailable: session is stopped'), findsOneWidget);
+    await tester.tap(find.text('Compact unavailable: session is stopped'));
+    await tester.tap(find.text('God Mode unavailable: session is stopped'));
+    await tester.pump();
+    expect(actions, isEmpty);
   });
 
   testWidgets('production host Danger Zone Archive session and Archive session dispatch typed operations and return to session settings', (tester) async {
@@ -3125,24 +3258,37 @@ void main() {
     expect(find.text('Capabilities', skipOffstage: false), findsNothing);
     expect(find.text('Policy decisions', skipOffstage: false), findsNothing);
     expect(find.text('Allowed recipients', skipOffstage: false), findsOneWidget);
+    expect(find.byKey(const ValueKey('roleEditor.capability.command.registry'), skipOffstage: false), findsNothing);
+    expect(find.byKey(const ValueKey('roleEditor.capability.workflow.memory'), skipOffstage: false), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('roleEditor.model')));
     await tester.pump();
     await tester.tap(find.text('gpt-5.4-mini').last);
     await tester.pump();
 
+    final instructionsField = find.byKey(const ValueKey('roleEditor.instructions'));
+    (tester.widget(instructionsField) as dynamic).controller.text = 'Updated runtime instructions.';
+    await tester.pump();
+
     await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.policy.command_registry.apply')));
+    final applyRow = tester.getSemantics(find.bySemanticsLabel('Role authority Apply command registry request command_registry.apply'));
+    expect(applyRow.rect.width, greaterThan(0));
+    expect(applyRow.rect.height, greaterThan(0));
+    expect(applyRow.hasFlag(SemanticsFlag.isChecked), isTrue);
     await tester.tap(find.byKey(const ValueKey('roleEditor.policy.command_registry.apply')));
     await tester.pump();
     await tester.tap(find.text('Allow').last);
     await tester.pump();
 
     await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
+    expect(tester.getSemantics(find.bySemanticsLabel('Role authority Write file fs.write')).hasFlag(SemanticsFlag.isChecked), isTrue);
     await tester.tap(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
     await tester.pump();
+    expect(tester.getSemantics(find.bySemanticsLabel('Role authority Write file fs.write')).hasFlag(SemanticsFlag.isChecked), isFalse);
     expect(find.byKey(const ValueKey('roleEditor.policy.fs.write')), findsNothing);
     await tester.tap(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
     await tester.pump();
+    expect(tester.getSemantics(find.bySemanticsLabel('Role authority Write file fs.write')).hasFlag(SemanticsFlag.isChecked), isTrue);
     await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.policy.fs.write')));
     await tester.tap(find.byKey(const ValueKey('roleEditor.policy.fs.write')));
     await tester.pump();
@@ -3168,11 +3314,10 @@ void main() {
     await tester.tap(find.descendant(of: find.byKey(const ValueKey('roleEditor.ownerVisible')), matching: find.byType(Switch)));
     await tester.pump();
 
-    (tester.widget(find.byKey(const ValueKey('roleEditor.instructions'))) as dynamic).controller.text = 'Updated runtime instructions.';
-    await tester.pump();
-
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Validate Draft'));
     await tester.tap(find.widgetWithText(OutlinedButton, 'Validate Draft'));
     await tester.pump();
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Save Version'));
     await tester.tap(find.widgetWithText(OutlinedButton, 'Save Version'));
     await tester.pump();
 

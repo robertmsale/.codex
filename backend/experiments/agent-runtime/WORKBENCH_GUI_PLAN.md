@@ -120,6 +120,18 @@ Runtime Operations launches Role Admin as a full-screen Role Manager page. Rust 
 
 Role create/update uses inline editor `instructionText` and persists it to immutable `role_versions.instruction_text`; the UI never creates prompt files. Server validation reuses canonical role manifest validation, DB routing validation, and command-policy validation. The shared Role Manager has one role-authority editor where each action row carries its policy decision; validate/save drafts derive capabilities and policy from those rows before dispatch so the backend policy-key invariant remains the source of truth. Create/update/activate/archive/unarchive mutations wait for projection/delta evidence, while metadata/options, validation, detail, version, and export operations return direct typed results.
 
+Role authority options are concrete backend action ids only. Group labels such
+as `command.registry` and `workflow.memory` are not selectable capabilities;
+QA automation targets rows by stable labels that contain the product label and
+exact action id, and visible rows expose checked state through semantics.
+Manual Connect to URL immediately moves the runtime state out of Not connected
+or shows the typed connection error. Session Settings is a full-screen route
+with a `Close session settings` affordance in both selected-session and
+no-selected-session states; stopped sessions render invalid quick actions
+disabled with a visible unavailable reason. Create Project and Create Session
+dialogs are not barrier-dismissible; keyboard dismissal preserves dirty text
+until the user explicitly cancels or submits.
+
 ## Direction
 
 The connected shell is a chat-first Robdex Workbench product using the shared conversation primitives.

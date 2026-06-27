@@ -5,8 +5,8 @@ import 'workbench_models.dart';
 const mockAgentRuntimeRoleEditorOptions = AgentRuntimeRoleEditorOptions(
   models: ['gpt-5.5', 'gpt-5.4-mini', 'codex-live-model'],
   reasoningEfforts: ['low', 'medium', 'high'],
-  capabilities: ['tool.execute_code', 'tool.request_command_registry_change', 'fs.read', 'fs.write', 'patch.apply', 'workflow_memory.search', 'workflow_memory.feedback', 'command_registry.apply'],
-  policyActions: ['tool.execute_code', 'tool.request_command_registry_change', 'fs.read', 'fs.write', 'patch.apply', 'workflow_memory.search', 'workflow_memory.feedback', 'command_registry.apply'],
+  capabilities: ['tool.execute_code', 'tool.request_command_registry_change', 'fs.read', 'fs.write', 'patch.apply', 'workflow_memory.search', 'workflow_memory.remember.project', 'workflow_memory.remember.global', 'workflow_memory.feedback', 'command_registry.request', 'command_registry.decide', 'command_registry.apply', 'git.status', 'git.diff'],
+  policyActions: ['tool.execute_code', 'tool.request_command_registry_change', 'fs.read', 'fs.write', 'patch.apply', 'workflow_memory.search', 'workflow_memory.remember.project', 'workflow_memory.remember.global', 'workflow_memory.feedback', 'command_registry.request', 'command_registry.decide', 'command_registry.apply', 'git.status', 'git.diff'],
   policyDecisions: ['allow', 'deny', 'ownerApproval'],
   routingModes: ['direct'],
   recipients: ['owner', 'runtime-safe-builder', 'orchestrator-reviewer'],

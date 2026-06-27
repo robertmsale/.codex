@@ -228,6 +228,17 @@ class AgentRuntimeWorkbenchController extends ChangeNotifier {
 
   void connect(String baseUrl) {
     _baseUrl = baseUrl.trim().isEmpty ? _baseUrl : baseUrl.trim();
+    final current = _viewModel ?? _disconnectedViewModel;
+    _viewModel = current.copyWith(
+      connectionState: 'connecting',
+      connectionTone: 'warning',
+      baseUrl: _baseUrl,
+      statusLabel: 'Connecting to runtime',
+      errorMessage: null,
+      outputLog: <String>[...current.outputLog.take(49), 'Connect to URL: connecting to $_baseUrl'],
+      pendingRequestCount: _pendingRequestIds.length + 1,
+    );
+    _bridgeErrorMessage = null;
     _send('connect', bindings.AgentRuntimeRequestConnect(baseUrl: _baseUrl, selectedSessionId: ''));
   }
 
