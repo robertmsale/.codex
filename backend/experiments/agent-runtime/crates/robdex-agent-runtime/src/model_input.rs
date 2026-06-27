@@ -86,7 +86,7 @@ pub fn runtime_context_block(snapshot: &ContextSnapshotRecord) -> String {
 }
 
 pub fn context_delta_block(snapshot: &ContextSnapshotRecord) -> Option<String> {
-    if matches!(snapshot.event_kind.as_str(), "initial" | "snapshot_refreshed" | "role_epoch_changed") {
+    if matches!(snapshot.event_kind.as_str(), "initial" | "unchanged" | "snapshot_refreshed" | "role_authority_changed") {
         return None;
     }
     let details = bounded_delta_details(snapshot);
@@ -101,7 +101,7 @@ pub fn context_delta_block(snapshot: &ContextSnapshotRecord) -> Option<String> {
 }
 
 pub fn role_transition_summary_block(snapshot: &ContextSnapshotRecord) -> Option<String> {
-    if snapshot.event_kind != "role_epoch_changed" {
+    if snapshot.event_kind != "role_authority_changed" {
         return None;
     }
     let previous = snapshot.previous_snapshot.as_ref().and_then(|value| value.pointer("/role/epoch")).and_then(Value::as_str).unwrap_or("unknown");
@@ -267,13 +267,14 @@ pub async fn persist_context_snapshot(
     command_context: &CommandContextEvidence,
     turn_id: Option<Uuid>,
 ) -> Result<ContextSnapshotRecord> {
-    let previous: Option<(i64, Value)> = sqlx::query_as(
-        "SELECT context_epoch, snapshot FROM session_context_snapshots WHERE session_id=$1 ORDER BY context_epoch DESC LIMIT 1",
+    let previous: Option<(i64, i64, Value)> = sqlx::query_as(
+        "SELECT context_epoch, context_event_watermark, snapshot FROM session_context_snapshots WHERE session_id=$1 ORDER BY context_epoch DESC LIMIT 1",
     )
     .bind(session.id)
     .fetch_optional(pool)
     .await?;
-    let previous_epoch = previous.as_ref().map(|(epoch, _)| *epoch);
+    let previous_epoch = previous.as_ref().map(|(epoch, _, _)| *epoch);
+    let previous_watermark = previous.as_ref().map(|(_, watermark, _)| *watermark).unwrap_or(0);
     let context_epoch = previous_epoch.unwrap_or(0) + 1;
     let role_epoch = role_epoch(role);
     let (project_key, project_display) = project_label(pool, session.project_key.as_deref()).await?;
@@ -315,30 +316,81 @@ pub async fn persist_context_snapshot(
         },
         "generatedAt": Utc::now().to_rfc3339(),
     });
-    let event_kind = match previous.as_ref() {
-        None => "initial",
-        Some((_, prior)) if prior.pointer("/project/key") != snapshot.pointer("/project/key") => "project_assignment_changed",
-        Some((_, prior)) if prior.pointer("/cwd/path") != snapshot.pointer("/cwd/path") => "cwd_changed",
-        Some((_, prior)) if prior.pointer("/worktreeRoot") != snapshot.pointer("/worktreeRoot") => "worktree_root_changed",
-        Some((_, prior)) if prior.pointer("/role/epoch") != snapshot.pointer("/role/epoch") => "role_epoch_changed",
-        Some((_, prior)) if prior.pointer("/godMode/state") != snapshot.pointer("/godMode/state") => "god_mode_changed",
-        Some((_, prior)) if prior.pointer("/lifecycle/status") != snapshot.pointer("/lifecycle/status") => "session_lifecycle_changed",
-        Some((_, prior)) if prior.get("model") != snapshot.get("model") => "model_changed",
-        Some((_, prior)) if prior.pointer("/tools/commandContextId") != snapshot.pointer("/tools/commandContextId") => "tool_context_changed",
-        _ => "snapshot_refreshed",
+    let structural_event_kind = match previous.as_ref() {
+        None => Some("initial"),
+        Some((_, _, prior)) if prior.pointer("/project/key") != snapshot.pointer("/project/key") => Some("project_assignment_changed"),
+        Some((_, _, prior)) if prior.pointer("/cwd/path") != snapshot.pointer("/cwd/path") => Some("cwd_changed"),
+        Some((_, _, prior)) if prior.pointer("/worktreeRoot") != snapshot.pointer("/worktreeRoot") => Some("worktree_root_changed"),
+        Some((_, _, prior)) if prior.pointer("/role/epoch") != snapshot.pointer("/role/epoch") => Some("role_authority_changed"),
+        Some((_, _, prior)) if prior.pointer("/godMode/state") != snapshot.pointer("/godMode/state") => Some("god_mode_changed"),
+        Some((_, _, prior)) if prior.pointer("/lifecycle/status") != snapshot.pointer("/lifecycle/status") => Some("session_lifecycle_changed"),
+        Some((_, _, prior)) if prior.get("model") != snapshot.get("model") => Some("model_changed"),
+        Some((_, _, prior)) if prior.pointer("/tools/commandContextId") != snapshot.pointer("/tools/commandContextId") => Some("tool_context_changed"),
+        _ => None,
     };
-    let event_sequence: i64 = sqlx::query_scalar(
-        "INSERT INTO session_context_events (session_id, turn_id, event_kind, role_epoch, context_epoch, previous_context_epoch, payload) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING sequence",
+    let pending_count: i64 = if previous.is_some() {
+        sqlx::query_scalar("SELECT COUNT(*) FROM session_context_events WHERE session_id=$1 AND sequence > $2")
+            .bind(session.id)
+            .bind(previous_watermark)
+            .fetch_one(pool)
+            .await?
+    } else {
+        0_i64
+    };
+    if let Some((prior_epoch, prior_watermark, prior_snapshot)) = previous.as_ref()
+        && structural_event_kind.is_none()
+        && pending_count == 0
+    {
+        return Ok(ContextSnapshotRecord {
+            role_epoch,
+            context_epoch: *prior_epoch,
+            previous_context_epoch: Some(*prior_epoch),
+            context_event_watermark: *prior_watermark,
+            event_kind: "unchanged".to_string(),
+            event_sequence: *prior_watermark,
+            snapshot: prior_snapshot.clone(),
+            previous_snapshot: Some(prior_snapshot.clone()),
+        });
+    }
+    if previous.is_some() && structural_event_kind.is_some() && pending_count == 0 {
+        sqlx::query(
+            "INSERT INTO session_context_events (session_id, turn_id, event_kind, role_epoch, context_epoch, previous_context_epoch, payload) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        )
+        .bind(session.id)
+        .bind(turn_id)
+        .bind(structural_event_kind.expect("checked"))
+        .bind(&role_epoch)
+        .bind(context_epoch)
+        .bind(previous_epoch)
+        .bind(json!({"snapshot": snapshot, "previousSnapshot": previous.as_ref().map(|(_, _, value)| value), "previousContextEpoch": previous_epoch}))
+        .execute(pool)
+        .await?;
+    }
+    let pending: Vec<(i64, String, Value)> = sqlx::query_as(
+        "SELECT sequence, event_kind, payload FROM session_context_events WHERE session_id=$1 AND sequence > $2 ORDER BY sequence ASC",
     )
     .bind(session.id)
-    .bind(turn_id)
-    .bind(event_kind)
-    .bind(&role_epoch)
-    .bind(context_epoch)
-    .bind(previous_epoch)
-    .bind(json!({"snapshot": snapshot, "previousSnapshot": previous.as_ref().map(|(_, value)| value), "previousContextEpoch": previous_epoch}))
-    .fetch_one(pool)
+    .bind(previous_watermark)
+    .fetch_all(pool)
     .await?;
+    let (event_sequence, event_kind) = if previous.is_none() {
+        let event_sequence: i64 = sqlx::query_scalar(
+            "INSERT INTO session_context_events (session_id, turn_id, event_kind, role_epoch, context_epoch, previous_context_epoch, payload) VALUES ($1,$2,'initial',$3,$4,$5,$6) RETURNING sequence",
+        )
+        .bind(session.id)
+        .bind(turn_id)
+        .bind(&role_epoch)
+        .bind(context_epoch)
+        .bind(previous_epoch)
+        .bind(json!({"snapshot": snapshot, "previousSnapshot": Value::Null, "previousContextEpoch": previous_epoch}))
+        .fetch_one(pool)
+        .await?;
+        (event_sequence, "initial".to_string())
+    } else if let Some((sequence, kind, _)) = pending.last() {
+        (*sequence, kind.clone())
+    } else {
+        unreachable!("unchanged contexts returned early and structural changes create a pending event")
+    };
     let watermark = event_sequence;
     let id = Uuid::new_v4();
     sqlx::query(
@@ -358,10 +410,10 @@ pub async fn persist_context_snapshot(
         context_epoch,
         previous_context_epoch: previous_epoch,
         context_event_watermark: watermark,
-        event_kind: event_kind.to_string(),
+        event_kind,
         event_sequence,
         snapshot,
-        previous_snapshot: previous.map(|(_, value)| value),
+        previous_snapshot: previous.map(|(_, _, value)| value),
     })
 }
 
@@ -385,12 +437,10 @@ pub fn runtime_developer_messages(snapshot: &ContextSnapshotRecord, command_cont
             metadata: json!({"source": "role_transition_summary", "roleEpoch": snapshot.role_epoch, "contextEpoch": snapshot.context_epoch, "contextEventWatermark": snapshot.context_event_watermark}),
         });
     }
-    if matches!(snapshot.event_kind.as_str(), "initial" | "role_epoch_changed" | "tool_context_changed") {
-        messages.push(RuntimeInputMessage {
-            text: command_context.text.clone(),
-            metadata: command_context.metadata.clone(),
-        });
-    }
+    messages.push(RuntimeInputMessage {
+        text: command_context.text.clone(),
+        metadata: command_context.metadata.clone(),
+    });
     messages
 }
 
@@ -415,20 +465,11 @@ pub fn responses_input(
     runtime_messages: &[RuntimeInputMessage],
     current_message: Option<&str>,
 ) -> Vec<Value> {
-    let include_role_instructions = runtime_messages.iter().any(|message| {
-        matches!(
-            message.metadata.get("source").and_then(Value::as_str),
-            Some("runtime_context" | "role_transition_summary")
-        )
-    });
-    let mut input = Vec::new();
-    if include_role_instructions {
-        input.push(json!({
-            "role": "developer",
-            "content": [{"type": "input_text", "text": role_instructions_block(role)}],
-            "metadata": {"source": "role_instructions", "roleEpoch": role_epoch(role)}
-        }));
-    }
+    let mut input = vec![json!({
+        "role": "developer",
+        "content": [{"type": "input_text", "text": role_instructions_block(role)}],
+        "metadata": {"source": "role_instructions", "roleEpoch": role_epoch(role)}
+    })];
     for runtime_message in runtime_messages {
         let mut content = vec![json!({"type": "input_text", "text": runtime_message.text})];
         if let Some(attachments) = runtime_message.metadata.get("imageArtifactAttachments").and_then(Value::as_array) {
@@ -529,7 +570,7 @@ mod tests {
         }];
         let input = responses_input(&role, &history, &[], Some("continue"));
         let rendered = serde_json::to_string(&input).unwrap();
-        assert!(!rendered.contains("new role instructions"));
+        assert!(rendered.contains("new role instructions"));
         assert!(!rendered.contains("old role"));
         assert!(rendered.contains("assistant answer"));
     }
@@ -595,7 +636,7 @@ mod tests {
             context_epoch: 4,
             previous_context_epoch: Some(3),
             context_event_watermark: 14,
-            event_kind: "role_epoch_changed".to_string(),
+            event_kind: "role_authority_changed".to_string(),
             event_sequence: 14,
             snapshot: json!({"role": {"epoch": "operator:2.0.1:new"}}),
             previous_snapshot: Some(json!({"role": {"epoch": "operator:2.0.0:old"}})),
@@ -645,7 +686,7 @@ mod tests {
             context_epoch: 2,
             previous_context_epoch: Some(1),
             context_event_watermark: 13,
-            event_kind: "snapshot_refreshed".to_string(),
+            event_kind: "unchanged".to_string(),
             event_sequence: 13,
             snapshot: json!({"role": {"epoch": "operator:2.0.0:test"}}),
             previous_snapshot: Some(json!({"role": {"epoch": "operator:2.0.0:test"}})),
@@ -666,8 +707,8 @@ mod tests {
         let messages = runtime_developer_messages(&snapshot, &command_context);
         let rendered = serde_json::to_string(&messages).unwrap();
         assert!(!rendered.contains("<runtime_context"), "{rendered}");
-        assert!(!rendered.contains("<command_context"), "{rendered}");
-        assert!(messages.is_empty());
+        assert!(rendered.contains("<command_context"), "{rendered}");
+        assert_eq!(messages.len(), 1);
     }
 
     #[test]

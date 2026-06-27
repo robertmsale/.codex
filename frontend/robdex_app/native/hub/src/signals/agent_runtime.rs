@@ -353,6 +353,7 @@ pub struct AgentRuntimeSelectedSessionControlPlane {
     pub name: String,
     pub status: String,
     pub role_id: String,
+    pub role_version_id: String,
     pub project_key: String,
     pub active_model: String,
     pub workdir: String,
@@ -496,7 +497,7 @@ pub struct AgentRuntimeDiscoveryView {
 
 #[derive(Clone, Debug, Serialize, SignalPiece)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRuntimeSessionRow { pub id: String, pub title: String, pub status: String, pub subtitle: String, pub group_label: String, pub tone: String }
+pub struct AgentRuntimeSessionRow { pub id: String, pub title: String, pub status: String, pub role_version_id: String, pub subtitle: String, pub group_label: String, pub tone: String }
 #[derive(Clone, Debug, Serialize, SignalPiece)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeTimelineRow { pub id: String, pub title: String, pub subtitle: String, pub status: String, pub tone: String }

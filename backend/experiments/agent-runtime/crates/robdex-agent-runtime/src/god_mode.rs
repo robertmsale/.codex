@@ -100,6 +100,24 @@ pub async fn grant_session(pool: &PgPool, session_id: Uuid, actor: &str, reason:
         json!({"grantId": id, "grantedBy": actor, "reason": reason, "expiresAt": expires_at}),
     )
     .await?;
+    let role = db::session_role_snapshot(pool, session_id).await?;
+    db::append_session_context_event(
+        pool,
+        session_id,
+        "god_mode_changed",
+        &role,
+        json!({
+            "source": actor,
+            "actor": actor,
+            "timestamp": chrono::Utc::now(),
+            "previousGodMode": "inactive",
+            "newGodMode": "active",
+            "grantId": id,
+            "reason": reason,
+            "expiresAt": expires_at,
+        }),
+    )
+    .await?;
     Ok(active_grant(pool, session_id).await?.expect("inserted grant is active"))
 }
 
@@ -132,6 +150,23 @@ pub async fn revoke_active(pool: &PgPool, session_id: Uuid, actor: &str, reason:
             "godMode.revoked",
             Some("revoked"),
             json!({"revokedBy": actor, "reason": reason, "count": result.rows_affected()}),
+        )
+        .await?;
+        let role = db::session_role_snapshot(pool, session_id).await?;
+        db::append_session_context_event(
+            pool,
+            session_id,
+            "god_mode_changed",
+            &role,
+            json!({
+                "source": actor,
+                "actor": actor,
+                "timestamp": chrono::Utc::now(),
+                "previousGodMode": "active",
+                "newGodMode": "inactive",
+                "reason": reason,
+                "count": result.rows_affected(),
+            }),
         )
         .await?;
     }

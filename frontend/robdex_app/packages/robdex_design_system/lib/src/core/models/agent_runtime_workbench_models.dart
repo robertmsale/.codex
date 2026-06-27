@@ -317,6 +317,7 @@ class AgentRuntimeSessionItem {
     required this.id,
     required this.title,
     required this.status,
+    required this.roleVersionId,
     required this.subtitle,
     required this.groupLabel,
     required this.tone,
@@ -325,6 +326,7 @@ class AgentRuntimeSessionItem {
   final String id;
   final String title;
   final String status;
+  final String roleVersionId;
   final String subtitle;
   final String groupLabel;
   final String tone;
@@ -334,6 +336,7 @@ class AgentRuntimeSessionItem {
       id: '${json['id'] ?? 'session'}',
       title: '${json['title'] ?? json['id'] ?? 'Session'}',
       status: '${json['status'] ?? 'unknown'}',
+      roleVersionId: '${json['roleVersionId'] ?? ''}',
       subtitle: '${json['subtitle'] ?? ''}',
       groupLabel: '${json['groupLabel'] ?? 'Sessions'}',
       tone: '${json['tone'] ?? 'info'}',
@@ -446,6 +449,7 @@ class AgentRuntimeSelectedSessionControlPlane {
     required this.name,
     required this.status,
     required this.roleId,
+    required this.roleVersionId,
     required this.projectKey,
     required this.activeModel,
     required this.workdir,
@@ -467,6 +471,7 @@ class AgentRuntimeSelectedSessionControlPlane {
   final String name;
   final String status;
   final String roleId;
+  final String roleVersionId;
   final String projectKey;
   final String activeModel;
   final String workdir;
@@ -489,6 +494,7 @@ class AgentRuntimeSelectedSessionControlPlane {
       name: '${json['name'] ?? ''}',
       status: '${json['status'] ?? ''}',
       roleId: '${json['roleId'] ?? ''}',
+      roleVersionId: '${json['roleVersionId'] ?? ''}',
       projectKey: '${json['projectKey'] ?? ''}',
       activeModel: '${json['activeModel'] ?? ''}',
       workdir: '${json['workdir'] ?? ''}',
@@ -522,6 +528,7 @@ class AgentRuntimeSelectedSessionControlPlane {
     String? name,
     String? status,
     String? roleId,
+    String? roleVersionId,
     String? projectKey,
     String? activeModel,
     String? workdir,
@@ -540,9 +547,10 @@ class AgentRuntimeSelectedSessionControlPlane {
     sessionId: sessionId ?? this.sessionId,
     title: title ?? this.title,
     name: name ?? this.name,
-    status: status ?? this.status,
-    roleId: roleId ?? this.roleId,
-    projectKey: projectKey ?? this.projectKey,
+      status: status ?? this.status,
+      roleId: roleId ?? this.roleId,
+      roleVersionId: roleVersionId ?? this.roleVersionId,
+      projectKey: projectKey ?? this.projectKey,
     activeModel: activeModel ?? this.activeModel,
     workdir: workdir ?? this.workdir,
     worktreeRoot: worktreeRoot ?? this.worktreeRoot,

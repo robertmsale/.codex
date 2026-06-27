@@ -8,6 +8,7 @@ class AgentRuntimeSessionRow {
     required this.id,
     required this.title,
     required this.status,
+    required this.roleVersionId,
     required this.subtitle,
     required this.groupLabel,
     required this.tone,
@@ -19,6 +20,7 @@ class AgentRuntimeSessionRow {
       id: deserializer.deserializeString(),
       title: deserializer.deserializeString(),
       status: deserializer.deserializeString(),
+      roleVersionId: deserializer.deserializeString(),
       subtitle: deserializer.deserializeString(),
       groupLabel: deserializer.deserializeString(),
       tone: deserializer.deserializeString(),
@@ -39,6 +41,7 @@ class AgentRuntimeSessionRow {
   final String id;
   final String title;
   final String status;
+  final String roleVersionId;
   final String subtitle;
   final String groupLabel;
   final String tone;
@@ -47,6 +50,7 @@ class AgentRuntimeSessionRow {
     String? id,
     String? title,
     String? status,
+    String? roleVersionId,
     String? subtitle,
     String? groupLabel,
     String? tone,
@@ -55,6 +59,7 @@ class AgentRuntimeSessionRow {
       id: id ?? this.id,
       title: title ?? this.title,
       status: status ?? this.status,
+      roleVersionId: roleVersionId ?? this.roleVersionId,
       subtitle: subtitle ?? this.subtitle,
       groupLabel: groupLabel ?? this.groupLabel,
       tone: tone ?? this.tone,
@@ -66,6 +71,7 @@ class AgentRuntimeSessionRow {
     serializer.serializeString(id);
     serializer.serializeString(title);
     serializer.serializeString(status);
+    serializer.serializeString(roleVersionId);
     serializer.serializeString(subtitle);
     serializer.serializeString(groupLabel);
     serializer.serializeString(tone);
@@ -87,6 +93,7 @@ class AgentRuntimeSessionRow {
       && id == other.id
       && title == other.title
       && status == other.status
+      && roleVersionId == other.roleVersionId
       && subtitle == other.subtitle
       && groupLabel == other.groupLabel
       && tone == other.tone;
@@ -97,6 +104,7 @@ class AgentRuntimeSessionRow {
         id,
         title,
         status,
+        roleVersionId,
         subtitle,
         groupLabel,
         tone,
@@ -111,6 +119,7 @@ class AgentRuntimeSessionRow {
         'id: $id, '
         'title: $title, '
         'status: $status, '
+        'roleVersionId: $roleVersionId, '
         'subtitle: $subtitle, '
         'groupLabel: $groupLabel, '
         'tone: $tone'

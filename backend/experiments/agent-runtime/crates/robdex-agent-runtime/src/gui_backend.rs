@@ -742,6 +742,7 @@ mod tests {
                                 status: "stopped".to_string(),
                                 role_id: Some("runtime-allow".to_string()),
                                 role_version: Some("1.0.0".to_string()),
+                                role_version_id: Some("role-version-1".to_string()),
                                 project_key: None,
                                 title: None,
                                 name: None,

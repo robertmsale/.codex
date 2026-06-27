@@ -957,7 +957,8 @@ runtime does not rely on `previous_response_id`, and production role/runtime
 context is not placed in the Responses `instructions` field. Each model turn is
 assembled from PostgreSQL state into an explicit input array.
 
-The first model request for a session receives a machine-readable role block:
+Every stateless model request for a session receives the current
+machine-readable role block:
 
 ```xml
 <role_instructions epoch="role-key:role-version:role-version-id" role_key="..." role_version="...">
@@ -965,9 +966,10 @@ The first model request for a session receives a machine-readable role block:
 </role_instructions>
 ```
 
-Role instructions are not additive. The latest `role_instructions` block is the
-active role authority. The first request also receives a machine-readable runtime
-snapshot:
+Role instructions are not additive and are not recovered from visible chat
+history. The latest `role_instructions` block supplied on the current request is
+the active role authority. The first request also receives a machine-readable
+runtime snapshot:
 
 ```xml
 <runtime_context epoch="...">
@@ -984,23 +986,32 @@ snapshot:
 Every session has either a canonical CWD or an explicit unavailable CWD state.
 `Unassigned` means no project assignment; it does not silently mean unknown CWD.
 Later model requests do not reinsert the full runtime snapshot when nothing
-changed. Runtime changes append durable `session_context_events` rows and are
-rendered as compact developer deltas, such as `cwd_changed`,
-`project_assignment_changed`, `tool_context_changed`, `god_mode_changed`, and
-`session_lifecycle_changed`. Role authority or role-instruction changes insert a
-concise `role_transition_summary` plus a fresh `role_instructions` block instead
-of dumping the full role JSON. God Mode grant/revoke changes are session-scoped
-context events and do not require full runtime context reinsertion on unrelated
-later turns.
+changed. They still include compact command-context guidance with the current
+command context id, visible command count, native affordance count, and the
+sanctioned `cmd.describe`/`cmd["name"].method.describe` discovery path; they do
+not dump the full command catalog on unchanged turns. Runtime changes append
+durable `session_context_events` rows at mutation time and are rendered once as
+compact developer deltas, such as `cwd_changed`, `project_assignment_changed`,
+`tool_context_changed`, `god_mode_changed`, and `session_lifecycle_changed`.
+Role authority or role-instruction changes append `role_authority_changed`,
+insert a concise `role_transition_summary`, and include the current
+`role_instructions` block instead of dumping the full role JSON. God Mode
+grant/revoke changes are session-scoped context events and do not require full
+runtime context reinsertion on unrelated later turns.
 When CWD is known, the model can answer CWD questions from developer context
 without a tool call. When CWD is unavailable, context says so and CWD-dependent
 runtime actions must be unavailable rather than guessed.
 
 Runtime context snapshots and context events are durable PostgreSQL rows in
-`session_context_snapshots` and `session_context_events`. Model request evidence
-records role/context epoch metadata, the context event watermark, prompt cache
-key, and whether compacted state was present. Dart does not author or inject
-these messages; it sends only user/UI lifecycle intents through Rinf.
+`session_context_snapshots` and `session_context_events`. Unchanged turns reuse
+the last persisted snapshot and do not append `snapshot_refreshed` churn or
+create a new snapshot solely because a request started. Each persisted snapshot
+records the consumed context-event watermark; pending context events are emitted
+to the model once, then later unrelated turns do not repeat the same delta.
+Model request evidence records role/context epoch metadata, the context event
+watermark, prompt cache key, and whether compacted state was present. Dart does
+not author or inject these messages; it sends only user/UI lifecycle intents
+through Rinf.
 
 Tool/command registry changes, CWD changes, sandbox/policy changes, and role
 metadata changes are represented as typed context events. The next model turn
@@ -1451,7 +1462,7 @@ Reserved future action names documented but not implemented here:
 - `message.send`
 - `message.route`
 
-Manifest decision values are `allow`, `deny`, `ownerApproval`, and `orchestratorApproval`; the GUI editor also offers `off`, which removes that action from both `capabilities` and `policy`. Runtime policy maps approval decisions to `approvalRequired` and does not execute those actions in this task. Missing action policy defaults to deny. Policy is execution authority; `capabilities` are validated to exactly match policy keys so they cannot contradict enforcement. Sessions store a role snapshot, and role save/activation updates that snapshot synchronously for every non-archived session using the role. Runtime authorization and model input then use the updated session snapshot for future tool calls and turns. Each propagation appends a durable `role_authority.changed` event with previous/new role-version identity, changed policy decisions, changed capabilities, actor/source, and timestamp; the next model request emits a concise model-visible authority delta. The direct Responses adapter receives the model name and role snapshot from the session snapshot, then emits role instructions as a tagged developer input block on the initial request and when role identity/instructions change. Reasoning effort is stored in the DB role version and snapshot but is not applied by the current direct adapter yet.
+Manifest decision values are `allow`, `deny`, `ownerApproval`, and `orchestratorApproval`; the GUI editor also offers `off`, which removes that action from both `capabilities` and `policy`. Runtime policy maps approval decisions to `approvalRequired` and does not execute those actions in this task. Missing action policy defaults to deny. Policy is execution authority; `capabilities` are validated to exactly match policy keys so they cannot contradict enforcement. Sessions store a role snapshot, and role save/activation updates that snapshot synchronously for every non-archived session using the role. Runtime authorization and model input then use the updated session snapshot for future tool calls and turns. Each propagation keeps the `role_authority.changed` audit event and appends a separate durable `session_context_events` row with `event_kind='role_authority_changed'`, previous/new role-version identity, changed policy decisions, changed capabilities, actor/source, and timestamp; the next model request emits a concise model-visible authority delta exactly once. The direct Responses adapter receives the model name and role snapshot from the session snapshot, then emits role instructions as a tagged developer input block on every stateless request. Reasoning effort is stored in the DB role version and snapshot but is not applied by the current direct adapter yet.
 
 
 ## Role Admin GUI/editor contract

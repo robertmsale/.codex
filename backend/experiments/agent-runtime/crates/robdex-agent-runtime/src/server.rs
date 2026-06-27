@@ -1799,15 +1799,18 @@ mod tests {
         }
 
         async fn submit_tool_result(&self, role: &crate::roles::RoleSnapshot, history: &[ModelHistoryItem], runtime_messages: &[RuntimeInputMessage], _tool_call_response: &Value, call_id: &str, tool_result: &Value) -> anyhow::Result<ModelFinalTurn> {
+            self.observed_history.lock().expect("history lock").push(history.to_vec());
             if let Some(message) = self.final_error {
                 anyhow::bail!("{message}");
             }
             let model_name = self.model_name.unwrap_or("fake-model");
+            let request_shape = json!({"model":model_name,"input": crate::model_input::responses_input(role, history, runtime_messages, None), "toolResult":tool_result});
+            self.observed_request_shapes.lock().expect("request shapes").push(request_shape.clone());
             Ok(ModelFinalTurn {
                 provider: "fake".to_string(),
                 model: model_name.to_string(),
                 final_text: format!("fake final {call_id} {}", tool_result.get("status").and_then(Value::as_str).unwrap_or("unknown")),
-                request_shape: json!({"model":model_name,"input": crate::model_input::responses_input(role, history, runtime_messages, None), "toolResult":tool_result}),
+                request_shape,
                 raw_response: json!({"output":[{"type":"message","content":[{"type":"output_text","text":"fake final"}]}]}),
             })
         }
@@ -2012,11 +2015,34 @@ mod tests {
         assert!(!visible_chat.contains("<role_instructions"), "developer role context must stay out of visible chat timeline");
         assert!(!visible_chat.contains("<runtime_context"), "developer runtime context must stay out of visible chat timeline");
 
+        let snapshots_before_second: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_context_snapshots WHERE session_id=$1")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("snapshots before second");
+        let events_before_second: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_context_events WHERE session_id=$1")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("events before second");
         crate::runtime::send_with_model_client(&test_db.pool, session_id, "what changed?", &model, compaction::CompactionBudget::default()).await.expect("second send");
         let second_shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("second shape");
         let second_rendered = serde_json::to_string(&second_shape).expect("second shape json");
         assert!(!second_rendered.contains("<runtime_context"), "unchanged later turn must not reinsert full runtime context: {second_rendered}");
-        assert!(!second_rendered.contains("<role_instructions"), "unchanged later turn must not reinsert role instructions: {second_rendered}");
+        assert!(second_rendered.contains("<role_instructions"), "unchanged stateless turn must include current role instructions: {second_rendered}");
+        assert!(second_rendered.contains("Runtime command context unchanged"), "unchanged stateless turn must include compact command guidance: {second_rendered}");
+        let snapshots_after_second: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_context_snapshots WHERE session_id=$1")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("snapshots after second");
+        let events_after_second: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_context_events WHERE session_id=$1")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("events after second");
+        assert_eq!(snapshots_after_second, snapshots_before_second, "unchanged turn must reuse persisted context snapshot");
+        assert_eq!(events_after_second, events_before_second, "unchanged turn must not append snapshot_refreshed context event");
         test_db.cleanup().await;
     }
 
@@ -2205,7 +2231,7 @@ mod tests {
             .fetch_one(&test_db.pool)
             .await
             .expect("event");
-        assert_eq!(event_kind, "role_epoch_changed");
+        assert_eq!(event_kind, "role_authority_changed");
         test_db.cleanup().await;
     }
 
@@ -2218,6 +2244,12 @@ mod tests {
         crate::runtime::send_with_model_client(&test_db.pool, session_id, "first", &model, compaction::CompactionBudget::default()).await.expect("first send");
 
         crate::god_mode::grant_session(&test_db.pool, session_id, "test", "prove concise context delta", None).await.expect("grant");
+        let grant_context_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_context_events WHERE session_id=$1 AND event_kind='god_mode_changed'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("grant context events");
+        assert_eq!(grant_context_events, 1);
         crate::runtime::send_with_model_client(&test_db.pool, session_id, "after grant", &model, compaction::CompactionBudget::default()).await.expect("grant send");
         let grant_shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("grant shape");
         let grant_rendered = serde_json::to_string(&grant_shape).expect("grant shape json");
@@ -2232,6 +2264,12 @@ mod tests {
         assert!(!unchanged_rendered.contains("god_mode_changed"), "{unchanged_rendered}");
 
         crate::god_mode::revoke_active(&test_db.pool, session_id, "test", "prove revoke delta").await.expect("revoke");
+        let revoke_context_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_context_events WHERE session_id=$1 AND event_kind='god_mode_changed'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("revoke context events");
+        assert_eq!(revoke_context_events, 2);
         crate::runtime::send_with_model_client(&test_db.pool, session_id, "after revoke", &model, compaction::CompactionBudget::default()).await.expect("revoke send");
         let revoke_shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("revoke shape");
         let revoke_rendered = serde_json::to_string(&revoke_shape).expect("revoke shape json");
@@ -3693,6 +3731,22 @@ mod tests {
             assert_eq!(current.user, "initial direct final prompt");
             assert_eq!(current.assistant.as_deref(), Some("direct final before steering"));
         }
+        let request_shapes = model.observed_request_shapes.lock().expect("request shapes").clone();
+        if request_shapes.len() > 1 {
+            let continuation_shape = serde_json::to_string(&request_shapes[1]).expect("continuation request json");
+            assert!(
+                continuation_shape.contains("<role_instructions"),
+                "same-turn direct-final continuation must include latest role instructions: {continuation_shape}"
+            );
+            assert!(
+                continuation_shape.contains("Runtime command context unchanged"),
+                "same-turn direct-final continuation must include compact command-context guidance: {continuation_shape}"
+            );
+            assert!(
+                !continuation_shape.contains("<runtime_context"),
+                "same-turn direct-final continuation must not reinsert full runtime_context on unchanged context: {continuation_shape}"
+            );
+        }
         let continuation_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='model.direct_final_continuation'")
             .bind(session_id)
             .fetch_one(&test_db.pool)
@@ -3788,6 +3842,22 @@ mod tests {
             assert_eq!(current.turn_id, turns[0].0.to_string());
             assert_eq!(current.user, "initial tool prompt");
             assert!(current.assistant.as_deref().unwrap_or_default().contains("tool_result"));
+        }
+        let request_shapes = model.observed_request_shapes.lock().expect("request shapes").clone();
+        if request_shapes.len() > 1 {
+            let continuation_shape = serde_json::to_string(&request_shapes[1]).expect("continuation request json");
+            assert!(
+                continuation_shape.contains("<role_instructions"),
+                "same-turn tool-result continuation must include latest role instructions: {continuation_shape}"
+            );
+            assert!(
+                continuation_shape.contains("Runtime command context unchanged"),
+                "same-turn tool-result continuation must include compact command-context guidance: {continuation_shape}"
+            );
+            assert!(
+                !continuation_shape.contains("<runtime_context"),
+                "same-turn tool-result continuation must not reinsert full runtime_context on unchanged context: {continuation_shape}"
+            );
         }
         let continuation_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='model.same_turn_continuation'")
             .bind(session_id)
@@ -6488,6 +6558,24 @@ mod tests {
         let added = event.pointer("/changedActionSummary/addedActions").and_then(Value::as_array).expect("added actions");
         assert!(added.iter().any(|action| action == "git.status"));
         assert!(added.iter().any(|action| action == "git.diff"));
+        let context_event: (String, Value) = sqlx::query_as("SELECT event_kind, payload FROM session_context_events WHERE session_id=$1 AND event_kind='role_authority_changed' ORDER BY sequence DESC LIMIT 1")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("role authority context event");
+        assert_eq!(context_event.0, "role_authority_changed");
+        assert_eq!(context_event.1["roleId"], "project-progenitor");
+        assert_eq!(context_event.1["previousRoleVersionId"], stale.role_version_id.to_string());
+        assert_eq!(context_event.1["newRoleVersionId"], new_version.to_string());
+        assert_eq!(context_event.1["source"], "gui-role-editor");
+        assert!(context_event.1.get("timestamp").and_then(Value::as_str).is_some());
+        assert!(context_event.1.pointer("/changedCapabilitySummary/addedCapabilities").and_then(Value::as_array).expect("added capabilities").iter().any(|action| action == "git.status"));
+        let archived_role_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_context_events WHERE session_id=$1 AND event_kind='role_authority_changed'")
+            .bind(archived_session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("archived role context events");
+        assert_eq!(archived_role_events, 0);
 
         crate::runtime::send_with_model_client(&test_db.pool, session_id, "second context", &model, compaction::CompactionBudget::default()).await.expect("second send");
         let shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("shape");
@@ -6496,6 +6584,11 @@ mod tests {
         assert!(rendered.contains("Role authority changed"), "{rendered}");
         assert!(rendered.contains("git.status"), "{rendered}");
         assert!(rendered.contains("git.diff"), "{rendered}");
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "third context", &model, compaction::CompactionBudget::default()).await.expect("third send");
+        let later_shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("later shape");
+        let later_rendered = serde_json::to_string(&later_shape).expect("later shape json");
+        assert!(!later_rendered.contains("<role_transition_summary"), "{later_rendered}");
+        assert!(!later_rendered.contains("Role authority changed"), "{later_rendered}");
         test_db.cleanup().await;
     }
 
@@ -6567,6 +6660,35 @@ mod tests {
             crate::policy::PolicyEngine::decide(&absent, "git.diff", json!({"paths":[]})).decision,
             crate::policy::RuntimeDecision::Allow
         );
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn selected_session_and_session_rows_expose_enforcement_role_version_id() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("role-version-projection"), ".", Some("."), Some("Role Version Projection"), None).await.expect("session");
+        let projection = crate::projection::build_runtime_projection_snapshot(&test_db.pool, Some(session_id)).await.expect("projection");
+        let row = projection.sessions.iter().find(|row| row.id == session_id.to_string()).expect("session row");
+        assert_eq!(row.role_version_id.as_deref(), Some(role.role_version_id.to_string().as_str()));
+        let selected = projection.selected_session.as_ref().expect("selected session");
+        assert_eq!(selected.role_version_id.as_deref(), Some(role.role_version_id.to_string().as_str()));
+        let view = crate::rinf_transport::AgentRuntimeWorkbenchViewModel::from_runtime_state(
+            "http://127.0.0.1:8765",
+            Some(&projection),
+            &robdex_agent_runtime_projection::GuiControllerState::default(),
+            &[],
+            0,
+            None,
+            &crate::rinf_transport::AgentRuntimeDiscoveryView::default(),
+            &crate::rinf_transport::AgentRuntimeDiscoveryView::default(),
+            &crate::rinf_transport::AgentRuntimeDiscoveryView::default(),
+            &[],
+        );
+        let view_row = view.sessions.iter().find(|row| row.id == session_id.to_string()).expect("view session row");
+        assert_eq!(view_row.role_version_id, role.role_version_id.to_string());
+        let control_plane = view.shell.selected_session_control_plane.as_ref().expect("selected control plane");
+        assert_eq!(control_plane.role_version_id, role.role_version_id.to_string());
         test_db.cleanup().await;
     }
 

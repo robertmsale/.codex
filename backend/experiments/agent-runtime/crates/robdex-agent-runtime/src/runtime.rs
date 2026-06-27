@@ -404,7 +404,17 @@ pub(crate) async fn continue_pending_steering_after_operation_boundary(
         json!({"submittedInputId": pending.id, "boundary": "operation_completed", "history": {"items": history.len(), "source": "completed_history_plus_current_turn_transcript"}}),
     )
     .await?;
-    let _ = model.request_tool_call(&role, &history, &[], "", "", &pending.content).await?;
+    let session = db::session_record(pool, session_id).await?;
+    let live_commands = command_registry::live_visible_commands(pool, &role, session.project_key.as_deref()).await?;
+    let previous_command_context = latest_command_context_evidence(pool, session_id).await?;
+    let command_context = command_registry::runtime_command_context_message(&live_commands, previous_command_context.as_ref());
+    let runtime_messages = vec![RuntimeInputMessage {
+        text: command_context.text,
+        metadata: command_context.metadata,
+    }];
+    let execute_code_contract = command_registry::stable_execute_code_contract_with_god_mode_shell(crate::god_mode::active_grant(pool, session_id).await?.is_some());
+    let request_registry_contract = command_registry::request_tool_contract();
+    let _ = model.request_tool_call(&role, &history, &runtime_messages, &execute_code_contract, &request_registry_contract, &pending.content).await?;
     Ok(true)
 }
 
@@ -415,7 +425,6 @@ async fn latest_command_context_evidence(pool: &PgPool, session_id: Uuid) -> Res
         SELECT payload->'commandContext'
         FROM model_events
         WHERE session_id=$1
-          AND event_type='assistant_message'
           AND payload ? 'commandContext'
         ORDER BY created_at DESC, ordinal DESC
         LIMIT 1
@@ -599,18 +608,20 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
         json!({"input": message}),
     )
     .await?;
-    sqlx::query("UPDATE session_context_snapshots SET turn_id=$1 WHERE session_id=$2 AND context_epoch=$3")
-        .bind(turn_id)
-        .bind(session_id)
-        .bind(context_snapshot.context_epoch)
-        .execute(pool)
-        .await?;
-    sqlx::query("UPDATE session_context_events SET turn_id=$1 WHERE session_id=$2 AND context_epoch=$3")
-        .bind(turn_id)
-        .bind(session_id)
-        .bind(context_snapshot.context_epoch)
-        .execute(pool)
-        .await?;
+    if context_snapshot.event_kind != "unchanged" {
+        sqlx::query("UPDATE session_context_snapshots SET turn_id=$1 WHERE session_id=$2 AND context_epoch=$3")
+            .bind(turn_id)
+            .bind(session_id)
+            .bind(context_snapshot.context_epoch)
+            .execute(pool)
+            .await?;
+        sqlx::query("UPDATE session_context_events SET turn_id=$1 WHERE session_id=$2 AND context_epoch=$3 AND turn_id IS NULL")
+            .bind(turn_id)
+            .bind(session_id)
+            .bind(context_snapshot.context_epoch)
+            .execute(pool)
+            .await?;
+    }
     let _route = match routing::decide_route(pool, session_id, Some(turn_id), &role_snapshot).await {
         Ok(route) => route,
         Err(error) => {
@@ -635,6 +646,8 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
                 turn_id,
                 &prior_history,
                 &model_role_instructions,
+                &runtime_command_context.evidence,
+                &runtime_messages,
                 final_response,
                 model,
                 budget,
@@ -1084,11 +1097,14 @@ async fn complete_direct_final_response(
     turn_id: Uuid,
     prior_history: &[db::HistoryItem],
     role_instructions: &str,
+    command_context: &command_registry::CommandContextEvidence,
+    runtime_messages: &[RuntimeInputMessage],
     final_response: ModelFinalTurn,
     model: &(impl ModelClient + Sync + ?Sized),
     budget: compaction::CompactionBudget,
 ) -> Result<()> {
     let final_model_event_id = Uuid::new_v4();
+    let request_evidence = model_request_evidence(&final_response.request_shape, command_context, runtime_messages);
     sqlx::query(
         r#"
         INSERT INTO model_events (id, session_id, turn_id, event_type, payload)
@@ -1102,7 +1118,9 @@ async fn complete_direct_final_response(
         "summary": final_response.final_text,
         "provider": final_response.provider,
         "model": final_response.model,
+        "request": request_evidence,
         "raw": bounded_raw_response(&final_response.raw_response),
+        "commandContext": serde_json::to_value(command_context).unwrap_or(Value::Null),
     }))
     .execute(pool)
     .await?;
@@ -1191,13 +1209,24 @@ async fn complete_direct_final_response(
             }),
         )
         .await?;
+        let continuation_role = db::session_role_snapshot(pool, session_id).await?;
+        let continuation_session = db::session_record(pool, session_id).await?;
+        let continuation_commands = command_registry::live_visible_commands(pool, &continuation_role, continuation_session.project_key.as_deref()).await?;
+        let continuation_previous_context = latest_command_context_evidence(pool, session_id).await?;
+        let continuation_command_context = command_registry::runtime_command_context_message(&continuation_commands, continuation_previous_context.as_ref());
+        let continuation_runtime_messages = vec![RuntimeInputMessage {
+            text: continuation_command_context.text,
+            metadata: continuation_command_context.metadata,
+        }];
+        let continuation_execute_contract = command_registry::stable_execute_code_contract_with_god_mode_shell(crate::god_mode::active_grant(pool, session_id).await?.is_some());
+        let continuation_request_contract = command_registry::request_tool_contract();
         match model
             .request_tool_call(
-                &db::session_role_snapshot(pool, session_id).await?,
+                &continuation_role,
                 &continuation_history,
-                &[],
-                "",
-                "",
+                &continuation_runtime_messages,
+                &continuation_execute_contract,
+                &continuation_request_contract,
                 &pending.content,
             )
             .await?

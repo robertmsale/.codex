@@ -57,6 +57,8 @@ pub struct SessionListItem {
     pub status: String,
     pub role_id: Option<String>,
     pub role_version: Option<String>,
+    #[serde(default)]
+    pub role_version_id: Option<String>,
     pub project_key: Option<String>,
     pub title: Option<String>,
     pub name: Option<String>,
@@ -86,6 +88,8 @@ pub struct SelectedSessionDetail {
     pub id: String,
     pub role_id: Option<String>,
     pub role_version: Option<String>,
+    #[serde(default)]
+    pub role_version_id: Option<String>,
     pub project_key: Option<String>,
     #[serde(default)]
     pub active_model: Option<String>,

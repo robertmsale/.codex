@@ -378,7 +378,7 @@ async fn current_watermark(pool: &PgPool) -> Result<i64> {
 async fn session_list_items(pool: &PgPool) -> Result<Vec<SessionListItem>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, status, role_id, role_version, project_key, workdir, title, name, tracked,
+        SELECT id, status, role_id, role_version, role_snapshot, project_key, workdir, title, name, tracked,
                archived_at, updated_at
         FROM sessions
         WHERE archived_at IS NULL AND hidden = false
@@ -394,6 +394,11 @@ async fn session_list_items(pool: &PgPool) -> Result<Vec<SessionListItem>> {
             status: row.get("status"),
             role_id: row.get("role_id"),
             role_version: row.get("role_version"),
+            role_version_id: row
+                .get::<Value, _>("role_snapshot")
+                .get("roleVersionId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             project_key: row.get("project_key"),
             title: row.get("title"),
             name: row.get("name"),
@@ -408,7 +413,7 @@ async fn session_list_items(pool: &PgPool) -> Result<Vec<SessionListItem>> {
 async fn session_list_item(pool: &PgPool, session_id: Uuid) -> Result<Option<SessionListItem>> {
     let row = sqlx::query(
         r#"
-        SELECT id, status, role_id, role_version, project_key, workdir, title, name, tracked,
+        SELECT id, status, role_id, role_version, role_snapshot, project_key, workdir, title, name, tracked,
                archived_at, updated_at
         FROM sessions
         WHERE id = $1 AND archived_at IS NULL AND hidden = false
@@ -422,6 +427,11 @@ async fn session_list_item(pool: &PgPool, session_id: Uuid) -> Result<Option<Ses
         status: row.get("status"),
         role_id: row.get("role_id"),
         role_version: row.get("role_version"),
+        role_version_id: row
+            .get::<Value, _>("role_snapshot")
+            .get("roleVersionId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         project_key: row.get("project_key"),
         title: row.get("title"),
         name: row.get("name"),
@@ -584,6 +594,11 @@ async fn selected_session_detail(
         id: row.get::<Uuid, _>("id").to_string(),
         role_id: row.get("role_id"),
         role_version: row.get("role_version"),
+        role_version_id: row
+            .get::<Value, _>("role_snapshot")
+            .get("roleVersionId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         project_key: row.get("project_key"),
         active_model,
         workdir: row.get("workdir"),

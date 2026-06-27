@@ -10,6 +10,7 @@ class AgentRuntimeSelectedSessionControlPlane {
     required this.name,
     required this.status,
     required this.roleId,
+    required this.roleVersionId,
     required this.projectKey,
     required this.activeModel,
     required this.workdir,
@@ -34,6 +35,7 @@ class AgentRuntimeSelectedSessionControlPlane {
       name: deserializer.deserializeString(),
       status: deserializer.deserializeString(),
       roleId: deserializer.deserializeString(),
+      roleVersionId: deserializer.deserializeString(),
       projectKey: deserializer.deserializeString(),
       activeModel: deserializer.deserializeString(),
       workdir: deserializer.deserializeString(),
@@ -67,6 +69,7 @@ class AgentRuntimeSelectedSessionControlPlane {
   final String name;
   final String status;
   final String roleId;
+  final String roleVersionId;
   final String projectKey;
   final String activeModel;
   final String workdir;
@@ -88,6 +91,7 @@ class AgentRuntimeSelectedSessionControlPlane {
     String? name,
     String? status,
     String? roleId,
+    String? roleVersionId,
     String? projectKey,
     String? activeModel,
     String? workdir,
@@ -109,6 +113,7 @@ class AgentRuntimeSelectedSessionControlPlane {
       name: name ?? this.name,
       status: status ?? this.status,
       roleId: roleId ?? this.roleId,
+      roleVersionId: roleVersionId ?? this.roleVersionId,
       projectKey: projectKey ?? this.projectKey,
       activeModel: activeModel ?? this.activeModel,
       workdir: workdir ?? this.workdir,
@@ -133,6 +138,7 @@ class AgentRuntimeSelectedSessionControlPlane {
     serializer.serializeString(name);
     serializer.serializeString(status);
     serializer.serializeString(roleId);
+    serializer.serializeString(roleVersionId);
     serializer.serializeString(projectKey);
     serializer.serializeString(activeModel);
     serializer.serializeString(workdir);
@@ -167,6 +173,7 @@ class AgentRuntimeSelectedSessionControlPlane {
       && name == other.name
       && status == other.status
       && roleId == other.roleId
+      && roleVersionId == other.roleVersionId
       && projectKey == other.projectKey
       && activeModel == other.activeModel
       && workdir == other.workdir
@@ -190,6 +197,7 @@ class AgentRuntimeSelectedSessionControlPlane {
         name,
         status,
         roleId,
+        roleVersionId,
         projectKey,
         activeModel,
         workdir,
@@ -217,6 +225,7 @@ class AgentRuntimeSelectedSessionControlPlane {
         'name: $name, '
         'status: $status, '
         'roleId: $roleId, '
+        'roleVersionId: $roleVersionId, '
         'projectKey: $projectKey, '
         'activeModel: $activeModel, '
         'workdir: $workdir, '

@@ -23,6 +23,7 @@ void main() {
           id: 'session-custom',
           title: 'Custom role session',
           status: 'stopped',
+          roleVersionId: 'role-version-custom',
           subtitle: 'Project workspace',
           groupLabel: 'Neon Incident Commander',
           tone: 'warning',

@@ -600,6 +600,56 @@ fn changed_capability_summary(previous: &RoleSnapshot, new: &RoleSnapshot) -> Va
     })
 }
 
+async fn latest_session_context_epoch_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    session_id: Uuid,
+) -> Result<Option<i64>> {
+    let epoch: Option<i64> = sqlx::query_scalar(
+        "SELECT context_epoch FROM session_context_snapshots WHERE session_id=$1 ORDER BY context_epoch DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(epoch)
+}
+
+async fn append_session_context_event_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    session_id: Uuid,
+    event_kind: &str,
+    role_epoch: &str,
+    payload: Value,
+) -> Result<i64> {
+    let previous_context_epoch = latest_session_context_epoch_tx(tx, session_id).await?;
+    let context_epoch = previous_context_epoch.unwrap_or(0) + 1;
+    let sequence: i64 = sqlx::query_scalar(
+        "INSERT INTO session_context_events (session_id, turn_id, event_kind, role_epoch, context_epoch, previous_context_epoch, payload) VALUES ($1,NULL,$2,$3,$4,$5,$6) RETURNING sequence",
+    )
+    .bind(session_id)
+    .bind(event_kind)
+    .bind(role_epoch)
+    .bind(context_epoch)
+    .bind(previous_context_epoch)
+    .bind(payload)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(sequence)
+}
+
+pub async fn append_session_context_event(
+    pool: &PgPool,
+    session_id: Uuid,
+    event_kind: &str,
+    role_snapshot: &RoleSnapshot,
+    payload: Value,
+) -> Result<i64> {
+    let mut tx = pool.begin().await?;
+    let role_epoch = format!("{}:{}:{}", role_snapshot.id, role_snapshot.version, role_snapshot.role_version_id);
+    let sequence = append_session_context_event_tx(&mut tx, session_id, event_kind, &role_epoch, payload).await?;
+    tx.commit().await?;
+    Ok(sequence)
+}
+
 async fn propagate_role_snapshot_to_non_archived_sessions(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     role_id: &str,
@@ -665,10 +715,29 @@ async fn propagate_role_snapshot_to_non_archived_sessions(
             "newRoleVersion": new_snapshot.version,
             "previousPolicyHash": previous_policy_hash,
             "newPolicyHash": new_policy_hash,
-            "changedActionSummary": changed,
-            "changedCapabilitySummary": changed_capabilities,
+            "changedActionSummary": changed.clone(),
+            "changedCapabilitySummary": changed_capabilities.clone(),
         }))
         .execute(&mut **tx)
+        .await?;
+        append_session_context_event_tx(
+            tx,
+            session_id,
+            "role_authority_changed",
+            &format!("{}:{}:{}", new_snapshot.id, new_snapshot.version, new_snapshot.role_version_id),
+            json!({
+                "actor": actor,
+                "source": actor,
+                "timestamp": timestamp,
+                "roleId": role_id,
+                "previousRoleVersionId": previous_snapshot.role_version_id,
+                "newRoleVersionId": new_snapshot.role_version_id,
+                "previousRoleVersion": previous_snapshot.version,
+                "newRoleVersion": new_snapshot.version,
+                "changedActionSummary": changed,
+                "changedCapabilitySummary": changed_capabilities,
+            }),
+        )
         .await?;
         affected += 1;
     }
@@ -1478,6 +1547,21 @@ pub async fn archive_session(pool: &PgPool, session_id: Uuid) -> Result<()> {
     .await?
     .rows_affected();
     tx.commit().await?;
+    let role_snapshot = session_role_snapshot(pool, session_id).await?;
+    append_session_context_event(
+        pool,
+        session_id,
+        "session_lifecycle_changed",
+        &role_snapshot,
+        json!({
+            "source": "session.archive",
+            "actor": "runtime",
+            "timestamp": Utc::now(),
+            "previousLifecycle": "open",
+            "newLifecycle": "archived",
+        }),
+    )
+    .await?;
     let lifecycle_cleanup = crate::lifecycle_hooks::cleanup_session_lifecycle_resources(pool, session_id, "session archived").await?;
     crate::god_mode::revoke_active(pool, session_id, "runtime", "session archived").await?;
     crate::requirements::deactivate_nested_reviewers(pool, session_id).await?;
