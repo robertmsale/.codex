@@ -3514,7 +3514,7 @@ void main() {
         reasoningEfforts: mockAgentRuntimeRoleEditorOptions.reasoningEfforts,
         capabilities: mockAgentRuntimeRoleEditorOptions.capabilities,
         policyActions: mockAgentRuntimeRoleEditorOptions.policyActions,
-        policyDecisions: const [],
+        policyDecisions: mockAgentRuntimeRoleEditorOptions.policyDecisions,
         routingModes: mockAgentRuntimeRoleEditorOptions.routingModes,
         recipients: mockAgentRuntimeRoleEditorOptions.recipients,
         reservedActions: mockAgentRuntimeRoleEditorOptions.reservedActions,
@@ -3538,7 +3538,7 @@ void main() {
     expect(find.text('Deny'), findsWidgets);
     expect(find.text('Owner approval'), findsWidgets);
     expect(find.text('Orchestrator approval'), findsWidgets);
-    await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Deny').first);
+    await tester.tap(find.text('Deny').last, warnIfMissed: false);
     await tester.pump();
 
     await tester.scrollUntilVisible(find.byKey(const ValueKey('roleEditor.policySelect.command_registry.apply')), 40, scrollable: find.byType(Scrollable).last);
@@ -3550,7 +3550,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('roleEditor.policyDecision.command_registry.decide')));
     await tester.pump();
-    await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Owner approval').first);
+    await tester.tap(find.text('Owner approval').last, warnIfMissed: false);
     await tester.pump();
 
     await tester.tap(find.byKey(const ValueKey('roleEditor.policyClearSelection')));
@@ -3558,7 +3558,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('roleEditor.policyDecision.command_registry.decide')));
     await tester.pump();
-    await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Off / absent').first);
+    await tester.tap(find.text('Off / absent').last, warnIfMissed: false);
     await tester.pump();
 
     await tester.tap(find.byKey(const ValueKey('roleEditor.policySelectAll')));

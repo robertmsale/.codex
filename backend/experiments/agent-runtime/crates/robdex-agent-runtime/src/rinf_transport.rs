@@ -3107,7 +3107,13 @@ fn role_editor_options_view(roles: &[RoleSummary], model_options: &[AgentRuntime
         reasoning_efforts: vec!["low".to_string(), "medium".to_string(), "high".to_string()],
         capabilities,
         policy_actions,
-        policy_decisions: vec!["allow".to_string(), "deny".to_string()],
+        policy_decisions: vec![
+            "off".to_string(),
+            "allow".to_string(),
+            "deny".to_string(),
+            "ownerApproval".to_string(),
+            "orchestratorApproval".to_string(),
+        ],
         routing_modes: vec!["direct".to_string()],
         recipients,
         reserved_actions,
@@ -3931,7 +3937,7 @@ mod tests {
                 })
             }))
             .route("/sessions", post(Json(json!({"sessionId":"00000000-0000-0000-0000-00000000c002"}))))
-            .route("/roles/editor/options", get(Json(json!({"policyDecisions":["allow","deny","ownerApproval","orchestratorApproval"],"routingModes":["direct"],"defaultRecipients":["owner"],"knownActions":["tool.execute_code"]}))))
+            .route("/roles/editor/options", get(Json(json!({"policyDecisions":["off","allow","deny","ownerApproval","orchestratorApproval"],"routingModes":["direct"],"defaultRecipients":["owner"],"knownActions":["tool.execute_code"]}))))
             .route("/roles/editor/validate", post(Json(json!({"valid":true,"errors":[],"warnings":[],"roleId":"gui-role","version":"1.0.0"}))))
             .route("/roles", post(Json(json!({"roleId":"gui-role","versionId":"role-version-1","status":"created"}))))
             .route("/roles/gui-role/versions", post(Json(json!({"roleId":"gui-role","versionId":"role-version-2","status":"updated"}))).get(Json(json!([{"roleVersionId":"role-version-1","version":"1.0.0","current":true}]))))
@@ -6640,7 +6646,7 @@ mod tests {
             } => value["policyDecisions"].as_array().cloned(),
             _ => None,
         }).expect("role editor decisions returned");
-        for expected in ["allow", "deny", "ownerApproval", "orchestratorApproval"] {
+        for expected in ["off", "allow", "deny", "ownerApproval", "orchestratorApproval"] {
             assert!(decision_values.iter().any(|value| value == expected), "missing policy decision {expected}: {decision_values:?}");
         }
 

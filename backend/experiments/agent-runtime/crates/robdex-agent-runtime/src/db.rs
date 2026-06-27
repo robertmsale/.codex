@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Result, bail};
+use chrono::Utc;
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -369,6 +370,26 @@ pub async fn import_role_version_with_actor(pool: &PgPool, imported: &ImportedRo
     let snapshot = &imported.snapshot;
     let snapshot_value = snapshot_to_value(snapshot)?;
     let mut tx = pool.begin().await?;
+    if actor == "seed-import" {
+        let existing_current: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT rv.created_by
+            FROM roles r
+            JOIN role_versions rv ON rv.id = r.current_version_id
+            WHERE r.id=$1
+            "#,
+        )
+        .bind(&snapshot.id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if existing_current
+            .as_deref()
+            .is_some_and(|created_by| created_by != "seed-import")
+        {
+            tx.commit().await?;
+            return Ok(());
+        }
+    }
     sqlx::query(
         r#"
         INSERT INTO roles (id, display_name, current_version_id, status, metadata, created_at, updated_at)
@@ -566,6 +587,19 @@ fn changed_action_summary(previous: &RoleSnapshot, new: &RoleSnapshot) -> Value 
     })
 }
 
+fn changed_capability_summary(previous: &RoleSnapshot, new: &RoleSnapshot) -> Value {
+    const LIMIT: usize = 24;
+    let previous_keys: BTreeSet<String> = previous.capabilities.iter().cloned().collect();
+    let new_keys: BTreeSet<String> = new.capabilities.iter().cloned().collect();
+    let added: Vec<String> = new_keys.difference(&previous_keys).take(LIMIT).cloned().collect();
+    let removed: Vec<String> = previous_keys.difference(&new_keys).take(LIMIT).cloned().collect();
+    json!({
+        "addedCapabilities": added,
+        "removedCapabilities": removed,
+        "truncated": previous_keys.len().saturating_add(new_keys.len()) > LIMIT * 2,
+    })
+}
+
 async fn propagate_role_snapshot_to_non_archived_sessions(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     role_id: &str,
@@ -598,6 +632,8 @@ async fn propagate_role_snapshot_to_non_archived_sessions(
         }
         let previous_policy_hash = role_policy_hash(&previous_snapshot)?;
         let changed = changed_action_summary(&previous_snapshot, new_snapshot);
+        let changed_capabilities = changed_capability_summary(&previous_snapshot, new_snapshot);
+        let timestamp = Utc::now();
         sqlx::query(
             r#"
             UPDATE sessions
@@ -620,6 +656,8 @@ async fn propagate_role_snapshot_to_non_archived_sessions(
         .bind(new_snapshot.role_version_id)
         .bind(json!({
             "actor": actor,
+            "source": actor,
+            "timestamp": timestamp,
             "roleId": role_id,
             "previousRoleVersionId": previous_snapshot.role_version_id,
             "newRoleVersionId": new_snapshot.role_version_id,
@@ -628,6 +666,7 @@ async fn propagate_role_snapshot_to_non_archived_sessions(
             "previousPolicyHash": previous_policy_hash,
             "newPolicyHash": new_policy_hash,
             "changedActionSummary": changed,
+            "changedCapabilitySummary": changed_capabilities,
         }))
         .execute(&mut **tx)
         .await?;

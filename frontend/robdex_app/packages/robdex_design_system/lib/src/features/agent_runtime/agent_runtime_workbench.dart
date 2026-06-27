@@ -1921,12 +1921,7 @@ class _RoleAuthorityEditorState extends State<_RoleAuthorityEditor> {
 
   List<String> _decisionValues(String current) {
     return _dedupeRoleManagerOptions([
-      _rolePolicyOffDecision,
       ...widget.decisions,
-      'allow',
-      'deny',
-      'ownerApproval',
-      'orchestratorApproval',
       if (current.trim().isNotEmpty) current,
     ]);
   }

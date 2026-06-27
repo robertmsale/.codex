@@ -7,7 +7,7 @@ const mockAgentRuntimeRoleEditorOptions = AgentRuntimeRoleEditorOptions(
   reasoningEfforts: ['low', 'medium', 'high'],
   capabilities: ['tool.execute_code', 'tool.request_command_registry_change', 'fs.read', 'fs.write', 'patch.apply', 'workflow_memory.search', 'workflow_memory.remember.project', 'workflow_memory.remember.global', 'workflow_memory.feedback', 'command_registry.request', 'command_registry.decide', 'command_registry.apply', 'git.status', 'git.diff'],
   policyActions: ['tool.execute_code', 'tool.request_command_registry_change', 'fs.read', 'fs.write', 'patch.apply', 'workflow_memory.search', 'workflow_memory.remember.project', 'workflow_memory.remember.global', 'workflow_memory.feedback', 'command_registry.request', 'command_registry.decide', 'command_registry.apply', 'git.status', 'git.diff'],
-  policyDecisions: ['allow', 'deny', 'ownerApproval', 'orchestratorApproval'],
+  policyDecisions: ['off', 'allow', 'deny', 'ownerApproval', 'orchestratorApproval'],
   routingModes: ['direct'],
   recipients: ['owner', 'runtime-safe-builder', 'orchestrator-reviewer'],
   reservedActions: ['message.send', 'agent.archive', 'command_registry.apply', 'workflow_memory.feedback'],

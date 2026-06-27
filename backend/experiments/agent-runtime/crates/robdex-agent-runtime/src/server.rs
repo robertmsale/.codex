@@ -1705,7 +1705,7 @@ async fn state_ws_loop(state: ServerState, query: WsQuery, socket: WebSocket) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use crate::compaction;
     use crate::gui_backend::GuiBackendController;
     use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelInitialTurn, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
@@ -2011,6 +2011,12 @@ mod tests {
         let visible_chat = serde_json::to_string(&projection.selected_chat_entries).expect("chat json");
         assert!(!visible_chat.contains("<role_instructions"), "developer role context must stay out of visible chat timeline");
         assert!(!visible_chat.contains("<runtime_context"), "developer runtime context must stay out of visible chat timeline");
+
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "what changed?", &model, compaction::CompactionBudget::default()).await.expect("second send");
+        let second_shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("second shape");
+        let second_rendered = serde_json::to_string(&second_shape).expect("second shape json");
+        assert!(!second_rendered.contains("<runtime_context"), "unchanged later turn must not reinsert full runtime context: {second_rendered}");
+        assert!(!second_rendered.contains("<role_instructions"), "unchanged later turn must not reinsert role instructions: {second_rendered}");
         test_db.cleanup().await;
     }
 
@@ -2192,6 +2198,7 @@ mod tests {
         let rendered = serde_json::to_string(&shape).expect("shape json");
         assert!(rendered.contains("new role epoch instructions"), "{rendered}");
         assert!(rendered.contains("<role_transition_summary"), "{rendered}");
+        assert!(!rendered.contains("<runtime_context"), "role transition must be concise and not dump full runtime context: {rendered}");
         assert!(!rendered.contains("kind=\\\"role_epoch_changed\\\""), "role change must not be represented as ordinary context_delta: {rendered}");
         let event_kind: String = sqlx::query_scalar("SELECT event_kind FROM session_context_events WHERE session_id=$1 ORDER BY sequence DESC LIMIT 1")
             .bind(session_id)
@@ -2199,6 +2206,37 @@ mod tests {
             .await
             .expect("event");
         assert_eq!(event_kind, "role_epoch_changed");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn god_mode_grant_and_revoke_emit_context_deltas_without_later_full_reinsertion() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("context-god-mode"), ".", Some("."), None, None).await.expect("session");
+        let model = FakeModelClient { direct_final_text: Some("ok"), ..Default::default() };
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "first", &model, compaction::CompactionBudget::default()).await.expect("first send");
+
+        crate::god_mode::grant_session(&test_db.pool, session_id, "test", "prove concise context delta", None).await.expect("grant");
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "after grant", &model, compaction::CompactionBudget::default()).await.expect("grant send");
+        let grant_shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("grant shape");
+        let grant_rendered = serde_json::to_string(&grant_shape).expect("grant shape json");
+        assert!(grant_rendered.contains("<context_delta"), "{grant_rendered}");
+        assert!(grant_rendered.contains("god_mode_changed"), "{grant_rendered}");
+        assert!(!grant_rendered.contains("<runtime_context"), "{grant_rendered}");
+
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "unchanged", &model, compaction::CompactionBudget::default()).await.expect("unchanged send");
+        let unchanged_shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("unchanged shape");
+        let unchanged_rendered = serde_json::to_string(&unchanged_shape).expect("unchanged shape json");
+        assert!(!unchanged_rendered.contains("<runtime_context"), "{unchanged_rendered}");
+        assert!(!unchanged_rendered.contains("god_mode_changed"), "{unchanged_rendered}");
+
+        crate::god_mode::revoke_active(&test_db.pool, session_id, "test", "prove revoke delta").await.expect("revoke");
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "after revoke", &model, compaction::CompactionBudget::default()).await.expect("revoke send");
+        let revoke_shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("revoke shape");
+        let revoke_rendered = serde_json::to_string(&revoke_shape).expect("revoke shape json");
+        assert!(revoke_rendered.contains("god_mode_changed"), "{revoke_rendered}");
+        assert!(!revoke_rendered.contains("<runtime_context"), "{revoke_rendered}");
         test_db.cleanup().await;
     }
 
@@ -6458,6 +6496,140 @@ mod tests {
         assert!(rendered.contains("Role authority changed"), "{rendered}");
         assert!(rendered.contains("git.status"), "{rendered}");
         assert!(rendered.contains("git.diff"), "{rendered}");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn role_save_deny_and_absent_immediately_block_existing_session_git_status() {
+        let test_db = validation_db().await;
+        let router = app(ServerState::new(test_db.pool.clone()));
+        let mut allowed = db::current_role_snapshot(&test_db.pool, "project-progenitor").await.expect("project progenitor role");
+        allowed.version = "live-deny-base".to_string();
+        allowed.role_version_id = Uuid::new_v4();
+        allowed.capabilities = vec!["git.status".to_string(), "git.diff".to_string()];
+        allowed.policy = BTreeMap::from([
+            ("git.status".to_string(), crate::roles::ManifestDecision::Allow),
+            ("git.diff".to_string(), crate::roles::ManifestDecision::Allow),
+        ]);
+        let session_id = db::new_session(&test_db.pool, &allowed, Some("progenitor-deny"), ".", Some("."), Some("Config Progenitor"), None)
+            .await
+            .expect("allowed live session");
+        assert_eq!(
+            crate::policy::PolicyEngine::decide(&db::session_role_snapshot(&test_db.pool, session_id).await.expect("before"), "git.status", json!({})).decision,
+            crate::policy::RuntimeDecision::Allow
+        );
+
+        let deny_draft: RoleEditorDraft = serde_json::from_value(json!({
+            "id": "project-progenitor",
+            "version": "99.99.101-deny-status",
+            "displayName": "Project Progenitor",
+            "modelDefaults": {"model": "gpt-5.4-mini", "reasoningEffort": "medium"},
+            "instructionText": "Project Progenitor deny propagation test instructions.",
+            "capabilities": ["git.status", "git.diff"],
+            "policy": {"git.status": "deny", "git.diff": "allow"},
+            "routing": {"mode": "direct", "defaultRecipient": "owner", "allowedRecipients": ["owner"], "reservedActions": []},
+            "visibility": {"listed": true, "ownerVisible": true},
+            "lifecycleAuthority": {"canSpawnAgents": false, "canArchiveAgents": false, "reservedActions": []}
+        }))
+        .expect("deny draft");
+        let (deny_status, deny_updated) = request_json(router.clone(), Method::POST, "/roles/project-progenitor/versions", serde_json::to_value(deny_draft).expect("deny draft json")).await;
+        assert_eq!(deny_status, StatusCode::OK, "{deny_updated}");
+        let denied = db::session_role_snapshot(&test_db.pool, session_id).await.expect("denied role");
+        assert_eq!(
+            crate::policy::PolicyEngine::decide(&denied, "git.status", json!({})).decision,
+            crate::policy::RuntimeDecision::Deny
+        );
+        assert_eq!(denied.policy.get("git.status"), Some(&crate::roles::ManifestDecision::Deny));
+
+        let absent_draft: RoleEditorDraft = serde_json::from_value(json!({
+            "id": "project-progenitor",
+            "version": "99.99.102-absent-status",
+            "displayName": "Project Progenitor",
+            "modelDefaults": {"model": "gpt-5.4-mini", "reasoningEffort": "medium"},
+            "instructionText": "Project Progenitor absent propagation test instructions.",
+            "capabilities": ["git.diff"],
+            "policy": {"git.diff": "allow"},
+            "routing": {"mode": "direct", "defaultRecipient": "owner", "allowedRecipients": ["owner"], "reservedActions": []},
+            "visibility": {"listed": true, "ownerVisible": true},
+            "lifecycleAuthority": {"canSpawnAgents": false, "canArchiveAgents": false, "reservedActions": []}
+        }))
+        .expect("absent draft");
+        let (absent_status, absent_updated) = request_json(router, Method::POST, "/roles/project-progenitor/versions", serde_json::to_value(absent_draft).expect("absent draft json")).await;
+        assert_eq!(absent_status, StatusCode::OK, "{absent_updated}");
+        let absent = db::session_role_snapshot(&test_db.pool, session_id).await.expect("absent role");
+        assert_eq!(
+            crate::policy::PolicyEngine::decide(&absent, "git.status", json!({})).decision,
+            crate::policy::RuntimeDecision::Deny
+        );
+        assert!(!absent.capabilities.iter().any(|action| action == "git.status"));
+        assert!(!absent.policy.contains_key("git.status"));
+        assert_eq!(
+            crate::policy::PolicyEngine::decide(&absent, "git.diff", json!({"paths":[]})).decision,
+            crate::policy::RuntimeDecision::Allow
+        );
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn seed_import_preserves_user_edited_current_role_and_does_not_propagate() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("seed-preserve"), ".", Some("."), None, None).await.expect("session");
+        let gui_draft: RoleEditorDraft = serde_json::from_value(json!({
+            "id": "runtime-no-rg",
+            "version": "99.99.201-gui-preserved",
+            "displayName": "Runtime No Rg",
+            "modelDefaults": {"model": "gpt-5.4-mini", "reasoningEffort": "medium"},
+            "instructionText": "GUI edited role authority.",
+            "capabilities": ["tool.execute_code"],
+            "policy": {"tool.execute_code": "allow"},
+            "routing": {"mode": "direct", "defaultRecipient": null, "allowedRecipients": [], "reservedActions": []},
+            "visibility": {"listed": true, "ownerVisible": true},
+            "lifecycleAuthority": {"canSpawnAgents": false, "canArchiveAgents": false, "reservedActions": []}
+        }))
+        .expect("gui draft");
+        let gui_import = crate::roles::imported_role_from_editor_draft(&gui_draft).expect("gui import");
+        db::import_role_version_with_actor(&test_db.pool, &gui_import, "gui-role-editor").await.expect("gui import stored");
+        let gui_current: Uuid = sqlx::query_scalar("SELECT current_version_id FROM roles WHERE id='runtime-no-rg'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("gui current");
+        assert_eq!(gui_current, gui_import.snapshot.role_version_id);
+        let events_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='role_authority.changed'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("events before seed");
+
+        let seed_draft: RoleEditorDraft = serde_json::from_value(json!({
+            "id": "runtime-no-rg",
+            "version": "99.99.202-seed-should-not-clobber",
+            "displayName": "Runtime No Rg",
+            "modelDefaults": {"model": "gpt-5.4-mini", "reasoningEffort": "medium"},
+            "instructionText": "Seed import must not replace GUI edits.",
+            "capabilities": ["tool.execute_code"],
+            "policy": {"tool.execute_code": "deny"},
+            "routing": {"mode": "direct", "defaultRecipient": null, "allowedRecipients": [], "reservedActions": []},
+            "visibility": {"listed": true, "ownerVisible": true},
+            "lifecycleAuthority": {"canSpawnAgents": false, "canArchiveAgents": false, "reservedActions": []}
+        }))
+        .expect("seed draft");
+        let seed_import = crate::roles::imported_role_from_editor_draft(&seed_draft).expect("seed import");
+        db::import_role_version_with_actor(&test_db.pool, &seed_import, "seed-import").await.expect("seed import ignored");
+        let current_after: Uuid = sqlx::query_scalar("SELECT current_version_id FROM roles WHERE id='runtime-no-rg'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("current after seed");
+        assert_eq!(current_after, gui_current);
+        let session_after = db::session_role_snapshot(&test_db.pool, session_id).await.expect("session after seed");
+        assert_eq!(session_after.role_version_id, gui_current);
+        assert_eq!(session_after.policy.get("tool.execute_code"), Some(&crate::roles::ManifestDecision::Allow));
+        let events_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_stream WHERE session_id=$1 AND event_type='role_authority.changed'")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("events after seed");
+        assert_eq!(events_after, events_before);
         test_db.cleanup().await;
     }
 

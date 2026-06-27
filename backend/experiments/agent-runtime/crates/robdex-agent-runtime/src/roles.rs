@@ -602,6 +602,7 @@ pub fn db_display_row(snapshot: &RoleSnapshot) -> Value {
 pub fn editor_options(recipients: Vec<String>) -> RoleEditorOptions {
     RoleEditorOptions {
         policy_decisions: vec![
+            "off".to_string(),
             "allow".to_string(),
             "deny".to_string(),
             "ownerApproval".to_string(),
@@ -804,12 +805,12 @@ mod tests {
     fn editor_options_expose_all_supported_policy_decisions() {
         let options = super::editor_options(vec!["owner".to_string()]);
         assert_eq!(options.policy_decisions, vec![
+            "off".to_string(),
             "allow".to_string(),
             "deny".to_string(),
             "ownerApproval".to_string(),
             "orchestratorApproval".to_string(),
         ]);
-        assert!(!options.policy_decisions.contains(&"off".to_string()));
     }
 
     #[test]

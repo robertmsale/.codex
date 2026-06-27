@@ -957,7 +957,7 @@ runtime does not rely on `previous_response_id`, and production role/runtime
 context is not placed in the Responses `instructions` field. Each model turn is
 assembled from PostgreSQL state into an explicit input array.
 
-The first active developer item is a machine-readable role block:
+The first model request for a session receives a machine-readable role block:
 
 ```xml
 <role_instructions epoch="role-key:role-version:role-version-id" role_key="..." role_version="...">
@@ -966,7 +966,7 @@ The first active developer item is a machine-readable role block:
 ```
 
 Role instructions are not additive. The latest `role_instructions` block is the
-active role authority. The next developer item is a machine-readable runtime
+active role authority. The first request also receives a machine-readable runtime
 snapshot:
 
 ```xml
@@ -983,6 +983,15 @@ snapshot:
 
 Every session has either a canonical CWD or an explicit unavailable CWD state.
 `Unassigned` means no project assignment; it does not silently mean unknown CWD.
+Later model requests do not reinsert the full runtime snapshot when nothing
+changed. Runtime changes append durable `session_context_events` rows and are
+rendered as compact developer deltas, such as `cwd_changed`,
+`project_assignment_changed`, `tool_context_changed`, `god_mode_changed`, and
+`session_lifecycle_changed`. Role authority or role-instruction changes insert a
+concise `role_transition_summary` plus a fresh `role_instructions` block instead
+of dumping the full role JSON. God Mode grant/revoke changes are session-scoped
+context events and do not require full runtime context reinsertion on unrelated
+later turns.
 When CWD is known, the model can answer CWD questions from developer context
 without a tool call. When CWD is unavailable, context says so and CWD-dependent
 runtime actions must be unavailable rather than guessed.
@@ -1415,7 +1424,7 @@ cargo run -- roles export <role-id> --out <db-backed-export.json>
 cargo run -- roles validate --manifest <manifest-or-db-export.json>
 ```
 
-`roles create`, `roles update`, `roles import`, and `roles import-seeds` share the same canonical DB role-version insertion path after their operation-specific preconditions pass. `roles create` is strict and fails if the role id already exists. `roles update` is strict and fails if the role id does not already exist. `roles import` is the general artifact ingestion path and remains import/upsert: it creates the role when missing or appends a new immutable role version and points the role at it when present. `roles import-seeds` is bootstrap/seed import and uses the same canonical insertion path for bundled seed manifests. `roles activate` changes only `roles.current_version_id`; it is the rollback mechanism and does not delete or rewrite historical `role_versions`. `roles archive` disables the role for new sessions while preserving the role, versions, DB-backed exports, inspection, and existing session snapshots. `roles unarchive` restores new-session availability using the existing current version and does not create a role version. `roles export` reads the DB current version and includes `instructionText`, so the export can be imported into a fresh database without the original prompt file.
+`roles create`, `roles update`, `roles import`, and `roles import-seeds` share the same canonical DB role-version insertion path after their operation-specific preconditions pass. `roles create` is strict and fails if the role id already exists. `roles update` is strict and fails if the role id does not already exist. `roles import` is the general artifact ingestion path and remains import/upsert: it creates the role when missing or appends a new immutable role version and points the role at it when present. `roles import-seeds` is bootstrap/seed import for bundled seed manifests; it preserves a current role version created by the GUI or owner-authored import and does not silently replace live user edits during restart or reseed. `roles activate` changes `roles.current_version_id` and synchronously propagates the activated snapshot to all non-archived sessions for that role; it is the rollback mechanism and does not delete or rewrite historical `role_versions`. `roles archive` disables the role for new sessions while preserving the role, versions, DB-backed exports, inspection, and archived session snapshots. `roles unarchive` restores new-session availability using the existing current version and does not create a role version. `roles export` reads the DB current version and includes `instructionText`, so the export can be imported into a fresh database without the original prompt file.
 
 Role validation emits structured packets with validity, role/version identity, prompt byte count, model defaults, policy actions, routing recipients, lifecycle authority, errors, and warnings. Validation rejects invalid JSON, invalid role ids, empty instruction text, missing model defaults, unknown native actions, concrete `cmd.*` role policy entries, capability/policy mismatches, unsupported routing modes, invalid reserved actions, and invalid routing recipients before activation/runtime use.
 
@@ -1442,7 +1451,7 @@ Reserved future action names documented but not implemented here:
 - `message.send`
 - `message.route`
 
-Manifest decision values are `allow`, `deny`, `ownerApproval`, and `orchestratorApproval`. Runtime policy maps approval decisions to `approvalRequired` and does not execute those actions in this task. Missing action policy defaults to deny. Policy is execution authority; `capabilities` are validated to exactly match policy keys so they cannot contradict enforcement. Sessions store immutable role snapshots at creation time; turns use the stored snapshot rather than rereading the latest manifest. The direct Responses adapter receives the model name and role snapshot from the session snapshot, then emits role instructions as a tagged developer input block through the Rust-owned model-input assembler. Reasoning effort is stored in the DB role version and snapshot but is not applied by the current direct adapter yet.
+Manifest decision values are `allow`, `deny`, `ownerApproval`, and `orchestratorApproval`; the GUI editor also offers `off`, which removes that action from both `capabilities` and `policy`. Runtime policy maps approval decisions to `approvalRequired` and does not execute those actions in this task. Missing action policy defaults to deny. Policy is execution authority; `capabilities` are validated to exactly match policy keys so they cannot contradict enforcement. Sessions store a role snapshot, and role save/activation updates that snapshot synchronously for every non-archived session using the role. Runtime authorization and model input then use the updated session snapshot for future tool calls and turns. Each propagation appends a durable `role_authority.changed` event with previous/new role-version identity, changed policy decisions, changed capabilities, actor/source, and timestamp; the next model request emits a concise model-visible authority delta. The direct Responses adapter receives the model name and role snapshot from the session snapshot, then emits role instructions as a tagged developer input block on the initial request and when role identity/instructions change. Reasoning effort is stored in the DB role version and snapshot but is not applied by the current direct adapter yet.
 
 
 ## Role Admin GUI/editor contract
@@ -1459,7 +1468,7 @@ Server routes added for the editor:
 
 The Rust GUI operation vocabulary includes direct-result role operations for metadata, validation, inspection, version listing, version detail, and export. Create, update, activate, archive, and unarchive operations are wait-for-delta mutations; role changes are visible through `RuntimeProjection.roles` and role semantic deltas. The Rust-owned `AgentRuntimeWorkbenchViewModel` exposes a `roleAdmin` section with role rows, selected role detail, version rows, draft summary, validation errors, and role action states. Dart renders those constructor-ready fields and may hold only ephemeral editor/controller text state.
 
-The design-system Role Manager is a full-screen page launched from the Runtime Operations Role Admin entry. It provides editable controls for role identity, version, display name, model defaults, role authority, routing/default recipient/allowed recipients/reserved actions, visibility, lifecycle authority, validation feedback, version history, activation, archive/unarchive, export, and inspection actions. Role authority is one canonical action-plus-decision editor: each row has one action id and one policy decision, and save/validate drafts derive both the capabilities vector and policy map from those same rows so the backend invariant cannot be contradicted by disconnected UI fields. Recipients and reserved actions use structured controls backed by Rust/Rinf-projected options rather than raw text areas as the primary editor. It uses `code_forge` as the Markdown instruction editor; edited CodeForge content is included as inline `instructionText` in validate/create/update draft submissions. Static Design Lab/workbench-shell mock states render the same exported page component used by the product route.
+The design-system Role Manager is a full-screen page launched from the Runtime Operations Role Admin entry. It provides editable controls for role identity, version, display name, model defaults, role authority, routing/default recipient/allowed recipients/reserved actions, visibility, lifecycle authority, validation feedback, version history, activation, archive/unarchive, export, and inspection actions. Role authority is one canonical action-plus-decision editor: each row has one action id, a row-selection checkbox for bulk editing only, and one policy decision from the Rust/Rinf-projected set `off`, `allow`, `deny`, `ownerApproval`, and `orchestratorApproval`. Save/validate drafts derive both the capabilities vector and policy map from those same rows so the backend invariant cannot be contradicted by disconnected UI fields. Recipients and reserved actions use structured controls backed by Rust/Rinf-projected options rather than raw text areas as the primary editor. It uses `code_forge` as the Markdown instruction editor; edited CodeForge content is included as inline `instructionText` in validate/create/update draft submissions. Static Design Lab/workbench-shell mock states render the same exported page component used by the product route.
 
 ## Approval and routing foundation
 

@@ -107,11 +107,11 @@ pub fn role_transition_summary_block(snapshot: &ContextSnapshotRecord) -> Option
     let previous = snapshot.previous_snapshot.as_ref().and_then(|value| value.pointer("/role/epoch")).and_then(Value::as_str).unwrap_or("unknown");
     let authority_delta = snapshot
         .snapshot
-        .pointer("/role/authorityDelta/changedActionSummary")
+        .pointer("/role/authorityDelta")
         .map(role_authority_delta_text)
         .unwrap_or_else(|| "Changed permissions were not summarized by the role save event.".to_string());
     Some(format!(
-        "<role_transition_summary epoch=\"{}\" previous_epoch=\"{}\" sequence=\"{}\">\nRole authority changed. Prior role instructions and policy text are not active instructions. Use only the current role_instructions block and current runtime_context block as active authority.\n{}\n</role_transition_summary>",
+        "<role_transition_summary epoch=\"{}\" previous_epoch=\"{}\" sequence=\"{}\">\nRole authority changed. Prior role instructions and policy text are not active instructions. Use the current role_instructions block and this concise authority delta as active authority.\n{}\n</role_transition_summary>",
         xml_escape(&snapshot.role_epoch),
         xml_escape(previous),
         snapshot.event_sequence,
@@ -120,6 +120,7 @@ pub fn role_transition_summary_block(snapshot: &ContextSnapshotRecord) -> Option
 }
 
 fn role_authority_delta_text(summary: &Value) -> String {
+    let action_summary = summary.get("changedActionSummary").unwrap_or(summary);
     fn list(value: Option<&Value>) -> String {
         let items = value
             .and_then(Value::as_array)
@@ -130,7 +131,7 @@ fn role_authority_delta_text(summary: &Value) -> String {
             .collect::<Vec<_>>();
         if items.is_empty() { "none".to_string() } else { items.join(", ") }
     }
-    let changed = summary
+    let changed = action_summary
         .get("changedDecisions")
         .and_then(Value::as_array)
         .into_iter()
@@ -145,12 +146,23 @@ fn role_authority_delta_text(summary: &Value) -> String {
             ))
         })
         .collect::<Vec<_>>();
+    let capabilities = summary
+        .pointer("/changedCapabilitySummary")
+        .map(|capability_summary| {
+            format!(
+                "added capabilities [{}]; removed capabilities [{}]",
+                list(capability_summary.get("addedCapabilities")),
+                list(capability_summary.get("removedCapabilities")),
+            )
+        })
+        .unwrap_or_else(|| "capability changes not summarized".to_string());
     truncate_chars(
         &format!(
-            "Changed role authority: added actions [{}]; removed actions [{}]; changed decisions [{}].",
-            list(summary.get("addedActions")),
-            list(summary.get("removedActions")),
+            "Changed role authority: added actions [{}]; removed actions [{}]; changed decisions [{}]; {}.",
+            list(action_summary.get("addedActions")),
+            list(action_summary.get("removedActions")),
             if changed.is_empty() { "none".to_string() } else { changed.join(", ") },
+            capabilities,
         ),
         1200,
     )
@@ -191,6 +203,18 @@ fn bounded_delta_details(snapshot: &ContextSnapshotRecord) -> String {
             current.pointer("/tools/commandContextId").and_then(Value::as_str).unwrap_or("unknown"),
             old.and_then(|value| value.pointer("/tools/visibleCommandCount")).and_then(Value::as_i64).unwrap_or_default(),
             current.pointer("/tools/visibleCommandCount").and_then(Value::as_i64).unwrap_or_default(),
+            snapshot.event_sequence,
+        ),
+        "god_mode_changed" => format!(
+            "old_god_mode={} new_god_mode={} sequence={}",
+            old.and_then(|value| value.pointer("/godMode/state")).and_then(Value::as_str).unwrap_or("unknown"),
+            current.pointer("/godMode/state").and_then(Value::as_str).unwrap_or("unknown"),
+            snapshot.event_sequence,
+        ),
+        "session_lifecycle_changed" => format!(
+            "old_lifecycle={} new_lifecycle={} sequence={}",
+            old.and_then(|value| value.pointer("/lifecycle/status")).and_then(Value::as_str).unwrap_or("unknown"),
+            current.pointer("/lifecycle/status").and_then(Value::as_str).unwrap_or("unknown"),
             snapshot.event_sequence,
         ),
         other => format!("kind={other} sequence={}", snapshot.event_sequence),
@@ -256,6 +280,7 @@ pub async fn persist_context_snapshot(
     let cwd_trimmed = session.workdir.trim();
     let cwd_known = !cwd_trimmed.is_empty();
     let native_affordances = visible_tool_bundle_for_role(pool, &role.id, session.project_key.as_deref()).await?;
+    let god_mode = crate::god_mode::active_grant(pool, session.id).await?;
     let role_authority_delta: Option<Value> = sqlx::query_scalar(
         r#"
         SELECT payload
@@ -273,6 +298,7 @@ pub async fn persist_context_snapshot(
     .await?;
     let snapshot = json!({
         "sessionId": session.id,
+        "lifecycle": {"status": session.status},
         "project": {"key": project_key, "displayName": project_display, "assignment": if session.project_key.is_some() {"assigned"} else {"unassigned"}},
         "cwd": {"state": if cwd_known {"known"} else {"unavailable"}, "path": if cwd_known {cwd_trimmed} else {"unavailable"}, "source": if cwd_known {"session.workdir"} else {"unavailable"}},
         "worktreeRoot": session.worktree_root,
@@ -281,6 +307,12 @@ pub async fn persist_context_snapshot(
         "sandbox": {"policy": "role.policy", "approval": "role.policy"},
         "policy": {"summary": "role snapshot policy and runtime command policy are authoritative"},
         "tools": {"commandContextId": command_context.id, "visibleCommandCount": command_context.visible_count, "nativeAffordances": native_affordances, "nativeAffordanceCount": native_affordances.len()},
+        "godMode": {
+            "state": if god_mode.is_some() { "active" } else { "inactive" },
+            "grantId": god_mode.as_ref().map(|grant| grant.id),
+            "grantedBy": god_mode.as_ref().map(|grant| grant.granted_by.as_str()),
+            "grantedAt": god_mode.as_ref().map(|grant| grant.granted_at.to_rfc3339()),
+        },
         "generatedAt": Utc::now().to_rfc3339(),
     });
     let event_kind = match previous.as_ref() {
@@ -289,6 +321,8 @@ pub async fn persist_context_snapshot(
         Some((_, prior)) if prior.pointer("/cwd/path") != snapshot.pointer("/cwd/path") => "cwd_changed",
         Some((_, prior)) if prior.pointer("/worktreeRoot") != snapshot.pointer("/worktreeRoot") => "worktree_root_changed",
         Some((_, prior)) if prior.pointer("/role/epoch") != snapshot.pointer("/role/epoch") => "role_epoch_changed",
+        Some((_, prior)) if prior.pointer("/godMode/state") != snapshot.pointer("/godMode/state") => "god_mode_changed",
+        Some((_, prior)) if prior.pointer("/lifecycle/status") != snapshot.pointer("/lifecycle/status") => "session_lifecycle_changed",
         Some((_, prior)) if prior.get("model") != snapshot.get("model") => "model_changed",
         Some((_, prior)) if prior.pointer("/tools/commandContextId") != snapshot.pointer("/tools/commandContextId") => "tool_context_changed",
         _ => "snapshot_refreshed",
@@ -332,12 +366,13 @@ pub async fn persist_context_snapshot(
 }
 
 pub fn runtime_developer_messages(snapshot: &ContextSnapshotRecord, command_context: &crate::command_registry::RuntimeCommandContextMessage) -> Vec<RuntimeInputMessage> {
-    let mut messages = vec![
-        RuntimeInputMessage {
+    let mut messages = Vec::new();
+    if snapshot.event_kind == "initial" {
+        messages.push(RuntimeInputMessage {
             text: runtime_context_block(snapshot),
             metadata: json!({"source": "runtime_context", "roleEpoch": snapshot.role_epoch, "contextEpoch": snapshot.context_epoch, "contextEventWatermark": snapshot.context_event_watermark}),
-        },
-    ];
+        });
+    }
     if let Some(delta) = context_delta_block(snapshot) {
         messages.push(RuntimeInputMessage {
             text: delta,
@@ -350,10 +385,12 @@ pub fn runtime_developer_messages(snapshot: &ContextSnapshotRecord, command_cont
             metadata: json!({"source": "role_transition_summary", "roleEpoch": snapshot.role_epoch, "contextEpoch": snapshot.context_epoch, "contextEventWatermark": snapshot.context_event_watermark}),
         });
     }
-    messages.push(RuntimeInputMessage {
-        text: command_context.text.clone(),
-        metadata: command_context.metadata.clone(),
-    });
+    if matches!(snapshot.event_kind.as_str(), "initial" | "role_epoch_changed" | "tool_context_changed") {
+        messages.push(RuntimeInputMessage {
+            text: command_context.text.clone(),
+            metadata: command_context.metadata.clone(),
+        });
+    }
     messages
 }
 
@@ -378,11 +415,20 @@ pub fn responses_input(
     runtime_messages: &[RuntimeInputMessage],
     current_message: Option<&str>,
 ) -> Vec<Value> {
-    let mut input = vec![json!({
-        "role": "developer",
-        "content": [{"type": "input_text", "text": role_instructions_block(role)}],
-        "metadata": {"source": "role_instructions", "roleEpoch": role_epoch(role)}
-    })];
+    let include_role_instructions = runtime_messages.iter().any(|message| {
+        matches!(
+            message.metadata.get("source").and_then(Value::as_str),
+            Some("runtime_context" | "role_transition_summary")
+        )
+    });
+    let mut input = Vec::new();
+    if include_role_instructions {
+        input.push(json!({
+            "role": "developer",
+            "content": [{"type": "input_text", "text": role_instructions_block(role)}],
+            "metadata": {"source": "role_instructions", "roleEpoch": role_epoch(role)}
+        }));
+    }
     for runtime_message in runtime_messages {
         let mut content = vec![json!({"type": "input_text", "text": runtime_message.text})];
         if let Some(attachments) = runtime_message.metadata.get("imageArtifactAttachments").and_then(Value::as_array) {
@@ -483,7 +529,7 @@ mod tests {
         }];
         let input = responses_input(&role, &history, &[], Some("continue"));
         let rendered = serde_json::to_string(&input).unwrap();
-        assert!(rendered.contains("new role instructions"));
+        assert!(!rendered.contains("new role instructions"));
         assert!(!rendered.contains("old role"));
         assert!(rendered.contains("assistant answer"));
     }
@@ -558,6 +604,7 @@ mod tests {
         let transition = role_transition_summary_block(&snapshot).expect("transition");
         assert!(transition.contains("<role_transition_summary"));
         assert!(transition.contains("Prior role instructions and policy text are not active instructions"));
+        assert!(transition.contains("concise authority delta"));
     }
 
     #[test]
@@ -589,5 +636,56 @@ mod tests {
             assert!(delta.contains(expected), "{delta}");
             assert!(delta.contains("sequence=15"), "{delta}");
         }
+    }
+
+    #[test]
+    fn runtime_messages_do_not_reinsert_full_context_on_snapshot_refresh() {
+        let snapshot = ContextSnapshotRecord {
+            role_epoch: "operator:2.0.0:test".to_string(),
+            context_epoch: 2,
+            previous_context_epoch: Some(1),
+            context_event_watermark: 13,
+            event_kind: "snapshot_refreshed".to_string(),
+            event_sequence: 13,
+            snapshot: json!({"role": {"epoch": "operator:2.0.0:test"}}),
+            previous_snapshot: Some(json!({"role": {"epoch": "operator:2.0.0:test"}})),
+        };
+        let command_context = crate::command_registry::RuntimeCommandContextMessage {
+            text: "<command_context>verbose</command_context>".to_string(),
+            metadata: json!({"source": "command_context"}),
+            evidence: CommandContextEvidence {
+                id: "cmdctx-test".to_string(),
+                catalog_included: false,
+                visible_count: 0,
+                added_count: 0,
+                removed_count: 0,
+                changed_count: 0,
+                summaries: vec![],
+            },
+        };
+        let messages = runtime_developer_messages(&snapshot, &command_context);
+        let rendered = serde_json::to_string(&messages).unwrap();
+        assert!(!rendered.contains("<runtime_context"), "{rendered}");
+        assert!(!rendered.contains("<command_context"), "{rendered}");
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn god_mode_delta_is_concise_context_delta() {
+        let snapshot = ContextSnapshotRecord {
+            role_epoch: "operator:2.0.0:test".to_string(),
+            context_epoch: 2,
+            previous_context_epoch: Some(1),
+            context_event_watermark: 14,
+            event_kind: "god_mode_changed".to_string(),
+            event_sequence: 14,
+            snapshot: json!({"godMode": {"state": "active"}}),
+            previous_snapshot: Some(json!({"godMode": {"state": "inactive"}})),
+        };
+        let delta = context_delta_block(&snapshot).expect("delta");
+        assert!(delta.contains("kind=\"god_mode_changed\""));
+        assert!(delta.contains("old_god_mode=inactive"));
+        assert!(delta.contains("new_god_mode=active"));
+        assert!(!delta.contains("<runtime_context"));
     }
 }
