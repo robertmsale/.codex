@@ -371,6 +371,8 @@ Routing is Rust-derived. Reviewer packets do not choose destinations.
 
 - `fail` and `rejectedBlocked` become failed progress and route synthesized correction text to the source worker from `reason`, `evidenceAssessment`, and `requiredCorrection`.
 - `acceptedBlocked` becomes blocked progress. Proven owner/human decision blockers do not route as normal completion. Other true external blockers route only through configured project blocked-routing when a distinct route exists.
+- An `acceptedBlocked` verdict never overrides an actionable `fail` or `rejectedBlocked`. If any canonical requirement is failed, the full-set status is failed and routes the source worker back to work.
+- Terminal blocked is allowed only when every canonical requirement is resolved as `passed`, `waived`, or `blocked`, and at least one canonical requirement is `blocked`.
 - A fully successful final review routes to the orchestrator only when project auto-routing is enabled and a distinct orchestrator exists. If auto-routing is disabled or no distinct orchestrator exists, Robdex deactivates/completes Requirements without starting an orchestrator turn.
 - `waiverAccepted` contributes to terminal success and deactivates the RequirementSet when every requirement is passed or waived.
 
@@ -385,7 +387,7 @@ Per-requirement `reviewProgress` is derived from reviewer verdicts:
 - `waiverAccepted` -> `waived`
 - unknown -> `unresolved`
 
-The overall review binding status is derived from persisted progress across every canonical requirement. All passed/waived requirements produce terminal success; any missing, failed, blocked, pending, or unresolved requirement keeps the set nonterminal.
+The overall review binding status is derived from persisted progress across every canonical requirement. All passed/waived requirements produce terminal success. All passed/waived/blocked requirements with at least one blocked requirement produce terminal blocked. Any failed requirement takes precedence over blocked progress and routes back to the source. Any missing, pending, or unresolved requirement keeps the set in review.
 
 ## Composable Requirements
 

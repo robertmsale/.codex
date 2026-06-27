@@ -3136,6 +3136,41 @@ fn requirement_set_value_all_passed_or_waived(requirements: &Value) -> bool {
     })
 }
 
+fn requirement_set_value_all_resolved_with_blocked(requirements: &Value) -> bool {
+    let Some(items) = requirements.get("requirements").and_then(Value::as_array) else {
+        return false;
+    };
+    if items.is_empty() {
+        return false;
+    }
+    let progress = requirements
+        .get("reviewProgress")
+        .and_then(Value::as_object);
+    items.iter().all(|requirement| {
+        let Some(key) = requirement.get("key").and_then(Value::as_str) else {
+            return false;
+        };
+        matches!(
+            progress
+                .and_then(|progress| progress.get(key))
+                .and_then(|progress| progress.get("status"))
+                .and_then(Value::as_str),
+            Some("passed" | "waived" | "blocked")
+        )
+    }) && items.iter().any(|requirement| {
+        requirement
+            .get("key")
+            .and_then(Value::as_str)
+            .and_then(|key| {
+                progress
+                    .and_then(|progress| progress.get(key))
+                    .and_then(|progress| progress.get("status"))
+                    .and_then(Value::as_str)
+            })
+            == Some("blocked")
+    })
+}
+
 fn derive_requirement_review_status_from_requirements_value(requirements: &Value) -> String {
     if requirement_set_value_all_passed_or_waived(requirements) {
         let any_waived = requirements
@@ -3155,6 +3190,9 @@ fn derive_requirement_review_status_from_requirements_value(requirements: &Value
             });
         return if any_waived { "waiverAccepted" } else { "passed" }.to_string();
     }
+    if requirement_set_value_all_resolved_with_blocked(requirements) {
+        return "blocked".to_string();
+    }
     let progress_values = requirements
         .get("reviewProgress")
         .and_then(Value::as_object)
@@ -3162,9 +3200,6 @@ fn derive_requirement_review_status_from_requirements_value(requirements: &Value
         .flat_map(|progress| progress.values())
         .filter_map(|progress| progress.get("status").and_then(Value::as_str))
         .collect::<Vec<_>>();
-    if progress_values.iter().any(|status| *status == "blocked") {
-        return "blocked".to_string();
-    }
     if progress_values.iter().any(|status| *status == "failed") {
         return "failed".to_string();
     }
@@ -5381,6 +5416,100 @@ mod tests {
         assert!(!text.contains("Requirements review passed."));
         let state = runtime.state_document_value().await;
         assert_eq!(state["projects"]["alpha"]["agents"]["worker-1"]["requirements"]["active"], json!(true));
+        transport.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn mixed_fail_and_accepted_blocked_routes_to_source_not_terminal_blocked() {
+        let temp = TempDir::new().expect("tempdir");
+        let (runtime, server, mut requests) = runtime_with_captured_app_server_requests(&temp).await;
+        let transport = runtime.spawn_transport();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtime
+            .persist_state_document(json!({
+                "projects": {
+                    "alpha": {
+                        "projectRoot": temp.path().display().to_string(),
+                        "cwd": temp.path().display().to_string(),
+                        "autoRouteReplies": true,
+                        "orchestratorThreadID": "orch-1",
+                        "agents": {
+                            "orch-1": {
+                                "displayName": "Orchestrator",
+                                "role": "orchestrator",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string()
+                            },
+                            "worker-1": {
+                                "displayName": "Worker One",
+                                "role": "worker",
+                                "projectRoot": temp.path().display().to_string(),
+                                "cwd": temp.path().display().to_string(),
+                                "requirements": {
+                                    "id": "requirements-alpha",
+                                    "active": true,
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirements": [
+                                        {"key": "blockedRequirement", "statement": "Blocked item.", "severity": "blocker", "verificationMethod": "sourceInspection"},
+                                        {"key": "failedRequirement", "statement": "Failed item.", "severity": "blocker", "verificationMethod": "sourceInspection"}
+                                    ],
+                                    "reviewProgress": {
+                                        "blockedRequirement": {"status": "blocked", "updatedAt": 1},
+                                        "failedRequirement": {"status": "failed", "updatedAt": 1}
+                                    }
+                                },
+                                "requirementReview": {
+                                    "sourceThreadId": "worker-1",
+                                    "reviewerThreadId": "reviewer-1",
+                                    "requirementSetId": "requirements-alpha",
+                                    "status": "failed",
+                                    "updatedAt": 1
+                                }
+                            },
+                            "reviewer-1": {
+                                "displayName": "Requirements Reviewer: Worker One",
+                                "role": "requirements-reviewer",
+                                "projectRoot": temp.path().display().to_string(),
+                                "parentThreadId": "worker-1",
+                                "hiddenFromPeerList": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("persist state");
+
+        runtime
+            .maybe_route_requirements_verdict(
+                "worker-1",
+                "reviewer-1",
+                "review-turn-mixed-fail-blocked",
+                &json!({
+                    "blockedRequirement": {
+                        "verdict": "acceptedBlocked",
+                        "evidence": [{"type": "sourceInspection", "value": "Reviewed true external blocker evidence."}]
+                    },
+                    "failedRequirement": {
+                        "verdict": "fail",
+                        "reason": "The proof is incomplete.",
+                        "evidenceAssessment": "The cited evidence does not prove the requirement.",
+                        "requiredCorrection": "Fix the failing requirement and resubmit evidence."
+                    }
+                }),
+            )
+            .await;
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), requests.recv())
+            .await
+            .expect("request timeout")
+            .expect("request");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "worker-1");
+        let text = request["params"]["input"][0]["text"].as_str().unwrap_or_default();
+        assert!(text.contains("Requirements review failed."));
+        assert!(!text.contains("accepted a true blocker"));
+        assert!(requests.try_recv().is_err(), "mixed fail plus acceptedBlocked must not route to orchestrator");
         transport.abort();
         server.abort();
     }

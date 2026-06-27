@@ -6665,6 +6665,24 @@ fn requirement_set_all_passed_or_waived(set: &RequirementSetState) -> bool {
         })
 }
 
+fn requirement_set_all_resolved_with_blocked(set: &RequirementSetState) -> bool {
+    !set.requirements.is_empty()
+        && set.requirements.iter().all(|requirement| {
+            matches!(
+                set.review_progress
+                    .get(requirement.key.as_str())
+                    .map(|progress| progress.status.as_str()),
+                Some("passed" | "waived" | "blocked")
+            )
+        })
+        && set.requirements.iter().any(|requirement| {
+            set.review_progress
+                .get(requirement.key.as_str())
+                .map(|progress| progress.status.as_str())
+                == Some("blocked")
+        })
+}
+
 fn requirement_set_has_unresolved_progress(set: &RequirementSetState) -> bool {
     set.requirements.iter().any(|requirement| {
         !matches!(
@@ -6686,14 +6704,14 @@ fn derive_requirement_review_status_from_progress(set: &RequirementSetState) -> 
         });
         return if any_waived { "waiverAccepted" } else { "passed" }.to_string();
     }
+    if requirement_set_all_resolved_with_blocked(set) {
+        return "blocked".to_string();
+    }
     let statuses = set
         .review_progress
         .values()
         .map(|progress| progress.status.as_str())
         .collect::<Vec<_>>();
-    if statuses.iter().any(|status| *status == "blocked") {
-        return "blocked".to_string();
-    }
     if statuses.iter().any(|status| *status == "failed") {
         return "failed".to_string();
     }
@@ -9466,6 +9484,75 @@ requirements:
             );
             assert_eq!(requirements.active, expected_active, "{per_requirement_verdict}");
         }
+    }
+
+    #[test]
+    fn requirements_review_status_truth_table_prioritizes_actionable_failures() {
+        let mut set = RequirementSetState {
+            id: Some("requirements-truth-table".to_string()),
+            active: true,
+            requirements: vec![
+                RequirementState {
+                    key: "passedRequirement".to_string(),
+                    statement: "Pass.".to_string(),
+                    severity: "blocker".to_string(),
+                    claim_schema_description: None,
+                    verdict_schema_description: None,
+                    verification_method: "sourceInspection".to_string(),
+                },
+                RequirementState {
+                    key: "blockedRequirement".to_string(),
+                    statement: "Block.".to_string(),
+                    severity: "blocker".to_string(),
+                    claim_schema_description: None,
+                    verdict_schema_description: None,
+                    verification_method: "sourceInspection".to_string(),
+                },
+                RequirementState {
+                    key: "failedRequirement".to_string(),
+                    statement: "Fail.".to_string(),
+                    severity: "blocker".to_string(),
+                    claim_schema_description: None,
+                    verdict_schema_description: None,
+                    verification_method: "sourceInspection".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        set.review_progress.insert(
+            "passedRequirement".to_string(),
+            RequirementReviewProgressState {
+                status: "passed".to_string(),
+                updated_at: Some(1),
+            },
+        );
+        set.review_progress.insert(
+            "blockedRequirement".to_string(),
+            RequirementReviewProgressState {
+                status: "blocked".to_string(),
+                updated_at: Some(1),
+            },
+        );
+        set.review_progress.insert(
+            "failedRequirement".to_string(),
+            RequirementReviewProgressState {
+                status: "failed".to_string(),
+                updated_at: Some(1),
+            },
+        );
+        assert_eq!(derive_requirement_review_status_from_progress(&set), "failed");
+
+        set.review_progress.insert(
+            "failedRequirement".to_string(),
+            RequirementReviewProgressState {
+                status: "waived".to_string(),
+                updated_at: Some(2),
+            },
+        );
+        assert_eq!(derive_requirement_review_status_from_progress(&set), "blocked");
+
+        set.review_progress.remove("failedRequirement");
+        assert_eq!(derive_requirement_review_status_from_progress(&set), "inReview");
     }
 
     #[tokio::test]
