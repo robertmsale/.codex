@@ -1,12 +1,15 @@
+use std::collections::BTreeSet;
+
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use uuid::Uuid;
 
 use crate::errors::RuntimeDomainError;
 
-use crate::roles::{ImportedRoleVersion, RoleSnapshot, snapshot_from_value, snapshot_to_value};
+use crate::roles::{ImportedRoleVersion, ManifestDecision, RoleSnapshot, snapshot_from_value, snapshot_to_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectRow {
@@ -365,6 +368,7 @@ pub async fn role_exists(pool: &PgPool, role_id: &str) -> Result<bool> {
 pub async fn import_role_version_with_actor(pool: &PgPool, imported: &ImportedRoleVersion, actor: &str) -> Result<()> {
     let snapshot = &imported.snapshot;
     let snapshot_value = snapshot_to_value(snapshot)?;
+    let mut tx = pool.begin().await?;
     sqlx::query(
         r#"
         INSERT INTO roles (id, display_name, current_version_id, status, metadata, created_at, updated_at)
@@ -379,7 +383,7 @@ pub async fn import_role_version_with_actor(pool: &PgPool, imported: &ImportedRo
     )
     .bind(&snapshot.id)
     .bind(&snapshot.display_name)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -405,15 +409,26 @@ pub async fn import_role_version_with_actor(pool: &PgPool, imported: &ImportedRo
     .bind(&snapshot_value)
     .bind(snapshot.created_at)
     .bind(actor)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query("UPDATE roles SET current_version_id = $2, updated_at = now() WHERE id = $1")
     .bind(&snapshot.id)
     .bind(snapshot.role_version_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
-    append_admin_event(pool, "role", Some(snapshot.role_version_id), "role.imported", Some("active"), json!({"roleId": snapshot.id, "version": snapshot.version, "roleVersionId": snapshot.role_version_id, "actor": actor})).await?;
+    let propagated = propagate_role_snapshot_to_non_archived_sessions(&mut tx, &snapshot.id, snapshot, actor).await?;
+    sqlx::query(
+        "INSERT INTO event_stream (session_id, turn_id, entity_type, entity_id, event_type, status, payload) VALUES (NULL, NULL, $1, $2, $3, $4, $5)",
+    )
+    .bind("role")
+    .bind(snapshot.role_version_id)
+    .bind("role.imported")
+    .bind("active")
+    .bind(json!({"roleId": snapshot.id, "version": snapshot.version, "roleVersionId": snapshot.role_version_id, "actor": actor, "propagatedSessionCount": propagated}))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -508,10 +523,124 @@ pub async fn role_versions(pool: &PgPool, role_id: &str) -> Result<Vec<Value>> {
     }).collect())
 }
 
+fn manifest_decision_label(decision: &ManifestDecision) -> &'static str {
+    match decision {
+        ManifestDecision::Allow => "allow",
+        ManifestDecision::Deny => "deny",
+        ManifestDecision::OwnerApproval => "ownerApproval",
+        ManifestDecision::OrchestratorApproval => "orchestratorApproval",
+    }
+}
+
+fn role_policy_hash(snapshot: &RoleSnapshot) -> Result<String> {
+    let value = serde_json::to_value(&snapshot.policy)?;
+    Ok(format!("{:x}", Sha256::digest(value.to_string().as_bytes())))
+}
+
+fn changed_action_summary(previous: &RoleSnapshot, new: &RoleSnapshot) -> Value {
+    const LIMIT: usize = 24;
+    let previous_keys: BTreeSet<String> = previous.policy.keys().cloned().collect();
+    let new_keys: BTreeSet<String> = new.policy.keys().cloned().collect();
+    let added: Vec<String> = new_keys.difference(&previous_keys).take(LIMIT).cloned().collect();
+    let removed: Vec<String> = previous_keys.difference(&new_keys).take(LIMIT).cloned().collect();
+    let changed: Vec<Value> = previous_keys
+        .intersection(&new_keys)
+        .filter_map(|action| {
+            let before = previous.policy.get(action)?;
+            let after = new.policy.get(action)?;
+            (before != after).then(|| {
+                json!({
+                    "action": action,
+                    "previousDecision": manifest_decision_label(before),
+                    "newDecision": manifest_decision_label(after),
+                })
+            })
+        })
+        .take(LIMIT)
+        .collect();
+    json!({
+        "addedActions": added,
+        "removedActions": removed,
+        "changedDecisions": changed,
+        "truncated": previous_keys.len().saturating_add(new_keys.len()) > LIMIT * 2,
+    })
+}
+
+async fn propagate_role_snapshot_to_non_archived_sessions(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    role_id: &str,
+    new_snapshot: &RoleSnapshot,
+    actor: &str,
+) -> Result<u64> {
+    let new_snapshot_value = snapshot_to_value(new_snapshot)?;
+    let new_policy_hash = role_policy_hash(new_snapshot)?;
+    let rows = sqlx::query(
+        r#"
+        SELECT id, role_snapshot
+        FROM sessions
+        WHERE role_id=$1 AND archived_at IS NULL
+        ORDER BY created_at ASC, id ASC
+        FOR UPDATE
+        "#,
+    )
+    .bind(role_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut affected = 0u64;
+    for row in rows {
+        let session_id: Uuid = row.get("id");
+        let previous_snapshot = snapshot_from_value(row.get::<Value, _>("role_snapshot"))?;
+        if previous_snapshot.role_version_id == new_snapshot.role_version_id
+            && previous_snapshot.policy == new_snapshot.policy
+            && previous_snapshot.capabilities == new_snapshot.capabilities
+        {
+            continue;
+        }
+        let previous_policy_hash = role_policy_hash(&previous_snapshot)?;
+        let changed = changed_action_summary(&previous_snapshot, new_snapshot);
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET role_version=$2, role_snapshot=$3, updated_at=now()
+            WHERE id=$1
+            "#,
+        )
+        .bind(session_id)
+        .bind(&new_snapshot.version)
+        .bind(&new_snapshot_value)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO event_stream (session_id, turn_id, entity_type, entity_id, event_type, status, payload)
+            VALUES ($1, NULL, 'role', $2, 'role_authority.changed', 'updated', $3)
+            "#,
+        )
+        .bind(session_id)
+        .bind(new_snapshot.role_version_id)
+        .bind(json!({
+            "actor": actor,
+            "roleId": role_id,
+            "previousRoleVersionId": previous_snapshot.role_version_id,
+            "newRoleVersionId": new_snapshot.role_version_id,
+            "previousRoleVersion": previous_snapshot.version,
+            "newRoleVersion": new_snapshot.version,
+            "previousPolicyHash": previous_policy_hash,
+            "newPolicyHash": new_policy_hash,
+            "changedActionSummary": changed,
+        }))
+        .execute(&mut **tx)
+        .await?;
+        affected += 1;
+    }
+    Ok(affected)
+}
+
 pub async fn activate_role_version(pool: &PgPool, role_id: &str, version_id: Uuid) -> Result<()> {
+    let mut tx = pool.begin().await?;
     let row = sqlx::query("SELECT role_id FROM role_versions WHERE id=$1")
         .bind(version_id)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
     let actual: String = row.get("role_id");
     if actual != role_id {
@@ -520,12 +649,28 @@ pub async fn activate_role_version(pool: &PgPool, role_id: &str, version_id: Uui
     let updated = sqlx::query("UPDATE roles SET current_version_id=$2, status='active', archived_at=NULL, unarchived_at=now(), updated_at=now() WHERE id=$1")
         .bind(role_id)
         .bind(version_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     if updated.rows_affected() != 1 {
         bail!("role not found: {role_id}");
     }
-    append_admin_event(pool, "role", Some(version_id), "role.activated", Some("active"), json!({"roleId": role_id, "roleVersionId": version_id})).await?;
+    let snapshot_value: Value = sqlx::query_scalar("SELECT snapshot FROM role_versions WHERE id=$1")
+        .bind(version_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let snapshot = snapshot_from_value(snapshot_value)?;
+    let propagated = propagate_role_snapshot_to_non_archived_sessions(&mut tx, role_id, &snapshot, "role-version-activate").await?;
+    sqlx::query(
+        "INSERT INTO event_stream (session_id, turn_id, entity_type, entity_id, event_type, status, payload) VALUES (NULL, NULL, $1, $2, $3, $4, $5)",
+    )
+    .bind("role")
+    .bind(version_id)
+    .bind("role.activated")
+    .bind("active")
+    .bind(json!({"roleId": role_id, "roleVersionId": version_id, "propagatedSessionCount": propagated}))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 

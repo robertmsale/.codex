@@ -105,12 +105,55 @@ pub fn role_transition_summary_block(snapshot: &ContextSnapshotRecord) -> Option
         return None;
     }
     let previous = snapshot.previous_snapshot.as_ref().and_then(|value| value.pointer("/role/epoch")).and_then(Value::as_str).unwrap_or("unknown");
+    let authority_delta = snapshot
+        .snapshot
+        .pointer("/role/authorityDelta/changedActionSummary")
+        .map(role_authority_delta_text)
+        .unwrap_or_else(|| "Changed permissions were not summarized by the role save event.".to_string());
     Some(format!(
-        "<role_transition_summary epoch=\"{}\" previous_epoch=\"{}\" sequence=\"{}\">\nRole authority changed. Prior role instructions and policy text are not active instructions. Use only the current role_instructions block and current runtime_context block as active authority.\n</role_transition_summary>",
+        "<role_transition_summary epoch=\"{}\" previous_epoch=\"{}\" sequence=\"{}\">\nRole authority changed. Prior role instructions and policy text are not active instructions. Use only the current role_instructions block and current runtime_context block as active authority.\n{}\n</role_transition_summary>",
         xml_escape(&snapshot.role_epoch),
         xml_escape(previous),
-        snapshot.event_sequence
+        snapshot.event_sequence,
+        xml_escape(&authority_delta)
     ))
+}
+
+fn role_authority_delta_text(summary: &Value) -> String {
+    fn list(value: Option<&Value>) -> String {
+        let items = value
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .take(12)
+            .collect::<Vec<_>>();
+        if items.is_empty() { "none".to_string() } else { items.join(", ") }
+    }
+    let changed = summary
+        .get("changedDecisions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(12)
+        .filter_map(|item| {
+            Some(format!(
+                "{}:{}→{}",
+                item.get("action")?.as_str()?,
+                item.get("previousDecision")?.as_str()?,
+                item.get("newDecision")?.as_str()?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    truncate_chars(
+        &format!(
+            "Changed role authority: added actions [{}]; removed actions [{}]; changed decisions [{}].",
+            list(summary.get("addedActions")),
+            list(summary.get("removedActions")),
+            if changed.is_empty() { "none".to_string() } else { changed.join(", ") },
+        ),
+        1200,
+    )
 }
 
 fn bounded_delta_details(snapshot: &ContextSnapshotRecord) -> String {
@@ -213,12 +256,27 @@ pub async fn persist_context_snapshot(
     let cwd_trimmed = session.workdir.trim();
     let cwd_known = !cwd_trimmed.is_empty();
     let native_affordances = visible_tool_bundle_for_role(pool, &role.id, session.project_key.as_deref()).await?;
+    let role_authority_delta: Option<Value> = sqlx::query_scalar(
+        r#"
+        SELECT payload
+        FROM event_stream
+        WHERE session_id=$1
+          AND event_type='role_authority.changed'
+          AND payload->>'newRoleVersionId'=$2
+        ORDER BY sequence DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(session.id)
+    .bind(role.role_version_id.to_string())
+    .fetch_optional(pool)
+    .await?;
     let snapshot = json!({
         "sessionId": session.id,
         "project": {"key": project_key, "displayName": project_display, "assignment": if session.project_key.is_some() {"assigned"} else {"unassigned"}},
         "cwd": {"state": if cwd_known {"known"} else {"unavailable"}, "path": if cwd_known {cwd_trimmed} else {"unavailable"}, "source": if cwd_known {"session.workdir"} else {"unavailable"}},
         "worktreeRoot": session.worktree_root,
-        "role": {"key": role.id, "version": role.version, "epoch": role_epoch, "roleVersionId": role.role_version_id},
+        "role": {"key": role.id, "version": role.version, "epoch": role_epoch, "roleVersionId": role.role_version_id, "authorityDelta": role_authority_delta},
         "model": role.model_defaults.model,
         "sandbox": {"policy": "role.policy", "approval": "role.policy"},
         "policy": {"summary": "role snapshot policy and runtime command policy are authoritative"},
@@ -230,9 +288,9 @@ pub async fn persist_context_snapshot(
         Some((_, prior)) if prior.pointer("/project/key") != snapshot.pointer("/project/key") => "project_assignment_changed",
         Some((_, prior)) if prior.pointer("/cwd/path") != snapshot.pointer("/cwd/path") => "cwd_changed",
         Some((_, prior)) if prior.pointer("/worktreeRoot") != snapshot.pointer("/worktreeRoot") => "worktree_root_changed",
+        Some((_, prior)) if prior.pointer("/role/epoch") != snapshot.pointer("/role/epoch") => "role_epoch_changed",
         Some((_, prior)) if prior.get("model") != snapshot.get("model") => "model_changed",
         Some((_, prior)) if prior.pointer("/tools/commandContextId") != snapshot.pointer("/tools/commandContextId") => "tool_context_changed",
-        Some((_, prior)) if prior.pointer("/role/epoch") != snapshot.pointer("/role/epoch") => "role_epoch_changed",
         _ => "snapshot_refreshed",
     };
     let event_sequence: i64 = sqlx::query_scalar(

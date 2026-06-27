@@ -6373,6 +6373,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn role_save_propagates_project_progenitor_git_status_to_existing_sessions() {
+        let test_db = validation_db().await;
+        let router = app(ServerState::new(test_db.pool.clone()));
+        let mut stale = db::current_role_snapshot(&test_db.pool, "project-progenitor").await.expect("project progenitor role");
+        stale.version = "stale-without-readonly-git".to_string();
+        stale.role_version_id = Uuid::new_v4();
+        stale.capabilities.retain(|action| action != "git.status" && action != "git.diff");
+        stale.policy.remove("git.status");
+        stale.policy.remove("git.diff");
+        let session_id = db::new_session(&test_db.pool, &stale, Some("progenitor-live"), ".", Some("."), Some("Config Progenitor"), None)
+            .await
+            .expect("stale live session");
+        let archived_session_id = db::new_session(&test_db.pool, &stale, Some("progenitor-archived"), ".", Some("."), Some("Archived Progenitor"), None)
+            .await
+            .expect("stale archived session");
+        db::archive_session(&test_db.pool, archived_session_id).await.expect("archive stale session");
+        let before = db::session_role_snapshot(&test_db.pool, session_id).await.expect("before role");
+        assert_eq!(
+            crate::policy::PolicyEngine::decide(&before, "git.status", json!({})).decision,
+            crate::policy::RuntimeDecision::Deny
+        );
+        let model = FakeModelClient { direct_final_text: Some("ok"), ..Default::default() };
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "first context", &model, compaction::CompactionBudget::default()).await.expect("first send");
+
+        let draft: RoleEditorDraft = serde_json::from_value(json!({
+            "id": "project-progenitor",
+            "version": "99.99.100-propagation",
+            "displayName": "Project Progenitor",
+            "modelDefaults": {"model": "gpt-5.4-mini", "reasoningEffort": "medium"},
+            "instructionText": "Project Progenitor propagation test instructions.",
+            "capabilities": ["git.status", "git.diff"],
+            "policy": {"git.status": "allow", "git.diff": "allow"},
+            "routing": {"mode": "direct", "defaultRecipient": "owner", "allowedRecipients": ["owner"], "reservedActions": []},
+            "visibility": {"listed": true, "ownerVisible": true},
+            "lifecycleAuthority": {"canSpawnAgents": false, "canArchiveAgents": false, "reservedActions": []}
+        }))
+        .expect("draft");
+        let (status, updated) = request_json(router, Method::POST, "/roles/project-progenitor/versions", serde_json::to_value(draft).expect("draft json")).await;
+        assert_eq!(status, StatusCode::OK, "{updated}");
+        let new_version = Uuid::parse_str(updated["versionId"].as_str().expect("version id")).expect("version uuid");
+        let current_version: Uuid = sqlx::query_scalar("SELECT current_version_id FROM roles WHERE id='project-progenitor'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("current version");
+        assert_eq!(current_version, new_version);
+
+        let after = db::session_role_snapshot(&test_db.pool, session_id).await.expect("after role");
+        assert_eq!(after.role_version_id, new_version);
+        assert_eq!(
+            crate::policy::PolicyEngine::decide(&after, "git.status", json!({})).decision,
+            crate::policy::RuntimeDecision::Allow
+        );
+        assert_eq!(
+            crate::policy::PolicyEngine::decide(&after, "git.diff", json!({"paths":[]})).decision,
+            crate::policy::RuntimeDecision::Allow
+        );
+        assert_eq!(
+            crate::policy::PolicyEngine::decide(&after, "git.commit", json!({"message":"nope"})).decision,
+            crate::policy::RuntimeDecision::Deny
+        );
+        let archived_after = db::session_role_snapshot(&test_db.pool, archived_session_id).await.expect("archived after role");
+        assert_eq!(archived_after.role_version_id, stale.role_version_id);
+        assert_eq!(
+            crate::policy::PolicyEngine::decide(&archived_after, "git.status", json!({})).decision,
+            crate::policy::RuntimeDecision::Deny
+        );
+        let event: Value = sqlx::query_scalar("SELECT payload FROM event_stream WHERE session_id=$1 AND event_type='role_authority.changed' ORDER BY sequence DESC LIMIT 1")
+            .bind(session_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("role authority event");
+        assert_eq!(event["actor"], "gui-role-editor");
+        assert_eq!(event["previousRoleVersionId"], stale.role_version_id.to_string());
+        assert_eq!(event["newRoleVersionId"], new_version.to_string());
+        let added = event.pointer("/changedActionSummary/addedActions").and_then(Value::as_array).expect("added actions");
+        assert!(added.iter().any(|action| action == "git.status"));
+        assert!(added.iter().any(|action| action == "git.diff"));
+
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "second context", &model, compaction::CompactionBudget::default()).await.expect("second send");
+        let shape = model.observed_request_shapes.lock().expect("request shapes").last().cloned().expect("shape");
+        let rendered = serde_json::to_string(&shape).expect("shape json");
+        assert!(rendered.contains("<role_transition_summary"), "{rendered}");
+        assert!(rendered.contains("Role authority changed"), "{rendered}");
+        assert!(rendered.contains("git.status"), "{rendered}");
+        assert!(rendered.contains("git.diff"), "{rendered}");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
     async fn deterministic_admin_websocket_mutations_update_projection_without_rehydrate() {
         let test_db = validation_db().await;
         let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
