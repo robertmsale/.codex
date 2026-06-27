@@ -6,10 +6,6 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile section */
-		EED12B1B2FF08D0D00105B9C /* ExyteChat in Frameworks */ = {isa = PBXBuildFile; productRef = EED12B1A2FF08D0D00105B9C /* ExyteChat */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXContainerItemProxy section */
 		EED12A492FF083D900105B9C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -56,7 +52,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				EED12B1B2FF08D0D00105B9C /* ExyteChat in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -117,7 +112,6 @@
 			);
 			name = robdex;
 			packageProductDependencies = (
-				EED12B1A2FF08D0D00105B9C /* ExyteChat */,
 			);
 			productName = robdex;
 			productReference = EED12A3B2FF083D800105B9C /* robdex.app */;
@@ -202,7 +196,6 @@
 			mainGroup = EED12A322FF083D800105B9C;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				EED12B192FF08D0D00105B9C /* XCRemoteSwiftPackageReference "chat" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = EED12A3C2FF083D800105B9C /* Products */;
@@ -624,25 +617,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		EED12B192FF08D0D00105B9C /* XCRemoteSwiftPackageReference "chat" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/exyte/chat";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 3.1.7;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		EED12B1A2FF08D0D00105B9C /* ExyteChat */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = EED12B192FF08D0D00105B9C /* XCRemoteSwiftPackageReference "chat" */;
-			productName = ExyteChat;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = EED12A332FF083D800105B9C /* Project object */;
 }
