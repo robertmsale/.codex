@@ -12,6 +12,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:robdex_app/src/app/robdex_app.dart';
 import 'package:robdex_app/src/bindings/signals/signals.dart';
 import 'package:robdex_app/src/terminal/integrated_terminal.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:robdex_design_system/robdex_design_system.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm/xterm.dart';
@@ -2025,6 +2026,123 @@ void main() {
     expect(requirementSet?['active'], isTrue);
     expect(requirementSet?['enforceOnTurns'], isTrue);
     expect(requirementSet?['requirements'], isNotEmpty);
+  });
+
+  testWidgets('composer Add image surfaces typed failure and clears stale error', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    var pickerCalls = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: ScaffoldMessenger(
+          child: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 560,
+                child: ComposerPanel(
+                  enabled: true,
+                  isRunning: false,
+                  selection: mockWorkbenchData.selection,
+                  availableModels: mockWorkbenchData.availableModels,
+                  openImageFiles: () async {
+                    pickerCalls += 1;
+                    throw StateError('Photos permission denied in test');
+                  },
+                  onSettingsChanged: (_) {},
+                  onCompactThread: () {},
+                  onSend: (_) {},
+                  onInterrupt: () {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final addMenu = tester.widget<PopupMenuButton<String>>(find.byType(PopupMenuButton<String>));
+    addMenu.onSelected?.call('image');
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    });
+    await tester.pump();
+
+    expect(pickerCalls, 1);
+    expect(find.textContaining('Stage: image picker'), findsOneWidget);
+    expect(find.textContaining('Photos permission'), findsOneWidget);
+    expect(find.byKey(const ValueKey('composer.imageError.dismiss')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('composer.imageError.dismiss')));
+    await tester.pump();
+    expect(find.textContaining('Stage: image picker'), findsNothing);
+
+    addMenu.onSelected?.call('image');
+    await tester.pump();
+    await tester.pump();
+    expect(pickerCalls, 2);
+    expect(find.textContaining('Stage: image picker'), findsOneWidget);
+    await tester.enterText(find.bySemanticsLabel('Chat message input'), 'clear stale error');
+    await tester.pump();
+    expect(find.textContaining('Stage: image picker'), findsNothing);
+  });
+
+  testWidgets('composer Add image opens source flow and sends selected image', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const imagePath = '/tmp/picked.png';
+    var pickerCalls = 0;
+    ComposerSubmission? sent;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildRobdexTheme(),
+        home: ScaffoldMessenger(
+          child: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 560,
+                child: ComposerPanel(
+                  enabled: true,
+                  isRunning: false,
+                  selection: mockWorkbenchData.selection,
+                  availableModels: mockWorkbenchData.availableModels,
+                  openImageFiles: () async {
+                    pickerCalls += 1;
+                    return <XFile>[XFile(imagePath)];
+                  },
+                  onSettingsChanged: (_) {},
+                  onCompactThread: () {},
+                  onSend: (submission) => sent = submission,
+                  onInterrupt: () {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final addMenu = tester.widget<PopupMenuButton<String>>(find.byType(PopupMenuButton<String>));
+    addMenu.onSelected?.call('image');
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    });
+    await tester.pump();
+
+    expect(pickerCalls, 1);
+    expect(find.text('picked.png'), findsOneWidget);
+    expect(find.textContaining('Stage: image picker'), findsNothing);
+
+    await tester.enterText(find.bySemanticsLabel('Chat message input'), 'send selected image');
+    await tester.tap(find.byTooltip('Send'));
+    await tester.pump();
+    expect(sent?.text, 'send selected image');
+    expect(sent?.localImagePaths, <String>[imagePath]);
+    await tester.pump(const Duration(milliseconds: 2600));
   });
 
   testWidgets('composer primary Replace submits active stored requirements without sending', (

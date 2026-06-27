@@ -1760,6 +1760,56 @@ void main() {
     expect(dispatched, false);
   });
 
+  testWidgets('Process Manager shows truthful zero state and reachable typed controls for process rows', (tester) async {
+    final events = <String>[];
+    const emptyProcessSurface = AgentRuntimeOperationSurface(
+      surfaceId: 'processManager',
+      title: 'Process Manager',
+      subtitle: 'Managed process handles',
+      rows: [],
+      actions: [],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentRuntimeOperationsDetail(
+            data: mockAgentRuntimeConnected.copyWith(
+              operationSurfaces: [
+                for (final surface in mockAgentRuntimeConnected.operationSurfaces)
+                  if (surface.surfaceId == 'processManager') emptyProcessSurface else surface,
+              ],
+            ),
+            focusSurfaceId: 'processManager',
+          ),
+        ),
+      ),
+    );
+    expect(find.text('No managed processes are running for this session. Start work or refresh runtime state.'), findsOneWidget);
+    expect(find.text('Terminate process'), findsNothing);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentRuntimeOperationsDetail(
+            data: mockAgentRuntimeConnected,
+            focusSurfaceId: 'processManager',
+            onProcessInput: (handle, text) => events.add('input:$handle:$text'),
+            onProcessFlush: (handle) => events.add('flush:$handle'),
+            onProcessTerminate: (handle) => events.add('terminate:$handle'),
+          ),
+        ),
+      ),
+    );
+    await tester.ensureVisible(find.byKey(const ValueKey('agentRuntime.process.input.dev-server')));
+    await tester.enterText(find.byKey(const ValueKey('agentRuntime.process.input.dev-server')), 'status');
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Send input'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Flush output'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Terminate process'));
+    await tester.pump();
+
+    expect(events, containsAll(<String>['input:dev-server:status', 'flush:dev-server', 'terminate:dev-server']));
+  });
+
   testWidgets('Workflow Memory section renders detail metadata and typed feedback actions', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1100, 1000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -1809,6 +1859,73 @@ void main() {
     await tester.tap(find.widgetWithText(OutlinedButton, 'Not helpful'));
     await tester.pump();
     expect(feedback, containsAll(['memory-1:attempted', 'memory-1:helpful', 'memory-1:notHelpful']));
+  });
+
+  testWidgets('Workflow Memory shows truthful empty state and reachable typed feedback controls', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1100, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final feedback = <String>[];
+    final baseMemory = mockAgentRuntimeConnected.workflowMemory;
+    final emptyData = mockAgentRuntimeConnected.copyWith(
+      workflowMemory: AgentRuntimeWorkflowMemoryData(
+        title: baseMemory.title,
+        subtitle: baseMemory.subtitle,
+        emptyTitle: baseMemory.emptyTitle,
+        emptyText: baseMemory.emptyText,
+        rows: const [],
+        recentEvents: const [],
+        feedbackActions: const [],
+      ),
+      operationSurfaces: [
+        for (final surface in mockAgentRuntimeConnected.operationSurfaces)
+          if (surface.surfaceId == 'workflowMemory')
+            const AgentRuntimeOperationSurface(
+              surfaceId: 'workflowMemory',
+              title: 'Workflow Memory',
+              subtitle: 'Reusable workflow context',
+              rows: [],
+              actions: [],
+            )
+          else
+            surface,
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentRuntimeOperationsDetail(
+            data: emptyData,
+            focusSurfaceId: 'workflowMemory',
+          ),
+        ),
+      ),
+    );
+
+    expect(find.textContaining('No workflow memories'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Helpful'), findsNothing);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentRuntimeOperationsDetail(
+            data: mockAgentRuntimeConnected,
+            focusSurfaceId: 'workflowMemory',
+            onWorkflowMemoryAttempted: (detail) => feedback.add('${detail.id}:attempted'),
+            onWorkflowMemoryHelpful: (detail) => feedback.add('${detail.id}:helpful'),
+            onWorkflowMemoryNotHelpful: (detail) => feedback.add('${detail.id}:notHelpful'),
+          ),
+        ),
+      ),
+    );
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Attempted'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Attempted'));
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Helpful'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Helpful'));
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Not helpful'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Not helpful'));
+    await tester.pump();
+
+    expect(feedback, containsAll(<String>['memory-1:attempted', 'memory-1:helpful', 'memory-1:notHelpful']));
   });
 
   testWidgets('Runtime Operations omits removed operation sheets and keeps active sections', (tester) async {

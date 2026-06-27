@@ -45,6 +45,7 @@ class ComposerPanel extends StatefulWidget {
     this.loadRequirementComposables,
     this.setThreadRequirements,
     this.uploadImageBytes,
+    this.openImageFiles,
     this.contextWindowRemainingPercent,
     this.terminalAvailable = false,
     this.onTerminalPressed,
@@ -65,6 +66,7 @@ class ComposerPanel extends StatefulWidget {
   final RequirementComposableLoader? loadRequirementComposables;
   final Future<void> Function(String requirementSetJson)? setThreadRequirements;
   final ImageBytesUploader? uploadImageBytes;
+  final Future<List<XFile>> Function()? openImageFiles;
   final int? contextWindowRemainingPercent;
   final bool terminalAvailable;
   final VoidCallback? onTerminalPressed;
@@ -490,23 +492,24 @@ class _ComposerPanelState extends State<ComposerPanel> {
       _attachmentError = null;
     });
     try {
-      final files = await openFiles(
-        acceptedTypeGroups: const <XTypeGroup>[
-          XTypeGroup(
-            label: 'Images',
-            extensions: <String>[
-              'png',
-              'jpg',
-              'jpeg',
-              'gif',
-              'webp',
-              'bmp',
-              'heic',
-              'heif',
+      final files = await (widget.openImageFiles?.call() ??
+          openFiles(
+            acceptedTypeGroups: const <XTypeGroup>[
+              XTypeGroup(
+                label: 'Images',
+                extensions: <String>[
+                  'png',
+                  'jpg',
+                  'jpeg',
+                  'gif',
+                  'webp',
+                  'bmp',
+                  'heic',
+                  'heif',
+                ],
+              ),
             ],
-          ),
-        ],
-      );
+          ));
       if (!mounted || files.isEmpty) {
         return;
       }
