@@ -2185,12 +2185,16 @@ void main() {
       'Project',
       'Role',
       'Model',
+    ]) {
+      expect(find.text(label), findsOneWidget);
+    }
+    for (final label in [
       'Title',
       'Generated session name',
       'Workdir',
       'Worktree root',
     ]) {
-      expect(find.text(label), findsOneWidget);
+      expect(find.text(label), findsWidgets);
     }
     expect(find.byKey(const ValueKey('agentRuntime.createSession.model')), findsOneWidget);
     expect(find.text('Codex live model'), findsOneWidget);
@@ -2591,10 +2595,19 @@ void main() {
     await pumpDialog();
     await tester.tap(find.text('Set Requirements…'));
     await tester.pumpAndSettle();
+    expect(find.text('Robdex frontend redesign'), findsNothing);
+    expect(find.text('The UI must match the reference image on large screens.'), findsNothing);
+    expect(tester.widget<TextField>(find.widgetWithText(TextField, 'Title')).controller!.text, isEmpty);
+    expect(tester.widget<TextField>(find.widgetWithText(TextField, 'Requirement statement')).controller!.text, isEmpty);
+    await tester.tap(find.widgetWithText(FilledButton, 'Set Requirements'));
+    await tester.pump();
+    expect(find.text('Every requirement needs a statement.'), findsOneWidget);
     await tester.enterText(find.widgetWithText(TextField, 'Requirement statement'), 'Prove the selected-session control plane.');
+    await tester.pump();
+    expect(find.text('Every requirement needs a statement.'), findsNothing);
     await tester.tap(find.widgetWithText(FilledButton, 'Set Requirements'));
     await tester.pumpAndSettle();
-    expect(actions, contains('requirements:session-a:Session Requirements:owner_requirement:Prove the selected-session control plane.'));
+    expect(actions, contains('requirements:session-a:::Prove the selected-session control plane.'));
   });
 
   testWidgets('production host opens full-screen session control plane from toolbar', (tester) async {
@@ -2665,7 +2678,34 @@ void main() {
     expect(find.byType(AgentRuntimeCreateSessionDialog), findsOneWidget);
   });
 
-  testWidgets('session control plane can close without a selected session and stopped quick actions give reasons', (tester) async {
+  testWidgets('toolbar sections menu reaches Command Registry surface', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final sentRequests = <bindings.AgentRuntimeRequest>[];
+    final controller = AgentRuntimeWorkbenchController(requestSink: (_, request) => sentRequests.add(request));
+    addTearDown(controller.dispose);
+    controller.setViewDataForTest(mockAgentRuntimeConnected, shell: agentRuntimeConversationShellData(mockAgentRuntimeConnected));
+
+    await tester.pumpWidget(MaterialApp(home: AgentRuntimeWorkbenchHost(controller: controller)));
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.sections')));
+    await tester.pumpAndSettle();
+    expect(find.text('Command Registry'), findsOneWidget);
+
+    await tester.tap(find.text('Command Registry'));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Runtime operations detail'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Refresh installed commands'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Refresh pending requests'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Refresh installed commands'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Refresh pending requests'));
+    await tester.pump();
+    expect(sentRequests.whereType<bindings.AgentRuntimeRequestDispatchOperation>().length, 2);
+  });
+
+  testWidgets('session control plane can close without a selected session and treats stopped as open idle', (tester) async {
     final actions = <String>[];
     var closed = 0;
     Future<void> pumpPlane(AgentRuntimeWorkbenchData data) async {
@@ -2707,12 +2747,19 @@ void main() {
     await pumpPlane(mockAgentRuntimeConnected.copyWith(
       selectedSessionControlPlane: mockAgentRuntimeConnected.selectedSessionControlPlane!.copyWith(status: 'stopped'),
     ));
-    expect(find.text('Compact unavailable: session is stopped'), findsOneWidget);
-    expect(find.text('God Mode unavailable: session is stopped'), findsOneWidget);
-    await tester.tap(find.text('Compact unavailable: session is stopped'));
-    await tester.tap(find.text('God Mode unavailable: session is stopped'));
+    expect(find.text('Idle'), findsOneWidget);
+    expect(find.text('Compact…'), findsOneWidget);
+    expect(find.text('Grant God Mode…'), findsOneWidget);
+    await tester.tap(find.text('Compact…'));
+    await tester.tap(find.text('Grant God Mode…'));
     await tester.pump();
-    expect(actions, isEmpty);
+    expect(actions, containsAll(['compact:session-a', 'grant:session-a']));
+
+    await pumpPlane(mockAgentRuntimeConnected.copyWith(
+      selectedSessionControlPlane: mockAgentRuntimeConnected.selectedSessionControlPlane!.copyWith(projectKey: ''),
+    ));
+    expect(find.text('Project'), findsWidgets);
+    expect(find.text('Unassigned'), findsOneWidget);
   });
 
   testWidgets('production host Danger Zone Archive session and Archive session dispatch typed operations and return to session settings', (tester) async {
@@ -2736,6 +2783,15 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('agentRuntime.toolbar.sessionSettings')));
     await tester.pumpAndSettle();
     expect(find.byType(AgentRuntimeSessionControlPlane), findsOneWidget);
+
+    await openDangerZone();
+    expect(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.cancel')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.cancel')));
+    await tester.pumpAndSettle();
+    expect(sentRequests, isEmpty);
+    expect(find.text('Danger Zone'), findsOneWidget);
+    expect(find.byType(AgentRuntimeSessionControlPlane), findsOneWidget);
+    expect(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.archiveSession')), findsNothing);
 
     await openDangerZone();
     await tester.tap(find.byKey(const ValueKey('agentRuntime.sessionControl.danger.archiveSession')));
@@ -3335,6 +3391,67 @@ void main() {
       expect(draft.canSpawnAgents, isTrue);
       expect(draft.ownerVisible, isFalse);
     }
+  });
+
+  testWidgets('role authority selected rows stay enabled when policy decisions are delayed', (tester) async {
+    AgentRuntimeRoleEditorDraft? saved;
+    final roleAdmin = AgentRuntimeRoleAdminData(
+      title: mockAgentRuntimeRoleAdminSelected.title,
+      subtitle: mockAgentRuntimeRoleAdminSelected.subtitle,
+      emptyTitle: mockAgentRuntimeRoleAdminSelected.emptyTitle,
+      emptyText: mockAgentRuntimeRoleAdminSelected.emptyText,
+      rows: mockAgentRuntimeRoleAdminSelected.rows,
+      selectedDetail: mockAgentRuntimeRoleAdminSelected.selectedDetail,
+      versionRows: mockAgentRuntimeRoleAdminSelected.versionRows,
+      editorDraft: mockAgentRuntimeRoleAdminSelected.editorDraft,
+      validationErrors: const [],
+      actionStates: mockAgentRuntimeRoleAdminSelected.actionStates,
+      editorOptions: AgentRuntimeRoleEditorOptions(
+        models: mockAgentRuntimeRoleEditorOptions.models,
+        reasoningEfforts: mockAgentRuntimeRoleEditorOptions.reasoningEfforts,
+        capabilities: mockAgentRuntimeRoleEditorOptions.capabilities,
+        policyActions: mockAgentRuntimeRoleEditorOptions.policyActions,
+        policyDecisions: const [],
+        routingModes: mockAgentRuntimeRoleEditorOptions.routingModes,
+        recipients: mockAgentRuntimeRoleEditorOptions.recipients,
+        reservedActions: mockAgentRuntimeRoleEditorOptions.reservedActions,
+      ),
+    );
+    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(
+      home: AgentRuntimeRoleManagerPage(
+        data: roleAdmin,
+        onUpdate: (draft) => saved = draft,
+      ),
+    ));
+    await tester.pump();
+
+    final writeLabel = find.bySemanticsLabel('Role authority Write file fs.write');
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
+    await tester.pump();
+    final before = tester.getSemantics(writeLabel);
+    expect(before.rect.width, greaterThan(0));
+    expect(before.rect.height, greaterThan(0));
+    expect(before.hasFlag(SemanticsFlag.isChecked), isTrue);
+    await tester.tap(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
+    await tester.pump();
+    expect(tester.getSemantics(writeLabel).hasFlag(SemanticsFlag.isChecked), isFalse);
+    expect(find.byKey(const ValueKey('roleEditor.policy.fs.write')), findsNothing);
+
+    final diffLabel = find.bySemanticsLabel('Role authority Git Diff git.diff');
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.capability.git.diff')));
+    await tester.pump();
+    expect(tester.getSemantics(diffLabel).hasFlag(SemanticsFlag.isChecked), isFalse);
+    await tester.tap(find.byKey(const ValueKey('roleEditor.capability.git.diff')));
+    await tester.pump();
+    expect(tester.getSemantics(diffLabel).hasFlag(SemanticsFlag.isChecked), isTrue);
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Save Version'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Save Version'));
+    await tester.pump();
+    expect(saved, isNotNull);
+    expect(saved!.policy.any((row) => row.action == 'git.diff' && row.decision == 'allow'), isTrue);
+    expect(saved!.policy.any((row) => row.action == 'fs.write'), isFalse);
   });
 
   testWidgets('role manager reloads same-count authority edits from refreshed projection', (tester) async {

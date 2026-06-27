@@ -167,7 +167,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
           Row(children: [
             const Text('Session Settings', style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w700)),
             const SizedBox(width: 10),
-            _pill(control.status, Colors.green),
+            _pill(_sessionStatusLabel(control.status), Colors.green),
           ]),
           const SizedBox(height: 5),
           const Text('Manage and control this runtime session', style: TextStyle(color: Color(0xFFB8C4D3), fontSize: 14)),
@@ -216,7 +216,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
         _field('Title', _title),
         _select('Role', _role, _roleOptions(control), (value) => setState(() => _role = value)),
         _select('Model', _model, control.modelOptions.map((model) => model.id).where((id) => id.isNotEmpty).toList(growable: false), (value) => setState(() => _model = value)),
-        _select('Project', _project, _projectOptions(control), (value) => setState(() => _project = value)),
+        _select('Project', _projectDisplayValue(_project), _projectOptions(control), (value) => setState(() => _project = value == '__unassigned__' ? '' : value)),
         _field('Workdir', _workdir),
         _field('Worktree Root', _worktreeRoot),
         _field('Name', _name),
@@ -311,22 +311,18 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
       ]);
 
   Widget _quickActions(AgentRuntimeSelectedSessionControlPlane control) {
-    final active = control.status.toLowerCase() == 'running' || control.status.toLowerCase() == 'active';
-    final stoppedReason = active ? null : 'session is ${control.status.isEmpty ? 'not running' : control.status}';
     return Container(
       padding: const EdgeInsets.fromLTRB(26, 18, 26, 22),
       decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0x223B82F6)))),
       child: Wrap(crossAxisAlignment: WrapCrossAlignment.center, spacing: 12, runSpacing: 10, children: [
         const Text('Quick Actions', style: TextStyle(color: Color(0xFFB8C4D3), fontWeight: FontWeight.w600)),
-        _quick(stoppedReason == null ? 'Compact…' : 'Compact unavailable: $stoppedReason', Colors.orange, stoppedReason == null ? () => widget.onCompact(control.sessionId) : null),
+        _quick('Compact…', Colors.orange, () => widget.onCompact(control.sessionId)),
         _quick(
-          stoppedReason == null
-              ? control.godMode.active
-                  ? 'Revoke God Mode…'
-                  : 'Grant God Mode…'
-              : 'God Mode unavailable: $stoppedReason',
+          control.godMode.active
+              ? 'Revoke God Mode…'
+              : 'Grant God Mode…',
           Colors.orange,
-          stoppedReason == null ? () => control.godMode.active ? widget.onRevokeGodMode(control.sessionId) : widget.onGrantGodMode(control.sessionId) : null,
+          () => control.godMode.active ? widget.onRevokeGodMode(control.sessionId) : widget.onGrantGodMode(control.sessionId),
         ),
         _quick('Set Requirements…', Colors.blueAccent, () => _showRequirementsAuthoring(control)),
         _quick('Export Bundle unavailable: no typed export', Colors.blueGrey, null),
@@ -364,7 +360,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(children: [
         SizedBox(width: 120, child: Text(label, style: const TextStyle(color: Color(0xFFB8C4D3)))),
-        Expanded(child: DropdownButtonFormField<String>(initialValue: selectedValue, items: [for (final item in values) DropdownMenuItem(value: item, child: Text(item))], onChanged: (value) { if (value != null) onChanged(value); }, decoration: _input())),
+        Expanded(child: DropdownButtonFormField<String>(initialValue: selectedValue, items: [for (final item in values) DropdownMenuItem(value: item, child: Text(label == 'Project' ? _projectLabel(item) : item))], onChanged: (value) { if (value != null) onChanged(value); }, decoration: _input())),
       ]),
     );
   }
@@ -395,7 +391,12 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
   }
 
   List<String> _roleOptions(AgentRuntimeSelectedSessionControlPlane control) => {control.roleId, ...widget.data.roleAdmin.rows.map((role) => role.id)}.where((value) => value.isNotEmpty).toList(growable: false);
-  List<String> _projectOptions(AgentRuntimeSelectedSessionControlPlane control) => {control.projectKey, ...control.projectOptions.map((project) => project.id)}.where((value) => value.isNotEmpty).toList(growable: false);
+  String _projectDisplayValue(String value) => value.trim().isEmpty ? '__unassigned__' : value;
+  String _projectLabel(String value) => value == '__unassigned__' ? 'Unassigned' : value;
+  List<String> _projectOptions(AgentRuntimeSelectedSessionControlPlane control) => {
+        _projectDisplayValue(control.projectKey),
+        ...control.projectOptions.map((project) => _projectDisplayValue(project.id)),
+      }.where((value) => value.isNotEmpty).toList(growable: false);
 
   void _showDanger(AgentRuntimeSelectedSessionControlPlane control) {
     showModalBottomSheet<void>(
@@ -406,7 +407,14 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             const Text('Danger Zone', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
             const SizedBox(height: 12),
-            OutlinedButton(key: const ValueKey('agentRuntime.sessionControl.danger.archiveSession'), onPressed: () { Navigator.of(context).pop(); widget.onArchiveSession(control.sessionId); }, child: const Text('Archive session')),
+            TextButton(key: const ValueKey('agentRuntime.sessionControl.danger.cancel'), onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              key: const ValueKey('agentRuntime.sessionControl.danger.archiveSession'),
+              onPressed: () { Navigator.of(context).pop(); widget.onArchiveSession(control.sessionId); },
+              style: OutlinedButton.styleFrom(foregroundColor: Colors.redAccent),
+              child: const Text('Archive session'),
+            ),
           ]),
         ),
       ),
@@ -430,32 +438,57 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
   }
 
   void _showRequirementsAuthoring(AgentRuntimeSelectedSessionControlPlane control) {
-    final title = TextEditingController(text: 'Session Requirements');
-    final key = TextEditingController(text: 'owner_requirement');
+    final title = TextEditingController();
+    final key = TextEditingController();
     final statement = TextEditingController();
+    var error = '';
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => SafeArea(
-        child: Padding(
-          padding: EdgeInsets.only(left: 18, right: 18, top: 18, bottom: 18 + MediaQuery.viewInsetsOf(context).bottom),
-          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            const Text('Set Requirements', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 12),
-            TextField(controller: title, decoration: const InputDecoration(labelText: 'Title')),
-            TextField(controller: key, decoration: const InputDecoration(labelText: 'Requirement key')),
-            TextField(controller: statement, decoration: const InputDecoration(labelText: 'Requirement statement')),
-            const SizedBox(height: 12),
-            FilledButton(
-              onPressed: () {
-                widget.onSetRequirements(control.sessionId, title: title.text, key: key.text, statement: statement.text);
-                Navigator.of(context).pop();
-              },
-              child: const Text('Set Requirements'),
-            ),
-          ]),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheetState) => SafeArea(
+          child: Padding(
+            padding: EdgeInsets.only(left: 18, right: 18, top: 18, bottom: 18 + MediaQuery.viewInsetsOf(context).bottom),
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              const Text('Set Requirements', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 12),
+              TextField(controller: title, decoration: const InputDecoration(labelText: 'Title', hintText: 'Requirement set title')),
+              TextField(controller: key, decoration: const InputDecoration(labelText: 'Requirement key', hintText: 'ownerRequirement')),
+              TextField(
+                controller: statement,
+                decoration: const InputDecoration(labelText: 'Requirement statement', hintText: 'Describe the required outcome.'),
+                onChanged: (_) {
+                  if (error.isNotEmpty) setSheetState(() => error = '');
+                },
+              ),
+              if (error.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(error, style: const TextStyle(color: Colors.redAccent)),
+              ],
+              const SizedBox(height: 12),
+              FilledButton(
+                onPressed: () {
+                  if (statement.text.trim().isEmpty) {
+                    setSheetState(() => error = 'Every requirement needs a statement.');
+                    return;
+                  }
+                  widget.onSetRequirements(control.sessionId, title: title.text, key: key.text, statement: statement.text);
+                  Navigator.of(context).pop();
+                },
+                child: const Text('Set Requirements'),
+              ),
+            ]),
+          ),
         ),
       ),
     );
   }
+}
+
+String _sessionStatusLabel(String status) {
+  final normalized = status.trim().toLowerCase();
+  if (normalized == 'stopped') {
+    return 'Idle';
+  }
+  return status.trim().isEmpty ? 'Ready' : status;
 }

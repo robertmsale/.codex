@@ -1200,7 +1200,7 @@ void _copyBubbleText(BuildContext context, String text) {
   ScaffoldMessenger.of(context).hideCurrentSnackBar();
   ScaffoldMessenger.of(context).showSnackBar(
     const SnackBar(
-      content: Text('Copied'),
+      content: Text('Copied message'),
       duration: Duration(milliseconds: 900),
     ),
   );
@@ -2127,6 +2127,10 @@ class _ToolEventRow extends StatelessWidget {
                   color: theme.colorScheme.onSurface.withValues(alpha: 0.72),
                 ),
               ),
+            ],
+            if (!expanded && _hasValue(entry.output)) ...[
+              const SizedBox(height: 6),
+              _EventSection(label: 'Output', value: _compactPreview(entry.output!), mono: true),
             ],
             if (expanded && _hasValue(entry.output)) ...[
               const SizedBox(height: 8),

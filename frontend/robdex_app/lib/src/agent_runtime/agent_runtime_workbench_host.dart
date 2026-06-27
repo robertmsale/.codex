@@ -373,7 +373,6 @@ class _AgentRuntimeToolbar extends StatelessWidget {
           'session',
           'processManager',
           'approvals',
-          'commandRegistry',
           'compaction',
           'requirementsReview',
           'godMode',
@@ -598,20 +597,23 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
                     _RuntimeLabeledField(
                       label: 'Title',
                       helper: 'Shown in the sessions list.',
-                      child: TextField(
+                      child: _RuntimeTextField(
                         key: const ValueKey('agentRuntime.createSession.title'),
+                        label: 'Title',
                         controller: _title,
-                        decoration: _runtimeInputDecoration(hintText: 'New session'),
+                        hintText: 'New session',
+                        textInputAction: TextInputAction.next,
                       ),
                     ),
                     _RuntimeLabeledField(
                       label: 'Generated session name',
                       helper: 'Read-only slug generated from the title.',
-                      child: TextField(
+                      child: _RuntimeTextField(
                         key: const ValueKey('agentRuntime.createSession.name'),
+                        label: 'Generated session name',
                         controller: _name,
                         readOnly: true,
-                        decoration: _runtimeInputDecoration(hintText: 'new-session'),
+                        hintText: 'new-session',
                       ),
                     ),
                   ]),
@@ -626,19 +628,23 @@ class _CreateAgentRuntimeSessionDialogState extends State<AgentRuntimeCreateSess
                     _RuntimeLabeledField(
                       label: 'Workdir',
                       helper: 'Initial working directory for runtime commands.',
-                      child: TextField(
+                      child: _RuntimeTextField(
                         key: const ValueKey('agentRuntime.createSession.workdir'),
+                        label: 'Workdir',
                         controller: _workdir,
-                        decoration: _runtimeInputDecoration(hintText: '/path/to/workdir'),
+                        hintText: '/path/to/workdir',
+                        textInputAction: TextInputAction.next,
                       ),
                     ),
                     _RuntimeLabeledField(
                       label: 'Worktree root',
                       helper: 'Repository or worktree root for this session.',
-                      child: TextField(
+                      child: _RuntimeTextField(
                         key: const ValueKey('agentRuntime.createSession.worktreeRoot'),
+                        label: 'Worktree root',
                         controller: _worktreeRoot,
-                        decoration: _runtimeInputDecoration(hintText: '/path/to/worktree'),
+                        hintText: '/path/to/worktree',
+                        textInputAction: TextInputAction.done,
                       ),
                     ),
                   ]),
@@ -752,6 +758,41 @@ InputDecoration _runtimeInputDecoration({required String hintText}) {
       borderSide: const BorderSide(color: Color(0xFF8AB4FF), width: 1.4),
     ),
   );
+}
+
+class _RuntimeTextField extends StatelessWidget {
+  const _RuntimeTextField({
+    super.key,
+    required this.label,
+    required this.controller,
+    required this.hintText,
+    this.readOnly = false,
+    this.textInputAction,
+  });
+
+  final String label;
+  final TextEditingController controller;
+  final String hintText;
+  final bool readOnly;
+  final TextInputAction? textInputAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: label,
+      textField: true,
+      child: TextField(
+        controller: controller,
+        readOnly: readOnly,
+        autocorrect: false,
+        enableSuggestions: false,
+        smartDashesType: SmartDashesType.disabled,
+        smartQuotesType: SmartQuotesType.disabled,
+        textInputAction: textInputAction,
+        decoration: _runtimeInputDecoration(hintText: hintText).copyWith(labelText: label),
+      ),
+    );
+  }
 }
 
 class _RuntimeFormSection extends StatelessWidget {
@@ -1048,8 +1089,8 @@ class _CreateProjectDialogState extends State<AgentRuntimeCreateProjectDialog> {
                 title: 'Project identity',
                 children: [
                   _RuntimeFormGrid(children: [
-                    _RuntimeLabeledField(label: 'Project key', child: TextField(key: const ValueKey('agentRuntime.createProject.key'), controller: _key, decoration: _runtimeInputDecoration(hintText: 'project-key'))),
-                    _RuntimeLabeledField(label: 'Display name', child: TextField(key: const ValueKey('agentRuntime.createProject.displayName'), controller: _displayName, decoration: _runtimeInputDecoration(hintText: 'Project name'))),
+                    _RuntimeLabeledField(label: 'Project key', child: _RuntimeTextField(key: const ValueKey('agentRuntime.createProject.key'), label: 'Project key', controller: _key, hintText: 'project-key', textInputAction: TextInputAction.next)),
+                    _RuntimeLabeledField(label: 'Display name', child: _RuntimeTextField(key: const ValueKey('agentRuntime.createProject.displayName'), label: 'Display name', controller: _displayName, hintText: 'Project name', textInputAction: TextInputAction.next)),
                   ]),
                 ],
               ),
@@ -1068,8 +1109,8 @@ class _CreateProjectDialogState extends State<AgentRuntimeCreateProjectDialog> {
                 title: 'Workspace',
                 children: [
                   _RuntimeFormGrid(children: [
-                    _RuntimeLabeledField(label: 'Default workdir', child: TextField(key: const ValueKey('agentRuntime.createProject.workdir'), controller: _workdir, decoration: _runtimeInputDecoration(hintText: '/path/to/workdir'))),
-                    _RuntimeLabeledField(label: 'Default worktree root', child: TextField(key: const ValueKey('agentRuntime.createProject.worktreeRoot'), controller: _worktreeRoot, decoration: _runtimeInputDecoration(hintText: '/path/to/worktree'))),
+                    _RuntimeLabeledField(label: 'Default workdir', child: _RuntimeTextField(key: const ValueKey('agentRuntime.createProject.workdir'), label: 'Default workdir', controller: _workdir, hintText: '/path/to/workdir', textInputAction: TextInputAction.next)),
+                    _RuntimeLabeledField(label: 'Default worktree root', child: _RuntimeTextField(key: const ValueKey('agentRuntime.createProject.worktreeRoot'), label: 'Default worktree root', controller: _worktreeRoot, hintText: '/path/to/worktree', textInputAction: TextInputAction.done)),
                   ]),
                 ],
               ),

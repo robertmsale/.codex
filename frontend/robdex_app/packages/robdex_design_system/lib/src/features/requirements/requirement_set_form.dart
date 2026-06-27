@@ -130,6 +130,7 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
     super.initState();
     final parsed = _parseInitial(widget.initialJson);
     _titleController = TextEditingController(text: parsed.$1);
+    _titleController.addListener(_clearValidationError);
     _requirements.addAll(parsed.$2);
     if (_requirements.isEmpty) {
       _requirements.add(_RequirementDraft());
@@ -147,11 +148,18 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
 
   @override
   void dispose() {
+    _titleController.removeListener(_clearValidationError);
     _titleController.dispose();
     for (final requirement in _requirements) {
       requirement.dispose();
     }
     super.dispose();
+  }
+
+  void _clearValidationError() {
+    if (_error != null) {
+      setState(() => _error = null);
+    }
   }
 
   (String, List<_RequirementDraft>) _parseInitial(String? jsonText) {
@@ -339,7 +347,7 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
                 controller: _titleController,
                 decoration: const InputDecoration(
                   labelText: 'Title',
-                  hintText: 'Robdex frontend redesign',
+                  hintText: 'Requirement set title',
                 ),
               ),
               const SizedBox(height: 16),
@@ -390,7 +398,7 @@ class _RequirementSetFormDialogState extends State<_RequirementSetFormDialog> {
                   index: i,
                   draft: _requirements[i],
                   uploadImageBytes: widget.uploadImageBytes,
-                  onChanged: () => setState(() {}),
+                  onChanged: () => setState(() => _error = null),
                   canRemove: _requirements.length > 1,
                   onRemove: () {
                     setState(() {
@@ -669,8 +677,9 @@ class _RequirementDraftCard extends StatelessWidget {
               maxLines: 4,
               decoration: const InputDecoration(
                 labelText: 'Statement',
-                hintText: 'The UI must match the reference image on large screens.',
+                hintText: 'Describe the required outcome.',
               ),
+              onChanged: (_) => onChanged(),
             ),
             const SizedBox(height: 10),
             Row(

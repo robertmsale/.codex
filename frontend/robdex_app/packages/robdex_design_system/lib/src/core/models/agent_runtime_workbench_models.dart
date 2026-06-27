@@ -980,7 +980,6 @@ class AgentRuntimeRoleEditorOptions {
         reasoningEfforts.isNotEmpty &&
         capabilities.isNotEmpty &&
         policyActions.isNotEmpty &&
-        policyDecisions.isNotEmpty &&
         routingModes.isNotEmpty &&
         recipients.isNotEmpty &&
         reservedActions.isNotEmpty;

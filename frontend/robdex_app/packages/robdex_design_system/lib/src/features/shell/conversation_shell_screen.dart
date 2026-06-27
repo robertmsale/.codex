@@ -322,6 +322,8 @@ class _RailProjectsSection extends StatelessWidget {
           child: ListView.separated(
             key: const ValueKey('conversationShell.projectsScrollView'),
             scrollDirection: compact ? Axis.horizontal : Axis.vertical,
+            cacheExtent: 0,
+            addSemanticIndexes: false,
             itemBuilder: (context, index) {
               final project = data.projects[index];
               final tile = InkWell(
@@ -400,6 +402,8 @@ class _RailSessionsSection extends StatelessWidget {
               ? _EmptyRail(title: data.emptyTitle, text: data.emptyText)
               : ListView.separated(
                   key: const ValueKey('conversationShell.sessionsScrollView'),
+                  cacheExtent: 0,
+                  addSemanticIndexes: false,
                   itemCount: data.sessions.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 4),
                   itemBuilder: (context, index) {

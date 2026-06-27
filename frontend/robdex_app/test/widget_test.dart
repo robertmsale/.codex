@@ -719,6 +719,100 @@ void main() {
     expect(find.text('Resuming interrupted QA-driven reliability sweep from existing agents without re-auditing from scratch.'), findsOneWidget);
   });
 
+  testWidgets('tool timeline rows show execute_code output without expansion', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ChatTimeline(
+            threadId: 'agent-runtime',
+            entries: const [
+              ChatEntry(
+                id: 'tool-1',
+                author: 'Runtime',
+                displayLabel: 'Runtime',
+                timestamp: null,
+                body: 'print("qa_visible_output_20260627")',
+                subtitle: 'execute_code',
+                kind: 'mcpToolCall',
+                status: 'completed',
+                command: 'print("qa_visible_output_20260627")',
+                output: 'qa_visible_output_20260627',
+                isTool: true,
+              ),
+            ],
+            title: 'Agent Runtime',
+            contextWindowRemainingPercent: 90,
+            onSend: (_) {},
+            onInterrupt: () {},
+            composerEnabled: false,
+            isRunning: false,
+            showComposer: false,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Output'), findsOneWidget);
+    expect(find.text('qa_visible_output_20260627'), findsOneWidget);
+  });
+
+  testWidgets('chat copy writes exact message and keeps timeline position', (WidgetTester tester) async {
+    String? copiedText;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copiedText = (call.arguments as Map<Object?, Object?>)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    final entries = List<ChatEntry>.generate(
+      12,
+      (index) => ChatEntry(
+        id: 'message-$index',
+        author: 'Assistant',
+        displayLabel: 'Assistant',
+        timestamp: null,
+        body: index == 11 ? 'Exact copy target 20260627' : 'Timeline filler $index',
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 420,
+            child: ChatTimeline(
+              threadId: 'copy-proof',
+              entries: entries,
+              title: 'Copy proof',
+              contextWindowRemainingPercent: 90,
+              onSend: (_) {},
+              onInterrupt: () {},
+              composerEnabled: false,
+              isRunning: false,
+              showComposer: false,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    final before = tester.state<ScrollableState>(find.byType(Scrollable).first).position.pixels;
+
+    await tester.tap(find.byKey(const ValueKey('semantic.chat.copy.message-11')));
+    await tester.pump();
+
+    expect(copiedText, 'Exact copy target 20260627');
+    expect(find.text('Copied message'), findsOneWidget);
+    expect(tester.state<ScrollableState>(find.byType(Scrollable).first).position.pixels, before);
+  });
+
   testWidgets('requirements reviewer verdict renders as formatted card', (
     WidgetTester tester,
   ) async {

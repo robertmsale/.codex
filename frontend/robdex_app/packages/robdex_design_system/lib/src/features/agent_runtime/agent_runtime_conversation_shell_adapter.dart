@@ -22,7 +22,7 @@ ConversationShellData agentRuntimeConversationShellData(AgentRuntimeWorkbenchDat
                 shortLabel: _shortLabel(_displayCopy(session.groupLabel)),
                 iconKey: 'runtime',
                 tone: session.tone,
-                statusLabel: _displayCopy(session.status),
+                statusLabel: _sessionStatusCopy(session.status),
                 description: _displayCopy(session.subtitle),
               ),
             ))
@@ -75,6 +75,14 @@ ConversationShellData agentRuntimeConversationShellData(AgentRuntimeWorkbenchDat
     emptyTitle: data.sessionsEmptyTitle,
     emptyText: data.sessionsEmptyText,
   );
+}
+
+String _sessionStatusCopy(String status) {
+  final normalized = status.trim().toLowerCase();
+  if (normalized == 'stopped') {
+    return 'Idle';
+  }
+  return _displayCopy(status);
 }
 
 String? _submissionStatus(AgentRuntimeWorkbenchData data) {

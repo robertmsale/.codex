@@ -117,6 +117,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
     final next = _controller.text.trim().isNotEmpty;
     setState(() {
       _hasDraftText = next;
+      _attachmentError = null;
       if (_dismissedSlashText != _controller.text) {
         _dismissedSlashText = null;
       }
@@ -148,6 +149,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
     setState(() {
       _localImagePaths.clear();
       _localImagePreviewBytes.clear();
+      _attachmentError = null;
     });
   }
 
@@ -356,6 +358,9 @@ class _ComposerPanelState extends State<ComposerPanel> {
   }
 
   Future<void> _editRequirements() async {
+    if (_attachmentError != null) {
+      setState(() => _attachmentError = null);
+    }
     final storedRequirements = widget.requirementReview?.storedRequirementCount ?? 0;
     final hasStoredRequirements = storedRequirements > 0;
     final requirementsActive = widget.requirementReview?.requirementSetActive ?? false;
@@ -464,7 +469,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
     }
     setState(() {
       for (final path in next) {
-        if (!_localImagePaths.contains(path)) {
+      if (!_localImagePaths.contains(path)) {
           _localImagePaths.add(path);
         }
         final bytes = previewBytes[path];
@@ -472,6 +477,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
           _localImagePreviewBytes[path] = bytes;
         }
       }
+      _attachmentError = null;
     });
   }
 
@@ -523,10 +529,10 @@ class _ComposerPanelState extends State<ComposerPanel> {
         }
         _appendImagePaths(paths, previewBytes: previews);
       }
-    } catch (_) {
+    } catch (error) {
       if (mounted) {
         setState(() {
-          _attachmentError = 'Could not upload image attachment.';
+          _attachmentError = 'Image attachment unavailable while opening the image picker. Check Photos permission or choose Set Requirements instead. Stage: image picker. ${error.toString().trim()}';
         });
       }
     } finally {
@@ -990,11 +996,25 @@ class _ComposerPanelState extends State<ComposerPanel> {
             ],
             if (_attachmentError != null) ...[
               const SizedBox(height: 10),
-              Text(
-                _attachmentError!,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.secondary,
-                ),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Text(
+                      _attachmentError!,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.secondary,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    key: const ValueKey('composer.imageError.dismiss'),
+                    tooltip: 'Dismiss image attachment error',
+                    onPressed: () => setState(() => _attachmentError = null),
+                    icon: const Icon(Icons.close_rounded, size: 16),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ],
               ),
             ],
           ],

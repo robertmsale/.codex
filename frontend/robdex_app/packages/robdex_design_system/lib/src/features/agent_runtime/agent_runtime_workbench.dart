@@ -1900,7 +1900,12 @@ class _RoleAuthorityEditor extends StatelessWidget {
       }
       return _roleManagerHumanLabel(a).compareTo(_roleManagerHumanLabel(b));
     });
-    final defaultDecision = decisions.contains('allow') ? 'allow' : decisions.isEmpty ? '' : decisions.first;
+    final normalizedDecisions = _dedupeRoleManagerOptions([
+      ...decisions,
+      if (!decisions.contains('allow')) 'allow',
+      if (!decisions.contains('deny')) 'deny',
+    ]);
+    final defaultDecision = normalizedDecisions.contains('allow') ? 'allow' : normalizedDecisions.first;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1925,12 +1930,12 @@ class _RoleAuthorityEditor extends StatelessWidget {
                     label: 'Role authority ${_roleManagerHumanLabel(action)} $action',
                     checked: rowByAction.containsKey(action),
                     button: true,
-                    onTap: defaultDecision.isEmpty ? null : () => _toggleRoleAuthorityAction(action, rowByAction.containsKey(action), rows, defaultDecision, onChanged),
+                    onTap: () => _toggleRoleAuthorityAction(action, rowByAction.containsKey(action), rows, defaultDecision, onChanged),
                     child: ExcludeSemantics(
                       child: CheckboxListTile(
                         key: ValueKey('roleEditor.capability.$action'),
                         value: rowByAction.containsKey(action),
-                        onChanged: defaultDecision.isEmpty ? null : (_) => _toggleRoleAuthorityAction(action, rowByAction.containsKey(action), rows, defaultDecision, onChanged),
+                        onChanged: (_) => _toggleRoleAuthorityAction(action, rowByAction.containsKey(action), rows, defaultDecision, onChanged),
                         controlAffinity: ListTileControlAffinity.leading,
                         dense: true,
                         contentPadding: EdgeInsets.zero,
@@ -1945,7 +1950,7 @@ class _RoleAuthorityEditor extends StatelessWidget {
                     key: ValueKey('roleEditor.policy.$action'),
                     label: 'Decision',
                     value: row.decision,
-                    values: _withCurrentOptions(decisions, row.decision),
+                    values: _withCurrentOptions(normalizedDecisions, row.decision),
                     onChanged: (value) {
                       onChanged([
                         for (final current in rows)
@@ -2654,7 +2659,7 @@ class _OperationsSection extends StatelessWidget {
           Text(title, style: theme.textTheme.labelLarge?.copyWith(color: Colors.white70, fontWeight: FontWeight.w800)),
           const SizedBox(height: 6),
           if (rows.isEmpty)
-            const Text('No items', style: TextStyle(color: Color(0xFF8FA1B8), fontSize: 12))
+            Text(_emptySurfaceCopy(title), style: const TextStyle(color: Color(0xFF8FA1B8), fontSize: 12))
           else
             for (final row in rows)
               Padding(
@@ -2699,6 +2704,23 @@ class _OperationsSection extends StatelessWidget {
       ),
     );
   }
+}
+
+String _emptySurfaceCopy(String title) {
+  final normalized = title.toLowerCase();
+  if (normalized.contains('command')) {
+    return 'No command registry rows are loaded. Refresh installed commands or pending requests.';
+  }
+  if (normalized.contains('process')) {
+    return 'No managed processes are running for this session. Start work or refresh runtime state.';
+  }
+  if (normalized.contains('workflow')) {
+    return 'No workflow memories are available yet. Memories appear after reusable context is stored.';
+  }
+  if (normalized.contains('approval')) {
+    return 'No approval requests are waiting.';
+  }
+  return 'No actionable rows are available.';
 }
 
 class _ProcessInputControl extends StatefulWidget {

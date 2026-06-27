@@ -127,10 +127,20 @@ exact action id, and visible rows expose checked state through semantics.
 Manual Connect to URL immediately moves the runtime state out of Not connected
 or shows the typed connection error. Session Settings is a full-screen route
 with a `Close session settings` affordance in both selected-session and
-no-selected-session states; stopped sessions render invalid quick actions
-disabled with a visible unavailable reason. Create Project and Create Session
+no-selected-session states. A database `stopped` session is an open idle
+session: the owner-facing UI says `Idle`, the composer may send the next turn,
+and quick actions stay routed through typed operation preconditions rather than
+being disabled because of the stored lifecycle value alone. Create Project and Create Session
 dialogs are not barrier-dismissible; keyboard dismissal preserves dirty text
 until the user explicitly cancels or submits.
+
+The selected-session transcript must show tool-result envelopes, not only tool
+inputs. An `execute_code` run with printed output renders the bounded output
+preview in the timeline. Command Registry, Process Manager, Workflow Memory,
+Set Requirements, and image attachment failures all remain reachable through
+typed Rust/Rinf operations or truthful unavailable states; image attachment
+failures name the failing stage and give a recovery path instead of generic
+upload copy.
 
 ## Direction
 

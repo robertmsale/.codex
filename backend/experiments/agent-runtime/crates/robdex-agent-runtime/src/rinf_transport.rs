@@ -624,10 +624,7 @@ impl AgentRuntimeWorkbenchViewModel {
             .unwrap_or_default();
         actions.sort_by(|left, right| left.kind.cmp(&right.kind).then(left.id.cmp(&right.id)));
         let selected_session_label = selected_session_label(projection, controller_state);
-        let selected_session_id = controller_state
-            .selected_session_id
-            .as_deref()
-            .or_else(|| projection.and_then(|projection| projection.selected_session.as_ref().map(|session| session.id.as_str())));
+        let selected_session_id = effective_selected_session_id(projection, controller_state);
         let effective_model_options = effective_model_options(projection, model_options);
         let role_admin = role_admin_view(
             projection,
@@ -729,10 +726,7 @@ impl AgentRuntimeConversationShellViewModel {
             .filter(|session| visible_session_ids.as_ref().is_none_or(|ids| ids.contains(&session.id)))
             .cloned()
             .collect::<Vec<_>>();
-        let selected_session_id = controller_state
-            .selected_session_id
-            .clone()
-            .or_else(|| projection.and_then(|projection| projection.selected_session.as_ref().map(|session| session.id.clone())));
+        let selected_session_id = effective_selected_session_id(projection, controller_state).map(str::to_string);
         let dynamic_roles = view
             .sessions
             .iter()
@@ -760,7 +754,7 @@ impl AgentRuntimeConversationShellViewModel {
             projects: project_rows,
             sessions: visible_sessions,
             selected_session_id: selected_session_id.clone(),
-            selected_conversation: projection
+            selected_conversation: if selected_session_id.is_some() { projection
                 .map(|projection| {
                     projection
                         .selected_chat_entries
@@ -768,11 +762,11 @@ impl AgentRuntimeConversationShellViewModel {
                         .map(agent_runtime_chat_entry)
                         .collect()
                 })
-                .unwrap_or_default(),
+                .unwrap_or_default() } else { Vec::new() },
             dynamic_roles,
             actions: view.actions.clone(),
             settings: {
-                let selected_detail = projection.and_then(|projection| projection.selected_session.as_ref());
+                let selected_detail = if selected_session_id.is_some() { projection.and_then(|projection| projection.selected_session.as_ref()) } else { None };
                 let mut settings = vec![
                 AgentRuntimeWorkbenchFact {
                     label: "Connection".to_string(),
@@ -797,8 +791,28 @@ impl AgentRuntimeConversationShellViewModel {
             approvals,
             diagnostics: view.controller_facts.clone(),
             operation_surfaces: operation_surfaces(projection, controller_state, view),
-            selected_session_control_plane: selected_session_control_plane(projection, view.model_options.as_slice()),
+            selected_session_control_plane: if selected_session_id.is_some() { selected_session_control_plane(projection, view.model_options.as_slice()) } else { None },
         }
+    }
+}
+
+fn effective_selected_session_id<'a>(projection: Option<&'a RuntimeProjection>, controller_state: &'a GuiControllerState) -> Option<&'a str> {
+    let candidate = controller_state
+        .selected_session_id
+        .as_deref()
+        .or_else(|| projection.and_then(|projection| projection.selected_session.as_ref().map(|session| session.id.as_str())))?;
+    let project_filter = controller_state.selected_project_id.as_deref();
+    let visible = projection
+        .and_then(|projection| projection.sessions.iter().find(|session| session.id == candidate))
+        .is_none_or(|session| session_visible_for_project(session.project_key.as_deref(), project_filter));
+    visible.then_some(candidate)
+}
+
+fn session_visible_for_project(session_project_key: Option<&str>, selected_project_id: Option<&str>) -> bool {
+    match selected_project_id {
+        None | Some("__all__") => true,
+        Some("__unassigned__") => session_project_key.unwrap_or("").trim().is_empty(),
+        Some(project_id) => session_project_key == Some(project_id),
     }
 }
 
@@ -2490,7 +2504,7 @@ impl GuiTransportRunner {
     async fn handle_intent(&mut self, intent: GuiTransportRequest) -> Result<Vec<GuiTransportOutputPacket>, ApiErrorPacket> {
         match intent {
             GuiTransportRequest::RefreshDiscovery { discovery_path } => {
-                self.refresh_discovery(discovery_path);
+                self.refresh_discovery(discovery_path).await;
                 Ok(vec![])
             }
             GuiTransportRequest::RefreshIcloudRemoteDiscovery { profile_path } => {
@@ -2518,7 +2532,7 @@ impl GuiTransportRunner {
                 discovery_path,
                 selected_session_id,
             } => {
-                self.refresh_discovery(discovery_path);
+                self.refresh_discovery(discovery_path).await;
                 if !self.discovery.connectable {
                     return Err(ApiErrorPacket::new(
                         "conflict",
@@ -2839,9 +2853,46 @@ impl GuiTransportRunner {
         ))
     }
 
-    fn refresh_discovery(&mut self, discovery_path: Option<String>) {
+    async fn refresh_discovery(&mut self, discovery_path: Option<String>) {
         let path = discovery_path.map(PathBuf::from).unwrap_or_else(default_discovery_path);
         self.discovery = read_discovery_file(&path);
+        if !self.discovery.connectable {
+            if let Some(fallback) = self.local_default_health_discovery(&path).await {
+                self.discovery = fallback;
+            }
+        }
+    }
+
+    async fn local_default_health_discovery(&self, discovery_path: &Path) -> Option<AgentRuntimeDiscoveryView> {
+        let base_url = self.base_url.trim_end_matches('/').to_string();
+        if base_url.is_empty() {
+            return None;
+        }
+        let health_url = format!("{base_url}/health");
+        let response = self.http.get(&health_url).send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        Some(AgentRuntimeDiscoveryView {
+            source_type: "localServiceFile".to_string(),
+            source_path: discovery_path.display().to_string(),
+            state: "runningHealthy".to_string(),
+            tone: "success".to_string(),
+            title: "Local runtime ready".to_string(),
+            message: "The default local Agent Runtime URL passed /health. Connect to URL remains available if the discovery file needs repair.".to_string(),
+            base_url: Some(base_url.clone()),
+            health_url: Some(health_url),
+            web_socket_url: Some(format!("{base_url}/state/ws").replacen("http://", "ws://", 1).replacen("https://", "wss://", 1)),
+            runtime_identity: None,
+            last_imported_at: None,
+            discovery_path: discovery_path.display().to_string(),
+            service_state: Some("runningHealthy".to_string()),
+            connectable: true,
+            diagnostics: vec![
+                format!("discovery file fallback path {}", discovery_path.display()),
+                "default local /health succeeded".to_string(),
+            ],
+        })
     }
 
     async fn refresh_icloud_remote_discovery(&mut self, profile_path: Option<String>) {
@@ -3409,7 +3460,7 @@ fn approval_tone(approval: &PendingApprovalSummary) -> &'static str {
 }
 
 fn selected_session_label(projection: Option<&RuntimeProjection>, controller_state: &GuiControllerState) -> String {
-    let selected_id = controller_state.selected_session_id.as_deref();
+    let selected_id = effective_selected_session_id(projection, controller_state);
     projection
         .and_then(|projection| {
             selected_id.and_then(|id| {
@@ -4871,6 +4922,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_discovery_falls_back_to_healthy_default_runtime_url() {
+        let base_url = start_transport_test_server().await;
+        let missing_path = temp_discovery_path("healthy-fallback-missing");
+        let (_stream_cancel_tx, stream_cancel_rx) = watch::channel(0_u64);
+        let mut runner = GuiTransportRunner::new(stream_cancel_rx);
+        runner.base_url = base_url;
+
+        runner
+            .refresh_discovery(Some(missing_path.display().to_string()))
+            .await;
+
+        assert_eq!(runner.discovery.state, "runningHealthy");
+        assert!(runner.discovery.connectable);
+        assert!(runner
+            .discovery
+            .diagnostics
+            .iter()
+            .any(|item| item.contains("default local /health succeeded")));
+    }
+
+    #[tokio::test]
     async fn icloud_remote_profile_classifies_missing_malformed_stale_healthy_and_unhealthy() {
         let http = reqwest::Client::new();
         let missing = read_icloud_remote_profile(&temp_remote_profile_path("missing"), &http).await;
@@ -5511,6 +5583,14 @@ mod tests {
         assert!(shell.command_registry_requests.iter().any(|row| row.id == "request-1"));
         let control_plane = shell.selected_session_control_plane.as_ref().expect("selected session control plane");
         assert_eq!(control_plane.session_id, "session-1");
+        let outside_filter_controller = GuiControllerState {
+            selected_project_id: Some("__unassigned__".to_string()),
+            ..controller.clone()
+        };
+        let outside_filter_shell = AgentRuntimeConversationShellViewModel::from_workbench(&view, Some(&projection), &outside_filter_controller);
+        assert!(outside_filter_shell.selected_session_id.is_none());
+        assert!(outside_filter_shell.selected_conversation.is_empty());
+        assert!(outside_filter_shell.selected_session_control_plane.is_none());
         assert_eq!(control_plane.role_id, "runtime-allow");
         assert_eq!(control_plane.project_key, "project-a");
         assert_eq!(control_plane.active_model, "gpt-5.4-mini");
